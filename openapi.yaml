@@ -1,0 +1,974 @@
+openapi: 3.0.3
+info:
+  title: brain-server API
+  description: >
+    HTTP API for the brain-server local agent memory / semantic search server
+    (Axum + rusqlite + sqlite-vec + model2vec). This spec is hand-written from
+    the source in src/main.rs and src/handlers/*. Endpoints whose contract could
+    not be fully verified from source are marked with `x-status: unverified`.
+    Every response carries `X-Api-Version: <semver>`; legacy routes carry a
+    `Deprecation` header per the deprecation policy in API_CONTRACT.md.
+  version: 0.9.8
+  x-api-version: "0.9.8"
+servers:
+  - url: http://127.0.0.1:8765
+    description: Default local server (override BIND_HOST/BIND_PORT)
+paths:
+  /health:
+    get:
+      summary: Liveness / system health
+      operationId: getHealth
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string }
+                  model: { type: string }
+                  system:
+                    type: object
+                    properties:
+                      memory_used_mb: { type: integer }
+                      memory_total_mb: { type: integer }
+                      memory_percent: { type: number }
+                  pool:
+                    type: object
+                    properties:
+                      connections: { type: integer }
+                      idle_connections: { type: integer }
+                      busy_connections: { type: integer }
+  /health/db:
+    get:
+      summary: Database health
+      operationId: getHealthDb
+      responses:
+        "200":
+          description: Database health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  database_size_bytes: { type: integer }
+                  database_size_mb: { type: number }
+                  last_write: { type: string, nullable: true }
+                  connection_pool:
+                    type: object
+                    properties:
+                      active: { type: integer }
+                      idle: { type: integer }
+                      max: { type: integer }
+  /ready:
+    get:
+      summary: Readiness probe
+      operationId: getReady
+      responses:
+        "200":
+          description: "OK when ready, NOT_READY otherwise"
+          content:
+            text/plain:
+              schema: { type: string, example: OK }
+  /openapi.yaml:
+    get:
+      summary: This OpenAPI document (machine-readable route discovery)
+      operationId: getOpenapi
+      responses:
+        "200":
+          description: OpenAPI 3.0 YAML
+          content:
+            application/yaml:
+              schema: { type: string }
+  /reindex:
+    post:
+      summary: Re-embed every chunk (vec0 rebuild)
+      operationId: reindex
+      responses:
+        "200":
+          description: Reindex result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  reembedded: { type: integer }
+                  skipped: { type: integer }
+  /version:
+    get:
+      summary: Server version
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version string (text/plain)
+          content:
+            text/plain:
+              schema: { type: string, example: "0.9.1" }
+  /stats:
+    get:
+      summary: Corpus statistics
+      operationId: getStats
+      responses:
+        "200":
+          description: Counts and model info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  embeddings: { type: integer }
+                  entities: { type: integer }
+                  relationships: { type: integer }
+                  model: { type: string }
+                  version: { type: string }
+  /add:
+    post:
+      summary: Add a single text chunk
+      operationId: addChunk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+                title: { type: string }
+                source: { type: string, default: manual }
+      responses:
+        "200":
+          description: Add result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  status: { type: string }
+                  chunk_id: { type: integer, nullable: true }
+                  error: { type: string, nullable: true }
+  /ingest/memory:
+    post:
+      summary: Ingest free-form memory text (raw body)
+      operationId: ingestMemory
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string }
+      responses:
+        "200":
+          description: Ingest result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  entry_id: { type: integer }
+                  similarity_score: { type: number }
+  /search:
+    get:
+      summary: Hybrid semantic + lexical search (legacy GET contract)
+      operationId: search
+      description: >
+        Legacy flat-query search. The structured v0.9.5 `QueryDoc` is available
+        on `POST /recall`. Here `lex` maps to a single `LexSpec.terms` entry
+        (FTS5-quoted, injection-safe); `sources` is a comma-separated OR scope.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: k
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - name: source
+          in: query
+          schema: { type: string }
+        - name: sources
+          in: query
+          schema: { type: string, description: comma-separated OR scope }
+        - name: since
+          in: query
+          schema: { type: string, description: ISO-8601 or YYYY-MM-DD HH:MM:SS }
+        - name: lex
+          in: query
+          schema: { type: string, description: single lexical term (quoted) }
+        - name: intent
+          in: query
+          schema: { type: string, description: recorded for provenance only }
+        - name: profile
+          in: query
+          schema: { type: string, description: retrieval profile hint (passthrough) }
+        - name: explain
+          in: query
+          schema: { type: boolean, description: return query_plan + telemetry (redacts content) }
+      responses:
+        "200":
+          description: Ranked results (or explain block when explain=true)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SearchResult"
+                  error: { type: string }
+                  query_plan:
+                    $ref: "#/components/schemas/QueryPlan"
+                  telemetry:
+                    $ref: "#/components/schemas/SearchTelemetry"
+  /v1/embeddings:
+    post:
+      summary: OpenAI-style embeddings
+      operationId: embeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input]
+              properties:
+                input:
+                  oneOf:
+                    - { type: string }
+                    - type: array
+                      items: { type: string }
+                model: { type: string }
+      responses:
+        "200":
+          description: Embeddings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  object: { type: string, example: list }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        object: { type: string }
+                        embedding: { type: array, items: { type: number } }
+                        index: { type: integer }
+                  model: { type: string }
+                  usage:
+                    type: object
+                    properties:
+                      prompt_tokens: { type: integer }
+                      total_tokens: { type: integer }
+  /ingest/markdown:
+    post:
+      summary: Ingest a markdown document (requires title)
+      operationId: ingestMarkdown
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, title]
+              properties:
+                content: { type: string }
+                title: { type: string }
+      responses:
+        "200":
+          description: Ingest result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  id: { type: integer }
+  /graph/entity/{name}:
+    get:
+      summary: Get an entity and its relations
+      operationId: getEntity
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Entity graph
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  type: { type: string }
+                  relations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        to_entity: { type: string }
+                        relation_type: { type: string }
+                        direction: { type: string }
+                  error: { type: string }
+  /graph/relations:
+    get:
+      summary: Relations for an entity (from or to)
+      operationId: getRelations
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string }
+        - name: to
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Relations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  relations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        entity: { type: string }
+                        relation: { type: string }
+                        direction: { type: string }
+  /graph/traverse:
+    get:
+      summary: Traverse the knowledge graph from an entity
+      operationId: traverseGraph
+      parameters:
+        - name: start
+          in: query
+          required: true
+          schema: { type: string }
+        - name: max_depth
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 3 }
+      responses:
+        "200":
+          description: Traversal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  traversal:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        entity: { type: string }
+                        depth: { type: integer }
+                        path: { type: string }
+  /get/{id}:
+    get:
+      summary: Fetch a single chunk by id (stable reference)
+      operationId: getChunk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The chunk with provenance span + source link
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chunk"
+        "404":
+          description: Chunk not found
+  /multi-get:
+    post:
+      summary: Fetch multiple chunks by id (bounded)
+      operationId: multiGet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items: { type: integer }
+                  maxItems: 1000
+      responses:
+        "200":
+          description: Array of chunks (missing ids omitted)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Chunk"
+  /sources/reconcile:
+    post:
+      summary: Retire active sources whose live URI is no longer present
+      operationId: reconcileSources
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, live_uris]
+              properties:
+                kind: { type: string, description: e.g. "vault" }
+                live_uris:
+                  type: array
+                  items: { type: string }
+                  maxItems: 50000
+      responses:
+        "200":
+          description: Reconcile result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted_sources: { type: integer }
+                  deleted_chunks: { type: integer }
+                  orphan_uris:
+                    type: array
+                    items: { type: string }
+  /sources/{id}:
+    delete:
+      summary: Retire a single source by id
+      operationId: deleteSource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Source retired
+        "404":
+          description: No such source
+  /connectors:
+    get:
+      summary: List registered connector instances
+      operationId: listConnectors
+      responses:
+        "200":
+          description: Connector list (ordered by kind, then instance)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorRow'
+  /webhooks/{kind}:
+    post:
+      summary: Verified webhook receiver (v0.9.7 Guard)
+      operationId: receiveWebhook
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Connector kind, e.g. 'github'.
+      responses:
+        "200":
+          description: Webhook accepted/enqueued (or duplicate)
+        "401":
+          description: Signature verification failed
+  /consolidate/propose:
+    post:
+      summary: Propose consolidation candidates (v0.9.8 Evidence)
+      operationId: proposeConsolidate
+      description: >-
+        Pure detection — finds exact-duplicate chunks and subject conflicts.
+        Never mutates rows. Review the returned candidates, then apply chosen
+        links via POST /consolidate/apply.
+      responses:
+        "200":
+          description: Consolidation proposal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsolidateProposal'
+  /consolidate/apply:
+    post:
+      summary: Record operator-chosen evidence links (v0.9.8 Evidence)
+      operationId: applyConsolidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        "200":
+          description: Links recorded (rejected links reported, non-fatal)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+  /audit:
+    get:
+      summary: Operator audit-log diagnostics (v0.9.7 Guard)
+      operationId: listAudit
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by audit kind (auth|ingest|webhook|reconcile|backup|connector)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Max events to return (default 100, capped at MAX_MULTI_GET)
+      responses:
+        "200":
+          description: Recent audit events (hashes only; no raw secrets)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditRow'
+  /quarantine:
+    get:
+      summary: List quarantined (flagged) chunks (v0.9.7 Guard)
+      operationId: listQuarantine
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Max rows to return (default 100, capped at MAX_MULTI_GET)
+      responses:
+        "200":
+          description: Flagged chunks awaiting operator review (hashes only)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quarantined:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        title:
+                          type: string
+                          nullable: true
+                        source:
+                          type: string
+                          nullable: true
+                        content_hash:
+                          type: string
+                          nullable: true
+                        created_at:
+                          type: string
+                          nullable: true
+                  count:
+                    type: integer
+  /quarantine/{id}/release:
+    post:
+      summary: Release a quarantined chunk back into retrieval (v0.9.7 Guard)
+      operationId: releaseQuarantine
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Quarantined chunk id
+      responses:
+        "200":
+          description: Chunk released (flag cleared)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  released:
+                    type: integer
+        "404":
+          description: No quarantined chunk with that id
+  /quarantine/{id}/delete:
+    post:
+      summary: Delete a quarantined chunk (v0.9.7 Guard)
+      operationId: deleteQuarantine
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: Quarantined chunk id
+      responses:
+        "200":
+          description: Chunk purged (knowledge row + vec0 entry removed)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  deleted:
+                    type: integer
+        "404":
+          description: No quarantined chunk with that id
+  /recall:
+    post:
+      summary: Deterministic end-to-end recall (v0.9.5 structured QueryDoc)
+      operationId: recall
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryDoc"
+      responses:
+        "200":
+          description: Recall hits + unified telemetry/provenance envelope
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hits:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RecallHit"
+                  domain: { type: string, nullable: true }
+                  domains_searched:
+                    type: array
+                    nullable: true
+                    items: { type: string }
+                  telemetry:
+                    $ref: "#/components/schemas/SearchTelemetry"
+  /ingest:
+    post:
+      summary: Plugin ingest (contract stub)
+      operationId: ingest
+      x-status: unverified
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Wire contract per API_CONTRACT.md; body not verified in source.
+      responses:
+        "200":
+          description: Unverified response shape
+  /memory/{id}:
+    delete:
+      summary: Forget / delete a memory (contract stub)
+      operationId: forget
+      x-status: unverified
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Unverified response shape
+  /domains:
+    get:
+      summary: List domains (contract stub)
+      operationId: domains
+      x-status: unverified
+      responses:
+        "200":
+          description: Unverified response shape
+components:
+  schemas:
+    LexSpec:
+      type: object
+      description: >
+        Structured lexical controls, compiled server-side into a single
+        FTS5-quoted MATCH expression (injection-safe). All fields optional;
+        empty = fall back to the bare query.
+      properties:
+        terms:
+          type: array
+          items: { type: string }
+          description: Implicit-AND terms.
+        phrases:
+          type: array
+          items: { type: string }
+          description: Quoted phrase matches (ordered token runs).
+        exclude:
+          type: array
+          items: { type: string }
+          description: Exclusions, prefixed with FTS5 NOT (-).
+        code:
+          type: array
+          items: { type: string }
+          description: Exact identifier / code path, matched verbatim.
+    QueryDoc:
+      type: object
+      description: v0.9.5 structured query document. `v` must be 1 (unknown versions are rejected).
+      properties:
+        v: { type: integer, default: 1, description: schema version }
+        q: { type: string, description: plain-text fallback query }
+        query: { type: string, description: recall query (POST /recall) }
+        lex: { $ref: "#/components/schemas/LexSpec" }
+        vec: { type: string, description: explicit embedding query (overrides q) }
+        hyde: { type: string, description: hypothetical answer (overrides vec) }
+        intent: { type: string, description: recorded for provenance/telemetry only }
+        sources:
+          type: array
+          items: { type: string }
+          description: multi-source OR scope
+        source: { type: string, description: legacy single-source equality }
+        since: { type: string, description: ISO-8601 / YYYY-MM-DD HH:MM:SS lower bound }
+        domain: { type: string, description: domain isolation label }
+        k: { type: integer, description: result count (GET /search) }
+        limit: { type: integer, description: result count (POST /recall) }
+        profile: { type: string, description: retrieval profile hint (passthrough) }
+        explain: { type: boolean, description: "GET /search query_plan toggle" }
+        provenance: { type: boolean, description: "POST /recall telemetry/provenance toggle" }
+        include_flagged: { type: boolean, description: "v0.9.7 Guard: include quarantined chunks" }
+        as_of: { type: string, nullable: true, description: "v0.9.8 Evidence: point-in-time recall (RFC3339)" }
+        evidence: { type: boolean, description: "v0.9.8 Evidence: include structured Evidence on every hit" }
+    Evidence:
+      type: object
+      description: >-
+        Faithful, bounded evidence for a hit (verbatim snippet + span + source
+        link). v0.9.8 adds time semantics, lifecycle, and typed links.
+      properties:
+        text: { type: string, description: verbatim substring of content }
+        line_start: { type: integer, nullable: true }
+        line_end: { type: integer, nullable: true }
+        heading_path: { type: string, nullable: true }
+        source_uri: { type: string, nullable: true }
+        revision_id: { type: integer, nullable: true }
+        valid_from: { type: string, nullable: true, description: when the fact became true (RFC3339) }
+        valid_to: { type: string, nullable: true, description: when the fact ceased to be true; null = current }
+        observed_at: { type: string, nullable: true, description: when brain-server learned the fact (RFC3339) }
+        authority: { type: number, nullable: true, description: "source-authority tie-breaker (0..1)" }
+        lifecycle:
+          type: string
+          nullable: true
+          enum: [current, historical, superseded]
+          description: current vs historical vs superseded; omitted when current
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              to_chunk: { type: integer }
+              kind: { type: string, enum: [supports, supersedes, contradicts, references, derived_from] }
+        highlights:
+          type: array
+          items:
+            type: array
+            items: { type: integer }
+            description: "[start,end) byte offsets within `text`"
+    SearchResult:
+      type: object
+      properties:
+        id: { type: integer }
+        similarity: { type: number, description: cosine similarity score }
+        title: { type: string, nullable: true }
+        content: { type: string }
+        source:
+          type: string
+          enum: [vector, fts, both]
+          nullable: true
+        snippet: { type: string, description: bounded verbatim preview }
+        source_uri: { type: string, nullable: true }
+        revision_id: { type: integer, nullable: true }
+        evidence:
+          $ref: "#/components/schemas/Evidence"
+        provenance:
+          type: object
+          nullable: true
+          properties:
+            vector_rank: { type: integer, nullable: true }
+            fts_rank: { type: integer, nullable: true }
+            fused_score: { type: number, nullable: true }
+            rerank_score: { type: number, nullable: true }
+            rerank_truncated: { type: boolean }
+            prf_expanded: { type: boolean }
+    RecallHit:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string, nullable: true }
+        content: { type: string }
+        snippet: { type: string, description: bounded verbatim preview }
+        score: { type: number }
+        domain: { type: string, nullable: true }
+        source:
+          type: string
+          enum: [vector, fts, both, graph]
+          nullable: true
+        evidence:
+          $ref: "#/components/schemas/Evidence"
+        conflict:
+          type: boolean
+          nullable: true
+          description: "v0.9.8: true when this chunk has a contradicts/supersedes link to a current chunk"
+        provenance:
+          type: object
+          nullable: true
+          properties:
+            vector_rank: { type: integer, nullable: true }
+            fts_rank: { type: integer, nullable: true }
+            fused_score: { type: number, nullable: true }
+            rerank_score: { type: number, nullable: true }
+            rerank_truncated: { type: boolean }
+            prf_expanded: { type: boolean }
+    Chunk:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string, nullable: true }
+        content: { type: string }
+        source: { type: string, nullable: true }
+        document_id: { type: string, nullable: true }
+        chunk_index: { type: integer, nullable: true }
+        heading_path: { type: string, nullable: true }
+        line_start: { type: integer, nullable: true }
+        line_end: { type: integer, nullable: true }
+        created_at: { type: string, nullable: true }
+        source_uri: { type: string, nullable: true }
+        revision_id: { type: integer, nullable: true }
+    QueryPlan:
+      type: object
+      description: Reproducible effective query (GET /search?explain=true).
+      properties:
+        k: { type: integer }
+        lex: { type: string, nullable: true }
+        vec: { type: string, nullable: true }
+        hyde: { type: string, nullable: true }
+        intent: { type: string, nullable: true }
+        sources: { type: array, items: { type: string } }
+        source: { type: string, nullable: true }
+        domain: { type: string, nullable: true }
+        since: { type: string, nullable: true }
+        profile: { type: string, nullable: true }
+        embedding_query: { type: string, nullable: true }
+    SearchTelemetry:
+      type: object
+      description: Unified retrieval telemetry (POST /recall provenance=true).
+      properties:
+        embed_ms: { type: number }
+        vector_ms: { type: number }
+        fts_ms: { type: number }
+        fusion_ms: { type: number }
+        prf_ms: { type: number }
+        rerank_ms: { type: number }
+        vec_candidates: { type: integer }
+        fts_candidates: { type: integer }
+        fused_count: { type: integer }
+        rrf_k: { type: integer }
+        embedding_query: { type: string, nullable: true }
+        intent: { type: string, nullable: true }
+        retrieval_ms_vec: { type: number }
+        retrieval_ms_fts: { type: number }
+        confidence: { type: number }
+        recommendation: { type: string, nullable: true }
+    ConnectorRow:
+      type: object
+      description: A registered connector instance (v0.9.6 Bridge).
+      properties:
+        id: { type: integer }
+        kind:
+          type: string
+          description: Connector kind, e.g. 'github', 'stub'. Matches the manifest `kind`.
+        instance:
+          type: string
+          description: Disambiguator within a kind, e.g. 'markfietje/brain-server' for github.
+        state:
+          type: string
+          enum: [registered, running, stopped, failed]
+        last_sync_at: { type: string, nullable: true }
+        last_error: { type: string, nullable: true }
+      required: [id, kind, instance, state]
+    AuditRow:
+      type: object
+      description: A single audit event (v0.9.7 Guard). Contains only hashes — no raw content or secrets.
+      properties:
+        id: { type: integer }
+        ts: { type: string }
+        kind:
+          type: string
+          enum: [auth, ingest, webhook, reconcile, backup, connector]
+        actor: { type: string }
+        target_hash: { type: string, description: xxh3 of the affected uri/id }
+        status:
+          type: string
+          enum: [ok, denied, error]
+        detail_hash: { type: string, description: xxh3 of a short detail string }
+      required: [id, ts, kind, actor, target_hash, status, detail_hash]
+    ConsolidateProposal:
+      type: object
+      description: v0.9.8 Evidence — reviewable consolidation candidates (no mutation).
+      properties:
+        exact_duplicates:
+          type: array
+          items:
+            type: array
+            items: { type: integer }
+          description: groups of chunk ids sharing a content_hash
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              from_chunk: { type: integer }
+              to_chunk: { type: integer }
+              subject: { type: string }
+              age_gap_secs: { type: integer }
+              authority_delta: { type: number }
+              proposed: { type: string, enum: [supersedes], description: suggested resolution }
+    ApplyRequest:
+      type: object
+      description: v0.9.8 Evidence — operator-chosen typed links to record.
+      properties:
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              from_chunk: { type: integer }
+              to_chunk: { type: integer }
+              kind: { type: string, enum: [supports, supersedes, contradicts, references, derived_from] }
+      required: [links]
+    ApplyResponse:
+      type: object
+      properties:
+        recorded: { type: integer }
+        rejected: { type: array, items: { type: string } }

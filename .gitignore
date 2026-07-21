@@ -1,0 +1,56 @@
+# Rust
+/target/
+**/target/
+*.pdb
+*.exe
+*.so
+*.dylib
+*.dll
+
+# Node / TypeScript (plugin)
+node_modules/
+dist/
+*.log
+.npm/
+
+# SQLite runtime (never commit live DBs)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+brain-server.pid
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.bak
+*.broken
+*.backup_*
+
+# Internal / pre-release documents (not shipped with source)
+/AGENTS.md
+/IMPLEMENTATION_PLAN_*.md
+/PLUGIN_INTEGRATION.md
+/ROADMAP.md
+/REALITY_CHECK.md
+/POSITIONING.md
+/IMPROVEMENTS.md
+/TODO.md

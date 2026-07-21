@@ -1,0 +1,34 @@
+{
+  "name": "@markfietje/brain-server-openclaw",
+  "version": "0.1.0",
+  "description": "OpenClaw memory plugin for the Rust brain-server: deterministic auto-recall, per-domain knowledge graphs, local static embeddings. Thin TS shim over loopback HTTP.",
+  "type": "module",
+  "main": "./index.ts",
+  "scripts": {
+    "test": "vitest run --config ../../test/vitest/vitest.extension-brain-server.config.ts"
+  },
+  "dependencies": {
+    "typebox": "1.3.3"
+  },
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.0"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "install": {
+      "npmSpec": "@markfietje/brain-server-openclaw",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.5.31"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "release": {
+      "bundleRuntimeDependencies": false,
+      "publishToClawHub": true,
+      "publishToNpm": true
+    }
+  }
+}

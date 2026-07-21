@@ -1,0 +1,120 @@
+[package]
+name = "brain-server"
+version = "0.9.8"
+edition = "2021"
+
+[features]
+# Benchmark harness (M0.1). Adds no dependencies — the `bench` binary reuses
+# the shared dependency-free HTTP client. Off by default so the default build
+# is unchanged. Enable with `cargo run --release --features bench --bin bench`.
+bench = []
+# GitHub App connector auth (M2.1). Pulls in `jsonwebtoken` + its crypto
+# transitive deps (RSA + SHA-256 via RustCrypto). The server binary never
+# enables this — outbound auth is a connector-binary concern, not a server
+# one (see `bin_common/http.rs` line 4 for the rationale). Enable when
+# building the brain-connector-gh binary (M2.2).
+connector-github = ["dep:jsonwebtoken", "jsonwebtoken/use_pem", "jsonwebtoken/rust_crypto", "dep:reqwest"]
+
+[dependencies]
+# Core Embedding
+model2vec-rs = "0.1.4"
+
+# Database Stack - Verified Absolute Latest
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+sqlite-vec = "0.1.6"
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.32.0"
+
+# Async Stack - Axum 0.8.x Standard
+axum = "0.8.9"
+hyper = "1.10.1"
+tower-http = { version = "0.6.11", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header" ] }
+tokio = { version = "1.53.0", features = ["full"] }
+
+# Serialization - Latest Releases
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.150"
+
+# Performance Utilities
+anyhow = "1.0.104"
+xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
+# Webhook HMAC-SHA256 verification (v0.9.7 "Guard"). Pure-Rust, no native deps.
+hmac = "0.12"
+sha2 = "0.10"
+# Encrypted backup/restore (v0.9.7 "Guard"). Pure-Rust AES-256-GCM, no native deps.
+aes-gcm = "0.10"
+# Hex encoding for HMAC signature roundtrips in webhook verification + tests.
+hex = "0.4"
+chrono = "0.4.45"
+dirs = "6.0.0"
+sysinfo = "0.38.2"
+zerocopy = { version = "0.8", features = ["derive"] }
+uuid = { version = "1.24", features = ["v4", "serde"] }
+
+# Markdown parsing for structure-aware chunking (v0.9.4: closes the gap on
+# setext headings, indented code blocks, blockquotes, lists, tables, and other
+# CommonMark constructs the previous hand-rolled line-scanner mis-handled).
+# Context7-verified 2026-07-17: 0.13 is current. default-features = false
+# drops the `html` + `getopts` deps we don't need (we only use the parser).
+pulldown-cmark = { version = "0.13.4", default-features = false }
+
+# Observability
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# GitHub App connector auth (M2.1). Optional — only pulled in when the
+# `connector-github` feature is enabled. Default-features disabled because
+# we only need `RS256` encoding (no JWS verification in this codebase).
+jsonwebtoken = { version = "10.4", default-features = false, optional = true }
+
+# Outbound HTTP for the brain-connector-gh binary (M2.2). Optional — only
+# pulled in when `connector-github` is enabled. The server binary never
+# enables this (constraint #1: no outbound HTTP dep on the server — see
+# `bin_common/http.rs` line 4). Uses `rustls-tls` (no system OpenSSL dep,
+# consistent with `rusqlite`'s bundled philosophy) + `blocking` (sync client
+# matches the AuthProvider trait's sync API).
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"], optional = true }
+
+[dev-dependencies]
+tempfile = "3.27"
+# Used only by `connector::auth::github_app::tests` to generate throwaway
+# RSA keypairs for JWT-shape tests. Pulled transitively by `jsonwebtoken`
+# already, but declared explicitly so the test doesn't silently break if
+# `jsonwebtoken` ever swaps its crypto backend.
+rsa = "0.9"
+rand = "0.8"
+# Used only by the same test to decode JWT segments for shape inspection.
+# Transitive via jsonwebtoken; declared explicitly for the same reason as rsa.
+base64 = "0.22"
+
+[[bin]]
+name = "brain"
+path = "src/bin/brain.rs"
+
+[[bin]]
+name = "mcp"
+path = "src/bin/mcp.rs"
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+required-features = ["bench"]
+
+[[bin]]
+name = "brain-connector-stub"
+path = "src/bin/brain-connector-stub.rs"
+
+[[bin]]
+name = "brain-connector-gh"
+path = "src/bin/brain-connector-gh.rs"
+required-features = ["connector-github"]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.release.package."*"]
+opt-level = "z"

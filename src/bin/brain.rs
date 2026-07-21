@@ -1,0 +1,1744 @@
+//! `brain` — command-line client for a running brain-server.
+//!
+//! Hand-rolled argument parsing (no `clap` dependency). Talks HTTP/1.1 to the
+//! server using the shared, dependency-free client in `bin_common/http.rs`.
+//!
+//! Subcommands:
+//!   brain query "<q>" [--k N] [--source S ...] [--phrase P ...]
+//!                  [--exclude E ...] [--code C ...] [--since ISO]
+//!                  [--intent I] [--profile P] [--explain]
+//!   brain explain "<q>" [--source S ...] [--since ISO]
+//!   brain get <id>
+//!   brain ingest-dir <path> [--dry-run] [--source S]
+//!   brain bench
+//!   brain status
+//!   brain doctor
+
+#[path = "../bin_common/http.rs"]
+mod http;
+
+use http::{delete, get, post};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::exit;
+
+const DEFAULT_URL: &str = "http://127.0.0.1:8765";
+
+/// v0.9.2: walk bounds for `ingest-dir`. Guards against pathological vaults
+/// blowing the ingest budget. 50k files / 500 MiB matches the plan's RSS ceiling
+/// with headroom for the model + index. ponytail ceiling: a vault larger than
+/// this needs the paid live-sync tier (streaming ingest), not one-shot ingest.
+const MAX_INGEST_FILES: usize = 50_000;
+const MAX_INGEST_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Ground-truth corpus mirrored from `tests/eval.rs` DOCS. Used only by
+/// `brain bench` to map a server result back to its judged doc index so we can
+/// compute recall. Keep in sync with the eval fixture.
+// ponytail: bench recall is only meaningful if this corpus has been ingested
+// into the server (via `brain ingest-dir` or the eval harness). If the corpus
+// is not present, recall will read 0 — that is an environment error, not a bug.
+const DOCS: &[&str] = &[
+    "Bignay is a tropical fruit and a good alternative to blueberry, rich in antioxidants.",
+    "The Rust programming language guarantees memory safety without a garbage collector.",
+    "Vitamin D3 supplementation improves immune function and bone density in deficient adults.",
+    "The GDPR is a European regulation protecting the personal data of EU residents.",
+    "Gut microbiome diversity affects inflammation markers and immune system regulation.",
+    "SQLite is an embedded relational database with FTS5 full-text search support.",
+    "ISO 9001 is the international standard for quality management systems.",
+    "Ownership and borrowing are Rust's core concepts for compile-time memory safety.",
+    "Antioxidants in tropical fruits like bignay help reduce oxidative stress.",
+    "The GDPR covers any organization processing EU residents' data, with fines up to four percent of global revenue.",
+];
+
+fn base_url() -> String {
+    std::env::var("BRAIN_URL").unwrap_or_else(|_| DEFAULT_URL.to_string())
+}
+
+/// Resolve the bearer token for authenticated routes, mirroring the server's
+/// `AUTH_TOKEN_FILE` → `AUTH_TOKEN` ladder (see `src/config.rs`).
+///
+/// 1. `BRAIN_TOKEN_FILE` — explicit path to a `0600`-mode secret file.
+/// 2. `BRAIN_TOKEN` — raw env var (dev convenience).
+/// 3. `~/.config/brain-server/auth-token` — default install path written by
+///    `scripts/install-service.sh`. Zero-config for the common case.
+///
+/// Returns `None` if no token is resolvable — public routes still work, but
+/// `/search`, `/stats`, `/recall`, `/ingest/*` will 401 against an
+/// auth-enabled server. The CLI surfaces that error rather than silently
+/// degrading.
+fn auth_token() -> Option<String> {
+    if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
+        let p = path.trim();
+        if let Ok(s) = std::fs::read_to_string(p) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    if let Ok(t) = std::env::var("BRAIN_TOKEN") {
+        let t = t.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    // Default install path: written by install-service.sh alongside the
+    // launchd plist's AUTH_TOKEN_FILE. Same file, same value, no extra env.
+    let default_path = dirs_home().join(".config/brain-server/auth-token");
+    if let Ok(s) = std::fs::read_to_string(&default_path) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+fn default_db_path() -> PathBuf {
+    if let Ok(p) = std::env::var("BRAIN_DB_PATH") {
+        return PathBuf::from(p);
+    }
+    let home = dirs_home();
+    home.join(".openclaw/workspace/brain.db")
+}
+
+fn dirs_home() -> PathBuf {
+    // Minimal HOME discovery (mirrors dirs::home_dir without the dependency).
+    if let Ok(h) = std::env::var("HOME") {
+        return PathBuf::from(h);
+    }
+    PathBuf::from(".")
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        print_usage();
+        exit(0);
+    }
+    let cmd = args[0].as_str();
+    let rest = &args[1..];
+
+    let result = match cmd {
+        "query" => cmd_query(rest),
+        "explain" => cmd_explain(rest),
+        "get" => cmd_get(rest),
+        "ingest-dir" => cmd_ingest_dir(rest),
+        "reconcile" => cmd_reconcile(rest),
+        "source-delete" => cmd_source_delete(rest),
+        "connect" => cmd_connect(rest),
+        "sync" => cmd_sync(rest),
+        "connector-status" => cmd_connector_status(rest),
+        "backup" => cmd_backup(rest),
+        "restore" => cmd_restore(rest),
+        "bench" => cmd_bench(),
+        "status" => cmd_status(),
+        "doctor" => cmd_doctor(rest),
+        "-h" | "--help" | "help" => {
+            print_usage();
+            Ok(())
+        }
+        "-V" | "--version" => {
+            println!("brain {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        other => {
+            eprintln!("error: unknown subcommand '{other}'");
+            print_usage();
+            exit(2);
+        }
+    };
+
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        exit(1);
+    }
+}
+
+fn print_usage() {
+    // ponytail: raw string literal preserves the intended 2-space indentation.
+    // The previous version used `\n\` line continuations, which strip leading
+    // whitespace on the next line — so every subcommand rendered flush-left.
+    // `r#"..."#` (raw with hash-delimiters) lets the embedded `"` survive too.
+    println!(
+        r#"brain — client for brain-server (default {DEFAULT_URL}; override with BRAIN_URL)
+
+usage:
+  brain query "<q>" [--k N] [--source S ...] [--phrase P ...]
+                 [--exclude E ...] [--code C ...] [--since ISO]
+                 [--intent I] [--profile P] [--explain]
+  brain explain "<q>" [--source S ...] [--since ISO]
+  brain get <id>
+  brain ingest-dir <path> [--dry-run] [--source S]
+  brain reconcile <path> [--kind vault] [--dry-run]
+  brain source-delete <id>
+  brain connect github --app-id N --install-id N --key-file PATH \
+                      --repo owner/repo [...] [--webhook-secret-file PATH]
+  brain sync [github] [--config PATH]
+  brain connector-status
+  brain backup <out-path> [--passphrase-file PATH]
+  brain restore <in-path> [--passphrase-file PATH]
+  brain bench
+  brain status
+  brain doctor [--backup <path> [--passphrase-file PATH]]
+
+auth:
+  Reads BRAIN_TOKEN_FILE, then BRAIN_TOKEN, then
+  ~/.config/brain-server/auth-token (written by install-service.sh)."#
+    );
+}
+
+// ── argument helpers ──────────────────────────────────────────────────────
+
+/// Parse `--flag value` and `--flag=value` options from a slice, returning the
+/// remaining positional arguments and a map of flag -> value (None if flag has
+/// no `=` and is a boolean switch).
+fn parse_flags(
+    args: &[String],
+) -> (
+    Vec<String>,
+    std::collections::HashMap<String, Option<String>>,
+) {
+    let mut positionals = Vec::new();
+    let mut flags = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some(rest) = a.strip_prefix("--") {
+            if let Some((k, v)) = rest.split_once('=') {
+                flags.insert(k.to_string(), Some(v.to_string()));
+            } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                flags.insert(rest.to_string(), Some(args[i + 1].clone()));
+                i += 1;
+            } else {
+                flags.insert(rest.to_string(), None);
+            }
+        } else {
+            positionals.push(a.clone());
+        }
+        i += 1;
+    }
+    (positionals, flags)
+}
+
+fn require_positional(positionals: &[String], name: &str) -> Result<String, String> {
+    positionals
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("missing required argument: {name}"))
+}
+
+fn json_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
+}
+
+// ── subcommands ────────────────────────────────────────────────────────────
+
+/// Collect every value of a repeatable `--flag value` / `--flag=value` option
+/// from raw args. Used for OR-scoped flags (`--source`, `--phrase`, …) where one
+/// value per occurrence is appended to a list rather than overwriting.
+fn multi_flag(args: &[String], name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some(rest) = a.strip_prefix("--") {
+            if let Some((k, v)) = rest.split_once('=') {
+                if k == name {
+                    out.push(v.to_string());
+                }
+            } else if i + 1 < args.len() && !args[i + 1].starts_with("--") && rest == name {
+                out.push(args[i + 1].clone());
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Build a v0.9.5 structured `QueryDoc` body from the parsed CLI flags, lowering
+/// the lexical controls into the `LexSpec` the server compiles (FTS5-quoted,
+/// injection-safe). Returns the JSON body string.
+fn build_query_doc(
+    q: &str,
+    flags: &std::collections::HashMap<String, Option<String>>,
+    phrases: &[String],
+    excludes: &[String],
+    codes: &[String],
+    sources: &[String],
+    explain: bool,
+) -> String {
+    let k = flags.get("k").and_then(|o| o.as_ref());
+    let since = flags.get("since").and_then(|o| o.clone());
+    let intent = flags.get("intent").and_then(|o| o.clone());
+    let profile = flags.get("profile").and_then(|o| o.clone());
+
+    let mut body = serde_json::json!({ "query": q });
+    if let Some(k) = k {
+        body["limit"] = serde_json::json!(k.parse::<u32>().unwrap_or(5));
+    }
+    if !phrases.is_empty() || !excludes.is_empty() || !codes.is_empty() {
+        let mut lex = serde_json::json!({});
+        if !phrases.is_empty() {
+            lex["phrases"] = serde_json::json!(phrases);
+        }
+        if !excludes.is_empty() {
+            lex["exclude"] = serde_json::json!(excludes);
+        }
+        if !codes.is_empty() {
+            lex["code"] = serde_json::json!(codes);
+        }
+        body["lex"] = lex;
+    }
+    if !sources.is_empty() {
+        body["sources"] = serde_json::json!(sources);
+    }
+    if let Some(s) = flags.get("source").and_then(|o| o.clone()) {
+        body["source"] = serde_json::json!(s);
+    }
+    if let Some(s) = since {
+        body["since"] = serde_json::json!(s);
+    }
+    if let Some(s) = intent {
+        body["intent"] = serde_json::json!(s);
+    }
+    if let Some(s) = profile {
+        body["profile"] = serde_json::json!(s);
+    }
+    if explain {
+        // `explain` maps to the unified prove nance/telemetry envelope on /recall.
+        body["provenance"] = serde_json::json!(true);
+    }
+    body.to_string()
+}
+
+fn cmd_query(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let q = require_positional(&positionals, "query")?;
+    let phrases = multi_flag(args, "phrase");
+    let excludes = multi_flag(args, "exclude");
+    let codes = multi_flag(args, "code");
+    let sources = multi_flag(args, "source");
+    let explain = flags.contains_key("explain");
+
+    let body = build_query_doc(&q, &flags, &phrases, &excludes, &codes, &sources, explain);
+
+    let resp = post(
+        &base_url(),
+        "/recall",
+        &[],
+        "application/json",
+        &body,
+        auth_token().as_deref(),
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| format!("server returned non-JSON (status {}): {e}", resp.status))?;
+
+    if let Some(err) = value.get("error") {
+        return Err(format!("server error: {err}"));
+    }
+
+    let hits = value
+        .get("hits")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    println!("recall: \"{q}\"  ({} hits)", hits.len());
+    if explain && value.get("telemetry").is_some() {
+        print_telemetry(&value["telemetry"]);
+    }
+    print_hits(&hits, explain);
+    Ok(())
+}
+
+fn cmd_explain(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let q = require_positional(&positionals, "query")?;
+    let sources = multi_flag(args, "source");
+    let since = flags.get("since").and_then(|o| o.clone());
+
+    let mut body = serde_json::json!({ "query": q, "provenance": true });
+    if !sources.is_empty() {
+        body["sources"] = serde_json::json!(sources);
+    }
+    if let Some(s) = since {
+        body["since"] = serde_json::json!(s);
+    }
+
+    let resp = post(
+        &base_url(),
+        "/recall",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| format!("server returned non-JSON (status {}): {e}", resp.status))?;
+
+    if let Some(err) = value.get("error") {
+        return Err(format!("server error: {err}"));
+    }
+    let hits = value
+        .get("hits")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+    println!("explain: \"{q}\"  ({} hits)", hits.len());
+    print_telemetry(value.get("telemetry").unwrap_or(&serde_json::Value::Null));
+    print_hits(&hits, true);
+    Ok(())
+}
+
+/// Print the unified `/recall` telemetry block (the M3 envelope that folds the
+/// old `/search` `query_plan` into one shape). Mirrors the real `SearchTelemetry`
+/// struct in `src/search/mod.rs` — only fields the server actually emits are
+/// listed, so nothing printed is fabricated.
+fn print_telemetry(tel: &serde_json::Value) {
+    if tel.is_null() {
+        return;
+    }
+    println!("  telemetry:");
+    for key in [
+        "embedding_query",
+        "intent",
+        "fused_count",
+        "rrf_k",
+        "vec_candidates",
+        "fts_candidates",
+        "confidence",
+        "recommendation",
+    ] {
+        if let Some(v) = tel.get(key) {
+            println!("    {key}: {v}");
+        }
+    }
+}
+
+/// Pretty-print a `/recall` hit list. `with_provenance` toggles the per-hit
+/// retrieval provenance (vector/fts ranks, fused score, PRF decision).
+fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
+    if hits.is_empty() {
+        println!("  (no results)");
+        return;
+    }
+    for (rank, h) in hits.iter().enumerate() {
+        let id = h.get("id").and_then(|x| x.as_i64()).unwrap_or(-1);
+        let score = h.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        let title = json_str(h, "title").unwrap_or_else(|| "(untitled)".into());
+        let source = h
+            .get("source")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let snippet = h
+            .get("snippet")
+            .and_then(|x| x.as_str())
+            .map(|s| s.replace('\n', " "))
+            .unwrap_or_default();
+
+        println!(
+            "{:>3}. [{:.4}] id={} source={}",
+            rank + 1,
+            score,
+            id,
+            source
+        );
+        println!("     title: {title}");
+        if !snippet.is_empty() {
+            println!("     {snippet}");
+        }
+        if with_provenance {
+            if let Some(p) = h.get("provenance") {
+                let vr = p.get("vector_rank").and_then(|x| x.as_u64());
+                let fr = p.get("fts_rank").and_then(|x| x.as_u64());
+                let fs = p.get("fused_score").and_then(|x| x.as_f64());
+                let rs = p.get("rerank_score").and_then(|x| x.as_f64());
+                let prf = p
+                    .get("prf_expanded")
+                    .and_then(|x| x.as_bool())
+                    .unwrap_or(false);
+                println!(
+                    "     provenance: vector_rank={:?} fts_rank={:?} fused={:?} rerank={:?} prf_expanded={}",
+                    vr, fr, fs, rs, prf
+                );
+            } else {
+                println!("     provenance: (none returned by server)");
+            }
+        }
+    }
+}
+
+fn cmd_get(args: &[String]) -> Result<(), String> {
+    let (positionals, _flags) = parse_flags(args);
+    let id_str = require_positional(&positionals, "id")?;
+    let id: i64 = id_str
+        .parse()
+        .map_err(|_| format!("id must be an integer, got '{id_str}'"))?;
+
+    let path = format!("/get/{id}");
+    let resp = get(&base_url(), &path, &[], auth_token().as_deref())?;
+    if resp.status == 404 {
+        return Err(format!("no chunk with id {id}"));
+    }
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| format!("non-JSON response (status {}): {e}", resp.status))?;
+
+    let title = json_str(&v, "title").unwrap_or_else(|| "(untitled)".into());
+    let source = json_str(&v, "source").unwrap_or_default();
+    let heading = json_str(&v, "heading_path").unwrap_or_default();
+    let line_start = v.get("line_start").and_then(|x| x.as_i64());
+    let line_end = v.get("line_end").and_then(|x| x.as_i64());
+    let source_uri = json_str(&v, "source_uri").unwrap_or_default();
+    let revision_id = v.get("revision_id").and_then(|x| x.as_i64());
+
+    println!("chunk {id}");
+    println!("  title      : {title}");
+    if !source.is_empty() {
+        println!("  source     : {source}");
+    }
+    if !heading.is_empty() {
+        println!("  heading    : {heading}");
+    }
+    if let (Some(a), Some(b)) = (line_start, line_end) {
+        println!("  lines      : {a}..{b}");
+    }
+    if !source_uri.is_empty() {
+        println!("  source_uri : {source_uri}");
+    }
+    if let Some(r) = revision_id {
+        println!("  revision   : {r}");
+    }
+    println!("  {:-<60}", "");
+    let content = json_str(&v, "content").unwrap_or_default();
+    println!("{content}");
+    Ok(())
+}
+
+fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let path = require_positional(&positionals, "path")?;
+    let dry_run = flags.contains_key("dry-run");
+    let source = flags.get("source").and_then(|o| o.clone());
+
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {path}"));
+    }
+
+    let ignore = load_brainignore(root);
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(root, root, &ignore, &mut files)?;
+    files.sort();
+
+    // v0.9.2: bound the walk so a pathological vault can't blow the ingest
+    // budget. Counts/bytes are total file content, not just markdown.
+    if files.len() > MAX_INGEST_FILES {
+        return Err(format!(
+            "too many files: {} (max {MAX_INGEST_FILES}). Narrow the path or use .brainignore.",
+            files.len()
+        ));
+    }
+    let total_bytes: u64 = files
+        .iter()
+        .filter_map(|f| std::fs::metadata(f).ok().map(|m| m.len()))
+        .sum();
+    if total_bytes > MAX_INGEST_BYTES {
+        return Err(format!(
+            "vault too large: {} bytes (max {MAX_INGEST_BYTES}). Narrow the path or use .brainignore.",
+            total_bytes
+        ));
+    }
+
+    if files.is_empty() {
+        println!("no ingestable text/markdown files found in {path}");
+        return Ok(());
+    }
+
+    let mut ingested = 0;
+    let mut skipped = 0;
+    for f in &files {
+        let rel = f.strip_prefix(root).unwrap_or(f);
+        let ext = f
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let is_markdown = matches!(ext.as_str(), "md" | "markdown");
+        let content = match std::fs::read_to_string(f) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("  skip {}: {e}", rel.display());
+                skipped += 1;
+                continue;
+            }
+        };
+        if content.trim().is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        if dry_run {
+            let target = if is_markdown {
+                "/ingest/markdown"
+            } else {
+                "/ingest/memory"
+            };
+            println!(
+                "  [dry-run] {} -> {} ({} bytes{})",
+                rel.display(),
+                target,
+                content.len(),
+                source
+                    .as_ref()
+                    .map(|s| format!(", source={s}"))
+                    .unwrap_or_default()
+            );
+            continue;
+        }
+
+        let outcome = if is_markdown {
+            let title = derive_title(f);
+            // v0.9.2: send the absolute path as source_path so the server can
+            // dedup/replace per-file and surface provenance.
+            let abs = std::fs::canonicalize(f)
+                .unwrap_or_else(|_| f.to_path_buf())
+                .to_string_lossy()
+                .to_string();
+            let body = serde_json::json!({
+                "content": content,
+                "title": title,
+                "source_path": abs,
+            })
+            .to_string();
+            post(
+                &base_url(),
+                "/ingest/markdown",
+                &[],
+                "application/json",
+                &body,
+                auth_token().as_deref(),
+            )
+            .map(|r| (r.status, r.body))
+        } else {
+            let q = source
+                .as_ref()
+                .map(|s| vec![("source".to_string(), s.clone())])
+                .unwrap_or_default();
+            post(
+                &base_url(),
+                "/ingest/memory",
+                &q,
+                "text/plain",
+                &content,
+                auth_token().as_deref(),
+            )
+            .map(|r| (r.status, r.body))
+        };
+
+        match outcome {
+            Ok((status, body)) => {
+                let ok = status == 200 && !body.contains("\"success\":false");
+                if ok {
+                    ingested += 1;
+                    println!("  ok   {} -> {}", rel.display(), summarize_ingest(&body));
+                } else {
+                    skipped += 1;
+                    println!(
+                        "  fail {} ({}): {}",
+                        rel.display(),
+                        status,
+                        truncate(&body, 120)
+                    );
+                }
+            }
+            Err(e) => {
+                skipped += 1;
+                println!("  error {}: {e}", rel.display());
+            }
+        }
+    }
+
+    println!("\ningest-dir complete: {ingested} ingested, {skipped} skipped");
+    Ok(())
+}
+
+/// `brain reconcile <path>`: walks the live filesystem, computes the canonical
+/// absolute-path URIs the server indexes (the same form `ingest-dir` sends),
+/// and POSTs them to `/sources/reconcile`. The server retires any active
+/// `--kind` source whose URI is no longer on disk — how a vault delete or
+/// rename is reflected after a re-ingest cycle.
+///
+/// `--dry-run`: print the orphan URIs the server WOULD retire without actually
+///   issuing the reconcile request.
+///
+/// ponytail: this is a one-shot walk, not a watch. A real vault workflow should
+/// invoke `brain reconcile <vault>` after `brain ingest-dir <vault>` on every
+/// sync. Live incremental reconcile needs the streaming-sync tier (P3+).
+fn cmd_reconcile(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let path = require_positional(&positionals, "path")?;
+    let dry_run = flags.contains_key("dry-run");
+    let kind = flags
+        .get("kind")
+        .and_then(|o| o.as_deref())
+        .unwrap_or("vault")
+        .to_string();
+
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {path}"));
+    }
+
+    // Reuse ingest-dir's walker + ignore file so the live URI set matches the
+    // set ingest-dir would have sent. A URI computed differently here would
+    // never match a stored source_path, making reconcile a no-op at best.
+    let ignore = load_brainignore(root);
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_files(root, root, &ignore, &mut files)?;
+    files.sort();
+
+    if files.len() > MAX_INGEST_FILES {
+        return Err(format!(
+            "too many files: {} (max {MAX_INGEST_FILES}). Narrow the path or use .brainignore.",
+            files.len()
+        ));
+    }
+
+    // Canonicalize each file path the same way cmd_ingest_dir does so the URIs
+    // match what's stored in `sources.uri`. Non-canonicalizable files fall back
+    // to the literal path — matches the ingest-dir fallback.
+    let live_uris: Vec<String> = files
+        .iter()
+        .map(|f| {
+            std::fs::canonicalize(f)
+                .unwrap_or_else(|_| f.to_path_buf())
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+
+    println!(
+        "reconcile {path}: {count} live files (kind={kind}){dry}",
+        count = live_uris.len(),
+        dry = if dry_run { " [dry-run]" } else { "" }
+    );
+
+    if dry_run {
+        // No server roundtrip — just show what we'd send.
+        for uri in &live_uris {
+            println!("  live  {uri}");
+        }
+        println!(
+            "\n[dry-run] would POST {n} URIs to /sources/reconcile",
+            n = live_uris.len()
+        );
+        return Ok(());
+    }
+
+    let body = serde_json::json!({
+        "kind": kind,
+        "live_uris": live_uris,
+    })
+    .to_string();
+    let resp = post(
+        &base_url(),
+        "/sources/reconcile",
+        &[],
+        "application/json",
+        &body,
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| format!("non-JSON response (status {}): {e}", resp.status))?;
+    let deleted_sources = v
+        .get("deleted_sources")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let deleted_chunks = v
+        .get("deleted_chunks")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(0);
+    let orphan_uris = v
+        .get("orphan_uris")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    println!(
+        "\nreconcile complete: {deleted_sources} source(s) retired, {deleted_chunks} chunk(s) swept"
+    );
+    for uri in &orphan_uris {
+        println!("  orphan {uri}");
+    }
+    Ok(())
+}
+
+/// `brain source-delete <id>`: retires a single source by id via
+/// `DELETE /sources/{id}`. Sweeps that source's chunks from retrieval and
+/// tombstones the source + active revision. The companion to `brain reconcile`
+/// for one-off deletes (a vault file you want forgotten without rescanning
+/// the whole directory).
+fn cmd_source_delete(args: &[String]) -> Result<(), String> {
+    let (positionals, _flags) = parse_flags(args);
+    let id_str = require_positional(&positionals, "id")?;
+    let id: i64 = id_str
+        .parse()
+        .map_err(|_| format!("id must be an integer, got '{id_str}'"))?;
+
+    let path = format!("/sources/{id}");
+    let resp = delete(&base_url(), &path, &[], auth_token().as_deref())?;
+    if resp.status == 404 {
+        return Err(format!("no source with id {id}"));
+    }
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("deleted source {id}");
+    Ok(())
+}
+
+// ── v0.9.6 Bridge: connector CLI ────────────────────────────────────────────
+
+/// `brain connect github --app-id N --install-id N --key-file PATH --repo O/R [...]`
+///
+/// Writes the connector config to `~/.config/brain-server/connectors/github-{instance}.json`
+/// (mode 0600). The instance name is derived from the first repo (or a hash
+/// of the sorted repo set for multi-repo). Does NOT spawn the connector —
+/// use `brain sync github` to run one backfill pass.
+///
+/// ponytail: this is a thin file-authoring command. No server roundtrip —
+/// the server has no `/connectors` POST route (registration is local-file).
+/// Adding a server route would be appropriate when connectors are managed
+/// remotely; v0.9.6 keeps the operator surface on the host that runs them.
+fn cmd_connect(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let kind = flags
+        .get("kind")
+        .and_then(|o| o.as_deref())
+        .unwrap_or("github")
+        .to_string();
+    if kind != "github" {
+        return Err(format!(
+            "v0.9.6 supports only kind=github (got '{kind}'); other connectors land in v0.9.7+"
+        ));
+    }
+
+    let app_id: i64 = flags
+        .get("app-id")
+        .and_then(|o| o.as_deref())
+        .ok_or_else(|| "--app-id <N> is required".to_string())?
+        .parse()
+        .map_err(|_| "--app-id must be an integer".to_string())?;
+    let installation_id: i64 = flags
+        .get("install-id")
+        .and_then(|o| o.as_deref())
+        .ok_or_else(|| "--install-id <N> is required".to_string())?
+        .parse()
+        .map_err(|_| "--install-id must be an integer".to_string())?;
+    let key_file = flags
+        .get("key-file")
+        .and_then(|o| o.as_deref())
+        .ok_or_else(|| "--key-file <PATH> is required".to_string())?
+        .to_string();
+    let webhook_secret_file = flags
+        .get("webhook-secret-file")
+        .and_then(|o| o.as_deref())
+        .map(|s| s.to_string());
+
+    // Collect --repo flags (can appear multiple times). The parse_flags helper
+    // overwrites on duplicate keys, so we re-scan argv manually for repeats.
+    let repos: Vec<String> = args
+        .windows(2)
+        .filter_map(|w| {
+            if w[0] == "--repo" {
+                Some(w[1].clone())
+            } else {
+                w[0].strip_prefix("--repo=").map(|v| v.to_string())
+            }
+        })
+        .collect();
+    if repos.is_empty() {
+        return Err("at least one --repo owner/name is required".to_string());
+    }
+    for r in &repos {
+        if !r.contains('/') || r.split('/').count() != 2 {
+            return Err(format!("repo must be 'owner/name', got '{r}'"));
+        }
+    }
+
+    // Validate the key file exists + is readable BEFORE we write the config.
+    // Failing after writing leaves a stale config the user has to clean up.
+    let key_path = Path::new(&key_file);
+    if !key_path.is_file() {
+        return Err(format!("key file not found: {key_file}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(key_path)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "warn: key file {key_file} is mode {:o} (not 0600); recommend `chmod 600 {key_file}`",
+                mode & 0o777
+            );
+        }
+    }
+
+    // Construct the config + derive the instance name (matches the connector
+    // binary's `derive_instance_name` so the config path is stable).
+    let instance = if repos.len() == 1 {
+        repos[0].replace('/', "_")
+    } else {
+        let mut sorted = repos.clone();
+        sorted.sort();
+        format!(
+            "multi-{:016x}",
+            xxhash_rust::xxh3::xxh3_64(sorted.join(",").as_bytes())
+        )
+    };
+
+    let config = serde_json::json!({
+        "app_id": app_id,
+        "installation_id": installation_id,
+        "private_key_path": key_file,
+        "webhook_secret_path": webhook_secret_file,
+        "repositories": repos,
+    });
+
+    let config_dir = match std::env::var("BRAIN_CONNECTOR_CONFIG_DIR") {
+        Ok(s) if !s.trim().is_empty() => PathBuf::from(s),
+        _ => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".config/brain-server/connectors")
+        }
+    };
+    std::fs::create_dir_all(&config_dir).map_err(|e| format!("mkdir {config_dir:?}: {e}"))?;
+    let config_path = config_dir.join(format!("github-{instance}.json"));
+
+    // Atomic write: tempfile in the same dir, chmod 0600, rename.
+    let bytes = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
+    let tmp_suffix = format!(
+        ".{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp_path = config_path.with_file_name(format!("github-{instance}.json.tmp{tmp_suffix}"));
+    std::fs::write(&tmp_path, &bytes).map_err(|e| format!("write {tmp_path:?}: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp_path, &config_path)
+        .map_err(|e| format!("rename -> {config_path:?}: {e}"))?;
+
+    // Best-effort audit of connector registration (local-file, but recorded).
+    if let Ok(db_path) = std::env::var("BRAIN_DB_PATH") {
+        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+            brain_server::audit::record(
+                &conn,
+                brain_server::audit::AuditKind::Connector,
+                "github",
+                &instance,
+                brain_server::audit::AuditStatus::Ok,
+                "connect config written",
+            );
+        }
+    }
+
+    println!("wrote {config_path:?}");
+    println!("instance: github-{instance}");
+    println!("repos:    {}", repos.join(", "));
+    println!("\nnext: brain sync github --instance {instance}");
+    Ok(())
+}
+
+/// `brain sync [github] [--instance <name>]`
+///
+/// Spawns `brain-connector-gh` with the right argv. Inherits stdout/stderr so
+/// the connector's JSON-lines event stream surfaces to the operator. If
+/// `--instance` is omitted and exactly one github config exists, uses it;
+/// otherwise lists available instances and asks the operator to specify.
+///
+/// ponytail: spawns the binary, doesn't try to be a long-running supervisor.
+/// Long-running supervision (restart on crash, periodic schedule) lands with
+/// the server-side auto-start in v0.9.7+.
+fn cmd_sync(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let kind = flags
+        .get("kind")
+        .and_then(|o| o.as_deref())
+        .or_else(|| _positionals.first().map(|s| s.as_str()))
+        .unwrap_or("github");
+    if kind != "github" {
+        return Err(format!(
+            "v0.9.6 supports only kind=github (got '{kind}'); other connectors land in v0.9.7+"
+        ));
+    }
+
+    // Find the binary. $PATH first (installed via install-service.sh), then
+    // target/debug (for dev). Falls back to target/release.
+    let bin = which("brain-connector-gh")
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|d| d.join("target/debug/brain-connector-gh"))
+                .filter(|p| p.exists())
+        })
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|d| d.join("target/release/brain-connector-gh"))
+                .filter(|p| p.exists())
+        })
+        .ok_or_else(|| {
+            "brain-connector-gh not found. Build with:\n  \
+             cargo build --release --features connector-github --bin brain-connector-gh"
+                .to_string()
+        })?;
+
+    // Resolve the config path.
+    let config_path = if let Some(p) = flags.get("config").and_then(|o| o.as_deref()) {
+        PathBuf::from(p)
+    } else {
+        let instance = flags.get("instance").and_then(|o| o.as_deref());
+        let config_dir = match std::env::var("BRAIN_CONNECTOR_CONFIG_DIR") {
+            Ok(s) if !s.trim().is_empty() => PathBuf::from(s),
+            _ => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".config/brain-server/connectors")
+            }
+        };
+        let matches = match instance {
+            Some(name) => vec![config_dir.join(format!("github-{name}.json"))],
+            None => glob_github_configs(&config_dir)?,
+        };
+        match matches.len() {
+            0 => {
+                return Err(format!(
+                    "no github connector config in {config_dir:?}. Run `brain connect github ...` first."
+                ));
+            }
+            1 => matches[0].clone(),
+            n => {
+                eprintln!("multiple github configs found; pick one with --instance:");
+                for p in &matches {
+                    eprintln!("  {}", p.file_name().unwrap_or_default().to_string_lossy());
+                }
+                return Err(format!("{n} configs; specify --instance <name>"));
+            }
+        }
+    };
+    if !config_path.is_file() {
+        return Err(format!("config not found: {config_path:?}"));
+    }
+
+    // Resolve the brain-server DB path (the connector writes checkpoints there).
+    let db_path = match std::env::var("BRAIN_DB_PATH") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".openclaw/workspace/brain.db")
+        }
+    };
+    if !db_path.is_file() {
+        return Err(format!(
+            "brain-server DB not found at {db_path:?}. Override with BRAIN_DB_PATH."
+        ));
+    }
+
+    let status = std::process::Command::new(&bin)
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--checkpoint")
+        .arg(&db_path)
+        // Inherit stdout/stderr so the connector's JSON-lines events surface
+        // directly to the operator. No piping — the connector is short-lived.
+        .status()
+        .map_err(|e| format!("failed to spawn {bin:?}: {e}"))?;
+    if !status.success() {
+        return Err(format!("brain-connector-gh exited with {status}"));
+    }
+    Ok(())
+}
+
+/// Resolve the backup passphrase from `--passphrase-file` / `-flag`, then the
+/// `BRAIN_BACKUP_PASSPHRASE_FILE` env var. Errors clearly if none is given.
+fn resolve_passphrase(
+    flags: &std::collections::HashMap<String, Option<String>>,
+) -> Result<Vec<u8>, String> {
+    let path = flags
+        .get("passphrase-file")
+        .and_then(|o| o.clone())
+        .or_else(|| std::env::var("BRAIN_BACKUP_PASSPHRASE_FILE").ok())
+        .ok_or_else(|| {
+            "a passphrase file is required: pass --passphrase-file PATH or set BRAIN_BACKUP_PASSPHRASE_FILE"
+                .to_string()
+        })?;
+    std::fs::read(&path).map_err(|e| format!("cannot read passphrase file {path}: {e}"))
+}
+
+/// `brain backup <out-path> [--passphrase-file PATH]`
+fn cmd_backup(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let out = positionals
+        .first()
+        .cloned()
+        .ok_or_else(|| "usage: brain backup <out-path> [--passphrase-file PATH]".to_string())?;
+    let pass = resolve_passphrase(&flags)?;
+    let db = default_db_path();
+    brain_server::backup::backup(&db, Path::new(&out), &pass)
+        .map_err(|e| format!("backup failed: {e:#}"))?;
+    println!("backup written: {out} (+ {out}.sha256 checksum)");
+    Ok(())
+}
+
+/// `brain restore <in-path> [--passphrase-file PATH]`
+fn cmd_restore(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let in_path = positionals
+        .first()
+        .cloned()
+        .ok_or_else(|| "usage: brain restore <in-path> [--passphrase-file PATH]".to_string())?;
+    let pass = resolve_passphrase(&flags)?;
+    let db = default_db_path();
+    brain_server::backup::restore(Path::new(&in_path), &db, &pass)
+        .map_err(|e| format!("restore failed: {e:#}"))?;
+    println!("restored: {db:?} (safety snapshot saved as <db>.bak)");
+    Ok(())
+}
+
+/// `brain connector-status` — lists every registered connector across all
+/// kinds. Calls the existing `GET /connectors` route.
+fn cmd_connector_status(_args: &[String]) -> Result<(), String> {
+    let resp = get(&base_url(), "/connectors", &[], auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| format!("non-JSON /connectors response: {e}"))?;
+    let connectors = v
+        .get("connectors")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| "response missing 'connectors' array".to_string())?;
+    if connectors.is_empty() {
+        println!("no connectors registered");
+        println!("\nregister one with: brain connect github --app-id N --install-id N --key-file PATH --repo owner/name");
+        return Ok(());
+    }
+    println!(
+        "{:<6} {:<10} {:<32} {:<10} {:<22}",
+        "id", "kind", "instance", "state", "last_sync"
+    );
+    for c in connectors {
+        let id = c.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+        let kind = c.get("kind").and_then(|x| x.as_str()).unwrap_or("?");
+        let instance = c.get("instance").and_then(|x| x.as_str()).unwrap_or("?");
+        let state = c.get("state").and_then(|x| x.as_str()).unwrap_or("?");
+        let last_sync = c.get("last_sync_at").and_then(|x| x.as_str()).unwrap_or("");
+        println!(
+            "{:<6} {:<10} {:<32} {:<10} {:<22}",
+            id, kind, instance, state, last_sync
+        );
+    }
+    Ok(())
+}
+
+/// Look up a binary on `$PATH`. Hand-rolled because `which` is not a dep.
+fn which(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Glob `github-*.json` files in a directory. Hand-rolled (no `glob` dep).
+/// Returns paths sorted alphabetically.
+fn glob_github_configs(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("read {dir:?}: {e}"))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| match p.file_name() {
+            Some(name) => name
+                .to_str()
+                .map(|s| s.starts_with("github-") && s.ends_with(".json"))
+                .unwrap_or(false),
+            None => false,
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+fn summarize_ingest(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("status")
+                .or_else(|| v.get("id"))
+                .map(|x| x.to_string())
+        })
+        .unwrap_or_else(|| "done".into())
+}
+
+fn derive_title(path: &Path) -> String {
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("untitled")
+        .to_string();
+    name.replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn load_brainignore(root: &Path) -> Vec<String> {
+    let path = root.join(".brainignore");
+    match std::fs::read_to_string(&path) {
+        Ok(c) => c
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_string())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Recursively collect ingestable files, skipping hidden dirs (`.git`, etc.),
+/// applying `.brainignore` patterns, and bounding depth to avoid runaways.
+fn collect_files(
+    root: &Path,
+    dir: &Path,
+    ignore: &[String],
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    // ponytail: bounded by filesystem depth (~32) rather than a node count;
+    // a symlink loop is prevented by not following symlinked dirs.
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read_dir {:?}: {e}", dir))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("dir entry error: {e}"))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("file_type error: {e}"))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if ignore_matches(ignore, &path, root) {
+                continue;
+            }
+            collect_files(root, &path, ignore, out)?;
+        } else if file_type.is_file() {
+            if ignore_matches(ignore, &path, root) {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if matches!(
+                ext.as_str(),
+                "md" | "markdown"
+                    | "txt"
+                    | "rst"
+                    | "org"
+                    | "json"
+                    | "csv"
+                    | "log"
+                    | "rs"
+                    | "py"
+                    | "js"
+                    | "ts"
+                    | "go"
+                    | "c"
+                    | "cpp"
+                    | "h"
+                    | "java"
+                    | "sh"
+                    | "yaml"
+                    | "yml"
+                    | "toml"
+                    | "html"
+                    | "htm"
+            ) {
+                out.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check whether `path` (relative to `root`) matches any gitignore-style glob.
+fn ignore_matches(patterns: &[String], path: &Path, root: &Path) -> bool {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    patterns
+        .iter()
+        .any(|p| glob_match(p, &rel_str) || glob_match(p, &name))
+}
+
+/// Minimal glob matcher supporting `*` (any chars) and `**` (across `/`).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    // Recursive backtracking matcher.
+    fn matches(pat: &[char], p: usize, txt: &[char], t: usize) -> bool {
+        let mut pi = p;
+        let mut ti = t;
+        while pi < pat.len() {
+            match pat[pi] {
+                '*' => {
+                    if pi + 1 < pat.len() && pat[pi + 1] == '*' {
+                        // "**": consume following '/' then match rest greedily
+                        if pi + 2 < pat.len() && pat[pi + 2] == '/' {
+                            pi += 3;
+                            let mut ti2 = ti;
+                            while ti2 <= txt.len() {
+                                if matches(pat, pi, txt, ti2) {
+                                    return true;
+                                }
+                                ti2 += 1;
+                            }
+                            return false;
+                        }
+                        // bare "**" as single star
+                        let mut ti2 = ti;
+                        while ti2 <= txt.len() {
+                            if matches(pat, pi + 1, txt, ti2) {
+                                return true;
+                            }
+                            ti2 += 1;
+                        }
+                        return false;
+                    }
+                    // single '*'
+                    let mut ti2 = ti;
+                    while ti2 <= txt.len() {
+                        if matches(pat, pi + 1, txt, ti2) {
+                            return true;
+                        }
+                        ti2 += 1;
+                    }
+                    return false;
+                }
+                c if pi < pat.len() && c == txt.get(ti).copied().unwrap_or('\0') => {
+                    pi += 1;
+                    ti += 1;
+                }
+                _ => return false,
+            }
+        }
+        ti == txt.len()
+    }
+    matches(&pat, 0, &txt, 0)
+}
+
+fn cmd_status() -> Result<(), String> {
+    let resp = get(&base_url(), "/stats", &[], auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!("server returned status {}", resp.status));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON stats response: {e}"))?;
+    println!("brain-server status");
+    println!(
+        "  version : {}",
+        json_str(&v, "version").unwrap_or_default()
+    );
+    println!("  model   : {}", json_str(&v, "model").unwrap_or_default());
+    println!(
+        "  documents   : {}",
+        v.get("count").and_then(|x| x.as_i64()).unwrap_or(-1)
+    );
+    println!(
+        "  embeddings  : {}",
+        v.get("embeddings").and_then(|x| x.as_i64()).unwrap_or(-1)
+    );
+    println!(
+        "  entities    : {}",
+        v.get("entities").and_then(|x| x.as_i64()).unwrap_or(-1)
+    );
+    println!(
+        "  relationships: {}",
+        v.get("relationships")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(-1)
+    );
+    Ok(())
+}
+
+fn cmd_doctor(args: &[String]) -> Result<(), String> {
+    // `brain doctor --backup <path> [--passphrase-file PATH]` — verify-only mode.
+    let (positionals, flags) = parse_flags(args);
+    if let Some(backup_path) = flags
+        .get("backup")
+        .and_then(|o| o.clone())
+        .or_else(|| positionals.first().cloned())
+    {
+        let pass = resolve_passphrase(&flags)?;
+        let manifest = brain_server::backup::verify(Path::new(&backup_path), &pass)
+            .map_err(|e| format!("backup verify failed: {e:#}"))?;
+        println!("brain doctor — backup verification\n");
+        println!("  backup:    {}", backup_path);
+        println!("  created:   {}", manifest.created_at);
+        println!("  version:   {}", manifest.version);
+        println!("  components:");
+        for c in &manifest.components {
+            let tag = if c.secret { " (secret: path only)" } else { "" };
+            println!("    - {}  xxh3={}  size={}{}", c.name, c.xxh3, c.size, tag);
+        }
+        println!("\nbackup integrity: OK");
+        return Ok(());
+    }
+
+    println!("brain doctor — health report\n");
+
+    // 1. reachable
+    let health = get(&base_url(), "/health", &[], None);
+    let (reachable, version, model) = match &health {
+        Ok(r) if r.status == 200 => {
+            let v: serde_json::Value =
+                serde_json::from_str(&r.body).unwrap_or(serde_json::Value::Null);
+            (
+                true,
+                json_str(&v, "version").unwrap_or_default(),
+                json_str(&v, "model").unwrap_or_default(),
+            )
+        }
+        Ok(r) => {
+            println!("  [✗] server reachable but returned status {}", r.status);
+            (true, String::new(), String::new())
+        }
+        Err(e) => {
+            println!("  [✗] server NOT reachable: {e}");
+            (false, String::new(), String::new())
+        }
+    };
+    println!(
+        "  [{}] server reachable at {}",
+        if reachable { "✓" } else { "✗" },
+        base_url()
+    );
+
+    // 2. model loaded (via /version)
+    match get(&base_url(), "/version", &[], None) {
+        Ok(r) if !r.body.trim().is_empty() => {
+            println!("  [✓] model loaded (version endpoint: {})", r.body.trim());
+        }
+        Ok(r) => println!("  [✗] /version returned empty body (status {})", r.status),
+        Err(e) => println!("  [✗] cannot reach /version: {e}"),
+    }
+    if !model.is_empty() {
+        println!("  [✓] model id: {model}  (server v{version})");
+    }
+
+    // 3. DB path — not exposed by the API, so we check the expected local file.
+    let db = default_db_path();
+    let exists = db.exists();
+    println!(
+        "  [{}] local DB file: {}",
+        if exists { "✓" } else { "·" },
+        db.display()
+    );
+    if !exists {
+        println!("      (file not present; server will create it on first run)");
+    }
+
+    // 4. DB health (optional, only if reachable)
+    if reachable {
+        match get(&base_url(), "/health/db", &[], None) {
+            Ok(r) if r.status == 200 => {
+                let v: serde_json::Value =
+                    serde_json::from_str(&r.body).unwrap_or(serde_json::Value::Null);
+                let size = v.get("database_size_mb").and_then(|x| x.as_f64());
+                let last = json_str(&v, "last_write");
+                println!(
+                    "  [✓] database healthy ({:.2} MB, last write: {})",
+                    size.unwrap_or(0.0),
+                    last.unwrap_or_else(|| "n/a".into())
+                );
+            }
+            Ok(r) => println!("  [·] /health/db returned status {}", r.status),
+            Err(e) => println!("  [·] /health/db unavailable: {e}"),
+        }
+    }
+
+    // 5. local DB integrity + journal mode (reads the file directly).
+    if db.exists() {
+        match rusqlite::Connection::open(&db) {
+            Ok(conn) => {
+                let integrity: String = conn
+                    .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                    .unwrap_or_else(|_| "error".to_string());
+                if integrity == "ok" {
+                    println!("  [✓] integrity_check: ok");
+                } else {
+                    println!("  [✗] integrity_check: {integrity}");
+                }
+                let jmode: String = conn
+                    .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+                    .unwrap_or_default();
+                println!("  [·] journal_mode: {jmode}");
+            }
+            Err(e) => println!("  [·] cannot open DB for local check: {e}"),
+        }
+    }
+
+    println!("\ndoctor complete.");
+    Ok(())
+}
+
+fn cmd_bench() -> Result<(), String> {
+    let fixture = "tests/fixtures/eval_queries.md";
+    let raw = std::fs::read_to_string(fixture)
+        .map_err(|e| format!("cannot read {fixture}: {e} (run from the repo root)"))?;
+    let queries = parse_eval_fixture(&raw)?;
+    if queries.is_empty() {
+        return Err("no queries parsed from eval fixture".into());
+    }
+
+    // Probe reachability first.
+    match get(&base_url(), "/health", &[], None) {
+        Ok(r) if r.status == 200 => {}
+        Ok(r) => return Err(format!("server unhealthy (status {})", r.status)),
+        Err(e) => return Err(format!("cannot reach server: {e}")),
+    }
+
+    println!("brain bench — frozen eval set ({} queries)", queries.len());
+    println!("query                                            r@5    r@10");
+    println!("{:-<52} ------ ------", "");
+
+    let mut sum5 = 0.0_f32;
+    let mut sum10 = 0.0_f32;
+    for q in &queries {
+        let resp = get(
+            &base_url(),
+            "/search",
+            &[
+                ("q".to_string(), q.query.clone()),
+                ("k".to_string(), "10".to_string()),
+            ],
+            auth_token().as_deref(),
+        )?;
+        let ids = results_to_doc_indices(&resp.body);
+        let r5 = recall_at_k(&ids, &q.relevant, 5);
+        let r10 = recall_at_k(&ids, &q.relevant, 10);
+        sum5 += r5;
+        sum10 += r10;
+        let label = if q.query.chars().count() > 48 {
+            let t: String = q.query.chars().take(45).collect();
+            format!("{t}...")
+        } else {
+            q.query.clone()
+        };
+        println!("{:<52} {:<6.2} {:<6.2}", label, r5, r10);
+    }
+
+    let n = queries.len() as f32;
+    println!("{:-<52} ------ ------", "");
+    println!(
+        "mean recall@5 = {:.3}   recall@10 = {:.3}   (over {} queries)",
+        sum5 / n,
+        sum10 / n,
+        queries.len()
+    );
+    Ok(())
+}
+
+struct EvalQuery {
+    query: String,
+    relevant: Vec<usize>,
+    #[allow(dead_code)]
+    category: String,
+}
+
+fn parse_eval_fixture(raw: &str) -> Result<Vec<EvalQuery>, String> {
+    let mut out = Vec::new();
+    let mut current: Option<EvalQuery> = None;
+    for line in raw.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("###") {
+            // new query block: "Q<n> — [category]"
+            let cat = rest
+                .rsplit_once('[')
+                .and_then(|(_, c)| c.strip_suffix(']'))
+                .unwrap_or("")
+                .to_string();
+            current = Some(EvalQuery {
+                query: String::new(),
+                relevant: Vec::new(),
+                category: cat,
+            });
+        } else if let Some(q) = line.strip_prefix("Query:") {
+            if let Some(c) = &mut current {
+                c.query = q.trim().trim_matches('"').to_string();
+            }
+        } else if let Some(r) = line.strip_prefix("Relevant:") {
+            if let Some(mut c) = current.take() {
+                c.relevant = parse_index_list(r);
+                out.push(c);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn parse_index_list(s: &str) -> Vec<usize> {
+    let s = s.trim().trim_start_matches('[').trim_end_matches(']');
+    s.split(',')
+        .filter_map(|x| x.trim().parse::<usize>().ok())
+        .collect()
+}
+
+/// Map a `/search` JSON body to a rank-ordered list of doc indices (matching
+/// `DOCS`). Unknown results map to -1 so they never count as relevant.
+fn results_to_doc_indices(body: &str) -> Vec<i64> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let results = v.get("results").and_then(|r| r.as_array());
+    let Some(results) = results else {
+        return Vec::new();
+    };
+    let doc_set: HashSet<String> = DOCS.iter().map(|d| d.trim().to_string()).collect();
+    results
+        .iter()
+        .map(|r| {
+            let content = r
+                .get("content")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            doc_set
+                .iter()
+                .position(|d| d == &content)
+                .map(|i| i as i64)
+                .unwrap_or(-1)
+        })
+        .collect()
+}
+
+/// recall@k: fraction of judged-relevant docs present in the top-k results.
+/// `results` are doc indices in rank order; `relevant` are judged doc indices.
+/// Mirrors `tests/metrics.rs::recall_at_k`.
+fn recall_at_k(results: &[i64], relevant: &[usize], k: usize) -> f32 {
+    if relevant.is_empty() {
+        return 1.0;
+    }
+    let rel: HashSet<i64> = relevant.iter().map(|&r| r as i64).collect();
+    let found = results.iter().take(k).filter(|r| rel.contains(r)).count();
+    found as f32 / relevant.len() as f32
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(n).collect();
+        format!("{t}...")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn glob_matches_simple_name() {
+        assert!(glob_match("*.tmp", "foo.tmp"));
+        assert!(!glob_match("*.tmp", "foo.md"));
+    }
+
+    #[test]
+    fn glob_matches_directory_prefix() {
+        // `**/` spans path separators.
+        assert!(glob_match("draft/**", "draft/note.md"));
+        assert!(glob_match("draft/**", "draft/sub/deep.md"));
+        assert!(!glob_match("draft/**", "final/note.md"));
+    }
+
+    #[test]
+    fn glob_matches_exact_name() {
+        assert!(glob_match("secret.md", "secret.md"));
+        assert!(!glob_match("secret.md", "other.md"));
+    }
+
+    #[test]
+    fn ignore_skips_brainignore_entries() {
+        // Patterns are matched against the path relative to the vault root and
+        // against the bare filename. A `.brainignore` entry must suppress both
+        // whole-subtree and per-file matches.
+        let root = Path::new("/vault");
+        let patterns = vec!["drafts/**".to_string(), "*.tmp".to_string()];
+        assert!(ignore_matches(
+            &patterns,
+            Path::new("/vault/drafts/note.md"),
+            root
+        ));
+        assert!(ignore_matches(
+            &patterns,
+            Path::new("/vault/scratch.tmp"),
+            root
+        ));
+        assert!(!ignore_matches(
+            &patterns,
+            Path::new("/vault/keep.md"),
+            root
+        ));
+    }
+}

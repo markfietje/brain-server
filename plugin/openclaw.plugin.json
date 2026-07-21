@@ -1,0 +1,111 @@
+{
+  "id": "brain-server",
+  "name": "Brain Server",
+  "description": "Local semantic-memory + knowledge-graph plugin. Static (model2vec) embeddings, SQLite + sqlite-vec, per-domain knowledge graphs with cross-domain fallback. Deterministic auto-recall over loopback HTTP to the Rust brain-server. Zero decision/embedding tokens.",
+  "kind": "memory",
+  "activation": {
+    "onStartup": true
+  },
+  "commandAliases": [{ "name": "brain" }],
+  "contracts": {
+    "tools": ["memory_recall", "memory_store", "memory_forget"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean" },
+      "baseUrl": {
+        "type": "string",
+        "description": "Loopback URL of the Rust brain-server.",
+        "default": "http://127.0.0.1:8765"
+      },
+      "authToken": {
+        "type": "string",
+        "description": "Optional bearer token. Must match BRAIN_TOKEN on the server (v1.1.0+).",
+        "sensitive": true
+      },
+      "agents": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Per-agent opt-in allowlist (agent ids). Empty = disabled until at least one agent is listed."
+      },
+      "allowedChatTypes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["direct", "group", "channel", "explicit"]
+        },
+        "description": "Chat types permitted for recall. Default: direct + explicit. group/channel excluded to prevent private-memory data leakage in shared contexts."
+      },
+      "allowedChatIds": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "deniedChatIds": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "Deterministically inject relevant memories every turn via before_prompt_build. No LLM decides whether to recall."
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": false,
+        "description": "Capture durable facts/decisions after a successful turn. Off by default; capture is a policy choice."
+      },
+      "strictDomain": {
+        "type": "boolean",
+        "default": false,
+        "description": "true = no cross-domain fallback; stay in the auto-routed domain."
+      },
+      "defaultDomain": {
+        "type": "string",
+        "default": "global"
+      },
+      "autoRecallTopK": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
+      "autoRecallTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000, "default": 5000 },
+      "requestTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000, "default": 8000 },
+      "minQueryLength": { "type": "integer", "minimum": 1, "maximum": 200, "default": 5 },
+      "recallMaxChars": { "type": "integer", "minimum": 40, "maximum": 10000, "default": 1000 }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enabled",
+      "help": "Globally enable Brain Server recall/capture while keeping the plugin command available."
+    },
+    "baseUrl": {
+      "label": "Brain Server URL",
+      "placeholder": "http://127.0.0.1:8765",
+      "help": "Loopback URL of the Rust brain-server process."
+    },
+    "authToken": {
+      "label": "Auth Token",
+      "sensitive": true,
+      "help": "Bearer token matching BRAIN_TOKEN on the server (required once server auth ships in v1.1.0)."
+    },
+    "agents": {
+      "label": "Target Agents",
+      "help": "Explicit agent ids permitted to use memory. Least-privilege opt-in (OWASP LLM06)."
+    },
+    "allowedChatTypes": {
+      "label": "Allowed Chat Types",
+      "help": "direct + explicit by default. Excluding group/channel prevents private-memory leakage in shared contexts."
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Deterministic per-turn recall injection. Zero decision tokens — recall is plugin code, not an LLM prediction."
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Store durable facts after a successful turn. Off by default."
+    },
+    "strictDomain": {
+      "label": "Strict Domain",
+      "help": "Disable cross-domain fallback on miss."
+    }
+  }
+}
