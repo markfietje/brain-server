@@ -955,20 +955,180 @@ mod tests {
         assert!(schema_ge("1.0.0", "0.9.9"));
         assert!(!schema_ge("0.9.4", "0.9.9"));
     }
-}
 
-// ── Deferred (operator tooling, not ship-blocking) ──────────────────────────
-//
-// M2.8 — fixtures for upgrade-from-old-schema testing. Ship three small <1 MiB
-// binary DB snapshots (`fixture-v0.9.4-sources.db`, `fixture-v0.9.6-bridge.db`,
-// `fixture-v0.9.8-evidence.db`) and a test that runs copy → verify against each
-// and asserts the parity checks pass. Valuable for catching regressions in the
-// upgrade path, but the four tests above already prove the copy/verify/rollback
-// contract on a v0.9.9 source. Defer until the schema stabilizes for v1.0.0.
-//
-// M2.9 — interrupted-migration SIGTERM test. Start `copy`, SIGTERM after 100 ms,
-// then re-run `rehearse`. Assert the partial dest is removed cleanly and the
-// second run succeeds. Catches the "partial dest file" failure mode. Defer
-// because it requires a child-process harness that adds complexity without
-// changing the contract — the current `copy` removes any prior dest before
-// VACUUM INTO, so a partial file from a crashed run is cleaned on the next run.
+    /// Create a fixture DB whose schema matches a historical release.
+    /// Uses the full current migration then removes tables/columns that didn't
+    /// exist in `version`. This is sound because the verify phase checks row
+    /// counts — a table absent from source reports 0 rows, and the dest (after
+    /// `run_migration`) also has 0 rows for any table that was empty in source.
+    fn build_historical_fixture(version: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("brain.db");
+        register_sqlite_vec();
+        let mut conn = Connection::open(&db_path).expect("open fixture");
+        run_migration(&mut conn, 256).expect("migrate fixture");
+
+        // Drop tables that postdate the target version.
+        // v0.9.8 = + evidence_links (no webhook/audit which are v0.9.7)
+        // v0.9.6 = + connectors + checkpoints (no audit, webhook, evidence_links)
+        // v0.9.4 = sources + revisions only (no connectors, audit, webhook, evidence_links)
+        match version {
+            "0.9.8" => {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS webhook_queue;
+                     DROP TABLE IF EXISTS webhook_seen;
+                     DROP TABLE IF EXISTS audit_events;",
+                )
+                .expect("drop v0.9.7+ tables");
+            }
+            "0.9.4" | "0.9.6" => {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS evidence_links;
+                     DROP TABLE IF EXISTS webhook_queue;
+                     DROP TABLE IF EXISTS webhook_seen;
+                     DROP TABLE IF EXISTS audit_events;",
+                )
+                .expect("drop v0.9.7+ tables");
+            }
+            _ => {}
+        }
+        if version == "0.9.4" {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS connectors;
+                 DROP TABLE IF EXISTS connector_checkpoints;",
+            )
+            .expect("drop v0.9.6+ tables");
+        }
+        // Pre-v0.9.9: no schema_version key in schema_meta.
+        conn.execute("DELETE FROM schema_meta WHERE key = 'schema_version'", [])
+            .expect("clear schema_version");
+
+        // Populate test data: 2 knowledge rows + vec0 embeddings.
+        for i in 1..=2 {
+            conn.execute(
+                "INSERT INTO knowledge (content, source, content_hash) VALUES (?1, 'test', ?2)",
+                params![format!("content-{i}"), format!("hash-{i}")],
+            )
+            .expect("insert knowledge");
+            let kid: i64 = conn.last_insert_rowid();
+            let f32_vec: Vec<f32> = (0..512).map(|j| j as f32 / 512.0 + i as f32).collect();
+            conn.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'test', datetime('now'))",
+                params![kid, f32_vec.as_bytes()],
+            )
+            .expect("insert vec");
+        }
+        // One evidence_link (only if the table exists in this version).
+        if version == "0.9.8" {
+            conn.execute(
+                "INSERT INTO evidence_links (from_chunk, to_chunk, kind) VALUES (1, 2, 'references')",
+                [],
+            )
+            .expect("insert evidence_link");
+        }
+        // One source + revision (v0.9.4+).
+        conn.execute(
+            "INSERT INTO sources (uri, kind) VALUES ('fixture://doc-1', 'vault')",
+            [],
+        )
+        .expect("insert source");
+        let sid: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO source_revisions (source_id, revision, chunk_count, byte_size) VALUES (?1, 'rev-1', 2, 256)",
+            params![sid],
+        )
+        .expect("insert revision");
+        // Link knowledge row 1 to the source.
+        conn.execute(
+            "UPDATE knowledge SET source_id = ?1, revision_id = 1 WHERE id = 1",
+            params![sid],
+        )
+        .expect("link source");
+
+        // One connector + checkpoint (v0.9.6+).
+        if version == "0.9.6" || version == "0.9.8" {
+            conn.execute(
+                "INSERT INTO connectors (kind, instance) VALUES ('test', 'fixture')",
+                [],
+            )
+            .expect("insert connector");
+            let cid: i64 = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO connector_checkpoints (connector_id, key, value) VALUES (?1, 'cursor', '42')",
+                params![cid],
+            )
+            .expect("insert checkpoint");
+        }
+
+        drop(conn);
+        dir
+    }
+
+    #[test]
+    fn test_rehearse_upgrade_from_v0_9_8_fixture() {
+        let dir = build_historical_fixture("0.9.8");
+        let source = dir.path().join("brain.db");
+        let dest = dir.path().join("global.db");
+
+        phase_copy(&resolve_args(source.clone(), dest.clone())).expect("copy from v0.9.8 fixture");
+        let report = phase_verify(&resolve_args(source, dest)).expect("verify");
+        assert!(
+            !report.any_failed(),
+            "v0.9.8 fixture upgrade must pass all checks: {:?}",
+            report.rows
+        );
+    }
+
+    #[test]
+    fn test_rehearse_upgrade_from_v0_9_6_fixture() {
+        let dir = build_historical_fixture("0.9.6");
+        let source = dir.path().join("brain.db");
+        let dest = dir.path().join("global.db");
+
+        phase_copy(&resolve_args(source.clone(), dest.clone())).expect("copy from v0.9.6 fixture");
+        let report = phase_verify(&resolve_args(source, dest)).expect("verify");
+        assert!(
+            !report.any_failed(),
+            "v0.9.6 fixture upgrade must pass all checks: {:?}",
+            report.rows
+        );
+    }
+
+    #[test]
+    fn test_rehearse_upgrade_from_v0_9_4_fixture() {
+        let dir = build_historical_fixture("0.9.4");
+        let source = dir.path().join("brain.db");
+        let dest = dir.path().join("global.db");
+
+        phase_copy(&resolve_args(source.clone(), dest.clone())).expect("copy from v0.9.4 fixture");
+        let report = phase_verify(&resolve_args(source, dest)).expect("verify");
+        assert!(
+            !report.any_failed(),
+            "v0.9.4 fixture upgrade must pass all checks: {:?}",
+            report.rows
+        );
+    }
+
+    #[test]
+    fn test_rehearse_interrupted_then_resumed() {
+        let dir = build_source_db();
+        let source = dir.path().join("brain.db");
+        let dest = dir.path().join("global.db");
+
+        // Simulate a crash that left a partial/truncated dest file.
+        fs::write(&dest, b"partial garbage").expect("write partial dest to simulate crash");
+
+        // Run copy — should remove the partial file and succeed.
+        phase_copy(&resolve_args(source.clone(), dest.clone()))
+            .expect("copy must clean partial dest and succeed");
+
+        // Verify full parity.
+        let report = phase_verify(&resolve_args(source, dest)).expect("verify runs");
+        assert!(
+            !report.any_failed(),
+            "verify must pass after interrupted-then-resumed copy: {:?}",
+            report.rows
+        );
+    }
+}
