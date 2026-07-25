@@ -131,8 +131,10 @@ pub async fn recall(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
-    // `strict` only affects cross-domain fallback, which doesn't exist yet.
-    let _ = req.strict;
+    // `strict` controls cross-domain fan-out: when true, stay in the resolved
+    // domain even on miss/low-confidence; when false (default), federate. Used
+    // below in the no-confident-route branch.
+    let strict = req.strict;
 
     // Prompt-injection guard (same defense the legacy /search applies).
     if contains_suspicious_pattern(&query) {
@@ -188,7 +190,7 @@ pub async fn recall(
                     targets.push((d.clone(), p));
                 }
                 None => {
-                    if req.strict {
+                    if strict {
                         // Strict: no cross-domain fallback; search the home domain only.
                         let p = state.registry.pool_for("global").map_err(|e| {
                             HandlerError::bad_request(
@@ -260,7 +262,12 @@ pub async fn recall(
         .unwrap_or_else(|| query.clone());
 
     let search_future = task::spawn_blocking(move || {
-        let mut all: Vec<(crate::SearchResult, String)> = Vec::new();
+        // Per-domain result lists (already ranked within each domain by the
+        // underlying hybrid search). Collected separately so cross-domain
+        // merge can treat each domain as one RRF retriever — raw scores are
+        // NOT comparable across domains (different IDF tables, different embed
+        // norms after quantization); RRF on ranks is the correct merge.
+        let mut per_domain: Vec<(String, Vec<crate::SearchResult>)> = Vec::new();
         let mut tel = crate::search::SearchTelemetry::default();
         for (domain, pool) in &targets {
             let mut f = base_filters.clone();
@@ -293,16 +300,10 @@ pub async fn recall(
                 for r in &mut rs {
                     crate::suppress_flagged_evidence(r, f.include_flagged);
                 }
-                all.extend(rs.into_iter().map(|r| (r, domain.clone())));
+                per_domain.push((domain.clone(), rs));
             }
         }
-        // Merge across domains by score (descending), cap to k.
-        all.sort_by(|a, b| {
-            b.0.score
-                .partial_cmp(&a.0.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        all.truncate(k);
+        let all = rrf_merge_domains(per_domain, k);
         (all, tel)
     });
 
@@ -385,6 +386,56 @@ fn map_source(src: Option<crate::SearchSource>) -> HitSource {
         Some(SearchSource::Both) => HitSource::Both,
         None => HitSource::Vector,
     }
+}
+
+/// Merge per-domain ranked result lists via Reciprocal Rank Fusion (per the
+/// v1.0 plan M3: "Merge across domains with the same RRF from v0.9.1").
+///
+/// Each domain's list is treated as one retriever; a chunk that appears in
+/// multiple domains accumulates RRF contributions from each. RRF is rank-based,
+/// so it correctly merges results whose raw scores are not comparable across
+/// domains (different IDF, different embed norms after quantization).
+///
+/// Dedup key is `(id, domain)` — the same content legitimately stored in two
+/// domains stays distinct (two memories), but a chunk can only appear once per
+/// domain (the in-domain search already deduplicated).
+///
+/// `k` is the final cap. The RRF contribution uses the same `RRF_K = 60`
+/// constant as the in-domain hybrid fusion (`search::RRF_K`).
+pub(super) fn rrf_merge_domains(
+    per_domain: Vec<(String, Vec<crate::SearchResult>)>,
+    k: usize,
+) -> Vec<(crate::SearchResult, String)> {
+    use std::collections::HashMap;
+    let rrf_k = crate::search::RRF_K as f32;
+
+    // First pass: collect fused scores per (domain, id).
+    let mut fused: HashMap<(String, i64), (f32, &crate::SearchResult)> = HashMap::new();
+    for (domain, rs) in &per_domain {
+        for (rank, r) in rs.iter().enumerate() {
+            let key = (domain.clone(), r.id);
+            let contribution = 1.0 / (rrf_k + rank as f32);
+            fused
+                .entry(key)
+                .and_modify(|(score, _)| *score += contribution)
+                .or_insert((contribution, r));
+        }
+    }
+
+    // Sort by fused score descending; truncate to k.
+    let mut entries: Vec<((String, i64), f32, &crate::SearchResult)> = fused
+        .into_iter()
+        .map(|((d, id), (score, r))| ((d, id), score, r))
+        .collect();
+    entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(k);
+
+    // Clone the (cheaply cloneable) SearchResult for the caller. ponytail:
+    // cloning here keeps the helper pure + testable without lifetime gymnastics.
+    entries
+        .into_iter()
+        .map(|((d, _), _, r)| (r.clone(), d))
+        .collect()
 }
 
 /// Validate a parsed recall request against the contract bounds. Returns the
@@ -614,6 +665,76 @@ mod tests {
     #[test]
     fn results_to_hits_empty() {
         assert!(results_to_hits(Vec::<(crate::SearchResult, String)>::new(), false).is_empty());
+    }
+
+    /// Cross-domain RRF: results are ranked by their RRF contribution
+    /// `1/(k+rank)` per-domain. Raw scores are NOT comparable across domains
+    /// (different IDF tables, different embed norms); rank IS comparable.
+    /// Each (domain, id) pair is a distinct hit tagged with its source domain.
+    #[test]
+    fn rrf_merge_ranks_by_per_domain_rank_not_raw_score() {
+        let mk = |id: i64, score: f32, content: &str| crate::SearchResult {
+            id,
+            score,
+            content: content.into(),
+            untrusted: true,
+            ..Default::default()
+        };
+        // Domain A: chunk 1 rank 0 (raw score 0.10), chunk 2 rank 1 (raw 0.95).
+        // Domain B: chunk 3 rank 0 (raw 0.99), chunk 4 rank 1 (raw 0.50).
+        //
+        // Under the OLD raw-score merge, chunk 3 (0.99) would win. Under RRF,
+        // the two rank-0 hits (chunk 1 in A, chunk 3 in B) tie for first because
+        // each contributes exactly `1/60`. The high raw 0.99 score must NOT
+        // outweigh the low raw 0.10 score — both are rank 0 in their domain.
+        let per_domain = vec![
+            ("a".to_string(), vec![mk(1, 0.10, "a1"), mk(2, 0.95, "a2")]),
+            ("b".to_string(), vec![mk(3, 0.99, "b3"), mk(4, 0.50, "b4")]),
+        ];
+        let merged = rrf_merge_domains(per_domain, 10);
+        // Top two must be the two rank-0 hits (ids 1 and 3), in either order.
+        let top_ids: std::collections::HashSet<i64> =
+            merged.iter().take(2).map(|(r, _)| r.id).collect();
+        assert_eq!(
+            top_ids,
+            [1, 3].into_iter().collect(),
+            "rank-0 hits should win regardless of raw score"
+        );
+        // Every hit is tagged with its source domain.
+        let tags: Vec<&str> = merged.iter().map(|(_, d)| d.as_str()).collect();
+        assert!(tags.contains(&"a") && tags.contains(&"b"));
+        // Cap to k.
+        let capped = rrf_merge_domains(
+            vec![
+                ("a".to_string(), vec![mk(1, 0.1, "a1"), mk(2, 0.2, "a2")]),
+                ("b".to_string(), vec![mk(3, 0.3, "b3"), mk(4, 0.4, "b4")]),
+            ],
+            2,
+        );
+        assert_eq!(capped.len(), 2, "k truncation must apply");
+    }
+
+    /// Same chunk id in the SAME domain twice (shouldn't happen, but the dedup
+    /// key is (domain, id) so we must keep them distinct across domains).
+    #[test]
+    fn rrf_merge_keeps_same_id_in_different_domains() {
+        let mk = |id: i64, content: &str| crate::SearchResult {
+            id,
+            score: 0.5,
+            content: content.into(),
+            untrusted: true,
+            ..Default::default()
+        };
+        let per_domain = vec![
+            ("a".to_string(), vec![mk(7, "a-copy")]),
+            ("b".to_string(), vec![mk(7, "b-copy")]),
+        ];
+        let merged = rrf_merge_domains(per_domain, 10);
+        assert_eq!(
+            merged.len(),
+            2,
+            "same id in different domains stays distinct"
+        );
     }
 
     #[test]
