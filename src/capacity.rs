@@ -173,4 +173,53 @@ mod tests {
         assert!(!CapacityStatus::Warning.blocks_writes());
         assert!(CapacityStatus::Exceeded.blocks_writes());
     }
+
+    #[test]
+    fn capacity_envelope_env_overrides_docs_limit() {
+        let prev = std::env::var("CAPACITY_MAX_DOCS").ok();
+        std::env::set_var("CAPACITY_MAX_DOCS", "5");
+        let env = CapacityEnvelope::for_target(CapacityTarget::Jetson);
+        assert_eq!(
+            env.max_docs, 5,
+            "CAPACITY_MAX_DOCS env var must override the Jetson default of 10k"
+        );
+        match prev {
+            Some(v) => std::env::set_var("CAPACITY_MAX_DOCS", v),
+            None => std::env::remove_var("CAPACITY_MAX_DOCS"),
+        }
+    }
+
+    #[test]
+    fn capacity_envelope_env_overrides_db_mib() {
+        let prev = std::env::var("CAPACITY_MAX_DB_MIB").ok();
+        std::env::set_var("CAPACITY_MAX_DB_MIB", "50");
+        let env = CapacityEnvelope::for_target(CapacityTarget::Jetson);
+        assert_eq!(
+            env.max_db_mib, 50,
+            "CAPACITY_MAX_DB_MIB env var must override the Jetson default of 512"
+        );
+        match prev {
+            Some(v) => std::env::set_var("CAPACITY_MAX_DB_MIB", v),
+            None => std::env::remove_var("CAPACITY_MAX_DB_MIB"),
+        }
+    }
+
+    #[test]
+    fn capacity_classify_docs_exceeded_with_env_override() {
+        // Integration: classify returns Exceeded when env-constrained max_docs
+        // is breached. This proves the env → CapacityEnvelope → classify wire
+        // that guard_capacity relies on at runtime.
+        let prev = std::env::var("CAPACITY_MAX_DOCS").ok();
+        std::env::set_var("CAPACITY_MAX_DOCS", "5");
+        let env = CapacityEnvelope::for_target(CapacityTarget::Jetson);
+        assert_eq!(
+            classify(10, 0, 0, &env),
+            CapacityStatus::Exceeded,
+            "10 docs must exceed env-overridden limit of 5"
+        );
+        match prev {
+            Some(v) => std::env::set_var("CAPACITY_MAX_DOCS", v),
+            None => std::env::remove_var("CAPACITY_MAX_DOCS"),
+        }
+    }
 }
