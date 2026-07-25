@@ -93,6 +93,12 @@ release makes it a rehearsed operation, not an architectural leap.
   startup migration on every prior release.
 - The soak driver (`scripts/soak.sh`) and large-vault generator are deferred as
   operator tooling; the `bench --envelope` mode is the code-level ship gate.
+- **10k-scale bench trips the loopback rate limit** (10 000 req/60s,
+  hardcoded in `src/main.rs:RateLimiter`). Measured capacity on the production
+  mini PC is captured at 1k+5k scales (6k requests, under the limit). To
+  measure 10k+, either raise the loopback limit, exempt loopback in
+  `rate_limit_middleware`, or add an inter-request delay in `bench`.
+  See `BENCHMARKS.md` §v0.9.9.
 
 ### v0.9.8 "Evidence" — 2026-07-20 (released)
 

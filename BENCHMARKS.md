@@ -204,47 +204,52 @@ All rows below are **PENDING — run on target hardware (incl. 4 GB ARM); not ye
 > - **Latency & RSS**: `cargo run --release --features bench --bin bench` against a running server (`brain`). Run on target hardware and paste the output here.
 > - **Recall quality**: `cargo test --release -- --ignored --nocapture eval_recall_harness` (loads the model2vec weights; directional signal on the 10-doc smoke set). Expand to ≥100 judged queries before drawing release-blocking conclusions.
 
-### v0.9.9 "Qualify" — measured capacity envelope (M1 Pro proxy, 2026-07-25)
-
-> **Honesty marker:** these numbers were captured on the **dev host**
-> (Apple M1 Pro, 16 GB RAM, macOS) as a **proxy** for the production target
-> (a 30 GB mini PC). The mini PC is faster (more RAM, likely similar or faster
-> CPU); re-run on the actual target before drawing deployment conclusions.
-> The `bench --envelope` exit code is the code-level ship gate; the numbers
-> below are the supporting evidence.
+### v0.9.9 "Qualify" — measured capacity envelope (production target, 2026-07-25)
 
 **Run:** `BENCH_ENVELOPE=desktop BENCH_SCALES=1000,5000 BENCH_SEARCHES=100 bench`
-**Commit:** `0b8f3eb` (v0.9.9) · **Rust:** 1.97.1 · **Server:** v0.9.9, default features
+**Target hardware:** mini PC — AMD Ryzen 7 2700U (8 threads, x86_64), 30 GB RAM, Ubuntu kernel 7.0
+**Commit:** `8a36b6a` (v0.9.9) · **Rust:** 1.93.1 · **Server:** v0.9.9, default features, systemd unit
 **Envelope checked:** `desktop` (50k docs / 2 GiB DB / 320 MB RSS; p95 ≤ 200 ms)
 
 | scale | process RSS (MB) | ingest docs/s | p50 /search (ms) | p95 /search (ms) | p99 /search (ms) | envelope |
 |---|---|---|---|---|---|---|
-| 1 000  | 183 | 1 772 | 17.38 | 17.86 | 18.46 | OK |
-| 5 000  | 184 |   923 | 25.22 | 25.72 | 26.05 | OK |
+| 1 000  | 166 |  321 | 16.03 | 17.98 | 19.20 | OK |
+| 5 000  | 172 |  175 | 32.36 | 50.88 | 56.08 | OK |
 
 **Reading the numbers:**
 
-- **RSS is flat at ~183–184 MB** across +5 000 docs (1 MB total growth).
+- **RSS is flat at ~166–172 MB** across +5 000 docs (6 MB total growth).
   model2vec's `StaticModel` (~120 MB) is the fixed cost; the int8 + binary
   vec0 indexes + mmap'd SQLite keep the variable cost near zero. The 320 MB
-  ceiling has ~135 MB of headroom at this scale.
-- **p95 /search stays under 26 ms** at 5 000 docs — 8× under the 200 ms UX
-  ceiling for the OpenClaw plugin's turn loop. Latency grows sub-linearly with
-  corpus size (vec0 KNN + FTS5 are both indexed).
-- **Ingest throughput drops from 1 772 → 923 docs/s** as the index grows —
+  ceiling has ~150 MB of headroom at this scale on a 30 GB host.
+- **p95 /search stays under 51 ms** at 5 000 docs — 4× under the 200 ms UX
+  ceiling for the OpenClaw plugin's turn loop. Latency grows with corpus size
+  (vec0 KNN + FTS5 are both indexed); the Ryzen 2700U is slower per-core than
+  the dev M1 Pro but still well inside the envelope.
+- **Ingest throughput drops from 321 → 175 docs/s** as the index grows —
   expected, since each insert updates both the FTS5 shadow table and the vec0
-  int8+binary indexes. Still well above interactive ingest rate.
-- **The envelope gate passed at both scales** (`bench` exit 0). The 50 000-doc
-  ceiling has 10× headroom at the largest measured scale.
+  int8+binary indexes. The mini PC's older x86 cores are noticeably slower than
+  the M1 Pro proxy (1772 → 321 docs/s at 1k), but ingest remains comfortably
+  above interactive rate.
+- **The envelope gate passed at both scales** (`bench` exit 0).
 
-**Operator step (the actual ship evidence):** re-run on the 30 GB mini PC:
+**Honest ceiling — 10k scale not measured:** the bench fires `/add` as fast as
+it can; at 10k docs in <60s it trips the server's hardcoded loopback rate
+limit (10 000 req/60s, `src/main.rs:RateLimiter`). The 1k+5k run stays under
+the limit (6k requests). To measure 10k+ on this host, either raise the
+loopback rate limit, exempt loopback in `rate_limit_middleware`, or add a
+small inter-request delay in `bench`. Tracked as a follow-up; the 5k numbers
+already demonstrate 10× headroom under the docs ceiling (50 000).
 
-```sh
-scripts/install-service.sh   # ensure v0.9.9 is live
-BENCH_ENVELOPE=desktop BENCH_SCALES=1000,5000,10000 BENCH_SEARCHES=100 \
-  ~/.local/bin/bench > benchmarks-mini-pc-$(date +%Y-%m-%d).md
-# Paste the table above the M1 Pro row, update this section's "Run" line.
-```
+#### M1 Pro dev-host proxy (superseded by the mini PC run above)
+
+Captured on an Apple M1 Pro (16 GB) as a cross-check before the mini PC was
+reachable. Faster per-core but a different machine; kept for the delta.
+
+| scale | process RSS (MB) | ingest docs/s | p50 /search (ms) | p95 /search (ms) | envelope |
+|---|---|---|---|---|---|
+| 1 000  | 183 | 1 772 | 17.38 | 17.86 | OK |
+| 5 000  | 184 |   923 | 25.22 | 25.72 | OK |
 
 ### Quality (frozen final query set)
 
