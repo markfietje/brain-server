@@ -204,6 +204,48 @@ All rows below are **PENDING — run on target hardware (incl. 4 GB ARM); not ye
 > - **Latency & RSS**: `cargo run --release --features bench --bin bench` against a running server (`brain`). Run on target hardware and paste the output here.
 > - **Recall quality**: `cargo test --release -- --ignored --nocapture eval_recall_harness` (loads the model2vec weights; directional signal on the 10-doc smoke set). Expand to ≥100 judged queries before drawing release-blocking conclusions.
 
+### v0.9.9 "Qualify" — measured capacity envelope (M1 Pro proxy, 2026-07-25)
+
+> **Honesty marker:** these numbers were captured on the **dev host**
+> (Apple M1 Pro, 16 GB RAM, macOS) as a **proxy** for the production target
+> (a 30 GB mini PC). The mini PC is faster (more RAM, likely similar or faster
+> CPU); re-run on the actual target before drawing deployment conclusions.
+> The `bench --envelope` exit code is the code-level ship gate; the numbers
+> below are the supporting evidence.
+
+**Run:** `BENCH_ENVELOPE=desktop BENCH_SCALES=1000,5000 BENCH_SEARCHES=100 bench`
+**Commit:** `0b8f3eb` (v0.9.9) · **Rust:** 1.97.1 · **Server:** v0.9.9, default features
+**Envelope checked:** `desktop` (50k docs / 2 GiB DB / 320 MB RSS; p95 ≤ 200 ms)
+
+| scale | process RSS (MB) | ingest docs/s | p50 /search (ms) | p95 /search (ms) | p99 /search (ms) | envelope |
+|---|---|---|---|---|---|---|
+| 1 000  | 183 | 1 772 | 17.38 | 17.86 | 18.46 | OK |
+| 5 000  | 184 |   923 | 25.22 | 25.72 | 26.05 | OK |
+
+**Reading the numbers:**
+
+- **RSS is flat at ~183–184 MB** across +5 000 docs (1 MB total growth).
+  model2vec's `StaticModel` (~120 MB) is the fixed cost; the int8 + binary
+  vec0 indexes + mmap'd SQLite keep the variable cost near zero. The 320 MB
+  ceiling has ~135 MB of headroom at this scale.
+- **p95 /search stays under 26 ms** at 5 000 docs — 8× under the 200 ms UX
+  ceiling for the OpenClaw plugin's turn loop. Latency grows sub-linearly with
+  corpus size (vec0 KNN + FTS5 are both indexed).
+- **Ingest throughput drops from 1 772 → 923 docs/s** as the index grows —
+  expected, since each insert updates both the FTS5 shadow table and the vec0
+  int8+binary indexes. Still well above interactive ingest rate.
+- **The envelope gate passed at both scales** (`bench` exit 0). The 50 000-doc
+  ceiling has 10× headroom at the largest measured scale.
+
+**Operator step (the actual ship evidence):** re-run on the 30 GB mini PC:
+
+```sh
+scripts/install-service.sh   # ensure v0.9.9 is live
+BENCH_ENVELOPE=desktop BENCH_SCALES=1000,5000,10000 BENCH_SEARCHES=100 \
+  ~/.local/bin/bench > benchmarks-mini-pc-$(date +%Y-%m-%d).md
+# Paste the table above the M1 Pro row, update this section's "Run" line.
+```
+
 ### Quality (frozen final query set)
 
 | Config | recall@5 | recall@10 | nDCG@10 | MRR | precision@k |
