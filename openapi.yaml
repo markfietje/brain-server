@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 0.9.9
-  x-api-version: "0.9.9"
+  version: 1.0.0
+  x-api-version: "1.0.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -692,19 +692,64 @@ paths:
                     $ref: "#/components/schemas/SearchTelemetry"
   /ingest:
     post:
-      summary: Plugin ingest (contract stub)
+      summary: Structured ingest (v1.0 primary path)
       operationId: ingest
-      x-status: unverified
+      description: >
+        Ingest a memory with optional entities/relations into the resolved
+        domain's knowledge graph. Server trusts the caller's graph data after
+        validation; entities/relations are upserted idempotently. Centroid is
+        recomputed after each successful ingest.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              description: Wire contract per API_CONTRACT.md; body not verified in source.
+              properties:
+                title: { type: string, maxLength: 500 }
+                content: { type: string, maxLength: 1000000 }
+                domain:
+                  type: string
+                  description: Target domain (defaults to 'global').
+                  pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+                entities:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+                    properties:
+                      name: { type: string, maxLength: 100 }
+                      type: { type: string, maxLength: 64 }
+                    required: [name]
+                relations:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+                    properties:
+                      from: { type: string, maxLength: 100 }
+                      to: { type: string, maxLength: 100 }
+                      type:
+                        type: string
+                        maxLength: 64
+                        pattern: "^[a-z0-9_]{1,64}$"
+                    required: [from, to, type]
+              required: [title, content]
       responses:
         "200":
-          description: Unverified response shape
+          description: Ingest result (created or duplicate)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  status: { type: string, enum: [created, duplicate] }
+                  domain: { type: string }
+                  entities_added: { type: integer }
+                  relations_added: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "507": { $ref: "#/components/responses/CapacityExceeded" }
   /memory/{id}:
     delete:
       summary: Forget / delete a memory (contract stub)
@@ -720,14 +765,166 @@ paths:
           description: Unverified response shape
   /domains:
     get:
-      summary: List domains (contract stub)
-      operationId: domains
-      x-status: unverified
+      summary: List domains with per-domain counts
+      operationId: listDomains
       responses:
         "200":
-          description: Unverified response shape
+          description: Domains and their stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domains:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        entries: { type: integer }
+                        entities: { type: integer }
+                        relations: { type: integer }
+                        multi_db: { type: boolean }
+    post:
+      summary: Create or warm a domain
+      operationId: createDomain
+      description: >
+        Idempotent. Returns 201 if the domain was newly created (file opened +
+        migration run), 200 if it already existed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+              required: [name]
+      responses:
+        "200":
+          description: Domain already existed
+        "201":
+          description: Domain created
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /domains/{name}:
+    delete:
+      summary: Delete a domain and all its data
+      operationId: deleteDomain
+      description: >
+        The `global` domain is protected. The caller MUST echo the domain name
+        as `?confirm=<name>` so a typoed URL or replay cannot destroy data.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: confirm
+          in: query
+          required: true
+          schema: { type: string }
+          description: Must equal `{name}`.
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  deleted: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /domains/{name}/vacuum:
+    post:
+      summary: Reclaim free pages in the domain's DB
+      operationId: vacuumDomain
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Vacuumed
+  /domains/{name}/export:
+    get:
+      summary: Stream a consistent snapshot of the domain's .db file
+      operationId: exportDomain
+      description: >
+        Uses SQLite `VACUUM INTO` for a consistent snapshot — safe under
+        concurrent writes. Returns `application/octet-stream` with a
+        `Content-Disposition: attachment` header.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The .db snapshot
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+  /domains/{name}/import:
+    post:
+      summary: Restore a previously-exported .db snapshot into a NEW domain
+      operationId: importDomain
+      description: >
+        Body is the raw bytes of a brain-<domain>.db. Target domain must NOT
+        already exist on disk (no overwrite of live data). `global` is
+        protected. Bytes are written via temp file + atomic rename.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  imported: { type: boolean }
+                  bytes: { type: integer }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
 components:
+  responses:
+    BadRequest:
+      description: Validation failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    CapacityExceeded:
+      description: Capacity envelope exceeded; new writes refused (HTTP 507)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    PayloadTooLarge:
+      description: Body exceeded the size cap
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object, nullable: true }
     LexSpec:
       type: object
       description: >
