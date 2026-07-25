@@ -57,6 +57,10 @@ pub async fn ingest(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, HandlerError> {
+    // v0.9.9: refuse new writes when over the capacity envelope (HTTP 507).
+    // Read routes do not call this guard; an over-capacity brain still answers.
+    super::guard_capacity(&_state)?;
+
     // ---- validation ----
     let title = req.title.trim().to_string();
     if title.is_empty() {

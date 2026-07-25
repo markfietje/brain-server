@@ -223,12 +223,67 @@ impl HandlerError {
             inner: ApiError::new("recall_unavailable", message.into()),
         }
     }
+    /// v0.9.9 "Qualify": HTTP 507 — new ingests are refused because the server
+    /// is over its capacity envelope. Read routes (`/search`, `/recall`, `/get`)
+    /// never return this; an over-capacity brain still answers.
+    pub fn insufficient_storage(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::INSUFFICIENT_STORAGE,
+            inner: ApiError::new("capacity_exceeded", message.into()),
+        }
+    }
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             inner: ApiError::new("internal_error", message.into()),
         }
     }
+}
+
+/// v0.9.9 "Qualify": reject a write when the server is over its capacity
+/// envelope. Returns `Ok(())` when writes are allowed; `Err(507)` when
+/// `CapacityStatus::Exceeded`. Best-effort: if the measurement query fails, the
+/// guard fails OPEN (allows the write) — a transient DB error must not turn the
+/// brain read-only. Callers: every ingest path (`/add`, `/ingest`,
+/// `/ingest/memory`, `/ingest/markdown`). Read routes do NOT call this.
+pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
+    use brain_server::capacity::{capacity_target, CapacityEnvelope, CapacityStatus};
+    // Cheap short-circuit: pool state never blocks writes here; we only need a
+    // connection to count rows. If the pool is momentarily exhausted, fail open.
+    let Some(conn) = state.pool.get().ok() else {
+        return Ok(());
+    };
+    let docs: usize = conn
+        .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+        .max(0) as usize;
+    let db_mib: u64 = std::fs::metadata(&state.db_path)
+        .map(|m| m.len() / 1_000_000)
+        .unwrap_or(0);
+    // CRITICAL: measure the process's own RSS, not system-wide memory.
+    // System::used_memory() is the whole-host figure; on any machine with a
+    // real workload it would always exceed the 320 MB per-process ceiling and
+    // block every write with a spurious 507.
+    let mut sys = sysinfo::System::new();
+    let pid = sysinfo::Pid::from_u32(std::process::id());
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        false,
+        sysinfo::ProcessRefreshKind::nothing().with_memory(),
+    );
+    let rss_mib: u64 = sys
+        .process(pid)
+        .map(|p| p.memory() / 1_000_000)
+        .unwrap_or(0);
+    let envelope = CapacityEnvelope::for_target(capacity_target());
+    let status = brain_server::capacity::classify(docs, db_mib, rss_mib, &envelope);
+    if status.blocks_writes() {
+        return Err(HandlerError::insufficient_storage(format!(
+            "capacity_exceeded: docs={docs}/{} db_mib={db_mib}/{} rss_mib={rss_mib}/{} — see BENCHMARKS.md §capacity",
+            envelope.max_docs, envelope.max_db_mib, envelope.max_rss_mib
+        )));
+    }
+    Ok(())
 }
 
 impl IntoResponse for HandlerError {

@@ -89,17 +89,11 @@ impl DomainRegistry {
 
     /// Validate a domain name is safe to use as a filename (matches the handler
     /// regex `^[a-z0-9][a-z0-9_-]{0,62}$`). Rejects empty, path separators,
-    /// `..`, and uppercase.
+    /// `..`, and uppercase. Delegates to `storage_layout::is_valid_domain` so
+    /// the security check lives in exactly one place (shared with the
+    /// `brain-migrate-rehearse` binary).
     pub fn is_valid_domain(domain: &str) -> bool {
-        let mut chars = domain.chars();
-        let Some(first) = chars.next() else {
-            return false;
-        };
-        if !first.is_ascii_alphanumeric() || first.is_ascii_uppercase() {
-            return false;
-        }
-        domain.len() <= 63
-            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        brain_server::storage_layout::is_valid_domain(domain)
     }
 
     /// Resolve `domain` to its pool. In shim mode (or for `global`) this always
@@ -185,7 +179,8 @@ fn open_with_migration(path: &Path) -> Result<BrainPool, DomainRegistryError> {
     let mut conn = pool
         .get()
         .map_err(|e| DomainRegistryError::Open(e.to_string()))?;
-    crate::run_migration(&mut conn).map_err(|e| DomainRegistryError::Migration(e.to_string()))?;
+    brain_server::migration::run_migration(&mut conn, config::DB_MMAP_SIZE_MIB)
+        .map_err(|e| DomainRegistryError::Migration(e.to_string()))?;
     Ok(pool)
 }
 

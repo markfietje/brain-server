@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "0.9.8"
+version = "0.9.9"
 edition = "2021"
 
 [features]
@@ -8,6 +8,10 @@ edition = "2021"
 # the shared dependency-free HTTP client. Off by default so the default build
 # is unchanged. Enable with `cargo run --release --features bench --bin bench`.
 bench = []
+# Migration rehearsal tool (v0.9.9 "Qualify" M2). Off by default so the default
+# build is unchanged. Enable with
+# `cargo run --release --features migrate --bin brain-migrate-rehearse`.
+migrate = []
 # GitHub App connector auth (M2.1). Pulls in `jsonwebtoken` + its crypto
 # transitive deps (RSA + SHA-256 via RustCrypto). The server binary never
 # enables this — outbound auth is a connector-binary concern, not a server
@@ -99,6 +103,14 @@ path = "src/bin/mcp.rs"
 name = "bench"
 path = "src/bin/bench.rs"
 required-features = ["bench"]
+
+# v0.9.9 "Qualify" M2: copy-and-verify migration rehearsal tool. Runs against
+# a *copy* of the live DB (server must be stopped). Feature-gated so the
+# default build stays minimal — same pattern as `bench`.
+[[bin]]
+name = "brain-migrate-rehearse"
+path = "src/bin/brain_migrate_rehearse.rs"
+required-features = ["migrate"]
 
 [[bin]]
 name = "brain-connector-stub"

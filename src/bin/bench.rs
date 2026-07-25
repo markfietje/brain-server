@@ -7,12 +7,17 @@
 //! docs at 1k/5k/10k scales, and prints a markdown table of resident memory,
 //! ingest throughput, and `/search` latency percentiles to stdout.
 //!
+//! v0.9.9: when `BENCH_ENVELOPE` is set (desktop|jetson), each scale asserts
+//! against the published capacity envelope and the run exits non-zero on any
+//! breach — turning the report into a ship gate.
+//!
 //! Env:
 //!   BRAIN_URL         base URL of the server (default http://127.0.0.1:8765)
 //!   BRAIN_TOKEN_FILE  path to a 0600 secret file (preferred over BRAIN_TOKEN)
 //!   BRAIN_TOKEN       raw bearer token (dev convenience)
 //!   BENCH_SCALES      comma-separated doc counts (default 1000,5000,10000)
 //!   BENCH_SEARCHES    search queries per scale (default 100)
+//!   BENCH_ENVELOPE    assert against this capacity envelope (desktop|jetson)
 //!
 //! Scales are cumulative within one run — the server exposes no reset API, so
 //! each scale's docs are appended on top of the previous scale's. "RSS at rest"
@@ -84,6 +89,54 @@ fn num_searches() -> usize {
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(100)
+}
+
+/// v0.9.9: capacity envelope to assert against. `None` when `BENCH_ENVELOPE`
+/// is unset (report-only). When set (desktop|jetson), the harness reads the
+/// published envelope from `brain_server::capacity` and exits non-zero on any
+/// breach — turning the report into a ship gate.
+fn envelope() -> Option<(brain_server::capacity::CapacityEnvelope, &'static str)> {
+    let target = std::env::var("BENCH_ENVELOPE").ok()?.trim().to_lowercase();
+    let t = match target.as_str() {
+        "desktop" => brain_server::capacity::CapacityTarget::Desktop,
+        "jetson" => brain_server::capacity::CapacityTarget::Jetson,
+        _ => return None,
+    };
+    Some((
+        brain_server::capacity::CapacityEnvelope::for_target(t),
+        match t {
+            brain_server::capacity::CapacityTarget::Desktop => "desktop",
+            brain_server::capacity::CapacityTarget::Jetson => "jetson",
+        },
+    ))
+}
+
+/// Documented UX ceiling for the OpenClaw plugin (p95 of /search). Breaching
+/// it under the active envelope is a ship-blocker — the plugin's turn loop
+/// starts feeling laggy above this.
+const ENVELOPE_P95_MS_CEILING: u64 = 200;
+
+/// Assert a scale's measurements against the envelope. Returns a list of
+/// human-readable breaches (empty when within envelope).
+fn check_envelope(
+    env: &brain_server::capacity::CapacityEnvelope,
+    target_name: &str,
+    row: &Row,
+) -> Vec<String> {
+    let mut breaches = Vec::new();
+    if row.rss_after > env.max_rss_mib {
+        breaches.push(format!(
+            "RSS after ingest = {} MB > {} MB ({} envelope)",
+            row.rss_after, env.max_rss_mib, target_name
+        ));
+    }
+    if row.p95_ms > ENVELOPE_P95_MS_CEILING as f64 {
+        breaches.push(format!(
+            "p95 /search = {:.0} ms > {} ms (UX ceiling)",
+            row.p95_ms, ENVELOPE_P95_MS_CEILING
+        ));
+    }
+    breaches
 }
 
 /// Resident memory (MB) the server reports via `/health` → `system.memory_used_mb`.
@@ -237,6 +290,36 @@ fn run() -> Result<(), String> {
     }
 
     print_report(&base, searches, &rows, &rss_after_batches);
+
+    // v0.9.9: when BENCH_ENVELOPE is set, assert each scale against the
+    // published capacity envelope. Any breach exits non-zero — the report
+    // becomes a ship gate, not just a measurement.
+    if let Some((env, target_name)) = envelope() {
+        println!("\n### Capacity envelope assertion (target: {target_name})\n");
+        println!("| scale | max RSS (MB) | max p95 (ms) | result |");
+        println!("|---|---|---|---|");
+        let mut all_ok = true;
+        for r in &rows {
+            let breaches = check_envelope(&env, target_name, r);
+            let result = if breaches.is_empty() {
+                "OK"
+            } else {
+                all_ok = false;
+                "BREACH"
+            };
+            println!(
+                "| {} | {} | {} | {} |",
+                r.scale, env.max_rss_mib, ENVELOPE_P95_MS_CEILING, result
+            );
+            for b in &breaches {
+                eprintln!("ENVELOPE BREACH at scale {}: {b}", r.scale);
+            }
+        }
+        if !all_ok {
+            return Err("capacity envelope breached — see ENVELOPE BREACH lines above".into());
+        }
+    }
+
     Ok(())
 }
 

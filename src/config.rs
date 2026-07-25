@@ -134,13 +134,21 @@ pub fn injection_policy() -> InjectionPolicy {
 }
 
 /// Database file path. Reads `BRAIN_DB_PATH`; falls back to
-/// `~/.openclaw/workspace/brain.db`.
+/// `~/.openclaw/workspace/brain.db`. v0.9.9: delegates to
+/// `StorageLayout::detect()?.legacy_db()` so this path and the layout's path
+/// are byte-identical (the back-compat invariant locked by
+/// `storage_layout::tests::legacy_db_matches_brain_db_path_env_when_set`).
+/// The historical default is preserved exactly.
 pub fn brain_db_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("BRAIN_DB_PATH") {
-        return std::path::PathBuf::from(p);
-    }
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    home.join(".openclaw/workspace/brain.db")
+    brain_server::storage_layout::StorageLayout::detect()
+        .map(|l| l.legacy_db())
+        .unwrap_or_else(|_| {
+            // Defensive: detect() only fails on a non-absolute BRAIN_DATA_ROOT,
+            // in which case we fall back to the historical default rather than
+            // panic at startup. The bad env var is logged by the caller.
+            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            home.join(".openclaw/workspace/brain.db")
+        })
 }
 
 /// Optional bearer token for authenticated routes. When no token is resolvable,
@@ -229,6 +237,8 @@ pub fn model_id_for_profile(profile: &str) -> &'static str {
         _ => MODEL_ID, // edge-default / quality-local / air-gapped keep the default static model
     }
 }
+
+// ── Retrieval quality estimator config ─────────────────────────────────
 
 // ── Retrieval quality estimator config ─────────────────────────────────
 

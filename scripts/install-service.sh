@@ -14,10 +14,15 @@ SRC_BIN="$REPO/target/release/$BIN_NAME"
 DEST_DIR="$HOME/.local/bin"
 DEST_BIN="$DEST_DIR/$BIN_NAME"
 # Operator CLIs shipped alongside the server: brain (doctor/bench/ingest),
-# mcp (MCP bridge), bench (latency harness). All are tiny static-ish clients.
+# mcp (MCP bridge), bench (latency harness), brain-migrate-rehearse (v0.9.9
+# Qualify — copy-and-verify migration rehearsal). All are tiny static-ish
+# clients.
 # v0.9.6: brain-connector-stub is always built; brain-connector-gh needs the
 # connector-github feature (reqwest + jsonwebtoken deps).
 CLI_BINS=("brain" "mcp" "bench" "brain-connector-stub")
+# v0.9.9: brain-migrate-rehearse needs the `migrate` feature to compile. Built
+# in the same `cargo build` invocation as the others via --features bench,migrate.
+FEATURE_BINS=("brain-migrate-rehearse:migrate")
 # Optional binaries that require extra features to build. Built best-effort:
 # if the feature flag is off, the binary is just absent from target/release.
 OPTIONAL_BINS=("brain-connector-gh:connector-github")
@@ -33,11 +38,11 @@ die() { printf 'ERR %s\n' "$*" >&2; exit 1; }
 [[ -f "$PLIST" ]] || die "plist not found: $PLIST -- install the launchd service first."
 
 # 1. Build the release binary + operator CLIs.
-#    `--features bench` is an empty feature (no extra deps) — it only gates
-#    compilation of the bench binary, which is required-features=["bench"].
-log "building release binaries (server + brain/mcp/bench/brain-connector-stub)..."
-( cd "$REPO" && cargo build --release --features bench \
-    --bin "$BIN_NAME" --bin brain --bin mcp --bin bench --bin brain-connector-stub )
+#    `--features bench,migrate` are empty features (no extra deps) — they only
+#    gate compilation of the bench + brain-migrate-rehearse binaries.
+log "building release binaries (server + brain/mcp/bench/brain-connector-stub/brain-migrate-rehearse)..."
+( cd "$REPO" && cargo build --release --features bench,migrate \
+    --bin "$BIN_NAME" --bin brain --bin mcp --bin bench --bin brain-connector-stub --bin brain-migrate-rehearse )
 [[ -x "$SRC_BIN" ]] || die "build did not produce $SRC_BIN"
 
 # 1b. Build optional binaries that need extra features. Best-effort: if the
@@ -77,6 +82,14 @@ for bin in "${CLI_BINS[@]}"; do
 	src="$REPO/target/release/$bin"
 	[[ -x "$src" ]] || die "build did not produce $src"
 	install_bin "$src" "$DEST_DIR/$bin"
+done
+# v0.9.9: feature-gated CLI bins (built in the main cargo line, so they exist).
+for entry in "${FEATURE_BINS[@]}"; do
+	bin="${entry%%:*}"
+	src="$REPO/target/release/$bin"
+	if [[ -x "$src" ]]; then
+		install_bin "$src" "$DEST_DIR/$bin"
+	fi
 done
 # Optional bins: install only if they were built (feature on).
 for entry in "${OPTIONAL_BINS[@]}"; do
