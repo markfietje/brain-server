@@ -293,6 +293,39 @@ impl IntoResponse for HandlerError {
 }
 
 // ---------------------------------------------------------------------------
+// Domain resolution helpers (v1.0.0 "Domains")
+// ---------------------------------------------------------------------------
+
+/// Resolve a domain name to its connection pool via the registry.
+/// Defaults to `"global"` when `domain` is `None` or empty. Unknown domains
+/// return a `400` whose `details` carries the list of known domains (per the
+/// v1.0 plan: "Unknown domain → 400 with the list of known domains").
+pub fn resolve_domain_pool(
+    registry: &crate::domain_registry::DomainRegistry,
+    domain: Option<&str>,
+) -> Result<crate::Pool, HandlerError> {
+    let d = domain.filter(|s| !s.trim().is_empty()).unwrap_or("global");
+    registry.pool_for(d).map_err(|e| {
+        let known = registry.known_domains();
+        HandlerError::bad_request_with(
+            "domain_invalid",
+            format!("cannot resolve domain '{d}': {e}"),
+            serde_json::json!({ "known_domains": known }),
+        )
+    })
+}
+
+/// Extract domain from `X-Brain-Domain` header — used by GET handlers
+/// that don't have a JSON body with a `domain` field.
+pub fn domain_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get("x-brain-domain")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_lowercase())
+}
+
+// ---------------------------------------------------------------------------
 // Shared validation helpers
 // ---------------------------------------------------------------------------
 
@@ -362,21 +395,102 @@ pub fn normalize_rel_type(raw: &str) -> Result<String, HandlerError> {
     Ok(s)
 }
 
-// Hand-rolled matcher for the tiny set of validation patterns used by the
-// handler stubs.  Replaces the `regex` crate dependency (removed with the
-// annotator module in v0.9.0).  The patterns are simple character-class +
-// repetition checks — no need for a full regex engine.
-fn is_match(_pattern: &str, s: &str) -> bool {
-    // The only patterns used by the handlers are:
-    //   ^[a-z0-9_][a-z0-9_-]{0,63}$   (domain names)
-    //   ^[a-z0-9_]{1,64}$            (relation types)
-    //   ^[a-z0-9_ -]{1,100}$         (entity names)
-    // We hand-roll a checker for these shapes.
-    let s = s.trim();
-    if s.is_empty() {
-        return false;
+// Hand-rolled checkers for the three patterns used by the validators.
+// Replaces the `regex` crate dependency (removed with the annotator module in
+// v0.9.0). Each checker enforces ONE shape — the previous single `is_match`
+// ignored its `_pattern` argument and silently rejected spaces in entity
+// names (breaking the canonical `vitamin d3` example).
+//
+// ponytail: each pattern is a tiny character-class + length check; a full
+// regex engine is overkill. The shapes are pinned by the test in this module.
+fn is_match(pattern: &str, s: &str) -> bool {
+    match pattern {
+        DOMAIN_RE => is_valid_domain(s),
+        NAME_RE => is_valid_name(s),
+        RELTYPE_RE => is_valid_rel_type(s),
+        _ => false,
     }
-    s.chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+/// `^[a-z0-9][a-z0-9_-]{0,62}$` — delegates to storage_layout (security-critical;
+/// one source of truth for filename safety).
+fn is_valid_domain(s: &str) -> bool {
+    brain_server::storage_layout::is_valid_domain(s.trim())
+}
+
+/// `^[A-Za-z0-9 _-]{1,100}$` — entity/note names. Allows spaces (e.g. note
+/// titles, multi-word entities like "vitamin d3") and uppercase. The validator
+/// lowercases before insertion; this only checks the input shape.
+fn is_valid_name(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
+        && s.len() <= 100
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '_' || c == '-')
+}
+
+/// `^[a-z0-9_]{1,64}$` — relation types (snake_case, no hyphens).
+fn is_valid_rel_type(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty()
         && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_from_headers_extracts_header_value() {
+        use axum::http::HeaderMap;
+        let mut headers = HeaderMap::new();
+        assert_eq!(domain_from_headers(&headers), None);
+        headers.insert("x-brain-domain", "health".parse().unwrap());
+        assert_eq!(domain_from_headers(&headers), Some("health".to_string()));
+    }
+
+    #[test]
+    fn resolve_domain_pool_falls_back_to_global() {
+        use crate::domain_registry::DomainRegistry;
+        use r2d2_sqlite::SqliteConnectionManager;
+        let mgr = SqliteConnectionManager::memory();
+        let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
+        let reg = DomainRegistry::new(pool.clone(), std::path::Path::new("/tmp/db.db"), false);
+        let p = resolve_domain_pool(&reg, None).expect("no domain defaults to global");
+        assert!(p.get().is_ok());
+        let p = resolve_domain_pool(&reg, Some("")).expect("empty domain defaults to global");
+        assert!(p.get().is_ok());
+        // Invalid domain rejected.
+        assert!(resolve_domain_pool(&reg, Some("../evil")).is_err());
+    }
+
+    /// Pin the three validator shapes. The previous is_match silently rejected
+    /// spaces in entity names, breaking the canonical `vitamin d3` example.
+    #[test]
+    fn validators_match_their_documented_shapes() {
+        // Domain: lowercase + digit + underscore/hyphen, 1..=63 chars.
+        assert!(is_match(DOMAIN_RE, "global"));
+        assert!(is_match(DOMAIN_RE, "health"));
+        assert!(!is_match(DOMAIN_RE, "Health"));
+        assert!(!is_match(DOMAIN_RE, "has space"));
+        assert!(!is_match(DOMAIN_RE, "../evil"));
+        assert!(!is_match(DOMAIN_RE, &"x".repeat(64)));
+
+        // Name: alphanumeric + space + underscore/hyphen, 1..=100 chars.
+        assert!(is_match(NAME_RE, "vitamin d3"));
+        assert!(is_match(NAME_RE, "Bignay Fruit"));
+        assert!(is_match(NAME_RE, "rust"));
+        assert!(!is_match(NAME_RE, ""));
+        assert!(!is_match(NAME_RE, "dot.in.name"));
+        assert!(!is_match(NAME_RE, &"x".repeat(101)));
+
+        // Relation type: lowercase snake_case, 1..=64 chars, no hyphens.
+        assert!(is_match(RELTYPE_RE, "helps"));
+        assert!(is_match(RELTYPE_RE, "relates_to"));
+        assert!(!is_match(RELTYPE_RE, "Has Caps"));
+        assert!(!is_match(RELTYPE_RE, "has-hyphen"));
+        assert!(!is_match(RELTYPE_RE, "has space"));
+    }
 }
