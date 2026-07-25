@@ -340,19 +340,31 @@ FTS row. A `tombstones` row records the deletion for provenance. `id` is parsed 
 ```json
 {
   "domains": [
-    { "name": "global", "entries": 1307, "entities": 2341, "relations": 1892, "hasCentroid": false },
-    { "name": "health", "entries": 412,  "entities": 2341, "relations": 1892, "hasCentroid": false }
+    { "name": "global", "entries": 1307, "entities": 2341, "relations": 1892, "multi_db": false },
+    { "name": "health", "entries": 412,  "entities": 2341, "relations": 1892, "multi_db": false }
   ]
 }
 ```
 Not used by the recall hot path, but useful for the `brain` CLI and for surfacing
 `knownDomains`.
 
-> **Known limitation (current source):** domains are derived by `GROUP BY domain` on the
-> `knowledge` table (single-DB tagged model). `hasCentroid` is **always `false`** today
-> (the centroid layer is computed but not yet surfaced here), and `entities`/`relations`
-> are **global totals copied into every row** (per-domain KG counts land with per-domain
-> DBs). Do not rely on per-row entity/relation numbers being domain-scoped yet.
+**v1.0.0 lifecycle routes** (per the plan M5):
+- `POST /domains` body `{"name": "health"}` — create or warm a domain. Idempotent;
+  returns `201` on first open, `200` if already present.
+- `DELETE /domains/{name}?confirm={name}` — drop ALL data for the domain and VACUUM.
+  The `global` domain is protected. The `?confirm=<exact-name>` query param is
+  REQUIRED so a typoed URL or replay can't destroy data by accident.
+- `POST /domains/{name}/vacuum` — reclaim free pages. Cheap, safe under load.
+- `GET /domains/{name}/export` — stream a consistent snapshot via `VACUUM INTO`.
+  Returns `application/octet-stream` + `Content-Disposition: attachment`.
+- `POST /domains/{name}/import` — restore a snapshot into a NEW domain. Body is
+  the raw bytes from a prior export. Target must not already exist; `global` is
+  protected. Atomic temp-file + rename; migration runs on the imported pool.
+
+> **Per-domain counts.** In shim mode (`BRAIN_MULTI_DB=false`, the default) the
+> registry enumerates the `domain` column on the shared pool — entities and
+> relations are global totals in that mode. In multi-db mode each domain has its
+> own file and the counts are genuinely domain-scoped.
 
 ---
 
@@ -641,3 +653,29 @@ This is the procedure the rehearsal proves is safe:
 
 **v0.9.9 does NOT perform steps 1–5.** It ships the tooling + this contract so
 v1.0.0 is a rehearsed operation.
+
+### v1.0.0 boot-time cutover (automatic)
+
+When `BRAIN_MULTI_DB=true` is set at server startup, the server performs a
+one-shot safety snapshot of the legacy `brain.db` into `global.db`:
+
+1. Resolves paths via `StorageLayout`: `legacy_db()` (`brain.db`) and
+   `global_domain_db()` (`global.db`).
+2. Skips the snapshot if ANY of:
+   - shim mode (`BRAIN_MULTI_DB` off — the legacy `brain.db` IS the global pool);
+   - the marker `~/.openclaw/workspace/.v1-legacy-cutover-done` exists;
+   - `global.db` already exists (operator provisioned it);
+   - `brain.db` has no `knowledge` rows (fresh install).
+3. Otherwise: `VACUUM INTO '<global.db>'` (consistent snapshot, safe under WAL),
+   then writes the marker so restarts never re-copy.
+
+The runtime keeps reading the legacy `brain.db` for the `global` domain — the
+snapshot exists as a backup the rehearsal tool can verify against, and as the
+physical source for any future operator-driven cutover. No data is moved out of
+`brain.db`; the v0.9.x install path is preserved byte-identical.
+
+**v1.0 deprecation policy.** The legacy `/add`, `/search`, `/ingest/memory`,
+and `/ingest/markdown` routes remain (with `Deprecation: version="0.9.5"`
+header). The primary write path is now `POST /ingest`; the primary read path is
+`POST /recall`. A future major version may remove the legacy routes after a
+deprecation window of at least one minor cycle.

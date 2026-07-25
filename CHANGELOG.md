@@ -12,6 +12,99 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.0.0 "Domains" — 2026-07-26 (current)
+
+The multi-domain cutover. Every handler resolves its target domain via the
+`X-Brain-Domain` header or JSON `domain` field; POST/GET/DELETE domain lifecycle
+is a first-class API. Structured ingest (`POST /ingest`) with inline
+entity/relation upsert is the primary write path. The single-DB shim mode
+preserves v0.9.x behavior byte-for-identical; `BRAIN_MULTI_DB=true` activates
+per-domain files.
+
+#### Added — domain routing (M1 + M2)
+- **`X-Brain-Domain` header** support on every GET handler (`/search`, `/stats`,
+  `/get/{id}`, `/multi-get`, `/graph/entity/{name}`, `/graph/relations`,
+  `/graph/traverse`). Resolves the target domain's connection pool via
+  `DomainRegistry`.
+- **`domain` query param** on `GET /search` and `GET /stats` for tool-friendly
+  domain scoping without headers.
+- **`handlers::resolve_domain_pool()`** — shared helper that resolves any domain
+  name to its pool, defaulting to `"global"`. The error envelope's `details`
+  field now carries `known_domains` so an unknown-domain `400` is actionable.
+
+#### Added — federated search (M3)
+- **Cross-domain RRF merge.** The previous `/recall` cross-domain sort used raw
+  `score` (wrong: scores aren't comparable across domains because IDF tables
+  and post-quantization norms differ). Replaced with rank-based RRF using the
+  same `RRF_K = 60` constant as the in-domain hybrid fusion.
+- **`?cross_domain=true` on `/graph/traverse`** walks edges across every known
+  domain pool, labelling each hop with its source domain.
+- The `/recall` handler already supported centroid routing for domain-aware
+  recall (v0.9.1 `domain_router`). Verified end-to-end for the v1.0 cutover:
+  multi-domain federation with labelled `domains_searched` on the response.
+
+#### Added — structured ingest (M4)
+- **`POST /ingest`** accepts `{ title, content, domain?, entities?, relations? }`.
+  Entities are validated and upserted idempotently; relations are anchored to
+  the ingested chunk. The `/ingest/markdown` `[[...]]` parser remains as the
+  legacy fallback. Recomputes the domain centroid after each successful ingest.
+- **MCP `brain_ingest` updated** to call `POST /ingest` with structured fields
+  when the caller supplies `entities`/`relations`/`domain` (the agent does
+  extraction client-side, per the plan). Legacy memory-style ingest with just
+  `content` still routes to `/ingest/memory` for back-compat.
+- **Fixed the validator regression.** The hand-rolled `is_match` checker
+  ignored its `pattern` argument and silently rejected spaces in entity names
+  — breaking the canonical `vitamin d3` example. Replaced with three
+  correctly-scoped checkers (`is_valid_domain`, `is_valid_name`,
+  `is_valid_rel_type`); the shapes are pinned by a unit test.
+
+#### Added — domain lifecycle (M5)
+- **`POST /domains`** — create/warm a domain (idempotent; 201 on first open).
+- **`DELETE /domains/{name}?confirm=<name>`** — delete a domain and all its
+  data. `global` is protected. The `?confirm=<exact-name>` query param is
+  REQUIRED so a typoed URL or replay cannot destroy data by accident.
+- **`POST /domains/{name}/vacuum`** — reclaim free pages in the domain's DB.
+- **`GET /domains/{name}/export`** — stream a consistent snapshot of the
+  domain's `.db` file via `VACUUM INTO` (safe under concurrent writes).
+- **`POST /domains/{name}/import`** — restore a snapshot into a NEW domain
+  (target must not exist; `global` protected; atomic temp-file + rename).
+- **`GET /domains`** — real per-domain counts via the registry, not a GROUP BY
+  on the shared pool.
+
+#### Added — migration + tests (M6)
+- **Boot-time legacy cutover snapshot.** When `BRAIN_MULTI_DB=true` is set at
+  startup and the legacy `brain.db` has data, the server performs a one-shot
+  `VACUUM INTO` into `global.db`, guarded by a marker so restarts never
+  re-copy. The runtime keeps reading the legacy path; the snapshot exists as
+  a backup and as the physical source for any future operator cutover.
+- **Four required M6 integration tests added:** domain isolation, fallback
+  trigger on low-confidence routing, structured ingest entity/relation
+  insertion (the canonical `vitamin d3` example), and export round-trip.
+
+#### Changed
+- Cargo.toml version 0.9.9 → 1.0.0.
+- `openapi.yaml` info version → 1.0.0; the new domain lifecycle routes are
+  documented (the `test_openapi_covers_routes` test asserts coverage).
+- Handlers that previously used `state.pool` directly now resolve via
+  `handlers::resolve_domain_pool(&state.registry, domain)`. Shim mode returns
+  the global pool unchanged; multi-db mode opens per-domain pools lazily.
+- `API_CONTRACT.md` §4 documents the new lifecycle routes; §9 documents the
+  v1.0 boot-time cutover + deprecation policy.
+
+#### Honest ceilings (carried forward)
+- **Domain `dim` / `quant` are not per-domain.** All domains share the global
+  model profile; per-domain model selection is a v1.1 concern.
+- **No registry DB table.** The registry enumerates `brain-<domain>.db` files
+  on disk. This is simpler and avoids a separate `registry.db` to manage, but
+  means there's no per-domain `dim`/`quant`/`version` metadata store.
+- **The `global` domain continues to read the legacy `brain.db` even in
+  multi-db mode.** The boot-time snapshot creates `global.db` as a backup +
+  rehearsal target, but the runtime path stays on `brain.db` for `global` so
+  the 430-doc live DB never silently shifts under the operator.
+- **Cross-domain `ATTACH` was not used.** Per-domain pool queries + RRF merge
+  is simpler and avoids sqlite-vec attach complications; benchmark on ARM
+  eMMC remains an operator step (see `BENCHMARKS.md`).
+
 ### v0.9.9 "Qualify" — 2026-07-25 (released)
 
 The v1.0 cutover rehearsal milestone. No user-visible multi-domain behavior
