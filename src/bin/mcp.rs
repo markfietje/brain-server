@@ -207,13 +207,39 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
         },
         {
             "name": "brain_ingest",
-            "description": "Ingest a text passage into the brain memory store.",
+            "description": "Ingest a memory with optional structured entities/relations into the brain's knowledge graph (v1.0 primary path). Calls POST /ingest; the agent does entity extraction client-side and passes the graph data here.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "content": { "type": "string", "description": "The text to ingest." },
-                    "title": { "type": "string", "description": "Optional title (routes to /ingest/markdown)." },
-                    "source": { "type": "string", "description": "Source label (used for memory ingest)." }
+                    "content": { "type": "string", "description": "The text to ingest (full prose)." },
+                    "title": { "type": "string", "description": "Title for the memory." },
+                    "domain": { "type": "string", "description": "Target domain (defaults to 'global'). Must match ^[a-z0-9][a-z0-9_-]{0,62}$." },
+                    "entities": {
+                        "type": "array",
+                        "description": "Entities mentioned in the content. The server trusts these (no regex extraction).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Entity name (allows spaces, e.g. 'vitamin d3')." },
+                                "type": { "type": "string", "description": "Optional entity type/kind (≤64 chars)." }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                    "relations": {
+                        "type": "array",
+                        "description": "Relations between entities, anchored to this memory.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": { "type": "string" },
+                                "to": { "type": "string" },
+                                "type": { "type": "string", "description": "snake_case relation type, e.g. 'helps' / 'relates_to'." }
+                            },
+                            "required": ["from", "to", "type"]
+                        }
+                    },
+                    "source": { "type": "string", "description": "Source label (legacy memory-ingest mode only; ignored when entities/relations are present)." }
                 },
                 "required": ["content"]
             }
@@ -340,8 +366,52 @@ fn build_lex(args: &serde_json::Value) -> serde_json::Value {
 fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
     let content = arg_str(args, "content").ok_or("brain_ingest requires 'content'")?;
     let title = arg_str(args, "title");
-    let source = arg_str(args, "source");
+    let domain = arg_str(args, "domain");
+    let entities = args.get("entities").cloned();
+    let relations = args.get("relations").cloned();
+    let has_structured = entities.as_ref().is_some_and(|v| v.is_array())
+        || relations.as_ref().is_some_and(|v| v.is_array());
 
+    // v1.0 primary path: POST /ingest with structured fields. Triggered when
+    // the caller supplies entities/relations/domain — the agent did extraction
+    // client-side, per the plan M4.
+    if has_structured || domain.is_some() {
+        let mut body = serde_json::json!({ "content": content });
+        if let Some(t) = title {
+            body["title"] = serde_json::json!(t);
+        } else {
+            // POST /ingest requires a non-empty title; default to first line.
+            let default_title = content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(100)
+                .collect::<String>();
+            body["title"] = serde_json::json!(default_title);
+        }
+        if let Some(d) = domain {
+            body["domain"] = serde_json::json!(d);
+        }
+        if let Some(e) = entities {
+            body["entities"] = e;
+        }
+        if let Some(r) = relations {
+            body["relations"] = r;
+        }
+        let resp = post(
+            &base_url(),
+            "/ingest",
+            &[],
+            "application/json",
+            &body.to_string(),
+            auth_token().as_deref(),
+        )?;
+        return Ok(format_response(resp.status, &resp.body));
+    }
+
+    // Legacy paths: keep back-compat for memory-style ingests with no graph data.
+    let source = arg_str(args, "source");
     let resp = if let Some(title) = title {
         let body = serde_json::json!({ "content": content, "title": title }).to_string();
         post(
