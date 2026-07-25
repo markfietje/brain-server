@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 0.9.8
-  x-api-version: "0.9.8"
+  version: 0.9.9
+  x-api-version: "0.9.9"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -41,6 +41,22 @@ paths:
                       connections: { type: integer }
                       idle_connections: { type: integer }
                       busy_connections: { type: integer }
+                  # v0.9.9 "Qualify": capacity envelope status. Present when the
+                  # pool had a connection to measure against; omitted (not null)
+                  # when the pool was momentarily exhausted. `status` is one of
+                  # ok|warning|exceeded. Writes are rejected with HTTP 507 when
+                  # exceeded; reads always return 200.
+                  capacity:
+                    type: object
+                    properties:
+                      target: { type: string, example: jetson }
+                      docs: { type: integer }
+                      max_docs: { type: integer }
+                      db_mib: { type: integer }
+                      max_db_mib: { type: integer }
+                      rss_mib: { type: integer }
+                      max_rss_mib: { type: integer }
+                      status: { type: string, example: ok }
   /health/db:
     get:
       summary: Database health

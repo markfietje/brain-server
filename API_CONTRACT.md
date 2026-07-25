@@ -551,3 +551,93 @@ For a single machine-readable source of truth, derive JSON Schemas from the Rust
 [`schemars`](https://crates.io/crates/schemars) (`#[derive(JsonSchema)]`) and publish them
 alongside the OpenAPI spec (`openapi.yaml`). The TS types can then be code-generated from
 those schemas, eliminating manual drift. Noted in ROADMAP Phase 6.
+
+---
+
+## 8. Capacity envelopes (v0.9.9)
+
+brain-server publishes a *measured* (not estimated) capacity envelope per
+target hardware. A configuration that exceeds it is **unsupported**: writes
+are rejected with HTTP `507 Insufficient Storage` until the operator resolves
+it; reads always return `200` (an over-capacity brain must still answer).
+
+| Target | `BRAIN_CAPACITY_TARGET` | Max docs | Max DB | Max RSS |
+|---|---|---|---|---|
+| Jetson Nano 4 GB (default) | `jetson` | 10 000 | 512 MiB | 320 MB |
+| Desktop / 16 GB host | `desktop` | 50 000 | 2 GiB | 320 MB |
+
+- **`/health`** reports the live state under `capacity`: `{ target, docs,
+  max_docs, db_mib, max_db_mib, rss_mib, max_rss_mib, status }` where `status`
+  is `ok` | `warning` (within 10% of a ceiling) | `exceeded`.
+- **Writes** (`POST /add`, `/ingest`, `/ingest/memory`, `/ingest/markdown`)
+  call `guard_capacity`. Over-capacity → `507` with body
+  `{ "error": "capacity_exceeded: docs=N/M db_mib=.../... rss_mib=.../..." }`.
+- **Reads** (`GET /search`, `POST /recall`, `GET /get/{id}`) never check
+  capacity — a brain over its envelope still answers queries.
+- **Tightening for test/constrained deploys:** `CAPACITY_MAX_DOCS`,
+  `CAPACITY_MAX_DB_MIB`, `CAPACITY_MAX_RSS_MIB` override the built-in defaults.
+- **Ship gate:** `bench --features bench` with `BENCH_ENVELOPE=jetson` exits
+  non-zero if RSS or p95 ceilings are breached — turning a measurement into an
+  assertion.
+
+Measured numbers for 1k / 10k / large-vault corpora are published in
+`BENCHMARKS.md` §v0.9.9 (operator step — run on the target hardware).
+
+## 9. Migration (v0.9.9 — the v1.0 cutover contract)
+
+v1.0.0 splits the single `brain.db` into per-domain files (`global.db` +
+`brain-<domain>.db`). v0.9.9 **rehearses** that cutover without performing it:
+the live runtime stays in shim mode (single global DB). The rehearsal proves
+the cutover is safe; v1.0.0 executes it.
+
+### Per-row migration rule
+
+Every row follows exactly one rule when v1.0 runs the cutover:
+
+| Row kind | Default target domain | Rule |
+|---|---|---|
+| `knowledge.domain = 'global'` | `global` | unchanged |
+| `knowledge.domain = '<name>'` | `<name>` | copy to `brain-<name>.db`; tombstone in `global` |
+| `sources` / `source_revisions` | follows the linked chunk's domain | copy with the chunks |
+| `entities` / `relationships` | follows the owning `knowledge.id` | copy with the chunks |
+| `evidence_links` | follows `from_chunk_id` | copy with the from-chunk |
+| `tombstones` | `global` (audit trail) | never split |
+| `connectors` / `connector_checkpoints` | `global` (registry metadata) | never split |
+| `audit_events` | `global` (immutable audit trail) | never split |
+| `domain_centroids` | `global` (it IS the routing table) | never split |
+| `webhook_queue` | `global` (transient) | drained before cutover; not migrated |
+
+### Rehearsal tool
+
+`brain-migrate-rehearse` (build with `--features migrate`) runs the cutover
+against a *copy* of the live DB:
+
+```sh
+# Stop the server first (WAL must be quiescent).
+brain-migrate-rehearse rehearse \
+  --source ~/.openclaw/workspace/brain.db \
+  --dest   ~/.openclaw/workspace/global.db
+```
+
+Phases: `backup` (encrypted snapshot via `backup::backup`) → `copy`
+(`VACUUM INTO` + `run_migration`) → `verify` (row-count + content-hash +
+FTS/vec parity + source/revision linkage + evidence_links + audit_events +
+schema-version + 50-row vec0 byte spot-check) → `report`. Exits `0` only when
+**every** check passes; any mismatch leaves the dest file + a precise failure
+message. `rollback` removes the candidate without touching the source.
+
+### Recovery (rollback after the v1.0 cutover)
+
+This is the procedure the rehearsal proves is safe:
+
+1. Stop the server.
+2. `mv brain.db brain.db.pre-v1` and `mv global.db brain.db` (or flip
+   `BRAIN_DB_PATH`).
+3. Enable `BRAIN_MULTI_DB=true` in the launchd plist.
+4. Restart via `scripts/install-service.sh`; `brain doctor` reports v1.0.0.
+5. **Rollback if needed:** stop server, `mv brain.db.pre-v1 brain.db`, unset
+   `BRAIN_MULTI_DB=true`, restart. The failed `global.db` is retained as
+   `brain.db.failed-cutover` for forensics.
+
+**v0.9.9 does NOT perform steps 1–5.** It ships the tooling + this contract so
+v1.0.0 is a rehearsed operation.

@@ -12,6 +12,88 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v0.9.9 "Qualify" — 2026-07-25 (released)
+
+The v1.0 cutover rehearsal milestone. No user-visible multi-domain behavior
+ships here — that is v1.0.0. v0.9.9 extracts the migration + storage seams,
+ships a copy-and-verify **rehearsal** tool, publishes measured capacity
+envelopes with fail-clear behavior, and freezes the v1.0 API + migration
+contract. The actual `BRAIN_MULTI_DB=true` cutover is the v1.0 ship step; this
+release makes it a rehearsed operation, not an architectural leap.
+
+#### Added — M1 (domain-ready seams)
+- **`StorageLayout` abstraction** (`src/storage_layout.rs`). Every on-disk path
+  brain-server touches (legacy `brain.db`, future `global.db`, per-domain
+  `brain-<name>.db`, backups, registry, connector configs) derived from one
+  root. `config::brain_db_path()` delegates to it; the back-compat invariant
+  (existing `BRAIN_DB_PATH` callers see the same path) is locked by a test.
+  New `BRAIN_DATA_ROOT` env var is the v1.0 relocation knob.
+- **Schema-version reader** (`storage_layout::schema_version` +
+  `SCHEMA_VERSION_V0_9_9`). `run_migration` records `schema_version` in
+  `schema_meta`; the rehearsal tool reads it to refuse a migrate-down.
+- **Extended `test_migration_schema_contract`.** Now asserts every table from
+  v0.9.4–v0.9.8 (`audit_events`, `webhook_queue`, `webhook_seen`,
+  `evidence_links`) + the `authority` column + the recorded schema version.
+- **`is_valid_domain` lifted to `storage_layout`** so the security-critical
+  filename check lives in exactly one place; `DomainRegistry` delegates.
+
+#### Added — M2 (migration rehearsal)
+- **`brain-migrate-rehearse` binary** (`src/bin/brain_migrate_rehearse.rs`,
+  feature-gated behind `--features migrate`). Six subcommands: `backup`, `copy`,
+  `verify`, `report`, `rollback`, `rehearse`. Runs against a *copy* of the live
+  DB (server must be stopped). The `rehearse` all-in-one exits 0 only when every
+  parity check passes.
+- **`run_migration` extracted to `src/migration.rs`** (lib module). Mechanical
+  move from `main.rs`; the one signature change is `run_migration(db,
+  mmap_mib: i64)` so the lib has no dep on the server-private `config` module.
+  All 9 call sites updated.
+- **Parity checks.** Row counts for every table (knowledge, embeddings,
+  vec_knowledge, entities, relationships, tombstones, sources,
+  source_revisions, connectors, connector_checkpoints, audit_events,
+  webhook_queue, evidence_links), FTS5 count, vec0 count, source/revision
+  linkage, schema-version comparison, and a 50-row random vec0 byte-spot-check.
+
+#### Added — M3 (capacity + contract)
+- **Capacity envelopes** (`src/capacity.rs`, lib module).
+  `CapacityTarget::Desktop` (50k docs / 2 GiB DB / 320 MB RSS) and
+  `CapacityTarget::Jetson` (10k docs / 512 MiB DB / 320 MB RSS). Resolved from
+  `BRAIN_CAPACITY_TARGET` (default: jetson). Tightenable via `CAPACITY_MAX_*`
+  env vars.
+- **`/health` capacity field.** Reports `{target, docs, max_docs, db_mib,
+  max_db_mib, rss_mib, max_rss_mib, status}` where `status` is
+  `ok|warning|exceeded`.
+- **HTTP 507 on writes when over-capacity.** Every ingest path (`/add`,
+  `/ingest`, `/ingest/memory`, `/ingest/markdown`) calls `guard_capacity`.
+  Read routes (`/search`, `/recall`, `/get`) are NEVER blocked — an
+  over-capacity brain still answers.
+- **`bench --envelope` assertion mode.** `BENCH_ENVELOPE=desktop|jetson`
+  turns the benchmark report into a ship gate: exits non-zero on RSS or p95
+  ceiling breach.
+
+#### Documentation
+- `openapi.yaml` → 0.9.9: `/health` capacity field; `X-Api-Version: 0.9.9`.
+- `API_CONTRACT.md`: §Migration (v1.0 per-row cutover rule), §Recovery (the
+  rehearsal-proven rollback procedure), §Capacity envelopes.
+- `IMPLEMENTATION_PLAN_v0.9.9_Qualify.md`: the full plan this release ships.
+
+#### Internal
+- `Cargo.toml` 0.9.8 → 0.9.9. New `migrate` feature + `brain-migrate-rehearse`
+  `[[bin]]` entry.
+
+#### Honest ceilings (carried into v1.0.0)
+- No `BRAIN_MULTI_DB=true` cutover is performed in v0.9.9 — the rehearsal runs
+  against a *copy*; the live DB stays in shim mode.
+- WAL-active detection is a heuristic (file-size check); the operator is
+  expected to have stopped the server.
+- The 50-row vec0 spot-check is a sample, not a full scan — catches the known
+  sqlite-vec corruption class but cannot prove byte-identity of every embedding.
+- Old-schema fixtures (v0.9.4/v0.9.6/v0.9.8) and the interrupted-migration
+  SIGTERM test are deferred — the current-schema parity checks cover the ship
+  gate; the upgrade-from-old-schema path is exercised by the server's own
+  startup migration on every prior release.
+- The soak driver (`scripts/soak.sh`) and large-vault generator are deferred as
+  operator tooling; the `bench --envelope` mode is the code-level ship gate.
+
 ### v0.9.8 "Evidence" — 2026-07-20 (released)
 
 The evidence-integrity milestone. Recall now carries faithful, time-aware
