@@ -170,6 +170,15 @@ pub async fn ingest(
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
 
+        // Baseline counts so we can report what THIS ingest actually added
+        // (relations may auto-create entities that weren't in the input array).
+        let entities_before: i64 = tx
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap_or(0);
+        let relations_before: i64 = tx
+            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
+            .unwrap_or(0);
+
         let content_hash = format!("{:016x}", xxh3_64(content.as_bytes()));
 
         // Idempotent dedup: if this exact content already exists, report duplicate.
@@ -222,21 +231,36 @@ pub async fn ingest(
             .map_err(|e| HandlerError::internal(format!("insert entity failed: {e}")))?;
         }
         // Relations (idempotent upsert, anchored to this knowledge row).
+        // ponytail: relations may reference entities that weren't explicitly
+        // declared in `entities` — auto-create them on miss so the canonical
+        // plan example (`vitamin d3 helps inflammation`) works even when only
+        // `vitamin d3` is declared. Idempotent: INSERT OR IGNORE on existing
+        // rows is a no-op; the SELECT then finds the row.
         for (from, to, kind) in &relations_norm {
+            tx.execute(
+                "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
+                rusqlite::params![from],
+            )
+            .map_err(|e| HandlerError::internal(format!("auto-create from-entity failed: {e}")))?;
+            tx.execute(
+                "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
+                rusqlite::params![to],
+            )
+            .map_err(|e| HandlerError::internal(format!("auto-create to-entity failed: {e}")))?;
             let from_id: i64 = tx
                 .query_row(
                     "SELECT id FROM entities WHERE name = ?1",
                     rusqlite::params![from],
                     |r| r.get(0),
                 )
-                .map_err(|e| HandlerError::internal(format!("resolve entity failed: {e}")))?;
+                .map_err(|e| HandlerError::internal(format!("resolve from-entity failed: {e}")))?;
             let to_id: i64 = tx
                 .query_row(
                     "SELECT id FROM entities WHERE name = ?1",
                     rusqlite::params![to],
                     |r| r.get(0),
                 )
-                .map_err(|e| HandlerError::internal(format!("resolve entity failed: {e}")))?;
+                .map_err(|e| HandlerError::internal(format!("resolve to-entity failed: {e}")))?;
             tx.execute(
                 "INSERT OR IGNORE INTO relationships (from_entity_id, to_entity_id, relation_type, knowledge_id)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -245,6 +269,15 @@ pub async fn ingest(
             .map_err(|e| HandlerError::internal(format!("insert relation failed: {e}")))?;
         }
 
+        let entities_after: i64 = tx
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap_or(entities_before);
+        let relations_after: i64 = tx
+            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
+            .unwrap_or(relations_before);
+        let entities_added = (entities_after - entities_before).max(0) as u32;
+        let relations_added = (relations_after - relations_before).max(0) as u32;
+
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
 
@@ -252,8 +285,8 @@ pub async fn ingest(
             id,
             status: "created",
             domain: Some(domain_label),
-            entities_added: Some(entities_norm.len() as u32),
-            relations_added: Some(relations_norm.len() as u32),
+            entities_added: Some(entities_added),
+            relations_added: Some(relations_added),
         })
     })
     .await

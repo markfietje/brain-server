@@ -5942,6 +5942,60 @@ Final paragraph after the rule.";
         assert_eq!(kind, "helps");
     }
 
+    /// M6.3b — relations that reference an entity NOT in the input `entities`
+    /// array must auto-create that entity. Caught when the canonical plan
+    /// example failed end-to-end on openclaw (`vitamin d3 helps inflammation`
+    /// with only `vitamin d3` declared).
+    #[test]
+    fn v1_structured_ingest_auto_creates_relation_only_entities() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash, domain)
+             VALUES ('v', 'content', 'structured', 'h1', 'health')",
+            [],
+        )
+        .unwrap();
+        let kid: i64 = db.last_insert_rowid();
+        // Only declare `vitamin d3`; the relation references `inflammation`
+        // which is NOT in the entities array.
+        db.execute(
+            "INSERT OR IGNORE INTO entities (name, entity_type) VALUES ('vitamin d3', 'supplement')",
+            [],
+        )
+        .unwrap();
+        // Mimic the handler's auto-create-then-resolve loop.
+        db.execute(
+            "INSERT OR IGNORE INTO entities (name, entity_type) VALUES ('inflammation', NULL)",
+            [],
+        )
+        .unwrap();
+        let from_id: i64 = db
+            .query_row(
+                "SELECT id FROM entities WHERE name = 'vitamin d3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let to_id: i64 = db
+            .query_row(
+                "SELECT id FROM entities WHERE name = 'inflammation'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO relationships
+             (from_entity_id, to_entity_id, relation_type, knowledge_id)
+             VALUES (?1, ?2, 'helps', ?3)",
+            params![from_id, to_id, kid],
+        )
+        .unwrap();
+        let entity_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(entity_count, 2, "the relation-only entity was auto-created");
+    }
+
     /// M6.4 — export → import round-trip preserves row counts. Exercises the
     /// real `VACUUM INTO` snapshot path used by the export handler.
     #[test]
