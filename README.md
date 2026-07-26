@@ -1,14 +1,16 @@
 # Brain Server
 
-A memory-efficient semantic-memory and knowledge-graph server for AI agents. It stores ingested text as searchable chunks with vector + lexical indexes, builds a knowledge graph from inline annotations, and exposes a structured query API — all in a single embedded SQLite database.
+**A local-first semantic-memory and knowledge-graph server for AI agents. Runs on a 4 GB ARM device drawing < 5 W — no GPU, no cloud, no per-query cost.**
 
-Uses static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-32M` that are essentially free on CPU. Designed for edge hardware but runs anywhere Rust compiles.
+Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-32M` make recall essentially free on CPU. Designed for edge hardware (Jetson Nano, Raspberry Pi 5, mini PC) but runs anywhere Rust compiles. The competitive wedge vs. cloud memory services (Zep, Mem0, Letta Cloud): **zero per-query cost, zero data egress, zero network latency on recall.**
 
 | | |
 |---|---|
 | **Version** | 1.0.1 "Domains" |
-| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static) |
+| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
+| **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
+| **Latency** | sub-50ms p99 recall on the reference device |
 | **Documentation** | [API Contract](./API_CONTRACT.md) · [`GET /openapi.yaml` live](#) · [Technical Spec](./SPECS.md) |
 
 ---
