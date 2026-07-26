@@ -12,7 +12,73 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
-### v1.0.1 "Domains" patch — 2026-07-26 (current)
+### Security roadmap expansion — 2026-07-26 (planning only, no code changes)
+
+Audit-driven expansion of the upcoming security roadmap. Closes every gap
+surfaced by an OWASP Top 10:**2025** review (Context7-verified 2026-07-26).
+No runtime code changes — this commit is documentation + new implementation
+plans only.
+
+#### Added — new implementation plans
+- **`IMPLEMENTATION_PLAN_v1.2.0_AuthN.md`** (NEW release between v1.1 and
+  v2.0): JWT/JWS verification (RS256/ES256/EdDSA only, never HS256/`none`);
+  `(jti, iss)` revocation table per OWASP JWT Cheat Sheet; refresh token
+  rotation + reuse detection; AuthZ middleware trait with deny-by-default;
+  OIDC discovery (`/.well-known/openid-configuration`); JWKS endpoint;
+  per-route enforcement matrix. The prerequisite v2.0 multi-tenant implicitly
+  assumed but didn't define.
+- **`IMPLEMENTATION_PLAN_v2.1.0_Limits.md`** (NEW release after v2.0):
+  per-tenant + tiered rate limiting per OWASP Multi-Tenant Cheat Sheet.
+  `RateLimiter` trait with `InMemory` (default) and `RedisRateLimiter`
+  (GCRA atomic Lua script, `--features ratelimit-redis`) impls. Per-tenant
+  cost tracking (tokens/egress) feeding v4.0 marketplace billing. Standard
+  `X-RateLimit-*` + `Retry-After` headers.
+- **`THREAT_MODEL.md`** (NEW): full STRIDE threat model per asset
+  (knowledge graph, tokens, audit log, binary, network). Residual-risk
+  register with explicit acceptances + ceilings. Per-release security exit
+  gate matrix.
+
+#### Updated — existing plans
+- **`IMPLEMENTATION_PLAN_v1.1.0.md`**: added M1.4 (file-watch hot token
+  rotation), M1.5 (CSRF scaffold), M2.2 (per-tenant audit data-layer filter),
+  M2.3 (audit hash chain for tamper-evidence), M5.4 (Prometheus `/metrics`
+  behind `--features metrics`); explicit dependency on v1.2 AuthN.
+- **`IMPLEMENTATION_PLAN_v2.0.0_Cortex.md`**: M1 multi-team now consumes
+  v1.2's AuthZ trait instead of re-inventing scope checks; cross-tenant
+  reads return 403 (not 404) per OWASP A01:2025; team-lifecycle admin
+  scope required.
+- **`IMPLEMENTATION_PLAN_v4.0.0_Sovereign.md`**: v3.7 "Connect" now ships
+  A2A over **mTLS + JWS** (was JWS only) per OWASP gRPC + Microservices
+  Cheat Sheets; SQLCipher gains a real **KMS abstraction trait**
+  (FileKeyProvider / VaultKeyProvider / AwsKmsKeyProvider) per OWASP
+  Secrets Management Cheat Sheet; data residency allowlist for peer agents.
+- **`SECURITY.md`**: rewritten against OWASP Top 10:**2025** (the new
+  canonical list, supersedes 2021/2023). Every category A01–A10 has a
+  control mapping table with status (✅ shipped / 🚧 planned with version).
+  Added compliance attestations table (SOC 2, ISO 27001, GDPR, HIPAA, PCI DSS).
+  Added STRIDE summary referencing THREAT_MODEL.md.
+- **`ROADMAP.md`**: release table updated with v1.0/v1.0.1 ship status,
+  v1.2 AuthN and v2.1 Limits new rows, v3.7 mTLS + KMS clarification,
+  v4.0 depends on v2.1.
+
+#### Standards verified via Context7 (2026-07-26)
+- OWASP Top 10:**2025** (`/owasp/top10`) — the canonical reference, current.
+- OWASP Cheat Sheet Series (`/owasp/cheatsheetseries`, score 80.97):
+  - JSON Web Token Cheat Sheet (`(jti, iss)` revocation, alg whitelist).
+  - Multi-Tenant Security Cheat Sheet (tenant-aware rate limiting, RLS).
+  - Secrets Management Cheat Sheet (BYOK, KMS patterns, sidecar rotation).
+  - gRPC + Microservices Security Cheat Sheets (mTLS for service-to-service).
+  - Transport Layer Security Cheat Sheet (mTLS, cert pinning).
+
+#### Why this matters
+The pre-existing plans would have shipped multi-tenant (v2.0) without a
+real AuthZ layer, multi-instance rate limiting, or JWT done right. This
+expansion front-loads the security architecture so v2.0/v4.0 can be
+honestly marketed as enterprise-ready. **Three new releases** inserted into
+the chain (v1.2, v2.1, v3.7 update) — no new features, just the security
+foundation the existing features implicitly required.
+
+### v1.0.1 "Domains" patch — 2026-07-26
 
 Patch release fixing the structured-ingest entity auto-create bug
 found end-to-end on openclaw.

@@ -1,0 +1,201 @@
+# Threat Model — brain-server
+
+**Methodology:** STRIDE (Microsoft). **Reference standards:** OWASP Top 10:2025
++ Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
+identity), NIST SP 800-207 (zero-trust architecture).
+
+This document is the engineering-side threat model. For per-release progress
+against the controls below, see [`SECURITY.md`](./SECURITY.md).
+
+---
+
+## 1. System boundaries
+
+```
+                         ┌──────────────────────────────────────────┐
+                         │  Internet / untrusted                    │
+                         └──────────────────────────────────────────┘
+                                          │
+                                          ▼
+                         ┌──────────────────────────────────────────┐
+                         │  Reverse Proxy (operator-managed)        │
+                         │  ─ TLS 1.3 termination                   │
+                         │  ─ Per-IP rate limit                     │
+                         │  ─ WAF / IP allowlist                    │
+                         │  ─ HSTS                                 │
+                         └──────────────────────────────────────────┘
+                                          │ (loopback HTTP)
+                                          ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  brain-server (Rust binary, single process)                              │
+│  ─ AuthN middleware: JWT/JWS verify + (jti, iss) revocation (v1.2)       │
+│  ─ AuthZ middleware: AuthzPolicy::authorize (v1.2)                       │
+│  ─ Rate limiter: per-tenant + tiered (v2.1)                              │
+│  ─ Audit log: append-only, hash-chained, per-tenant (v1.1)              │
+│  ─ SQLite (WAL) or per-domain SQLite (multi-db mode)                    │
+│  ─ Optional: A2A federation via mTLS (v3.7)                             │
+└──────────────────────────────────────────────────────────────────────────┘
+                       │                              │
+                       ▼                              ▼
+       ┌───────────────────────────┐    ┌───────────────────────────┐
+       │  Filesystem (local)       │    │  Peer brain-server (v3.7) │
+       │  ─ SQLite DBs             │    │  ─ A2A over mTLS           │
+       │  ─ Auth token file (0600) │    │  ─ JWKS verified           │
+       │  ─ JWT keys (0700 dir)    │    └───────────────────────────┘
+       └───────────────────────────┘
+```
+
+**Trust boundaries crossed:**
+1. **Internet → reverse proxy** — TLS termination, IP allowlist, per-IP rate limit.
+2. **Reverse proxy → brain-server** — loopback only; AuthN/AuthZ at the app.
+3. **brain-server → filesystem** — same host; assumes disk not tampered (LUKS
+   recommended for full-disk encryption; SQLCipher for at-rest app encryption
+   lands in v3.7).
+4. **brain-server → peer brain-server** (A2A, v3.7) — untrusted; mTLS + JWS
+   verified, scoped capability, data residency allowlist.
+
+---
+
+## 2. STRIDE per asset
+
+### Asset 1: Knowledge graph data (per-tenant)
+
+| Threat | Attack | Mitigation | Status |
+|---|---|---|---|
+| **S**poofing | Attacker forges tenant identity | JWT/JWS verify + tenant from signed claim (v1.2) | 🚧 |
+| **T**ampering | Direct DB edit on disk | Filesystem perms; SQLCipher + KMS (v3.7) | 🚧 |
+| **R**epudiation | "I didn't write that" | Audit hash chain (v1.1 M2.3) | 🚧 |
+| **I**nformation disclosure | Tenant A reads tenant B | Per-tenant files + AuthZ at data layer (v1.0+v1.2) | ✅/🚧 |
+| **D**enial of service | Burst fills the DB | Capacity envelope 507 (v0.9.9); per-tenant limiter (v2.1) | ✅/🚧 |
+| **E**levation of privilege | L1 frontline reads L2 escalation | AuthZ trait with deny-default + escalation rules (v1.2) | 🚧 |
+
+### Asset 2: Authentication tokens
+
+| Threat | Attack | Mitigation | Status |
+|---|---|---|---|
+| **S**poofing | Stolen token reuse | Short-lived JWT (≤15 min) + refresh rotation + revocation (v1.2) | 🚧 |
+| **T**ampering | Modify JWT payload | JWS signature (RS256/ES256/EdDSA only) (v1.2) | 🚧 |
+| **R**epudiation | "I didn't issue that token" | `iss` claim verified; key rotation log (v1.2) | 🚧 |
+| **I**nformation disclosure | Token in URL/logs | `Authorization: Bearer` header only; `SensitiveHeadersLayer` redacts logs (v0.9.4) | ✅ |
+| **D**enial of service | Token-storm | Per-tenant rate limit (v2.1) | 🚧 |
+| **E**levation of privilege | Token with broadened scope | Scope enforced per-request via AuthZ (v1.2); `alg:none` rejected | 🚧 |
+
+### Asset 3: Audit log
+
+| Threat | Attack | Mitigation | Status |
+|---|---|---|---|
+| **S**poofing | Forge audit entries | Append-only; writer is the authenticated process only | ✅ |
+| **T**ampering | Edit existing rows | Hash chain (`prev_hash` SHA-256); break is detectable on read (v1.1 M2.3) | 🚧 |
+| **R**epudiation | "The log is wrong" | Hash chain proves integrity; signed release tags prove code provenance | 🚧 |
+| **I**nformation disclosure | Tenant A reads tenant B's audit | Data-layer filter `WHERE tenant_id = ?` + AuthZ on `/audit` (v1.1 M2.2) | 🚧 |
+| **D**enial of service | Fill audit table | Bounded by writes; rotation policy documented | 🚧 |
+| **E**levation of privilege | Non-admin queries `/audit` | `admin:<tenant>/*` scope required (v1.2) | 🚧 |
+
+### Asset 4: Binary / supply chain
+
+| Threat | Attack | Mitigation | Status |
+|---|---|---|---|
+| **S**poofing | Malicious binary in place of legit | Build from source; signed git tags (`git tag -s`) | 🚧 |
+| **T**ampering | Backdoored transitive dep | `cargo audit` in CI; pinned direct deps; minimal feature flags | ✅ |
+| **R**epudiation | "We didn't ship that" | Reproducible build via `Cargo.lock`; tag history | ✅ |
+| **I**nformation disclosure | Source leaks secrets | Audited; no secrets in repo; `.env*` in `.gitignore` | ✅ |
+| **D**enial of service | CVE in dep causes crash | `CatchPanicLayer`; advisory monitoring; rapid patch process | ✅ |
+| **E**levation of privilege | Dep with CVE pre-auth | Pin versions; `cargo audit --deny warnings` in CI | ✅ |
+
+### Asset 5: Network transport
+
+| Threat | Attack | Mitigation | Status |
+|---|---|---|---|
+| **S**poofing | MITM impersonates server | TLS 1.3 at proxy; mTLS for A2A (v3.7); cert pinning for native clients | ✅/🚧 |
+| **T**ampering | Modify traffic in transit | TLS 1.3 (proxy); JWS non-repudiation for A2A payloads (v3.7) | ✅/🚧 |
+| **R**epudiation | "I didn't send that request" | `x-request-id` for tracing; JWS for A2A non-repudiation | ✅/🚧 |
+| **I**nformation disclosure | Eavesdropper reads traffic | TLS 1.3 everywhere; HSTS preload-eligible when `TLS_ENABLED=1` | ✅ |
+| **D**enial of service | SYN flood / slowloris | Proxy handles; per-IP rate limit; per-tenant rate limit (v2.1) | ✅/🚧 |
+| **E**levation of privilege | — | (no transport-level privilege concept) | n/a |
+
+---
+
+## 3. Residual risk (acceptances)
+
+These are explicit risk acceptances, not bugs. Each is documented in code with
+a `ponytail:` comment naming the ceiling and upgrade path.
+
+1. **Shim-mode tenant isolation is row-level, not file-level.** Mitigation:
+   SQL `WHERE tenant_id` filter at the data layer. Risk: a SQL injection in
+   any query would bypass. Accepted because: every query is parameterized
+   (grep-verified), and multi-db mode is the recommended path for true
+   multi-tenant deployments.
+
+2. **No encryption at rest before v3.7.** Mitigation: filesystem encryption
+   (LUKS/FileVault/BitLocker) recommended in deployment checklist. Risk: a
+   disk image captures plaintext DBs. Accepted because: brain-server targets
+   single-host trusted-disk deployments; SQLCipher is the v3.7 fix.
+
+3. **Prompt-injection guard is heuristic, not ML-classifier-based.** Ceiling
+   documented in `contains_suspicious_pattern`. Accepted because: edge-only
+   threat model; recall always marked `untrusted: true` so the consuming
+   agent enforces the data/instruction boundary.
+
+4. **Per-IP rate limit before v2.1.** Single-process in-memory. Risk: a
+   distributed attacker from many IPs can exceed the per-IP cap. Mitigation:
+   edge rate limit at the reverse proxy; per-tenant limit (v2.1) keys on the
+   verified principal, not IP.
+
+5. **`VACUUM INTO '<path>'` is unparameterized** (SQLite DDL limitation).
+   Risk: a path containing `'` would break SQL. Mitigation: paths come from
+   operator-controlled env vars (`BRAIN_DB_PATH`, `BRAIN_DATA_ROOT`), not
+   from request input. Accepted because: pre-existing pattern across
+   `backup.rs`, `migration.rs`, and the rehearsal tool.
+
+6. **Token revocation is eventually consistent (≤60s).** Mitigation: the
+   negative cache TTL is bounded; an attacker with a stolen token has at most
+   60s of access after revocation. Accepted because: this is the standard
+   JWT revocation tradeoff; tighter would require per-request DB lookup
+   (latency cost).
+
+---
+
+## 4. Per-release security exit gates
+
+Each major release must complete these exit gates (in addition to fmt/clippy/test):
+
+| Gate | v1.0 ✅ | v1.1 | v1.2 | v2.0 | v2.1 | v3.7 |
+|---|---|---|---|---|---|---|
+| THREAT_MODEL.md updated | ✅ | □ | □ | □ | □ | □ |
+| OWASP Top 10:2025 coverage checked | ✅ | □ | □ | □ | □ | □ |
+| `cargo audit --deny warnings` clean | ✅ | □ | □ | □ | □ | □ |
+| Penetration test report (3rd-party for v2.0+) | — | — | — | □ | □ | □ |
+| AuthN test matrix (OWASP JWT Cheat Sheet) | n/a | partial | □ | ✓ | ✓ | ✓ |
+| AuthZ test matrix (cross-tenant) | n/a | partial | □ | □ | ✓ | ✓ |
+| Rate limit test (per-tenant + tiered) | n/a | n/a | n/a | n/a | □ | ✓ |
+| Encryption audit (KMS + per-field) | n/a | n/a | n/a | n/a | n/a | □ |
+| Audit hash-chain verification | n/a | □ | ✓ | ✓ | ✓ | ✓ |
+| Compliance checklist (SOC 2 / ISO 27001 mappings) reviewed | ✅ | □ | □ | □ | □ | □ |
+
+---
+
+## 5. What this threat model does NOT cover
+
+- **Physical access to the host.** Assumes the operator controls physical
+  access (full-disk encryption is the operator's concern).
+- **Social engineering.** Out of scope; covered by ops policies, not code.
+- **Insider threat from the operator themselves.** The operator can read every
+  DB. For true multi-party computation, federate (v3.7 A2A) so no single
+  party has all data.
+- **Quantum computing attacks.** Asymmetric crypto (RSA, ECDSA) is quantum-
+  vulnerable. Post-quantum algorithms (ML-DSA / ML-KEM from NIST PQC) are
+  reserved for a future major release when libraries stabilize.
+- **Supply chain of the operating system.** Assumes the OS / kernel / libc
+  are trusted. Hardened OS images (Flatcar, Talos) are an operator choice.
+
+---
+
+## 6. Review cadence
+
+- **Per major release**: full STRIDE review, update this doc, update OWASP
+  coverage in `SECURITY.md`.
+- **Per CVE in a direct dep**: immediate patch release.
+- **Per discovered vuln (security advisory)**: immediate patch, retro on
+  why the threat model missed it, update doc.
+- **Annual**: third-party penetration test for any version marketed as
+  "enterprise-ready" (target: v2.0+).
