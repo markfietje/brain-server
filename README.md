@@ -6,7 +6,7 @@ Uses static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retri
 
 | | |
 |---|---|
-| **Version** | 1.0.0 "Domains" |
+| **Version** | 1.0.1 "Domains" |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Documentation** | [API Contract](./API_CONTRACT.md) · [`GET /openapi.yaml` live](#) · [Technical Spec](./SPECS.md) |

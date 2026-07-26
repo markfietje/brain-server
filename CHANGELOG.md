@@ -12,7 +12,19 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
-### v1.0.0 "Domains" — 2026-07-26 (current)
+### v1.0.1 "Domains" patch — 2026-07-26 (current)
+
+Patch release fixing the structured-ingest entity auto-create bug
+found end-to-end on openclaw.
+
+#### Fixed
+- `POST /ingest` now auto-creates entities referenced by relations but not
+  declared in the input `entities` array. The canonical plan example
+  (`vitamin d3 helps inflammation` with only `vitamin d3` declared) works.
+- `entities_added`/`relations_added` now report the real COUNT(*) delta
+  instead of the input array length.
+
+### v1.0.0 "Domains" — 2026-07-26
 
 The multi-domain cutover. Every handler resolves its target domain via the
 `X-Brain-Domain` header or JSON `domain` field; POST/GET/DELETE domain lifecycle
@@ -82,7 +94,7 @@ per-domain files.
   insertion (the canonical `vitamin d3` example), and export round-trip.
 
 #### Changed
-- Cargo.toml version 0.9.9 → 1.0.0.
+- Cargo.toml version 0.9.9 → 1.0.1.
 - `openapi.yaml` info version → 1.0.0; the new domain lifecycle routes are
   documented (the `test_openapi_covers_routes` test asserts coverage).
 - Handlers that previously used `state.pool` directly now resolve via
