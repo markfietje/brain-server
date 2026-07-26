@@ -12,6 +12,53 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### Cognitive Stack roadmap (v1.2.0 → v1.9.0) — 2026-07-26 (planning only)
+
+Deep-research-driven expansion of the v1.x line into **8 point releases** that
+transform brain-server from a memory store into a cognitive substrate that
+exceeds human memory capability. Each release adds ONE capability and hardens
+it; no feature ships without a fuzz/leak/regression test.
+
+Research sources (all current as of July 2026):
+- **Mem0 v3** (Context7, benchmark 83.22) — built-in graph memory + distillation.
+- **Graphiti / Zep** (Context7, benchmark 82.2) — bi-temporal KGs.
+- **Letta / MemGPT** (Context7, benchmark 83.31) — sleep-time "dreaming".
+- **arXiv July 2026**: TRACE (2607.00339), Submodular packing (2607.00725,
+  +5.1 F1), DiscoLoop (2607.00341), CAT (2607.00862), Dual-Confidence
+  Contrastive Decoding (2607.00570), KnowledgeDebugger (2607.01000),
+  Span-Level Hallucination Detection (2607.00895), Auditing Forgetting
+  (2607.00605).
+
+#### Added — new implementation plan
+- **`IMPLEMENTATION_PLAN_v1.2.0_to_v1.9.0_Cognitive_Stack.md`**: granular
+  milestone breakdown for all 8 releases. Each release has 5–7 milestones,
+  RSS budget, Definition of Done, and is gated on the previous. Cross-cutting
+  section codifies what every release must ship (fuzz, miri, leak, regression)
+  and what's forbidden (NN in hot path, auto-conflict-resolution, paraphrasing
+  comments).
+
+#### The 8 releases
+
+| Release | Name | Capability |
+|---|---|---|
+| v1.2.0 | AuthN | JWT/JWS + AuthZ layer (full plan in v1.2.0_AuthN.md) |
+| v1.3.0 | Bedrock | Memory-safety: panic elimination, `unsafe` audit, cargo-fuzz, miri, LSAN, loom, proptests |
+| v1.4.0 | Calibrate | Bi-temporal KGs + submodular packing + TRACE-style state-aware query + multi-vector |
+| v1.5.0 | Epistemic | Confidence calibration + "I don't know" + counterfactual influence + source trust + hallucination resistance |
+| v1.6.0 | Reconcile | Contradiction detection + supersession + conflict policy + knowledge editing + consistency checker |
+| v1.7.0 | Reason | Multi-hop reasoning + causal subgraph + counterfactual simulation + transitive inference |
+| v1.8.0 | Consolidate | Sleep-time worker + near-duplicate detection + extractive summarization + cross-cluster linking |
+| v1.9.0 | Anticipate | Session context + proactive `/anticipate` + SSE push + spaced repetition + personalization |
+
+#### Why this beats human memory by v1.9
+
+Every dimension where biological memory is weak (forgetting, source amnesia,
+overconfidence, slow self-correction, single-context reasoning) becomes a
+deterministic, auditable brain-server capability. Every dimension where
+biological memory is strong (analog intuition, neural creativity) is
+**deliberately out of scope** — brain-server is an extended-mind substrate,
+not a brain replacement.
+
 ### Security roadmap expansion — 2026-07-26 (planning only, no code changes)
 
 Audit-driven expansion of the upcoming security roadmap. Closes every gap
