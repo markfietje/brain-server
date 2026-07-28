@@ -271,6 +271,15 @@ struct AppState {
     rate_limiter: Arc<RateLimiter>,
     /// v1.1.0 Harden M3: last backup+integrity result for `/health`.
     snapshot: integrity::SnapshotState,
+    /// v1.1.1: TTL-memoized `audit::verify_chain` result for `/metrics`.
+    /// `/audit/verify` always does a fresh full scan (authoritative answer);
+    /// `/metrics` reads this cache and refreshes only if older than
+    /// `AUDIT_CHAIN_CACHE_TTL`. The cached value is a real verified result —
+    /// just briefly stale. Tradeoff: a tamper that lands between refreshes is
+    /// reported on the next TTL boundary, not instantly. Ponytail ceiling:
+    /// adequate for monitoring; an operator wanting a fresh answer hits
+    /// `/audit/verify`.
+    audit_chain_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, bool)>>>,
 }
 
 #[derive(Deserialize)]
@@ -1294,6 +1303,7 @@ struct AuditQuery {
 async fn metrics(State(s): State<Arc<AppState>>) -> (axum::http::StatusCode, String) {
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
+    let audit_cache = s.audit_chain_cache.clone();
     let body = task::spawn_blocking(move || -> String {
         let mut sys = System::new();
         sys.refresh_memory();
@@ -1309,7 +1319,25 @@ async fn metrics(State(s): State<Arc<AppState>>) -> (axum::http::StatusCode, Str
             .and_then(|c| c.get("status"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let chain_ok = pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false);
+        let chain_ok = {
+            // /metrics path: use the TTL cache so a scrape doesn't trigger a
+            // full O(n) chain scan. /audit/verify bypasses this for the
+            // authoritative answer.
+            let now = std::time::Instant::now();
+            let cached = audit_cache.lock().ok().and_then(|g| *g).filter(|(ts, _)| {
+                now.duration_since(*ts).as_secs() < config::AUDIT_CHAIN_CACHE_TTL_SECS
+            });
+            match cached {
+                Some((_, ok)) => ok,
+                None => {
+                    let fresh = pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false);
+                    if let Ok(mut g) = audit_cache.lock() {
+                        *g = Some((now, fresh));
+                    }
+                    fresh
+                }
+            }
+        };
         let mut out = String::with_capacity(512);
         out.push_str("# HELP brain_rss_mib Process RSS in MiB.\n");
         out.push_str("# TYPE brain_rss_mib gauge\n");
@@ -3210,6 +3238,7 @@ async fn main() -> Result<()> {
             connection_tracker,
             rate_limiter,
             snapshot: snapshot_state,
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
         }));
 
     // v0.9.7 "Guard": spawn the webhook drain worker. It processes verified

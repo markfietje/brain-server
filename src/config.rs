@@ -165,6 +165,13 @@ pub fn brain_db_path() -> std::path::PathBuf {
 // cached set under a single RwLock — not from disk.
 pub const TOKEN_ROTATION_POLL_SECS: u64 = 5;
 
+/// v1.1.1: TTL for the `/metrics` audit-chain cache. `/metrics` is scraped
+/// frequently (Prometheus default 15s); running a full O(n) chain scan on
+/// every scrape wastes CPU. `/audit/verify` stays authoritative (always scans);
+/// `/metrics` returns the cached result and refreshes when older than this.
+/// 60s = max staleness window for the `brain_audit_chain_ok` gauge.
+pub const AUDIT_CHAIN_CACHE_TTL_SECS: u64 = 60;
+
 /// Optional bearer token for authenticated routes. When no token is resolvable,
 /// the server runs unauthenticated (loopback-only is still the safe default).
 /// When set, mutating/authenticated routes require `Authorization: Bearer <t>`.

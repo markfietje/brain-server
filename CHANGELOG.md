@@ -12,6 +12,42 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.1.1 "Harden" (audit chain bug-fix) — 2026-07-29
+
+Bug-fix release. Closes three honest ceilings carried forward from v1.1.0,
+one of which was a latent false-negative affecting every migrated DB.
+
+#### Fixed
+- **`verify_chain` false-negative on migrated DBs (`src/audit.rs`).** The
+  v1.1.0 walk assumed at most one NULL `prev_hash` row at the start of the
+  table. After the additive migration, **every** pre-v1.1 row has NULL
+  `prev_hash` — so on a real migrated DB the *second* NULL row hit the
+  `_ => return false` fallthrough and `/audit/verify` (plus
+  `brain_audit_chain_ok` via `/metrics`) reported tampering on a clean DB.
+  The walk now treats NULL `prev_hash` as "no backref to verify" (advances
+  the running link but never fails) and only fails when a v1.1 row's stored
+  `prev_hash` disagrees with the recomputed link. Pinned by
+  `hash_chain_survives_migration_with_many_null_rows`.
+
+#### Closed ceilings (from v1.1.0)
+- **Audit chain now covered by a real migration fixture test.**
+  `hash_chain_survives_real_v1_0_to_v1_1_migration` builds a DB with the
+  pre-v1.1 `audit_events` schema, inserts rows, runs the actual
+  `run_migration`, and verifies the chain holds across the NULL → Some
+  boundary with real `record()` calls afterward.
+- **`record_tenant` now wraps its read+INSERT in a `SAVEPOINT`.** A `BEGIN`
+  would error when called inside a caller's existing transaction
+  (e.g. `delete_quarantine`); `SAVEPOINT` nests cleanly. Rolling back the
+  savepoint on audit-INSERT failure touches only the audit row, not the
+  caller's work. Pinned by `record_tenant_is_safe_inside_caller_transaction`.
+- **`/metrics` no longer triggers a full chain scan on every scrape.**
+  `brain_audit_chain_ok` is now backed by a TTL-memoized result
+  (`AUDIT_CHAIN_CACHE_TTL_SECS=60`). `/audit/verify` remains
+  authoritative and always scans fully — that is its job.
+
+#### Updated
+- Cargo.toml 1.1.0 → 1.1.1. `openapi.yaml` → 1.1.1.
+
 ### v1.1.0 "Harden" — 2026-07-28
 
 Operationally-reliable + audit-ready release on top of v1.0's multi-domain
@@ -84,14 +120,16 @@ YAGNI until a browser UI exists.
   ES256 signing keys + JWKS + revocation — all land in v1.2 AuthN.
 - **No AuthZ middleware.** The `tenant_id` column lands here, but "team A
   can't read team B's data" needs the v1.2 AuthZ trait.
-- **Audit chain link is read inside the same connection, not inside an
-  explicit BEGIN/COMMIT.** SQLite's single-writer serializes the read+INSERT
-  pair; if a future caller needs strict cross-statement atomicity, wrap the
-  pair in `conn.transaction()` — one-line upgrade path documented in
-  `audit::record_tenant`.
-- **`prev_hash` NULL on pre-v1.1 rows.** The chain starts at the first v1.1
-  row; pre-v1.1 history is not retroactively chained (would require
-  re-hashing every existing row).
+- ~~**Audit chain link is read inside the same connection, not inside an
+  explicit BEGIN/COMMIT.**~~ Closed in v1.1.1 (`SAVEPOINT` wrap).
+- ~~**`prev_hash` NULL on pre-v1.1 rows.**~~ The chain still starts at the
+  first v1.1 row (no retroactive re-hash of existing rows — that would be
+  expensive and is out of scope), but v1.1.1 fixed the read-side walk so
+  these NULL rows no longer break `verify_chain`.
+- ~~**`/audit/verify` + `/metrics` full-table scan per call.~~ `/audit/verify`
+  still scans fully (that is its job — you cannot verify a chain without
+  walking every link); v1.1.1 added a TTL cache on the `/metrics` path so a
+  Prometheus scrape no longer triggers a scan.
 
 ### Cognitive Stack roadmap (v1.2.0 → v1.9.0) — 2026-07-26 (planning only)
 

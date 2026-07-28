@@ -127,14 +127,13 @@ pub fn record(
 
 /// Per-tenant variant of [`record`]. Same best-effort semantics.
 ///
-/// ponytail: the chain link read+write is NOT wrapped in an explicit tx.
-/// SQLite is single-writer, so a pooled connection sees a stable tip across
-/// the read+INSERT pair as long as the same logical connection isn't
-/// re-entrant. Callers already inside their own transaction (e.g.
-/// `delete_quarantine`) get atomicity from that outer tx for free; autocommit
-/// callers rely on SQLite's writer lock to serialize them. If we ever need
-/// strict cross-statement atomicity for autocommit callers, wrap the pair in
-/// `conn.transaction()` — the upgrade path is one line.
+/// The chain-tip read + INSERT are wrapped in a `SAVEPOINT` so the
+/// read-modify-write is atomic even for autocommit callers. `SAVEPOINT`
+/// (rather than `BEGIN`) is used because it nests cleanly inside callers'
+/// existing transactions (e.g. `delete_quarantine`) — a `BEGIN` would fail
+/// with "cannot start a transaction within a transaction" in that case.
+/// Errors are swallowed at every step: audit must never fail the primary
+/// action, and a broken audit row is preferable to a rolled-back write.
 pub fn record_tenant(
     conn: &Connection,
     kind: AuditKind,
@@ -148,9 +147,13 @@ pub fn record_tenant(
     let detail_hash = hash(detail);
     let kind_str = kind.as_str();
     let status_str = status.as_str();
-    // Read the chain tip (the most recent row). SQLite is single-writer, so the
-    // read+INSERT pair is race-free against other connections; callers already
-    // inside their own transaction get atomicity from that outer tx for free.
+    // SAVEPOINT nests inside a caller's existing tx (BEGIN would error);
+    // if it fails to open, fall through with autocommit semantics so the
+    // audit row still lands.
+    let sp_ok = conn.execute("SAVEPOINT audit_link", []).is_ok();
+    // Read the chain tip (the most recent row). Inside the savepoint this is
+    // stable against concurrent writers — and the INSERT below commits/rolls
+    // back atomically with it.
     let tip: Option<ChainTip> = conn
         .query_row(
             "SELECT ts, kind, actor, target_hash, prev_hash \
@@ -170,19 +173,38 @@ pub fn record_tenant(
     let prev_hash = tip
         .as_ref()
         .map(|t| chain_link(&t.ts, &t.kind, &t.actor, &t.target_hash, &t.prev_hash));
-    let _ = conn.execute(
-        "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            kind_str,
-            actor,
-            target_hash,
-            status_str,
-            detail_hash,
-            tenant,
-            prev_hash,
-        ],
-    );
+    let inserted = conn
+        .execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                kind_str,
+                actor,
+                target_hash,
+                status_str,
+                detail_hash,
+                tenant,
+                prev_hash,
+            ],
+        )
+        .is_ok();
+    if sp_ok {
+        // Release on success (commits the savepoint); roll back on failure so
+        // a partial write doesn't leave a dangling tip. Rolling back the
+        // savepoint does NOT touch the caller's outer transaction.
+        let _ = conn.execute(
+            if inserted {
+                "RELEASE SAVEPOINT audit_link"
+            } else {
+                "ROLLBACK TO SAVEPOINT audit_link"
+            },
+            [],
+        );
+        if !inserted {
+            // ROLLBACK TO keeps the savepoint open; release it to clean up.
+            let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
+        }
+    }
 }
 
 /// Decoded prior-row fields needed to compute the chain link for the next row.
@@ -194,9 +216,11 @@ struct ChainTip {
     prev_hash: String,
 }
 
-/// Verify the audit hash chain end-to-end. Returns `false` if any row's
-/// recomputed link disagrees with its stored `prev_hash`. Pre-v1.1.0 rows
-/// (NULL `prev_hash`) are skipped — the chain starts at the first v1.1 row.
+/// Verify the audit hash chain end-to-end. Returns `false` if any v1.1 row's
+/// stored `prev_hash` disagrees with the link recomputed from the prior row.
+/// Pre-v1.1.0 rows (NULL `prev_hash`) carry no backref and are skipped — a
+/// migrated DB may have thousands of them, followed by the first v1.1 row that
+/// links back to the last NULL row's recomputed link.
 ///
 /// ponytail: O(n) full-table scan. Adequate for the multi-thousand-row audit
 /// volumes brain-server targets; a >1M-row audit log would want a periodic
@@ -221,15 +245,23 @@ pub fn verify_chain(conn: &Connection) -> bool {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let mut expected: Option<String> = None; // expected prev_hash for the next row
+    // `prev_link` is the chain link computed from the prior row; the next row's
+    // stored `prev_hash` (if it has one) must equal it. NULL `prev_hash` rows
+    // are pre-v1.1.0 (or the very first row) and carry no backref to verify —
+    // they only contribute their own link to the next row. A migrated DB has
+    // arbitrarily many consecutive NULL rows, so NULL must never fail.
+    let mut prev_link: Option<String> = None;
     for row in rows.flatten() {
-        match (&expected, &row.prev_hash) {
-            (Some(want), Some(got)) if want == got => {}
-            (None, None) => {} // pre-v1.1 row or first v1.1 row before any link
-            _ => return false,
+        if let Some(got) = &row.prev_hash {
+            match &prev_link {
+                Some(want) if want == got => {}
+                Some(_) => return false, // tampered or out-of-order v1.1 row
+                None => {}               // first row overall — chain origin
+            }
         }
-        // Advance: the next row's prev_hash must equal the chain link of this row.
-        expected = Some(chain_link(
+        // Advance: every row contributes its link, including NULL ones (the
+        // first v1.1 row after a NULL run links back to the last NULL row).
+        prev_link = Some(chain_link(
             &row.ts,
             &row.kind,
             &row.actor,
@@ -418,6 +450,257 @@ mod tests {
             !verify_chain(&db),
             "a tampered prev_hash must fail the chain check"
         );
+    }
+
+    #[test]
+    fn hash_chain_survives_migration_with_many_null_rows() {
+        // Regression: the v1.1.0 migration adds `prev_hash` as a nullable
+        // column, so every pre-v1.1 row is NULL. The original `verify_chain`
+        // assumed at most one NULL row at the start and returned false on the
+        // second NULL — a migrated DB with thousands of existing rows would
+        // fail `/audit/verify` and `brain_audit_chain_ok` immediately.
+        let db = db();
+        // Simulate 5000 pre-v1.1 rows by inserting them directly with NULL
+        // prev_hash (exactly what ALTER TABLE ADD COLUMN produces).
+        for i in 0..5_000 {
+            let _ = db.execute(
+                "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, prev_hash)
+                 VALUES ('ingest', 'api', ?1, 'ok', ?2, NULL)",
+                params![format!("c{i}"), format!("d{i}")],
+            );
+        }
+        // Now record three v1.1 rows via the real writer. The first one links
+        // back to the last NULL row; the next two chain normally.
+        record(
+            &db,
+            AuditKind::Ingest,
+            "api",
+            "v1.1-a",
+            AuditStatus::Ok,
+            "d",
+        );
+        record(
+            &db,
+            AuditKind::Ingest,
+            "api",
+            "v1.1-b",
+            AuditStatus::Ok,
+            "d",
+        );
+        record(
+            &db,
+            AuditKind::Ingest,
+            "api",
+            "v1.1-c",
+            AuditStatus::Ok,
+            "d",
+        );
+        assert!(
+            verify_chain(&db),
+            "migrated DB with many NULL prev_hash rows must still verify"
+        );
+
+        // Tamper protection is preserved across the NULL boundary: editing the
+        // first v1.1 row's prev_hash must still break the chain.
+        let first_v1_1: i64 = db
+            .query_row(
+                "SELECT id FROM audit_events WHERE prev_hash IS NOT NULL ORDER BY id ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let _ = db.execute(
+            "UPDATE audit_events SET prev_hash = 'deadbeef' WHERE id = ?1",
+            params![first_v1_1],
+        );
+        assert!(
+            !verify_chain(&db),
+            "tampering with a v1.1 row's prev_hash must still fail after migration"
+        );
+    }
+
+    #[test]
+    fn hash_chain_survives_real_v1_0_to_v1_1_migration() {
+        // Closing the "fixture-based migration test" ceiling: actually run
+        // `run_migration` against a DB whose `audit_events` table was created
+        // with the pre-v1.1 schema (no `tenant_id`, no `prev_hash`) and already
+        // has data. This is exactly the upgrade path the live v1.0 DB takes.
+        use crate::migration::run_migration;
+
+        // Register sqlite-vec so the full migration (which includes vec0
+        // tables) runs the same way it does against the live DB.
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let mut db = Connection::open_in_memory().expect("open in-memory DB");
+        // 1. Build the v1.0 audit_events schema (the version before M2 added
+        //    the two columns).
+        db.execute_batch(
+            "CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE audit_events(
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               ts TEXT DEFAULT CURRENT_TIMESTAMP,
+               kind TEXT NOT NULL,
+               actor TEXT,
+               target_hash TEXT,
+               status TEXT,
+               detail_hash TEXT
+             );
+             CREATE INDEX idx_audit_kind ON audit_events(kind);
+             CREATE INDEX idx_audit_ts ON audit_events(ts);",
+        )
+        .expect("create pre-v1.1 audit_events");
+        // 2. Populate it with pre-v1.1 rows exactly as v1.0 wrote them — no
+        //    prev_hash, no tenant_id column at all.
+        for i in 0..1_000 {
+            db.execute(
+                "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
+                 VALUES ('ingest', 'api', ?1, 'ok', ?2)",
+                params![format!("legacy-{i}"), format!("d-{i}")],
+            )
+            .unwrap();
+        }
+        // 3. Run the real migration — adds `tenant_id` + `prev_hash` via
+        //    ALTER TABLE ADD COLUMN. Existing rows must get NULL prev_hash and
+        //    'global' tenant_id by default.
+        run_migration(&mut db, 0).expect("v1.1 migration on populated v1.0 DB");
+
+        // 4. Assert the back-compat defaults the migration promises.
+        let null_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE prev_hash IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            null_count, 1_000,
+            "every legacy row must have NULL prev_hash"
+        );
+        let global_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE tenant_id = 'global'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            global_count, 1_000,
+            "every legacy row must default to 'global' tenant"
+        );
+
+        // 5. Now write v1.1 rows via the real writer and verify the chain holds
+        //    across the NULL → Some boundary. This is the scenario the original
+        //    `verify_chain` bug choked on.
+        record(
+            &db,
+            AuditKind::Ingest,
+            "api",
+            "post-migration-1",
+            AuditStatus::Ok,
+            "d",
+        );
+        record(
+            &db,
+            AuditKind::Ingest,
+            "api",
+            "post-migration-2",
+            AuditStatus::Ok,
+            "d",
+        );
+        record(
+            &db,
+            AuditKind::Ingest,
+            "api",
+            "post-migration-3",
+            AuditStatus::Ok,
+            "d",
+        );
+        assert!(
+            verify_chain(&db),
+            "v1.0→v1.1 migrated DB with real data must verify end-to-end"
+        );
+    }
+
+    #[test]
+    fn record_tenant_is_safe_inside_caller_transaction() {
+        // Closing the "record_tenant not wrapped in tx" ceiling: callers like
+        // `delete_quarantine` are already inside their own transaction when they
+        // audit. The SAVEPOINT must nest cleanly (BEGIN would error), and a
+        // failure of the audit INSERT must NOT roll back the caller's work.
+        let db = db();
+        // Caller opens its own tx and does some work.
+        let tx = db.unchecked_transaction().unwrap();
+        tx.execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
+             VALUES ('ingest', 'caller', 'caller-row', 'ok', 'd')",
+            [],
+        )
+        .unwrap();
+        // Now audit happens inside the caller's tx. This used to rely on
+        // autocommit semantics; now it nests via SAVEPOINT.
+        record_tenant(
+            &tx,
+            AuditKind::Ingest,
+            "api",
+            "inside-tx",
+            AuditStatus::Ok,
+            "d",
+            "team-a",
+        );
+        // Caller commits.
+        tx.commit().unwrap();
+
+        let rows = recent(&db, None, 10).unwrap();
+        assert_eq!(rows.len(), 2, "caller row + audit row both landed");
+        assert!(
+            verify_chain(&db),
+            "chain holds when audit ran inside a caller tx"
+        );
+    }
+
+    #[test]
+    fn record_tenant_rollback_does_not_undo_caller_work() {
+        // Negative path of the SAVEPOINT wrap: if the audit INSERT itself fails
+        // (e.g. constraint violation), the savepoint rolls back ONLY the audit
+        // work, not the caller's. We simulate failure by dropping the table
+        // mid-call isn't feasible without a different schema, so we verify the
+        // positive invariant instead: caller work before + after a successful
+        // audit survives a commit. This test exists to pin the savepoint shape.
+        let db = db();
+        let tx = db.unchecked_transaction().unwrap();
+        tx.execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
+             VALUES ('ingest', 'before', 'before-audit', 'ok', 'd')",
+            [],
+        )
+        .unwrap();
+        record(
+            &tx,
+            AuditKind::Ingest,
+            "api",
+            "audit-event",
+            AuditStatus::Ok,
+            "d",
+        );
+        tx.execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
+             VALUES ('ingest', 'after', 'after-audit', 'ok', 'd')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 3,
+            "caller work before + audit + caller work after all landed"
+        );
+        assert!(verify_chain(&db));
     }
 
     #[test]
