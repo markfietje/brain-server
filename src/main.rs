@@ -2787,14 +2787,14 @@ async fn auth_middleware(
     }
 }
 
-// ponytail: constant-time compare via fold (no early exit on mismatch). Good
-// enough for the loopback deployment where the timing surface is ~nil anyway;
-// if this ever fronts a network adversary, swap to the `constant_time_eq`
-// crate for an asm/black_box-backed guarantee against optimizer-driven
-// short-circuiting. The length check below is inherently leaky, but token
-// length is not secret for a fixed-format random token.
+// v1.1.2: replaced a hand-rolled fold with `subtle::ConstantTimeEq`, which
+// is backed by asm/black_box primitives that the optimizer cannot short-
+// circuit. `subtle` is already a transitive dep (sha2/hmac/aes-gcm), so this
+// adds zero build surface. The length check below is inherently leaky, but
+// token length is not secret for a fixed-format random token.
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    use subtle::ConstantTimeEq as _;
+    a.len() == b.len() && a.ct_eq(b).unwrap_u8() == 1
 }
 
 /// Handle CLI flags before any side effect. Prints version/usage and exits;

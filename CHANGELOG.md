@@ -12,6 +12,41 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.1.2 "Harden" (constant-time auth hardening) — 2026-07-29
+
+Security hardening release. A best-practices pass (rusqlite 0.40.1 docs +
+RustCrypto `subtle` 2.6.1, fetched 2026-07-29) surfaced one real gap: the
+bearer-token comparison used a hand-rolled fold that LLVM could short-circuit,
+re-introducing a timing oracle the v1.1.0 comment had explicitly flagged.
+
+#### Security
+- **Bearer-token comparison now uses `subtle::ConstantTimeEq`.** The prior
+  `ct_eq` (a manual `fold` of `acc | (x ^ y)`) had no `black_box` barrier, so
+  a sufficiently aggressive optimization pass could turn it back into a
+  short-circuit compare — exactly the timing oracle the constant-time
+  pattern exists to prevent. `subtle` 2.6.1 was already a transitive dep
+  (via `sha2`/`hmac`/`aes-gcm`), so the swap adds zero build surface. The
+  ponytail ceiling noted in the v1.1.0 comment is now closed. Pinned by
+  the existing `test_ct_eq`.
+
+#### Considered and left as-is (documented best-practice judgment calls)
+- **`verify_chain`'s `want == got` hash comparison left as a plain `==`.**
+  This compares two equal-length SHA-256 hex strings inside a tamper-
+  detection read path (not an auth gate). An attacker who could measure
+  the timing remotely would already control the DB and could simply edit
+  `prev_hash` to match. Wrapping it in `ct_eq` would be gold-plating
+  without a real threat model — the auth path was the actual surface.
+- **`record_tenant`'s raw-SQL `SAVEPOINT` left as-is.** rusqlite 0.40.1
+  exposes a canonical `savepoint_with_name()` API, but it takes `&mut
+  Connection`; the ~20 call sites pass `&Connection` (often from a pooled
+  r2d2 connection, which derefs to `&Connection`). Migrating would ripple
+  through every caller + require pooled-connection borrow gymnastics for
+  zero correctness gain — the current raw-SQL approach is verified by 3
+  v1.1.1 tests and uses parameterized queries (no injection surface).
+
+#### Updated
+- Cargo.toml 1.1.1 → 1.1.2. `openapi.yaml` → 1.1.2.
+
 ### v1.1.1 "Harden" (audit chain bug-fix) — 2026-07-29
 
 Bug-fix release. Closes three honest ceilings carried forward from v1.1.0,
