@@ -90,6 +90,14 @@ pub fn cors_headers() -> String {
     std::env::var("CORS_HEADERS").unwrap_or_else(|_| CORS_DEFAULT_HEADERS.to_string())
 }
 
+// ── v1.1.0 "Harden" M4: graceful shutdown constant ─────────────────
+/// Hard cap on how long shutdown waits for in-flight requests after the
+/// graceful-shutdown signal. Wraps the entire `axum::serve(...)` future in a
+/// `tokio::time::timeout`; if it elapses, the process exits even if a request
+/// is stuck. The watchdog's `get_long_running` already flags anything above
+/// `CONNECTION_WATCHDOG_THRESHOLD_SECS`, so the cap only fires on genuine hangs.
+pub const SHUTDOWN_DRAIN_SECS: u64 = 30;
+
 // ── v0.9.7 "Guard" security constants ──────────────────────────────────
 
 /// When `BIND_HOST` fails to parse as an IP, refuse to bind instead of falling
@@ -151,6 +159,12 @@ pub fn brain_db_path() -> std::path::PathBuf {
         })
 }
 
+// ── v1.1.0 "Harden" M1.4: token rotation constants ───────────────────
+// The token-store background task stats the file at this cadence and reloads
+// on mtime change. The auth check itself is hot-path, so it reads from the
+// cached set under a single RwLock — not from disk.
+pub const TOKEN_ROTATION_POLL_SECS: u64 = 5;
+
 /// Optional bearer token for authenticated routes. When no token is resolvable,
 /// the server runs unauthenticated (loopback-only is still the safe default).
 /// When set, mutating/authenticated routes require `Authorization: Bearer <t>`.
@@ -161,12 +175,10 @@ pub fn brain_db_path() -> std::path::PathBuf {
 ///    token out of the process/launchd environment and off `launchctl print`.
 /// 2. `AUTH_TOKEN` — the raw env var. Kept for back-compat/dev convenience.
 ///
-/// Rotation / revocation (v0.9.7 Guard): the token file may contain multiple
-/// newline-separated tokens; any one matching is accepted. To rotate with zero
-/// downtime, append the new token on a new line (`cp` the file), then later drop
-/// the old line to revoke it. Because the file is re-read on every request,
-/// rotation takes effect without a server restart and there is no token-valid
-/// window where both old and new clients are simultaneously rejected.
+/// v1.1.0 Harden: `auth_tokens()` here reads from disk on every call (so it
+/// reflects rotation immediately when called directly). The server's hot path
+/// uses `auth::TokenStore` which caches this result + reloads on mtime change,
+/// audited + fail-safe against file deletion (see `auth.rs`).
 pub fn auth_token() -> Option<String> {
     if let Ok(path) = std::env::var("AUTH_TOKEN_FILE") {
         let path = path.trim();

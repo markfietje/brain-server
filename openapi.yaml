@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.0.1
-  x-api-version: "1.0.1"
+  version: 1.1.0
+  x-api-version: "1.1.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -544,7 +544,7 @@ paths:
                 $ref: '#/components/schemas/ApplyResponse'
   /audit:
     get:
-      summary: Operator audit-log diagnostics (v0.9.7 Guard)
+      summary: Operator audit-log diagnostics (v0.9.7 Guard; v1.1.0 tenant filter)
       operationId: listAudit
       parameters:
         - name: kind
@@ -553,6 +553,12 @@ paths:
           schema:
             type: string
           description: Filter by audit kind (auth|ingest|webhook|reconcile|backup|connector)
+        - name: tenant
+          in: query
+          required: false
+          schema:
+            type: string
+          description: v1.1.0 — scope rows to a tenant at the SQL layer (default returns all tenants)
         - name: limit
           in: query
           required: false
@@ -571,6 +577,32 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AuditRow'
+  /audit/verify:
+    get:
+      summary: Verify the audit hash chain (v1.1.0 Harden)
+      operationId: verifyAuditChain
+      responses:
+        "200":
+          description: Chain integrity result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    description: true when every row's recomputed link matches its stored prev_hash
+  /metrics:
+    get:
+      summary: Prometheus text-format exporter (v1.1.0 Harden M5)
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus exposition text
+          content:
+            text/plain:
+              schema:
+                type: string
   /quarantine:
     get:
       summary: List quarantined (flagged) chunks (v0.9.7 Guard)
@@ -1145,7 +1177,11 @@ components:
           type: string
           enum: [ok, denied, error]
         detail_hash: { type: string, description: xxh3 of a short detail string }
-      required: [id, ts, kind, actor, target_hash, status, detail_hash]
+        tenant_id:
+          type: string
+          description: v1.1.0 — tenant this row belongs to ('global' for pre-v1.1 rows)
+          default: global
+      required: [id, ts, kind, actor, target_hash, status, detail_hash, tenant_id]
     ConsolidateProposal:
       type: object
       description: v0.9.8 Evidence — reviewable consolidation candidates (no mutation).

@@ -524,6 +524,36 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);",
     )?;
 
+    // v1.1.0 Harden M2: per-tenant scoping + tamper-evidence. Additive columns
+    // on `audit_events`. `tenant_id` defaults to 'global' for back-compat with
+    // every pre-v1.1 row; `prev_hash` is backfilled NULL and the chain starts
+    // fresh from the next inserted row (a documented upgrade-path ceiling).
+    for (col, def) in [
+        ("tenant_id", "TEXT NOT NULL DEFAULT 'global'"),
+        ("prev_hash", "TEXT"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('audit_events') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE audit_events ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_events(tenant_id)",
+        [],
+    )?;
+
     // ── v0.9.7 "Guard": verified webhook ingest queue ──────────────────
     // Bounded FIFO of verified webhook deliveries. Idempotency is enforced by
     // the UNIQUE(delivery_hash) constraint; a replayed delivery is a no-op
@@ -565,12 +595,12 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_evidence_links_to ON evidence_links(to_chunk);",
     )?;
 
-    // ── v0.9.9 "Qualify" M1.2: record the schema version so the rehearsal
-    // tool (and future migrations) can read it. Idempotent — `INSERT OR
-    // REPLACE`. Bumped once per release that changes this function.
+    // ── v0.9.9 "Qualify" M1.2 / v1.1.0 "Harden": record the schema version so
+    // the rehearsal tool (and future migrations) can read it. Idempotent.
+    // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '0.9.9')
-         ON CONFLICT(key) DO UPDATE SET value = '0.9.9';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.1.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.1.0';",
         [],
     )?;
 

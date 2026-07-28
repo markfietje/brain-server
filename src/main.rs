@@ -38,10 +38,11 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 use zerocopy::IntoBytes;
 
+use auth::TokenStore;
 use brain_server::audit;
 // v0.9.9 "Qualify" M2.1: `run_migration` + `migrate_down_0_9_0` were extracted
 // to `brain_server::migration` (src/migration.rs) so the `brain-migrate-rehearse`
@@ -51,6 +52,7 @@ use brain_server::audit;
 #[cfg(test)]
 use brain_server::migration::migrate_down_0_9_0;
 use brain_server::migration::run_migration;
+mod auth;
 mod chunker;
 mod config;
 mod connector;
@@ -58,6 +60,7 @@ mod consolidate;
 mod domain_registry;
 mod domain_router;
 mod handlers;
+mod integrity;
 mod search;
 mod sources;
 mod vault;
@@ -211,6 +214,50 @@ pub fn spawn_connection_watchdog(tracker: std::sync::Arc<ConnectionTracker>) {
     });
 }
 
+/// v1.1.0 Harden M5: RSS watchdog. Polls every `CONNECTION_WATCHDOG_INTERVAL_SECS`
+/// (reuses the leak-detector cadence — both are "is something stuck" checks).
+/// When process RSS exceeds the active envelope's `max_rss_mib` for two
+/// consecutive samples, logs `error!`. If `BRAIN_RSS_RESTART=1` is set, exits
+/// with code 1 so systemd `Restart=on-failure` recycles the process; default
+/// is log-only — a tight restart loop is worse than a slow leak (plan risk note).
+pub fn spawn_rss_watchdog() {
+    use config::CONNECTION_WATCHDOG_INTERVAL_SECS;
+    let restart_on_breach = std::env::var("BRAIN_RSS_RESTART")
+        .map(|v| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+            CONNECTION_WATCHDOG_INTERVAL_SECS,
+        ));
+        let mut prev_over = false;
+        let envelope = brain_server::capacity::CapacityEnvelope::for_target(
+            brain_server::capacity::capacity_target(),
+        );
+        loop {
+            interval.tick().await;
+            let rss = process_rss_mib();
+            let over = rss > envelope.max_rss_mib;
+            if over && prev_over {
+                error!(
+                    target: "brain::rss",
+                    "RSS sustained at {rss} MiB across two samples (ceiling {} MiB)",
+                    envelope.max_rss_mib
+                );
+                if restart_on_breach {
+                    error!(target: "brain::rss", "BRAIN_RSS_RESTART=1 → exiting for supervisor restart");
+                    std::process::exit(1);
+                }
+            }
+            prev_over = over;
+        }
+    });
+}
+
 struct AppState {
     model: Arc<StaticModel>,
     pool: Pool,
@@ -222,6 +269,8 @@ struct AppState {
     connection_tracker: std::sync::Arc<ConnectionTracker>,
     #[allow(dead_code)]
     rate_limiter: Arc<RateLimiter>,
+    /// v1.1.0 Harden M3: last backup+integrity result for `/health`.
+    snapshot: integrity::SnapshotState,
 }
 
 #[derive(Deserialize)]
@@ -1075,6 +1124,7 @@ fn process_rss_mib() -> u64 {
 async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
+    let snapshot = s.snapshot.clone();
     let health_future = task::spawn_blocking(move || {
         let mut sys = System::new();
         sys.refresh_memory();
@@ -1087,11 +1137,12 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             sys.total_memory() / 1_000_000,
             pool_state,
             capacity,
+            snapshot.read(),
         ))
     });
 
     match timeout(StdDuration::from_secs(3), health_future).await {
-        Ok(Ok(Ok((used_mb, total_mb, pool_state, capacity)))) => {
+        Ok(Ok(Ok((used_mb, total_mb, pool_state, capacity, snapshot)))) => {
             let mut body = serde_json::json!({
                 "status": "ok",
                 "version": SERVER_VERSION,
@@ -1105,7 +1156,8 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                     "connections": pool_state.connections,
                     "idle_connections": pool_state.idle_connections,
                     "busy_connections": pool_state.connections.saturating_sub(pool_state.idle_connections)
-                }
+                },
+                "backup": snapshot.to_json()
             });
             // `capacity` is `Some` when the pool had a connection available,
             // `None` when the pool was momentarily exhausted — in which case
@@ -1200,16 +1252,20 @@ async fn health_db(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// 100, capped at `config::MAX_MULTI_GET`). All rows are hashes only — no
 /// secrets survive the round-trip. Gated by `auth_middleware` like other
 /// non-public routes.
+///
+/// v1.1.0: optional `tenant` filter scopes rows at the SQL layer.
 async fn list_audit(
     State(s): State<Arc<AppState>>,
     Query(params): Query<AuditQuery>,
 ) -> Json<serde_json::Value> {
     let limit = params.limit.unwrap_or(100).min(config::MAX_MULTI_GET);
     let kind = params.kind.clone();
+    let tenant = params.tenant.clone();
     let pool = s.pool.clone();
     let rows = task::spawn_blocking(move || -> Vec<audit::AuditRow> {
         match pool.get() {
-            Ok(conn) => audit::recent(&conn, kind.as_deref(), limit).unwrap_or_default(),
+            Ok(conn) => audit::recent_tenant(&conn, kind.as_deref(), tenant.as_deref(), limit)
+                .unwrap_or_default(),
             Err(_) => Vec::new(),
         }
     })
@@ -1223,7 +1279,81 @@ struct AuditQuery {
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]
+    tenant: Option<String>,
+    #[serde(default)]
     limit: Option<usize>,
+}
+
+/// `GET /metrics` (v1.1.0 Harden M5) — Prometheus text-format exporter.
+/// Reuses the same numbers `/health` reports; no Prometheus client dep, just
+/// the wire format. Auth-gated like other operator surfaces (`auth_middleware`).
+///
+/// ponytail: hand-rolled text format (4 lines of HELP/TYPE + gauge). Pulling
+/// `prometheus` or `metrics` crate for this would be a 12+ transitive-dep tax
+/// for a feature the plan itself flags as risky. Format is stable and trivial.
+async fn metrics(State(s): State<Arc<AppState>>) -> (axum::http::StatusCode, String) {
+    let pool = s.pool.clone();
+    let db_path = s.db_path.clone();
+    let body = task::spawn_blocking(move || -> String {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        let pool_state = pool.state();
+        let busy = pool_state
+            .connections
+            .saturating_sub(pool_state.idle_connections);
+        // Reuse the capacity measurement so `/metrics` and `/health` agree.
+        let cap = pool.get().ok().map(|c| measure_capacity(&c, &db_path));
+        let used_mib = sys.used_memory() / 1_000_000;
+        let cap_status = cap
+            .as_ref()
+            .and_then(|c| c.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let chain_ok = pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false);
+        let mut out = String::with_capacity(512);
+        out.push_str("# HELP brain_rss_mib Process RSS in MiB.\n");
+        out.push_str("# TYPE brain_rss_mib gauge\n");
+        out.push_str(&format!("brain_rss_mib {used_mib}\n"));
+        out.push_str("# HELP brain_pool_connections Pool connection counts.\n");
+        out.push_str("# TYPE brain_pool_connections gauge\n");
+        out.push_str(&format!(
+            "brain_pool_connections{{state=\"idle\"}} {}\n",
+            pool_state.idle_connections
+        ));
+        out.push_str(&format!(
+            "brain_pool_connections{{state=\"busy\"}} {busy}\n"
+        ));
+        out.push_str("# HELP brain_capacity_status 1=ok 2=warning 3=exceeded.\n");
+        out.push_str("# TYPE brain_capacity_status gauge\n");
+        let cap_num = match cap_status {
+            "ok" => 1,
+            "warning" => 2,
+            "exceeded" => 3,
+            _ => 0,
+        };
+        out.push_str(&format!("brain_capacity_status {cap_num}\n"));
+        out.push_str("# HELP brain_audit_chain_ok 1=chain verifies, 0=tamper detected.\n");
+        out.push_str("# TYPE brain_audit_chain_ok gauge\n");
+        out.push_str(&format!("brain_audit_chain_ok {}\n", u8::from(chain_ok)));
+        out
+    })
+    .await
+    .unwrap_or_default();
+    (axum::http::StatusCode::OK, body)
+}
+
+/// `GET /audit/verify` (v1.1.0 Harden) — read-only check that the audit hash
+/// chain is intact. Returns `{ "ok": bool }`. Exposed separately from
+/// `GET /audit` because the chain check is a full-table scan and shouldn't run
+/// on every list call.
+async fn verify_audit_chain(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let pool = s.pool.clone();
+    let ok = task::spawn_blocking(move || -> bool {
+        pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+    Json(serde_json::json!({ "ok": ok }))
 }
 
 async fn stats(
@@ -2558,17 +2688,24 @@ async fn rate_limit_middleware(
     next.run(req).await
 }
 
-/// Auth middleware (P4 scaffold). When `AUTH_TOKEN`/`AUTH_TOKEN_FILE` is set,
-/// every non-public route requires a matching `Authorization: Bearer <token>`
-/// header. When unset the server is unauthenticated (safe only behind a
-/// loopback/proxy). Public read-only routes (`/health`, `/ready`, `/version`,
-/// `/openapi.yaml`) are always exempt so a load balancer can probe without
-/// credentials and third parties can discover the contract without a token.
-/// CORS
-/// preflight (`OPTIONS`) is also exempt: browsers send it without credentials
-/// and it must reach the CORS layer intact to attach preflight headers; the
-/// following real request still authenticates normally.
-async fn auth_middleware(req: Request<Body>, next: Next) -> Response {
+/// Auth middleware (P4 scaffold, v1.1.0 hot-rotation). When
+/// `AUTH_TOKEN`/`AUTH_TOKEN_FILE` is set, every non-public route requires a
+/// matching `Authorization: Bearer <token>` header. When unset the server is
+/// unauthenticated (safe only behind a loopback/proxy). Public read-only routes
+/// (`/health`, `/ready`, `/version`, `/openapi.yaml`) are always exempt so a
+/// load balancer can probe without credentials and third parties can discover
+/// the contract without a token. CORS preflight (`OPTIONS`) is also exempt:
+/// browsers send it without credentials and it must reach the CORS layer intact
+/// to attach preflight headers; the following real request authenticates normally.
+///
+/// v1.1.0: tokens come from the cached, mtime-refreshed `TokenStore` rather
+/// than a per-request disk read. Fail-safe: if the file was deleted, the store
+/// keeps the last-good set so auth can never silently clear.
+async fn auth_middleware(
+    State(tokens): State<TokenStore>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
     let path = req.uri().path();
     let public = matches!(
         path,
@@ -2580,8 +2717,8 @@ async fn auth_middleware(req: Request<Body>, next: Next) -> Response {
     if public || req.method() == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
-    let tokens = config::auth_tokens();
-    if tokens.is_empty() {
+    let accepted = tokens.tokens();
+    if accepted.is_empty() {
         return next.run(req).await;
     }
     let presented = req
@@ -2592,7 +2729,7 @@ async fn auth_middleware(req: Request<Body>, next: Next) -> Response {
         .map(|t| t.trim());
     let ok = presented
         .map(|p| {
-            tokens
+            accepted
                 .iter()
                 .any(|t| ct_eq(p.as_bytes(), t.trim().as_bytes()))
         })
@@ -2842,6 +2979,23 @@ async fn main() -> Result<()> {
     spawn_connection_watchdog(std::sync::Arc::clone(&connection_tracker));
     info!("Connection watchdog started");
 
+    // v1.1.0 Harden M5: RSS watchdog. Log-only by default; `BRAIN_RSS_RESTART=1`
+    // opts in to exit-on-sustained-breach for supervisor-managed restarts.
+    spawn_rss_watchdog();
+
+    // v1.1.0 Harden M1.4: cached, fail-safe bearer-token store + hot rotation.
+    // The watcher polls `AUTH_TOKEN_FILE` mtime every 5s and reloads on change.
+    let token_store = TokenStore::new();
+    if token_store.has_file() {
+        auth::spawn_rotation_watcher(token_store.clone(), db_path.clone());
+        info!("token rotation watcher started");
+    }
+
+    // v1.1.0 Harden M3: rolling backup + integrity self-check. Runs once on
+    // boot then every 6h; `/health` reports `last_backup` + `integrity_ok`.
+    let snapshot_state = integrity::SnapshotState::default();
+    integrity::spawn_scheduler(db_path.clone(), snapshot_state.clone());
+
     // Spawn pool health check to prevent connection timeouts
     let pool_for_health = pool.clone();
     tokio::spawn(async move {
@@ -2931,6 +3085,8 @@ async fn main() -> Result<()> {
     // v0.9.7 "Guard": clone the pool for the webhook drain worker before it is
     // moved into AppState below.
     let webhook_pool = pool.clone();
+    // v1.1.0 Harden M4: clone the pool for the post-shutdown WAL checkpoint.
+    let shutdown_pool = pool.clone();
 
     let app = Router::new()
         .route("/health", get(health))
@@ -3002,6 +3158,8 @@ async fn main() -> Result<()> {
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
         .route("/audit", get(list_audit))
+        .route("/audit/verify", get(verify_audit_chain))
+        .route("/metrics", get(metrics))
         // Inner layers (closest to handler)
         .layer(RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE))
         .layer(TimeoutLayer::with_status_code(
@@ -3027,7 +3185,10 @@ async fn main() -> Result<()> {
             rate_limiter.clone(),
             rate_limit_middleware,
         ))
-        .layer(middleware::from_fn(auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            token_store.clone(),
+            auth_middleware,
+        ))
         // Response headers
         .layer(SetResponseHeaderLayer::overriding(
             axum::http::header::SERVER,
@@ -3048,6 +3209,7 @@ async fn main() -> Result<()> {
             db_path: db_path.clone(),
             connection_tracker,
             rate_limiter,
+            snapshot: snapshot_state,
         }));
 
     // v0.9.7 "Guard": spawn the webhook drain worker. It processes verified
@@ -3092,41 +3254,66 @@ async fn main() -> Result<()> {
     println!("🚀 Server: http://{}:{}", bind_host, bind_port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let ctrl_c = async {
-                signal::ctrl_c()
-                    .await
-                    .expect("failed to install Ctrl+C handler");
-            };
+    // v1.1.0 Harden M4: hard cap on shutdown drain. The graceful-shutdown
+    // future inside `axum::serve` returns as soon as SIGTERM/SIGINT arrives;
+    // axum then waits for in-flight requests. Wrap that wait in a timeout so
+    // a stuck request can't pin the process. The WAL checkpoint runs after.
+    let drain_cap = StdDuration::from_secs(config::SHUTDOWN_DRAIN_SECS);
+    match timeout(
+        drain_cap,
+        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()),
+    )
+    .await
+    {
+        Ok(inner) => inner?,
+        Err(_) => {
+            println!(
+                "⚠️  Shutdown drain cap of {}s exceeded; forcing exit",
+                config::SHUTDOWN_DRAIN_SECS
+            );
+        }
+    }
 
-            #[cfg(unix)]
-            let terminate = async {
-                signal::unix::signal(signal::unix::SignalKind::terminate())
-                    .expect("failed to install signal handler")
-                    .recv()
-                    .await;
-            };
-            #[cfg(not(unix))]
-            let terminate = std::future::pending::<()>();
-
-            tokio::select! {
-                _ = ctrl_c => {
-                    println!("\n🔔 Received SIGINT (Ctrl+C)");
-                }
-                _ = terminate => {
-                    println!("\n🔔 Received SIGTERM");
-                }
-            }
-
-            println!("\n🛑 Initiating graceful shutdown...");
-            println!("⏳ Waiting for in-flight requests to complete...");
-            // Axum waits for in-flight requests after this future resolves.
-            // No hard timeout — if one is needed, track in-flight requests with a counter.
-        })
-        .await?;
+    // v1.1.0 Harden M4: checkpoint WAL on shutdown so a kill -9 or power loss
+    // can't leave the live DB with un-replayed WAL frames. Best-effort: a
+    // failure here is logged, not fatal (the OS will replay WAL on next open
+    // anyway). `TRUNCATE` zeros the WAL file back to its minimum size.
+    println!("📦 Checkpointing WAL...");
+    if let Ok(conn) = shutdown_pool.get() {
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
 
     Ok(())
+}
+
+/// Wait for SIGINT or SIGTERM (Unix) / Ctrl+C (Windows). Returns when either
+/// fires; the caller uses this as axum's graceful-shutdown trigger.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => println!("\n🔔 Received SIGINT (Ctrl+C)"),
+        _ = terminate => println!("\n🔔 Received SIGTERM"),
+    }
+
+    println!(
+        "\n🛑 Initiating graceful shutdown (cap {}s)...",
+        config::SHUTDOWN_DRAIN_SECS
+    );
 }
 #[cfg(test)]
 mod tests {
@@ -5570,6 +5757,27 @@ Final paragraph after the rule.";
             "knowledge table is missing expected columns: {missing_cols:?}"
         );
 
+        // v1.1.0 Harden: audit_events gained `tenant_id` + `prev_hash`. Both
+        // are referenced by `audit::record_tenant` + `audit::verify_chain`; a
+        // dropped column would break the chain at the next ingest.
+        let expected_audit_cols = ["tenant_id", "prev_hash"];
+        let actual_audit_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(audit_events)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        let missing_audit: Vec<String> = expected_audit_cols
+            .iter()
+            .filter(|c| !actual_audit_cols.contains(**c))
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            missing_audit.is_empty(),
+            "audit_events table is missing v1.1.0 columns: {missing_audit:?}"
+        );
+
         // Core-loop roundtrip: insert → FTS shadow row exists → vec0 row
         // insertable → row count visible. This is the smallest test that
         // fails if a migration breaks the ingest→search path.
@@ -5619,8 +5827,8 @@ Final paragraph after the rule.";
         // migrate-down without --force.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V0_9_9),
-            "schema_version must be recorded as 0.9.9 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_1_0),
+            "schema_version must be recorded as 1.1.0 after migration"
         );
     }
 
@@ -5690,6 +5898,8 @@ Final paragraph after the rule.";
             // v0.9.7 Guard
             "/webhooks/{kind}",
             "/audit",
+            "/audit/verify",
+            "/metrics",
             "/quarantine",
             "/quarantine/{id}/release",
             "/quarantine/{id}/delete",

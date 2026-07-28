@@ -12,6 +12,87 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.1.0 "Harden" — 2026-07-28
+
+Operationally-reliable + audit-ready release on top of v1.0's multi-domain
+foundation. Pares the v1.1.0 plan down to the slices that close real gaps
+(bearer-token file-watch hot rotation, per-tenant audit + hash-chain tamper-
+evidence, rolling backups + integrity self-check, graceful-shutdown drain cap
++ WAL checkpoint, RSS watchdog, Prometheus exporter). Explicit non-goals for
+v1.1 (deferred to v1.2 AuthN): JWT/JWS verification, AuthZ trait + middleware,
+per-tenant rate limiting, CSRF enforcement. The CSRF scaffold from the plan is
+YAGNI until a browser UI exists.
+
+#### Security & audit
+- **Audit hash chain (`src/audit.rs`).** Each row stores a SHA-256
+  `prev_hash` over the prior row's `(ts, kind, actor, target_hash,
+  prev_hash)` tuple. `GET /audit/verify` walks the chain and returns
+  `{ "ok": bool }`. Tampering with any field breaks the read-side check;
+  pinned by `hash_chain_detects_tampering` + `hash_chain_rejects_tampered_kind`.
+  `id` is deliberately excluded so a renumbered restore keeps the chain intact.
+- **Per-tenant audit scoping.** New `tenant_id` column (default `'global'` for
+  back-compat with every pre-v1.1 row). `GET /audit?tenant=<id>` enforces the
+  filter at the SQL layer (`WHERE tenant_id = ?`) so a forgotten app-level
+  filter cannot leak cross-tenant rows. `audit::record_tenant` is the variant
+  that takes a tenant; existing call sites default to `global`.
+- **File-watch token rotation (`src/auth.rs`).** `AUTH_TOKEN_FILE` is now
+  cached in-process and refreshed on mtime change (polled every 5s) rather
+  than re-read from disk per request. Fail-safe: if the file is deleted,
+  emptied, or becomes unreadable after the first successful load, the cached
+  token set stays in effect — auth is never silently cleared. Each real
+  rotation writes an `auth_token_rotated` audit row (target = file path;
+  no PII). Pinned by `reload_picks_up_new_token` +
+  `reload_keeps_cache_when_file_deleted` + `reload_keeps_cache_when_file_emptied`.
+
+#### Operational reliability
+- **Rolling backup + integrity self-check (`src/integrity.rs`).** A periodic
+  task snapshots the live DB with `VACUUM INTO <db>.snapshot-<ts>.bak`, runs
+  `PRAGMA integrity_check` on the snapshot, and keeps the last 4 copies
+  (default 6h cadence, runs once on boot). `/health` now reports
+  `backup: { last_backup, integrity_ok }`.
+- **Graceful shutdown drain cap + WAL checkpoint.** SIGTERM/SIGINT now drains
+  in-flight requests under a hard `SHUTDOWN_DRAIN_SECS=30` cap, then runs
+  `PRAGMA wal_checkpoint(TRUNCATE)` so a kill -9 or power loss can't leave
+  the live DB with un-replayed WAL frames.
+- **RSS watchdog.** Polls every 30s; sustained breach of the capacity
+  envelope's `max_rss_mib` across two samples logs `error!`. Opt-in exit for
+  supervisor restart via `BRAIN_RSS_RESTART=1`; default is log-only — a
+  tight restart loop is worse than a slow leak.
+
+#### Observability
+- **Prometheus exporter (`GET /metrics`).** Hand-rolled text format (no
+  `prometheus` crate dep — the plan itself flagged the dep as risky).
+  Exports `brain_rss_mib`, `brain_pool_connections{state}`,
+  `brain_capacity_status`, `brain_audit_chain_ok`. Auth-gated like other
+  operator surfaces.
+- **`GET /audit/verify`** as a separate route from `GET /audit` because the
+  chain check is a full-table scan and shouldn't run on every list call.
+
+#### Migration
+- Additive: `audit_events` gained `tenant_id TEXT NOT NULL DEFAULT 'global'`
+  + `prev_hash TEXT` + `idx_audit_tenant`. Existing rows backfill to
+  `'global'` / NULL; the chain starts fresh from the next inserted row
+  (documented upgrade-path ceiling). `schema_version` stamped `1.1.0`.
+
+#### Updated
+- Cargo.toml 1.0.1 → 1.1.0. `openapi.yaml` → 1.1.0 with `/audit/verify`,
+  `/metrics`, the `tenant` query param on `/audit`, and the `tenant_id` field
+  on the `AuditRow` schema.
+
+#### Honest ceilings (carried into v1.2)
+- **No JWT/JWS verification.** Opaque bearer tokens only; JWT needs RS256/
+  ES256 signing keys + JWKS + revocation — all land in v1.2 AuthN.
+- **No AuthZ middleware.** The `tenant_id` column lands here, but "team A
+  can't read team B's data" needs the v1.2 AuthZ trait.
+- **Audit chain link is read inside the same connection, not inside an
+  explicit BEGIN/COMMIT.** SQLite's single-writer serializes the read+INSERT
+  pair; if a future caller needs strict cross-statement atomicity, wrap the
+  pair in `conn.transaction()` — one-line upgrade path documented in
+  `audit::record_tenant`.
+- **`prev_hash` NULL on pre-v1.1 rows.** The chain starts at the first v1.1
+  row; pre-v1.1 history is not retroactively chained (would require
+  re-hashing every existing row).
+
 ### Cognitive Stack roadmap (v1.2.0 → v1.9.0) — 2026-07-26 (planning only)
 
 Deep-research-driven expansion of the v1.x line into **8 point releases** that

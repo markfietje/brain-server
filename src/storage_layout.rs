@@ -19,9 +19,12 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 /// The schema version recorded in `schema_meta` by `run_migration`. Bumped once
-/// per release that changes the migration. v0.9.9 is the checkpoint before the
-/// v1.0 database split — the rehearsal tool reads this to refuse a migrate-down
-/// without `--force`.
+/// per release that changes the migration. v1.1.0 adds the audit-chain columns
+/// (`tenant_id`, `prev_hash`) and the `idx_audit_tenant` index.
+pub const SCHEMA_VERSION_V1_1_0: &str = "1.1.0";
+/// Historical v0.9.9 checkpoint before the v1.0/v1.1 migrations. Kept for
+/// back-compat with any code or operator script that compares against it; new
+/// code should reference [`SCHEMA_VERSION_V1_1_0`].
 pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 
 /// Read the recorded schema version from `schema_meta`. Returns `None` for a

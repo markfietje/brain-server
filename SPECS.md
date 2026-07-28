@@ -48,7 +48,7 @@ AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 
 ## 2. Package & Dependencies
 
-From `Cargo.toml` (`name = "brain-server"`, `version = "1.0.1"`, `edition = "2021"`):
+From `Cargo.toml` (`name = "brain-server"`, `version = "1.1.0"`, `edition = "2021"`):
 
 | Purpose | Crate | Version |
 |---|---|---|
@@ -228,7 +228,7 @@ Bound to `BIND_HOST:BIND_PORT` (default `127.0.0.1:8765`). All routes are layere
 | GET | `/health/db` | `health_db` | DB round-trip check |
 | GET | `/ready` | `ready` | readiness (model + DB) |
 | GET | `/stats` | `stats` | counts + model + version |
-| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.0.1`) |
+| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.1.0`) |
 | POST | `/add` | `add_chunk` | text ingest (raw), embeds + stores |
 | POST | `/ingest/memory` | `ingest_memory` | structured memory ingest |
 | GET | `/search?q=&k=` | `search` | semantic search (brute-force cosine) |
@@ -237,6 +237,9 @@ Bound to `BIND_HOST:BIND_PORT` (default `127.0.0.1:8765`). All routes are layere
 | GET | `/graph/entity/{name}` | `get_entity` | entity + 1-hop relations |
 | GET | `/graph/relations?from=&to=` | `get_relations` | relations between entities |
 | GET | `/graph/traverse?start=&max_depth=` | `traverse_graph` | recursive graph walk (≤ `TRAVERSE_MAX_DEPTH`) |
+| GET | `/audit?kind=&tenant=&limit=` | `list_audit` | operator audit-log diagnostics (hashes only); `tenant` filters at the SQL layer (v1.1.0) |
+| GET | `/audit/verify` | `verify_audit_chain` | v1.1.0 — returns `{ ok: bool }` after walking the SHA-256 hash chain |
+| GET | `/metrics` | `metrics` | v1.1.0 — Prometheus text-format exporter (no dep) |
 
 ### Request/response shapes (selected)
 

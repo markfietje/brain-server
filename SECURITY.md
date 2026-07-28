@@ -410,7 +410,7 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
-| 1.1 (planned) | 2026-Q3 | Per-tenant audit + hash chain; file-watch token rotation; CSRF scaffold; Prometheus exporter |
+| 1.1 | 2026-07-28 | Per-tenant audit + SHA-256 hash chain; fail-safe file-watch token rotation; rolling backups + `/health` integrity; graceful-shutdown drain cap + WAL checkpoint; RSS watchdog; Prometheus `/metrics` exporter |
 | 1.2 (planned) | 2026-Q3 | JWT/JWS verification (RS256/ES256/EdDSA); `(jti, iss)` revocation; AuthZ trait + middleware; JWKS endpoint; OIDC discovery |
 | 2.0 (planned) | 2026-Q4 | Multi-team tenancy consuming v1.2 AuthZ; team namespace in paths |
 | 2.1 (planned) | 2026-Q4 | Per-tenant + tiered rate limiting; Redis impl; cost tracking; quota alerts |
