@@ -90,13 +90,13 @@ pub fn cors_headers() -> String {
     std::env::var("CORS_HEADERS").unwrap_or_else(|_| CORS_DEFAULT_HEADERS.to_string())
 }
 
-// ── v1.1.0 "Harden" M4: graceful shutdown constant ─────────────────
-/// Hard cap on how long shutdown waits for in-flight requests after the
-/// graceful-shutdown signal. Wraps the entire `axum::serve(...)` future in a
-/// `tokio::time::timeout`; if it elapses, the process exits even if a request
-/// is stuck. The watchdog's `get_long_running` already flags anything above
-/// `CONNECTION_WATCHDOG_THRESHOLD_SECS`, so the cap only fires on genuine hangs.
-pub const SHUTDOWN_DRAIN_SECS: u64 = 30;
+// ── v1.3.0 "Bedrock" fix: SHUTDOWN_DRAIN_SECS was removed. The v1.1.0
+// implementation wrapped the ENTIRE `axum::serve(...)` future in a timeout,
+// capping total server lifetime at 30s — not just the drain phase. This
+// caused a 30s crash-loop on systemd deployments. Fixed: the server now runs
+// indefinitely until SIGTERM, then axum's built-in drain handles the rest.
+// If a request hangs after SIGTERM, systemd's TimeoutStopSec (default 90s)
+// is the outer cap.
 
 // ── v0.9.7 "Guard" security constants ──────────────────────────────────
 

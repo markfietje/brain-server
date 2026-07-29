@@ -3626,25 +3626,18 @@ async fn main_inner() -> Result<()> {
     println!("🚀 Server: http://{}:{}", bind_host, bind_port);
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // v1.1.0 Harden M4: hard cap on shutdown drain. The graceful-shutdown
-    // future inside `axum::serve` returns as soon as SIGTERM/SIGINT arrives;
-    // axum then waits for in-flight requests. Wrap that wait in a timeout so
-    // a stuck request can't pin the process. The WAL checkpoint runs after.
-    let drain_cap = StdDuration::from_secs(config::SHUTDOWN_DRAIN_SECS);
-    match timeout(
-        drain_cap,
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()),
-    )
-    .await
-    {
-        Ok(inner) => inner?,
-        Err(_) => {
-            println!(
-                "⚠️  Shutdown drain cap of {}s exceeded; forcing exit",
-                config::SHUTDOWN_DRAIN_SECS
-            );
-        }
-    }
+    // v1.3.0 Bedrock fix: the v1.1.0 `timeout(drain_cap, axum::serve(...))`
+    // was wrapping the ENTIRE serve lifetime, causing a 30s crash-loop on
+    // systemd-managed deployments (the server would run for exactly
+    // SHUTDOWN_DRAIN_SECS then exit). The timeout was intended to cap only
+    // the drain phase, not the serving phase. Fixed: let the server run
+    // indefinitely until SIGTERM, then axum's built-in drain handles the
+    // rest. If a request hangs forever after SIGTERM, systemd's
+    // TimeoutStopSec (default 90s) will kill the process — that's the
+    // outer cap, not the application.
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     // v1.1.0 Harden M4: checkpoint WAL on shutdown so a kill -9 or power loss
     // can't leave the live DB with un-replayed WAL frames. Best-effort: a
@@ -3682,10 +3675,7 @@ async fn shutdown_signal() {
         _ = terminate => println!("\n🔔 Received SIGTERM"),
     }
 
-    println!(
-        "\n🛑 Initiating graceful shutdown (cap {}s)...",
-        config::SHUTDOWN_DRAIN_SECS
-    );
+    println!("\n🛑 Initiating graceful shutdown...");
 }
 #[cfg(test)]
 mod tests {
