@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.1.2 "Harden" (constant-time auth hardening) |
+| **Version** | 1.2.0 "AuthN" (JWT/JWS + AuthZ layer) |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
@@ -92,6 +92,8 @@ curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
 | GET | `/domains` | Multi-domain status (debug) |
 | GET | `/connectors` | Registered connectors |
 | POST | `/webhooks/{kind}` | Verified webhook ingest (HMAC, replay-protected) |
+| POST | `/auth/refresh` · `/auth/logout` · `/auth/revoke` | Token lifecycle (JWT mode) |
+| GET | `/.well-known/openid-configuration` · `/.well-known/jwks.json` | OIDC discovery + JWKS |
 | GET | `/audit` | Append-only audit events (hash-only) |
 | GET | `/quarantine` · POST `/quarantine/{id}/release` · `/delete` | Injection review |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings |
@@ -115,6 +117,8 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `brain sync [github]` `[--config PATH \| --instance NAME]` | Run a connector sync |
 | `brain connector-status` | List registered connectors |
 | `brain audit [--kind K] [--limit N]` | Read audit log |
+| `brain key generate` [`--kind rsa`] | Generate a JWT signing keypair (JWT mode) |
+| `brain key list` / `brain key prune` | List / prune JWT signing keys |
 | `brain backup <db> <out>` / `brain restore <backup> <db>` | Encrypted backup/restore |
 
 ---
@@ -127,7 +131,11 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `BIND_PORT` | `8765` | Listen port |
 | `BRAIN_DB_PATH` | `brain.db` | SQLite database path |
 | `CORS_ORIGINS` | `localhost:3000,localhost:8080` | CORS allowlist |
-| `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Bearer token(s). Newline-separated = live rotation. Off if unset. |
+| `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s) (v1.1 default). Newline-separated = live rotation. Off if unset. |
+| `BRAIN_JWT_ISSUER` | — | Enables **JWT mode** when set + keys loaded. URL of the issuer (verified against the `iss` claim). |
+| `BRAIN_JWT_KEY_DIR` | `~/.config/brain-server/keys/` | Directory holding JWT signing key PEMs (mode 0700; private keys 0600). |
+| `BRAIN_PUBLIC_BASE_URL` | — | Public base URL for OIDC discovery (`/.well-known/openid-configuration`). Never inferred from `Host`. |
+| `BRAIN_JWT_AUDIENCE` | `brain-server` | Expected `aud` claim value. |
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
 | `PRF_ENABLED` / `PRF_DEPTH` / `PRF_TERMS` / `PRF_MAX_RANK` | `true` / `10` / `5` / `5` | PRF expansion |
 
@@ -138,7 +146,14 @@ All tunables: [`src/config.rs`](./src/config.rs).
 ## Security
 
 - **Loopback-safe by default.** Refuses `0.0.0.0` unless `BIND_PUBLIC=1`.
-- **Bearer-token auth** on non-public routes. Multiple tokens accepted (live rotation).
+- **Two authentication modes** (JWT is opt-in, opaque is the default):
+  - **Opaque bearer** (v1.1 default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`.
+    Multiple tokens accepted (live rotation). Constant-time compare.
+  - **JWT/JWS** (v1.2 opt-in): set `BRAIN_JWT_ISSUER` + load keys via
+    `brain key generate`. RS256/ES256/EdDSA only (never HS256/`none`);
+    `(jti, iss)` revocation; refresh-chain reuse detection; per-route AuthZ.
+    OIDC discovery at `/.well-known/openid-configuration`, JWKS at
+    `/.well-known/jwks.json`.
 - **Verified webhooks** — HMAC verification, replay-window enforcement, idempotency.
 - **Append-only audit log** — ingest + auth-denial events, hash-only.
 - **Prompt-injection quarantine** — suspicious input stored but excluded from retrieval. Deterministic structural control, not a classifier.

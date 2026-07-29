@@ -35,11 +35,14 @@ pub struct Frontmatter {
 pub fn split_frontmatter(content: &str) -> (String, String) {
     let mut lines = content.split_inclusive('\n');
     let first = lines.next();
-    if first.map(str::trim_end) != Some("---") {
-        return (String::new(), content.to_string());
-    }
+    // The opening `---` must be the very first line. If it's absent or
+    // different, there's no frontmatter — return the whole content as body.
+    let first_line = match first {
+        Some(l) if l.trim_end() == "---" => l,
+        _ => return (String::new(), content.to_string()),
+    };
     let mut yaml = String::new();
-    let mut consumed = first.unwrap().len();
+    let mut consumed = first_line.len();
     for line in lines {
         consumed += line.len();
         if line.trim_end() == "---" {

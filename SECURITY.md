@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-07-26 against OWASP Top 10:**2025** + Cheat Sheet Series
+**Last reviewed:** 2026-07-29 against OWASP Top 10:**2025** + Cheat Sheet Series
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
@@ -11,7 +11,8 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.0.x   | :white_check_mark: | Current LTS line |
+| 1.2.x   | :white_check_mark: | Current — JWT/JWS + AuthZ |
+| 1.0.x   | :white_check_mark: | LTS line (opaque bearer) |
 | 0.9.x   | :white_check_mark: | Maintained for back-compat |
 | < 0.9   | :x:                | Unsupported |
 
@@ -34,12 +35,12 @@ Full threat model in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Summary here.
 
 | Threat class (STRIDE) | Brain-server exposure | Mitigation | Status |
 |---|---|---|---|
-| **S**poofing | Agent → brain-server, brain-server → peer (A2A) | Bearer token (v1.1) → JWT/JWS + mTLS (v1.2/v3.7) | ✅ / 🚧 |
-| **T**ampering | Audit log, content at rest, JWT payload | Hash-chained audit (v1.1 M2.3); parameterized SQL (all versions); JWS signature (v1.2) | ✅ / 🚧 |
+| **S**poofing | Agent → brain-server, brain-server → peer (A2A) | Bearer token (v1.1) / JWT/JWS (v1.2); mTLS (v3.7) | ✅ / 🚧 |
+| **T**ampering | Audit log, content at rest, JWT payload | Hash-chained audit (v1.1 M2.3); parameterized SQL (all versions); JWS signature (v1.2) | ✅ |
 | **R**epudiation | "Who did this write?" | Append-only audit with `(actor, ts, hash, prev_hash)` (v1.1 M2) | ✅ |
 | **I**nformation disclosure | Cross-tenant leak, PII egress | Per-tenant file isolation (v1.0); AuthZ layer (v1.2); SQLCipher + per-field encryption (v3.7) | ✅ / 🚧 |
 | **D**enial of service | Burst, large body, vector query | Body limit + per-IP limiter (v0.9.4); per-tenant + tiered limiter (v2.1) | ✅ / 🚧 |
-| **E**levation of privilege | Token scope escalation | Constant-time token compare (v1.1); AuthZ trait with deny-by-default (v1.2) | ✅ / 🚧 |
+| **E**levation of privilege | Token scope escalation | Constant-time token compare (v1.1); AuthZ trait with deny-by-default (v1.2) | ✅ |
 
 ---
 
@@ -47,7 +48,7 @@ Full threat model in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Summary here.
 
 This is the canonical reference. Each item maps to a control in brain-server.
 
-### A01:2025 — Broken Access Control ✅ / 🚧
+### A01:2025 — Broken Access Control ✅
 
 **Requirement:** Deny by default. Enforce record ownership. Per-request AuthZ
 at the data-access layer. Short-lived tokens + refresh.
@@ -55,11 +56,11 @@ at the data-access layer. Short-lived tokens + refresh.
 | Control | Where | Status |
 |---|---|---|
 | Loopback-only default (no token → loopback only) | `auth_middleware` | ✅ |
-| AuthZ enforcement at the data layer | `AuthzPolicy::authorize` trait | 🚧 v1.2 |
-| JWT short-lived (≤15 min exp) + refresh | `auth/refresh` + token verifier | 🚧 v1.2 |
+| AuthZ enforcement at the data layer | `AuthzPolicy::authorize` trait | ✅ v1.2 |
+| JWT short-lived (≤15 min exp) + refresh | `auth/refresh` + token verifier | ✅ v1.2 |
 | Tenant isolation via file-per-domain | `DomainRegistry` | ✅ v1.0 |
-| AuthZ failures logged with `(principal, action, target)` | `audit_events` | 🚧 v1.2 |
-| Cross-tenant returns 403, never 404 (don't leak existence) | AuthZ layer | 🚧 v1.2 |
+| AuthZ failures logged with `(principal, action, target)` | `audit_events` | ✅ v1.2 M6 |
+| Cross-tenant returns 403, never 404 (don't leak existence) | AuthZ layer | ✅ v1.2 |
 
 **Citation:** OWASP A01:2025 — "Access control is only effective when
 implemented in trusted server-side code... deny by default... enforce record
@@ -72,7 +73,7 @@ ownership... log access control failures."
 | Auth off by default (loopback-safe) | `config::auth_token` | ✅ |
 | CORS allowlist, no wildcard | `CorsLayer` exact origins | ✅ |
 | Bind address loopback by default | `BIND_HOST=127.0.0.1` | ✅ |
-| Public base URL explicit (`BRAIN_PUBLIC_BASE_URL`) | `/.well-known/` (v1.2) | 🚧 |
+| Public base URL explicit (`BRAIN_PUBLIC_BASE_URL`) | `/.well-known/` | ✅ v1.2 |
 | Reproducible build (`Cargo.lock` checked in) | repo | ✅ |
 | Hardened systemd unit on openclaw | `ProtectSystem=strict`, etc. | ✅ |
 
@@ -85,13 +86,13 @@ ownership... log access control failures."
 | Optional features for high-surface deps (reqwest, jsonwebtoken) | Cargo features | ✅ |
 | Reproducible release build | `Cargo.lock`, `opt-level="z"`, `lto="fat"` | ✅ |
 
-### A04:2025 — Cryptographic Failures ✅ / 🚧
+### A04:2025 — Cryptographic Failures ✅
 
 | Control | Where | Status |
 |---|---|---|
-| Tokens compared constant-time | `auth_middleware` | ✅ |
-| JWT RS256/ES256/EdDSA only (never HS256 in distributed) | `verify_access_token` | 🚧 v1.2 |
-| `alg` whitelist + reject `none` + reject algorithm confusion | JWT verifier | 🚧 v1.2 |
+| Tokens compared constant-time | `auth_middleware` (`subtle::ConstantTimeEq`) | ✅ v1.1.2 |
+| JWT RS256/ES256/EdDSA only (never HS256 in distributed) | `verify_access_token` | ✅ v1.2 |
+| `alg` whitelist + reject `none` + reject algorithm confusion | JWT verifier | ✅ v1.2 |
 | AES-256-GCM for backups (v0.9.7) | `backup.rs` | ✅ |
 | HMAC-SHA256 for webhook verification (v0.9.7) | `webhook.rs` | ✅ |
 | SQLCipher at rest (AES-256 per-page) | KMS trait | 🚧 v3.7 |
@@ -122,31 +123,31 @@ browser local storage, and validated for signature, issuer, and audience."
 | Capacity envelope + HTTP 507 (fail-clear on writes) | `capacity.rs` | ✅ |
 | Reversible migrations (idempotent + additive + backup) | `migration.rs` | ✅ |
 | Rehearsal tool for v1.0 cutover (copy → verify → rollback) | `brain-migrate-rehearse` | ✅ |
-| Deny-by-default AuthZ | AuthZ trait | 🚧 v1.2 |
+| Deny-by-default AuthZ | AuthZ trait | ✅ v1.2 |
 | Threat-model review checkpoint per major release | release process | 🚧 |
 
-### A07:2025 — Authentication Failures ✅ / 🚧
+### A07:2025 — Authentication Failures ✅
 
 | Control | Where | Status |
 |---|---|---|
-| Constant-time token compare | `auth_middleware` | ✅ |
+| Constant-time token compare | `auth_middleware` (`subtle::ConstantTimeEq`) | ✅ v1.1.2 |
 | `401` on missing/invalid/malformed | `auth_middleware` | ✅ |
-| Audit row on every auth failure | `audit_events` | 🚧 v1.1 M2.1 |
-| Token rotation (file-watch) | `AUTH_TOKEN_FILE` hot reload | 🚧 v1.1 M1.4 |
-| JWT `(jti, iss)` revocation | `revoked_tokens` table | 🚧 v1.2 |
-| Refresh token rotation + reuse detection | refresh endpoint | 🚧 v1.2 |
+| Audit row on every auth failure | `audit_events` | ✅ v1.1 M2.1 |
+| Token rotation (file-watch) | `AUTH_TOKEN_FILE` hot reload | ✅ v1.1 M1.4 |
+| JWT `(jti, iss)` revocation | `revoked_tokens` table | ✅ v1.2 |
+| Refresh token rotation + reuse detection | refresh endpoint | ✅ v1.2 |
 | Account lockout / rate limit on auth | per-tenant limiter | 🚧 v2.1 |
 
 **Citation:** OWASP JWT Cheat Sheet — "Use the `(jti, iss)` pair because jti
 uniqueness is only guaranteed per issuer — a malicious or rogue issuer could
 mint a JWT with the same jti as a legitimate one, causing a collision."
 
-### A08:2025 — Software or Data Integrity Failures ✅ / 🚧
+### A08:2025 — Software or Data Integrity Failures ✅
 
 | Control | Where | Status |
 |---|---|---|
-| Signed JWTs (JWS) with key rotation | JWKS endpoint | 🚧 v1.2 |
-| Tamper-evident audit (hash chain) | `audit_events.prev_hash` | 🚧 v1.1 M2.3 |
+| Signed JWTs (JWS) with key rotation | JWKS endpoint | ✅ v1.2 |
+| Tamper-evident audit (hash chain) | `audit_events.prev_hash` | ✅ v1.1 M2.3 |
 | Content integrity via XXH3-64 hash | `knowledge.content_hash` | ✅ |
 | Source revision hashing | `source_revisions.revision` | ✅ |
 | Webhook HMAC verification | `webhook.rs` | ✅ |
@@ -159,7 +160,7 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 | Append-only audit log | `audit_events` | ✅ |
 | Per-tenant audit filter | `audit_events.tenant_id` + data-layer filter | 🚧 v1.1 M2.2 |
 | All writes audited (ingest, delete, domain lifecycle) | every write handler | ✅ |
-| All authN/authZ events audited | auth middleware → audit row | 🚧 v1.2 M6 |
+| All authN/authZ events audited | auth middleware → audit row | ✅ v1.2 M6 |
 | Quota warnings audited | `quota.warning` / `quota.exceeded` | 🚧 v2.1 M5 |
 | `/health` exposes ops status | `/health` capacity + integrity | ✅ |
 | `/metrics` Prometheus exporter | `--features metrics` | 🚧 v1.1 M5 |
@@ -215,22 +216,71 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 
 ## Authentication & Authorization
 
-### v1.1 — opaque bearer token (current)
+brain-server has two auth modes, resolved at startup from `BRAIN_JWT_ISSUER`
+(and the presence of a key dir). Both modes coexist; JWT is opt-in and the
+opaque mode is the back-compat default.
+
+### v1.1 — opaque bearer token (default; back-compat)
 
 - `AUTH_TOKEN_FILE` (preferred; 0600 file) or `AUTH_TOKEN` env var.
-- Constant-time compare.
-- Public routes (`/health`, `/health/db`, `/ready`, `/version`, `/.well-known/*`) bypass.
-- File-watch for hot rotation (v1.1 M1.4).
+- Constant-time compare via `subtle::ConstantTimeEq` (v1.1.2).
+- Public routes (`/health`, `/health/db`, `/ready`, `/version`, `/.well-known/*`)
+  bypass.
+- File-watch for hot rotation (v1.1 M1.4); fail-safe on delete/empty.
+- Single-user / single-tenant / loopback deployments.
 
-### v1.2 — JWT/JWS + AuthZ layer (in progress)
+### v1.2 — JWT/JWS + AuthZ layer (opt-in; multi-tenant)
 
-- **Algorithm whitelist**: RS256, RS384, RS512, ES256, ES384, ES512, EdDSA.
-- **Forbidden**: `none`, all HMAC variants (algorithm confusion CVE class).
-- **Verified claims**: `iss`, `aud`, `exp`, `nbf`, `sub`, `jti`.
-- **Revocation**: `(jti, iss)` table, 60s negative-cache.
-- **Refresh tokens**: separate JWS, ≤24h, rotated on use, reuse-detection.
-- **AuthZ trait** with deny-by-default; InMemory policy + pluggable OPA/Cedar.
-- **Per-route enforcement matrix** documented in `IMPLEMENTATION_PLAN_v1.2.0_AuthN.md` §M3.3.
+Enabled by setting `BRAIN_JWT_ISSUER` + loading keys via `brain key generate`.
+The two-layer middleware runs JWT verification outermost; the v1.1 opaque
+layer short-circuits when the JWT layer has already injected a `Principal`.
+
+- **Algorithm whitelist** (checked **before** key lookup — OWASP algorithm-
+  confusion defense): RS256, RS384, RS512, ES256, ES384, ES512, EdDSA.
+  **Forbidden**: `none`, all HMAC variants (HS*), all PS* variants.
+- **Verified claims**: `iss`, `aud`, `exp`, `nbf`, `sub`, `jti`. No "soft"
+  validation; missing claim = reject. 30s leeway for clock skew.
+- **Revocation**: `(jti, iss)` table per OWASP JWT Cheat Sheet, 60s negative-
+  lookup cache (eventual consistency, bounded TTL).
+- **Refresh tokens**: separate JWS, ≤24h, rotated on use. Reuse detection
+  burns the whole chain (OWASP pattern).
+- **AuthZ trait** with deny-by-default; `InMemoryPolicy` default (no external
+  deps); OPA/Cedar impls are the swappable v2.1+ upgrade path. `Action` enum
+  (Read/Write/Admin/Traverse) + `Scope` (`<action>:<team>/<domain>` with
+  wildcards). Escalation: write implies read down, admin implies both.
+- **Per-route enforcement matrix** documented in
+  `IMPLEMENTATION_PLAN_v1.2.0_AuthN.md` §M3.3.
+- **OIDC discovery** at `GET /.well-known/openid-configuration` (RFC 8414) +
+  **JWKS** at `GET /.well-known/jwks.json` (RFC 7517). Issuer pinned to
+  `BRAIN_PUBLIC_BASE_URL` — never inferred from the `Host` header (OWASP
+  A02:2025 Security Misconfiguration).
+
+### JWT Cheat Sheet compliance checklist (v1.2)
+
+Source: `IMPLEMENTATION_PLAN_v1.2.0_AuthN.md` §M1 (Context7-verified at plan
+write time; OWASP cheat-sheet URLs were 404ing on the v1.2 ship date, so the
+plan's encoded checklist was the source of truth). Every item is pinned by a
+unit test in `src/auth/jwt.rs` (14 tests covering the full failure matrix).
+
+- [x] **`alg` whitelist** — RS256/384/512, ES256/384/512, EdDSA only.
+- [x] **Reject `none`** — unsigned tokens rejected before any signature work.
+- [x] **Reject HS\*** — algorithm-confusion CVE class (attacker HMACs the
+      public key); rejected even if a matching HMAC key exists.
+- [x] **Reject PS\*** — cryptographically fine but excluded from the
+      whitelist to minimize the accepted algorithm surface.
+- [x] **Reject tampered payloads** — signature mismatch → 401.
+- [x] **Validate `exp`** — expired tokens rejected (30s leeway).
+- [x] **Validate `nbf`** — not-yet-valid tokens rejected (30s leeway).
+- [x] **Validate `iss`** — must match `BRAIN_JWT_ISSUER`.
+- [x] **Validate `aud`** — must match `BRAIN_JWT_AUDIENCE`.
+- [x] **Require `jti`** — missing `jti` → 401 (revocation needs it).
+- [x] **Require `kid`** — missing `kid` → 401 (key lookup needs it).
+- [x] **Reject unknown `kid`** — key not in JWKS → 401.
+- [x] **`(jti, iss)` revocation** — denylist lookup before accept (per OWASP:
+      `jti` is unique per `iss` only).
+- [x] **Token-type discrimination** — refresh tokens (`typ: refresh`)
+      rejected on data routes; access tokens rejected on `/auth/refresh`.
+- [x] **Refresh-chain reuse detection** — reuse burns the family.
 
 ---
 
@@ -241,10 +291,10 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 | Content deduplication | XXH3-64 (non-cryptographic, fast) | ✅ |
 | Source revision hash | XXH3-64 | ✅ |
 | Document ID | XXH3-64 of title | ✅ |
-| Audit row hash chain | SHA-256 | 🚧 v1.1 M2.3 |
-| Auth token compare | Constant-time `==` | ✅ |
-| JWT signature | RS256 / ES256 / EdDSA | 🚧 v1.2 |
-| JWT revocation key | `(jti, iss)` SHA-256 | 🚧 v1.2 |
+| Audit row hash chain | SHA-256 | ✅ v1.1 M2.3 |
+| Auth token compare | Constant-time (`subtle::ConstantTimeEq`) | ✅ v1.1.2 |
+| JWT signature | RS256 / ES256 / EdDSA | ✅ v1.2 |
+| JWT revocation key | `(jti, iss)` | ✅ v1.2 |
 | Webhook verification | HMAC-SHA256 | ✅ |
 | Backup encryption | AES-256-GCM | ✅ |
 | Database at rest | SQLCipher AES-256 per-page | 🚧 v3.7 |
@@ -324,12 +374,35 @@ OWASP Secrets Management Cheat Sheet (Context7-verified 2026-07-26):
 1. **File (default, v0.9+)**: `~/.config/brain-server/auth-token` mode 0600.
    Hot-rotatable via file-watch (v1.1 M1.4).
 2. **JWT signing keys (v1.2)**: `~/.config/brain-server/keys/` mode 0700;
-   private keys mode 0600; rotated via `brain key rotate` CLI.
+   private keys mode 0600; rotated via `brain key generate/list/prune` CLI.
 3. **External KMS (v3.7, BYOK pattern)**:
    - `BRAIN_KMS_PROVIDER=file|vault|aws`
    - `FileKeyProvider` (default; mode 0600 keys)
    - `VaultKeyProvider` (HashiCorp Vault; transit secret engine)
    - `AwsKmsKeyProvider` (AWS KMS; envelope encryption)
+
+### Bring Your Own Key (BYOK)
+
+Per `IMPLEMENTATION_PLAN_v1.2.0_AuthN.md` §5.3 (OWASP Secrets Management).
+
+| Tier | Mechanism | Status |
+|---|---|---|
+| **File-based (default)** | Operator places PEM files in `BRAIN_JWT_KEY_DIR` (default `~/.config/brain-server/keys/`, mode 0700; private keys 0600). `brain key generate` creates a fresh RSA keypair with the right modes. `brain key prune` drops retired keys after the rotation window. | ✅ v1.2 |
+| **Customer-managed (multi-tenant)** | Per-tenant key directories scoped by tenant id; the `KeyStore` resolves the verifying set from the request's verified `tenant` claim. The compliance wedge for regulated multi-tenant deployments. | 🚧 v2.0+ |
+| **External KMS** | `BRAIN_KMS_PROVIDER` + `BRAIN_KMS_KEY_ID` env vars are **reserved** in the config surface (parsed but not yet wired to a provider). Future impls: HashiCorp Vault (transit secret engine), AWS KMS (envelope encryption). No KMS code ships in v1.2 — file-based is sufficient for the single-host trusted-disk threat model. | 🚧 v3.7 |
+
+**Rotation procedure (v1.2, file-based):**
+
+```sh
+brain key generate           # mints a new keypair; old key stays in JWKS
+# …wait ≥ max token lifetime (24h refresh)…
+brain key prune              # drops retired keys from JWKS
+scripts/install-service.sh   # restart to reload the key set
+```
+
+Two keys stay live during rotation; the old key drops from JWKS only after
+every cached client token has expired (the 1h JWKS cache header + 24h refresh
+lifetime bound the overlap window).
 
 ### No secrets in
 
@@ -391,6 +464,11 @@ are operations work, not engineering.
 ## Secure Deployment Checklist
 
 - [ ] Set `AUTH_TOKEN_FILE` to a 0600-mode file containing ≥32 chars of entropy.
+- [ ] **For JWT mode**: set `BRAIN_JWT_ISSUER` + `BRAIN_PUBLIC_BASE_URL`, run
+      `brain key generate`, restart via `install-service.sh`.
+- [ ] **For JWT mode**: front `/.well-known/jwks.json` with a reverse proxy +
+      IP allowlist if the server is reachable beyond loopback (public keys,
+      but not unlimited scrape traffic).
 - [ ] Set `CORS_ORIGINS` to exact production origins (no wildcards).
 - [ ] Terminate TLS at reverse proxy; set `TLS_ENABLED=1` for HSTS.
 - [ ] Configure proxy: TLS 1.3 min, modern cipher suite, OCSP stapling.
@@ -410,8 +488,8 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.2 | 2026-07-29 | JWT/JWS verification (RS256/ES256/EdDSA, alg whitelist, no HS256/`none`); `(jti, iss)` revocation; refresh-chain reuse detection; AuthZ trait (deny-by-default); OIDC discovery + JWKS; key management CLI |
 | 1.1 | 2026-07-28 | Per-tenant audit + SHA-256 hash chain; fail-safe file-watch token rotation; rolling backups + `/health` integrity; graceful-shutdown drain cap + WAL checkpoint; RSS watchdog; Prometheus `/metrics` exporter |
-| 1.2 (planned) | 2026-Q3 | JWT/JWS verification (RS256/ES256/EdDSA); `(jti, iss)` revocation; AuthZ trait + middleware; JWKS endpoint; OIDC discovery |
 | 2.0 (planned) | 2026-Q4 | Multi-team tenancy consuming v1.2 AuthZ; team namespace in paths |
 | 2.1 (planned) | 2026-Q4 | Per-tenant + tiered rate limiting; Redis impl; cost tracking; quota alerts |
 | 3.7 (planned) | 2027-Q1 | A2A federation over mTLS; SQLCipher + KMS abstraction; per-field PII encryption; differential privacy |

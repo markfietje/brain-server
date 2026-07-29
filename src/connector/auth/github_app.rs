@@ -252,7 +252,7 @@ impl GitHubAppProvider {
     /// True when the cached token is missing or close to expiry. Takes the
     /// cache lock briefly so the subsequent fetch can run unlocked.
     fn needs_refresh(&self) -> bool {
-        let guard = self.cached.lock().expect("cached token mutex poisoned");
+        let guard = self.cached.lock().unwrap_or_else(|e| e.into_inner());
         match &*guard {
             None => true,
             Some(c) => c.token.is_expired(REFRESH_SKEW),
@@ -317,7 +317,7 @@ impl AuthProvider for GitHubAppProvider {
     fn access_token(&self) -> Result<AccessToken> {
         // Fast path: cached + not near expiry.
         if !self.needs_refresh() {
-            let guard = self.cached.lock().expect("cached token mutex poisoned");
+            let guard = self.cached.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(c) = guard.as_ref() {
                 return Ok(c.token.clone());
             }
@@ -326,7 +326,7 @@ impl AuthProvider for GitHubAppProvider {
         // Slow path: sign a fresh JWT and exchange it for an installation token.
         let app_jwt = self.sign_app_jwt()?;
         let token = self.fetch_installation_token(&app_jwt)?;
-        let mut guard = self.cached.lock().expect("cached token mutex poisoned");
+        let mut guard = self.cached.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(CachedToken {
             token: token.clone(),
         });

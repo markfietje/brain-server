@@ -99,22 +99,26 @@ fn handle_line(line: &str) -> Result<Option<String>, String> {
     let req: serde_json::Value =
         serde_json::from_str(line).map_err(|e| format!("invalid JSON-RPC request: {e}"))?;
 
-    // Notifications (no id) need no response.
+    // Notifications (no id) need no response per JSON-RPC 2.0 §4. A missing id
+    // on a request that would otherwise produce an error response is also
+    // treated as a notification — silently dropping is safer than panicking.
     let id = req.get("id").cloned();
     let method = req
         .get("method")
         .and_then(|m| m.as_str())
         .ok_or("missing 'method'")?
         .to_string();
+
+    // If there's no id, this is a notification — acknowledge and return no reply
+    // regardless of whether the method succeeded (JSON-RPC 2.0 §4.1).
+    let id = match id {
+        Some(v) => v,
+        None => return Ok(None),
+    };
     let params = req
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-
-    if id.is_none() {
-        // Notification — acknowledged, no reply.
-        return Ok(None);
-    }
 
     let result = match method.as_str() {
         "initialize" => method_initialize(),
@@ -123,7 +127,7 @@ fn handle_line(line: &str) -> Result<Option<String>, String> {
         "ping" => Ok(serde_json::json!({})),
         other => {
             return Ok(Some(error_response(
-                &id.unwrap(),
+                &id,
                 -32601,
                 &format!("method not found: {other}"),
             )));
@@ -131,8 +135,8 @@ fn handle_line(line: &str) -> Result<Option<String>, String> {
     };
 
     match result {
-        Ok(r) => Ok(Some(success_response(&id.unwrap(), r))),
-        Err(e) => Ok(Some(error_response(&id.unwrap(), -32603, &e))),
+        Ok(r) => Ok(Some(success_response(&id, r))),
+        Err(e) => Ok(Some(error_response(&id, -32603, &e))),
     }
 }
 

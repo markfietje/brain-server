@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.1.2
-  x-api-version: "1.1.2"
+  version: 1.2.0
+  x-api-version: "1.2.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -930,6 +930,126 @@ paths:
                   bytes: { type: integer }
         "400": { $ref: "#/components/responses/BadRequest" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+  /auth/refresh:
+    post:
+      summary: Exchange a refresh token for a new access + refresh token pair (v1.2 AuthN)
+      description: >
+        Verifies the presented refresh token cryptographically, detects reuse
+        (revoke_chain burns the family on reuse — OWASP pattern), rotates the
+        chain, returns a fresh access (≤15 min) + refresh (≤24h) token pair.
+        PUBLIC route — the refresh token is the credential. Returns 404
+        `jwt_unavailable` when the server is in opaque-token mode.
+      operationId: authRefresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Fresh token pair
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401":
+          description: Refresh token invalid / expired / wrong type
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: invalid_claim }
+                  error: { type: string }
+        "403":
+          description: Refresh-chain reuse detected; the chain has been revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: refresh_reuse_detected }
+                  error: { type: string }
+  /auth/logout:
+    post:
+      summary: Revoke the request's access token (v1.2 AuthN)
+      description: >
+        Adds the request's access-token `jti` to the `(jti, iss)` denylist with
+        `reason='logout'`. Reads the `Principal` injected by the JWT middleware
+        on the original access-token request. Returns 204 regardless of whether
+        a principal was present (no information leakage on unauthenticated calls).
+      operationId: authLogout
+      responses:
+        "204":
+          description: Logged out (or no principal present — same response)
+  /auth/revoke:
+    post:
+      summary: Operator/admin revoke a specific token by jti (v1.2 AuthN)
+      description: >
+        Revokes a specific `jti` without the holder presenting it. Requires
+        admin auth. Body: `{ jti, iss, reason, expires_at? }`. Used for
+        incident response (suspected compromise) without waiting for natural
+        expiry. Invalidates the negative-lookup cache for the revoked `(jti, iss)`.
+      operationId: authRevoke
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeRequest"
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not admin-scoped
+  /.well-known/openid-configuration:
+    get:
+      summary: OIDC Discovery metadata (RFC 8414) (v1.2 AuthN)
+      description: >
+        PUBLIC route. Returns the OIDC Discovery metadata. `issuer` + `jwks_uri`
+        are derived from `BRAIN_PUBLIC_BASE_URL` (never from the Host header —
+        OWASP A02:2025). When JWT is not configured, returns an empty placeholder
+        so probing clients get a clear "not configured" signal instead of a 404.
+      operationId: getOidcConfig
+      responses:
+        "200":
+          description: OIDC Discovery metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OidcConfig"
+  /.well-known/jwks.json:
+    get:
+      summary: JWK Set (RFC 7517) for key distribution (v1.2 AuthN)
+      description: >
+        PUBLIC route. Returns the current signing key set as a JWK Set.
+        Served with `Cache-Control: public, max-age=3600`; rotation keeps the
+        old key live > cache TTL so a stale client cache can't break
+        verification. Returns 500 `jwks_unavailable` when no RSA signing keys
+        are configured (EC/Ed JWK emission is a v1.3 follow-up).
+      operationId: getJwks
+      responses:
+        "200":
+          description: JWK Set
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "public, max-age=3600" }
+          content:
+            application/jwk-set+json:
+              schema:
+                $ref: "#/components/schemas/JwkSet"
+        "500":
+          description: No RSA signing keys configured for JWKS emission
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: jwks_unavailable }
+                  error: { type: string }
 components:
   responses:
     BadRequest:
@@ -1221,3 +1341,101 @@ components:
       properties:
         recorded: { type: integer }
         rejected: { type: array, items: { type: string } }
+    RefreshRequest:
+      type: object
+      description: v1.2 AuthN — `POST /auth/refresh` body. The refresh token is the credential.
+      properties:
+        refresh_token: { type: string, description: "JWS refresh token (typ: refresh)" }
+      required: [refresh_token]
+    TokenPair:
+      type: object
+      description: v1.2 AuthN — `/auth/refresh` response. Both tokens are opaque bearer strings to the client.
+      properties:
+        access_token: { type: string, description: JWS access token (≤15 min exp) }
+        refresh_token: { type: string, description: JWS refresh token (≤24h exp, rotated on next use) }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: access-token lifetime in seconds, example: 900 }
+      required: [access_token, refresh_token, token_type, expires_in]
+    RevokeRequest:
+      type: object
+      description: v1.2 AuthN — `POST /auth/revoke` body (operator/admin).
+      properties:
+        jti: { type: string, description: Token id to revoke }
+        iss: { type: string, description: Issuer (jti is unique per iss only) }
+        reason: { type: string, default: operator_revoked, description: "compromise | operator_revoked | rotation | custom" }
+        expires_at: { type: integer, nullable: true, description: "Unix epoch; defaults to now + 15 min" }
+      required: [jti, iss]
+    OidcConfig:
+      type: object
+      description: v1.2 AuthN — OIDC Discovery metadata (RFC 8414). Empty placeholder when JWT is unconfigured.
+      properties:
+        issuer: { type: string, example: "https://brain.example.com/" }
+        jwks_uri: { type: string, example: "https://brain.example.com/.well-known/jwks.json" }
+        token_endpoint: { type: string, example: "https://brain.example.com/auth/refresh" }
+        revocation_endpoint: { type: string, example: "https://brain.example.com/auth/revoke" }
+        id_token_signing_alg_values_supported:
+          type: array
+          items: { type: string }
+          example: [RS256, RS384, RS512, ES256, ES384, EdDSA]
+        scopes_supported:
+          type: array
+          items: { type: string }
+          example: [openid, read, write, admin]
+        response_types_supported:
+          type: array
+          items: { type: string }
+          example: [token]
+        subject_types_supported:
+          type: array
+          items: { type: string }
+          example: [public]
+        claims_supported:
+          type: array
+          items: { type: string }
+          example: [iss, aud, sub, jti, iat, nbf, exp, tenant, scopes]
+    JwkSet:
+      type: object
+      description: v1.2 AuthN — RFC 7517 JWK Set served at `/.well-known/jwks.json`.
+      properties:
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/Jwk" }
+      required: [keys]
+    Jwk:
+      type: object
+      description: v1.2 AuthN — single JSON Web Key (RSA only in v1.2; EC/Ed emission is v1.3).
+      properties:
+        kty: { type: string, example: RSA }
+        use: { type: string, example: sig }
+        alg: { type: string, example: RS256 }
+        kid: { type: string, description: Key id used in JWT `kid` header }
+        n: { type: string, description: RSA modulus (base64url) }
+        e: { type: string, description: RSA exponent (base64url), example: AQAB }
+      required: [kty, use, alg, kid, n, e]
+    Principal:
+      type: object
+      description: >
+        v1.2 AuthN — the authenticated principal, injected into request
+        extensions by the JWT middleware. `None` (absent) means opaque/no-auth
+        back-compat path (= superuser). Never serialized in a response.
+      properties:
+        sub: { type: string, description: Subject (from JWT `sub` claim) }
+        jti: { type: string, description: Token id (revocation key) }
+        tenant: { type: string, description: Tenant context (from signed `tenant` claim) }
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/Scope" }
+      required: [sub, jti, tenant]
+    Scope:
+      type: object
+      description: >
+        v1.2 AuthN — authorization scope of the form `<action>:<team>/<domain>`.
+        `team` and `domain` may be `*` (wildcard). Escalation: write implies
+        read down, admin implies both. `read:*/*` is superuser.
+      properties:
+        action:
+          type: string
+          enum: [read, write, admin, traverse]
+        team: { type: string, description: Team id or `*` }
+        domain: { type: string, description: Domain id or `*` }
+      required: [action, team, domain]

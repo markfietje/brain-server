@@ -131,6 +131,10 @@ fn main() {
         "connector-status" => cmd_connector_status(rest),
         "backup" => cmd_backup(rest),
         "restore" => cmd_restore(rest),
+        // v1.2.0 AuthN: JWT signing key management. Local-file operations;
+        // no server roundtrip (the server picks up new keys via its own
+        // KeyStore reload, currently on restart — hot-reload is a follow-up).
+        "key" => cmd_key(rest),
         "bench" => cmd_bench(),
         "status" => cmd_status(),
         "doctor" => cmd_doctor(rest),
@@ -178,6 +182,9 @@ usage:
   brain connector-status
   brain backup <out-path> [--passphrase-file PATH]
   brain restore <in-path> [--passphrase-file PATH]
+  brain key generate [--kid ID] [--alg RS256] [--dir PATH]
+  brain key list [--dir PATH]
+  brain key prune [--dir PATH] [--keep N]
   brain bench
   brain status
   brain doctor [--backup <path> [--passphrase-file PATH]]
@@ -1136,6 +1143,221 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
     brain_server::backup::restore(Path::new(&in_path), &db, &pass)
         .map_err(|e| format!("restore failed: {e:#}"))?;
     println!("restored: {db:?} (safety snapshot saved as <db>.bak)");
+    Ok(())
+}
+
+// ── v1.2.0 "AuthN": JWT signing key management ──────────────────────────────
+// Local-file operations — no server roundtrip. The server picks up new keys
+// on restart (hot-reload via KeyStore::reload is a follow-up; the rotation
+// watcher pattern from v1.1's TokenStore is the template).
+
+/// Resolve the key directory: explicit `--dir`, else `BRAIN_JWT_KEY_DIR`,
+/// else the platform default `~/.config/brain-server/keys/`.
+fn key_dir(flags: &std::collections::HashMap<String, Option<String>>) -> PathBuf {
+    if let Some(d) = flags.get("dir").and_then(|o| o.clone()) {
+        return PathBuf::from(d);
+    }
+    if let Ok(d) = std::env::var("BRAIN_JWT_KEY_DIR") {
+        let p = d.trim();
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    dirs_home().join(".config/brain-server/keys")
+}
+
+fn cmd_key(args: &[String]) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("usage: brain key <generate|list|prune> [...]".to_string());
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    match sub {
+        "generate" => cmd_key_generate(rest),
+        "list" => cmd_key_list(rest),
+        "prune" => cmd_key_prune(rest),
+        other => Err(format!(
+            "unknown 'brain key' subcommand: '{other}' (try generate|list|prune)"
+        )),
+    }
+}
+
+/// `brain key generate` — create a new RSA keypair, write to `<dir>/<kid>.pem`
+/// + `<dir>/<kid>.key` (0600). The kid defaults to a short timestamped id.
+fn cmd_key_generate(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let dir = key_dir(&flags);
+    let kid = flags.get("kid").and_then(|o| o.clone()).unwrap_or_else(|| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("brain-{ts:x}")
+    });
+    // Create the dir 0700 if missing (OWASP Secrets Management: key dir mode).
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create key dir {dir:?}: {e}"))?;
+    set_mode_0700(&dir)?;
+
+    // Generate the RSA keypair. 2048 bits is the documented default for RS256;
+    // matching every major IdP's minimum.
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use rsa::RsaPrivateKey;
+    let mut rng = rand::thread_rng();
+    let priv_key = RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|e| format!("RSA keypair generation failed: {e}"))?;
+    let pub_key = rsa::RsaPublicKey::from(&priv_key);
+    let pub_pem = pub_key
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|e| format!("public PEM encode failed: {e}"))?;
+    let priv_pem = priv_key
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|e| format!("private PEM encode failed: {e}"))?;
+
+    let pub_path = dir.join(format!("{kid}.pem"));
+    let priv_path = dir.join(format!("{kid}.key"));
+    // Refuse to overwrite an existing keypair (silent overwrite would lose
+    // the old signing key, breaking every outstanding token).
+    if pub_path.exists() || priv_path.exists() {
+        return Err(format!(
+            "refusing to overwrite existing key '{kid}' in {dir:?}; pick a different --kid"
+        ));
+    }
+    std::fs::write(&pub_path, pub_pem.as_bytes())
+        .map_err(|e| format!("write {pub_path:?}: {e}"))?;
+    std::fs::write(&priv_path, priv_pem.as_bytes())
+        .map_err(|e| format!("write {priv_path:?}: {e}"))?;
+    set_mode_0600(&priv_path)?;
+
+    println!("generated RSA-2048 keypair:");
+    println!("  kid     : {kid}");
+    println!("  public  : {pub_path:?}");
+    println!("  private : {priv_path:?} (mode 0600)");
+    println!("restart brain-server to load the new key; existing tokens stay valid until the old key is pruned");
+    Ok(())
+}
+
+/// `brain key list` — list every key in the dir (kid, has-private, size).
+fn cmd_key_list(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let dir = key_dir(&flags);
+    if !dir.exists() {
+        println!("key dir {dir:?} does not exist (no keys configured)");
+        return Ok(());
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("read key dir {dir:?}: {e}"))?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let ext = p.extension().and_then(|s| s.to_str())?;
+            if ext == "pem" {
+                Some(p.file_stem()?.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    entries.sort();
+    if entries.is_empty() {
+        println!("no keys in {dir:?}");
+        return Ok(());
+    }
+    println!("{:<24} {:<8} path", "kid", "signing");
+    for kid in entries {
+        let has_priv = dir.join(format!("{kid}.key")).exists();
+        let role = if has_priv { "yes" } else { "verify" };
+        println!("{kid:<24} {role:<8} {dir:?}");
+    }
+    Ok(())
+}
+
+/// `brain key prune` — remove public PEMs that have no matching private key
+/// AND are older than `--keep` (default 1, meaning keep the most recent N
+/// verify-only keys). Used after rotation to drop keys whose tokens have all
+/// expired. Refuses to touch keys with a private half (those are still active).
+fn cmd_key_prune(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let dir = key_dir(&flags);
+    let keep: usize = flags
+        .get("keep")
+        .and_then(|o| o.clone())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    if !dir.exists() {
+        println!("key dir {dir:?} does not exist; nothing to prune");
+        return Ok(());
+    }
+    // Verify-only keys = PEMs without a matching `.key`. Sort by mtime desc;
+    // keep the N most recent, prune the rest.
+    let mut verify_only: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("read key dir {dir:?}: {e}"))?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let ext = p.extension().and_then(|s| s.to_str())?;
+            if ext != "pem" {
+                return None;
+            }
+            let kid = p.file_stem()?.to_string_lossy().to_string();
+            let has_priv = dir.join(format!("{kid}.key")).exists();
+            if has_priv {
+                return None;
+            }
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((p, mtime))
+        })
+        .collect();
+    // Sort newest first. clippy suggests `sort_by_key` with `Reverse` for
+    // descending order — equivalent, slightly clearer intent.
+    verify_only.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
+    let to_prune = if verify_only.len() > keep {
+        &verify_only[keep..]
+    } else {
+        &[]
+    };
+    if to_prune.is_empty() {
+        println!(
+            "no verify-only keys to prune (keep={keep}, found={})",
+            verify_only.len()
+        );
+        return Ok(());
+    }
+    for (p, _) in to_prune {
+        std::fs::remove_file(p).map_err(|e| format!("prune {p:?}: {e}"))?;
+        println!("pruned: {p:?}");
+    }
+    println!(
+        "pruned {} verify-only keys (kept {})",
+        to_prune.len(),
+        verify_only.len() - to_prune.len()
+    );
+    Ok(())
+}
+
+/// Set file mode 0600 on Unix. No-op on non-Unix (the brain-server target is
+/// macOS/Linux, but this keeps the CLI portable for tests on Windows-hosted CI).
+#[cfg(unix)]
+fn set_mode_0600(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("chmod 0600 {path:?}: {e}"))
+}
+
+#[cfg(not(unix))]
+fn set_mode_0600(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// Set dir mode 0700 on Unix.
+#[cfg(unix)]
+fn set_mode_0700(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("chmod 0700 {path:?}: {e}"))
+}
+
+#[cfg(not(unix))]
+fn set_mode_0700(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 

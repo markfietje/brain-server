@@ -20,6 +20,7 @@
 //!    bodies are deliberately minimal so they can be filled in without
 //!    changing the contract.
 
+pub mod auth;
 pub mod connectors;
 pub mod consolidate;
 pub mod domains;
@@ -28,6 +29,7 @@ pub mod ingest;
 pub mod recall;
 pub mod sources;
 pub mod webhooks;
+pub mod well_known;
 
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
@@ -289,6 +291,56 @@ pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
 impl IntoResponse for HandlerError {
     fn into_response(self) -> axum::response::Response {
         (self.status, Json(ErrorBody { error: self.inner })).into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthZ gate (v1.2.0 "AuthN" M3)
+// ---------------------------------------------------------------------------
+
+/// The single AuthZ gate every handler passes through. Returns Ok(()) if the
+/// principal is authorized for (action, team, domain), or a 403 HandlerError.
+/// `principal = None` is the v1.1 opaque-token / no-auth back-compat path:
+/// superuser, all scopes implicit. This is the lazy-Authorization retrofit —
+/// one call per handler instead of refactoring every pool-resolution site.
+///
+/// Usage: `authorize(principal, Action::Read, &tenant, &domain)?;` before
+/// resolving the pool or touching domain data.
+pub fn authorize(
+    principal: &Option<crate::auth::Principal>,
+    action: crate::auth::Action,
+    team: &str,
+    domain: &str,
+) -> Result<(), HandlerError> {
+    match principal {
+        None => Ok(()), // back-compat: no JWT = superuser
+        Some(p) => {
+            // The principal's tenant is the team context. If the caller passes
+            // a team that doesn't match, it's a cross-tenant attempt.
+            let effective_team = if team.is_empty() { &p.tenant } else { team };
+            if crate::auth::is_authorized(p, action, effective_team, domain) {
+                Ok(())
+            } else {
+                Err(HandlerError::forbidden(action, effective_team, domain))
+            }
+        }
+    }
+}
+
+impl HandlerError {
+    pub fn forbidden(action: crate::auth::Action, team: &str, domain: &str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            inner: ApiError::new(
+                "forbidden",
+                format!("no scope grants {action:?} on {team}/{domain}"),
+            )
+            .with_details(serde_json::json!({
+                "action": format!("{action:?}"),
+                "team": team,
+                "domain": domain,
+            })),
+        }
     }
 }
 

@@ -12,6 +12,111 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.2.0 "AuthN" — 2026-07-29
+
+JWT/JWS authentication + AuthZ layer. The prerequisite for v2.0 multi-team
+tenancy, enforced at the data-access layer rather than hand-rolled per-handler.
+Back-compat is the default: when `BRAIN_JWT_ISSUER` is unset OR no keys are
+loaded, the server runs in v1.1 opaque-token mode and every existing install
+keeps working unchanged. JWT is opt-in.
+
+Research basis: Context7 lookup on `jsonwebtoken` v10 verified 2026-07-29 (API
+surface, `Validation` builder, algorithm enum). OWASP cheat-sheet URLs were
+404ing on the day, so the encoded checklist from
+`IMPLEMENTATION_PLAN_v1.2.0_AuthN.md` (which was Context7-verified at plan
+write time) was the source of truth for the JWT Cheat Sheet test matrix.
+
+#### Security
+
+**M1 — JWT verification core (`src/auth/jwt.rs`).** `verify_access_token()` +
+`Claims` + `AuthError`. `ALLOWED_ALGS` whitelist (RS256/384/512, ES256/384/512,
+EdDSA) is checked **before** key lookup — the OWASP algorithm-confusion defense
+(`none`, all HS*, all PS* rejected unconditionally). Every claim validated:
+`iss`, `aud`, `exp`, `nbf`, `sub`, `jti`. 30s leeway for clock skew
+(subsumes the `reject_tokens_expiring_in_less_than` knob — documented
+trade-off). 14 tests pin the full OWASP JWT Cheat Sheet failure matrix:
+`none` rejected, HS256-with-public-key rejected, tampered payload rejected,
+expired/nbf rejected, wrong iss/aud rejected, missing jti/kid rejected,
+unknown kid rejected, refresh token rejected on data routes, PS256 rejected
+by whitelist, valid token accepted, leeway absorbs skew.
+
+**M2 — Revocation (`src/auth/revocation.rs`).** Additive `revoked_tokens` +
+`refresh_chains` tables. `RevocationCache` (60s negative-lookup cache, bounded
+TTL — eventual consistency by design). `purge_expired` housekeeping runs on a
+background timer. Refresh-chain reuse detection: presenting a stale refresh
+token calls `revoke_chain` and burns the whole family (OWASP pattern). The
+chain id is derived from `(iss, sub)` — per-user per-issuer.
+
+**M3 — AuthZ (`src/auth/policy.rs`).** `AuthzPolicy` trait + `InMemoryPolicy`
+default (no external deps; OPA/Cedar impls are the swappable v2.1+ upgrade
+path). `Action` enum (Read/Write/Admin/Traverse) + `Scope`
+(`<action>:<team>/<domain>` with wildcards) + `Principal` +
+`is_authorized()`. Escalation: write implies read down, admin implies both.
+Default-deny → 403, never 404 (no existence leakage — OWASP A01:2025). The
+retrofit is minimal: a single `authorize(principal, action, team, domain)`
+helper called at handler entry, not a full pool-resolution refactor.
+`Option<Principal>` where `None` = superuser (the back-compat path — opaque
+token mode passes `None` everywhere).
+
+**M4 — OIDC discovery + JWKS (`src/handlers/well_known.rs`).**
+`GET /.well-known/openid-configuration` (RFC 8414) + `GET /.well-known/jwks.json`
+(RFC 7517). Both routes PUBLIC — clients need them to learn how to verify
+tokens; you can't require a token to discover token verification. Issuer is
+pinned to `BRAIN_PUBLIC_BASE_URL` — never inferred from the `Host` header
+(OWASP A02:2025 Security Misconfiguration: Host-header spoofing could
+otherwise redirect discovery to a malicious endpoint).
+
+**M5 — Key management (`src/auth/jwks.rs` + `src/bin/brain.rs`).** `KeyStore`
+loads RSA/EC/Ed25519 PEMs from `BRAIN_JWT_KEY_DIR` (default
+`~/.config/brain-server/keys/`, mode 0700; private keys 0600), exposes
+`VerifyingKey`s for verification + RFC 7517 JWK Set JSON for the public
+endpoint. `brain key generate/list/prune` CLI: RSA keypair generation with
+0600 private-key mode + 0700 dir mode. Two keys live during rotation; the old
+key drops from JWKS only after every cached token has expired.
+
+**M6 — Audit integration.** AuthN/AuthZ events flow into the existing v1.1
+audit log: token-verified, token-rejected (with reason),
+authz-denied (with principal/action/team/domain), logout. Per-tenant audit
+filter at the data layer is unchanged from v1.1.
+
+**M7 — Migration (`src/migration.rs`).** Additive: `revoked_tokens` +
+`refresh_chains` tables. `schema_version` stamped `1.2.0`. Back-compat: when
+`BRAIN_JWT_ISSUER` is unset OR no keys load, the server falls back to v1.1
+opaque-token mode. Two-layer middleware: `jwt_auth_middleware` runs outermost
+(verifies JWS, checks revocation, injects `Principal` into extensions); the
+v1.1 `auth_middleware` runs as fallback and short-circuits when the Principal
+is already set.
+
+#### Updated
+- Cargo.toml 1.1.2 → 1.2.0. `jsonwebtoken` promoted from optional to required
+  (with `use_pem` + `rust_crypto` features); `rsa` + `rand` + `base64` added
+  as direct deps. `openapi.yaml` → 1.2.0 with `/auth/*`,
+  `/.well-known/*`, and the `TokenPair`/`RefreshRequest`/`RevokeRequest`/
+  `OidcConfig`/`JwkSet`/`Jwk`/`Principal`/`Scope` schemas.
+
+#### Honest ceilings (carried into v1.3)
+- **No distributed revocation.** The 60s negative cache is per-process; a
+  multi-instance deployment has a 60s window per instance. Distributed
+  revocation (Redis-backed denylist) is the v2.1 concern.
+- **No hot key reload — restart required.** Adding/removing a signing key
+  via `brain key generate/prune` requires an `install-service.sh` restart to
+  pick up. File-watch for keys is a small follow-up; deferred to keep the
+  v1.2 surface tight.
+- **EC/Ed JWK emission not implemented.** `KeyStore::to_jwks()` emits RSA
+  keys only today (the common case); EC/Ed keys verify correctly but don't
+  appear in `/.well-known/jwks.json`. Workaround: rotate to RSA for any key
+  a third party must discover via JWKS. Tracked for v1.3.
+- **No cookie-based refresh token storage.** Refresh tokens are returned in
+  the JSON body only; CLI bearer usage is the assumed client shape. The
+  `HttpOnly`+`Secure`+`SameSite=Strict` cookie path (browser UI) lands with
+  the v2.0 UI.
+- **Refresh-chain reuse detection burns the chain but doesn't notify the
+  user.** A stolen-then-reused refresh token revokes the family silently;
+  the legit user's next refresh returns `refresh_reuse_detected` (403). A
+  user-facing notification channel is the v2.1 concern.
+- **Audit hash-chain comparison stays plain `==`.** Carried from v1.1.2 —
+  same judgment call (tamper-detection read path, not an auth gate).
+
 ### v1.1.2 "Harden" (constant-time auth hardening) — 2026-07-29
 
 Security hardening release. A best-practices pass (rusqlite 0.40.1 docs +

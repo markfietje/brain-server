@@ -1,14 +1,38 @@
-//! v1.1.0 "Harden" M1.4 — fail-safe token rotation.
+//! Authentication (v1.1 "Harden" + v1.2 "AuthN").
 //!
-//! Wraps [`config::auth_tokens`] in an in-memory cache that:
-//! - reads from disk only when the file's mtime changes (every 5s), so the auth
-//!   hot path is a cheap `RwLock` read instead of a `stat`+`read` per request;
-//! - audited rotation event when the accepted token set actually changes;
-//! - fail-safe: if the file is deleted, goes empty, or becomes unreadable, the
-//!   last-good token set stays in effect. Auth is never silently cleared.
+//! Two modes, discriminated at startup by `BRAIN_JWT_ISSUER`:
 //!
-//! Uses `auth::record` (the append-only audit) on rotation, not the request
-//! path, so the audit row fires once per real change — never per request.
+//! - **Opaque** (v1.1 default): the existing `TokenStore` — a hot-rotating
+//!   set of bearer strings compared with `subtle::ConstantTimeEq`. Single-
+//!   tenant, single-user, loopback deployments. Back-compat: every v1.1
+//!   install keeps working unchanged.
+//! - **JWT** (v1.2 opt-in): RS256/ES256/EdDSA JWS verification against a
+//!   local JWKS, `(jti, iss)` revocation, refresh-chain reuse detection,
+//!   per-route AuthZ. Multi-tenant deployments.
+//!
+//! The middleware (`main.rs::auth_middleware`) calls into both paths through
+//! this module; handlers receive an `Option<Principal>` in request extensions
+//! (`None` = opaque/no-auth back-compat path = superuser).
+//!
+//! Submodules:
+//! - [`jwt`] — verification core (OWASP JWT Cheat Sheet matrix).
+//! - [`jwks`] — key loading + JWKS endpoint shape.
+//! - [`policy`] — AuthZ trait + in-memory default.
+//! - [`revocation`] — `(jti, iss)` denylist + refresh-chain reuse detection.
+//! - [`token_store`] (this file) — the v1.1 fail-safe rotating token cache.
+
+pub mod jwks;
+pub mod jwt;
+pub mod policy;
+pub mod revocation;
+
+// Re-export the principal types used across handler boundaries.
+#[allow(unused_imports)]
+pub use jwt::{AuthError, Claims, TokenType, VerifyingKey, ALLOWED_ALGS};
+#[allow(unused_imports)]
+pub use policy::{is_authorized, Action, Principal, Scope};
+#[allow(unused_imports)]
+pub use revocation::{purge_expired, revoke, revoke_chain, RevocationCache};
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -19,6 +43,36 @@ use rusqlite::Connection;
 
 use crate::audit::{self, AuditKind, AuditStatus};
 use crate::config;
+
+/// Which auth mode the server is running in. Resolved once at startup from
+/// `BRAIN_JWT_ISSUER` (and the presence of a key dir). `Opaque` is the
+/// default and the v1.1 back-compat path; `Jwt` is opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    Opaque,
+    Jwt,
+}
+
+impl AuthMode {
+    /// Resolve from the environment. JWT mode requires both an issuer AND a
+    /// non-empty key set (a JWT server with no keys can't verify anything —
+    /// better to fall back to opaque + log than to refuse every request).
+    pub fn from_env(keys_loaded: usize) -> Self {
+        let has_issuer = std::env::var("BRAIN_JWT_ISSUER")
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if has_issuer && keys_loaded > 0 {
+            AuthMode::Jwt
+        } else {
+            AuthMode::Opaque
+        }
+    }
+
+    pub fn is_jwt(self) -> bool {
+        self == AuthMode::Jwt
+    }
+}
 
 /// Cached accepted-token set + the file metadata that produced it. Cloning the
 /// `Arc` is the cheap clone in the hot path; the inner write happens at most

@@ -597,10 +597,40 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
 
     // ── v0.9.9 "Qualify" M1.2 / v1.1.0 "Harden": record the schema version so
     // the rehearsal tool (and future migrations) can read it. Idempotent.
+    // ── v1.2.0 "AuthN": token revocation + refresh-chain tracking ────
+    // Two additive tables. Both are new (no ALTER TABLE on existing tables
+    // beyond the `audit_events.tenant_id` already done in v1.1), so back-
+    // compat is trivial: a v1.1 DB picks these up on next start with no data
+    // loss. Indices cover the hot paths: denylist lookup by (jti, iss) is
+    // the PK; purge by expires_at; refresh-chain lookup by (chain_id, iss).
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS revoked_tokens(
+            jti TEXT NOT NULL,
+            iss TEXT NOT NULL,
+            sub TEXT,
+            expires_at INTEGER NOT NULL,
+            revoked_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            revoked_by TEXT,
+            reason TEXT,
+            PRIMARY KEY (jti, iss)
+         );
+         CREATE INDEX IF NOT EXISTS idx_revoked_expires ON revoked_tokens(expires_at);
+         CREATE TABLE IF NOT EXISTS refresh_chains(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chain_id TEXT NOT NULL,
+            iss TEXT NOT NULL,
+            current_jti TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'active',
+            first_seen INTEGER NOT NULL,
+            burned_at INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS idx_refresh_chain ON refresh_chains(chain_id, iss);",
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.1.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.1.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.2.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.2.0';",
         [],
     )?;
 

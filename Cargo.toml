@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.1.2"
+version = "1.2.1"
 edition = "2021"
 
 [features]
@@ -12,12 +12,11 @@ bench = []
 # build is unchanged. Enable with
 # `cargo run --release --features migrate --bin brain-migrate-rehearse`.
 migrate = []
-# GitHub App connector auth (M2.1). Pulls in `jsonwebtoken` + its crypto
-# transitive deps (RSA + SHA-256 via RustCrypto). The server binary never
-# enables this — outbound auth is a connector-binary concern, not a server
-# one (see `bin_common/http.rs` line 4 for the rationale). Enable when
-# building the brain-connector-gh binary (M2.2).
-connector-github = ["dep:jsonwebtoken", "jsonwebtoken/use_pem", "jsonwebtoken/rust_crypto", "dep:reqwest"]
+# GitHub App connector auth (M2.1). `jsonwebtoken` is now a required dep
+# on the server (v1.2.0 AuthN) with `use_pem` + `rust_crypto` always on, so
+# the connector feature only needs to add reqwest for the outbound GitHub API.
+# Enable when building the brain-connector-gh binary (M2.2).
+connector-github = ["dep:reqwest"]
 
 [dependencies]
 # Core Embedding
@@ -70,10 +69,26 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
-# GitHub App connector auth (M2.1). Optional — only pulled in when the
-# `connector-github` feature is enabled. Default-features disabled because
-# we only need `RS256` encoding (no JWS verification in this codebase).
-jsonwebtoken = { version = "10.4", default-features = false, optional = true }
+# JWT/JWS verification + signing (v1.2.0 "AuthN"). Required on the server
+# for the `/auth/*`, `/.well-known/*` surfaces, the auth middleware's JWT
+# path, and `brain key generate`/`sign`. `use_pem` enables PEM parsing for
+# `DecodingKey::from_rsa_pem` etc.; `rust_crypto` brings in the RSA/EC/Ed
+# primitives used both to verify and to sign. Context7-verified 2026-07-29:
+# v10 is current; API is `Validation::new(alg)` + `set_required_spec_claims`
+# + `validate_exp`/`validate_nbf` + `leeway`.
+jsonwebtoken = { version = "10.4", default-features = false, features = ["use_pem", "rust_crypto"] }
+# RSA key loading for JWT signing key rotation (v1.2.0 "AuthN" M5). Pure-Rust,
+# no system OpenSSL dep — consistent with the bundled philosophy. Already a
+# transitive dep of `jsonwebtoken` when `rust_crypto` is on; declared directly
+# so the key-management code doesn't silently break if jsonwebtoken swaps backends.
+rsa = "0.9"
+# Random key generation (`brain key generate`) + UUIDv7 `jti` minting (v1.2.0).
+# `getrandom` feature is the only one needed; `serde`/`v4` already on `uuid`.
+rand = "0.8"
+# Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
+# Tiny, stable, already a transitive dep; declared directly so the JWKS emitter
+# doesn't silently break if a transitive consumer swaps backends.
+base64 = "0.22"
 
 # Outbound HTTP for the brain-connector-gh binary (M2.2). Optional — only
 # pulled in when `connector-github` is enabled. The server binary never
@@ -85,15 +100,6 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 
 [dev-dependencies]
 tempfile = "3.27"
-# Used only by `connector::auth::github_app::tests` to generate throwaway
-# RSA keypairs for JWT-shape tests. Pulled transitively by `jsonwebtoken`
-# already, but declared explicitly so the test doesn't silently break if
-# `jsonwebtoken` ever swaps its crypto backend.
-rsa = "0.9"
-rand = "0.8"
-# Used only by the same test to decode JWT segments for shape inspection.
-# Transitive via jsonwebtoken; declared explicitly for the same reason as rsa.
-base64 = "0.22"
 
 [[bin]]
 name = "brain"
