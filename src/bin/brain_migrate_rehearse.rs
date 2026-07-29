@@ -179,9 +179,17 @@ impl ResolvedArgs {
 }
 
 /// Register sqlite-vec process-wide so `run_migration` can create vec0 tables
-/// on the dest connection. Mirrors the test helper in `main.rs::test_db`.
+/// on the dest connection. This binary doesn't share `main.rs`'s helper (it's
+/// a standalone binary), so the registration is duplicated here.
+///
+/// # Safety
+///
+/// See `main.rs::register_sqlite_vec` for the full safety proof. The short
+/// version: `sqlite3_vec_init` is `extern "C"` with the signature
+/// `sqlite3_auto_extension` expects; the pointer is process-lifetime static.
 fn register_sqlite_vec() {
-    #[allow(clippy::missing_transmute_annotations)]
+    #![allow(clippy::missing_transmute_annotations)]
+    // SAFETY: see the doc comment above.
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
             sqlite_vec::sqlite3_vec_init as *const (),

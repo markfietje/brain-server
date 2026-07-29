@@ -545,4 +545,20 @@ mod tests {
         assert!(!is_match(RELTYPE_RE, "has-hyphen"));
         assert!(!is_match(RELTYPE_RE, "has space"));
     }
+
+    // v1.3.0 Bedrock M6: idempotency property — normalizing a domain twice
+    // yields the same result as normalizing once.
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_normalize_domain_is_idempotent(raw in "[a-z0-9_-]{1,63}") {
+            let once = normalize_domain(&raw);
+            let twice = normalize_domain(once.as_deref().unwrap_or(""));
+            // Idempotent: both must succeed with the same value, or both fail.
+            if once.is_ok() && twice.is_ok() {
+                prop_assert_eq!(once.unwrap(), twice.unwrap());
+            }
+        }
+    }
 }

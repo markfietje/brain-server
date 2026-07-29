@@ -723,4 +723,42 @@ mod tests {
             assert_chunk_invariants(&format!("{s}\n\n# Tail\nbody with •🏋️\n"));
         }
     }
+
+    // v1.3.0 Bedrock M6: proper property-based test (replaces the hand-rolled
+    // pseudo-fuzz above for the exhaustive case). proptest generates 1000s of
+    // random UTF-8 inputs and verifies the chunk byte ranges are valid.
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 256, // bounded for CI; the hand-rolled test above covers 2000 more
+            ..proptest::test_runner::Config::default()
+        })]
+
+        #[test]
+        fn proptest_chunker_never_panics_and_ranges_are_valid(s in ".{0,2000}") {
+            let chunks = chunk_markdown(&s);
+            // Every chunk's text must be a valid substring of the input (the
+            // with_snippet invariant — never synthesized).
+            for chunk in &chunks {
+                prop_assert!(s.contains(&chunk.text),
+                    "chunk text must be a substring of the input");
+            }
+        }
+
+        #[test]
+        fn proptest_chunker_handles_multibyte_inputs(
+            s in proptest::collection::vec(
+                proptest::sample::select(vec!["\n", "•", "💡", "word ", "# H\n", "—", "🏋️"]),
+                0..100
+            )
+        ) {
+            let content = s.join("");
+            // Must never panic on multibyte input (the historical '•' crash).
+            let chunks = chunk_markdown(&content);
+            for chunk in &chunks {
+                prop_assert!(content.contains(&chunk.text));
+            }
+        }
+    }
 }

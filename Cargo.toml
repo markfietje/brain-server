@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.2.1"
+version = "1.3.0"
 edition = "2021"
 
 [features]
@@ -100,6 +100,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 
 [dev-dependencies]
 tempfile = "3.27"
+# Property-based testing (v1.3.0 Bedrock M6). Generates random inputs to test
+# invariants across input spaces. Used for chunker byte-range, RRF merge, and
+# validator idempotency properties. Benchmark score 91.11 (Context7-verified).
+proptest = "1.6"
 
 [[bin]]
 name = "brain"

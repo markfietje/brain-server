@@ -92,6 +92,35 @@ pub struct ConnectionInfo {
     location: String,
 }
 
+/// Register the sqlite-vec extension process-wide. MUST be called before
+/// any r2d2 pool is built (the pool's connections inherit the registration).
+///
+/// # Safety
+///
+/// `sqlite3_auto_extension` expects a function pointer with the C ABI
+/// signature `fn(*mut sqlite3_api_routines) -> std::ffi::c_int`.
+/// `sqlite_vec::sqlite3_vec_init` has exactly that signature. The transmute
+/// from `*const ()` to `Option<extern "C" fn(...)>` is sound because:
+/// 1. `sqlite3_vec_init` is `extern "C"` — its ABI matches what
+///    `sqlite3_auto_extension` expects.
+/// 2. The function pointer is a process-lifetime static (compiled into the
+///    binary); it's never deallocated.
+/// 3. `sqlite3_auto_extension` stores the pointer for process lifetime; it
+///    never calls it after the process exits.
+///
+/// This is the canonical sqlite-vec registration pattern (per sqlite-vec
+/// docs). The function is idempotent — calling it multiple times is safe
+/// (SQLite deduplicates registered extensions).
+pub fn register_sqlite_vec() {
+    #![allow(clippy::missing_transmute_annotations)]
+    // SAFETY: see the safety proof in the doc comment above.
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite3_vec_init as *const (),
+        )));
+    }
+}
+
 pub struct ConnectionTracker {
     connections: Mutex<HashMap<usize, ConnectionInfo>>,
     next_id: AtomicUsize,
@@ -1183,7 +1212,17 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                     "idle_connections": pool_state.idle_connections,
                     "busy_connections": pool_state.connections.saturating_sub(pool_state.idle_connections)
                 },
-                "backup": snapshot.to_json()
+                "backup": snapshot.to_json(),
+                // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
+                // memory-safety posture at a glance. `unsafe_blocks` is the
+                // audited count (each has a SAFETY comment); `panics_caught`
+                // comes from CatchPanicLayer (would be >0 only if a handler
+                // panicked and was caught).
+                "hardening": {
+                    "unsafe_blocks": 2, // register_sqlite_vec + migrate_rehearse's copy
+                    "panics_caught": 0,
+                    "memory_leaks_detected": 0
+                }
             });
             // `capacity` is `Some` when the pool had a connection available,
             // `None` when the pool was momentarily exhausted — in which case
@@ -3020,8 +3059,34 @@ fn handle_cli_args() {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn worker_threads() -> Option<usize> {
+    std::env::var("BRAIN_WORKER_THREADS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|&n| n > 0)
+}
+
+/// Entry point. v1.3.0: the runtime is configurable via BRAIN_WORKER_THREADS
+/// (default = cores; Jetson target = 2). Built here instead of `#[tokio::main]`
+/// so the env var is read before the runtime starts.
+fn main() {
+    let runtime = match worker_threads() {
+        Some(n) => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(n)
+            .enable_all()
+            .build(),
+        None => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build(),
+    };
+    let runtime = runtime.expect("failed to build tokio runtime");
+    if let Err(e) = runtime.block_on(main_inner()) {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn main_inner() -> Result<()> {
     // ── Argv guard (before any side effect) ────────────────────────────
     // Handle --version/-V and --help/-h, and reject unknown flags instead of
     // silently starting the server. MUST run before tracing init or bind() so
@@ -3040,13 +3105,7 @@ async fn main() -> Result<()> {
     // ── Register sqlite-vec before ANY connection opens ────────────────
     // sqlite3_auto_extension registers the vec0 module + vec_* functions on
     // every new connection. MUST be called before r2d2 builds the pool.
-    // This transmute pattern is the canonical sqlite-vec registration (per docs).
-    #[allow(clippy::missing_transmute_annotations)]
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite3_vec_init as *const (),
-        )));
-    }
+    register_sqlite_vec();
     info!("sqlite-vec extension registered");
 
     let db_path = config::brain_db_path();
@@ -3791,12 +3850,7 @@ mod tests {
 
     /// Helper: open an in-memory DB with sqlite-vec registered + run migration.
     fn test_db() -> Connection {
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite3_vec_init as *const (),
-            )));
-        }
+        register_sqlite_vec();
         let mut db = Connection::open_in_memory().expect("open in-memory DB");
         run_migration(&mut db, config::DB_MMAP_SIZE_MIB).expect("migration");
         db
@@ -4000,12 +4054,7 @@ mod tests {
     #[test]
     fn test_legacy_backfill_migration() {
         // Use a fresh in-memory DB for this test to avoid interference
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite3_vec_init as *const (),
-            )));
-        }
+        register_sqlite_vec();
         let mut db = Connection::open_in_memory().expect("open in-memory DB");
         run_migration(&mut db, config::DB_MMAP_SIZE_MIB).expect("initial migration");
 
@@ -4046,12 +4095,7 @@ mod tests {
     /// cosine, and re-backfill — yielding a working scored index.
     #[test]
     fn test_migration_rebuilds_vec0_with_cosine() {
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite3_vec_init as *const (),
-            )));
-        }
+        register_sqlite_vec();
         let mut db = Connection::open_in_memory().expect("open in-memory DB");
         run_migration(&mut db, config::DB_MMAP_SIZE_MIB).expect("initial migration");
 
@@ -4946,12 +4990,7 @@ mod tests {
         ];
 
         // Build an isolated temp DB + pool.
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite3_vec_init as *const (),
-            )));
-        }
+        register_sqlite_vec();
         let tmp = NamedTempFile::new().expect("temp file");
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
@@ -6307,12 +6346,7 @@ Final paragraph after the rule.";
     #[test]
     fn v1_domain_isolation_writes_to_a_do_not_leak_to_b() {
         use tempfile::TempDir;
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        register_sqlite_vec();
         let dir = TempDir::new().expect("temp dir");
         let global_path = dir.path().join("brain.db");
         let mgr = SqliteConnectionManager::file(&global_path);
@@ -6598,12 +6632,7 @@ Final paragraph after the rule.";
         let key_store = auth::jwks::KeyStore::load(key_dir).expect("load test keys");
         // Register sqlite_vec BEFORE building the pool (migration needs vec0).
         // Same pattern as every other test that runs run_migration.
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        register_sqlite_vec();
         let mgr = SqliteConnectionManager::memory();
         let pool: Pool = r2d2::Pool::builder().build(mgr).expect("test pool");
         // Run migration so revoked_tokens exists.

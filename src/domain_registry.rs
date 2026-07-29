@@ -244,12 +244,7 @@ mod tests {
     /// Multi-db mode opens a real per-domain file and migrates it.
     #[test]
     fn multi_db_opens_per_domain_file() {
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::register_sqlite_vec();
         let dir = std::env::temp_dir().join(format!(
             "brain-registry-test-{}",
             std::time::SystemTime::now()

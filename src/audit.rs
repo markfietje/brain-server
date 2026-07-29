@@ -520,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::missing_transmute_annotations)]
     fn hash_chain_survives_real_v1_0_to_v1_1_migration() {
         // Closing the "fixture-based migration test" ceiling: actually run
         // `run_migration` against a DB whose `audit_events` table was created
@@ -528,8 +529,12 @@ mod tests {
         use crate::migration::run_migration;
 
         // Register sqlite-vec so the full migration (which includes vec0
-        // tables) runs the same way it does against the live DB.
-        #[allow(clippy::missing_transmute_annotations)]
+        // tables) runs the same way it does against the live DB. Local copy
+        // because this test is in the lib crate (which doesn't share main.rs's
+        // helper). See main.rs::register_sqlite_vec for the safety proof.
+        // SAFETY: sqlite3_vec_init is extern "C" with the signature
+        // sqlite3_auto_extension expects; the pointer is process-lifetime
+        // static. See main.rs::register_sqlite_vec for the full proof.
         unsafe {
             rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
                 sqlite_vec::sqlite3_vec_init as *const (),

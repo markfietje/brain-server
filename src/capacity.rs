@@ -94,6 +94,16 @@ impl CapacityStatus {
         }
     }
 
+    /// Numeric severity: Ok=0, Warning=1, Exceeded=2. Used by the monotonicity
+    /// proptest to verify increasing inputs never improve the status.
+    pub fn severity(self) -> u8 {
+        match self {
+            Self::Ok => 0,
+            Self::Warning => 1,
+            Self::Exceeded => 2,
+        }
+    }
+
     /// True when a new write should be rejected with HTTP 507.
     pub fn blocks_writes(self) -> bool {
         matches!(self, Self::Exceeded)
@@ -220,6 +230,27 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("CAPACITY_MAX_DOCS", v),
             None => std::env::remove_var("CAPACITY_MAX_DOCS"),
+        }
+    }
+
+    // v1.3.0 Bedrock M6: classify() is monotonic — increasing docs/db/rss never
+    // improves the status.
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn proptest_classify_is_monotonic(
+            docs in 0u64..100_000u64,
+            db_mib in 0u64..4_000u64,
+            rss_mib in 0u64..2_000u64
+        ) {
+            let env = CapacityEnvelope::for_target(CapacityTarget::Desktop);
+            let docs_usize = docs as usize;
+            let s1 = classify(docs_usize, db_mib, rss_mib, &env);
+            let worse_docs = docs_usize + (docs_usize / 10).max(1);
+            let s2 = classify(worse_docs, db_mib, rss_mib, &env);
+            prop_assert!(s2.severity() >= s1.severity(),
+                "increasing docs from {docs} to {worse_docs} must not improve status: {s1:?} -> {s2:?}");
         }
     }
 }

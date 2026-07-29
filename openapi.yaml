@@ -8,7 +8,7 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.2.0
+  version: 1.3.0
   x-api-version: "1.2.0"
 servers:
   - url: http://127.0.0.1:8765

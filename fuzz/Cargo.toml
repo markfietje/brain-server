@@ -1,0 +1,42 @@
+[package]
+name = "brain-server-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+brain-server = { path = ".." }
+serde_json = "1"
+
+# The fuzz targets live in `fuzz/fuzz_targets/`. Each is a separate binary that
+# libFuzzer drives. Run with:
+#   cargo +nightly fuzz run fuzz_chunker -- -max_total_time=60
+# The fuzz feature flag gates the fuzz-only code paths in the main crate.
+
+[[bin]]
+name = "fuzz_chunker"
+path = "fuzz_targets/fuzz_chunker.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_lex_compile"
+path = "fuzz_targets/fuzz_lex_compile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_query_doc"
+path = "fuzz_targets/fuzz_query_doc.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_validator"
+path = "fuzz_targets/fuzz_validator.rs"
+test = false
+doc = false

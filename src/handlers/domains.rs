@@ -513,12 +513,7 @@ mod tests {
     fn delete_domain_shim_mode_sql_preserves_global_tables() {
         // We can't easily spin up axum in a unit test, so we exercise the SQL
         // shape against a real in-memory DB with the v0.9.9 schema.
-        #[allow(clippy::missing_transmute_annotations)]
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
             .expect("migration");
