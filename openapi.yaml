@@ -9,7 +9,7 @@ info:
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
   version: 1.3.0
-  x-api-version: "1.2.0"
+  x-api-version: "1.3.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -57,6 +57,17 @@ paths:
                       rss_mib: { type: integer }
                       max_rss_mib: { type: integer }
                       status: { type: string, example: ok }
+                  # v1.3.0 "Bedrock" M7: memory-safety posture. `unsafe_blocks`
+                  # is the audited count (each carries a SAFETY comment);
+                  # `panics_caught` increments when CatchPanicLayer catches a
+                  # handler panic; `memory_leaks_detected` is reserved for a
+                  # future LSAN integration (always 0 today).
+                  hardening:
+                    type: object
+                    properties:
+                      unsafe_blocks: { type: integer, example: 2 }
+                      panics_caught: { type: integer, example: 0 }
+                      memory_leaks_detected: { type: integer, example: 0 }
   /health/db:
     get:
       summary: Database health

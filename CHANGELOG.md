@@ -12,7 +12,7 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
-### v1.3.0 "Bedrock" — 2026-07-29
+### v1.3.0 "Bedrock" — 2026-07-29 (released)
 
 Memory-safety hardening release. Makes the binary bulletproof: zero panics
 in production paths, every `unsafe` block documented, property-based tests
@@ -66,7 +66,7 @@ for core invariants, and cargo-fuzz infrastructure.
 - **Hot key reload**: restart required after `brain key generate/prune`.
 - **Distributed revocation**: 60s per-instance negative cache (v2.1).
 
-### v1.2.1 "AuthN" (dead-code cleanup) — 2026-07-29
+### v1.2.1 "AuthN" (dead-code cleanup) — 2026-07-29 (released)
 
 Gap-closing release on top of v1.2.0. Dead-code elimination + panic fixes
 found during the v1.3.0 memory-safety audit.
@@ -79,7 +79,7 @@ found during the v1.3.0 memory-safety audit.
 - `authorize()` now uses `principal.tenant` as the team context.
 - Test count: 320 passed (unchanged from v1.2.0 after removing 2 trait tests).
 
-### v1.2.0 "AuthN" — 2026-07-29
+### v1.2.0 "AuthN" — 2026-07-29 (released)
 
 JWT/JWS authentication + AuthZ layer. The prerequisite for v2.0 multi-team
 tenancy, enforced at the data-access layer rather than hand-rolled per-handler.
@@ -184,7 +184,7 @@ is already set.
 - **Audit hash-chain comparison stays plain `==`.** Carried from v1.1.2 —
   same judgment call (tamper-detection read path, not an auth gate).
 
-### v1.1.2 "Harden" (constant-time auth hardening) — 2026-07-29
+### v1.1.2 "Harden" (constant-time auth hardening) — 2026-07-29 (released)
 
 Security hardening release. A best-practices pass (rusqlite 0.40.1 docs +
 RustCrypto `subtle` 2.6.1, fetched 2026-07-29) surfaced one real gap: the
@@ -219,7 +219,7 @@ re-introducing a timing oracle the v1.1.0 comment had explicitly flagged.
 #### Updated
 - Cargo.toml 1.1.1 → 1.1.2. `openapi.yaml` → 1.1.2.
 
-### v1.1.1 "Harden" (audit chain bug-fix) — 2026-07-29
+### v1.1.1 "Harden" (audit chain bug-fix) — 2026-07-29 (released)
 
 Bug-fix release. Closes three honest ceilings carried forward from v1.1.0,
 one of which was a latent false-negative affecting every migrated DB.
@@ -255,7 +255,7 @@ one of which was a latent false-negative affecting every migrated DB.
 #### Updated
 - Cargo.toml 1.1.0 → 1.1.1. `openapi.yaml` → 1.1.1.
 
-### v1.1.0 "Harden" — 2026-07-28
+### v1.1.0 "Harden" — 2026-07-28 (released)
 
 Operationally-reliable + audit-ready release on top of v1.0's multi-domain
 foundation. Pares the v1.1.0 plan down to the slices that close real gaps
@@ -451,7 +451,7 @@ honestly marketed as enterprise-ready. **Three new releases** inserted into
 the chain (v1.2, v2.1, v3.7 update) — no new features, just the security
 foundation the existing features implicitly required.
 
-### v1.0.1 "Domains" patch — 2026-07-26
+### v1.0.1 "Domains" patch — 2026-07-26 (released)
 
 Patch release fixing the structured-ingest entity auto-create bug
 found end-to-end on openclaw.
@@ -463,7 +463,7 @@ found end-to-end on openclaw.
 - `entities_added`/`relations_added` now report the real COUNT(*) delta
   instead of the input array length.
 
-### v1.0.0 "Domains" — 2026-07-26
+### v1.0.0 "Domains" — 2026-07-26 (released)
 
 The multi-domain cutover. Every handler resolves its target domain via the
 `X-Brain-Domain` header or JSON `domain` field; POST/GET/DELETE domain lifecycle

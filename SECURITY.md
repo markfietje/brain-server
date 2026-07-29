@@ -488,7 +488,11 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.3.0 | 2026-07-29 | Memory-safety hardening ("Bedrock"): zero `unwrap`/`expect`/`panic!` in production paths; 10 duplicate `unsafe` transmute blocks collapsed into one documented `register_sqlite_vec()`; every remaining `unsafe` carries a `// SAFETY:` comment; cargo-fuzz targets; proptests for chunker/validator/capacity invariants; `/health` exposes a `hardening` object (`unsafe_blocks`, `panics_caught`, `memory_leaks_detected`); `BRAIN_WORKER_THREADS` runtime tuning |
+| 1.2.1 | 2026-07-29 | Dead-code elimination + panic fixes found during the v1.3.0 audit (unused `AuthzPolicy` trait, `TokenType::as_str`, `DEFAULT_ALG`, etc.); `authorize()` now uses `principal.tenant` as team context |
 | 1.2 | 2026-07-29 | JWT/JWS verification (RS256/ES256/EdDSA, alg whitelist, no HS256/`none`); `(jti, iss)` revocation; refresh-chain reuse detection; AuthZ trait (deny-by-default); OIDC discovery + JWKS; key management CLI |
+| 1.1.2 | 2026-07-29 | Constant-time auth hardening: bearer-token compare swapped from a hand-rolled fold (LLVM-short-circuitable) to `subtle::ConstantTimeEq::ct_eq` (asm/`black_box`-backed); query parameterization audit (no injection surface) |
+| 1.1.1 | 2026-07-29 | Audit hash-chain false-negative fix: `verify_chain` no longer fails on the NULL→`Some` boundary created by the v1.0→v1.1 additive `prev_hash` migration; `record_tenant` wrapped in `SAVEPOINT` for caller-transaction safety; `/metrics` `brain_audit_chain_ok` TTL-cached |
 | 1.1 | 2026-07-28 | Per-tenant audit + SHA-256 hash chain; fail-safe file-watch token rotation; rolling backups + `/health` integrity; graceful-shutdown drain cap + WAL checkpoint; RSS watchdog; Prometheus `/metrics` exporter |
 | 2.0 (planned) | 2026-Q4 | Multi-team tenancy consuming v1.2 AuthZ; team namespace in paths |
 | 2.1 (planned) | 2026-Q4 | Per-tenant + tiered rate limiting; Redis impl; cost tracking; quota alerts |

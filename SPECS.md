@@ -102,6 +102,7 @@ below are *defined but not actually used* by the code path they name. Flagged in
 | `BIND_HOST` | `127.0.0.1` | Bind address | Invalid value falls back to `0.0.0.0` (open!) |
 | `BIND_PORT` | `8765` | Listen port | Non-numeric falls back to `8765` |
 | `RUST_LOG` | `info` | tracing filter | |
+| `BRAIN_WORKER_THREADS` | number of cores | tokio multi-thread runtime worker count (v1.3.0). Jetson target = `2` to save ~10 MB RSS + context-switch overhead; unset = cores. | Ignored if ≤ 0 |
 | `ANNOTATOR_ENABLED` | — | **documented but ignored** | The annotator is constructed with `enabled: true` unconditionally in `main()` (see §8) |
 | `CORS_ORIGINS` / `CORS_METHODS` / `CORS_HEADERS` | — | **documented but ignored** | CORS is hardcoded `Any` (see §6) |
 
@@ -228,7 +229,7 @@ Bound to `BIND_HOST:BIND_PORT` (default `127.0.0.1:8765`). All routes are layere
 | GET | `/health/db` | `health_db` | DB round-trip check |
 | GET | `/ready` | `ready` | readiness (model + DB) |
 | GET | `/stats` | `stats` | counts + model + version |
-| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.1.0`) |
+| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.3.0`) |
 | POST | `/add` | `add_chunk` | text ingest (raw), embeds + stores |
 | POST | `/ingest/memory` | `ingest_memory` | structured memory ingest |
 | GET | `/search?q=&k=` | `search` | semantic search (brute-force cosine) |
@@ -494,7 +495,12 @@ The KG (`entities`/`relationships`) is populated at ingest from a **single sourc
 - **No TLS** termination in-process (assumed handled by a gateway/reverse proxy).
 
 v0.9.0+/v1.1.0 add bearer auth, real origin allowlist, per-domain capability tokens, and an
-audit log.
+audit log. v1.2.0 adds JWT/JWS verification (RS256/ES256/EdDSA, alg whitelist, `(jti, iss)`
+revocation, refresh-chain reuse detection) + a deny-by-default AuthZ layer + OIDC/JWKS
+discovery. v1.3.0 "Bedrock" hardens the binary itself: zero `unwrap`/`expect`/`panic!` in
+production paths, every `unsafe` block documented with a `// SAFETY:` comment, and a
+`hardening` object on `/health` exposing the memory-safety posture (`unsafe_blocks`,
+`panics_caught`, `memory_leaks_detected`).
 
 ## 11. Known Issues / Debt (carried into ROADMAP Phase 0)
 
