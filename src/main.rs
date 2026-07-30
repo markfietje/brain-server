@@ -455,6 +455,11 @@ struct MarkdownPayload {
     /// neither is present.
     #[serde(default)]
     domain: Option<String>,
+    /// When true and source_path is set, re-process the file even if content
+    /// is unchanged — sweeps existing chunks before re-inserting. Used after
+    /// linker upgrades to regenerate the knowledge graph for all docs.
+    #[serde(default)]
+    replace: bool,
 }
 
 #[derive(Deserialize)]
@@ -1939,11 +1944,35 @@ async fn ingest_markdown(
     let doc_id = document_id.clone();
     let edges = kg_edges.clone();
     let raw_content_for_source = payload.content.clone();
+    let replace = payload.replace;
     let result = task::spawn_blocking(move || -> Result<(i64, usize, usize), AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Internal(e.to_string()))?;
+        if replace {
+            if let Some(sp) = source_path.as_deref() {
+                let stale_ids: Vec<i64> = {
+                    let mut stmt = tx
+                        .prepare("SELECT id FROM knowledge WHERE source_path = ?1")
+                        .map_err(|e| AppError::Internal(e.to_string()))?;
+                    let rows = stmt
+                        .query_map(params![sp], |r| r.get::<_, i64>(0))
+                        .map_err(|e| AppError::Internal(e.to_string()))?;
+                    rows.filter_map(|r| r.ok()).collect()
+                };
+                for id in &stale_ids {
+                    let _ = tx.execute(
+                        "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
+                        params![id],
+                    );
+                }
+                let _ = tx.execute(
+                    "DELETE FROM knowledge WHERE source_path = ?1",
+                    params![sp],
+                );
+            }
+        }
         let r = write_markdown_ingest(
             &tx,
             &chunks,

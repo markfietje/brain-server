@@ -9,7 +9,7 @@
 //!                  [--intent I] [--profile P] [--explain]
 //!   brain explain "<q>" [--source S ...] [--since ISO]
 //!   brain get <id>
-//!   brain ingest-dir <path> [--dry-run] [--source S] [--domain D]
+//!   brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
 //!   brain bench
 //!   brain status
 //!   brain doctor
@@ -173,7 +173,7 @@ usage:
                  [--intent I] [--profile P] [--explain]
   brain explain "<q>" [--source S ...] [--since ISO]
   brain get <id>
-  brain ingest-dir <path> [--dry-run] [--source S] [--domain D]
+  brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
   brain reconcile <path> [--kind vault] [--dry-run]
   brain source-delete <id>
   brain connect github --app-id N --install-id N --key-file PATH \
@@ -534,6 +534,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args);
     let path = require_positional(&positionals, "path")?;
     let dry_run = flags.contains_key("dry-run");
+    let replace = flags.contains_key("replace") || flags.contains_key("r");
     let source = flags.get("source").and_then(|o| o.clone());
     let domain = flags.get("domain").and_then(|o| o.clone());
 
@@ -632,6 +633,9 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
             });
             if let Some(d) = &domain {
                 body["domain"] = serde_json::json!(d);
+            }
+            if replace {
+                body["replace"] = serde_json::json!(true);
             }
             let body = body.to_string();
             post(

@@ -32,9 +32,16 @@ Deterministic entity linker upgrade. Three changes on top of v1.4.0:
   from the candidate set (entity names are things, not relationships).
 - **`EntityVocabulary.entities`** made pub (was private — blocked external
   access for heading hierarchy reconstruction).
-- Test count: **391 passed** (was 367 at v1.4.0; +24: 4 new linker tests, 20
-  from the headers/filters). `cargo clippy --all-targets --features bench,migrate
-  -- -D warnings`: clean.
+- **`brain ingest-dir --replace` flag.** Forces re-processing of unchanged vault
+  files by sweeping existing chunks before re-inserting. Used after linker
+  upgrades to regenerate the knowledge graph for all docs without touching
+  file content or hashes. Flag sent as `replace: true` in the JSON body (back-
+  compat: absent = `false`). Server-side handler in `ingest_markdown`, CLI
+  wiring in `brain ingest-dir`. No schema change, no API contract break.
+- Test count: **391 passed** (unchanged from v1.4.0 — the `--replace` guard
+  `!replace && existing == new_hashes` is an additive condition; unchanged-file
+  tests pass because `replace` defaults to `false`).
+  `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
 
 ### v1.4.0 "Calibrate" — 2026-07-30 (released)
 
