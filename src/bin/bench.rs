@@ -196,7 +196,16 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 }
 
 fn main() {
-    if let Err(e) = run() {
+    // v1.4.0 "Calibrate" M5: `bench eval` runs the retrieval-quality regression
+    // harness against a judgments file (BRAIN_EVAL_JUDGMENTS). The default
+    // (no arg) runs the synthetic-scale latency/RSS benchmark as before.
+    let args: Vec<String> = std::env::args().collect();
+    let res = if args.get(1).map(String::as_str) == Some("eval") {
+        run_eval()
+    } else {
+        run()
+    };
+    if let Err(e) = res {
         eprintln!("bench: {e}");
         std::process::exit(1);
     }
@@ -384,6 +393,138 @@ fn print_report(base: &str, searches: usize, rows: &[Row], rss_after_batches: &[
             println!("{line}");
         }
     }
+}
+
+// ── v1.4.0 "Calibrate" M5: retrieval-quality regression harness ────────────
+
+/// Run the retrieval-quality regression harness. Loads a judgments file
+/// (`BRAIN_EVAL_JUDGMENTS`, JSON array of `{query, relevant_ids, gold_answer?}`),
+/// runs each query through `/recall`, and reports precision@5, recall@5, MRR,
+/// NDCG@5, and `answer_in_context_rate`.
+///
+/// The 100-query hand-judged corpus against the live DB is an operator step —
+/// this function is the reproducible engine any judgments file plugs into.
+/// Ship gate: set `BENCH_EVAL_REGRESSION_PCT` (default 2.0); if recall@5 drops
+/// more than that vs the `BENCH_EVAL_BASELINE` JSON, exits non-zero.
+fn run_eval() -> Result<(), String> {
+    use brain_server::eval::{evaluate, Judgment};
+
+    let path = std::env::var("BRAIN_EVAL_JUDGMENTS").map_err(|_| {
+        "BRAIN_EVAL_JUDGMENTS env var must point to a judgments JSON file".to_string()
+    })?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read judgments file {path}: {e}"))?;
+    let judgments: Vec<Judgment> =
+        serde_json::from_str(&raw).map_err(|e| format!("judgments file is not valid JSON: {e}"))?;
+    if judgments.is_empty() {
+        return Err("judgments file contains no queries".into());
+    }
+
+    let base = base_url();
+    let bearer = auth_token();
+    let budget = std::env::var("BENCH_PACK_TOKENS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok());
+    let k = std::env::var("BENCH_EVAL_K")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(5);
+
+    // Probe reachability.
+    match get(&base, "/health", &[], bearer.as_deref()) {
+        Ok(r) if r.status == 200 => {}
+        Ok(r) => return Err(format!("server unhealthy (status {})", r.status)),
+        Err(e) => return Err(format!("cannot reach server at {base}: {e}")),
+    }
+
+    let mut judged: Vec<(Judgment, Vec<i64>, Option<bool>)> = Vec::with_capacity(judgments.len());
+    for j in judgments {
+        let body = serde_json::json!({
+            "query": j.query,
+            "limit": k,
+            "provenance": true,
+            "max_context_tokens": budget,
+            "gold_answer": j.gold_answer,
+        });
+        let resp = post(
+            &base,
+            "/recall",
+            &[],
+            "application/json",
+            &body.to_string(),
+            bearer.as_deref(),
+        )?;
+        if resp.status != 200 {
+            return Err(format!(
+                "/recall for query {:?} returned status {}: {}",
+                j.query, resp.status, resp.body
+            ));
+        }
+        let v: serde_json::Value = serde_json::from_str(&resp.body)
+            .map_err(|e| format!("/recall returned non-JSON: {e}"))?;
+        let retrieved: Vec<i64> = v
+            .get("hits")
+            .and_then(|h| h.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|h| h.get("id").and_then(|i| i.as_i64()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let aic = v
+            .get("telemetry")
+            .and_then(|t| t.get("answer_in_context"))
+            .and_then(|a| a.as_bool());
+        judged.push((j, retrieved, aic));
+    }
+
+    let report = evaluate(&judged, k);
+    println!("## Brain Server retrieval-quality eval\n");
+    println!(
+        "Target: `{base}`  |  queries: {}  |  k: {}",
+        report.queries, k
+    );
+    if budget.is_some() {
+        println!("Packing budget: {budget:?} tokens");
+    }
+    println!();
+    println!("| metric | value |");
+    println!("|---|---|");
+    println!("| precision@{k} | {:.4} |", report.precision_at_5);
+    println!("| recall@{k}    | {:.4} |", report.recall_at_5);
+    println!("| MRR          | {:.4} |", report.mrr);
+    println!("| NDCG@{k}     | {:.4} |", report.ndcg_at_5);
+    println!(
+        "| answer_in_context_rate | {:.4} |",
+        report.answer_in_context_rate
+    );
+
+    // Optional ship gate: compare against a baseline JSON.
+    if let Ok(baseline_path) = std::env::var("BENCH_EVAL_BASELINE") {
+        let b = std::fs::read_to_string(&baseline_path)
+            .map_err(|e| format!("cannot read baseline {baseline_path}: {e}"))?;
+        let baseline: serde_json::Value =
+            serde_json::from_str(&b).map_err(|e| format!("baseline is not valid JSON: {e}"))?;
+        let base_recall = baseline
+            .get("recall_at_5")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32;
+        let threshold = std::env::var("BENCH_EVAL_REGRESSION_PCT")
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .unwrap_or(2.0)
+            / 100.0;
+        let drop = base_recall - report.recall_at_5;
+        if drop > threshold {
+            return Err(format!(
+                "recall@5 regression: {:.4} → {:.4} (drop {:.4} > threshold {:.4})",
+                base_recall, report.recall_at_5, drop, threshold
+            ));
+        }
+        println!("\n✓ recall@5 within regression threshold ({threshold:.4}) vs baseline {base_recall:.4}");
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

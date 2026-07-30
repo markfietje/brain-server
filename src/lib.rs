@@ -33,3 +33,10 @@ pub mod capacity;
 // Server-internal callers (`run_migration` at startup, in tests) use it via
 // `brain_server::migration::`.
 pub mod migration;
+
+// Retrieval-quality metrics (v1.4.0 "Calibrate" M5): pure P@k/R@k/MRR/NDCG/
+// answer_in_context functions for the regression bench harness. Lives in the
+// lib so the `bench` binary (feature-gated) consumes them without a #[path]
+// include. The 100-query hand-judged corpus is an operator step; these
+// functions are the reproducible engine any judgments file plugs into.
+pub mod eval;
