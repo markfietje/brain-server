@@ -1957,6 +1957,8 @@ async fn ingest_markdown(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         if replace {
             if let Some(sp) = source_path.as_deref() {
+                // Collect stale knowledge IDs for this source_path,
+                // then sweep vec_knowledge + relationships + knowledge.
                 let stale_ids: Vec<i64> = {
                     let mut stmt = tx
                         .prepare("SELECT id FROM knowledge WHERE source_path = ?1")
@@ -1971,6 +1973,14 @@ async fn ingest_markdown(
                         "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
                         params![id],
                     );
+                }
+                // Sweep relationships: both those still linked (previously
+                // stale_ids) AND orphans already NULLed by prior re-ingests.
+                let _ = tx.execute(
+                    "DELETE FROM relationships WHERE knowledge_id IS NULL",
+                    [],
+                );
+                for id in &stale_ids {
                     let _ = tx.execute(
                         "DELETE FROM relationships WHERE knowledge_id = ?1",
                         params![id],
