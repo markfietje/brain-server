@@ -12,6 +12,102 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.4.0 "Calibrate" — 2026-07-30 (released)
+
+The surpass-human retrieval release. Implements the July-2026 SOTA on top of
+the v1.3.0 memory-safe foundation: **bi-temporal knowledge graphs** (Graphiti
+model), **budgeted monotone submodular evidence packing** (arXiv:2607.00725),
+and **TRACE-style state-aware traversal** (arXiv:2607.00339). No new model, no
+neural net in the hot path, no external API calls in recall — the low-power
+manifesto holds.
+
+**Research basis** (Context7-verified 2026-07-30 against getzep/graphiti
+`edges.py` + `search_filters.py` + `edge_operations.py`):
+- `valid_at`/`invalid_at` = valid-time interval (when the fact holds in the
+  world); `created_at` = transaction time (when brain learned it).
+- `resolve_edge_contradictions`: old facts are *expired* (invalid_at set), not
+  deleted — delete-proof auditability. v1.4 adopts the filter; the resolution
+  worker lands in v1.6 Reconcile.
+
+#### M1 — Bi-temporal edges
+- **Migration** (additive, idempotent): `relationships.valid_at` +
+  `invalid_at` columns. Existing edges default to NULL/NULL ⇒ always valid.
+- **New `src/temporal.rs`**: deterministic temporal-marker extraction from free
+  text ("from 2011 to 2017", "currently", "since 2020", "until 2019"). No LLM,
+  no external API. Pure, unit-tested (11 cases).
+- **Ingest path**: `/ingest` relations now accept optional explicit
+  `valid_at`/`invalid_at`; when absent, the extractor populates them from the
+  ingested content (best-effort).
+- **Query path**: `/recall` and `/graph/traverse` accept `?at=<ISO8601>`.
+  The SQL filter is `valid_at <= ? AND (invalid_at IS NULL OR invalid_at > ?)`
+  (Graphiti-validity semantics). Distinct from `as_of` (transaction-time /
+  revision recall).
+- **Normalization**: `at` is normalized in `perform_search_traced` alongside
+  `since` so a direct caller can't bypass it.
+
+#### M2 — Submodular evidence packing
+- **New `src/search/packing.rs`**: budgeted monotone submodular maximization.
+  Objective = relevance + coverage + representativeness, gated by diversity
+  (MMR-style near-dup threshold `DEDUP_SIMILARITY=0.85`). Lazy greedy under a
+  token knapsack (`max_context_tokens`, default 160 per the paper).
+- **`/recall`**: `max_context_tokens` field triggers packing; `gold_answer`
+  drives the `answer_in_context` diagnostic (did the gold survive?). Both
+  reported in telemetry.
+- **`SearchTelemetry`**: gained `packed_tokens`, `packing_candidates`,
+  `answer_in_context`.
+
+#### M3 — TRACE state-aware traversal
+- **Typed-edge prefixes**: `update:`, `supersedes:`, `contradicts:`,
+  `causes:` on `relation_type`. The validator (`RELTYPE_RE`) now accepts an
+  optional `prefix:base` form.
+- **New `src/trace.rs`**: prefix vocabulary + bounded-walk constants
+  (`MAX_HOPS=4`, `MAX_VISITED=256`) enforcing the forbidden-list rule.
+- **`/graph/traverse`**: validity-aware — the bi-temporal `at` filter skips
+  expired edges; the walk is hard-capped on depth + visited nodes.
+- **Schema reservation**: `knowledge.node_kind` (default `'event'`) +
+  `parent_id` columns added for the hierarchical node model (session/topic).
+  ponytail: construction logic deferred to v1.8 Consolidate (the only release
+  with a worker that can group events into sessions).
+
+#### M5 — Regression: bench harness
+- **New `brain_server::eval`** lib module: pure metric functions
+  (precision@k, recall@k, MRR, NDCG, `answer_in_context_rate`). Hand-computed
+  value checks pin each metric.
+- **`bench eval`** mode: loads a judgments file (`BRAIN_EVAL_JUDGMENTS`),
+  runs each query through `/recall`, reports the metrics. Optional ship gate
+  via `BENCH_EVAL_BASELINE` + `BENCH_EVAL_REGRESSION_PCT` (default 2%).
+- The 100-query hand-judged corpus against the live DB is an operator step;
+  the harness is the reproducible engine any judgments file plugs into.
+
+#### M4 — Multi-vector retrieval: DEFERRED
+- **Deferred per the plan's lazy-dev escape hatch.** Multi-vector doubles
+  embedding storage + per-query compute; a 4 GB Jetson can't afford two `vec0`
+  tables. The feature cannot be *measured* until M5's harness provides a
+  baseline to compare against (M5 lands in this release; M4's measurement
+  now has a foundation). The `multivec` feature flag is reserved (no-op) so
+  callers/docs/CI can reference the upgrade path. Lands in v1.4.1+ with
+  measured Δ-recall vs Δ-RSS.
+
+#### Testing
+- Test count: **367 passed** (was 324 at v1.3.0; +43: 11 temporal, 12 packing,
+  6 trace, 9 eval, 5 integration).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+
+#### Honest ceilings (carried into v1.5)
+- **Temporal extraction is English-only + deterministic.** It recognizes a
+  bounded set of markers ("from X to Y", "since", "until", "currently"). It
+  does NOT infer relative dates ("last year") or durations without anchors.
+  An LLM extractor is a v2.x concern (out of scope for the low-power path).
+- **Submodular packing uses lexical Jaccard for diversity**, not embedding
+  cosine. Cheap and good enough for near-dup detection; a cosine gate would
+  need the model in the packer (small win, adds per-call cost).
+- **TRACE node hierarchy is schema-only.** `node_kind`/`parent_id` columns
+  exist but nothing populates session/topic yet (v1.8 Consolidate).
+- **M4 multi-vector deferred** — see above.
+- **The 100-query judged corpus is an operator step.** The harness ships;
+  the judgments don't (they require the operator's private DB).
+
 ### v1.3.0 "Bedrock" — 2026-07-29 (released)
 
 Memory-safety hardening release. Makes the binary bulletproof: zero panics

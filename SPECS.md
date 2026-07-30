@@ -229,7 +229,7 @@ Bound to `BIND_HOST:BIND_PORT` (default `127.0.0.1:8765`). All routes are layere
 | GET | `/health/db` | `health_db` | DB round-trip check |
 | GET | `/ready` | `ready` | readiness (model + DB) |
 | GET | `/stats` | `stats` | counts + model + version |
-| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.3.0`) |
+| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.4.0`) |
 | POST | `/add` | `add_chunk` | text ingest (raw), embeds + stores |
 | POST | `/ingest/memory` | `ingest_memory` | structured memory ingest |
 | GET | `/search?q=&k=` | `search` | semantic search (brute-force cosine) |
