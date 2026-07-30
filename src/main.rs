@@ -1837,27 +1837,40 @@ async fn ingest_markdown(
     if !content.is_empty() {
         let from = escaped_title.to_lowercase();
 
-        // v1.4.0+: deterministic entity linker — zero LLM, zero hallucination.
-        // Builds vocabulary from document structure, then finds mentions and
-        // typed relationship patterns. Every edge is gated on both sides being
-        // known vocabulary entities (headings or bold terms).
-        let vocab = linker::extract_vocabulary(&content);
+        // v1.4.0+: deterministic entity linker — Aho-Corasick backed, zero LLM.
+        // Builds vocabulary from document structure, merges in existing entities
+        // from the database (cross-document linking), then finds mentions and
+        // typed relationship patterns. Code blocks are excluded from scanning.
+        let mut vocab = linker::extract_vocabulary(&content);
+        // Merge existing entities from DB for cross-document recognition.
+        if let Ok(conn) = state.pool.get() {
+            if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT name FROM entities") {
+                if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                    for row in rows.flatten() {
+                        vocab.insert(&row);
+                    }
+                }
+            }
+        }
+        vocab.finalize();
+        let matcher: linker::EntityMatcher = vocab.into();
+        let code_ranges = linker::find_code_ranges(&content);
         let doc_lower = title.trim().to_lowercase();
-        for mention in linker::find_mentions(&content, &vocab) {
-            let mention_lower = mention.to_lowercase();
+
+        for mention in matcher.find_mentions(&content, &code_ranges) {
             // Skip self-references (document title matching an entity)
-            if mention_lower == doc_lower {
+            if mention == doc_lower {
                 continue;
             }
             kg_edges.push((
                 "references".to_string(),
                 from.clone(),
-                mention_lower,
+                mention.to_string(),
             ));
         }
-        for edge in linker::find_relationships(&content, &vocab) {
-            let from_lower = edge.from.to_lowercase();
-            let to_lower = edge.to.to_lowercase();
+        for edge in matcher.find_relationships(&content, &code_ranges) {
+            let from_lower = edge.from;
+            let to_lower = edge.to;
             // Skip self-references and empty sides
             if from_lower == to_lower || from_lower.is_empty() || to_lower.is_empty() {
                 continue;

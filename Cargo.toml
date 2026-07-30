@@ -71,6 +71,12 @@ uuid = { version = "1.24", features = ["v4", "serde"] }
 # drops the `html` + `getopts` deps we don't need (we only use the parser).
 pulldown-cmark = { version = "0.13.4", default-features = false }
 
+# Multi-pattern string matching for deterministic entity linking (v1.4.0+).
+# Aho-Corasick with LeftmostFirst semantics enables O(n) entity mention
+# detection with case-insensitive, longest-match resolution. Already a
+# transitive dep via regex; declared directly for the linker module.
+aho-corasick = "1"
+
 # Observability
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

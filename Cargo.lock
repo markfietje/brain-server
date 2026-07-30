@@ -304,6 +304,7 @@ name = "brain-server"
 version = "1.4.0"
 dependencies = [
  "aes-gcm",
+ "aho-corasick",
  "anyhow",
  "axum",
  "base64 0.22.1",
