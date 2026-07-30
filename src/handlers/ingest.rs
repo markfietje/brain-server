@@ -162,6 +162,37 @@ pub async fn ingest(
         relations.push((from, to, kind, va, via));
     }
 
+    // Auto-extract entities + relationships via the deterministic linker when
+    // the caller supplies neither (OpenClaw plugin sends title + content only).
+    if entities.is_empty() && relations.is_empty() {
+        let code_ranges = crate::linker::find_code_ranges(&content);
+        let table_ranges = crate::linker::find_table_ranges(&content);
+        let list_bold_ranges = crate::linker::find_list_item_bold_ranges(&content);
+        let mut excluded: Vec<(usize, usize)> = code_ranges;
+        excluded.extend(table_ranges);
+        excluded.extend(list_bold_ranges);
+
+        let mut vocab = crate::linker::extract_vocabulary(&content, &excluded);
+        vocab.finalize();
+        let entity_names: Vec<String> = vocab.entities.clone();
+        entities = entity_names.iter().map(|n| (n.clone(), None)).collect();
+        let entity_set: std::collections::HashSet<String> =
+            entity_names.into_iter().collect();
+        let matcher: crate::linker::EntityMatcher = vocab.into();
+
+        let extra_patterns = matcher.discover_verb_patterns(&content, 3, &excluded);
+        let extra_refs: Vec<(&str, &str)> = extra_patterns.iter().map(|(v, _)| (v.as_str(), v.as_str())).collect();
+
+        let edges = matcher.find_relationships(&content, &excluded, &extra_refs);
+
+        let heading_edges =
+            crate::linker::extract_heading_relationships(&content, &entity_set, &excluded);
+
+        for edge in edges.into_iter().chain(heading_edges) {
+            relations.push((edge.from, edge.to, edge.relation, None, None));
+        }
+    }
+
     // ---- heavy logic ----
     // embed via model2vec, dedup via xxh3-64 content_hash, route to the
     // resolved domain (forced, else "global"), and insert knowledge + vec0 +
