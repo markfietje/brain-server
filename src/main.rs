@@ -38,7 +38,7 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use xxhash_rust::xxh3::{xxh3_64, xxh3_64_with_seed};
 use zerocopy::IntoBytes;
 
@@ -3473,7 +3473,7 @@ async fn main_inner() -> Result<()> {
             interval.tick().await;
             if let Ok(conn) = pool_for_health.get() {
                 let _ = conn.query_row("SELECT 1", [], |_| Ok(()));
-                info!("Pool health check: OK");
+                debug!("Pool health check: OK");
             }
         }
     });
