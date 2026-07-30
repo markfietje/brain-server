@@ -231,7 +231,7 @@ pub fn extract_heading_relationships(
         if !(1..=6).contains(&level) {
             continue;
         }
-        let heading_text = trimmed[level..].trim().to_lowercase();
+        let heading_text = strip_heading_number(trimmed[level..].trim()).to_lowercase();
 
         // Skip headings that are in the stop list (linear search — list is small)
         if STOP_HEADINGS.iter().any(|s| *s == heading_text) {
@@ -688,6 +688,34 @@ fn is_in_ranges(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
 // Vocabulary extraction from document structure
 // ---------------------------------------------------------------------------
 
+/// Strip leading section-number prefix (e.g. `5.1 `, `1.2.3 `) from heading text.
+fn strip_heading_number<'a>(s: &'a str) -> &'a str {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 {
+        return s;
+    }
+    // Each dot MUST be followed by at least one digit.
+    while i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        let dot_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == dot_start {
+            return s; // bare dot — not a section number
+        }
+    }
+    if i < bytes.len() && bytes[i] == b' ' {
+        s[i + 1..].trim_start()
+    } else {
+        s
+    }
+}
+
 /// Extract heading level and text from a line starting with `#`.
 fn parse_heading_line(line: &str) -> Option<(usize, &str)> {
     let trimmed = line.trim_start();
@@ -759,6 +787,7 @@ pub fn extract_vocabulary(
         let line_end = line_start + line.len();
         if !is_in_ranges(line_start, line_end, excluded_ranges) {
             if let Some((_level, heading)) = parse_heading_line(line) {
+                let heading = strip_heading_number(heading);
                 if STOP_HEADINGS.contains(&heading.to_lowercase().as_str()) || heading.len() < 4 {
                     line_start += line.len() + 1;
                     continue;
@@ -903,6 +932,30 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(found.contains(&"crush map"));
         assert!(found.contains(&"ceph"));
+    }
+
+    #[test]
+    fn strip_heading_number_removes_section_prefix() {
+        assert_eq!(strip_heading_number("5.1 Ceph Components"), "Ceph Components");
+        assert_eq!(strip_heading_number("1.2.3 Overview"), "Overview");
+        assert_eq!(strip_heading_number("Ceph Components"), "Ceph Components");
+        assert_eq!(strip_heading_number(""), "");
+        assert_eq!(strip_heading_number("5.1"), "5.1");
+        assert_eq!(strip_heading_number("5.1A Heading"), "5.1A Heading");
+        assert_eq!(strip_heading_number("5. 1 Leading"), "5. 1 Leading");
+        assert_eq!(strip_heading_number("5."), "5.");
+    }
+
+    #[test]
+    fn extract_vocabulary_strips_heading_numbers() {
+        let content = "## 5.1 Ceph Components\n## 1.2.3 OSD Deployment\n";
+        let vocab = extract_vocabulary(content, &[]);
+        assert!(
+            vocab.entities.contains(&"ceph components".to_string()),
+            "should match body-style name, got: {:?}",
+            vocab.entities
+        );
+        assert!(vocab.entities.contains(&"osd deployment".to_string()));
     }
 
     #[test]
