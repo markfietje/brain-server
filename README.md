@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.4.1 "Link" (deterministic entity linker: heading hierarchy `part_of`, verb-suffix filtering, zero-dependency KG upgrade) |
+| **Version** | 1.4.2 "Link" (noise-reduction: pipe-table/list-item-bold exclusion, heading-number stripping, orphan sweep) |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |

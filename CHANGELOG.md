@@ -14,7 +14,12 @@ been run, it is marked **pending** rather than asserted.
 
 ## [1.4.2] — 2026-07-30
 
-Noise-reduction release on top of v1.4.1. Eleven changes (cumulative with v1.4.1):
+Noise-reduction release on top of v1.4.1. Eleven changes (cumulative with v1.4.1).
+Research basis: Aho-Corasick (ACL/EMNLP, confirmed SOTA for deterministic
+multi-pattern matching, July 2026) + document-structure heading hierarchy
+research (2026) + dependency parsing upgrade path (nlrule) documented for
+future SVO extraction. See [`RESEARCH.md`](./RESEARCH.md) for the full
+research audit across all 17 assessed components.
 
 - **`--replace` flag** (`brain ingest-dir --replace`). Sweeps existing chunks
   before re-inserting, regenerating the knowledge graph from scratch. Server-side
@@ -77,11 +82,17 @@ Deterministic entity linker upgrade. All changes below are cumulative in v1.4.2.
 ### v1.4.0 "Calibrate" — 2026-07-30 (released)
 
 The surpass-human retrieval release. Implements the July-2026 SOTA on top of
-the v1.3.0 memory-safe foundation: **bi-temporal knowledge graphs** (Graphiti
-model), **budgeted monotone submodular evidence packing** (arXiv:2607.00725),
-and **TRACE-style state-aware traversal** (arXiv:2607.00339). No new model, no
-neural net in the hot path, no external API calls in recall — the low-power
-manifesto holds.
+the v1.3.0 memory-safe foundation. Six research-backed techniques form the
+retrieval stack:
+
+| Layer | Technique | Research |
+|-------|-----------|----------|
+| **Stage 1: Retrieval** | Hybrid dense + lexical | `vec0` KNN (sqlite-vec) + FTS5 BM25 |
+| **Stage 1: Fusion** | Reciprocal Rank Fusion (RRF, k=60) | [RRF (Cornell, 2009)](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) — still the standard model-free fusion algorithm per 2026 production patterns |
+| **Stage 2: Rerank** | Cross-encoder (optional) | [BGE-RerankerV2M3](https://huggingface.co/BAAI/bge-reranker-v2-m3) via fastembed — most-deployed production reranker |
+| **KG: Edges** | Bi-temporal (`valid_at`/`invalid_at`) | [Graphiti / Zep](https://github.com/getzep/graphiti) — bi-temporal KG model, SOTA for temporal facts, 82.2 benchmark |
+| **KG: Traversal** | Typed-edge prefix vocabulary | [TRACE: State-Aware Query Processing over Temporal Evidence Graphs](https://arxiv.org/abs/2607.00339) (July 2026) |
+| **Packing** | Budgeted submodular maximization | [What Survives Into Context](https://arxiv.org/abs/2607.00725) — +5.1 F1 HotpotQA, lazy greedy (Leskovec et al. 2007) |
 
 **Research basis** (Context7-verified 2026-07-30 against getzep/graphiti
 `edges.py` + `search_filters.py` + `edge_operations.py`):
