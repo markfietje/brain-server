@@ -100,6 +100,23 @@ pub struct RecallRequest {
     /// links) on every hit even without `provenance`.
     #[serde(default)]
     pub evidence: bool,
+    /// v1.4.0 "Calibrate" M1: bi-temporal valid-time point-in-time filter.
+    /// RFC3339 or `YYYY-MM-DD` instant; only chunks whose valid-interval
+    /// (valid_from, valid_to) contains this instant are returned. Distinct
+    /// from `as_of` (transaction-time / revision recall). Graphiti semantics.
+    #[serde(default)]
+    pub at: Option<String>,
+    /// v1.4.0 "Calibrate" M2: submodular evidence packing token budget. When
+    /// set, results are re-ranked by budgeted monotone submodular maximization
+    /// (relevance + coverage + representativeness + diversity) and truncated
+    /// to fit the budget. Replaces fixed `k` truncation for the packed path.
+    #[serde(default)]
+    pub max_context_tokens: Option<usize>,
+    /// v1.4.0 "Calibrate" M2: optional gold-answer substring for the
+    /// `answer_in_context` diagnostic (did the gold survive packing?). Reported
+    /// in telemetry when `provenance=true`.
+    #[serde(default)]
+    pub gold_answer: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -244,6 +261,12 @@ pub async fn recall(
         include_flagged: req.include_flagged,
         as_of: req.as_of.filter(|s| !s.trim().is_empty()),
         evidence: req.evidence,
+        at: req
+            .at
+            .as_deref()
+            .map(|s| crate::search::normalize_since(s.trim()))
+            .transpose()
+            .map_err(|e| HandlerError::bad_request("at_invalid", e.to_string()))?,
         ..Default::default()
     };
     let (_qtext, base_filters) = match doc.into_filters() {
@@ -260,6 +283,11 @@ pub async fn recall(
         .clone()
         .or_else(|| base_filters.embedding_query.clone())
         .unwrap_or_else(|| query.clone());
+    // v1.4.0 "Calibrate" M2: capture the query for the post-search packing pass
+    // before `query` is moved into the spawn_blocking closure below.
+    let packing_query = query.clone();
+    let max_context_tokens = req.max_context_tokens;
+    let gold_answer = req.gold_answer.clone();
 
     let search_future = task::spawn_blocking(move || {
         // Per-domain result lists (already ranked within each domain by the
@@ -307,13 +335,29 @@ pub async fn recall(
         (all, tel)
     });
 
-    let (tagged, tel) = match timeout(StdDuration::from_secs(8), search_future).await {
+    let (mut tagged, mut tel) = match timeout(StdDuration::from_secs(8), search_future).await {
         Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
             return Err(HandlerError::unavailable(format!("recall failed: {e}")));
         }
         Err(_) => return Err(HandlerError::unavailable("recall timed out")),
     };
+
+    // v1.4.0 "Calibrate" M2: submodular evidence packing. When a token budget
+    // is supplied, re-rank the merged results by budgeted monotone submodular
+    // maximization (relevance + coverage + representativeness + diversity) and
+    // truncate to the budget. Replaces fixed-k truncation for the packed path.
+    if let Some(budget) = max_context_tokens {
+        let cands: Vec<crate::SearchResult> = tagged.iter().map(|(r, _)| r.clone()).collect();
+        let domains: Vec<String> = tagged.iter().map(|(_, d)| d.clone()).collect();
+        let gold = gold_answer.as_deref();
+        let weights = crate::search::packing::weights_from_env();
+        let packed = crate::search::packing::pack(cands, &packing_query, budget, weights, gold);
+        tel.packed_tokens = Some(packed.packed_tokens);
+        tel.packing_candidates = Some(packed.candidates);
+        tel.answer_in_context = packed.answer_in_context;
+        tagged = packed.results.into_iter().zip(domains).collect();
+    }
 
     // ---- render (RecallHit carries its source domain for federation) ----
     let primary_domain = forced_domain
@@ -492,6 +536,9 @@ mod tests {
             include_flagged: false,
             as_of: None,
             evidence: false,
+            at: None,
+            max_context_tokens: None,
+            gold_answer: None,
         }
     }
 
@@ -521,6 +568,9 @@ mod tests {
             include_flagged: false,
             as_of: None,
             evidence: false,
+            at: None,
+            max_context_tokens: None,
+            gold_answer: None,
         };
         let err = validate_recall(&r).unwrap_err();
         assert_eq!(err.inner.code, "query_too_long");
