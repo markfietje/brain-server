@@ -680,11 +680,38 @@ fn parse_heading_line(line: &str) -> Option<(usize, &str)> {
     Some((i, heading))
 }
 
+/// Check if a bold span at byte position `open` (the `*` before `**term**`)
+/// is a list-item label like `- **Term**:` or `* **Term**:`.
+///
+/// These are structured-data markers, not content entities that should
+/// participate in relationship extraction.
+fn is_list_item_bold(content: &str, open: usize) -> bool {
+    let bytes = content.as_bytes();
+    // Look backwards past optional whitespace for `-` or `*` line prefix
+    let mut p = open;
+    while p > 0 && (bytes[p - 1] == b' ' || bytes[p - 1] == b'\t') {
+        p -= 1;
+    }
+    if p < 2 {
+        return false;
+    }
+    let prefix = bytes[p - 1];
+    if prefix != b'-' && prefix != b'*' {
+        return false;
+    }
+    // Ensure the list marker is at the start of a line (or preceded by whitespace)
+    if p > 2 && bytes[p - 2] != b'\n' && bytes[p - 2] != b'\r' {
+        // Not at line start; could be inline asterisks like "some * text"
+        return false;
+    }
+    true
+}
+
 /// Extract entity vocabulary from document structure.
 ///
 /// Sources:
 /// 1. Section headings (`## Title` and deeper)
-/// 2. Bold terms (`**term**`)
+/// 2. Bold terms (`**term**`) — skip list-item labels like `- **Term**:`
 /// 3. Code spans (`` `tool` ``)
 ///
 /// `excluded_ranges` — byte ranges to skip (code blocks, tables, etc).
@@ -718,7 +745,9 @@ pub fn extract_vocabulary(
         if bytes[i] == b'*' && bytes[i + 1] == b'*' {
             let start = i + 2;
             if let Some(end) = find_closing_double_star(bytes, start) {
-                if !is_in_ranges(start, end, excluded_ranges) {
+                if !is_in_ranges(start, end, excluded_ranges)
+                    && !is_list_item_bold(content, i)
+                {
                     let term = &content[start..end].trim();
                     if term.chars().any(|c| c.is_uppercase()) && term.len() >= 3 {
                         vocab.insert(term);
