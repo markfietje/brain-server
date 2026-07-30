@@ -217,7 +217,7 @@ fn provenance_is_empty(p: &Provenance) -> bool {
 
 impl SearchResult {
     /// Minimal constructor for a raw retriever hit (no provenance yet).
-    fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
+    pub(crate) fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
         Self {
             id,
             score,
@@ -517,6 +517,13 @@ pub struct SearchFilters {
     /// RRF-score buckets, prefer newer `observed_at` then higher `authority`.
     /// Never blended into `fused_score` (would distort lexical/vector semantics).
     pub freshness_tiebreak: bool,
+    /// v1.4.0 "Calibrate" M1: bi-temporal point-in-time filter (valid time, NOT
+    /// transaction time). When `Some`, a chunk/edge is visible iff its
+    /// valid-interval contains this instant:
+    ///   (valid_from IS NULL OR valid_from <= at) AND (valid_to IS NULL OR valid_to > at)
+    /// Distinct from `as_of` (revision/transaction-time point-in-time recall).
+    /// Graphiti valid_at/invalid_at semantics (Context7-verified 2026-07-30).
+    pub at: Option<String>,
 }
 
 impl Default for SearchFilters {
@@ -534,6 +541,7 @@ impl Default for SearchFilters {
             as_of: None,
             evidence: false,
             freshness_tiebreak: true,
+            at: None,
         }
     }
 }
@@ -592,6 +600,18 @@ pub struct SearchTelemetry {
     pub confidence: f32,
     /// Quality estimator recommendation.
     pub recommendation: Option<Recommendation>,
+    /// v1.4.0 "Calibrate" M2: tokens consumed by submodular packing. `None`
+    /// when packing was not requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packed_tokens: Option<usize>,
+    /// v1.4.0 "Calibrate" M2: candidate pool size considered by packing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packing_candidates: Option<usize>,
+    /// v1.4.0 "Calibrate" M2: the paper's `answer_in_context` diagnostic — did
+    /// the gold answer's tokens survive into the packed context? `None` when no
+    /// gold answer was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_in_context: Option<bool>,
 }
 
 // ── Similarity ────────────────────────────────────────────────────────────
@@ -1082,6 +1102,18 @@ pub fn vec0_knn(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
+    // v1.4.0 "Calibrate" M1: bi-temporal valid-time filter (Graphiti
+    // valid_at/invalid_at semantics applied to chunk valid_from/valid_to).
+    // Distinct from as_of: as_of is transaction-time (which revision was
+    // live); `at` is valid-time (was the fact true at this date).
+    if let Some(at) = &filters.at {
+        sql.push_str(
+            " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
+               AND (k.valid_to IS NULL OR k.valid_to > ?)",
+        );
+        params_vec.push(Box::new(at.clone()));
+        params_vec.push(Box::new(at.clone()));
+    }
     sql.push_str(" ORDER BY v.distance");
 
     let mut stmt = conn.prepare(&sql)?;
@@ -1156,6 +1188,15 @@ fn fts_search(
         );
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
+    }
+    // v1.4.0 "Calibrate" M1: bi-temporal valid-time filter (see vec0_knn).
+    if let Some(at) = &filters.at {
+        sql.push_str(
+            " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
+               AND (k.valid_to IS NULL OR k.valid_to > ?)",
+        );
+        params_vec.push(Box::new(at.clone()));
+        params_vec.push(Box::new(at.clone()));
     }
     sql.push_str(" ORDER BY score LIMIT ?");
     params_vec.push(Box::new(k as i64));
@@ -1262,13 +1303,19 @@ pub fn perform_search_traced(
     tel.embed_ms = t_embed.elapsed().as_secs_f32() * 1000.0;
     tel.intent = filters.intent.clone();
 
-    // Validate/normalize the temporal filter up front so an invalid `since`
-    // fails fast instead of producing a silently wrong lexical comparison.
-    let filters = if let Some(since) = &filters.since {
+    // Validate/normalize the temporal filters up front so an invalid `since`
+    // or `at` fails fast instead of producing a silently wrong lexical
+    // comparison against SQLite's fixed-width `YYYY-MM-DD HH:MM:SS` format.
+    // Both are normalized independently: a caller may set either, both, or
+    // neither. v1.4.0 "Calibrate" M1: `at` is the bi-temporal valid-time
+    // filter (distinct from `as_of` transaction-time recall).
+    let normalized_since = filters.since.as_deref().map(normalize_since).transpose()?;
+    let normalized_at = filters.at.as_deref().map(normalize_since).transpose()?;
+    let filters = if normalized_since.is_some() || normalized_at.is_some() {
         SearchFilters {
             source: filters.source.clone(),
             sources: filters.sources.clone(),
-            since: Some(normalize_since(since)?),
+            since: normalized_since,
             domain: filters.domain.clone(),
             lex: filters.lex.clone(),
             embedding_query: filters.embedding_query.clone(),
@@ -1278,6 +1325,7 @@ pub fn perform_search_traced(
             as_of: filters.as_of.clone(),
             evidence: filters.evidence,
             freshness_tiebreak: filters.freshness_tiebreak,
+            at: normalized_at,
         }
     } else {
         filters.clone()
@@ -1543,6 +1591,9 @@ pub mod query;
 
 // ── Retrieval quality estimation (QPP) ────────────────────────────────────
 pub mod quality;
+
+// ── v1.4.0 "Calibrate" M2: budgeted monotone submodular evidence packing ──
+pub mod packing;
 
 #[cfg(test)]
 mod tests;

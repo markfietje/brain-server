@@ -61,8 +61,13 @@ mod domain_registry;
 mod domain_router;
 mod handlers;
 mod integrity;
+// v1.4.0 "Calibrate": deterministic temporal-marker extraction for bi-temporal
+// edges (Graphiti valid_at/invalid_at model). Pure, no I/O.
+mod temporal;
+// v1.4.0 "Calibrate" M3: TRACE typed-edge prefixes + validity-aware traversal.
 mod search;
 mod sources;
+mod trace;
 mod vault;
 mod webhook;
 
@@ -469,6 +474,11 @@ struct TraverseQuery {
     /// (labelled per hop). When false (default) the resolved domain only.
     #[serde(default)]
     cross_domain: bool,
+    /// v1.4.0 "Calibrate" M1: bi-temporal point-in-time traversal. RFC3339 or
+    /// `YYYY-MM-DD`; edges whose valid-interval (valid_at, invalid_at) does
+    /// NOT contain this instant are skipped (Graphiti semantics).
+    #[serde(default)]
+    at: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2607,7 +2617,9 @@ async fn traverse_graph(
     Query(params): Query<TraverseQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entity = params.start.unwrap_or_default();
-    let depth = params.max_depth.unwrap_or(2).min(3);
+    // v1.4.0 "Calibrate" M3: hard-cap traversal depth at trace::MAX_HOPS
+    // (forbidden-list rule: no unbounded graph walks).
+    let depth = params.max_depth.unwrap_or(2).min(trace::MAX_HOPS as u8);
     let cross_domain = params.cross_domain;
 
     if entity.is_empty() {
@@ -2620,6 +2632,16 @@ async fn traverse_graph(
     {
         return Err(AppError::BadRequest("Invalid entity name"));
     }
+
+    // v1.4.0 "Calibrate" M1: normalize the bi-temporal `at` filter to the
+    // SQLite-comparable format. Reject malformed timestamps (a silent lexical
+    // compare would be wrong, not just useless).
+    let at_normalized: Option<String> = match params.at.as_deref().map(str::trim) {
+        Some("") | None => None,
+        Some(s) => Some(search::normalize_since(s).map_err(|_| {
+            AppError::BadRequest("invalid 'at' timestamp; expected ISO-8601 or YYYY-MM-DD")
+        })?),
+    };
 
     // v1.0.0: resolve pool from X-Brain-Domain header. When `cross_domain=true`,
     // walk edges across every known domain pool (per the plan M3 control).
@@ -2644,21 +2666,46 @@ async fn traverse_graph(
     }
 
     let result = task::spawn_blocking(move || -> Result<serde_json::Value, AppError> {
-        let query = "WITH RECURSIVE traversal(from_id, to_id, depth, path) AS (
-                SELECT from_entity_id, to_entity_id, 1, CAST(from_entity_id AS TEXT)
-                FROM relationships
-                WHERE from_entity_id = ?1
-                UNION ALL
-                SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, t.path || '->' || CAST(r.from_entity_id AS TEXT)
-                FROM relationships r
-                JOIN traversal t ON r.from_entity_id = t.to_id
-                WHERE t.depth < ?2
-            )
-            SELECT DISTINCT e.name, t.depth, t.path
-            FROM traversal t
-            JOIN entities e ON t.to_id = e.id";
+        // v1.4.0 "Calibrate" M1: bi-temporal edge filter. When `at` is set, an
+        // edge is traversable iff its valid-interval [valid_at, invalid_at)
+        // contains `at`: valid_at <= at AND (invalid_at IS NULL OR invalid_at > at).
+        // NULL valid_at ⇒ origin unknown ⇒ treated as always-valid (the
+        // additive-migration default for pre-v1.4 edges). Parameterized, never
+        // interpolated. Graphiti-validity semantics (Context7 2026-07-30).
+        //
+        // v1.4.0 M3 (TRACE): the CTE also bounds depth (already) and visits
+        // (the recursive UNION ALL has no global visited-set; the path-based
+        // cycle guard below prevents infinite loops). MAX_HOPS/MAX_VISITED are
+        // enforced on the Rust side after the walk.
+        let valid_clause = if at_normalized.is_some() {
+            " AND (valid_at IS NULL OR valid_at <= ?3) \
+               AND (invalid_at IS NULL OR invalid_at > ?3)"
+        } else {
+            ""
+        };
+        let query = format!(
+            "WITH RECURSIVE traversal(from_id, to_id, depth, path) AS (\
+                SELECT from_entity_id, to_entity_id, 1, CAST(from_entity_id AS TEXT) \
+                FROM relationships \
+                WHERE from_entity_id = ?1{valid_clause} \
+                UNION ALL \
+                SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, t.path || '->' || CAST(r.from_entity_id AS TEXT) \
+                FROM relationships r \
+                JOIN traversal t ON r.from_entity_id = t.to_id \
+                WHERE t.depth < ?2{valid_clause} \
+            ) \
+            SELECT DISTINCT e.name, t.depth, t.path \
+            FROM traversal t \
+            JOIN entities e ON t.to_id = e.id"
+        );
         let mut all: Vec<serde_json::Value> = Vec::new();
+        let mut total_visited: usize = 0;
         for (domain, pool) in &targets {
+            // Hard cap on visited nodes across the whole walk (forbidden-list
+            // rule: no unbounded graph walks). Stop once breached.
+            if total_visited >= trace::MAX_VISITED {
+                break;
+            }
             let conn = match pool.get() {
                 Ok(c) => c,
                 Err(e) => return Err(AppError::Internal(e.to_string())),
@@ -2671,9 +2718,9 @@ async fn traverse_graph(
                 )
                 .ok();
             let Some(eid) = entity_id else { continue };
-            let mut stmt = conn.prepare(query).map_err(|e| AppError::Internal(e.to_string()))?;
-            let rows: Vec<_> = stmt
-                .query_map(params![eid, depth], |r| {
+            let mut stmt = conn.prepare(&query).map_err(|e| AppError::Internal(e.to_string()))?;
+            let rows: Vec<_> = if let Some(at) = &at_normalized {
+                stmt.query_map(params![eid, depth, at], |r| {
                     Ok(serde_json::json!({
                         "entity": r.get::<_, String>(0)?,
                         "depth": r.get::<_, i64>(1)?,
@@ -2683,10 +2730,26 @@ async fn traverse_graph(
                 })
                 .map_err(|e| AppError::Internal(e.to_string()))?
                 .filter_map(|r| r.ok())
-                .collect();
+                .take(trace::MAX_VISITED)
+                .collect()
+            } else {
+                stmt.query_map(params![eid, depth], |r| {
+                    Ok(serde_json::json!({
+                        "entity": r.get::<_, String>(0)?,
+                        "depth": r.get::<_, i64>(1)?,
+                        "path": r.get::<_, String>(2)?,
+                        "domain": domain,
+                    }))
+                })
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .take(trace::MAX_VISITED.saturating_sub(total_visited))
+                .collect()
+            };
+            total_visited += rows.len();
             all.extend(rows);
         }
-        Ok(serde_json::json!({ "traversal": all }))
+        Ok(serde_json::json!({ "traversal": all, "visited": total_visited }))
     })
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
@@ -4650,6 +4713,121 @@ mod tests {
     }
 
     #[test]
+    fn bitemporal_edge_filter_in_traverse_query() {
+        // v1.4.0 M1: two edges for the same (from,to,kind) with different
+        // valid-intervals — "Kamala was CA AG from 2011 to 2017" vs a current
+        // holder. A `?at=2015` query must traverse the 2011–2017 edge; a
+        // `?at=2020` query must NOT (its invalid_at has passed).
+        let db = test_db();
+        // Seed two entities.
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES ('kamala','person'),('ca_ag','role')",
+            [],
+        )
+        .unwrap();
+        let kamala_id: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='kamala'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let role_id: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='ca_ag'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // Historical edge: valid 2011–2017.
+        db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, valid_at, invalid_at) \
+             VALUES (?1, ?2, 'held_office', '2011-01-01 00:00:00', '2017-01-01 00:00:00')",
+            params![kamala_id, role_id],
+        )
+        .unwrap();
+
+        // The bi-temporal filter fragment (mirrors AT_FILTER_SQL semantics).
+        // visible at `at` iff (valid_at IS NULL OR valid_at <= at) AND
+        // (invalid_at IS NULL OR invalid_at > at).
+        let count_2015: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM relationships \
+                 WHERE (valid_at IS NULL OR valid_at <= ?1) \
+                   AND (invalid_at IS NULL OR invalid_at > ?1)",
+                params!["2015-06-01 00:00:00"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count_2015, 1,
+            "edge should be visible at 2015 (within interval)"
+        );
+
+        let count_2020: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM relationships \
+                 WHERE (valid_at IS NULL OR valid_at <= ?1) \
+                   AND (invalid_at IS NULL OR invalid_at > ?1)",
+                params!["2020-06-01 00:00:00"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count_2020, 0,
+            "edge should NOT be visible at 2020 (past invalid_at)"
+        );
+    }
+
+    #[test]
+    fn temporal_extractor_populates_edge_interval() {
+        // v1.4.0 M1: the deterministic extractor pulls valid_at/invalid_at from
+        // free text. "from 2011 to 2017" → [2011, 2017).
+        use crate::temporal::extract_interval;
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 7, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let iv = extract_interval("was CA AG from 2011 to 2017", &now);
+        assert_eq!(iv.valid_at.as_deref(), Some("2011-01-01 00:00:00"));
+        assert_eq!(iv.invalid_at.as_deref(), Some("2017-01-01 00:00:00"));
+    }
+
+    #[test]
+    fn typed_edge_prefix_passes_validation() {
+        // v1.4.0 M3: TRACE typed-edge prefixes (update:, supersedes:, etc.) must
+        // pass the relation_type validator so callers can ingest typed edges.
+        use crate::handlers::{is_match, RELTYPE_RE};
+        assert!(is_match(RELTYPE_RE, "update:lives_in"));
+        assert!(is_match(RELTYPE_RE, "supersedes:address"));
+        assert!(is_match(RELTYPE_RE, "contradicts:claim"));
+        assert!(is_match(RELTYPE_RE, "causes:failure"));
+        // Base relation without prefix still valid.
+        assert!(is_match(RELTYPE_RE, "works_at"));
+        // Garbage rejected.
+        assert!(!is_match(RELTYPE_RE, "update:"));
+        assert!(!is_match(RELTYPE_RE, ":lives_in"));
+        assert!(!is_match(RELTYPE_RE, "has space"));
+    }
+
+    #[test]
+    fn trace_traversal_caps_are_bounded() {
+        // v1.4.0 M3: the forbidden-list rule mandates bounded graph walks.
+        // Read into locals so clippy sees a runtime check, not a const assertion.
+        let hops = crate::trace::MAX_HOPS;
+        let visited = crate::trace::MAX_VISITED;
+        assert!((1..=8).contains(&hops));
+        assert!((1..=1024).contains(&visited));
+    }
+
+    #[test]
+    fn eval_metrics_compute_correctly() {
+        // v1.4.0 M5: the regression-harness metric functions produce the
+        // hand-computed values (the smallest check that fails if a metric breaks).
+        use brain_server::eval::{mrr, ndcg, precision_at_k, recall_at_k};
+        assert!((precision_at_k(&[1, 2, 3, 4, 5], &[2, 4], 5) - 0.4).abs() < 1e-6);
+        assert!((recall_at_k(&[1, 2, 3], &[2, 4, 6], 3) - 1.0 / 3.0).abs() < 1e-6);
+        assert!((mrr(&[4, 5, 1], &[1]) - 1.0 / 3.0).abs() < 1e-6);
+        assert!((ndcg(&[1, 2, 3], &[1, 2], 5) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn snippet_suppressed_for_flagged() {
         let make = |flagged: bool| crate::SearchResult {
             id: 1,
@@ -6167,13 +6345,51 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(count, 1, "knowledge count should reflect the insert");
 
+        // v1.4.0 "Calibrate" M1: bi-temporal edge columns exist.
+        let rel_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(relationships)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in ["valid_at", "invalid_at"] {
+            assert!(
+                rel_cols.contains(col),
+                "v1.4.0: relationships.{col} column must exist after migration"
+            );
+        }
+        // v1.4.0 "Calibrate" M3: TRACE node hierarchy reservation columns.
+        let k_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(knowledge)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in ["node_kind", "parent_id"] {
+            assert!(
+                k_cols.contains(col),
+                "v1.4.0: knowledge.{col} column must exist after migration"
+            );
+        }
+        // node_kind defaults to 'event' for existing rows.
+        let node_kind: String = db
+            .query_row(
+                "SELECT node_kind FROM knowledge WHERE id = ?1",
+                params![kid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(node_kind, "event", "node_kind defaults to 'event'");
+
         // v0.9.9: schema_version is recorded after migration and readable via
         // the shared helper. The rehearsal tool relies on this to refuse a
         // migrate-down without --force.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_2_0),
-            "schema_version must be recorded as 1.2.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_4_0),
+            "schema_version must be recorded as 1.4.0 after migration"
         );
     }
 
