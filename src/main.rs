@@ -61,8 +61,7 @@ mod domain_registry;
 mod domain_router;
 mod handlers;
 mod integrity;
-// v1.4.0 "Calibrate": deterministic temporal-marker extraction for bi-temporal
-// edges (Graphiti valid_at/invalid_at model). Pure, no I/O.
+mod linker;
 mod temporal;
 // v1.4.0 "Calibrate" M3: TRACE typed-edge prefixes + validity-aware traversal.
 mod search;
@@ -1829,12 +1828,43 @@ async fn ingest_markdown(
     //   - wikilink targets (vault): source note `references` target note
     //   - frontmatter tags: note `tagged_with` tag
     //   - frontmatter aliases: alias `alias_of` note
+    //   - deterministic linker: auto-discovers entities + typed relationships
+    //     from section headings, bold terms, and sentence patterns (v1.4.0+)
     let mut kg_edges: Vec<(String, String, String)> = parse_annotations(&content)
         .into_iter()
         .map(|(rel, ent)| (rel, escaped_title.to_lowercase(), ent.to_lowercase()))
         .collect();
     if !content.is_empty() {
         let from = escaped_title.to_lowercase();
+
+        // v1.4.0+: deterministic entity linker — zero LLM, zero hallucination.
+        // Builds vocabulary from document structure, then finds mentions and
+        // typed relationship patterns. Every edge is gated on both sides being
+        // known vocabulary entities (headings or bold terms).
+        let vocab = linker::extract_vocabulary(&content);
+        let doc_lower = title.trim().to_lowercase();
+        for mention in linker::find_mentions(&content, &vocab) {
+            let mention_lower = mention.to_lowercase();
+            // Skip self-references (document title matching an entity)
+            if mention_lower == doc_lower {
+                continue;
+            }
+            kg_edges.push((
+                "references".to_string(),
+                from.clone(),
+                mention_lower,
+            ));
+        }
+        for edge in linker::find_relationships(&content, &vocab) {
+            let from_lower = edge.from.to_lowercase();
+            let to_lower = edge.to.to_lowercase();
+            // Skip self-references and empty sides
+            if from_lower == to_lower || from_lower.is_empty() || to_lower.is_empty() {
+                continue;
+            }
+            kg_edges.push((edge.relation, from_lower, to_lower));
+        }
+
         for target in vault::parse_wikilinks(&content) {
             kg_edges.push((
                 "references".to_string(),
