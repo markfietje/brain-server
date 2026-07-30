@@ -1971,6 +1971,10 @@ async fn ingest_markdown(
                         "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
                         params![id],
                     );
+                    let _ = tx.execute(
+                        "DELETE FROM relationships WHERE knowledge_id = ?1",
+                        params![id],
+                    );
                 }
                 let _ = tx.execute(
                     "DELETE FROM knowledge WHERE source_path = ?1",
