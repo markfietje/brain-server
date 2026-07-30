@@ -10,7 +10,7 @@
 use crate::config::{QualityConfig, MAX_SNIPPET_CHARS, SNIPPET_CONTEXT_CHARS};
 use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualityEstimator};
 use anyhow::{Context, Result};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use model2vec_rs::model::StaticModel;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -550,6 +550,11 @@ impl Default for SearchFilters {
 /// format (`YYYY-MM-DD HH:MM:SS`, UTC). Rejects malformed timestamps so a bad
 /// filter cannot degrade into a silent lexical string comparison.
 ///
+/// Accepts: RFC3339 (`2024-03-01T12:00:00Z`), `YYYY-MM-DD HH:MM:SS`, and bare
+/// `YYYY-MM-DD` (v1.4.0 Calibrate: the bi-temporal `at` filter commonly uses
+/// date-only form, e.g. `?at=2015-06-01`). A bare date is padded to
+/// `00:00:00` so SQLite's lexicographic comparison is well-defined.
+///
 /// ponytail: we normalize to UTC naive time and rely on SQLite's lexicographic
 /// comparison of the fixed-width format; we do not honor arbitrary timezone
 /// offsets beyond RFC3339 parsing (offsets are converted to UTC).
@@ -563,8 +568,12 @@ pub fn normalize_since(since: &str) -> Result<String> {
     if let Ok(dt) = NaiveDateTime::parse_from_str(since, "%Y-%m-%d %H:%M:%S") {
         return Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string());
     }
+    // v1.4.0: bare date `YYYY-MM-DD` → midnight. Valid ISO-8601 date form.
+    if let Ok(d) = NaiveDate::parse_from_str(since, "%Y-%m-%d") {
+        return Ok(d.and_hms_opt(0, 0,0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string());
+    }
     anyhow::bail!(
-        "invalid 'since' timestamp {:?}; expected ISO-8601 (RFC3339) or 'YYYY-MM-DD HH:MM:SS'",
+        "invalid 'since' timestamp {:?}; expected ISO-8601 (RFC3339), 'YYYY-MM-DD HH:MM:SS', or 'YYYY-MM-DD'",
         since
     )
 }

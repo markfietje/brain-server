@@ -236,6 +236,9 @@ fn normalize_since_accepts_rfc3339_and_naive() {
     assert_eq!(offset, "2026-07-10 12:00:00", "offset must convert to UTC");
     let naive = normalize_since("2026-07-10 12:00:00").unwrap();
     assert_eq!(naive, "2026-07-10 12:00:00");
+    // v1.4.0: bare date → midnight (the bi-temporal `at` common form).
+    let bare = normalize_since("2026-07-10").unwrap();
+    assert_eq!(bare, "2026-07-10 00:00:00");
 }
 
 #[test]
