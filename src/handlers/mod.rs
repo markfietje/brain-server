@@ -41,7 +41,10 @@ use serde_json::Value;
 
 pub const DOMAIN_RE: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 pub const NAME_RE: &str = r"^[A-Za-z0-9 _-]{1,100}$";
-pub const RELTYPE_RE: &str = r"^[a-z0-9_]{1,64}$";
+/// v1.4.0 "Calibrate" M3: allows an optional TRACE typed-edge prefix
+/// (`update:`, `supersedes:`, `contradicts:`, `causes:`) before the base
+/// relation. The prefix is a single `:` separator; the base stays snake_case.
+pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
 
 pub const MAX_QUERY: usize = 2_000;
 pub const MAX_TITLE: usize = 500;
@@ -455,7 +458,7 @@ pub fn normalize_rel_type(raw: &str) -> Result<String, HandlerError> {
 //
 // ponytail: each pattern is a tiny character-class + length check; a full
 // regex engine is overkill. The shapes are pinned by the test in this module.
-fn is_match(pattern: &str, s: &str) -> bool {
+pub(crate) fn is_match(pattern: &str, s: &str) -> bool {
     match pattern {
         DOMAIN_RE => is_valid_domain(s),
         NAME_RE => is_valid_name(s),
@@ -483,11 +486,26 @@ fn is_valid_name(s: &str) -> bool {
 
 /// `^[a-z0-9_]{1,64}$` — relation types (snake_case, no hyphens).
 fn is_valid_rel_type(s: &str) -> bool {
+    // v1.4.0 "Calibrate" M3: allow one TRACE typed-edge prefix (update: | supersedes: |
+    // contradicts: | causes:) before the base relation. The prefix is lowercase
+    // letters followed by a single `:`; the base is snake_case as before.
     let s = s.trim();
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    if s.is_empty() || s.len() > 64 {
+        return false;
+    }
+    let base = if let Some((prefix, rest)) = s.split_once(':') {
+        if prefix.is_empty() || rest.is_empty() {
+            return false;
+        }
+        if !prefix.chars().all(|c| c.is_ascii_lowercase()) {
+            return false;
+        }
+        rest
+    } else {
+        s
+    };
+    base.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 #[cfg(test)]
