@@ -647,6 +647,38 @@ pub fn find_table_ranges(content: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
+/// Find byte ranges of list-item bold labels (`- **Term**:` or `* **Term**:`).
+///
+/// These are structured-data markers, not prose content. Excluding them
+/// from entity-mention scanning prevents false relationships like
+/// `cpu | tested | change log` (from `- **Last Tested**:` being paired
+/// with every entity in the same sentence window).
+pub fn find_list_item_bold_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i + 3 < len {
+        if bytes[i] == b'*' && bytes[i + 1] == b'*' && is_list_item_bold(content, i) {
+            let start = i;
+            if let Some(end) = find_closing_double_star(bytes, i + 2) {
+                let close = end + 2; // past closing **
+                // Include the trailing colon if present
+                let range_end = if close < len && bytes[close] == b':' {
+                    close + 1
+                } else {
+                    close
+                };
+                ranges.push((start, range_end));
+                i = range_end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    ranges
+}
+
 /// Check if a byte range [start, end) overlaps any of the given ranges.
 fn is_in_ranges(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
     ranges.iter().any(|&(s, e)| start < e && end > s)

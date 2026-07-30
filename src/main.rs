@@ -1848,8 +1848,10 @@ async fn ingest_markdown(
         // typed relationship patterns. Code blocks and tables are excluded.
         let code_ranges = linker::find_code_ranges(&content);
         let table_ranges = linker::find_table_ranges(&content);
+        let list_bold_ranges = linker::find_list_item_bold_ranges(&content);
         let mut excluded_ranges: Vec<(usize, usize)> = code_ranges;
         excluded_ranges.extend(table_ranges);
+        excluded_ranges.extend(list_bold_ranges);
         let mut vocab = linker::extract_vocabulary(&content, &excluded_ranges);
         // Merge existing entities from DB for cross-document recognition.
         if let Ok(conn) = state.pool.get() {
