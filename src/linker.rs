@@ -203,7 +203,13 @@ fn is_likely_verb(word: &str) -> bool {
 /// 2026 document-structure research confirms that heading hierarchy is a
 /// critical structural signal for knowledge graph construction from technical
 /// documentation.
-pub fn extract_heading_relationships(content: &str, entities: &HashSet<String>) -> Vec<TypedEdge> {
+///
+/// `excluded_ranges` — byte ranges to skip (code blocks, tables, etc).
+pub fn extract_heading_relationships(
+    content: &str,
+    entities: &HashSet<String>,
+    excluded_ranges: &[(usize, usize)],
+) -> Vec<TypedEdge> {
     struct HeadingEntry {
         level: usize,
         name: String,
@@ -213,6 +219,13 @@ pub fn extract_heading_relationships(content: &str, entities: &HashSet<String>) 
     let mut edges: Vec<TypedEdge> = Vec::new();
 
     for line in content.lines() {
+        // Skip table rows, code blocks, and other excluded content
+        let line_start = line.as_ptr() as usize - content.as_ptr() as usize;
+        let line_end = line_start + line.len();
+        if is_in_ranges(line_start, line_end, excluded_ranges) {
+            continue;
+        }
+
         let trimmed = line.trim();
         let level = trimmed.bytes().take_while(|&b| b == b'#').count();
         if !(1..=6).contains(&level) {
@@ -366,7 +379,7 @@ impl EntityMatcher {
     pub fn find_relationships(
         &self,
         content: &str,
-        _code_ranges: &[(usize, usize)],
+        excluded_ranges: &[(usize, usize)],
         extra_patterns: &[(&str, &str)],
     ) -> Vec<TypedEdge> {
         if self.entity_names.is_empty() {
@@ -400,6 +413,7 @@ impl EntityMatcher {
             if end <= start + 10 {
                 continue;
             }
+
             let sentence = &content[start..end];
 
             // Skip indented code blocks
@@ -407,7 +421,20 @@ impl EntityMatcher {
                 continue;
             }
 
-            let mentions = self.find_mentions_with_positions(sentence, &[]);
+            // Adjust exclusion ranges relative to this sentence subslice
+            // so find_mentions_with_positions can skip individual mentions inside
+            // table rows / code blocks without losing valid content outside them.
+            let adjusted: Vec<(usize, usize)> = excluded_ranges
+                .iter()
+                .filter(|&&(s, e)| s < end && e > start)
+                .map(|&(s, e)| {
+                    let adj_s = if s < start { 0 } else { s - start };
+                    let adj_e = if e > end { end - start } else { e - start };
+                    (adj_s.min(end - start), adj_e.min(end - start))
+                })
+                .collect();
+
+            let mentions = self.find_mentions_with_positions(sentence, &adjusted);
             if mentions.len() < 2 {
                 continue;
             }
@@ -457,7 +484,12 @@ impl EntityMatcher {
     /// ponytail: frequency-based discovery cannot detect rare (< min_freq)
     /// relationships. The built-in [`RELATION_PATTERNS`] covers common
     /// infrastructure verbs as a safety net.
-    pub fn discover_verb_patterns(&self, content: &str, min_freq: usize) -> Vec<(String, String)> {
+    pub fn discover_verb_patterns(
+        &self,
+        content: &str,
+        min_freq: usize,
+        excluded_ranges: &[(usize, usize)],
+    ) -> Vec<(String, String)> {
         if self.entity_names.is_empty() {
             return vec![];
         }
@@ -493,13 +525,26 @@ impl EntityMatcher {
             if end <= start + 10 {
                 continue;
             }
+
             let sentence = &content[start..end];
 
             if sentence.starts_with("    ") || sentence.starts_with('\t') {
                 continue;
             }
 
-            let mentions = self.find_mentions_with_positions(sentence, &[]);
+            // Adjust exclusion ranges relative to this sentence subslice
+            // (same approach as find_relationships)
+            let adjusted: Vec<(usize, usize)> = excluded_ranges
+                .iter()
+                .filter(|&&(s, e)| s < end && e > start)
+                .map(|&(s, e)| {
+                    let adj_s = if s < start { 0 } else { s - start };
+                    let adj_e = if e > end { end - start } else { e - start };
+                    (adj_s.min(end - start), adj_e.min(end - start))
+                })
+                .collect();
+
+            let mentions = self.find_mentions_with_positions(sentence, &adjusted);
             if mentions.len() < 2 {
                 continue;
             }
@@ -586,6 +631,22 @@ pub fn find_code_ranges(content: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
+/// Find byte ranges of GFM pipe table rows.
+///
+/// A table row is any line starting with `|` (after optional whitespace).
+/// Each matching line is emitted as its own byte range.
+pub fn find_table_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut line_start: usize = 0;
+    for line in content.lines() {
+        if line.trim().starts_with('|') {
+            ranges.push((line_start, line_start + line.len()));
+        }
+        line_start += line.len() + 1; // +1 for newline
+    }
+    ranges
+}
+
 /// Check if a byte range [start, end) overlaps any of the given ranges.
 fn is_in_ranges(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
     ranges.iter().any(|&(s, e)| start < e && end > s)
@@ -625,17 +686,28 @@ fn parse_heading_line(line: &str) -> Option<(usize, &str)> {
 /// 1. Section headings (`## Title` and deeper)
 /// 2. Bold terms (`**term**`)
 /// 3. Code spans (`` `tool` ``)
-pub fn extract_vocabulary(content: &str) -> EntityVocabulary {
+///
+/// `excluded_ranges` — byte ranges to skip (code blocks, tables, etc).
+pub fn extract_vocabulary(
+    content: &str,
+    excluded_ranges: &[(usize, usize)],
+) -> EntityVocabulary {
     let mut vocab = EntityVocabulary::default();
 
     // 1. Section headings
+    let mut line_start: usize = 0;
     for line in content.lines() {
-        if let Some((_level, heading)) = parse_heading_line(line) {
-            if STOP_HEADINGS.contains(&heading.to_lowercase().as_str()) || heading.len() < 4 {
-                continue;
+        let line_end = line_start + line.len();
+        if !is_in_ranges(line_start, line_end, excluded_ranges) {
+            if let Some((_level, heading)) = parse_heading_line(line) {
+                if STOP_HEADINGS.contains(&heading.to_lowercase().as_str()) || heading.len() < 4 {
+                    line_start += line.len() + 1;
+                    continue;
+                }
+                vocab.insert(heading);
             }
-            vocab.insert(heading);
         }
+        line_start += line.len() + 1;
     }
 
     // 2. Bold terms
@@ -646,9 +718,11 @@ pub fn extract_vocabulary(content: &str) -> EntityVocabulary {
         if bytes[i] == b'*' && bytes[i + 1] == b'*' {
             let start = i + 2;
             if let Some(end) = find_closing_double_star(bytes, start) {
-                let term = &content[start..end].trim();
-                if term.chars().any(|c| c.is_uppercase()) && term.len() >= 3 {
-                    vocab.insert(term);
+                if !is_in_ranges(start, end, excluded_ranges) {
+                    let term = &content[start..end].trim();
+                    if term.chars().any(|c| c.is_uppercase()) && term.len() >= 3 {
+                        vocab.insert(term);
+                    }
                 }
                 i = end + 2;
                 continue;
@@ -663,9 +737,11 @@ pub fn extract_vocabulary(content: &str) -> EntityVocabulary {
         if bytes[i] == b'`' {
             let start = i + 1;
             if let Some(end) = find_closing_backtick(bytes, start) {
-                let tool = &content[start..end].trim();
-                if tool.len() >= 3 && tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
-                    vocab.insert(tool);
+                if !is_in_ranges(start, end, excluded_ranges) {
+                    let tool = &content[start..end].trim();
+                    if tool.len() >= 3 && tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+                        vocab.insert(tool);
+                    }
                 }
                 i = end + 1;
                 continue;
@@ -709,7 +785,7 @@ mod tests {
     #[test]
     fn extracts_headings_as_vocabulary() {
         let content = "# Title\n\n## CRUSH Map Configuration\n\n## OSD Deployment\n";
-        let vocab = extract_vocabulary(content);
+        let vocab = extract_vocabulary(content, &[]);
         assert!(vocab
             .entities
             .contains(&"crush map configuration".to_string()));
@@ -719,7 +795,7 @@ mod tests {
     #[test]
     fn excludes_h1() {
         let content = "# Title\n## Section\n";
-        let vocab = extract_vocabulary(content);
+        let vocab = extract_vocabulary(content, &[]);
         assert!(!vocab.entities.contains(&"title".to_string()));
         assert!(vocab.entities.contains(&"section".to_string()));
     }
@@ -727,7 +803,7 @@ mod tests {
     #[test]
     fn filters_generic_headings() {
         let content = "## Overview\n\n## Introduction\n\n## CRUSH Map\n";
-        let vocab = extract_vocabulary(content);
+        let vocab = extract_vocabulary(content, &[]);
         assert!(!vocab.entities.contains(&"overview".to_string()));
         assert!(vocab.entities.contains(&"crush map".to_string()));
     }
@@ -735,7 +811,7 @@ mod tests {
     #[test]
     fn extracts_bold_terms() {
         let content = "The **CRUSH** algorithm distributes data across **OSDs**.";
-        let vocab = extract_vocabulary(content);
+        let vocab = extract_vocabulary(content, &[]);
         assert!(vocab.entities.contains(&"crush".to_string()));
         assert!(vocab.entities.contains(&"osds".to_string()));
     }
@@ -743,7 +819,7 @@ mod tests {
     #[test]
     fn extracts_code_spans() {
         let content = "Configure `ceph.conf` and run `ceph-deploy`.";
-        let vocab = extract_vocabulary(content);
+        let vocab = extract_vocabulary(content, &[]);
         assert!(vocab.entities.contains(&"ceph.conf".to_string()));
         assert!(vocab.entities.contains(&"ceph-deploy".to_string()));
     }
@@ -824,7 +900,7 @@ mod tests {
     #[test]
     fn extracts_requires_relationship() {
         let content = "## Ceph\n\n## CRUSH\n\nCeph requires CRUSH for data distribution.";
-        let m: EntityMatcher = extract_vocabulary(content).into();
+        let m: EntityMatcher = extract_vocabulary(content, &[]).into();
         let code = find_code_ranges(content);
         let edges = m.find_relationships(content, &code, &[]);
         let req = edges.iter().find(|e| e.relation == "requires");
@@ -836,7 +912,7 @@ mod tests {
     #[test]
     fn extracts_runs_on_relationship() {
         let content = "## Proxmox VE\n\n## Debian\n\nProxmox VE runs on Debian.";
-        let m: EntityMatcher = extract_vocabulary(content).into();
+        let m: EntityMatcher = extract_vocabulary(content, &[]).into();
         let edges = m.find_relationships(content, &[], &[]);
         let edge = edges.iter().find(|e| e.relation == "runs_on");
         assert!(edge.is_some(), "should find 'runs_on': {:?}", edges);
@@ -855,7 +931,7 @@ mod tests {
     #[test]
     fn relationship_skips_code_blocks() {
         let content = "## Ceph\n\n## CRUSH\n\nCeph requires CRUSH for data distribution.\n```\nCeph requires nothing inside code.\n```";
-        let m: EntityMatcher = extract_vocabulary(content).into();
+        let m: EntityMatcher = extract_vocabulary(content, &[]).into();
         let code = find_code_ranges(content);
         let edges = m.find_relationships(content, &code, &[]);
         // Should find the "requires" relationship from the non-code part
@@ -871,7 +947,7 @@ mod tests {
 
     #[test]
     fn vocabulary_merge_deduplicates() {
-        let mut vocab = extract_vocabulary("## Ceph\n## CRUSH\n");
+        let mut vocab = extract_vocabulary("## Ceph\n## CRUSH\n", &[]);
         vocab.insert("ceph");
         vocab.insert("rados");
         vocab.finalize();
@@ -901,8 +977,8 @@ Proxmox VE manages Ceph clusters.
 Ceph stores data in pools.
 Proxmox VE provides a web interface.
 Ceph handles replication.";
-        let m: EntityMatcher = extract_vocabulary(content).into();
-        let verbs = m.discover_verb_patterns(content, 3);
+        let m: EntityMatcher = extract_vocabulary(content, &[]).into();
+        let verbs = m.discover_verb_patterns(content, 3, &[]);
         assert!(
             verbs.iter().any(|(v, _)| v == "requires"),
             "expected 'requires' in discovered verbs: {:?}",
@@ -936,8 +1012,8 @@ Ceph manages CRUSH maps.
 Ceph manages pools.
 
 Ceph manages OSDs.";
-        let m: EntityMatcher = extract_vocabulary(content).into();
-        let verbs = m.discover_verb_patterns(content, 3);
+        let m: EntityMatcher = extract_vocabulary(content, &[]).into();
+        let verbs = m.discover_verb_patterns(content, 3, &[]);
         let vrefs: Vec<(&str, &str)> = verbs
             .iter()
             .map(|(a, b)| (a.as_str(), b.as_str()))
@@ -985,7 +1061,7 @@ Ceph manages OSDs.";
         .map(String::from)
         .collect();
 
-        let edges = extract_heading_relationships(content, &entities);
+        let edges = extract_heading_relationships(content, &entities, &[]);
         assert_eq!(
             edges.len(),
             5,
@@ -1029,7 +1105,7 @@ Ceph manages OSDs.";
         .map(String::from)
         .collect();
 
-        let edges = extract_heading_relationships(content, &entities);
+        let edges = extract_heading_relationships(content, &entities, &[]);
         // "Ceph" has no parent that is also a stop-heading entity → no edge.
         // "CRUSH Map" under "Ceph" → 1 edge.
         assert_eq!(
@@ -1055,8 +1131,8 @@ Ceph maps OSD data.
 Ceph maps OSD pools.
 Ceph maps OSD failures.
 ";
-        let m: EntityMatcher = extract_vocabulary(content).into();
-        let verbs = m.discover_verb_patterns(content, 3);
+        let m: EntityMatcher = extract_vocabulary(content, &[]).into();
+        let verbs = m.discover_verb_patterns(content, 3, &[]);
         // "maps" ends in 's' but it's a plural noun, not a 3rd-person verb.
         // If discovered, "maps" would create false edges.
         assert!(

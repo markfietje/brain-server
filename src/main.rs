@@ -1845,8 +1845,12 @@ async fn ingest_markdown(
         // v1.4.0+: deterministic entity linker — Aho-Corasick backed, zero LLM.
         // Builds vocabulary from document structure, merges in existing entities
         // from the database (cross-document linking), then finds mentions and
-        // typed relationship patterns. Code blocks are excluded from scanning.
-        let mut vocab = linker::extract_vocabulary(&content);
+        // typed relationship patterns. Code blocks and tables are excluded.
+        let code_ranges = linker::find_code_ranges(&content);
+        let table_ranges = linker::find_table_ranges(&content);
+        let mut excluded_ranges: Vec<(usize, usize)> = code_ranges;
+        excluded_ranges.extend(table_ranges);
+        let mut vocab = linker::extract_vocabulary(&content, &excluded_ranges);
         // Merge existing entities from DB for cross-document recognition.
         if let Ok(conn) = state.pool.get() {
             if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT name FROM entities") {
@@ -1862,10 +1866,9 @@ async fn ingest_markdown(
             std::collections::HashSet::from_iter(vocab.entities.iter().cloned());
         vocab.finalize();
         let matcher: linker::EntityMatcher = vocab.into();
-        let code_ranges = linker::find_code_ranges(&content);
         let doc_lower = title.trim().to_lowercase();
 
-        for mention in matcher.find_mentions(&content, &code_ranges) {
+        for mention in matcher.find_mentions(&content, &excluded_ranges) {
             // Skip self-references (document title matching an entity)
             if mention == doc_lower {
                 continue;
@@ -1875,7 +1878,7 @@ async fn ingest_markdown(
         // v1.4.0+: Heading hierarchy → part_of relationships.
         // A heading at level N+1 under a heading at level N creates a
         // `part_of` edge if both are known entities.
-        for edge in linker::extract_heading_relationships(&content, &entity_set) {
+        for edge in linker::extract_heading_relationships(&content, &entity_set, &excluded_ranges) {
             if edge.from != doc_lower && edge.to != doc_lower {
                 kg_edges.push((edge.relation, edge.from, edge.to));
             }
@@ -1884,12 +1887,12 @@ async fn ingest_markdown(
         // min_freq=3 filters out words that happen to appear between entities
         // by accident and keeps genuine relationship verbs. The built-in
         // RELATION_PATTERNS handle the common infrastructure verbs as a fallback.
-        let discovered = matcher.discover_verb_patterns(&content, 3);
+        let discovered = matcher.discover_verb_patterns(&content, 3, &excluded_ranges);
         let discovered_refs: Vec<(&str, &str)> = discovered
             .iter()
             .map(|(a, b)| (a.as_str(), b.as_str()))
             .collect();
-        for edge in matcher.find_relationships(&content, &code_ranges, &discovered_refs) {
+        for edge in matcher.find_relationships(&content, &excluded_ranges, &discovered_refs) {
             let from_lower = edge.from;
             let to_lower = edge.to;
             // Skip self-references and empty sides
