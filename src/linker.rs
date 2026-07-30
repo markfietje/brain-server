@@ -686,25 +686,25 @@ fn parse_heading_line(line: &str) -> Option<(usize, &str)> {
 /// These are structured-data markers, not content entities that should
 /// participate in relationship extraction.
 fn is_list_item_bold(content: &str, open: usize) -> bool {
-    let bytes = content.as_bytes();
-    // Look backwards past optional whitespace for `-` or `*` line prefix
-    let mut p = open;
-    while p > 0 && (bytes[p - 1] == b' ' || bytes[p - 1] == b'\t') {
-        p -= 1;
-    }
-    if p < 2 {
+    if open < 2 {
         return false;
     }
-    let prefix = bytes[p - 1];
-    if prefix != b'-' && prefix != b'*' {
+    let before = content[..open].as_bytes();
+    let len = before.len();
+    // Skip trailing whitespace before the `**` opener
+    let mut end = len;
+    while end > 0 && (before[end - 1] == b' ' || before[end - 1] == b'\t') {
+        end -= 1;
+    }
+    if end < 1 {
         return false;
     }
-    // Ensure the list marker is at the start of a line (or preceded by whitespace)
-    if p > 2 && bytes[p - 2] != b'\n' && bytes[p - 2] != b'\r' {
-        // Not at line start; could be inline asterisks like "some * text"
+    let marker = before[end - 1];
+    if marker != b'-' && marker != b'*' {
         return false;
     }
-    true
+    // Confirm the list marker is at line start (or preceded by newline)
+    end == 1 || before[end - 2] == b'\n' || before[end - 2] == b'\r'
 }
 
 /// Extract entity vocabulary from document structure.
