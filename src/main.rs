@@ -1852,6 +1852,9 @@ async fn ingest_markdown(
                 }
             }
         }
+        // Save entity set before consuming vocab.
+        let entity_set: std::collections::HashSet<String> =
+            std::collections::HashSet::from_iter(vocab.entities.iter().cloned());
         vocab.finalize();
         let matcher: linker::EntityMatcher = vocab.into();
         let code_ranges = linker::find_code_ranges(&content);
@@ -1862,13 +1865,26 @@ async fn ingest_markdown(
             if mention == doc_lower {
                 continue;
             }
-            kg_edges.push((
-                "references".to_string(),
-                from.clone(),
-                mention.to_string(),
-            ));
+            kg_edges.push(("references".to_string(), from.clone(), mention.to_string()));
         }
-        for edge in matcher.find_relationships(&content, &code_ranges) {
+        // v1.4.0+: Heading hierarchy → part_of relationships.
+        // A heading at level N+1 under a heading at level N creates a
+        // `part_of` edge if both are known entities.
+        for edge in linker::extract_heading_relationships(&content, &entity_set) {
+            if edge.from != doc_lower && edge.to != doc_lower {
+                kg_edges.push((edge.relation, edge.from, edge.to));
+            }
+        }
+        // Discover domain-specific verb patterns from this document.
+        // min_freq=3 filters out words that happen to appear between entities
+        // by accident and keeps genuine relationship verbs. The built-in
+        // RELATION_PATTERNS handle the common infrastructure verbs as a fallback.
+        let discovered = matcher.discover_verb_patterns(&content, 3);
+        let discovered_refs: Vec<(&str, &str)> = discovered
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        for edge in matcher.find_relationships(&content, &code_ranges, &discovered_refs) {
             let from_lower = edge.from;
             let to_lower = edge.to;
             // Skip self-references and empty sides

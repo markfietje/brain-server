@@ -18,6 +18,8 @@
 //! independent. Not implemented because the common case (re-ingest where
 //! most entities already exist) works well enough.
 
+use std::collections::{HashMap, HashSet};
+
 use aho_corasick::{AhoCorasick, MatchKind};
 
 /// Check that the match at (start, end) in `content` has proper word
@@ -44,7 +46,7 @@ fn has_word_boundaries(content: &str, start: usize, end: usize) -> bool {
 /// greedy matching).
 #[derive(Default)]
 pub struct EntityVocabulary {
-    entities: Vec<String>,
+    pub entities: Vec<String>,
 }
 
 /// Compiled entity matcher — O(n) multi-pattern matching with Aho-Corasick.
@@ -84,6 +86,8 @@ const STOP_HEADINGS: &[&str] = &[
 
 /// Verb patterns for typed relationship extraction.
 /// Longer patterns first so they match before their shorter suffixes.
+/// These cover common infrastructure/tech verbs.
+/// Additional patterns are discovered per-document by [`EntityMatcher::discover_verb_patterns`].
 const RELATION_PATTERNS: &[(&str, &str)] = &[
     ("runs on top of", "runs_on"),
     ("communicates with", "communicates_with"),
@@ -118,6 +122,137 @@ const RELATION_PATTERNS: &[(&str, &str)] = &[
     ("deploys", "deploys"),
     ("installs", "installs"),
 ];
+
+/// Words that never carry a relationship between entities (articles, pure
+/// copulae, modals, common prepositions). Sorted for binary search.
+const STOP_WORDS: &[&str] = &[
+    "after", "also", "an", "and", "are", "as", "at", "be", "been", "being", "below", "between",
+    "but", "by", "can", "could", "did", "do", "does", "during", "for", "from", "had", "has",
+    "have", "her", "his", "in", "into", "is", "its", "just", "may", "might", "must", "my", "no",
+    "nor", "not", "of", "on", "or", "our", "shall", "should", "than", "that", "the", "their",
+    "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "upon",
+    "very", "via", "was", "were", "will", "with", "would", "your",
+];
+
+/// Verb-forming suffixes — words ending in these are almost certainly verbs.
+fn has_verb_suffix(w: &str) -> bool {
+    w.ends_with("ed")
+        || w.ends_with("ing")
+        || w.ends_with("ate")
+        || w.ends_with("ify")
+        || w.ends_with("ize")
+        || w.ends_with("ise")
+}
+
+/// Check whether a word matches common English verb patterns.
+///
+/// Accepts words that:
+/// 1. Appear in [`RELATION_PATTERNS`] (known-good infrastructure verbs), or
+/// 2. End with a verb-forming suffix (-ed, -ing, -ate, -ify, -ize, -ise), or
+/// 3. End with 3rd-person -s/-es where the base matches (2), e.g.
+///    "communicates" → base "communicate" → ends with -ate.
+///
+/// ponytail: bare base-form verbs without derivational suffixes
+/// ("run", "set", "cut", "encrypt") are not detected without a dictionary.
+/// They are rare as discovered patterns because the frequency threshold
+/// mostly catches morphologically marked verbs ("manages", "configures").
+/// Common infrastructure verbs are already covered by [`RELATION_PATTERNS`].
+fn is_likely_verb(word: &str) -> bool {
+    if word.len() < 3 {
+        return false;
+    }
+    if RELATION_PATTERNS.iter().any(|(v, _)| v == &word) {
+        return true;
+    }
+    if has_verb_suffix(word) {
+        return true;
+    }
+    // 3rd-person singular: strip trailing -s and check the base.
+    // "communicates" → base "communicate" → has_verb_suffix("communicate") = true
+    // "maps"         → base "map"         → has_verb_suffix("map") = false
+    if word.ends_with('s') && word.len() > 3 {
+        // Handle -ies → -y (verifies → verify)
+        if word.ends_with("ies") && word.len() > 4 {
+            let base = format!("{}y", &word[..word.len() - 3]);
+            if has_verb_suffix(&base) {
+                return true;
+            }
+        }
+        // Handle -es where base ends in s/sh/ch/z/o
+        if word.ends_with("es") && word.len() > 4 {
+            let base_es = &word[..word.len() - 2];
+            if has_verb_suffix(base_es) {
+                return true;
+            }
+        }
+        let base = &word[..word.len() - 1];
+        if has_verb_suffix(base) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Extract `part_of` relationships from the document's heading hierarchy.
+///
+/// A heading at level N+1 is a subtopic of the most recent heading at level N
+/// that is also a known entity in `entities`.  This encodes the document
+/// structure as explicit KG edges — a `part_of` edge is created for every
+/// adjacent heading pair where both headings exist in the entity vocabulary.
+///
+/// 2026 document-structure research confirms that heading hierarchy is a
+/// critical structural signal for knowledge graph construction from technical
+/// documentation.
+pub fn extract_heading_relationships(content: &str, entities: &HashSet<String>) -> Vec<TypedEdge> {
+    struct HeadingEntry {
+        level: usize,
+        name: String,
+    }
+
+    let mut stack: Vec<HeadingEntry> = Vec::new();
+    let mut edges: Vec<TypedEdge> = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let level = trimmed.bytes().take_while(|&b| b == b'#').count();
+        if !(1..=6).contains(&level) {
+            continue;
+        }
+        let heading_text = trimmed[level..].trim().to_lowercase();
+
+        // Skip headings that are in the stop list (linear search — list is small)
+        if STOP_HEADINGS.iter().any(|s| *s == heading_text) {
+            continue;
+        }
+        // Only create edges for headings that are known entities
+        if !entities.contains(&heading_text) {
+            continue;
+        }
+
+        // Pop stack until we find a parent at a higher (smaller) level
+        while stack.last().is_some_and(|h| h.level >= level) {
+            stack.pop();
+        }
+
+        // The top of the stack is the parent heading
+        if let Some(parent) = stack.last() {
+            if parent.name != heading_text {
+                edges.push(TypedEdge {
+                    relation: "part_of".to_string(),
+                    from: heading_text.clone(),
+                    to: parent.name.clone(),
+                });
+            }
+        }
+
+        stack.push(HeadingEntry {
+            level,
+            name: heading_text,
+        });
+    }
+
+    edges
+}
 
 // ---------------------------------------------------------------------------
 // EntityVocabulary
@@ -166,7 +301,11 @@ impl EntityMatcher {
     /// Returns entity names (from the vocabulary, lowercased) in order of
     /// appearance. With LeftmostFirst semantics, a longer entity always
     /// wins over a shorter prefix at the same position.
-    pub fn find_mentions<'m>(&'m self, content: &str, code_ranges: &[(usize, usize)]) -> Vec<&'m str> {
+    pub fn find_mentions<'m>(
+        &'m self,
+        content: &str,
+        code_ranges: &[(usize, usize)],
+    ) -> Vec<&'m str> {
         let mut found: Vec<(usize, &str)> = Vec::new();
 
         for m in self.ac.find_iter(content) {
@@ -205,7 +344,9 @@ impl EntityMatcher {
         // Dedup overlapping ranges (keep first / leftmost-longest)
         let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
         for m in found {
-            let overlaps = deduped.iter().any(|&(s, e, _)| (s..=e).contains(&m.0) && (s..=e).contains(&m.1));
+            let overlaps = deduped
+                .iter()
+                .any(|&(s, e, _)| (s..=e).contains(&m.0) && (s..=e).contains(&m.1));
             if !overlaps {
                 deduped.push(m);
             }
@@ -218,10 +359,15 @@ impl EntityMatcher {
     ///
     /// For each sentence, uses Aho-Corasick to find all entity mentions,
     /// then checks verb patterns between each ordered pair.
+    ///
+    /// `extra_patterns` are domain-verb patterns discovered from the document
+    /// itself by [`Self::discover_verb_patterns`]. They are checked in
+    /// addition to [`RELATION_PATTERNS`].
     pub fn find_relationships(
         &self,
         content: &str,
         _code_ranges: &[(usize, usize)],
+        extra_patterns: &[(&str, &str)],
     ) -> Vec<TypedEdge> {
         if self.entity_names.is_empty() {
             return vec![];
@@ -277,21 +423,125 @@ impl EntityMatcher {
                     }
 
                     let between_lower = between.to_lowercase();
-                    for (verb, rel_type) in RELATION_PATTERNS {
-                        if between_lower.contains(verb) {
-                            edges.push(TypedEdge {
-                                relation: rel_type.to_string(),
-                                from: mentions[i].2.to_string(),
-                                to: mentions[j].2.to_string(),
-                            });
-                            break;
-                        }
+                    // Check built-in patterns first, then discovered ones.
+                    // break on first match so longer patterns have priority.
+                    let matched = RELATION_PATTERNS
+                        .iter()
+                        .chain(extra_patterns.iter())
+                        .find(|(verb, _)| between_lower.contains(verb));
+                    if let Some((_, rel_type)) = matched {
+                        edges.push(TypedEdge {
+                            relation: rel_type.to_string(),
+                            from: mentions[i].2.to_string(),
+                            to: mentions[j].2.to_string(),
+                        });
                     }
                 }
             }
         }
 
         edges
+    }
+
+    /// Discover frequent verb patterns that appear between entity pairs in
+    /// this document.
+    ///
+    /// Scans every sentence, finds paired entity mentions, and counts every
+    /// non-stop-word in the text between them. Words that appear ≥ `min_freq`
+    /// times are returned as candidate relationship patterns.
+    ///
+    /// This makes the linker fully domain-agnostic: a medical document would
+    /// discover "treats" / "diagnoses" / "prevents"; a legal document would
+    /// discover "governed_by" / "requires_compliance_with".
+    ///
+    /// ponytail: frequency-based discovery cannot detect rare (< min_freq)
+    /// relationships. The built-in [`RELATION_PATTERNS`] covers common
+    /// infrastructure verbs as a safety net.
+    pub fn discover_verb_patterns(&self, content: &str, min_freq: usize) -> Vec<(String, String)> {
+        if self.entity_names.is_empty() {
+            return vec![];
+        }
+
+        // Build a set of known entity names — they should never become
+        // relationship types even if they appear between entity pairs.
+        let entity_set: HashSet<&str> = self.entity_names.iter().map(|s| s.as_str()).collect();
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let bytes = content.as_bytes();
+        let len = bytes.len();
+
+        // Walk sentence boundaries (same logic as find_relationships)
+        let mut sentence_starts: Vec<usize> = vec![0];
+        let mut i = 0;
+        while i < len {
+            if i + 1 < len && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+                let prev = if i >= 2 { &bytes[i - 2..i] } else { &[] };
+                if prev != b"i.e" && prev != b"e.g" {
+                    sentence_starts.push(i + 2);
+                }
+            }
+            if i + 3 < len && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
+                sentence_starts.push(i + 2);
+            }
+            i += 1;
+        }
+        sentence_starts.push(len);
+
+        for w in sentence_starts.windows(2) {
+            let start = w[0];
+            let end = w[1];
+            if end <= start + 10 {
+                continue;
+            }
+            let sentence = &content[start..end];
+
+            if sentence.starts_with("    ") || sentence.starts_with('\t') {
+                continue;
+            }
+
+            let mentions = self.find_mentions_with_positions(sentence, &[]);
+            if mentions.len() < 2 {
+                continue;
+            }
+
+            for i in 0..mentions.len() {
+                for j in i + 1..mentions.len() {
+                    if mentions[j].1 <= mentions[i].1 {
+                        continue;
+                    }
+                    let between = &sentence[mentions[i].1..mentions[j].0].trim();
+                    if between.is_empty() {
+                        continue;
+                    }
+                    // Count every alphanumeric word ≥ 3 chars that isn't a stop word,
+                    // an existing entity name (entities are things, not relationships),
+                    // or a non-verb (nouns like "maps", "example" are common noise).
+                    for word in between.split_whitespace() {
+                        let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+                        if word.len() < 3 {
+                            continue;
+                        }
+                        let lower = word.to_lowercase();
+                        if STOP_WORDS.binary_search(&lower.as_str()).is_ok() {
+                            continue;
+                        }
+                        if entity_set.contains(lower.as_str()) {
+                            continue;
+                        }
+                        // Skip words that don't look like verbs
+                        if !is_likely_verb(&lower) {
+                            continue;
+                        }
+                        *counts.entry(lower).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let mut verbs: Vec<(String, usize)> =
+            counts.into_iter().filter(|(_, c)| *c >= min_freq).collect();
+        verbs.sort_unstable_by_key(|v| std::cmp::Reverse(v.1));
+        verbs.into_iter().map(|(v, _)| (v.clone(), v)).collect()
     }
 }
 
@@ -414,9 +664,7 @@ pub fn extract_vocabulary(content: &str) -> EntityVocabulary {
             let start = i + 1;
             if let Some(end) = find_closing_backtick(bytes, start) {
                 let tool = &content[start..end].trim();
-                if tool.len() >= 3
-                    && tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-                {
+                if tool.len() >= 3 && tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
                     vocab.insert(tool);
                 }
                 i = end + 1;
@@ -462,7 +710,9 @@ mod tests {
     fn extracts_headings_as_vocabulary() {
         let content = "# Title\n\n## CRUSH Map Configuration\n\n## OSD Deployment\n";
         let vocab = extract_vocabulary(content);
-        assert!(vocab.entities.contains(&"crush map configuration".to_string()));
+        assert!(vocab
+            .entities
+            .contains(&"crush map configuration".to_string()));
         assert!(vocab.entities.contains(&"osd deployment".to_string()));
     }
 
@@ -552,7 +802,12 @@ mod tests {
         // "Ceph outside.\n" -> match Ceph at start
         // "Ceph outside again." -> match Ceph
         // "Ceph inside." inside ``` is skipped
-        assert_eq!(found.len(), 2, "should find Ceph twice (outside code): {:?}", found);
+        assert_eq!(
+            found.len(),
+            2,
+            "should find Ceph twice (outside code): {:?}",
+            found
+        );
     }
 
     #[test]
@@ -571,7 +826,7 @@ mod tests {
         let content = "## Ceph\n\n## CRUSH\n\nCeph requires CRUSH for data distribution.";
         let m: EntityMatcher = extract_vocabulary(content).into();
         let code = find_code_ranges(content);
-        let edges = m.find_relationships(content, &code);
+        let edges = m.find_relationships(content, &code, &[]);
         let req = edges.iter().find(|e| e.relation == "requires");
         assert!(req.is_some(), "should find 'requires': {:?}", edges);
         assert_eq!(req.unwrap().from.to_lowercase(), "ceph");
@@ -582,7 +837,7 @@ mod tests {
     fn extracts_runs_on_relationship() {
         let content = "## Proxmox VE\n\n## Debian\n\nProxmox VE runs on Debian.";
         let m: EntityMatcher = extract_vocabulary(content).into();
-        let edges = m.find_relationships(content, &[]);
+        let edges = m.find_relationships(content, &[], &[]);
         let edge = edges.iter().find(|e| e.relation == "runs_on");
         assert!(edge.is_some(), "should find 'runs_on': {:?}", edges);
         assert_eq!(edge.unwrap().from.to_lowercase(), "proxmox ve");
@@ -593,7 +848,7 @@ mod tests {
     fn no_relationships_with_empty_vocab() {
         let content = "The system runs on a standard kernel.";
         let m: EntityMatcher = EntityVocabulary::default().into();
-        let edges = m.find_relationships(content, &[]);
+        let edges = m.find_relationships(content, &[], &[]);
         assert!(edges.is_empty());
     }
 
@@ -602,10 +857,14 @@ mod tests {
         let content = "## Ceph\n\n## CRUSH\n\nCeph requires CRUSH for data distribution.\n```\nCeph requires nothing inside code.\n```";
         let m: EntityMatcher = extract_vocabulary(content).into();
         let code = find_code_ranges(content);
-        let edges = m.find_relationships(content, &code);
+        let edges = m.find_relationships(content, &code, &[]);
         // Should find the "requires" relationship from the non-code part
         let req = edges.iter().find(|e| e.relation == "requires");
-        assert!(req.is_some(), "should find 'requires' outside code: {:?}", edges);
+        assert!(
+            req.is_some(),
+            "should find 'requires' outside code: {:?}",
+            edges
+        );
     }
 
     // --- DB vocabulary ---
@@ -622,5 +881,203 @@ mod tests {
         // "ceph" should appear only once
         let count = vocab.entities.iter().filter(|e| *e == "ceph").count();
         assert_eq!(count, 1);
+    }
+
+    // --- Verb discovery ---
+
+    #[test]
+    fn discovers_verbs_between_entity_pairs() {
+        let content = "\
+## Ceph
+
+## CRUSH
+
+## Proxmox VE
+
+Ceph requires CRUSH for data distribution.
+Proxmox VE runs on Debian.
+Ceph supports erasure coding.
+Proxmox VE manages Ceph clusters.
+Ceph stores data in pools.
+Proxmox VE provides a web interface.
+Ceph handles replication.";
+        let m: EntityMatcher = extract_vocabulary(content).into();
+        let verbs = m.discover_verb_patterns(content, 3);
+        assert!(
+            verbs.iter().any(|(v, _)| v == "requires"),
+            "expected 'requires' in discovered verbs: {:?}",
+            verbs,
+        );
+        assert!(
+            verbs.iter().any(|(v, _)| v == "manages"),
+            "expected 'manages' in discovered verbs: {:?}",
+            verbs,
+        );
+        // "on" and "for" are stop words and should never appear
+        assert!(
+            !verbs.iter().any(|(v, _)| v == "on"),
+            "'on' is a stop word and should not be discovered",
+        );
+        assert!(
+            !verbs.iter().any(|(v, _)| v == "for"),
+            "'for' is a stop word and should not be discovered",
+        );
+    }
+
+    #[test]
+    fn discovered_verbs_are_used_in_relationships() {
+        let content = "\
+## Ceph
+
+## CRUSH
+
+Ceph manages CRUSH maps.
+
+Ceph manages pools.
+
+Ceph manages OSDs.";
+        let m: EntityMatcher = extract_vocabulary(content).into();
+        let verbs = m.discover_verb_patterns(content, 3);
+        let vrefs: Vec<(&str, &str)> = verbs
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let edges = m.find_relationships(content, &[], &vrefs);
+        // With paragraph breaks, each sentence is its own window:
+        //   1. Ceph → CRUSH: " manages " -> "manages"
+        //   2. Ceph → (pools not an entity): no pair
+        //   3. Ceph → (OSDs not an entity): no pair
+        // So we get exactly 1 manages edge.
+        let mgmt = edges.iter().filter(|e| e.relation == "manages").count();
+        assert_eq!(
+            mgmt, 1,
+            "should have 1 'manages' edge (only CRUSH is an entity): {:?}",
+            edges
+        );
+    }
+
+    // --- Heading hierarchy ---
+
+    #[test]
+    fn heading_hierarchy_creates_part_of_edges() {
+        let content = "\
+# Proxmox VE
+
+## Ceph
+
+### CRUSH Map
+
+#### Pool Configuration
+
+## Proxmox Backup Server
+
+### PBS Configuration
+";
+        let entities: HashSet<String> = [
+            "proxmox ve",
+            "ceph",
+            "crush map",
+            "pool configuration",
+            "proxmox backup server",
+            "pbs configuration",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let edges = extract_heading_relationships(content, &entities);
+        assert_eq!(
+            edges.len(),
+            5,
+            "all heading pairs should create part_of: {:?}",
+            edges
+        );
+
+        let pairs: Vec<(&str, &str)> = edges
+            .iter()
+            .map(|e| (e.from.as_str(), e.to.as_str()))
+            .collect();
+        assert!(pairs.contains(&("ceph", "proxmox ve")));
+        assert!(pairs.contains(&("crush map", "ceph")));
+        assert!(pairs.contains(&("pool configuration", "crush map")));
+        assert!(pairs.contains(&("proxmox backup server", "proxmox ve")));
+        assert!(pairs.contains(&("pbs configuration", "proxmox backup server")));
+    }
+
+    #[test]
+    fn heading_hierarchy_skips_stop_headings() {
+        let content = "\
+# Overview
+
+## Introduction
+
+## Ceph
+
+### Prerequisites
+
+### CRUSH Map
+";
+        // Only "Ceph" and "CRUSH Map" survive; "Overview", "Introduction", "Prerequisites" are STOP_HEADINGS.
+        let entities: HashSet<String> = [
+            "ceph",
+            "crush map",
+            "overview",
+            "introduction",
+            "prerequisites",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        let edges = extract_heading_relationships(content, &entities);
+        // "Ceph" has no parent that is also a stop-heading entity → no edge.
+        // "CRUSH Map" under "Ceph" → 1 edge.
+        assert_eq!(
+            edges.len(),
+            1,
+            "should only have CRUSH Map -> Ceph: {:?}",
+            edges
+        );
+        assert_eq!(edges[0].from, "crush map");
+        assert_eq!(edges[0].to, "ceph");
+    }
+
+    // --- Verb suffix filtering ---
+
+    #[test]
+    fn verb_suffix_filter_rejects_nouns() {
+        let content = "\
+## Ceph
+
+## OSD
+
+Ceph maps OSD data.
+Ceph maps OSD pools.
+Ceph maps OSD failures.
+";
+        let m: EntityMatcher = extract_vocabulary(content).into();
+        let verbs = m.discover_verb_patterns(content, 3);
+        // "maps" ends in 's' but it's a plural noun, not a 3rd-person verb.
+        // If discovered, "maps" would create false edges.
+        assert!(
+            !verbs.iter().any(|(v, _)| v == "maps"),
+            "'maps' is a plural noun, should be filtered: {:?}",
+            verbs,
+        );
+    }
+
+    #[test]
+    fn verb_suffix_accepts_verb_patterns() {
+        assert!(is_likely_verb("configures"));
+        assert!(is_likely_verb("manages"));
+        assert!(is_likely_verb("processed"));
+        assert!(is_likely_verb("processing"));
+        assert!(is_likely_verb("communicates"));
+        assert!(is_likely_verb("integrated"));
+        assert!(is_likely_verb("verifies"));
+        assert!(!is_likely_verb("maps"));
+        assert!(!is_likely_verb("data"));
+        assert!(!is_likely_verb("example"));
+        assert!(!is_likely_verb("system"));
     }
 }

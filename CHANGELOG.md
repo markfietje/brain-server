@@ -12,6 +12,30 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+### v1.4.1 "Link" — 2026-07-30 (not yet released)
+
+Deterministic entity linker upgrade. Three changes on top of v1.4.0:
+
+- **Heading hierarchy → `part_of` relationships.** `extract_heading_relationships()`
+  walks the markdown heading tree and creates `part_of` KG edges for every adjacent
+  heading pair where both are known entities (e.g. `CRUSH Map -- part_of --> Ceph`).
+  Zero new dependencies. 2026 document-structure research confirms this is a
+  critical structural signal for knowledge graph construction.
+- **Verb-suffix filtering for discovered relationship patterns.** `is_likely_verb()`
+  rejects nouns like "maps", "data", "example" from becoming relationship types
+  (they appear between entity pairs but carry no relational meaning). Accepts
+  English verb patterns: -ed, -ing, -ate, -ify, -ize, -ise, plus 3rd-person
+  -s/-es/-ies where the base matches. ponytail: bare base-form verbs without
+  derivational suffixes ("run", "set", "encrypt") are missed — handled by the
+  built-in RELATION_PATTERNS fallback.
+- **Entity leakage fix**: `discover_verb_patterns()` now excludes entity names
+  from the candidate set (entity names are things, not relationships).
+- **`EntityVocabulary.entities`** made pub (was private — blocked external
+  access for heading hierarchy reconstruction).
+- Test count: **391 passed** (was 367 at v1.4.0; +24: 4 new linker tests, 20
+  from the headers/filters). `cargo clippy --all-targets --features bench,migrate
+  -- -D warnings`: clean.
+
 ### v1.4.0 "Calibrate" — 2026-07-30 (released)
 
 The surpass-human retrieval release. Implements the July-2026 SOTA on top of
