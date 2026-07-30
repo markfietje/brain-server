@@ -1,24 +1,25 @@
 //! Obsidian vault semantics: YAML frontmatter + `[[wikilink]]` extraction.
 //!
 //! Pure, allocation-only, no I/O, no `unsafe`, no YAML dependency. Only the
-//! three keys Obsidian vaults rely on for search/graph are parsed: `title`,
-//! `tags`, `aliases`. Anything more complex is out of scope (upgrade path: a
-//! real YAML parser if a corpus needs nested frontmatter).
+//! four keys brain-server cares about are parsed: `title`, `tags`, `aliases`,
+//! `domain`. Anything more complex is out of scope (upgrade path: a real YAML
+//! parser if a corpus needs nested frontmatter).
 //!
 //! ponytail ceiling: hand-rolled line-oriented YAML. Handles the inline and
 //! block list forms Obsidian emits (`tags: [a, b]` and `tags:\n  - a`). Does
 //! NOT handle nested mappings, flow maps, multi-doc, or quoted scalars with
 //! embedded colons. Every real Obsidian vault uses one of the two supported
-//! forms for these three keys, so this is sufficient for v0.9.2.
+//! forms for these keys, so this is sufficient for v0.9.2 / v1.4.x.
 
 #![deny(unsafe_code)]
 
-/// Parsed frontmatter for the three keys brain-server cares about.
+/// Parsed frontmatter for the keys brain-server cares about.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Frontmatter {
     pub title: Option<String>,
     pub tags: Vec<String>,
     pub aliases: Vec<String>,
+    pub domain: Option<String>,
 }
 
 /// Split a document into `(frontmatter_yaml, body)`.
@@ -73,6 +74,11 @@ pub fn parse_frontmatter(yaml: &str) -> Frontmatter {
             "title" => {
                 if !val.is_empty() {
                     fm.title = Some(strip_quotes(val).to_string());
+                }
+            }
+            "domain" => {
+                if !val.is_empty() {
+                    fm.domain = Some(strip_quotes(val).to_string());
                 }
             }
             "tags" | "aliases" => {
@@ -305,5 +311,18 @@ mod tests {
         // No closing `]]` at all → nothing emitted, but a later valid link still works.
         let links = parse_wikilinks("[[unclosed text here then [[ok]]");
         assert_eq!(links, vec!["unclosed text here then [[ok".to_string()]);
+    }
+
+    #[test]
+    fn frontmatter_parses_domain_key() {
+        let fm = parse_frontmatter("title: Test\ndomain: proxmox\n");
+        assert_eq!(fm.title.as_deref(), Some("Test"));
+        assert_eq!(fm.domain.as_deref(), Some("proxmox"));
+    }
+
+    #[test]
+    fn frontmatter_domain_defaults_when_absent() {
+        let fm = parse_frontmatter("title: Test\ntags: [a]\n");
+        assert!(fm.domain.is_none());
     }
 }

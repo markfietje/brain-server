@@ -570,7 +570,11 @@ pub fn normalize_since(since: &str) -> Result<String> {
     }
     // v1.4.0: bare date `YYYY-MM-DD` → midnight. Valid ISO-8601 date form.
     if let Ok(d) = NaiveDate::parse_from_str(since, "%Y-%m-%d") {
-        return Ok(d.and_hms_opt(0, 0,0).unwrap().format("%Y-%m-%d %H:%M:%S").to_string());
+        return Ok(d
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string());
     }
     anyhow::bail!(
         "invalid 'since' timestamp {:?}; expected ISO-8601 (RFC3339), 'YYYY-MM-DD HH:MM:SS', or 'YYYY-MM-DD'",

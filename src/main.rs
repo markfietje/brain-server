@@ -185,7 +185,6 @@ impl ConnectionTracker {
     }
 }
 
-#[allow(dead_code)]
 struct RateLimiter {
     requests: Mutex<HashMap<String, Vec<Instant>>>,
     max_requests: usize,
@@ -201,7 +200,6 @@ impl RateLimiter {
         }
     }
 
-    #[allow(dead_code)]
     fn is_allowed(&self, ip: &str) -> bool {
         let now = Instant::now();
         if let Ok(mut requests) = self.requests.lock() {
@@ -301,6 +299,8 @@ struct AppState {
     #[allow(dead_code)]
     db_path: PathBuf,
     connection_tracker: std::sync::Arc<ConnectionTracker>,
+    /// Axum accesses this by type (State<Arc<RateLimiter>>), not by field name.
+    /// The compiler sees zero direct reads — false positive, required.
     #[allow(dead_code)]
     rate_limiter: Arc<RateLimiter>,
     /// v1.1.0 Harden M3: last backup+integrity result for `/health`.
@@ -451,13 +451,11 @@ struct MarkdownPayload {
     /// path, and frontmatter/wikilinks are parsed into the knowledge graph.
     #[serde(default)]
     source_path: Option<String>,
-}
-
-#[derive(Serialize)]
-#[allow(dead_code)]
-struct IngestResponse {
-    success: bool,
-    id: i64,
+    /// Target domain for the ingested content. When set, overrides any
+    /// `domain:` key in YAML frontmatter. Falls back to `"global"` when
+    /// neither is present.
+    #[serde(default)]
+    domain: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1871,6 +1869,13 @@ async fn ingest_markdown(
         return Err(AppError::Internal("Embedding count mismatch".into()));
     }
 
+    // Resolve domain: explicit payload field > YAML frontmatter > "global".
+    let domain = payload
+        .domain
+        .clone()
+        .filter(|d| !d.trim().is_empty())
+        .or_else(|| fm.domain.clone().filter(|d| !d.trim().is_empty()))
+        .unwrap_or_else(|| "global".to_string());
     let doc_title = escaped_title.clone();
     let doc_id = document_id.clone();
     let edges = kg_edges.clone();
@@ -1910,9 +1915,28 @@ async fn ingest_markdown(
 
     let (first_id, inserted, duplicates) = result;
 
-    // Best-effort: refresh the global domain centroid after a markdown ingest so
-    // routing stays current. (Markdown ingests land in the global domain today.)
-    let _ = domain_router::recompute_centroid(&state.pool, "global", &state.pool);
+    // Apply domain from frontmatter or payload field. When the domain differs
+    // from the default ("global"), update every chunk for this document_id.
+    // Using an UPDATE keeps write_markdown_ingest's signature unchanged and
+    // avoids touching 14 test call sites.
+    if domain != "global" {
+        let pool = state.pool.clone();
+        let d = domain.clone();
+        let did = document_id.clone();
+        let _ = task::spawn_blocking(move || -> Result<(), AppError> {
+            let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
+            conn.execute(
+                "UPDATE knowledge SET domain = ?1 WHERE document_id = ?2 AND domain = 'global'",
+                params![d, did],
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+            Ok(())
+        })
+        .await;
+    }
+
+    // Refresh the domain centroid so routing stays current.
+    let _ = domain_router::recompute_centroid(&state.pool, &domain, &state.pool);
 
     Ok(Json(serde_json::json!({
         "success": true,

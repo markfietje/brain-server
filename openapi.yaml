@@ -305,10 +305,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [content, title]
+              required: [content]
               properties:
                 content: { type: string }
-                title: { type: string }
+                title: { type: string, nullable: true }
+                source_path: { type: string, nullable: true, description: "Absolute file path for vault dedup/replace" }
+                domain: { type: string, nullable: true, description: "Target domain (defaults to 'global' or YAML frontmatter domain:)" }
       responses:
         "200":
           description: Ingest result

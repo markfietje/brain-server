@@ -9,7 +9,7 @@
 //!                  [--intent I] [--profile P] [--explain]
 //!   brain explain "<q>" [--source S ...] [--since ISO]
 //!   brain get <id>
-//!   brain ingest-dir <path> [--dry-run] [--source S]
+//!   brain ingest-dir <path> [--dry-run] [--source S] [--domain D]
 //!   brain bench
 //!   brain status
 //!   brain doctor
@@ -173,7 +173,7 @@ usage:
                  [--intent I] [--profile P] [--explain]
   brain explain "<q>" [--source S ...] [--since ISO]
   brain get <id>
-  brain ingest-dir <path> [--dry-run] [--source S]
+  brain ingest-dir <path> [--dry-run] [--source S] [--domain D]
   brain reconcile <path> [--kind vault] [--dry-run]
   brain source-delete <id>
   brain connect github --app-id N --install-id N --key-file PATH \
@@ -535,6 +535,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
     let path = require_positional(&positionals, "path")?;
     let dry_run = flags.contains_key("dry-run");
     let source = flags.get("source").and_then(|o| o.clone());
+    let domain = flags.get("domain").and_then(|o| o.clone());
 
     let root = Path::new(&path);
     if !root.is_dir() {
@@ -599,15 +600,19 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
             } else {
                 "/ingest/memory"
             };
+            let meta = source
+                .as_ref()
+                .map(|s| format!(", source={s}"))
+                .unwrap_or_default();
+            let meta = domain
+                .as_ref()
+                .map(|d| format!("{meta}, domain={d}"))
+                .unwrap_or(meta);
             println!(
-                "  [dry-run] {} -> {} ({} bytes{})",
+                "  [dry-run] {} -> {} ({} bytes{meta})",
                 rel.display(),
                 target,
                 content.len(),
-                source
-                    .as_ref()
-                    .map(|s| format!(", source={s}"))
-                    .unwrap_or_default()
             );
             continue;
         }
@@ -620,12 +625,15 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
                 .unwrap_or_else(|_| f.to_path_buf())
                 .to_string_lossy()
                 .to_string();
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "content": content,
                 "title": title,
                 "source_path": abs,
-            })
-            .to_string();
+            });
+            if let Some(d) = &domain {
+                body["domain"] = serde_json::json!(d);
+            }
+            let body = body.to_string();
             post(
                 &base_url(),
                 "/ingest/markdown",
