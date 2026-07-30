@@ -127,7 +127,7 @@ const RELATION_PATTERNS: &[(&str, &str)] = &[
 /// copulae, modals, common prepositions). Sorted for binary search.
 const STOP_WORDS: &[&str] = &[
     "after", "also", "an", "and", "are", "as", "at", "be", "been", "being", "below", "between",
-    "but", "by", "can", "could", "did", "do", "does", "during", "for", "from", "had", "has",
+    "but", "by", "can", "could", "date", "did", "do", "does", "during", "for", "from", "had", "has",
     "have", "her", "his", "in", "into", "is", "its", "just", "may", "might", "must", "my", "no",
     "nor", "not", "of", "on", "or", "our", "shall", "should", "than", "that", "the", "their",
     "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "upon",
@@ -444,7 +444,27 @@ impl EntityMatcher {
                     if mentions[j].1 <= mentions[i].1 {
                         continue;
                     }
-                    let between = &sentence[mentions[i].1..mentions[j].0].trim();
+                    // Build between-text from non-excluded byte ranges
+                    let between_start = mentions[i].1;
+                    let between_end = mentions[j].0;
+                    let mut between = String::new();
+                    let mut cursor = between_start;
+                    for &(s, e) in &adjusted {
+                        if s >= between_end {
+                            break;
+                        }
+                        if s > cursor {
+                            between.push_str(&sentence[cursor..s.min(between_end)]);
+                        }
+                        cursor = cursor.max(e);
+                        if cursor >= between_end {
+                            break;
+                        }
+                    }
+                    if cursor < between_end {
+                        between.push_str(&sentence[cursor..between_end]);
+                    }
+                    let between = between.trim();
                     if between.is_empty() {
                         continue;
                     }
@@ -554,7 +574,26 @@ impl EntityMatcher {
                     if mentions[j].1 <= mentions[i].1 {
                         continue;
                     }
-                    let between = &sentence[mentions[i].1..mentions[j].0].trim();
+                    let between_start = mentions[i].1;
+                    let between_end = mentions[j].0;
+                    let mut between = String::new();
+                    let mut cursor = between_start;
+                    for &(s, e) in &adjusted {
+                        if s >= between_end {
+                            break;
+                        }
+                        if s > cursor {
+                            between.push_str(&sentence[cursor..s.min(between_end)]);
+                        }
+                        cursor = cursor.max(e);
+                        if cursor >= between_end {
+                            break;
+                        }
+                    }
+                    if cursor < between_end {
+                        between.push_str(&sentence[cursor..between_end]);
+                    }
+                    let between = between.trim();
                     if between.is_empty() {
                         continue;
                     }

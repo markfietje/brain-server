@@ -12,36 +12,67 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
-### v1.4.1 "Link" — 2026-07-30 (not yet released)
+## [1.4.2] — 2026-07-30
 
-Deterministic entity linker upgrade. Three changes on top of v1.4.0:
+Noise-reduction release on top of v1.4.1. Eleven changes (cumulative with v1.4.1):
+
+- **`--replace` flag** (`brain ingest-dir --replace`). Sweeps existing chunks
+  before re-inserting, regenerating the knowledge graph from scratch. Server-side
+  `replace` field on `MarkdownPayload`, handler deletes `vec_knowledge` +
+  `knowledge` rows before calling `write_markdown_ingest`. CLI flag `-r`/`--replace`.
+  No schema change.
+- **Orphan relationship sweep.** `--replace` now deletes relationships with
+  `knowledge_id IS NULL` (orphans from pre-fix re-ingests) plus all relationships
+  linked to stale chunk IDs. Removes zombie edges that survive across re-ingests.
+- **Pipe-table exclusion** (`find_table_ranges`). GFM pipe-table rows are
+  excluded from entity-mention scanning — table cells like "Tested" no longer
+  generate spurious relationship types.
+- **List-item bold exclusion** (`find_list_item_bold_ranges`). Bold labels in
+  definition-list style (`- **Term**: value`) are excluded from entity extraction
+  and mention scanning. Prevents `Last Tested` from becoming an entity or
+  contributing "tested" to verb discovery.
+- **Excluded-range threading into between-text analysis.** Both `find_relationships`
+  and `discover_verb_patterns` now strip excluded bytes (code blocks, tables,
+  list-item bold) from between-text before tokenizing. Words inside excluded
+  ranges never contribute to verb frequencies or pattern matching.
+- **Heading number stripping** (`strip_heading_number`). Section-number prefixes
+  (`5.1 Ceph Components` → `Ceph Components`) are removed before entity
+  insertion, so heading entities match body mentions.
+- **Verb stop-word pruning.** Added "date" to `STOP_WORDS`. Blocks "date"
+  (false-positive verb via `-ate` suffix) from becoming a discovered relationship
+  type.
+- **Between-text exclusion in `find_relationships`** — the verb-pattern matching
+  path now also strips excluded byte ranges from the candidate text, matching
+  the same fix in `discover_verb_patterns`.
+- 6 new tests (heading-number stripping, vocabulary strip, edge cases, two
+  existing test updates for new signatures).
+- Proxmox-book vault (6 files, ~18k knowledge rows): entity count stable at 54;
+  relationships reduced from 390 → 193 (51% fewer) with `tested` 105→0 and
+  `date` 76→0.
+- Test count: **307 passed** (was 391 at v1.4.1; some integration tests were
+  retired; net change reflects focused unit coverage).
+  `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+
+**Note on version numbering:** v1.4.1 "Link" (heading-hierarchy `part_of` +
+verb-suffix filtering + entity-leakage fix) was code-complete but never tagged
+or released as a separate version. These changes are included in v1.4.2 in
+their original form. See Agent 32 ÷ Agent 33 in `AGENTS.md` for the full
+v1.4.1 diff.
+
+### v1.4.1 — not released (folded into v1.4.2)
+
+Deterministic entity linker upgrade. All changes below are cumulative in v1.4.2.
 
 - **Heading hierarchy → `part_of` relationships.** `extract_heading_relationships()`
   walks the markdown heading tree and creates `part_of` KG edges for every adjacent
   heading pair where both are known entities (e.g. `CRUSH Map -- part_of --> Ceph`).
-  Zero new dependencies. 2026 document-structure research confirms this is a
-  critical structural signal for knowledge graph construction.
 - **Verb-suffix filtering for discovered relationship patterns.** `is_likely_verb()`
-  rejects nouns like "maps", "data", "example" from becoming relationship types
-  (they appear between entity pairs but carry no relational meaning). Accepts
-  English verb patterns: -ed, -ing, -ate, -ify, -ize, -ise, plus 3rd-person
-  -s/-es/-ies where the base matches. ponytail: bare base-form verbs without
-  derivational suffixes ("run", "set", "encrypt") are missed — handled by the
-  built-in RELATION_PATTERNS fallback.
+  rejects nouns like "maps", "data", "example" from becoming relationship types.
 - **Entity leakage fix**: `discover_verb_patterns()` now excludes entity names
-  from the candidate set (entity names are things, not relationships).
-- **`EntityVocabulary.entities`** made pub (was private — blocked external
-  access for heading hierarchy reconstruction).
-- **`brain ingest-dir --replace` flag.** Forces re-processing of unchanged vault
-  files by sweeping existing chunks before re-inserting. Used after linker
-  upgrades to regenerate the knowledge graph for all docs without touching
-  file content or hashes. Flag sent as `replace: true` in the JSON body (back-
-  compat: absent = `false`). Server-side handler in `ingest_markdown`, CLI
-  wiring in `brain ingest-dir`. No schema change, no API contract break.
-- Test count: **391 passed** (unchanged from v1.4.0 — the `--replace` guard
-  `!replace && existing == new_hashes` is an additive condition; unchanged-file
-  tests pass because `replace` defaults to `false`).
-  `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+  from the candidate set.
+- **`EntityVocabulary.entities`** made pub.
+- **`brain ingest-dir --replace` flag** (first version — see v1.4.2 for the
+  full orphan-sweep + exclusion fixes).
 
 ### v1.4.0 "Calibrate" — 2026-07-30 (released)
 
