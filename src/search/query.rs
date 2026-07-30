@@ -72,6 +72,11 @@ pub struct QueryDoc {
     /// links) on every hit. Serialization switch.
     #[serde(default)]
     pub evidence: bool,
+    /// v1.4.0 "Calibrate" M1: bi-temporal valid-time point-in-time filter.
+    /// RFC3339 or `YYYY-MM-DD`; only chunks whose valid-interval contains this
+    /// instant are returned. Distinct from `as_of` (transaction-time recall).
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 impl QueryDoc {
@@ -100,6 +105,11 @@ impl QueryDoc {
             Some(s) => Some(normalize_since(s).map_err(QueryDocError::InvalidSince)?),
             None => None,
         };
+        // v1.4.0 "Calibrate" M1: normalize the bi-temporal `at` filter.
+        let at = match &self.at {
+            Some(s) => Some(normalize_since(s).map_err(QueryDocError::InvalidAt)?),
+            None => None,
+        };
         let embedding_query = self
             .hyde
             .filter(|s| !s.trim().is_empty())
@@ -125,6 +135,7 @@ impl QueryDoc {
                 as_of: self.as_of.filter(|s| !s.trim().is_empty()),
                 evidence: self.evidence,
                 freshness_tiebreak: true,
+                at,
             },
         ))
     }
@@ -149,6 +160,7 @@ impl Default for QueryDoc {
             include_flagged: false,
             as_of: None,
             evidence: false,
+            at: None,
         }
     }
 }
@@ -227,6 +239,8 @@ pub enum QueryDocError {
     UnsupportedVersion(u8),
     EmptyQuery,
     InvalidSince(anyhow::Error),
+    /// v1.4.0 "Calibrate" M1: malformed `at` bi-temporal filter.
+    InvalidAt(anyhow::Error),
 }
 
 impl std::fmt::Display for QueryDocError {
@@ -237,6 +251,7 @@ impl std::fmt::Display for QueryDocError {
             }
             QueryDocError::EmptyQuery => write!(f, "query must not be empty"),
             QueryDocError::InvalidSince(e) => write!(f, "invalid 'since': {e}"),
+            QueryDocError::InvalidAt(e) => write!(f, "invalid 'at': {e}"),
         }
     }
 }

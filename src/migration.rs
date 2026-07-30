@@ -627,10 +627,76 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_refresh_chain ON refresh_chains(chain_id, iss);",
     )?;
 
+    // ── v1.4.0 "Calibrate" M1: bi-temporal edges (Graphiti model). ───────
+    // Every relationship carries a valid-time interval [valid_at, invalid_at):
+    //   valid_at   = when the fact BECAME TRUE in the world (event time)
+    //   invalid_at = when the fact STOPPED BEING TRUE (NULL ⇒ still current)
+    // These are distinct from created_at (transaction time: when brain learned
+    // the fact). A query `?at=2015` filters: valid_at <= 2015 AND (invalid_at
+    // IS NULL OR invalid_at > 2015). Context7-verified 2026-07-30 against the
+    // Graphiti EntityEdge source (getzep/graphiti:edges.py): the model is
+    // valid_at/invalid_at for valid time, expired_at for correction wall-clock
+    // time, reference_time for source provenance. We adopt valid_at/invalid_at
+    // (the two that drive retrieval filtering); expired_at is subsumed by the
+    // v0.9.8 evidence_links `supersedes`/`update:` kind + audit log.
+    // Idempotent + additive; existing edges default to NULL/NULL ⇒ always valid.
+    for (col, def) in [("valid_at", "TIMESTAMP"), ("invalid_at", "TIMESTAMP")] {
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('relationships') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE relationships ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rels_valid_at ON relationships(valid_at)",
+        [],
+    )?;
+
+    // ── v1.4.0 "Calibrate" M3: TRACE hierarchical node reservation. ───────
+    // node_kind defaults to 'event' (every chunk is one ingest event). Higher
+    // levels — 'session' (a coherent batch) and 'topic' (a long-running theme)
+    // — are populated by the v1.8 Consolidate worker; nothing reads them yet.
+    // parent_id links a node to its enclosing session/topic.
+    //   ponytail: schema reservation only. Construction logic is deferred to
+    //   v1.8 Consolidate (the only release with a worker that can group events
+    //   into sessions). Adding the columns now keeps v1.4's migration additive
+    //   and avoids a future ALTER on the hot knowledge table.
+    for (col, def) in [
+        ("node_kind", "TEXT NOT NULL DEFAULT 'event'"),
+        ("parent_id", "INTEGER"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE knowledge ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_parent ON knowledge(parent_id)",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.2.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.2.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.4.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.4.0';",
         [],
     )?;
 

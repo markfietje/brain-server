@@ -26,6 +26,11 @@ use super::{
 };
 use crate::handlers::HandlerError;
 
+/// A normalized relation ready for insert: (from, to, kind, optional explicit
+/// valid_at, optional explicit invalid_at). The temporal pair is caller override;
+/// when None the ingest path runs the deterministic temporal extractor.
+type NormalizedRelation = (String, String, String, Option<String>, Option<String>);
+
 #[derive(Debug, Deserialize)]
 pub struct EntityInput {
     pub name: String,
@@ -39,6 +44,13 @@ pub struct RelationInput {
     pub to: String,
     #[serde(rename = "type")]
     pub kind: String,
+    /// v1.4.0 "Calibrate" M1: optional explicit valid-at (ISO-8601). Overrides
+    /// the deterministic extractor when the caller knows the fact's interval.
+    #[serde(default)]
+    pub valid_at: Option<String>,
+    /// v1.4.0 "Calibrate" M1: optional explicit invalid-at (ISO-8601).
+    #[serde(default)]
+    pub invalid_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,12 +139,27 @@ pub async fn ingest(
         }
         entities.push((name, e.kind.clone()));
     }
-    let mut relations: Vec<(String, String, String)> = Vec::with_capacity(req.relations.len());
+    // (from, to, kind, explicit valid_at, explicit invalid_at). The
+    // temporal pair is optional caller override; None ⇒ run the extractor.
+    let mut relations: Vec<NormalizedRelation> = Vec::with_capacity(req.relations.len());
     for r in &req.relations {
         let from = normalize_name(&r.from)?;
         let to = normalize_name(&r.to)?;
         let kind = normalize_rel_type(&r.kind)?;
-        relations.push((from, to, kind));
+        // Normalize explicit temporal overrides (validate, don't trust raw).
+        let va = r
+            .valid_at
+            .as_deref()
+            .map(|s| crate::search::normalize_since(s.trim()))
+            .transpose()
+            .map_err(|e| HandlerError::bad_request("temporal_invalid", e.to_string()))?;
+        let via = r
+            .invalid_at
+            .as_deref()
+            .map(|s| crate::search::normalize_since(s.trim()))
+            .transpose()
+            .map_err(|e| HandlerError::bad_request("temporal_invalid", e.to_string()))?;
+        relations.push((from, to, kind, va, via));
     }
 
     // ---- heavy logic ----
@@ -236,7 +263,13 @@ pub async fn ingest(
         // plan example (`vitamin d3 helps inflammation`) works even when only
         // `vitamin d3` is declared. Idempotent: INSERT OR IGNORE on existing
         // rows is a no-op; the SELECT then finds the row.
-        for (from, to, kind) in &relations_norm {
+        //
+        // v1.4.0 "Calibrate" M1: populate bi-temporal valid_at/invalid_at.
+        // Caller-supplied explicit values win; otherwise run the deterministic
+        // temporal extractor over the ingested content (best-effort, no LLM).
+        // The extractor is pure; we run it once per relation keyed on content.
+        let content_interval = crate::temporal::extract_interval_now(&content);
+        for (from, to, kind, explicit_va, explicit_via) in &relations_norm {
             tx.execute(
                 "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
                 rusqlite::params![from],
@@ -261,10 +294,23 @@ pub async fn ingest(
                     |r| r.get(0),
                 )
                 .map_err(|e| HandlerError::internal(format!("resolve to-entity failed: {e}")))?;
+            // Resolve the valid-time interval: explicit caller value, else the
+            // extractor's result. `None` ⇒ leave the column NULL (always valid).
+            let va: Option<&str> = explicit_va
+                .as_deref()
+                .or(content_interval.valid_at.as_deref());
+            let via: Option<&str> = explicit_via
+                .as_deref()
+                .or(content_interval.invalid_at.as_deref());
+            // INSERT OR IGNORE so re-ingesting the same (from,to,kind) is a
+            // no-op; the temporal columns are set on first insert. Updating
+            // them on a later ingest would require a separate UPDATE path,
+            // intentionally not wired (re-ingest = idempotent no-op by design).
             tx.execute(
-                "INSERT OR IGNORE INTO relationships (from_entity_id, to_entity_id, relation_type, knowledge_id)
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![from_id, to_id, kind, id],
+                "INSERT OR IGNORE INTO relationships \
+                    (from_entity_id, to_entity_id, relation_type, knowledge_id, valid_at, invalid_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![from_id, to_id, kind, id, va, via],
             )
             .map_err(|e| HandlerError::internal(format!("insert relation failed: {e}")))?;
         }
