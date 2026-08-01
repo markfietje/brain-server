@@ -12,6 +12,102 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-08-02
+
+**"Suggest" — opt-in, non-interrupting anticipation (light cut).**
+
+This release is the **evidence-gated v1.9 scope** sanctioned by
+`IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.9, NOT the
+broader Anticipate plan in `IMPLEMENTATION_PLAN_v1.9.0_Anticipate.md` (which
+that roadmap explicitly supersedes — same pattern as v1.5–v1.8). Roadmap
+v1.9: *"an explicit `POST /suggest` experiment scoped to a session and an
+accept/dismiss/false-positive metric."* Exit: *"opt-in suggestions save
+measurable time at an acceptable false-positive rate; otherwise the feature
+is removed."*
+
+### Discovery
+
+The full Anticipate plan (M1 sessions table + auto-start, M3 short-poll/SSE
+push, M4 attention decay, M5 personalization vector) is **forbidden** by the
+roadmap's "Do not ship" list ("unsolicited push, ranking decay, hidden
+personalization, or SSE by default"). The only surviving scope is the opt-in
+pull + the false-positive metric. The session concept survives in its
+**client-owned** form (Mem0 `run_id` pattern): the caller passes an opaque
+`session` string; the server never auto-tracks, auto-expires, or auto-embeds
+a session.
+
+### Shipped
+
+- **`POST /suggest`** — opt-in anticipation pull. Caller supplies explicit
+  `context` (what they're working on); server embeds it via the existing
+  `StaticModel`, runs `vec0_knn` with an over-fetch equal to `k + exclude.len()`,
+  filters out the caller-supplied `exclude` ids, truncates to `k`, and tags
+  every hit `provenance.reason = "anticipated"`. Reuses the v1.6.0
+  `valid_to IS NULL` default filter, so superseded chunks are never suggested,
+  and the v0.9.7 flagged-row exclusion, so quarantined chunks are never
+  suggested. No new state, no background work, no push.
+- **`POST /suggest/feedback`** — Mem0-style accept/dismiss per surfaced chunk
+  (`feedback: accept|dismiss`, optional hashed `reason`, optional `session`).
+  Validates the chunk exists (404 on typo so the metric isn't poisoned).
+  Tenant-scoped via the JWT principal. The `suggest_feedback` table IS the
+  audit surface (append-only, hash-of-reason, tenant-scoped) — no duplicate
+  `audit_events` row is written.
+- **`GET /suggest/metrics`** — the false-positive rate (dismisses / total)
+  over the feedback ledger, with optional `session` / `since` window filters.
+  This IS the roadmap exit criterion, made queryable. Tenant-scoped.
+- **`BRAIN_SUGGEST_ENABLED` kill switch** (default `true`). When `false`, all
+  three routes return `501 Not Implemented` — the roadmap's "otherwise the
+  feature is removed" guarantee, without a rebuild.
+- **CLI**: `brain suggest`, `brain suggest-feedback`, `brain suggest-metrics`.
+- **Migration**: additive `suggest_feedback` table + `schema_version = 1.9.0`
+  (was `1.4.0`; v1.5–v1.8 were light cuts with no schema change).
+- **OpenAPI** → 1.9.0: three routes + `SuggestionHit`/`SuggestTelemetry`/
+  `SuggestMetrics` schemas. `test_openapi_covers_routes` extended.
+
+### Deferred (per evidence-gated roadmap)
+
+- **M1 sessions table + auto-start + 30-min window + running embedding mean**
+  — "hidden personalization." The server must not auto-track sessions.
+- **M3 short-poll `/events` + SSE push** — "unsolicited push" + "SSE by
+  default." `/suggest` is an explicit pull; the agent asks.
+- **M4 attention decay + spaced-repetition** — "ranking decay." Feedback is
+  purely a measurement signal; it never boosts or demotes retrieval.
+- **M5 personalization vector** — "hidden personalization." No per-tenant
+  bias vector; `/recall` ranking is unchanged.
+
+### Verification
+
+- `cargo test --features bench,migrate`: **428 passed, 1 ignored** (was 414
+  at v1.8.0; +14 = 12 pure-function tests in `suggest.rs` + 2 integration
+  tests in `main.rs`).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release --features bench,migrate`: all 5 binaries clean.
+- **Live end-to-end smoke** (after `scripts/install-service.sh`, pid 17967):
+  `/suggest` returns anticipated chunks (excluded ids correctly dropped,
+  telemetry accurate); `/suggest/feedback` records accept+dismiss;
+  `/suggest/metrics?session=` returns `false_positive_rate: 0.5` (1/2);
+  `BRAIN_SUGGEST_ENABLED=false` → all three routes return `501` while
+  `/version` stays `200` (kill switch proven live).
+
+### Honest ceilings (carried into v2.0)
+
+- **No semantic anticipation.** `/suggest` is KNN-over-context with
+  exclusions, not a learned next-query predictor. The "anticipated" label is
+  a contract marker, not a model output.
+- **Session is client-owned.** The server stores the opaque string but does
+  no session-boundary detection, no timeout, no embedding mean. Cross-session
+  metrics require the caller to label consistently.
+- **`accept`/`dismiss` is binary.** Mem0's `VERY_NEGATIVE` is collapsed; a
+  future "report-as-harmful" path is v2.x.
+- **Metrics are per-process.** The query scans `suggest_feedback` live; no
+  rollup materialization. Bounded by the `(tenant_id, ts)` index.
+- **Feedback is not retrieval-affecting.** No boost, no decay — the roadmap
+  forbids it. The signal is purely for the operator's false-positive
+  measurement.
+- **Near-duplicate / cross-domain suggest** deferred (per-domain only, like
+  the rest of the retrieval stack).
+
 ## [1.8.0] — 2026-08-01
 
 **"Maintain" — reviewable proposals + undo (light cut).**

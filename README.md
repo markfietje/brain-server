@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.8.0 "Maintain" (reviewable proposals + undo; light cut: see CHANGELOG) |
+| **Version** | 1.9.0 "Suggest" (opt-in anticipation + false-positive metric; light cut: see CHANGELOG) |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
@@ -32,6 +32,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 - **Span verification** (v1.5) — `POST /verify` checks whether a claim is supported by a chunk's actual text (deterministic lexical match, no LLM).
 - **Self-correction** (v1.6) — operator-approved `supersedes` links atomically expire the prior fact; historical recall (`?at=<past>`) still returns it. `brain resolve` + `brain check-consistency` surface action items.
 - **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
+- **Opt-in anticipation** (v1.9) — `POST /suggest` returns related-but-not-surfaced chunks (tagged `reason: "anticipated"`); `POST /suggest/feedback` records accept/dismiss; `GET /suggest/metrics` reports the false-positive rate. No push, no decay, no hidden personalization — the agent asks explicitly. `BRAIN_SUGGEST_ENABLED=false` disables the surface.
 
 ---
 
@@ -97,6 +98,9 @@ curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
 | GET | `/domains` · POST `/domains` · DELETE `/domains/{name}` | Multi-domain status + lifecycle |
 | POST | `/consolidate/propose` | Reviewable consolidation proposals: exact-dups, conflicts, contradictions, stale sources, near-duplicates |
 | POST | `/consolidate/apply` · POST `/consolidate/undo` | Record / reverse supersession links (v1.6/v1.8) |
+| POST | `/suggest` | Opt-in anticipation pull — related chunks the agent didn't directly retrieve (v1.9) |
+| POST | `/suggest/feedback` | Record accept/dismiss for a surfaced suggestion (v1.9) |
+| GET | `/suggest/metrics` | False-positive rate over the feedback ledger (v1.9 exit criterion) |
 | GET | `/connectors` | Registered connectors |
 | POST | `/webhooks/{kind}` | Verified webhook ingest (HMAC, replay-protected) |
 | POST | `/auth/refresh` · `/auth/logout` · `/auth/revoke` | Token lifecycle (JWT mode) |
@@ -122,6 +126,9 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `brain resolve <new_id> <old_id>` | Mark new chunk as superseding old; expires old from current recall (v1.6) |
 | `brain undo-resolve <old_id> [<old_id> ...]` | Reverse a prior supersession; restores chunk to current recall (v1.8) |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates (v1.6/v1.8) |
+| `brain suggest "<context>"` `[--exclude id[,id...]]` `[--k N]` `[--session S]` | Opt-in anticipation pull (v1.9) |
+| `brain suggest-feedback <id> accept\|dismiss` `[--reason "..."]` `[--session S]` | Record a suggestion outcome (v1.9) |
+| `brain suggest-metrics` `[--session S]` `[--since DATE]` | False-positive rate over the feedback ledger (v1.9) |
 | `brain source-delete <id>` | Retire a source |
 | `brain connect github --app-id N --install-id N --key-file PATH --repo O/R` | Configure GitHub connector |
 | `brain sync [github]` `[--config PATH \| --instance NAME]` | Run a connector sync |
@@ -148,6 +155,7 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `BRAIN_JWT_AUDIENCE` | `brain-server` | Expected `aud` claim value. |
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
 | `PRF_ENABLED` / `PRF_DEPTH` / `PRF_TERMS` / `PRF_MAX_RANK` | `true` / `10` / `5` / `5` | PRF expansion |
+| `BRAIN_SUGGEST_ENABLED` | `true` | v1.9 kill switch: when `false`, the `/suggest/*` routes return `501` (the roadmap's "otherwise the feature is removed" guarantee). |
 
 All tunables: [`src/config.rs`](./src/config.rs).
 
