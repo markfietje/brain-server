@@ -4905,6 +4905,61 @@ mod tests {
     }
 
     #[test]
+    fn supersession_makes_chunk_invisible_to_default_recall_but_visible_historically() {
+        // v1.6.0 "Reconcile" Carry-forward proof: after resolve_supersession,
+        // the existing /recall bi-temporal filter (vec0_knn + fts_search both
+        // use this fragment on knowledge.valid_from/valid_to) must:
+        //   - exclude the old chunk from DEFAULT recall (no `?at`)
+        //   - still return it via `?at=<before-resolution>`
+        // This is the roadmap exit criterion, verified at the SQL layer the
+        // real retrieval path uses.
+        let mut db = test_db();
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash, domain) VALUES
+                (1, 'old address: 123 Main St', 'h1', 'global'),
+                (2, 'new address: 456 Oak Ave', 'h2', 'global')",
+            [],
+        )
+        .unwrap();
+        // Operator resolves: chunk 2 supersedes chunk 1, expiring 1 now.
+        let tx = db.transaction().unwrap();
+        let expired =
+            crate::consolidate::resolve_supersession(&tx, 2, 1, "2026-08-01T12:00:00Z").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(expired, 1);
+
+        // The exact filter fragment used by vec0_knn (search/mod.rs:1123) and
+        // fts_search (search/mod.rs:1207) when `at` is set, plus the default-
+        // recall path (no `at` clause ⇒ only the valid_to IS NULL guard fires).
+        // Default recall (now): chunk 1 excluded, chunk 2 visible.
+        let now_default: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id IN (1,2) AND (valid_to IS NULL OR valid_to > '2026-08-01T12:00:01Z')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            now_default, 1,
+            "default recall must exclude the expired chunk 1, keep chunk 2"
+        );
+        // Historical recall (?at=before-resolution): chunk 1 IS visible again.
+        let historical: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id IN (1,2) 
+                 AND (valid_from IS NULL OR valid_from <= '2025-01-01T00:00:00Z')
+                 AND (valid_to IS NULL OR valid_to > '2025-01-01T00:00:00Z')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            historical, 2,
+            "historical recall at 2025 must see BOTH chunks (valid_to hadn't been set yet)"
+        );
+    }
+
+    #[test]
     fn temporal_extractor_populates_edge_interval() {
         // v1.4.0 M1: the deterministic extractor pulls valid_at/invalid_at from
         // free text. "from 2011 to 2017" → [2011, 2017).

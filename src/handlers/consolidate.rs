@@ -22,6 +22,10 @@ pub struct ConsolidateProposal {
     pub exact_duplicates: Vec<Vec<i64>>,
     /// Subject conflicts: same subject, differing content, both current.
     pub conflicts: Vec<ConflictView>,
+    /// v1.6.0: `contradicts` links that have no paired `supersedes` resolution.
+    /// Each entry is `(from_chunk, to_chunk)`. Operator-actionable: a
+    /// contradiction was flagged but nobody picked a winner.
+    pub unresolved_contradictions: Vec<(i64, i64)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +45,7 @@ pub async fn propose(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ConsolidateProposal>, HandlerError> {
     let pool = state.pool.clone();
-    let (exact_duplicates, conflicts) =
+    let (exact_duplicates, conflicts, unresolved) =
         tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
             let conn = pool
                 .get()
@@ -52,7 +56,10 @@ pub async fn propose(
             let cf = consolidate::find_subject_conflicts(&conn).map_err(|e| {
                 HandlerError::internal(format!("find_subject_conflicts failed: {e}"))
             })?;
-            Ok::<_, HandlerError>((dups, cf))
+            let uc = consolidate::find_unresolved_contradictions(&conn).map_err(|e| {
+                HandlerError::internal(format!("find_unresolved_contradictions failed: {e}"))
+            })?;
+            Ok::<_, HandlerError>((dups, cf, uc))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -73,6 +80,7 @@ pub async fn propose(
     Ok(Json(ConsolidateProposal {
         exact_duplicates,
         conflicts,
+        unresolved_contradictions: unresolved,
     }))
 }
 
@@ -103,6 +111,7 @@ pub async fn apply(
 ) -> Result<Json<ApplyResponse>, HandlerError> {
     let pool = state.pool.clone();
     let links = req.links;
+    let now_utc = chrono::Utc::now().to_rfc3339();
     let (recorded, rejected) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
         let mut conn = pool
             .get()
@@ -113,13 +122,35 @@ pub async fn apply(
             .transaction()
             .map_err(|e| HandlerError::internal(format!("tx failed: {e}")))?;
         for l in &links {
-            match consolidate::link_evidence(&tx, l.from_chunk, l.to_chunk, &l.kind) {
-                Ok(n) => recorded += n,
-                Err(e) => rejected.push(format!(
-                    "{}->{}:{} ({})",
-                    l.from_chunk, l.to_chunk, l.kind, e
-                )),
-            }
+            // v1.6.0 "Reconcile": `supersedes` is the only kind that expires
+            // the prior fact (the mandatory Carry-forward). Other kinds
+            // (contradicts/supports/references/derived_from) just record the
+            // link — they don't change retrieval state. Routing on kind keeps
+            // the handler generic while making supersession atomic.
+            let n = if l.kind == consolidate::LINK_SUPERSEDES {
+                match consolidate::resolve_supersession(&tx, l.from_chunk, l.to_chunk, &now_utc) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        rejected.push(format!(
+                            "{}->{}:{} ({})",
+                            l.from_chunk, l.to_chunk, l.kind, e
+                        ));
+                        continue;
+                    }
+                }
+            } else {
+                match consolidate::link_evidence(&tx, l.from_chunk, l.to_chunk, &l.kind) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        rejected.push(format!(
+                            "{}->{}:{} ({})",
+                            l.from_chunk, l.to_chunk, l.kind, e
+                        ));
+                        continue;
+                    }
+                }
+            };
+            recorded += n;
         }
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
@@ -140,9 +171,13 @@ mod tests {
         let p = ConsolidateProposal {
             exact_duplicates: vec![],
             conflicts: vec![],
+            unresolved_contradictions: vec![],
         };
         let json = serde_json::to_string(&p).unwrap();
-        assert_eq!(json, r#"{"exact_duplicates":[],"conflicts":[]}"#);
+        assert_eq!(
+            json,
+            r#"{"exact_duplicates":[],"conflicts":[],"unresolved_contradictions":[]}"#
+        );
     }
 
     #[test]

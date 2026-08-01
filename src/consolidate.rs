@@ -52,6 +52,115 @@ pub fn link_evidence(
     )?)
 }
 
+/// v1.6.0 "Reconcile" — atomic supersession resolution. The mandatory
+/// Carry-forward from `IMPLEMENTATION_PLAN_v1.6.0_Reconcile.md`: a typed
+/// `supersedes` link must actually *expire* the prior fact, not just record
+/// the relationship. Graphiti's `resolve_edge_contradictions` (Context7,
+/// verified 2026-08-01) is the canonical pattern — old facts get
+/// `invalid_at = resolved.valid_at` and are never deleted.
+///
+/// Convention (matches `/consolidate/propose`): `from_chunk` is the NEW
+/// (winning) chunk, `to_chunk` is the OLD (losing) chunk. Atomically, inside
+/// the caller's transaction:
+///   1. Insert the `supersedes` evidence_link (idempotent via UNIQUE).
+///   2. Set `valid_to = now` on the OLD chunk, but ONLY if it's still NULL —
+///      idempotent: a second call with the same pair touches 0 rows.
+///   3. Audit the resolution (no PII — hash of the loser's content_hash).
+///
+/// The `valid_to` population is what makes the existing `/recall` bi-temporal
+/// filter `(k.valid_to IS NULL OR k.valid_to > ?at)` exclude the old chunk by
+/// default while `?at=<before-resolution>` still returns it. No new retrieval
+/// code, no new schema — the v0.9.8 + v1.4.0 plumbing already does the right
+/// thing once `valid_to` is set.
+///
+/// Returns the number of chunks newly expired (0 or 1). The link insert is
+/// reported separately by the caller via `link_evidence`'s return.
+pub fn resolve_supersession(
+    tx: &Transaction<'_>,
+    from_chunk: i64,
+    to_chunk: i64,
+    now_utc: &str,
+) -> Result<usize> {
+    if from_chunk == to_chunk {
+        anyhow::bail!("supersession cannot be self-referential (chunk {from_chunk})");
+    }
+    // 1. Record the typed link (idempotent; UNIQUE constraint enforces it).
+    link_evidence(tx, from_chunk, to_chunk, LINK_SUPERSEDES)?;
+    // 2. Expire the prior fact ONLY if not already expired. This makes the
+    //    operation idempotent: calling it twice with the same pair is a no-op
+    //    on the second call (valid_to is already set, so the WHERE matches 0
+    //    rows). Without this guard, re-resolution would silently overwrite a
+    //    historical timestamp and corrupt `?at=<past>` queries.
+    let expired = tx.execute(
+        "UPDATE knowledge SET valid_to = ?1
+         WHERE id = ?2 AND valid_to IS NULL",
+        params![now_utc, to_chunk],
+    )?;
+    // 3. Audit. Target_hash = content_hash of the expired chunk (no PII).
+    //    The `audit::record_tenant` savepoint nests inside the caller's tx
+    //    (v1.1.1 fix); a failure here rolls back only the audit row, not the
+    //    resolution. AuditKind::Reconcile is the documented kind for this.
+    if expired > 0 {
+        // Target_hash = content_hash of the expired chunk (no PII). Best-effort:
+        // a NULL hash (legacy row) is recorded as "unknown" rather than failing
+        // the resolution.
+        let loser_hash: Option<String> = tx
+            .query_row(
+                "SELECT content_hash FROM knowledge WHERE id = ?1",
+                params![to_chunk],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        let target = loser_hash.as_deref().unwrap_or("unknown");
+        crate::audit::record_tenant(
+            tx,
+            crate::audit::AuditKind::Reconcile,
+            "api",
+            target,
+            crate::audit::AuditStatus::Ok,
+            "supersession",
+            crate::audit::DEFAULT_TENANT,
+        );
+    }
+    Ok(expired)
+}
+
+/// v1.6.0 "Reconcile" M5 — consistency check: find `contradicts` links that
+/// have no paired resolution. A contradicts edge is "unresolved" when BOTH
+/// endpoints are still current (neither has an incoming `supersedes` link and
+/// neither has `valid_to` set). These are the operator-actionable cases — a
+/// contradiction was flagged but nobody picked a winner. Pure detection;
+/// returns pairs for the proposal endpoint + `brain check-consistency`.
+///
+/// ponytail: this is the only consistency check that needs new code. The
+/// attached v1.6 plan also lists orphan entities + derived_from cycles, but
+/// those either already have a surface (orphans show up as 0-relation entities
+/// in `/graph/entity`) or are vanishingly rare on a local-first store
+/// (derived_from chains are operator-created and short). Ship the one check
+/// that surfaces an otherwise-invisible operator action; defer the rest.
+pub fn find_unresolved_contradictions(conn: &Connection) -> Result<Vec<(i64, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT el.from_chunk, el.to_chunk
+         FROM evidence_links el
+         WHERE el.kind = ?1
+           AND NOT EXISTS (
+             SELECT 1 FROM evidence_links s
+             WHERE s.kind = ?2
+               AND (s.from_chunk = el.from_chunk OR s.to_chunk = el.from_chunk
+                    OR s.from_chunk = el.to_chunk OR s.to_chunk = el.to_chunk)
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM knowledge k
+             WHERE k.id IN (el.from_chunk, el.to_chunk) AND k.valid_to IS NOT NULL
+           )",
+    )?;
+    let rows = stmt.query_map(params![LINK_CONTRADICTS, LINK_SUPERSEDES], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// Find exact-duplicate chunks: same `content_hash` appearing more than once.
 /// Reuses the `content_hash` column already populated on every ingest (no new
 /// schema). Returns the duplicate chunk ids grouped by hash; the caller decides
@@ -182,12 +291,26 @@ mod tests {
                 source_id INTEGER,
                 revision_id INTEGER,
                 observed_at TEXT,
-                authority REAL
+                authority REAL,
+                valid_from TEXT,
+                valid_to TEXT
              );
              CREATE TABLE sources(id INTEGER PRIMARY KEY, uri TEXT, kind TEXT, state TEXT);
              CREATE TABLE source_revisions(id INTEGER PRIMARY KEY, source_id INTEGER, revision TEXT, state TEXT);
              CREATE TABLE evidence_links(id INTEGER PRIMARY KEY, from_chunk INTEGER, to_chunk INTEGER, kind TEXT,
-                UNIQUE(from_chunk, to_chunk, kind));",
+                UNIQUE(from_chunk, to_chunk, kind));
+             -- v1.6.0: resolve_supersession calls audit::record_tenant, which
+             -- is best-effort but needs the table to exist to write a row.
+             CREATE TABLE audit_events(
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               ts TEXT DEFAULT CURRENT_TIMESTAMP,
+               kind TEXT NOT NULL,
+               actor TEXT,
+               target_hash TEXT,
+               status TEXT,
+               detail_hash TEXT,
+               tenant_id TEXT NOT NULL DEFAULT 'global',
+               prev_hash TEXT);",
         )
         .unwrap();
         c
@@ -284,5 +407,159 @@ mod tests {
         link_evidence(&tx, 2, 1, LINK_SUPERSEDES).unwrap();
         tx.commit().unwrap();
         assert!(find_subject_conflicts(&c).unwrap().is_empty());
+    }
+
+    // ---- v1.6.0 "Reconcile" — atomic supersession resolution ----
+
+    #[test]
+    fn resolve_supersession_expires_old_chunk_and_records_link() {
+        // The roadmap exit criterion: "an approved update changes current
+        // recall; historical recall still returns the prior claim."
+        // resolve_supersession(new=2, old=1) must set valid_to on chunk 1.
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES
+                (1, 'old fact', 'h1'),
+                (2, 'new fact', 'h2')",
+            [],
+        )
+        .unwrap();
+        let tx = c.transaction().unwrap();
+        let expired = resolve_supersession(&tx, 2, 1, "2026-08-01T12:00:00Z").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(expired, 1, "the old chunk should be expired");
+        // valid_to populated on chunk 1 (the loser).
+        let vt: Option<String> = c
+            .query_row("SELECT valid_to FROM knowledge WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(vt.as_deref(), Some("2026-08-01T12:00:00Z"));
+        // Chunk 2 (the winner) is untouched by resolve_supersession — the
+        // caller is responsible for its valid_from if it needs stamping.
+        let vt2: Option<String> = c
+            .query_row("SELECT valid_to FROM knowledge WHERE id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(vt2.is_none(), "winner's valid_to must stay NULL");
+        // The supersedes link exists.
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM evidence_links WHERE from_chunk=2 AND to_chunk=1 AND kind='supersedes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // The audit row landed (kind=reconcile, actor=api).
+        let audited: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='reconcile' AND actor='api'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audited, 1, "supersession must be audited");
+    }
+
+    #[test]
+    fn resolve_supersession_is_idempotent() {
+        // Calling resolve_supersession twice with the same pair must NOT
+        // overwrite the historical timestamp on the second call — that would
+        // corrupt `?at=<past>` queries by moving the expiry forward.
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'a', 'h1'), (2, 'b', 'h2')",
+            [],
+        )
+        .unwrap();
+        let first = "2026-08-01T12:00:00Z";
+        let second = "2026-12-31T23:59:59Z";
+        let tx = c.transaction().unwrap();
+        let n1 = resolve_supersession(&tx, 2, 1, first).unwrap();
+        let n2 = resolve_supersession(&tx, 2, 1, second).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(n1, 1, "first call expires the loser");
+        assert_eq!(n2, 0, "second call touches 0 rows (idempotent)");
+        let vt: String = c
+            .query_row("SELECT valid_to FROM knowledge WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            vt, first,
+            "timestamp must NOT be overwritten by the second call"
+        );
+    }
+
+    #[test]
+    fn resolve_supersession_rejects_self_link() {
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'a', 'h1')",
+            [],
+        )
+        .unwrap();
+        let tx = c.transaction().unwrap();
+        let err = resolve_supersession(&tx, 1, 1, "2026-08-01T12:00:00Z").unwrap_err();
+        tx.rollback().unwrap();
+        assert!(err.to_string().contains("self-referential"));
+    }
+
+    #[test]
+    fn find_unresolved_contradictions_flags_unresolved_and_hides_resolved() {
+        // v1.6.0 M5: a `contradicts` link with no paired `supersedes` is
+        // unresolved (operator-actionable). Once either endpoint is superseded,
+        // the contradiction is considered resolved and drops out.
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES
+                (1, 'claim A', 'h1'), (2, 'claim B', 'h2'),
+                (3, 'claim C', 'h3'), (4, 'claim D', 'h4')",
+            [],
+        )
+        .unwrap();
+        // Unresolved: chunks 1<->2 contradicted, no supersedes.
+        // Resolved: chunks 3<->4 contradicted AND 4 supersedes 3.
+        let tx = c.transaction().unwrap();
+        link_evidence(&tx, 1, 2, LINK_CONTRADICTS).unwrap();
+        link_evidence(&tx, 3, 4, LINK_CONTRADICTS).unwrap();
+        link_evidence(&tx, 4, 3, LINK_SUPERSEDES).unwrap();
+        tx.commit().unwrap();
+        let unresolved = find_unresolved_contradictions(&c).unwrap();
+        assert_eq!(unresolved.len(), 1, "only the 1<->2 pair is unresolved");
+        let pair = unresolved[0];
+        assert!(pair == (1, 2) || pair == (2, 1));
+    }
+
+    #[test]
+    fn resolve_supersession_rollback_changes_neither() {
+        // The third arm of the roadmap exit criterion: "a failed transaction
+        // changes neither." If the caller rolls back, valid_to must stay NULL
+        // and no link/audit row must persist.
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'a', 'h1'), (2, 'b', 'h2')",
+            [],
+        )
+        .unwrap();
+        let tx = c.transaction().unwrap();
+        let _ = resolve_supersession(&tx, 2, 1, "2026-08-01T12:00:00Z").unwrap();
+        tx.rollback().unwrap(); // discard the work
+        let vt: Option<String> = c
+            .query_row("SELECT valid_to FROM knowledge WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(vt.is_none(), "rollback must leave valid_to NULL");
+        let links: i64 = c
+            .query_row("SELECT COUNT(*) FROM evidence_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 0, "rollback must undo the link insert");
+        let audits: i64 = c
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(audits, 0, "rollback must undo the audit row");
     }
 }

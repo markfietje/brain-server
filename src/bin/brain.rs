@@ -125,6 +125,8 @@ fn main() {
         "get" => cmd_get(rest),
         "ingest-dir" => cmd_ingest_dir(rest),
         "reconcile" => cmd_reconcile(rest),
+        "resolve" => cmd_resolve(rest),
+        "check-consistency" => cmd_check_consistency(rest),
         "source-delete" => cmd_source_delete(rest),
         "connect" => cmd_connect(rest),
         "sync" => cmd_sync(rest),
@@ -175,6 +177,8 @@ usage:
   brain get <id>
   brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
   brain reconcile <path> [--kind vault] [--dry-run]
+  brain resolve <new_id> <old_id>
+  brain check-consistency
   brain source-delete <id>
   brain connect github --app-id N --install-id N --key-file PATH \
                       --repo owner/repo [...] [--webhook-secret-file PATH]
@@ -808,6 +812,105 @@ fn cmd_reconcile(args: &[String]) -> Result<(), String> {
     );
     for uri in &orphan_uris {
         println!("  orphan {uri}");
+    }
+    Ok(())
+}
+
+/// `brain resolve <new_id> <old_id>`: mark `new_id` as superseding `old_id`.
+/// v1.6.0 "Reconcile" — operator-facing shortcut for the most common
+/// consolidation case. POSTs one `{from:new, to:old, kind:"supersedes"}` link
+/// to `/consolidate/apply`; the server expires `old_id` (sets `valid_to=now`)
+/// atomically. The old chunk stays retrievable via `/recall?at=<past>`.
+fn cmd_resolve(args: &[String]) -> Result<(), String> {
+    let (positionals, _flags) = parse_flags(args);
+    if positionals.len() < 2 {
+        return Err("usage: brain resolve <new_id> <old_id>".into());
+    }
+    let new_id: i64 = positionals[0]
+        .parse()
+        .map_err(|_| format!("new_id must be an integer, got '{}'", positionals[0]))?;
+    let old_id: i64 = positionals[1]
+        .parse()
+        .map_err(|_| format!("old_id must be an integer, got '{}'", positionals[1]))?;
+    if new_id == old_id {
+        return Err("new_id and old_id must differ".into());
+    }
+    let body = serde_json::json!({
+        "links": [{ "from_chunk": new_id, "to_chunk": old_id, "kind": "supersedes" }]
+    });
+    let resp = post(
+        &base_url(),
+        "/consolidate/apply",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let recorded = v.get("recorded").and_then(|n| n.as_u64()).unwrap_or(0);
+    let rejected = v.get("rejected").and_then(|a| a.as_array());
+    if recorded == 0 {
+        return Err(format!(
+            "resolution recorded no link (rejected: {:?})",
+            rejected
+        ));
+    }
+    println!("resolved: chunk {new_id} supersedes chunk {old_id} (old chunk expired; ");
+    println!("  still retrievable via /recall?at=<before-now>)");
+    Ok(())
+}
+/// `brain check-consistency`: v1.6.0 M5 — surface unresolved contradictions.
+/// Calls `/consolidate/propose` and reports the `unresolved_contradictions`
+/// list (contradicts links with no paired supersedes). Never auto-fixes;
+/// operator uses `brain resolve <new> <old>` to act on each.
+fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
+    let resp = post(
+        &base_url(),
+        "/consolidate/propose",
+        &[],
+        "application/json",
+        "",
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let dups = v["exact_duplicates"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let conflicts = v["conflicts"].as_array().map(|a| a.len()).unwrap_or(0);
+    let unresolved = v["unresolved_contradictions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    println!("brain-server consistency report:");
+    println!("  exact_duplicate_groups : {dups}");
+    println!("  subject_conflicts       : {conflicts}");
+    println!("  unresolved_contradictions: {}", unresolved.len());
+    if unresolved.is_empty() {
+        println!("  ✓ no unresolved contradictions");
+    } else {
+        println!("  action items (resolve with `brain resolve <new> <old>`):");
+        for pair in unresolved {
+            let from = pair[0].as_i64().unwrap_or(0);
+            let to = pair[1].as_i64().unwrap_or(0);
+            println!("    contradicts: chunk {from} <-> chunk {to}");
+        }
     }
     Ok(())
 }
