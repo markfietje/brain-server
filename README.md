@@ -20,7 +20,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 - **Hybrid retrieval** — vector KNN (`vec0`) + lexical FTS5 (BM25) fused via Reciprocal Rank Fusion, with deterministic PRF query expansion and full per-result provenance.
 - **Structured query** — `QueryDoc` with `LexSpec` (phrases, exclusions, code paths), multi-source OR scope, temporal `since`/`as_of` predicates.
 - **Temporal evidence** — every ingest stamps `observed_at` / `valid_from` / `valid_to` / `authority`. Point-in-time recall returns the revision active at a timestamp. `RecallHit.conflict` flags contradictory/superseded hits.
-- **Knowledge graph** — entities and relationships extracted from `[[relation::entity]]` syntax in markdown. Traverse, query, and follow links.
+- **Knowledge graph** — entities and relationships extracted from `[[relation::entity]]` syntax in markdown. Traverse, query, and follow links. Multi-hop explanations via `/graph/traverse?explain=true` (structured hop chains); edge-type filter via `?kind=`.
 - **Source lifecycle** — every chunk carries provenance (`source` + immutable `revision`). Connectors backfill external sources through a supervised pipeline; `POST /reconcile` sweeps orphans from deleted sources.
 - **Connectors** — supervised ingesters (GitHub issues via App auth) that backfill through the existing source/revision pipeline. Extensible connector contract.
 - **Prompt-injection quarantine** — suspicious content stored but excluded from retrieval until reviewed.
@@ -28,6 +28,10 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 - **Encrypted backup/restore** — AES-256-GCM, checksummed backups.
 - **OpenAI-compatible embeddings** — `POST /v1/embeddings`.
 - **MCP server** — `mcp` binary exposes search/recall/ingest as MCP tools.
+- **Calibrated abstention** (v1.5) — when retrieval quality is too low to support a claim, `/recall` returns `{decision: "low_confidence", hits: []}` instead of top-1 garbage.
+- **Span verification** (v1.5) — `POST /verify` checks whether a claim is supported by a chunk's actual text (deterministic lexical match, no LLM).
+- **Self-correction** (v1.6) — operator-approved `supersedes` links atomically expire the prior fact; historical recall (`?at=<past>`) still returns it. `brain resolve` + `brain check-consistency` surface action items.
+- **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
 
 ---
 
@@ -82,14 +86,17 @@ curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
 | POST | `/ingest` | Structured ingest (explicit entities/relations) |
 | GET | `/search?q=&k=&lex=&sources=` | Semantic search *(deprecated; use `/recall`)* |
 | POST | `/recall` | Structured recall (`QueryDoc`, primary endpoint) |
+| POST | `/verify` | Span verification — is a claim supported by a chunk's text? (v1.5) |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | POST | `/reindex` | Rebuild vector/FTS indexes |
 | DELETE | `/memory/{id}` | Delete a chunk (tombstone) |
 | GET | `/graph/entity/{name}` | Entity + 1-hop relations |
 | GET | `/graph/relations?from=&to=` | Relations between entities |
-| GET | `/graph/traverse?start=&max_depth=` | Recursive walk (max 3) |
+| GET | `/graph/traverse?start=&max_depth=&explain=&kind=` | Recursive walk (max 4); `explain=true` returns structured hop paths; `kind=` filters by edge type (v1.7) |
 | POST | `/sources/reconcile` · DELETE `/sources/{id}` | Source lifecycle |
-| GET | `/domains` | Multi-domain status (debug) |
+| GET | `/domains` · POST `/domains` · DELETE `/domains/{name}` | Multi-domain status + lifecycle |
+| POST | `/consolidate/propose` | Reviewable consolidation proposals: exact-dups, conflicts, contradictions, stale sources, near-duplicates |
+| POST | `/consolidate/apply` · POST `/consolidate/undo` | Record / reverse supersession links (v1.6/v1.8) |
 | GET | `/connectors` | Registered connectors |
 | POST | `/webhooks/{kind}` | Verified webhook ingest (HMAC, replay-protected) |
 | POST | `/auth/refresh` · `/auth/logout` · `/auth/revoke` | Token lifecycle (JWT mode) |
@@ -112,6 +119,9 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `brain explain "q"` | Provenance + telemetry |
 | `brain ingest-dir <path>` [--dry-run] | Ingest a vault directory |
 | `brain reconcile <path>` [--dry-run] | Sweep deleted sources |
+| `brain resolve <new_id> <old_id>` | Mark new chunk as superseding old; expires old from current recall (v1.6) |
+| `brain undo-resolve <old_id> [<old_id> ...]` | Reverse a prior supersession; restores chunk to current recall (v1.8) |
+| `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates (v1.6/v1.8) |
 | `brain source-delete <id>` | Retire a source |
 | `brain connect github --app-id N --install-id N --key-file PATH --repo O/R` | Configure GitHub connector |
 | `brain sync [github]` `[--config PATH \| --instance NAME]` | Run a connector sync |
