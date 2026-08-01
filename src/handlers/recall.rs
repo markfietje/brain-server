@@ -406,7 +406,9 @@ pub async fn recall(
 /// Map search results into the recall response shape, tagging every hit with
 /// its source domain (per-hit, for federated recall) and provenance source.
 /// Kept pure so it can be unit-tested without a model or database.
-fn abstention_decision(recommendation: Option<crate::Recommendation>) -> crate::handlers::RecallDecision {
+fn abstention_decision(
+    recommendation: Option<crate::Recommendation>,
+) -> crate::handlers::RecallDecision {
     // ponytail: the only signal that triggers abstention is the calibrated
     // `ClarifyQuery` recommendation, which already encodes overlap + gap +
     // lexical-density gates. A single-score threshold here would duplicate the

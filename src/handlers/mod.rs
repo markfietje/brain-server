@@ -28,6 +28,7 @@ pub mod forget;
 pub mod ingest;
 pub mod recall;
 pub mod sources;
+pub mod verify;
 pub mod webhooks;
 pub mod well_known;
 

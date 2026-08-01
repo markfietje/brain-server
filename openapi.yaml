@@ -754,6 +754,38 @@ paths:
                     items: { type: string }
                   telemetry:
                     $ref: "#/components/schemas/SearchTelemetry"
+  /verify:
+    post:
+      summary: Verify a claim against a chunk's actual text (v1.5.0)
+      operationId: verifyClaim
+      description: >
+        Deterministic span verification (arXiv:2607.00895 baseline). Given a
+        `claim` and a `chunk_id`, returns whether the claim is supported by
+        the chunk's text via case-insensitive substring match. No embeddings,
+        no LLM, no model load — the hallucination-resistance primitive.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chunk_id, claim]
+              properties:
+                chunk_id: { type: integer }
+                claim:
+                  type: string
+                  description: Claim to verify. Whitespace-trimmed; max 2000 chars.
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "400":
+          description: Empty or oversized claim
+        "404":
+          description: No chunk with that id
   /ingest:
     post:
       summary: Structured ingest (v1.0 primary path)
@@ -1265,6 +1297,27 @@ components:
         created_at: { type: string, nullable: true }
         source_uri: { type: string, nullable: true }
         revision_id: { type: integer, nullable: true }
+    VerifyResponse:
+      type: object
+      description: >
+        Result of `/verify` (v1.5.0). `supported` is true when at least one
+        case-insensitive occurrence of the claim was found in the chunk text.
+      properties:
+        chunk_id: { type: integer }
+        supported: { type: boolean }
+        decision:
+          type: string
+          enum: [supported, unsupported_claim]
+        match_ranges:
+          type: array
+          description: >
+            `[start, end)` byte offsets within chunk `content`. Capped at 100;
+            further matches are not reported but do not change `supported`.
+          items:
+            type: array
+            items: { type: integer }
+            minItems: 2
+            maxItems: 2
     QueryPlan:
       type: object
       description: Reproducible effective query (GET /search?explain=true).

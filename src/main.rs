@@ -1976,20 +1976,14 @@ async fn ingest_markdown(
                 }
                 // Sweep relationships: both those still linked (previously
                 // stale_ids) AND orphans already NULLed by prior re-ingests.
-                let _ = tx.execute(
-                    "DELETE FROM relationships WHERE knowledge_id IS NULL",
-                    [],
-                );
+                let _ = tx.execute("DELETE FROM relationships WHERE knowledge_id IS NULL", []);
                 for id in &stale_ids {
                     let _ = tx.execute(
                         "DELETE FROM relationships WHERE knowledge_id = ?1",
                         params![id],
                     );
                 }
-                let _ = tx.execute(
-                    "DELETE FROM knowledge WHERE source_path = ?1",
-                    params![sp],
-                );
+                let _ = tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp]);
             }
         }
         let r = write_markdown_ingest(
@@ -3688,6 +3682,10 @@ async fn main_inner() -> Result<()> {
         // v0.9.6 Bridge: connector registry. `GET /connectors` lists every
         // registered connector instance across all kinds.
         .route("/connectors", get(handlers::connectors::list))
+        // v1.5.0 "Epistemic" M5: deterministic span verification. Given a
+        // claim + chunk_id, returns whether the claim is supported by the
+        // chunk's text. Pure lexical match — no embeddings, no LLM.
+        .route("/verify", post(handlers::verify::verify))
         // v0.9.8 "Evidence" M2.3: reviewable consolidation. `propose` is pure
         // detection (no mutation); `apply` records operator-chosen typed links.
         .route("/consolidate/propose", post(handlers::consolidate::propose))
@@ -6587,6 +6585,8 @@ Final paragraph after the rule.";
             "/sources/{id}",
             // v0.9.6 Bridge
             "/connectors",
+            // v1.5.0 Epistemic
+            "/verify",
             // v0.9.7 Guard
             "/webhooks/{kind}",
             "/audit",
