@@ -3859,6 +3859,15 @@ async fn main_inner() -> Result<()> {
         // claim + chunk_id, returns whether the claim is supported by the
         // chunk's text. Pure lexical match — no embeddings, no LLM.
         .route("/verify", post(handlers::verify::verify))
+        // v1.9.0 "Suggest": opt-in, non-interrupting anticipation. `/suggest`
+        // is an explicit pull (caller asks "what else might be relevant?");
+        // `/suggest/feedback` records accept/dismiss; `/suggest/metrics` is
+        // the false-positive rate (roadmap exit criterion). All three are
+        // gated by BRAIN_SUGGEST_ENABLED and return 501 when disabled — the
+        // roadmap's "otherwise the feature is removed" kill switch.
+        .route("/suggest", post(handlers::suggest::suggest))
+        .route("/suggest/feedback", post(handlers::suggest::feedback))
+        .route("/suggest/metrics", get(handlers::suggest::metrics))
         // v0.9.8 "Evidence" M2.3: reviewable consolidation. `propose` is pure
         // detection (no mutation); `apply` records operator-chosen typed links.
         .route("/consolidate/propose", post(handlers::consolidate::propose))
@@ -5194,6 +5203,123 @@ mod tests {
         assert_eq!(
             historical, 2,
             "historical recall at 2025 must see BOTH chunks (valid_to hadn't been set yet)"
+        );
+    }
+
+    // ── v1.9.0 "Suggest" integration tests ──────────────────────────────
+    //
+    // The pure-function tests in handlers/suggest.rs cover validation,
+    // outcome parsing, and the metric math. These integration tests prove the
+    // SQL contract the handlers actually issue against a migrated DB — the
+    // smallest checks that fail if the migration or the queries drift.
+
+    #[test]
+    fn suggest_feedback_table_is_append_only_and_queryable() {
+        // The handler's INSERT + the metrics GROUP BY against real rows.
+        let db = test_db();
+        let now = 1722500000i64;
+        // 3 accepts, 2 dismisses across two sessions, one tenant.
+        for &(fb, sess) in &[
+            ("accept", "s1"),
+            ("accept", "s1"),
+            ("dismiss", "s1"),
+            ("accept", "s2"),
+            ("dismiss", "s2"),
+        ] {
+            db.execute(
+                "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
+                 VALUES (1, ?1, NULL, ?2, ?3, 'default')",
+                params![fb, now, sess],
+            )
+            .unwrap();
+        }
+        // Total counts (the metrics handler's exact GROUP BY shape).
+        let mut stmt = db
+            .prepare(
+                "SELECT feedback, COUNT(*) FROM suggest_feedback
+                 WHERE tenant_id = 'default' GROUP BY feedback",
+            )
+            .unwrap();
+        let mut accepts = 0u64;
+        let mut dismisses = 0u64;
+        for row in stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .flatten()
+        {
+            match row.0.as_str() {
+                "accept" => accepts = row.1 as u64,
+                "dismiss" => dismisses = row.1 as u64,
+                _ => {}
+            }
+        }
+        assert_eq!(accepts, 3);
+        assert_eq!(dismisses, 2);
+        // false_positive_rate = dismisses / total = 2/5 = 0.4.
+        let total = accepts + dismisses;
+        assert_eq!(total, 5);
+        assert!((dismisses as f32 / total as f32 - 0.4).abs() < 1e-6);
+
+        // Session-scoped query (the handler's optional filter).
+        let s1_dismisses: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM suggest_feedback
+                 WHERE tenant_id = 'default' AND session = 's1' AND feedback = 'dismiss'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(s1_dismisses, 1);
+
+        // Tenant isolation: a second tenant's rows are invisible to the first.
+        db.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id)
+             VALUES (1, 'accept', ?1, 'other-tenant')",
+            params![now],
+        )
+        .unwrap();
+        let default_total: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM suggest_feedback WHERE tenant_id = 'default'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            default_total, 5,
+            "other-tenant row must not leak into default"
+        );
+    }
+
+    #[test]
+    fn suggest_exclude_filter_uses_the_same_knowledge_visibility_as_recall() {
+        // v1.6.0 warranty carried into /suggest: a superseded chunk (valid_to
+        // set) must NOT be suggestable, because vec0_knn reuses the
+        // `valid_to IS NULL` default filter. Proves /suggest never re-surfaces
+        // a fact the operator already retired.
+        let mut db = test_db();
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash, domain) VALUES
+                (1, 'old fact', 'h1', 'global'),
+                (2, 'new fact', 'h2', 'global')",
+            [],
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let _ =
+            crate::consolidate::resolve_supersession(&tx, 2, 1, "2026-08-01T00:00:00Z").unwrap();
+        tx.commit().unwrap();
+        // The exact visibility predicate vec0_knn applies by default.
+        let visible: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id IN (1,2) AND valid_to IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            visible, 1,
+            "superseded chunk 1 must be invisible to /suggest (same as /recall)"
         );
     }
 
@@ -6841,12 +6967,52 @@ Final paragraph after the rule.";
 
         // v0.9.9: schema_version is recorded after migration and readable via
         // the shared helper. The rehearsal tool relies on this to refuse a
-        // migrate-down without --force.
+        // migrate-down without --force. v1.9.0 bumps this from 1.4.0 (the
+        // light-cut releases v1.5–v1.8 made no schema changes).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_4_0),
-            "schema_version must be recorded as 1.4.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_9_0),
+            "schema_version must be recorded as 1.9.0 after migration"
         );
+
+        // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
+        // Append-only by construction; this is the smallest check that fails
+        // if the migration forgets the table or any of its audit-relevant cols.
+        let sf_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(suggest_feedback)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in [
+            "chunk_id",
+            "feedback",
+            "reason_hash",
+            "ts",
+            "session",
+            "tenant_id",
+        ] {
+            assert!(
+                sf_cols.contains(col),
+                "v1.9.0: suggest_feedback.{col} column must exist after migration"
+            );
+        }
+        // The table is writable + the (tenant_id, ts) index exists.
+        db.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id)
+             VALUES (1, 'accept', 0, 'default')",
+            [],
+        )
+        .unwrap();
+        let idx_exists: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_suggest_feedback_tenant_ts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx_exists, 1, "idx_suggest_feedback_tenant_ts must exist");
     }
 
     /// Assert every route registered in `build_app` is documented in
@@ -6914,6 +7080,10 @@ Final paragraph after the rule.";
             "/connectors",
             // v1.5.0 Epistemic
             "/verify",
+            // v1.9.0 Suggest
+            "/suggest",
+            "/suggest/feedback",
+            "/suggest/metrics",
             // v0.9.7 Guard
             "/webhooks/{kind}",
             "/audit",

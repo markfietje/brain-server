@@ -28,6 +28,7 @@ pub mod forget;
 pub mod ingest;
 pub mod recall;
 pub mod sources;
+pub mod suggest;
 pub mod verify;
 pub mod webhooks;
 pub mod well_known;
@@ -261,6 +262,20 @@ impl HandlerError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             inner: ApiError::new("internal_error", message.into()),
+        }
+    }
+    /// v1.9.0 "Suggest": like [`internal`](Self::internal) but with an
+    /// explicit status + code. Used for the `BRAIN_SUGGEST_ENABLED=false` kill
+    /// switch, which returns `501 Not Implemented` (not 500) so a configured
+    /// client can distinguish "feature disabled" from "server error".
+    pub fn internal_with(
+        code: &'static str,
+        message: impl Into<String>,
+        status: StatusCode,
+    ) -> Self {
+        Self {
+            status,
+            inner: ApiError::new(code, message.into()),
         }
     }
 }
