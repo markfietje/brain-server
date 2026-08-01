@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.6.0
-  x-api-version: "1.6.0"
+  version: 1.7.0
+  x-api-version: "1.7.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -397,6 +397,22 @@ paths:
           in: query
           schema: { type: string }
           description: "v1.4.0 Calibrate M1: bi-temporal point-in-time traversal (RFC3339 or YYYY-MM-DD). Edges whose valid-interval [valid_at, invalid_at) does not contain this instant are skipped (Graphiti semantics)."
+        - name: kind
+          in: query
+          schema: { type: string }
+          description: >
+            v1.7.0 Explain: restrict the walk to edges whose relation_type
+            matches. Exact match (e.g. `kind=works_at`) or prefix match when
+            ending with `:` (e.g. `kind=causes:` for the causal subgraph).
+            Opt-in filter — does not claim causality. Empty/absent walks all.
+        - name: explain
+          in: query
+          schema: { type: boolean, default: false }
+          description: >
+            v1.7.0 Explain: when true, response includes a `paths` array with
+            structured per-hop explanations ({from, relation, to}) suitable
+            for rendering as "A --works_at--> B --ceo_of--> C". The flat
+            `traversal` array stays for back-compat.
       responses:
         "200":
           description: Traversal
@@ -413,6 +429,34 @@ paths:
                         entity: { type: string }
                         depth: { type: integer }
                         path: { type: string }
+                        edge_path: { type: string, description: "v1.7.0: pipe-separated relation_types parallel to `path`" }
+                        from_entity: { type: string, nullable: true, description: "v1.7.0: seed entity name" }
+                        domain: { type: string }
+                  paths:
+                    type: array
+                    description: "v1.7.0: present only when `explain=true`. Structured hop chains."
+                    items:
+                      type: object
+                      properties:
+                        hops:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              from:
+                                type: object
+                                properties:
+                                  id: { type: string }
+                                  name: { type: string }
+                              relation: { type: string }
+                              to:
+                                type: object
+                                properties:
+                                  id: { type: string }
+                                  name: { type: string }
+                        depth: { type: integer }
+                        domain: { type: string }
+                  visited: { type: integer }
   /get/{id}:
     get:
       summary: Fetch a single chunk by id (stable reference)

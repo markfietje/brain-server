@@ -12,6 +12,92 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-08-01
+
+**"Explain" — bounded graph evidence + faithful explanations (light cut).**
+
+This release is the **evidence-gated v1.7 scope** sanctioned by
+`IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.7, NOT the
+broader v1.7.0 plan in `IMPLEMENTATION_PLAN_v1.7.0_Reason.md` (which that
+roadmap explicitly supersedes). The roadmap says: ship explicit, typed,
+bounded path retrieval + faithful explanations; **do NOT ship** causal
+discovery, counterfactual estimates, or transitive `causes` facts.
+
+Research basis (Context7-verified 2026-08-01): Graphiti's `edge_bfs_search`
+(`/getzep/graphiti`) is the canonical bounded-BFS pattern — origin nodes,
+max_depth, filters, limit. brain-server already had this in `/graph/traverse`
+(v1.0/v1.4); the gap was that paths were flat id-strings with no edge types,
+so a consuming agent couldn't render a faithful explanation.
+
+### Discovery
+
+The bounded-BFS + bi-temporal + cross-domain + MAX_HOPS/MAX_VISITED
+infrastructure already shipped in v1.0/v1.4. The single gap: `/graph/traverse`
+returned `path` as a flat string of entity ids (`1->5->9`) with no relation
+types. A faithful explanation needs `A --works_at--> B --ceo_of--> C`, not
+`1->5->9`. This release closes that gap by extending the existing endpoint
+(no new route, no new schema).
+
+### Shipped
+
+- **Faithful explanation paths on `/graph/traverse?explain=true`.** The
+  recursive CTE now carries `relation_type` per hop; the response includes a
+  new `paths` array with structured hop chains
+  `[{from:{id,name}, relation, to:{id,name}}, ...]`. Consuming agents can
+  render the reasoning chain verbatim. The flat `traversal` array stays for
+  back-compat.
+- **`?kind=<relation_type>` edge filter.** Restricts the walk to edges whose
+  `relation_type` matches. Exact match (`kind=works_at`) or prefix match when
+  ending with `:` (`kind=causes:` for the causal subgraph — opt-in, no
+  auto-causal claims). Wildcards in user input are escaped to prevent LIKE
+  injection.
+- **OpenAPI contract** updated (v1.7.0): `kind` + `explain` params, `paths`
+  array, `edge_path` + `from_entity` fields on `traversal` rows.
+- 2 new unit tests (hop-chain reconstruction + empty-input handling).
+
+### Deferred (per evidence-gated roadmap)
+
+These items from `IMPLEMENTATION_PLAN_v1.7.0_Reason.md` are **deliberately
+not shipped** — the roadmap explicitly forbids them without an
+intervention-ready causal model + domain expert validation:
+
+- **M2 causal discovery / M3 counterfactual simulation.** Roadmap: "A graph
+  path is association unless an intervention-ready causal model and domain
+  expert validation exist." The `causes:` prefix remains schema-reserved
+  (v1.4); operators can ingest typed edges and walk them with `?kind=causes:`,
+  but the brain makes NO claim about causality.
+- **M4 transitive inference (virtual inferred edges).** Roadmap-forbidden:
+  no transitive `causes` facts. The `state='inferred'` schema reservation
+  stays unused until an evidence-gated upgrade.
+- **M1's `/graph/reason` new endpoint.** Not needed — `/graph/traverse` with
+  `explain=true` IS multi-hop reasoning with bounded BFS. A new endpoint
+  would duplicate the CTE.
+- **Carry-forward: TRACE session/topic hierarchy, multi-vector.**
+  Schema reservations only.
+
+### Verification
+
+- `cargo test --features bench,migrate`: **409 passed, 1 ignored** (was 407
+  at v1.6.0; +2).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release --features bench,migrate`: all 5 binaries clean.
+- **Live end-to-end smoke: operator step** (run `scripts/install-service.sh`).
+
+### Honest ceilings (carried into v1.8)
+
+- **Intermediate entity names in `paths` are best-effort.** The seed and leaf
+  nodes carry names; intermediate nodes are surfaced as ids unless the caller
+  resolves them via `/get/{id}`. A path-aware CTE that carries named tuples
+  is the upgrade path.
+- **`?kind=` filter is exact/prefix only.** No regex, no negation (e.g.
+  "all edges except causes:"). Acceptable for a local-first store.
+- **No audit row on traverse.** Pure read; the roadmap's "every state mutation
+  is auditable" rule doesn't apply.
+- **Graph paths are association, not causation.** Even when filtered with
+  `?kind=causes:`, the brain reports what the graph contains — not what is
+  true in the world. This is the roadmap's explicit guardrail.
+
 ## [1.6.0] — 2026-08-01
 
 **"Reconcile" — correct without erasing (light cut).**
