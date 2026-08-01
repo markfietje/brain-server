@@ -4928,13 +4928,14 @@ mod tests {
         tx.commit().unwrap();
         assert_eq!(expired, 1);
 
-        // The exact filter fragment used by vec0_knn (search/mod.rs:1123) and
-        // fts_search (search/mod.rs:1207) when `at` is set, plus the default-
-        // recall path (no `at` clause ⇒ only the valid_to IS NULL guard fires).
-        // Default recall (now): chunk 1 excluded, chunk 2 visible.
+        // The exact filter fragments now used by vec0_knn and fts_search
+        // (search/mod.rs). v1.6.0 fix: default recall (no `at`) excludes
+        // expired chunks via `valid_to IS NULL`; historical recall (`at` set)
+        // uses the bi-temporal window.
+        // Default recall (now): chunk 1 excluded (valid_to set), chunk 2 visible.
         let now_default: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE id IN (1,2) AND (valid_to IS NULL OR valid_to > '2026-08-01T12:00:01Z')",
+                "SELECT COUNT(*) FROM knowledge WHERE id IN (1,2) AND valid_to IS NULL",
                 [],
                 |r| r.get(0),
             )

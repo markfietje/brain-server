@@ -1115,17 +1115,30 @@ pub fn vec0_knn(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
-    // v1.4.0 "Calibrate" M1: bi-temporal valid-time filter (Graphiti
-    // valid_at/invalid_at semantics applied to chunk valid_from/valid_to).
-    // Distinct from as_of: as_of is transaction-time (which revision was
-    // live); `at` is valid-time (was the fact true at this date).
-    if let Some(at) = &filters.at {
-        sql.push_str(
-            " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
-               AND (k.valid_to IS NULL OR k.valid_to > ?)",
-        );
-        params_vec.push(Box::new(at.clone()));
-        params_vec.push(Box::new(at.clone()));
+    // v1.4.0 "Calibrate" M1 + v1.6.0 "Reconcile" fix: bi-temporal valid-time
+    // filter. Two modes:
+    //   - `at` = None (default recall): exclude EXPIRED chunks only
+    //     (valid_to IS NULL). v1.6.0 fix — before this, superseded chunks
+    //     were still returned by default recall because the filter only fired
+    //     when `at` was set. That broke the Reconcile exit criterion.
+    //   - `at` = Some(t): full bi-temporal window
+    //     (valid_from <= t AND (valid_to IS NULL OR valid_to > t)).
+    //     Graphiti valid_at/invalid_at semantics (Context7 2026-08-01).
+    match &filters.at {
+        Some(at) => {
+            sql.push_str(
+                " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
+                   AND (k.valid_to IS NULL OR k.valid_to > ?)",
+            );
+            params_vec.push(Box::new(at.clone()));
+            params_vec.push(Box::new(at.clone()));
+        }
+        None => {
+            // Default recall: only current facts. A chunk with valid_to set
+            // has been superseded (v1.6.0 resolve_supersession) and must not
+            // appear unless the caller asks for historical `?at=` recall.
+            sql.push_str(" AND k.valid_to IS NULL");
+        }
     }
     sql.push_str(" ORDER BY v.distance");
 
@@ -1202,14 +1215,19 @@ fn fts_search(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
-    // v1.4.0 "Calibrate" M1: bi-temporal valid-time filter (see vec0_knn).
-    if let Some(at) = &filters.at {
-        sql.push_str(
-            " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
-               AND (k.valid_to IS NULL OR k.valid_to > ?)",
-        );
-        params_vec.push(Box::new(at.clone()));
-        params_vec.push(Box::new(at.clone()));
+    // v1.4.0 + v1.6.0 fix: bi-temporal valid-time filter (see vec0_knn).
+    match &filters.at {
+        Some(at) => {
+            sql.push_str(
+                " AND (k.valid_from IS NULL OR k.valid_from <= ?) \
+                   AND (k.valid_to IS NULL OR k.valid_to > ?)",
+            );
+            params_vec.push(Box::new(at.clone()));
+            params_vec.push(Box::new(at.clone()));
+        }
+        None => {
+            sql.push_str(" AND k.valid_to IS NULL");
+        }
     }
     sql.push_str(" ORDER BY score LIMIT ?");
     params_vec.push(Box::new(k as i64));
