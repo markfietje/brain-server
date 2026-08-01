@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.5.0 "Epistemic" (calibrated abstention + span verification; light cut: see CHANGELOG for what was deferred and why) |
+| **Version** | 1.6.0 "Reconcile" (atomic supersession + unresolved-contradiction checker; light cut: see CHANGELOG) |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |

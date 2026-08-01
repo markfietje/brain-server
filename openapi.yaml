@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.5.0
-  x-api-version: "1.5.0"
+  version: 1.6.0
+  x-api-version: "1.6.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -534,12 +534,14 @@ paths:
           description: Signature verification failed
   /consolidate/propose:
     post:
-      summary: Propose consolidation candidates (v0.9.8 Evidence)
+      summary: Propose consolidation candidates (v0.9.8 Evidence; v1.6.0 unresolved-contradictions)
       operationId: proposeConsolidate
       description: >-
-        Pure detection — finds exact-duplicate chunks and subject conflicts.
-        Never mutates rows. Review the returned candidates, then apply chosen
-        links via POST /consolidate/apply.
+        Pure detection — finds exact-duplicate chunks, subject conflicts, and
+        (v1.6.0) unresolved `contradicts` links. Never mutates rows. Review
+        the returned candidates, then apply chosen links via
+        POST /consolidate/apply. v1.6.0: `apply` with kind=`supersedes` now
+        atomically expires the prior chunk (sets valid_to=now).
       responses:
         "200":
           description: Consolidation proposal
@@ -549,8 +551,13 @@ paths:
                 $ref: '#/components/schemas/ConsolidateProposal'
   /consolidate/apply:
     post:
-      summary: Record operator-chosen evidence links (v0.9.8 Evidence)
+      summary: Record operator-chosen evidence links (v0.9.8; v1.6.0 supersedes expires)
       operationId: applyConsolidate
+      description: >-
+        Records typed links. v1.6.0: a link with kind=`supersedes` now expires
+        the prior (to_chunk) fact atomically — sets valid_to=now so default
+        /recall excludes it while ?at=<past> still returns it. Other kinds
+        (contradicts/supports/references/derived_from) just record the link.
       requestBody:
         required: true
         content:
@@ -1411,6 +1418,17 @@ components:
               age_gap_secs: { type: integer }
               authority_delta: { type: number }
               proposed: { type: string, enum: [supersedes], description: suggested resolution }
+        unresolved_contradictions:
+          type: array
+          description: >
+            v1.6.0: `contradicts` links with no paired `supersedes` resolution.
+            Each entry is [from_chunk, to_chunk]. Operator-actionable: resolve
+            via POST /consolidate/apply with kind=supersedes, or `brain resolve`.
+          items:
+            type: array
+            items: { type: integer }
+            minItems: 2
+            maxItems: 2
     ApplyRequest:
       type: object
       description: v0.9.8 Evidence — operator-chosen typed links to record.

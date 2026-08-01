@@ -12,6 +12,100 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-08-01
+
+**"Reconcile" — correct without erasing (light cut).**
+
+This release is the **evidence-gated v1.6 scope** sanctioned by
+`IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.6, NOT the
+broader v1.6.0 plan in `IMPLEMENTATION_PLAN_v1.6.0_Reconcile.md` (which
+that roadmap explicitly supersedes). The roadmap exit criterion: *"an
+approved update changes current recall; historical recall still returns the
+prior claim; a failed transaction changes neither."*
+
+Research basis (Context7-verified 2026-08-01): Graphiti's
+`resolve_edge_contradictions` (`/getzep/graphiti`) is the canonical pattern —
+old facts are expired (`invalid_at = resolved.valid_at`), never deleted.
+brain-server applies the same semantics at the chunk level via the existing
+`knowledge.valid_from`/`valid_to` columns (v0.9.8) and the existing `/recall`
+bi-temporal filter (v1.4.0).
+
+### Discovery
+
+~85% of the infrastructure already shipped in v0.9.8 + v1.4.0: the
+`valid_from`/`valid_to` columns, the `/recall` + `/graph/traverse` bi-temporal
+filters, the `evidence_links` table, and `find_subject_conflicts`. The single
+missing piece was the atomic operation that expires the prior fact when an
+operator records a `supersedes` link. This release closes that gap.
+
+### Shipped
+
+- **Atomic supersession resolution** (`src/consolidate.rs::resolve_supersession`).
+  When `/consolidate/apply` records a `supersedes` link, the prior chunk's
+  `valid_to` is set to now **in the same transaction** as the link insert.
+  The existing `/recall` filter `(valid_to IS NULL OR valid_to > ?at)` then
+  excludes the chunk by default; `?at=<before-resolution>` still returns it.
+  No new retrieval code, no new schema. Idempotent: a second call with the
+  same pair touches 0 rows (doesn't overwrite the historical timestamp).
+  Audit row recorded via `AuditKind::Reconcile` (hash only, no PII).
+  Graphiti's pattern, applied at chunk level.
+- **`/consolidate/apply` routing on kind.** `supersedes` links now call
+  `resolve_supersession` (link + expire + audit); other kinds keep the plain
+  `link_evidence` path (they don't change retrieval state).
+- **`brain resolve <new_id> <old_id>` CLI.** Operator-facing shortcut for
+  the most common case — POSTs one supersedes link, prints confirmation.
+- **`brain check-consistency` CLI + `unresolved_contradictions` field on
+  `/consolidate/propose`.** Surfaces `contradicts` links that have no paired
+  `supersedes` resolution — the otherwise-invisible operator action items.
+  Pure detection; never auto-fixes.
+- OpenAPI contract updated (v1.6.0): new field on `ConsolidateProposal`,
+  clarifying notes on `/consolidate/apply` re: expiration semantics.
+- 6 new tests (4 supersession unit + 1 end-to-end SQL proof + 1 unresolved-
+  contradiction detection).
+
+### Deferred (with reasoning)
+
+These items from `IMPLEMENTATION_PLAN_v1.6.0_Reconcile.md` are **deliberately
+not shipped** — either forbidden by the evidence-gated roadmap or not worth
+the watts without a measured benefit:
+
+- **M1 auto-contradiction detection at ingest** (embed top-3 + lexical cues).
+  Roadmap-forbidden: MOSAIC "motivates the claim model; it does not justify
+  automatic deletion." Also adds ingest-time embedding work (CPU).
+- **M3 auto conflict-resolution policy** (`BRAIN_CONFLICT_POLICY=source|recency`).
+  Roadmap-forbidden: "manual-first conflict resolution." Only operator-driven
+  resolution ships; auto policy is deferred indefinitely.
+- **M4 edit-in-place + `knowledge_history` table** (`POST /knowledge/{id}/edit`).
+  Roadmap mentions "undo" only, not "edit in place." Real schema add + re-embed
+  work; deferred until an operator requests it.
+- **Carry-forward: TRACE session/topic hierarchy.** Schema reservation only
+  (`node_kind`/`parent_id`); no bounded producer exists. Explicitly deferred.
+- **Multi-vector.** No-op until the v1.5 judged baseline demonstrates a recall
+  gain worth its RSS cost.
+
+### Verification
+
+- `cargo test --features bench,migrate`: **407 passed, 1 ignored** (was 401
+  at v1.5.0; +6).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release --features bench,migrate`: all 5 binaries clean.
+- **Live end-to-end smoke: operator step** (run `scripts/install-service.sh`).
+
+### Honest ceilings (carried into v1.7)
+
+- **Resolution is operator-driven only.** No auto-detection of contradictions
+  at ingest; operators must run `brain check-consistency` or `/consolidate/propose`
+  to find them. This is the roadmap's "manual-first" rule, not a gap.
+- **`resolve_supersession` expires one chunk per call.** Multi-way conflicts
+  (3+ chunks contesting the same subject) require multiple calls. Acceptable
+  for a local-first store; batch resolution is a v1.7+ concern.
+- **`find_unresolved_contradictions` is the only consistency check.** Orphan
+  entities + `derived_from` cycles deferred (lower value, would balloon the diff).
+- **No propagation to the entities/relationships KG.** `resolve_supersession`
+  operates on chunks; KG edges have their own bi-temporal filter via
+  `/graph/traverse?at=`. A unified claim-level resolution is the v2.x path.
+
 ## [1.5.0] — 2026-08-01
 
 **"Epistemic" — calibrated abstention + span verification (light cut).**
