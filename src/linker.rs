@@ -127,9 +127,9 @@ const RELATION_PATTERNS: &[(&str, &str)] = &[
 /// copulae, modals, common prepositions). Sorted for binary search.
 const STOP_WORDS: &[&str] = &[
     "after", "also", "an", "and", "are", "as", "at", "be", "been", "being", "below", "between",
-    "but", "by", "can", "could", "date", "did", "do", "does", "during", "for", "from", "had", "has",
-    "have", "her", "his", "in", "into", "is", "its", "just", "may", "might", "must", "my", "no",
-    "nor", "not", "of", "on", "or", "our", "shall", "should", "than", "that", "the", "their",
+    "but", "by", "can", "could", "date", "did", "do", "does", "during", "for", "from", "had",
+    "has", "have", "her", "his", "in", "into", "is", "its", "just", "may", "might", "must", "my",
+    "no", "nor", "not", "of", "on", "or", "our", "shall", "should", "than", "that", "the", "their",
     "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "upon",
     "very", "via", "was", "were", "will", "with", "would", "your",
 ];
@@ -428,7 +428,7 @@ impl EntityMatcher {
                 .iter()
                 .filter(|&&(s, e)| s < end && e > start)
                 .map(|&(s, e)| {
-                    let adj_s = if s < start { 0 } else { s - start };
+                    let adj_s = s.saturating_sub(start);
                     let adj_e = if e > end { end - start } else { e - start };
                     (adj_s.min(end - start), adj_e.min(end - start))
                 })
@@ -558,7 +558,7 @@ impl EntityMatcher {
                 .iter()
                 .filter(|&&(s, e)| s < end && e > start)
                 .map(|&(s, e)| {
-                    let adj_s = if s < start { 0 } else { s - start };
+                    let adj_s = s.saturating_sub(start);
                     let adj_e = if e > end { end - start } else { e - start };
                     (adj_s.min(end - start), adj_e.min(end - start))
                 })
@@ -702,7 +702,7 @@ pub fn find_list_item_bold_ranges(content: &str) -> Vec<(usize, usize)> {
             let start = i;
             if let Some(end) = find_closing_double_star(bytes, i + 2) {
                 let close = end + 2; // past closing **
-                // Include the trailing colon if present
+                                     // Include the trailing colon if present
                 let range_end = if close < len && bytes[close] == b':' {
                     close + 1
                 } else {
@@ -728,7 +728,7 @@ fn is_in_ranges(start: usize, end: usize, ranges: &[(usize, usize)]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Strip leading section-number prefix (e.g. `5.1 `, `1.2.3 `) from heading text.
-fn strip_heading_number<'a>(s: &'a str) -> &'a str {
+fn strip_heading_number(s: &str) -> &str {
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() && bytes[i].is_ascii_digit() {
@@ -788,7 +788,7 @@ fn is_list_item_bold(content: &str, open: usize) -> bool {
     if open < 2 {
         return false;
     }
-    let before = content[..open].as_bytes();
+    let before = &content.as_bytes()[..open];
     let len = before.len();
     // Skip trailing whitespace before the `**` opener
     let mut end = len;
@@ -814,10 +814,7 @@ fn is_list_item_bold(content: &str, open: usize) -> bool {
 /// 3. Code spans (`` `tool` ``)
 ///
 /// `excluded_ranges` — byte ranges to skip (code blocks, tables, etc).
-pub fn extract_vocabulary(
-    content: &str,
-    excluded_ranges: &[(usize, usize)],
-) -> EntityVocabulary {
+pub fn extract_vocabulary(content: &str, excluded_ranges: &[(usize, usize)]) -> EntityVocabulary {
     let mut vocab = EntityVocabulary::default();
 
     // 1. Section headings
@@ -845,9 +842,7 @@ pub fn extract_vocabulary(
         if bytes[i] == b'*' && bytes[i + 1] == b'*' {
             let start = i + 2;
             if let Some(end) = find_closing_double_star(bytes, start) {
-                if !is_in_ranges(start, end, excluded_ranges)
-                    && !is_list_item_bold(content, i)
-                {
+                if !is_in_ranges(start, end, excluded_ranges) && !is_list_item_bold(content, i) {
                     let term = &content[start..end].trim();
                     if term.chars().any(|c| c.is_uppercase()) && term.len() >= 3 {
                         vocab.insert(term);
@@ -868,7 +863,9 @@ pub fn extract_vocabulary(
             if let Some(end) = find_closing_backtick(bytes, start) {
                 if !is_in_ranges(start, end, excluded_ranges) {
                     let tool = &content[start..end].trim();
-                    if tool.len() >= 3 && tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    if tool.len() >= 3
+                        && tool.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                    {
                         vocab.insert(tool);
                     }
                 }
@@ -975,7 +972,10 @@ mod tests {
 
     #[test]
     fn strip_heading_number_removes_section_prefix() {
-        assert_eq!(strip_heading_number("5.1 Ceph Components"), "Ceph Components");
+        assert_eq!(
+            strip_heading_number("5.1 Ceph Components"),
+            "Ceph Components"
+        );
         assert_eq!(strip_heading_number("1.2.3 Overview"), "Overview");
         assert_eq!(strip_heading_number("Ceph Components"), "Ceph Components");
         assert_eq!(strip_heading_number(""), "");

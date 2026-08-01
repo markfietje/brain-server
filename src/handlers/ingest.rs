@@ -176,12 +176,14 @@ pub async fn ingest(
         vocab.finalize();
         let entity_names: Vec<String> = vocab.entities.clone();
         entities = entity_names.iter().map(|n| (n.clone(), None)).collect();
-        let entity_set: std::collections::HashSet<String> =
-            entity_names.into_iter().collect();
+        let entity_set: std::collections::HashSet<String> = entity_names.into_iter().collect();
         let matcher: crate::linker::EntityMatcher = vocab.into();
 
         let extra_patterns = matcher.discover_verb_patterns(&content, 3, &excluded);
-        let extra_refs: Vec<(&str, &str)> = extra_patterns.iter().map(|(v, _)| (v.as_str(), v.as_str())).collect();
+        let extra_refs: Vec<(&str, &str)> = extra_patterns
+            .iter()
+            .map(|(v, _)| (v.as_str(), v.as_str()))
+            .collect();
 
         let edges = matcher.find_relationships(&content, &excluded, &extra_refs);
 
