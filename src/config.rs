@@ -9,6 +9,13 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_REQUEST_SIZE: usize = 1024 * 1024;
 pub const MAX_QUERY_LENGTH: usize = 2000;
 
+/// v1.9.0 "Suggest": bounds for the opt-in `/suggest` surface. `k` is capped
+/// small because suggestions are supplementary context, not a replacement for
+/// `/recall`; `exclude` is capped so a caller can't OOM the NOT IN clause.
+pub const MAX_SUGGEST_K: u32 = 20;
+pub const MAX_SUGGEST_EXCLUDE: usize = 100;
+pub const DEFAULT_SUGGEST_K: u32 = 5;
+
 /// M2 evidence quality: bounded snippet window (chars) and the redaction cap
 /// on `explain` payloads so they can never leak unbounded source text.
 pub const MAX_SNIPPET_CHARS: usize = 240;
@@ -228,6 +235,22 @@ pub fn multi_db() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// v1.9.0 "Suggest": whether the opt-in `/suggest` routes are live. Defaults
+/// to `true` (the feature ships on); set `BRAIN_SUGGEST_ENABLED=false` to
+/// disable the surface entirely — the routes then return `501 Not Implemented`.
+/// This is the roadmap's "otherwise the feature is removed" kill switch: an
+/// operator who measures an unacceptable false-positive rate can disable
+/// `/suggest` without a rebuild.
+pub fn brain_suggest_enabled() -> bool {
+    !matches!(
+        std::env::var("BRAIN_SUGGEST_ENABLED")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
 }
 
 /// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to

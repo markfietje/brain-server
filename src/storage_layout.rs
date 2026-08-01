@@ -25,6 +25,7 @@ use rusqlite::Connection;
 /// and `refresh_chains` tables for JWT auth (the AuthN feature). v1.1.0 adds
 /// the audit-chain columns (`tenant_id`, `prev_hash`) and the
 /// `idx_audit_tenant` index.
+pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
 pub const SCHEMA_VERSION_V1_2_0: &str = "1.2.0";
 pub const SCHEMA_VERSION_V1_1_0: &str = "1.1.0";

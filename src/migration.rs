@@ -693,10 +693,37 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
-    // Bumped once per release that changes this function.
+    // ── v1.9.0 "Suggest": opt-in anticipation feedback. ─────────────────
+    // Append-only ledger of accept/dismiss signals on suggested chunks. This
+    // table IS the audit surface for the feedback mutation (chunk_id +
+    // feedback + ts + tenant_id + optional reason_hash reconstruct who/what/
+    // when); no duplicate `audit_events` row is written. Session is a
+    // caller-supplied opaque label (Mem0 `run_id` pattern) — the server never
+    // auto-tracks sessions (roadmap forbids hidden personalization).
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.4.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.4.0';",
+        "CREATE TABLE IF NOT EXISTS suggest_feedback (
+             id          INTEGER PRIMARY KEY,
+             chunk_id    INTEGER NOT NULL,
+             feedback    TEXT NOT NULL,
+             reason_hash TEXT,
+             ts          INTEGER NOT NULL,
+             session     TEXT,
+             tenant_id   TEXT NOT NULL DEFAULT 'default'
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_suggest_feedback_tenant_ts
+         ON suggest_feedback(tenant_id, ts);",
+        [],
+    )?;
+
+    // Bumped once per release that changes this function. v1.5–v1.8 were light
+    // cuts with no schema change, so the stamp stayed at 1.4.0; v1.9 adds the
+    // suggest_feedback table.
+    db.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.9.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.9.0';",
         [],
     )?;
 
