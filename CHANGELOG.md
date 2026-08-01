@@ -12,6 +12,92 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-08-01
+
+**"Epistemic" — calibrated abstention + span verification (light cut).**
+
+This release is the **evidence-gated v1.5 scope** sanctioned by
+`IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.5, NOT the
+broader v1.5.0 Epistemic plan in `IMPLEMENTATION_PLAN_v1.5.0_Epistemic.md`
+(which that roadmap explicitly supersedes). The roadmap says: ship calibrated
+abstention + span verification; **do not ship** source-trust ranking,
+counterfactual influence, or a fixed universal confidence threshold until
+their held-out benefit is demonstrated. This release honors that.
+
+Research basis (Context7-verified 2026-08-01): Self-RAG pattern
+(`/nirdiamant/rag_techniques` — retrieve → assess → abstain on low relevance)
+confirms the abstention model; arXiv:2607.00895 (span-level hallucination
+detection) sanctions the deterministic lexical `/verify` baseline.
+
+### Shipped
+
+- **Calibrated abstention on `/recall`** (M2). `RecallResponse` gains a
+  `decision` field (`ok` | `low_confidence`). When the existing
+  `HeuristicEstimator` (v1.4.0) classifies the query as `ClarifyQuery` (low
+  overlap + low lexical density + weak gap), `/recall` returns
+  `{decision: "low_confidence", hits: []}` instead of shipping top-1 garbage.
+  The consuming agent (OpenClaw) can escalate or fall back to web search.
+  **Not** a magic `score < 0.3` cutoff — abstention is driven by the
+  calibrated multi-signal `Recommendation`, which is what the evidence-gated
+  roadmap requires. Zero new compute: `confidence` + `recommendation` were
+  already computed by `perform_search_with_prf`.
+- **`POST /verify` deterministic span verification** (M5). Given
+  `{chunk_id, claim}`, returns `{supported, decision, match_ranges}` via
+  case-insensitive substring match over one chunk's text. Zero embeddings,
+  zero LLM, zero model load — O(content.len()) per request, opt-in (not in
+  the recall hot path). The hallucination-resistance primitive: an agent can
+  verify "the brain said X" against the original source before acting on it.
+  Mismatch surfaces as `unsupported_claim`. Bounded: claim capped at
+  `MAX_QUERY` (2000 chars), output ranges capped at 100.
+- **OpenAPI contract** updated: `/verify` route + `VerifyResponse` schema +
+  `decision` field on `/recall`. `test_openapi_covers_routes` extended.
+- 8 new tests (1 abstention wiring + 7 span-verification including byte-offset,
+  non-overlapping, case-insensitive, unicode-safe, cap-enforcement).
+- Pre-existing rust-1.97 clippy lints in `linker.rs` silenced (chore commit;
+  not introduced by this release).
+
+### Deferred (with reasoning)
+
+These items from `IMPLEMENTATION_PLAN_v1.5.0_Epistemic.md` are **deliberately
+not shipped** because the evidence-gated roadmap forbids them until their
+held-out benefit is demonstrated on a judged-query corpus:
+
+- **M1 calibration curve + judged baseline.** Operator step — requires the
+  private ≥100-query judgment set. The harness ships (`bench eval` from
+  v1.4.0); the corpus does not.
+- **M3 counterfactual influence (leave-one-out).** Roadmap-forbidden without
+  measured Δ-recall vs Δ-latency. The naive implementation re-runs retrieval
+  O(5)× per query — unacceptable on Jetson.
+- **M4 source-trust scoring + `/feedback` endpoint.** Roadmap-forbidden
+  without measured benefit. Would add a `source.trust` column, Bayesian
+  update logic, and ranking decay — real hot-path cost.
+- **Carry-forward: fuzz targets exercising prod code, miri/LSAN runs.**
+  Operator/hardware step. The stubs from v1.3.0 remain stubs until the
+  chunker/query modules move from the binary to the lib crate.
+
+### Verification
+
+- `cargo test --features bench,migrate`: **401 passed, 1 ignored** (was 391
+  at v1.4.2; +10).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release --features bench,migrate`: all 5 binaries clean.
+- Live restart + end-to-end smoke: **operator step** (run
+  `scripts/install-service.sh`).
+
+### Honest ceilings (carried into v1.6)
+
+- **Abstention is heuristic, not learned.** The `ClarifyQuery` threshold is
+  calibrated on rank-agreement signals, not on a judged corpus. Once the
+  Carry-forward baseline is recorded, v1.6 may tune or replace it.
+- **`/verify` is lexical only.** No semantic match (paraphrase, synonym).
+  A claim that's semantically equivalent but lexically different will report
+  `unsupported_claim`. This is the deterministic baseline; a model-based
+  upgrade is the v1.6+ path.
+- **No audit row on `/verify`.** It's a pure read; the roadmap's "every state
+  mutation is auditable" rule does not apply. If verification telemetry
+  becomes a requirement, it lands with v1.6 Reconcile.
+
 ## [1.4.2] — 2026-07-30
 
 Noise-reduction release on top of v1.4.1. Eleven changes (cumulative with v1.4.1).
