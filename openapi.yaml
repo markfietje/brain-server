@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.7.0
-  x-api-version: "1.7.0"
+  version: 1.8.0
+  x-api-version: "1.8.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -615,6 +615,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplyResponse'
+  /consolidate/undo:
+    post:
+      summary: Reverse prior supersession resolutions (v1.8.0 Maintain)
+      operationId: undoConsolidate
+      description: >-
+        v1.8.0 roadmap exit criterion: "reject or undo them without retrieval
+        regression." For each `old_chunk`, clears `valid_to` back to NULL +
+        removes the `supersedes` evidence_link, restoring the chunk to current
+        recall. Audited. Idempotent (no-op if nothing to undo).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_chunks]
+              properties:
+                old_chunks:
+                  type: array
+                  items: { type: integer }
+                  description: Chunk ids previously expired via supersedes.
+      responses:
+        "200":
+          description: Undo result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  undone: { type: integer, description: "State changes applied (0 if nothing to undo)" }
+                  rejected:
+                    type: array
+                    items: { type: string }
   /audit:
     get:
       summary: Operator audit-log diagnostics (v0.9.7 Guard; v1.1.0 tenant filter)
@@ -1473,6 +1506,30 @@ components:
             items: { type: integer }
             minItems: 2
             maxItems: 2
+        stale_sources:
+          type: array
+          description: >
+            v1.8.0: vault sources whose backing file no longer exists on disk.
+            Operator reviews: re-ingest if moved, or DELETE /sources/{id} to retire.
+          items:
+            type: object
+            properties:
+              source_id: { type: integer }
+              uri: { type: string }
+              kind: { type: string }
+              chunk_count: { type: integer }
+        near_duplicates:
+          type: array
+          description: >
+            v1.8.0: near-duplicate chunk pairs (cosine > 0.95, different content
+            hash). Propose supersedes; operator picks the winner via brain resolve.
+          items:
+            type: object
+            properties:
+              chunk_a: { type: integer }
+              chunk_b: { type: integer }
+              similarity: { type: number, description: cosine similarity }
+              proposed: { type: string, enum: [supersedes] }
     ApplyRequest:
       type: object
       description: v0.9.8 Evidence — operator-chosen typed links to record.

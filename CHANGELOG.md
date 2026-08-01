@@ -12,6 +12,100 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-08-01
+
+**"Maintain" — reviewable proposals + undo (light cut).**
+
+This release is the **evidence-gated v1.8 scope** sanctioned by
+`IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.8, NOT the
+broader v1.8.0 plan in `IMPLEMENTATION_PLAN_v1.8.0_Consolidate.md` (which
+that roadmap explicitly supersedes). Roadmap v1.8: *"duplicate and stale-
+source proposals, resumable batches, review UI/API contract, and recovery
+rehearsal."* Exit: *"reviewers accept proposals at a measured precision
+target, and reject or undo them without retrieval regression."*
+
+### Discovery
+
+The exact-duplicate + subject-conflict + unresolved-contradiction detectors
+already shipped in v0.9.8 / v1.6.0 (via `/consolidate/propose`). The single
+missing pieces for the exit criterion: (1) **stale-source detection** (vault
+files that no longer exist on disk), (2) **near-duplicate detection**
+(semantic, not just exact-hash), and (3) **undo** — the "reject or undo them
+without retrieval regression" arm.
+
+### Shipped
+
+- **`POST /consolidate/undo` + `brain undo-resolve <old_id> [...]` CLI.** The
+  roadmap exit criterion's undo arm: clears `valid_to` back to NULL + removes
+  the `supersedes` evidence_link, atomically in one tx. Audited via
+  `AuditKind::Reconcile`. Idempotent — a re-run on an already-undone chunk is
+  a no-op. Batch-safe (takes a list of chunk ids).
+- **Stale-source detection** (`consolidate::find_stale_sources`). Vault sources
+  whose `uri` is a file path that no longer exists on disk. Pure detection —
+  never archives or deletes. Operator reviews and either re-ingests (file moved)
+  or retires via `DELETE /sources/{id}`. Surfaced in `/consolidate/propose`
+  response + `brain check-consistency` report.
+- **Near-duplicate detection** (`consolidate::find_near_duplicates`). Pairs of
+  current chunks with embedding cosine > 0.95 (different content hash — exact
+  dups already detected separately). Uses the existing `vec_knowledge` KNN to
+  find each chunk's nearest neighbor — bounded O(n×k) via KNN, not O(n²)
+  pairwise. Capped at 50 pairs per proposal (the endpoint isn't a dump truck).
+  Surfaced in `/consolidate/propose` + `brain check-consistency`.
+- **OpenAPI contract** updated (v1.8.0): `/consolidate/undo` route +
+  `stale_sources` + `near_duplicates` fields on `ConsolidateProposal`.
+  `test_openapi_covers_routes` extended.
+- 5 new tests (undo round-trip, undo idempotent, stale-source detection,
+  embedding-decode round-trip, existing proposal serialization updated).
+
+### Deferred (per evidence-gated roadmap)
+
+These items from `IMPLEMENTATION_PLAN_v1.8.0_Consolidate.md` are **deliberately
+not shipped** — the roadmap forbids autonomous/background maintenance:
+
+- **M1 background `ConsolidationWorker`** (power-aware, hourly). Roadmap says
+  proposals, not a background worker that auto-runs. Operators trigger on
+  demand via `brain check-consistency` / `/consolidate/propose`. A background
+  worker is autonomous consolidation, which the roadmap defers indefinitely.
+- **M3 summarization** (cluster medoid as summary chunk). Roadmap: "A medoid
+  is labelled `representative`, not `summary`." Synthesizing a new chunk is a
+  "fabricated summary" — forbidden. The medoid IS already a chunk.
+- **M4 cross-cluster linking** (proposed `related`/`co_occurs` edges).
+  Roadmap: "synthetic relation insertion" forbidden. Existing evidence_links
+  kinds (supports/supersedes/contradicts/references/derived_from) stay the
+  documented set; no new kinds added.
+- **M5 memory defragmentation / archival / domain moves.** Roadmap: "automatic
+  archiving" + "domain moves" both forbidden. Stale-source *detection* ships
+  (this release); the *archival* action stays operator-driven via existing
+  `DELETE /sources/{id}`.
+- **Resumable batches** as a saved review state. The proposal endpoint is
+  idempotent + re-runnable, so an operator can pick up where they left off by
+  re-running `/consolidate/propose`. No saved-state API needed for v1.8.
+
+### Verification
+
+- `cargo test --features bench,migrate`: **414 passed, 1 ignored** (was 409
+  at v1.7.0; +5).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- `cargo build --release --features bench,migrate`: all 5 binaries clean.
+- **Live end-to-end smoke: operator step** (run `scripts/install-service.sh`).
+
+### Honest ceilings (carried into v1.9)
+
+- **Near-duplicate detection is per-domain only** (same as exact-dup detection).
+  Cross-domain near-dups would need embedding federation; deferred to v2.x.
+- **`find_near_duplicates` loads each chunk's embedding once per scan.** ~5 MiB
+  transient for a 10k-chunk corpus at int8; bounded + ephemeral. Upgrade path:
+  batch the KNN calls if per-chunk query cost matters on a large corpus.
+- **`decode_embedding` assumes the vec0 int8 blob layout.** If sqlite-vec
+  changes its format, the round-trip test breaks first (pinned).
+- **Undo only reverses `supersedes`-kind resolutions.** Other evidence_link
+  kinds (contradicts/supports/references/derived_from) have no state to undo —
+  they were never expiring. If you want to remove one, use `DELETE /memory/{id}`
+  on the link row directly (or a future v1.9+ generic link-delete API).
+- **No background worker.** Operators must run `brain check-consistency` on
+  demand. This is the roadmap's explicit choice, not a gap.
+
 ## [1.7.0] — 2026-08-01
 
 **"Explain" — bounded graph evidence + faithful explanations (light cut).**
