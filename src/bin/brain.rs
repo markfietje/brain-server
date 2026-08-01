@@ -129,6 +129,10 @@ fn main() {
         "undo-resolve" => cmd_undo_resolve(rest),
         "check-consistency" => cmd_check_consistency(rest),
         "source-delete" => cmd_source_delete(rest),
+        // v1.9.0 "Suggest": opt-in anticipation surface.
+        "suggest" => cmd_suggest(rest),
+        "suggest-feedback" => cmd_suggest_feedback(rest),
+        "suggest-metrics" => cmd_suggest_metrics(rest),
         "connect" => cmd_connect(rest),
         "sync" => cmd_sync(rest),
         "connector-status" => cmd_connector_status(rest),
@@ -182,6 +186,9 @@ usage:
   brain undo-resolve <old_id> [<old_id> ...]
   brain check-consistency
   brain source-delete <id>
+  brain suggest "<context>" [--exclude id[,id...]] [--k N] [--domain D] [--session S]
+  brain suggest-feedback <chunk_id> accept|dismiss [--reason "..."] [--session S]
+  brain suggest-metrics [--session S] [--since DATE]
   brain connect github --app-id N --install-id N --key-file PATH \
                       --repo owner/repo [...] [--webhook-secret-file PATH]
   brain sync [github] [--config PATH]
@@ -1016,6 +1023,204 @@ fn cmd_source_delete(args: &[String]) -> Result<(), String> {
         ));
     }
     println!("deleted source {id}");
+    Ok(())
+}
+
+// ── v1.9.0 "Suggest": opt-in anticipation CLI ────────────────────────────────
+
+/// `brain suggest "<context>"`: opt-in pull for related-but-not-surfaced
+/// chunks. The caller explicitly asks "what else might be relevant?" — the
+/// server never pushes. Each hit is tagged `reason: "anticipated"` so the
+/// consuming agent may ignore it.
+fn cmd_suggest(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let context = require_positional(&positionals, "context")?;
+    if context.trim().is_empty() {
+        return Err("context must be non-empty".into());
+    }
+    // --exclude accepts comma-separated (--exclude 1,2,3) like /search's sources.
+    let exclude: Vec<i64> = flags
+        .get("exclude")
+        .and_then(|o| o.clone())
+        .map(|s| {
+            s.split(',')
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| {
+                    p.trim()
+                        .parse::<i64>()
+                        .map_err(|_| format!("exclude id must be an integer, got '{p}'"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let k: u32 = flags
+        .get("k")
+        .and_then(|o| o.clone())
+        .map(|s| {
+            s.parse::<u32>()
+                .map_err(|_| format!("--k must be an integer, got '{s}'"))
+        })
+        .transpose()?
+        .unwrap_or(5);
+    let domain = flags.get("domain").and_then(|o| o.clone());
+    let session = flags.get("session").and_then(|o| o.clone());
+
+    let mut body = serde_json::json!({ "context": context, "k": k });
+    if !exclude.is_empty() {
+        body["exclude"] = serde_json::json!(exclude);
+    }
+    if let Some(d) = domain {
+        body["domain"] = serde_json::json!(d);
+    }
+    if let Some(s) = session {
+        body["session"] = serde_json::json!(s);
+    }
+    let resp = post(
+        &base_url(),
+        "/suggest",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status == 501 {
+        return Err("/suggest is disabled on the server (BRAIN_SUGGEST_ENABLED=false)".into());
+    }
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let hits = v["suggestions"].as_array().cloned().unwrap_or_default();
+    if hits.is_empty() {
+        println!(
+            "no suggestions (corpus may be small or everything relevant was already surfaced)"
+        );
+        return Ok(());
+    }
+    println!("suggestions (anticipated; the agent may ignore these):");
+    for h in &hits {
+        let id = h["id"].as_i64().unwrap_or(0);
+        let score = h["score"].as_f64().unwrap_or(0.0);
+        let title = h["title"].as_str().unwrap_or("");
+        let content = h["content"].as_str().unwrap_or("");
+        println!("  [{id}] score={score:.3} {title}");
+        println!("        {}", truncate(content, 120));
+    }
+    let tel = &v["telemetry"];
+    println!(
+        "  telemetry: k={} excluded={} retrieved={}",
+        tel["k"].as_u64().unwrap_or(0),
+        tel["excluded"].as_u64().unwrap_or(0),
+        tel["retrieved"].as_u64().unwrap_or(0),
+    );
+    println!("  record outcomes with: brain suggest-feedback <id> accept|dismiss");
+    Ok(())
+}
+
+/// `brain suggest-feedback <chunk_id> accept|dismiss`: record the outcome for
+/// a surfaced suggestion. Accepts optional `--reason` (hashed server-side,
+/// never stored raw) and `--session`. The aggregate drives the false-positive
+/// metric surfaced by `brain suggest-metrics`.
+fn cmd_suggest_feedback(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    if positionals.len() < 2 {
+        return Err("usage: brain suggest-feedback <chunk_id> accept|dismiss [--reason \"...\"] [--session S]".into());
+    }
+    let chunk_id: i64 = positionals[0]
+        .parse()
+        .map_err(|_| format!("chunk_id must be an integer, got '{}'", positionals[0]))?;
+    let outcome = positionals[1].trim().to_lowercase();
+    if outcome != "accept" && outcome != "dismiss" {
+        return Err(format!(
+            "feedback must be 'accept' or 'dismiss', got '{outcome}'"
+        ));
+    }
+    let reason = flags.get("reason").and_then(|o| o.clone());
+    let session = flags.get("session").and_then(|o| o.clone());
+    let mut body = serde_json::json!({ "chunk_id": chunk_id, "feedback": outcome });
+    if let Some(r) = reason {
+        body["reason"] = serde_json::json!(r);
+    }
+    if let Some(s) = session {
+        body["session"] = serde_json::json!(s);
+    }
+    let resp = post(
+        &base_url(),
+        "/suggest/feedback",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status == 501 {
+        return Err("/suggest is disabled on the server (BRAIN_SUGGEST_ENABLED=false)".into());
+    }
+    if resp.status == 404 {
+        return Err(format!("no chunk with id {chunk_id}"));
+    }
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("recorded: chunk {chunk_id} -> {outcome}");
+    Ok(())
+}
+
+/// `brain suggest-metrics`: the false-positive rate over the feedback ledger.
+/// This is the v1.9 roadmap exit criterion, made queryable. Optional
+/// `--session` / `--since` filter the window.
+fn cmd_suggest_metrics(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let mut query: Vec<(String, String)> = Vec::new();
+    if let Some(s) = flags.get("session").and_then(|o| o.clone()) {
+        query.push(("session".into(), s));
+    }
+    if let Some(s) = flags.get("since").and_then(|o| o.clone()) {
+        query.push(("since".into(), s));
+    }
+    let resp = get(
+        &base_url(),
+        "/suggest/metrics",
+        &query,
+        auth_token().as_deref(),
+    )?;
+    if resp.status == 501 {
+        return Err("/suggest is disabled on the server (BRAIN_SUGGEST_ENABLED=false)".into());
+    }
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let total = v["total"].as_u64().unwrap_or(0);
+    let accepts = v["accepts"].as_u64().unwrap_or(0);
+    let dismisses = v["dismisses"].as_u64().unwrap_or(0);
+    let accept_rate = v["accept_rate"].as_f64().unwrap_or(0.0);
+    let fpr = v["false_positive_rate"].as_f64().unwrap_or(0.0);
+    println!("brain-server suggest metrics:");
+    println!("  total               : {total}");
+    println!("  accepts             : {accepts}");
+    println!("  dismisses           : {dismisses}");
+    println!("  accept_rate         : {accept_rate:.3}");
+    println!("  false_positive_rate : {fpr:.3}  (roadmap exit criterion)");
+    if let Some(w) = v.get("window").and_then(|w| w.as_object()) {
+        let since = w.get("since").and_then(|s| s.as_str()).unwrap_or("-");
+        let session = w.get("session").and_then(|s| s.as_str()).unwrap_or("-");
+        println!("  window              : since={since} session={session}");
+    }
     Ok(())
 }
 

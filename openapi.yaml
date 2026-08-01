@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.8.0
-  x-api-version: "1.8.0"
+  version: 1.9.0
+  x-api-version: "1.9.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -870,6 +870,126 @@ paths:
           description: Empty or oversized claim
         "404":
           description: No chunk with that id
+  /suggest:
+    post:
+      summary: Opt-in anticipation pull (v1.9.0 "Suggest")
+      operationId: suggest
+      description: >
+        Explicit, opt-in pull for related-but-not-surfaced chunks. The caller
+        supplies the working `context`; the server embeds it and returns chunks
+        that did not come up in a direct `/recall` (excluded via `exclude`).
+        Every hit is tagged `provenance.reason = "anticipated"` so the
+        consuming agent may ignore it. NOT proactive push — the agent asks.
+        Gated by `BRAIN_SUGGEST_ENABLED` (returns 501 when disabled).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [context]
+              properties:
+                context:
+                  type: string
+                  description: What the caller is working on right now. Max 2000 chars.
+                exclude:
+                  type: array
+                  maxItems: 100
+                  items: { type: integer }
+                  description: Chunk ids already surfaced (e.g. this turn's /recall hits).
+                k:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 5
+                domain:
+                  type: string
+                  pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+                session:
+                  type: string
+                  description: Caller-supplied opaque session label (Mem0 run_id pattern).
+      responses:
+        "200":
+          description: Suggestion list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items: { $ref: "#/components/schemas/SuggestionHit" }
+                  telemetry: { $ref: "#/components/schemas/SuggestTelemetry" }
+        "400":
+          description: Invalid context / k / exclude
+        "501":
+          description: BRAIN_SUGGEST_ENABLED=false — surface disabled
+  /suggest/feedback:
+    post:
+      summary: Record accept/dismiss for a surfaced suggestion (v1.9.0)
+      operationId: suggestFeedback
+      description: >
+        Mem0-style feedback (POSITIVE/NEGATIVE collapsed to accept/dismiss).
+        Drives the false-positive metric surfaced by `GET /suggest/metrics`.
+        `reason` is hashed server-side, never stored raw. The feedback table
+        is the audit surface for this mutation (append-only, tenant-scoped).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chunk_id, feedback]
+              properties:
+                chunk_id: { type: integer }
+                feedback:
+                  type: string
+                  enum: [accept, dismiss]
+                reason:
+                  type: string
+                  description: Optional free-text reason (hashed before storage).
+                session:
+                  type: string
+      responses:
+        "200":
+          description: Feedback recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: recorded }
+        "400":
+          description: feedback must be 'accept' or 'dismiss'
+        "404":
+          description: No chunk with that id (refuses feedback on typos)
+        "501":
+          description: BRAIN_SUGGEST_ENABLED=false — surface disabled
+  /suggest/metrics:
+    get:
+      summary: False-positive rate over the feedback ledger (v1.9.0)
+      operationId: suggestMetrics
+      description: >
+        The v1.9 roadmap exit criterion, made queryable. Returns accept /
+        dismiss counts and the false-positive rate (dismisses / total) over the
+        feedback table. Optional `session` / `since` filter the window.
+        Tenant-scoped: a principal sees only their own feedback rows.
+      parameters:
+        - in: query
+          name: session
+          schema: { type: string }
+        - in: query
+          name: since
+          schema: { type: string }
+          description: ISO-8601 timestamp (RFC3339 or YYYY-MM-DD).
+      responses:
+        "200":
+          description: Metric totals + rates
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuggestMetrics" }
+        "501":
+          description: BRAIN_SUGGEST_ENABLED=false — surface disabled
   /ingest:
     post:
       summary: Structured ingest (v1.0 primary path)
@@ -1402,6 +1522,58 @@ components:
             items: { type: integer }
             minItems: 2
             maxItems: 2
+    SuggestionHit:
+      type: object
+      description: >
+        One anticipated chunk from `POST /suggest` (v1.9.0). The
+        `provenance.reason = "anticipated"` marker tells the consuming agent
+        this was NOT directly retrieved — the agent may ignore it.
+      properties:
+        id: { type: integer }
+        title: { type: string, nullable: true }
+        content: { type: string }
+        score:
+          type: number
+          format: float
+          description: Cosine-derived similarity in [0.0, 1.0].
+        domain: { type: string, nullable: true }
+        provenance:
+          type: object
+          properties:
+            reason:
+              type: string
+              enum: [anticipated]
+            session: { type: string, nullable: true }
+    SuggestTelemetry:
+      type: object
+      properties:
+        k: { type: integer }
+        excluded: { type: integer }
+        retrieved: { type: integer }
+        domain: { type: string, nullable: true }
+    SuggestMetrics:
+      type: object
+      description: >
+        The false-positive rate over the `/suggest/feedback` ledger — the
+        v1.9 roadmap exit criterion, made queryable.
+      properties:
+        total: { type: integer }
+        accepts: { type: integer }
+        dismisses: { type: integer }
+        accept_rate:
+          type: number
+          format: float
+          description: accepts / total (0.0 when total == 0).
+        false_positive_rate:
+          type: number
+          format: float
+          description: dismisses / total (0.0 when total == 0).
+        window:
+          type: object
+          nullable: true
+          properties:
+            since: { type: string, nullable: true }
+            session: { type: string, nullable: true }
     QueryPlan:
       type: object
       description: Reproducible effective query (GET /search?explain=true).
