@@ -2832,25 +2832,36 @@ async fn traverse_graph(
         // (`A --works_at--> B --ceo_of--> C`). The flat `traversal` array stays
         // for back-compat. Path string carries ids+rels as `id:rel:id:rel:id`.
         let valid_clause = if at_normalized.is_some() {
-            " AND (valid_at IS NULL OR valid_at <= ?3) \
-               AND (invalid_at IS NULL OR invalid_at > ?3)"
+            " AND (valid_at IS NULL OR valid_at <= ?at) \
+               AND (invalid_at IS NULL OR invalid_at > ?at)"
         } else {
             ""
         };
         // v1.7.0: kind filter. Prefix match when kind ends with `:` (e.g.
         // `causes:`), exact match otherwise. Applied to BOTH the seed and the
         // recursive step so the walk stays inside the requested edge type.
-        let kind_clause = match &kind_filter {
-            Some(k) if k.ends_with(':') => " AND r.relation_type LIKE ?4 ESCAPE '\\' ",
-            Some(_) => " AND r.relation_type = ?4 ",
+        // Use named placeholders that we'll substitute to the right ?N below.
+        let kind_clause_tmpl = match &kind_filter {
+            Some(k) if k.ends_with(':') => " AND r.relation_type LIKE ?kind ESCAPE '\\' ",
+            Some(_) => " AND r.relation_type = ?kind ",
             None => "",
         };
         // The seed clause references the columns without the `r.` alias.
-        let kind_seed_clause = match &kind_filter {
-            Some(k) if k.ends_with(':') => " AND relation_type LIKE ?4 ESCAPE '\\' ",
-            Some(_) => " AND relation_type = ?4 ",
+        let kind_seed_clause_tmpl = match &kind_filter {
+            Some(k) if k.ends_with(':') => " AND relation_type LIKE ?kind ESCAPE '\\' ",
+            Some(_) => " AND relation_type = ?kind ",
             None => "",
         };
+        // Compute the positional placeholder indices based on which optional
+        // params are bound. ?1 = eid (always), ?2 = depth (always, in the
+        // recursive step). After that: ?3 = at (if present), then the next
+        // index = kind (if present). This is the bug fix: previously kind was
+        // hardcoded to ?4, which only worked when `at` was also bound.
+        let at_ph = "?3";
+        let kind_ph = if at_normalized.is_some() { "?4" } else { "?3" };
+        let valid_clause = valid_clause.replace("?at", at_ph);
+        let kind_clause = kind_clause_tmpl.replace("?kind", kind_ph);
+        let kind_seed_clause = kind_seed_clause_tmpl.replace("?kind", kind_ph);
         let query = format!(
             "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
                 SELECT from_entity_id, to_entity_id, 1, \
@@ -5064,6 +5075,66 @@ mod tests {
             count_2020, 0,
             "edge should NOT be visible at 2020 (past invalid_at)"
         );
+    }
+
+    #[test]
+    fn kind_filter_restricts_traverse_to_matching_edge_type() {
+        // v1.7.0: the ?kind=<relation_type> filter must restrict the walk to
+        // edges of that type. This is a regression test for the placeholder-
+        // numbering bug: when `at` was None, kind was incorrectly hardcoded
+        // to ?4 (which didn't exist when only 3 params were bound) → 500.
+        // The fix computes kind_ph dynamically (?3 when at is None, ?4 when
+        // at is Some). This test exercises the at=None,kind=Some branch.
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES \
+              ('smoke_a','thing'),('smoke_b','thing'),('smoke_c','thing')",
+            [],
+        )
+        .unwrap();
+        let a: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='smoke_a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='smoke_b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let c: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='smoke_c'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // Two edges from a: works_at→b, linked_to→c. The kind filter must
+        // pick exactly one.
+        db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type) VALUES \
+              (?1, ?2, 'works_at'), (?1, ?3, 'linked_to')",
+            params![a, b, c],
+        )
+        .unwrap();
+        // The exact query fragment used when at=None, kind=Some('works_at'):
+        // kind_ph = ?3 (since at is None). The CTE binds [eid=?1, depth=?2,
+        // kind=?3]. Only the works_at edge must survive.
+        let sql = "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
+            SELECT from_entity_id, to_entity_id, 1, CAST(from_entity_id AS TEXT), CAST(relation_type AS TEXT) \
+            FROM relationships WHERE from_entity_id = ?1 AND relation_type = ?3 \
+            UNION ALL \
+            SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, t.path || '->' || CAST(r.from_entity_id AS TEXT), t.edge_path || '|' || r.relation_type \
+            FROM relationships r JOIN traversal t ON r.from_entity_id = t.to_id \
+            WHERE t.depth < ?2 AND r.relation_type = ?3 \
+        ) SELECT COUNT(*) FROM traversal";
+        let n: i64 = db
+            .query_row(sql, params![a, 2_i64, "works_at"], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "kind=works_at must select exactly 1 edge");
+        // And the other kind picks the other edge.
+        let n2: i64 = db
+            .query_row(sql, params![a, 2_i64, "linked_to"], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n2, 1, "kind=linked_to must select exactly 1 edge");
     }
 
     #[test]
