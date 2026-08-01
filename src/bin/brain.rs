@@ -126,6 +126,7 @@ fn main() {
         "ingest-dir" => cmd_ingest_dir(rest),
         "reconcile" => cmd_reconcile(rest),
         "resolve" => cmd_resolve(rest),
+        "undo-resolve" => cmd_undo_resolve(rest),
         "check-consistency" => cmd_check_consistency(rest),
         "source-delete" => cmd_source_delete(rest),
         "connect" => cmd_connect(rest),
@@ -178,6 +179,7 @@ usage:
   brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
   brain reconcile <path> [--kind vault] [--dry-run]
   brain resolve <new_id> <old_id>
+  brain undo-resolve <old_id> [<old_id> ...]
   brain check-consistency
   brain source-delete <id>
   brain connect github --app-id N --install-id N --key-file PATH \
@@ -867,6 +869,57 @@ fn cmd_resolve(args: &[String]) -> Result<(), String> {
     println!("  still retrievable via /recall?at=<before-now>)");
     Ok(())
 }
+
+/// `brain undo-resolve <old_id> [<old_id> ...]`: v1.8.0 — reverse prior
+/// supersession resolutions. The roadmap exit criterion's undo arm: "reject
+/// or undo them without retrieval regression." For each `old_id`, clears
+/// `valid_to` back to NULL + removes the `supersedes` link, restoring the
+/// chunk to current recall.
+fn cmd_undo_resolve(args: &[String]) -> Result<(), String> {
+    let (positionals, _flags) = parse_flags(args);
+    if positionals.is_empty() {
+        return Err("usage: brain undo-resolve <old_id> [<old_id> ...]".into());
+    }
+    let mut chunks: Vec<i64> = Vec::new();
+    for p in &positionals {
+        chunks.push(
+            p.parse()
+                .map_err(|_| format!("id must be an integer, got '{p}'"))?,
+        );
+    }
+    let body = serde_json::json!({ "old_chunks": chunks });
+    let resp = post(
+        &base_url(),
+        "/consolidate/undo",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let undone = v.get("undone").and_then(|n| n.as_u64()).unwrap_or(0);
+    let rejected = v.get("rejected").and_then(|a| a.as_array());
+    println!(
+        "undone: {undone} state change(s) across {} chunk(s)",
+        chunks.len()
+    );
+    println!("  chunks restored to current recall: {chunks:?}");
+    if let Some(r) = rejected {
+        if !r.is_empty() {
+            println!("  rejected: {r:?}");
+        }
+    }
+    Ok(())
+}
+
 /// `brain check-consistency`: v1.6.0 M5 — surface unresolved contradictions.
 /// Calls `/consolidate/propose` and reports the `unresolved_contradictions`
 /// list (contradicts links with no paired supersedes). Never auto-fixes;
@@ -902,6 +955,11 @@ fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
     println!("  exact_duplicate_groups : {dups}");
     println!("  subject_conflicts       : {conflicts}");
     println!("  unresolved_contradictions: {}", unresolved.len());
+    // v1.8.0: stale sources + near-duplicates.
+    let stale = v["stale_sources"].as_array().cloned().unwrap_or_default();
+    let near = v["near_duplicates"].as_array().cloned().unwrap_or_default();
+    println!("  stale_sources           : {}", stale.len());
+    println!("  near_duplicates         : {}", near.len());
     if unresolved.is_empty() {
         println!("  ✓ no unresolved contradictions");
     } else {
@@ -910,6 +968,24 @@ fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
             let from = pair[0].as_i64().unwrap_or(0);
             let to = pair[1].as_i64().unwrap_or(0);
             println!("    contradicts: chunk {from} <-> chunk {to}");
+        }
+    }
+    if !stale.is_empty() {
+        println!("  stale sources (re-ingest or `brain source-delete <id>`):");
+        for s in &stale {
+            let id = s["source_id"].as_i64().unwrap_or(0);
+            let chunks = s["chunk_count"].as_i64().unwrap_or(0);
+            let uri = s["uri"].as_str().unwrap_or("?");
+            println!("    source {id} ({chunks} chunks): {uri}");
+        }
+    }
+    if !near.is_empty() {
+        println!("  near-duplicates (resolve with `brain resolve <new> <old>`):");
+        for n in &near {
+            let a = n["chunk_a"].as_i64().unwrap_or(0);
+            let b = n["chunk_b"].as_i64().unwrap_or(0);
+            let sim = n["similarity"].as_f64().unwrap_or(0.0);
+            println!("    chunks {a} ≈ {b} (cosine {sim:.3})");
         }
     }
     Ok(())

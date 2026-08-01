@@ -3863,6 +3863,10 @@ async fn main_inner() -> Result<()> {
         // detection (no mutation); `apply` records operator-chosen typed links.
         .route("/consolidate/propose", post(handlers::consolidate::propose))
         .route("/consolidate/apply", post(handlers::consolidate::apply))
+        // v1.8.0 "Maintain": reverse prior supersession resolutions. The undo
+        // arm of the roadmap exit criterion ("reject or undo them without
+        // retrieval regression"). Clears valid_to + removes the supersedes link.
+        .route("/consolidate/undo", post(handlers::consolidate::undo))
         // v0.9.7 "Guard": verified webhook ingestion. The handler only verifies
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
@@ -6921,6 +6925,7 @@ Final paragraph after the rule.";
             // v0.9.8 Evidence
             "/consolidate/propose",
             "/consolidate/apply",
+            "/consolidate/undo",
             // v1.2.0 AuthN
             "/auth/refresh",
             "/auth/logout",

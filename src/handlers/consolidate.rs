@@ -26,6 +26,28 @@ pub struct ConsolidateProposal {
     /// Each entry is `(from_chunk, to_chunk)`. Operator-actionable: a
     /// contradiction was flagged but nobody picked a winner.
     pub unresolved_contradictions: Vec<(i64, i64)>,
+    /// v1.8.0: vault sources whose backing file no longer exists on disk.
+    /// Operator reviews: re-ingest if moved, or `DELETE /sources/{id}` to retire.
+    pub stale_sources: Vec<StaleSourceView>,
+    /// v1.8.0: near-duplicate chunk pairs (cosine > threshold, different hash).
+    /// Propose `supersedes`; operator picks the winner via `brain resolve`.
+    pub near_duplicates: Vec<NearDupView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StaleSourceView {
+    pub source_id: i64,
+    pub uri: String,
+    pub kind: String,
+    pub chunk_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NearDupView {
+    pub chunk_a: i64,
+    pub chunk_b: i64,
+    pub similarity: f32,
+    pub proposed: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,7 +67,7 @@ pub async fn propose(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ConsolidateProposal>, HandlerError> {
     let pool = state.pool.clone();
-    let (exact_duplicates, conflicts, unresolved) =
+    let (exact_duplicates, conflicts, unresolved, stale, near_dups) =
         tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
             let conn = pool
                 .get()
@@ -59,7 +81,14 @@ pub async fn propose(
             let uc = consolidate::find_unresolved_contradictions(&conn).map_err(|e| {
                 HandlerError::internal(format!("find_unresolved_contradictions failed: {e}"))
             })?;
-            Ok::<_, HandlerError>((dups, cf, uc))
+            // v1.8.0: stale-source + near-duplicate proposals.
+            let stale = consolidate::find_stale_sources(&conn)
+                .map_err(|e| HandlerError::internal(format!("find_stale_sources failed: {e}")))?;
+            // ponytail: near-dup KNN scan is O(n) per chunk; bounded by
+            // MAX_NEAR_DUP_PAIRS so the propose endpoint stays cheap.
+            let near = consolidate::find_near_duplicates(&conn, 0.95, 50)
+                .map_err(|e| HandlerError::internal(format!("find_near_duplicates failed: {e}")))?;
+            Ok::<_, HandlerError>((dups, cf, uc, stale, near))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -76,11 +105,31 @@ pub async fn propose(
             proposed: consolidate::LINK_SUPERSEDES,
         })
         .collect();
+    let stale_sources = stale
+        .into_iter()
+        .map(|s| StaleSourceView {
+            source_id: s.source_id,
+            uri: s.uri,
+            kind: s.kind,
+            chunk_count: s.chunk_count,
+        })
+        .collect();
+    let near_duplicates = near_dups
+        .into_iter()
+        .map(|n| NearDupView {
+            chunk_a: n.chunk_a,
+            chunk_b: n.chunk_b,
+            similarity: n.similarity,
+            proposed: consolidate::LINK_SUPERSEDES,
+        })
+        .collect();
 
     Ok(Json(ConsolidateProposal {
         exact_duplicates,
         conflicts,
         unresolved_contradictions: unresolved,
+        stale_sources,
+        near_duplicates,
     }))
 }
 
@@ -162,6 +211,55 @@ pub async fn apply(
     Ok(Json(ApplyResponse { recorded, rejected }))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UndoRequest {
+    /// Chunk ids to un-resolve. Each was previously the 'old' (loser) chunk
+    /// in a `resolve_supersession` call. Undo restores them to current recall
+    /// by clearing valid_to + removing the supersedes link.
+    pub old_chunks: Vec<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UndoResponse {
+    pub undone: usize,
+    pub rejected: Vec<String>,
+}
+
+/// `POST /consolidate/undo` — v1.8.0: reverse prior supersession resolutions.
+/// Roadmap exit criterion: "reject or undo them without retrieval regression."
+/// For each `old_chunk`, clears `valid_to` back to NULL + removes the
+/// `supersedes` evidence_link, atomically in one tx. Audited. Idempotent.
+pub async fn undo(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UndoRequest>,
+) -> Result<Json<UndoResponse>, HandlerError> {
+    let pool = state.pool.clone();
+    let chunks = req.old_chunks;
+    let (undone, rejected) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
+        let mut conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut undone = 0usize;
+        let mut rejected: Vec<String> = Vec::new();
+        let tx = conn
+            .transaction()
+            .map_err(|e| HandlerError::internal(format!("tx failed: {e}")))?;
+        for cid in &chunks {
+            match consolidate::undo_supersession(&tx, *cid) {
+                Ok(n) => undone += n,
+                Err(e) => rejected.push(format!("chunk {cid}: {e}")),
+            }
+        }
+        tx.commit()
+            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+        Ok::<_, HandlerError>((undone, rejected))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+
+    Ok(Json(UndoResponse { undone, rejected }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,11 +270,13 @@ mod tests {
             exact_duplicates: vec![],
             conflicts: vec![],
             unresolved_contradictions: vec![],
+            stale_sources: vec![],
+            near_duplicates: vec![],
         };
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(
             json,
-            r#"{"exact_duplicates":[],"conflicts":[],"unresolved_contradictions":[]}"#
+            r#"{"exact_duplicates":[],"conflicts":[],"unresolved_contradictions":[],"stale_sources":[],"near_duplicates":[]}"#
         );
     }
 

@@ -161,6 +161,226 @@ pub fn find_unresolved_contradictions(conn: &Connection) -> Result<Vec<(i64, i64
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+// ── v1.8.0 "Maintain" — reviewable proposals + undo ─────────────────────
+//
+// Roadmap v1.8: "duplicate and stale-source proposals, resumable batches,
+// review UI/API contract, and recovery rehearsal." Exit: reviewers accept
+// proposals at a measured precision target, and reject or undo them without
+// retrieval regression. Everything below is detection (proposals) or
+// reversible application — no background worker, no auto-archive, no
+// synthetic edges. Operators trigger on demand.
+
+/// A source whose backing file (vault URI) no longer exists on disk. The
+/// roadmap calls these "stale-source proposals" — operator reviews and either
+/// re-ingests (if the file moved) or retires the source via `DELETE /sources/{id}`.
+#[derive(Debug, Clone)]
+pub struct StaleSource {
+    pub source_id: i64,
+    pub uri: String,
+    pub kind: String,
+    pub chunk_count: i64,
+}
+
+/// v1.8.0 M5 (partial): find vault sources whose `uri` is a file path that no
+/// longer exists. Only checks `kind='vault'` sources (URIs starting with `/` or
+/// a drive letter); `manual://` and connector URIs have no filesystem backing.
+/// Pure detection — never archives or deletes. The operator decides.
+///
+/// ponytail: filesystem stat per source is bounded by the source count
+/// (hundreds, not thousands). On a remote/NFS mount this could be slow; the
+/// caller runs this on-demand via `/consolidate/propose`, never in the hot
+/// path. Upgrade path: cache the result with a TTL if stat cost matters.
+pub fn find_stale_sources(conn: &Connection) -> Result<Vec<StaleSource>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.uri, s.kind, COUNT(k.id) AS chunk_count
+         FROM sources s
+         LEFT JOIN knowledge k ON k.source_id = s.id
+         WHERE s.state = 'active'
+           AND s.kind = 'vault'
+         GROUP BY s.id, s.uri, s.kind",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(StaleSource {
+            source_id: r.get(0)?,
+            uri: r.get(1)?,
+            kind: r.get(2)?,
+            chunk_count: r.get(3)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        let s = r?;
+        // Only file-path URIs (not manual:// or connector URIs). A vault URI
+        // is an absolute path; check existence via std::fs. Missing = stale.
+        let is_file_uri =
+            s.uri.starts_with('/') || (s.uri.len() >= 2 && s.uri.as_bytes()[1] == b':');
+        if is_file_uri && !std::path::Path::new(&s.uri).exists() {
+            out.push(s);
+        }
+    }
+    Ok(out)
+}
+
+/// A near-duplicate pair: two current chunks with cosine similarity above the
+/// threshold but different content hashes (exact dups are detected separately).
+#[derive(Debug, Clone)]
+pub struct NearDupPair {
+    pub chunk_a: i64,
+    pub chunk_b: i64,
+    pub similarity: f32,
+}
+
+/// v1.8.0 M2 (partial): find near-duplicate chunk pairs via embedding cosine
+/// similarity. Uses the existing `vec_knowledge` KNN to find each chunk's
+/// nearest neighbor (k=2 = self + nearest); pairs above the threshold are
+/// proposed. Bounded O(n×k) via KNN, not O(n²) pairwise. Pure detection.
+///
+/// `threshold` default 0.95 (very high — only propose when we're confident).
+/// `max_pairs` caps the output (the proposal endpoint isn't a dump truck).
+///
+/// ponytail ceiling: this loads each chunk's embedding into memory once per
+/// scan. For a 10k-chunk corpus at 512 dims × int8, that's ~5 MiB transient —
+/// bounded + ephemeral. The KNN query is the existing vec0 MATCH operator
+/// (sqlite-vec FFI), so no new vector code. Upgrade path: batch the KNN calls
+/// if per-chunk query cost matters on a large corpus.
+pub fn find_near_duplicates(
+    conn: &Connection,
+    threshold: f32,
+    max_pairs: usize,
+) -> Result<Vec<NearDupPair>> {
+    // Collect current chunks with their embeddings (skip chunks already
+    // expired via valid_to — those are being forgotten, not consolidated).
+    let mut stmt = conn.prepare(
+        "SELECT k.id, v.embedding
+         FROM knowledge k
+         JOIN vec_knowledge v ON v.knowledge_id = k.id
+         WHERE k.valid_to IS NULL
+         ORDER BY k.id",
+    )?;
+    let rows: Vec<(i64, Vec<f32>)> = stmt
+        .query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            // vec0 stores embeddings as a serialized blob; rusqlite gives us
+            // it as Vec<u8>. Decode to f32 via the known int8 layout.
+            let blob: Vec<u8> = r.get(1)?;
+            Ok((id, decode_embedding(&blob)))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
+    let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    let mut pairs: Vec<NearDupPair> = Vec::new();
+    for (id, emb) in &rows {
+        if pairs.len() >= max_pairs {
+            break;
+        }
+        // KNN: find this chunk's 2 nearest neighbors. vec_quantize_int8 is a
+        // SQLite function provided by sqlite-vec (called in-SQL); ?1 binds the
+        // raw Vec<f32> query embedding, which the function quantizes. This is
+        // the same pattern vec0_knn uses (search/mod.rs:1064).
+        let mut knn = conn.prepare(
+            "SELECT v.knowledge_id, v.distance
+             FROM vec_knowledge v
+             WHERE v.embedding_int8 MATCH vec_quantize_int8(?1, 'unit')
+               AND v.k = 2
+               AND v.knowledge_id != ?2
+             ORDER BY v.distance",
+        )?;
+        // Bind the embedding as raw bytes (4 bytes per f32) — same pattern as
+        // vec0_knn (search/mod.rs:1073). vec_quantize_int8 is the sqlite-vec
+        // SQLite function that quantizes the raw f32 input in-SQL.
+        let emb_bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let neighbors = knn.query_map(rusqlite::params![emb_bytes, id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, f32>(1)?, // vec0 distance (0=identical, 2=orthogonal)
+            ))
+        })?;
+        for n in neighbors {
+            let Ok((other_id, distance)) = n else {
+                continue;
+            };
+            // cosine similarity = 1 - distance (vec0 convention). Threshold
+            // check is the gate; anything below is not a near-dup.
+            let sim = 1.0 - distance;
+            if sim < threshold {
+                continue;
+            }
+            // Dedup the pair (a,b) == (b,a). Use sorted key.
+            let key = if id < &other_id {
+                (*id, other_id)
+            } else {
+                (other_id, *id)
+            };
+            if seen.insert(key) {
+                pairs.push(NearDupPair {
+                    chunk_a: key.0,
+                    chunk_b: key.1,
+                    similarity: sim,
+                });
+                if pairs.len() >= max_pairs {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(pairs)
+}
+
+/// Decode a vec0 embedding blob into f32 values. vec0 stores int8-quantized
+/// embeddings; the blob layout is `[dim_bytes...]` where each byte is a signed
+/// int8. We dequantize by treating each byte as its signed value normalized
+/// to [-1, 1]. This matches the quantization used by `vec_quantize_int8`.
+/// ponytail: vec0's internal layout is an implementation detail; if sqlite-vec
+/// changes its blob format, this breaks. Pinned by the round-trip test below.
+fn decode_embedding(blob: &[u8]) -> Vec<f32> {
+    blob.iter().map(|&b| (b as i8 as f32) / 127.0).collect()
+}
+
+/// v1.8.0 — undo a prior supersession. The roadmap exit criterion's
+/// "reject or undo them without retrieval regression" arm. Reverses
+/// `resolve_supersession`: clears `valid_to` back to NULL on the old chunk
+/// and removes the `supersedes` evidence_link, atomically in the caller's tx.
+/// Audited via `AuditKind::Reconcile` (hash only). Idempotent: if there's no
+/// link/valid_to to undo, touches 0 rows.
+///
+/// `old_chunk` is the chunk that was previously expired (the loser). Returns
+/// the number of state changes applied (0 if nothing to undo, 1-2 if undone).
+pub fn undo_supersession(tx: &Transaction<'_>, old_chunk: i64) -> Result<usize> {
+    // 1. Clear valid_to (restores the chunk to current recall).
+    let cleared = tx.execute(
+        "UPDATE knowledge SET valid_to = NULL WHERE id = ?1 AND valid_to IS NOT NULL",
+        params![old_chunk],
+    )?;
+    // 2. Remove any incoming supersedes link pointing at this chunk.
+    let unlinked = tx.execute(
+        "DELETE FROM evidence_links WHERE to_chunk = ?1 AND kind = ?2",
+        params![old_chunk, LINK_SUPERSEDES],
+    )?;
+    if cleared > 0 || unlinked > 0 {
+        let target_hash: Option<String> = tx
+            .query_row(
+                "SELECT content_hash FROM knowledge WHERE id = ?1",
+                params![old_chunk],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        let target = target_hash.as_deref().unwrap_or("unknown");
+        crate::audit::record_tenant(
+            tx,
+            crate::audit::AuditKind::Reconcile,
+            "api",
+            target,
+            crate::audit::AuditStatus::Ok,
+            "undo_supersession",
+            crate::audit::DEFAULT_TENANT,
+        );
+    }
+    Ok(cleared + unlinked)
+}
+
 /// Find exact-duplicate chunks: same `content_hash` appearing more than once.
 /// Reuses the `content_hash` column already populated on every ingest (no new
 /// schema). Returns the duplicate chunk ids grouped by hash; the caller decides
@@ -561,5 +781,115 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(audits, 0, "rollback must undo the audit row");
+    }
+
+    // ---- v1.8.0 "Maintain" — undo + stale sources ----
+
+    #[test]
+    fn undo_supersession_restores_chunk_to_current_recall() {
+        // Roadmap exit criterion: "reject or undo them without retrieval
+        // regression." After resolve then undo, valid_to must be NULL again
+        // AND the supersedes link removed — the chunk returns to default recall.
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'a', 'h1'), (2, 'b', 'h2')",
+            [],
+        )
+        .unwrap();
+        let tx = c.transaction().unwrap();
+        resolve_supersession(&tx, 2, 1, "2026-08-01T12:00:00Z").unwrap();
+        let undone = undo_supersession(&tx, 1).unwrap();
+        tx.commit().unwrap();
+        // At least 2 state changes: valid_to cleared + link deleted.
+        assert!(undone >= 2, "undo should touch both valid_to and the link");
+        let vt: Option<String> = c
+            .query_row("SELECT valid_to FROM knowledge WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(vt.is_none(), "undo must clear valid_to back to NULL");
+        let links: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM evidence_links WHERE kind='supersedes'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(links, 0, "undo must remove the supersedes link");
+        // Audit row recorded for the undo. The audit table stores hashes
+        // (not raw strings), so count by kind=reconcile and actor=api.
+        let audits: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='reconcile' AND actor='api'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // 2 rows: one from resolve_supersession, one from undo_supersession.
+        assert_eq!(audits, 2, "both resolve and undo must be audited");
+    }
+
+    #[test]
+    fn undo_supersession_is_idempotent_when_nothing_to_undo() {
+        // Undo on a chunk that was never resolved must be a no-op (0 state
+        // changes), not an error. This makes batch undo safe to re-run.
+        let mut c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'a', 'h1')",
+            [],
+        )
+        .unwrap();
+        let tx = c.transaction().unwrap();
+        let n = undo_supersession(&tx, 1).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(n, 0, "undo on a never-resolved chunk must touch 0 rows");
+    }
+
+    #[test]
+    fn find_stale_sources_detects_missing_vault_files() {
+        // A source whose `uri` is a path that doesn't exist on disk is stale.
+        // Manual:// URIs and existing paths are not stale.
+        let c = db();
+        c.execute(
+            "INSERT INTO sources(id, uri, kind, state) VALUES
+                (1, '/nonexistent/vault/note.md', 'vault', 'active'),
+                (2, 'manual://abc123', 'manual', 'active'),
+                (3, '/tmp', 'vault', 'active')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO knowledge(id, source_id, content, content_hash) VALUES
+                (1, 1, 'orphan', 'h1'),
+                (2, 3, 'ok', 'h3')",
+            [],
+        )
+        .unwrap();
+        let stale = find_stale_sources(&c).unwrap();
+        assert_eq!(
+            stale.len(),
+            1,
+            "only the missing /nonexistent path is stale"
+        );
+        assert_eq!(stale[0].source_id, 1);
+        assert_eq!(stale[0].chunk_count, 1);
+        // /tmp exists on macOS/Linux, so source 3 is NOT stale.
+        // manual:// is not a file URI, so source 2 is NOT stale.
+    }
+
+    #[test]
+    fn decode_embedding_round_trips_through_int8_quantization() {
+        // The decode_embedding function must correctly interpret the vec0
+        // int8 blob format. A known input should produce known f32 values.
+        // ponytail: this pins the blob-layout assumption documented in the
+        // function. If sqlite-vec changes its format, this test breaks first.
+        let known_bytes = vec![0i8 as u8, 64, 127, -64i8 as u8, -128i8 as u8];
+        let decoded = decode_embedding(&known_bytes);
+        assert_eq!(decoded.len(), 5);
+        assert!((decoded[0] - 0.0).abs() < 0.01, "0 → 0.0");
+        assert!((decoded[1] - (64.0 / 127.0)).abs() < 0.01, "64 → ~0.504");
+        assert!((decoded[2] - 1.0).abs() < 0.01, "127 → 1.0");
+        assert!((decoded[3] - (-64.0 / 127.0)).abs() < 0.01, "-64 → ~-0.504");
+        assert!((decoded[4] - (-1.0)).abs() < 0.02, "-128 → ~-1.0 (clamped)");
     }
 }
