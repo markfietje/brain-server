@@ -107,9 +107,28 @@ pub struct RecallHit {
     pub conflict: Option<bool>,
 }
 
+/// v1.5.0 "Epistemic" — calibrated abstention. When the existing
+/// `HeuristicEstimator` reports `Recommendation::ClarifyQuery` (low overlap,
+/// low lexical density, weak gap), `/recall` returns `low_confidence` with an
+/// empty `hits` slice instead of shipping top-1 garbage. NOT a magic score
+// cutoff — abstention is driven by the calibrated multi-signal `Recommendation`,
+// which is what `IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.5
+// requires ("no fixed universal confidence threshold until held-out benefit
+// is demonstrated").
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallDecision {
+    /// Normal retrieval; `hits` carries the ranked results.
+    Ok,
+    /// Calibrated abstention. `hits` is empty; the consuming agent should
+    /// escalate (ask the user) or fall back to web search.
+    LowConfidence,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RecallResponse {
     pub hits: Vec<RecallHit>,
+    pub decision: RecallDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

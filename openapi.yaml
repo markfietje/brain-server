@@ -737,6 +737,16 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/RecallHit"
+                  decision:
+                    type: string
+                    enum: [ok, low_confidence]
+                    default: ok
+                    description: >
+                      v1.5.0 "Epistemic" — calibrated abstention. `low_confidence`
+                      is returned (with empty `hits`) when the quality estimator
+                      classifies the query as ClarifyQuery: too weak to support a
+                      claim. NOT a single-score cutoff; driven by overlap + gap +
+                      lexical density signals.
                   domain: { type: string, nullable: true }
                   domains_searched:
                     type: array

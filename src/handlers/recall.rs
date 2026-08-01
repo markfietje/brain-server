@@ -364,7 +364,22 @@ pub async fn recall(
         .clone()
         .or(routed)
         .unwrap_or_else(|| "global".to_string());
-    let hits = results_to_hits(tagged, req.provenance);
+
+    // v1.5.0 "Epistemic" – calibrated abstention. The existing
+    // `HeuristicEstimator` already classified this query via overlap + gap +
+    // lexical density into a `Recommendation`. When it says `ClarifyQuery`, the
+    // retrieval is too weak to support a claim — ship the empty-hits
+    // `low_confidence` envelope instead of top-1 garbage. NOT a magic score
+    // cutoff; abstention is driven by the calibrated multi-signal
+    // `Recommendation`, which is what the evidence-gated roadmap v1.5 requires
+    // ("no fixed universal confidence threshold until held-out benefit is
+    // demonstrated").
+    let decision = abstention_decision(tel.recommendation);
+    let hits = if matches!(decision, crate::handlers::RecallDecision::LowConfidence) {
+        Vec::new()
+    } else {
+        results_to_hits(tagged, req.provenance)
+    };
 
     let domains_searched = if req.provenance {
         let mut seen: Vec<String> = hits.iter().filter_map(|h| h.domain.clone()).collect();
@@ -377,6 +392,7 @@ pub async fn recall(
 
     Ok(Json(RecallResponse {
         hits,
+        decision,
         domain: Some(primary_domain),
         domains_searched,
         telemetry: req.provenance.then_some(tel),
@@ -386,6 +402,21 @@ pub async fn recall(
 // ---------------------------------------------------------------------------
 // Pure helpers (testable without AppState / StaticModel)
 // ---------------------------------------------------------------------------
+
+/// Map search results into the recall response shape, tagging every hit with
+/// its source domain (per-hit, for federated recall) and provenance source.
+/// Kept pure so it can be unit-tested without a model or database.
+fn abstention_decision(recommendation: Option<crate::Recommendation>) -> crate::handlers::RecallDecision {
+    // ponytail: the only signal that triggers abstention is the calibrated
+    // `ClarifyQuery` recommendation, which already encodes overlap + gap +
+    // lexical-density gates. A single-score threshold here would duplicate the
+    // estimator's job and drift from it; v1.6+ may add a learned threshold once
+    // the judged-query baseline (Carry-forward) is recorded.
+    match recommendation {
+        Some(crate::Recommendation::ClarifyQuery) => crate::handlers::RecallDecision::LowConfidence,
+        _ => crate::handlers::RecallDecision::Ok,
+    }
+}
 
 /// Map search results into the recall response shape, tagging every hit with
 /// its source domain (per-hit, for federated recall) and provenance source.
@@ -835,5 +866,32 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].provenance.is_some());
         assert_eq!(hits[0].provenance.as_ref().unwrap().vector_rank, Some(0));
+    }
+
+    // ---- v1.5.0 "Epistemic" — calibrated abstention ----
+
+    #[test]
+    fn abstention_returns_low_confidence_only_on_clarify_query() {
+        // The only signal that should trigger abstention is the calibrated
+        // ClarifyQuery recommendation. Return/RunPrf/RunReranker/IncreaseTopK
+        // all map to Ok — they produced (or could produce) usable hits.
+        use crate::Recommendation::*;
+        assert_eq!(
+            abstention_decision(Some(ClarifyQuery)),
+            crate::handlers::RecallDecision::LowConfidence
+        );
+        for r in [Return, RunPrf, RunReranker, IncreaseTopK] {
+            assert_eq!(
+                abstention_decision(Some(r)),
+                crate::handlers::RecallDecision::Ok,
+                "{r:?} should not abstain"
+            );
+        }
+        // Missing recommendation (pre-quality-estimator path) must NOT
+        // abstain — that would silently break legacy callers.
+        assert_eq!(
+            abstention_decision(None),
+            crate::handlers::RecallDecision::Ok
+        );
     }
 }
