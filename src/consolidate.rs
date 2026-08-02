@@ -248,24 +248,26 @@ pub fn find_near_duplicates(
     threshold: f32,
     max_pairs: usize,
 ) -> Result<Vec<NearDupPair>> {
-    // Collect current chunks with their embeddings. The vec0 virtual table
-    // stores quantized int8 (not directly SELECTable as f32); the source-of-
-    // truth f32 vectors live in the legacy `embeddings` table as JSON text.
-    // (See migration.rs:348 — vec0 is the search index, embeddings is truth.)
+    // Collect current chunks with their quantized embeddings straight from the
+    // vec0 index. v1.8.0 originally read the legacy `embeddings` JSON table,
+    // but that table froze at v0.9.0 — production ingests write only
+    // vec_knowledge, so the scan silently covered ~0% of chunks on a live DB.
+    // decode_embedding dequantizes the int8 blob back to f32; the quantization
+    // error is bounded and the 0.95 threshold tolerates it. The KNN query
+    // below re-quantizes via vec_quantize_int8 (same pattern as /recall).
     // Skip chunks already expired via valid_to (being forgotten, not consolidated).
     let mut stmt = conn.prepare(
-        "SELECT k.id, e.vector
+        "SELECT k.id, v.embedding_int8
          FROM knowledge k
-         JOIN embeddings e ON e.knowledge_id = k.id
+         JOIN vec_knowledge v ON v.knowledge_id = k.id
          WHERE k.valid_to IS NULL
          ORDER BY k.id",
     )?;
     let rows: Vec<(i64, Vec<f32>)> = stmt
         .query_map([], |r| {
             let id: i64 = r.get(0)?;
-            let v: String = r.get(1)?;
-            let f32_vec: Vec<f32> = serde_json::from_str(&v).unwrap_or_default();
-            Ok((id, f32_vec))
+            let blob: Vec<u8> = r.get(1)?;
+            Ok((id, decode_embedding(&blob)))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -330,17 +332,17 @@ pub fn find_near_duplicates(
     Ok(pairs)
 }
 
-/// Decode a vec0 embedding blob into f32 values. vec0 stores int8-quantized
-/// embeddings; the blob layout is `[dim_bytes...]` where each byte is a signed
-/// int8. We dequantize by treating each byte as its signed value normalized
-/// to [-1, 1].
+/// Decode a vec0 int8 embedding blob into f32 values. The blob layout is one
+/// signed int8 per dimension (raw bytes, no header — verified against
+/// sqlite-vec's `vec_int8` representation); we dequantize by treating each
+/// byte as its signed value normalized to [-1, 1].
 ///
-/// ponytail: NOT currently used — `find_near_duplicates` reads from the
-/// `embeddings` JSON table (the source-of-truth f32) instead. Kept as
-/// documentation of the vec0 blob format for a future path that reads vec0
-/// directly (avoiding the JSON deserialization cost). If sqlite-vec changes
-/// its blob format, the round-trip test below catches it.
-#[allow(dead_code)]
+/// ponytail: reads only the int8 vector, not the `embedding_bit` column, and
+/// dequantizes with the /127 scale sqlite-vec uses for 'unit' quantization.
+/// The nearest-neighbor query below re-quantizes this back to int8, so a small
+/// scale mismatch would only nudge the query vector, never the reported
+/// similarity (which comes from the vec0 distance). If sqlite-vec changes its
+/// blob format, the round-trip test below catches it.
 fn decode_embedding(blob: &[u8]) -> Vec<f32> {
     blob.iter().map(|&b| (b as i8 as f32) / 127.0).collect()
 }
@@ -526,9 +528,6 @@ mod tests {
              CREATE TABLE source_revisions(id INTEGER PRIMARY KEY, source_id INTEGER, revision TEXT, state TEXT);
              CREATE TABLE evidence_links(id INTEGER PRIMARY KEY, from_chunk INTEGER, to_chunk INTEGER, kind TEXT,
                 UNIQUE(from_chunk, to_chunk, kind));
-             -- v1.8.0: find_near_duplicates reads from the embeddings table
-             -- (source-of-truth f32 vectors as JSON text).
-             CREATE TABLE embeddings(knowledge_id INTEGER PRIMARY KEY, vector TEXT);
              -- v1.6.0: resolve_supersession calls audit::record_tenant, which
              -- is best-effort but needs the table to exist to write a row.
              CREATE TABLE audit_events(

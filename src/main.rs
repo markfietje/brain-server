@@ -5206,6 +5206,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn near_duplicates_cover_vec0_ingested_chunks_not_legacy_json_only() {
+        // v1.9.1 regression (C1): find_near_duplicates used to JOIN the legacy
+        // `embeddings` JSON table, which froze at v0.9.0 — production ingests
+        // write only vec_knowledge, so on a live DB the scan silently covered
+        // ~0% of chunks (2 of 8538 on the operator's DB). This test ingests
+        // two near-identical chunks through the REAL vec_quantize_int8 path
+        // (zero `embeddings` rows) and asserts the scan still proposes them.
+        let db = test_db();
+        // Two 512-dim unit-ish vectors, near-identical (cosine ≈ 0.999).
+        let v1: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
+        let v2: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01 + 0.001).sin()).collect();
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES
+                (1, 'near dup a', 'a'), (2, 'near dup b', 'b')",
+            [],
+        )
+        .unwrap();
+        for (kid, v) in [(1i64, &v1), (2, &v2)] {
+            db.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'test', datetime('now'))",
+                rusqlite::params![kid, v.as_bytes()],
+            )
+            .unwrap();
+        }
+        // The legacy JSON table stays empty — the scan must not depend on it.
+        let legacy: i64 = db
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy, 0, "no embeddings row written by modern ingests");
+        let pairs = crate::consolidate::find_near_duplicates(&db, 0.95, 10).unwrap();
+        assert_eq!(
+            pairs.len(),
+            1,
+            "the two near-identical chunks must be proposed as near-dups"
+        );
+        assert_eq!(pairs[0].chunk_a.min(pairs[0].chunk_b), 1);
+        assert_eq!(pairs[0].chunk_a.max(pairs[0].chunk_b), 2);
+        assert!(
+            pairs[0].similarity > 0.95,
+            "similarity {} must clear the threshold",
+            pairs[0].similarity
+        );
+    }
+
     // ── v1.9.0 "Suggest" integration tests ──────────────────────────────
     //
     // The pure-function tests in handlers/suggest.rs cover validation,
