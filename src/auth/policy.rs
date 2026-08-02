@@ -66,14 +66,6 @@ pub struct Principal {
     pub jti: String,
 }
 
-impl Principal {
-    /// True when this principal is the implicit superuser (no scopes = no
-    /// restrictions). Handlers short-circuit AuthZ on this.
-    pub fn is_superuser(&self) -> bool {
-        self.scopes.is_empty()
-    }
-}
-
 /// A parsed scope. `<action>:<team>/<domain>`. Lowercased on parse so
 /// comparison is case-insensitive (matches the `is_valid_domain` rule that
 /// domain names are lowercase).
@@ -124,13 +116,15 @@ impl Scope {
 }
 
 /// Convenience: a principal is authorized if any of its scopes grants the
-/// (action, team, domain) tuple, or if the principal is the implicit superuser
-/// (no scopes). Used by `handlers::authorize` which wraps this with the
-/// `Option<Principal>` back-compat path.
+/// (action, team, domain) tuple. Used by `handlers::authorize` which wraps this
+/// with the `Option<Principal>` back-compat path.
+///
+/// Audit G2 (v1.11.0): an authenticated principal with zero valid scopes is
+/// deny-all — a token that carried no grants grants nothing. Explicit
+/// superuser requires `admin:*/*` (the `*:*/*` scope). The `None`-principal
+/// path (opaque-token/no-JWT back-compat) stays superuser in
+/// `handlers::authorize`.
 pub fn is_authorized(principal: &Principal, action: Action, team: &str, domain: &str) -> bool {
-    if principal.is_superuser() {
-        return true;
-    }
     let team_lc = team.to_ascii_lowercase();
     let domain_lc = domain.to_ascii_lowercase();
     principal
@@ -201,15 +195,26 @@ mod tests {
     }
 
     #[test]
-    fn empty_scopes_principal_is_superuser() {
+    fn empty_scopes_principal_is_deny_all_not_superuser() {
+        // Audit G2 (v1.11.0): an authenticated principal with zero scopes must
+        // NOT be a superuser — a token that carried no grants grants nothing.
+        // Explicit superuser requires `admin:*/*` (the `*:*/*` scope).
         let p = Principal {
             sub: "op".to_string(),
             tenant: "global".to_string(),
             scopes: vec![],
             jti: String::new(),
         };
-        assert!(p.is_superuser());
-        assert!(is_authorized(&p, Action::Admin, "any", "any"));
+        assert!(!is_authorized(&p, Action::Read, "any", "any"));
+        assert!(!is_authorized(&p, Action::Admin, "any", "any"));
+        // The explicit superuser scope still works.
+        let admin = Principal {
+            sub: "op".to_string(),
+            tenant: "global".to_string(),
+            scopes: vec![Scope::parse("*:*/*").unwrap()],
+            jti: String::new(),
+        };
+        assert!(is_authorized(&admin, Action::Admin, "any", "any"));
     }
 
     #[test]
