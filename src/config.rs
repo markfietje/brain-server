@@ -58,8 +58,14 @@ pub const PROFILE_AIR_GAPPED: &str = "air-gapped";
 /// deployer explicitly sets `CORS_ORIGINS`. This prevents an accidental open
 /// CORS policy in production. Dev origins (localhost:3000/8080) are allowed
 /// because they are loopback.
+///
+/// Audit G4 (v1.11.0): `*` is never a valid CORS origin and is stripped from
+/// whatever source the list came from. The layer exact-matches origin strings
+/// (see `build_app`), so a literal `*` entry would otherwise silently match
+/// nothing — a deployer who writes `CORS_ORIGINS=*` deserves an error, not a
+/// config that looks permissive but grants zero cross-origin access.
 pub fn cors_origins() -> String {
-    match std::env::var("CORS_ORIGINS") {
+    let raw = match std::env::var("CORS_ORIGINS") {
         Ok(v) => v,
         Err(_) => {
             // Unset: lock down to loopback-only. The default list contains only
@@ -70,7 +76,18 @@ pub fn cors_origins() -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         }
-    }
+    };
+    sanitize_origins(&raw)
+}
+
+/// Trim, drop empties, and reject the literal `*` (never a valid CORS origin).
+/// Pure so the no-wildcard guard is unit-testable without mutating env.
+fn sanitize_origins(raw: &str) -> String {
+    raw.split(',')
+        .map(|o| o.trim())
+        .filter(|o| !o.is_empty() && *o != "*")
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// True for loopback origins (`http(s)://localhost`, `127.0.0.1`, `::1`).
@@ -336,5 +353,33 @@ impl QualityConfig {
             confidence_threshold: env_f32("QUALITY_CONFIDENCE_THRESHOLD", 0.6),
             rerank_threshold: env_f32("QUALITY_RERANK_THRESHOLD", 0.85),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_origins_drops_wildcard_and_empties() {
+        // Audit G4 (v1.11.0): `*` must never survive into the allow-list, and
+        // stray commas/whitespace produce no empty entries.
+        assert_eq!(sanitize_origins("*"), "");
+        assert_eq!(sanitize_origins("*,https://a.test"), "https://a.test");
+        assert_eq!(
+            sanitize_origins(" https://a.test , * , https://b.test "),
+            "https://a.test,https://b.test"
+        );
+        assert_eq!(sanitize_origins("https://a.test"), "https://a.test");
+        assert_eq!(sanitize_origins(""), "");
+        assert_eq!(sanitize_origins(","), "");
+    }
+
+    #[test]
+    fn loopback_origins_are_recognized() {
+        assert!(is_loopback_origin("http://localhost:3000"));
+        assert!(is_loopback_origin("http://127.0.0.1:8765"));
+        assert!(is_loopback_origin("https://localhost"));
+        assert!(!is_loopback_origin("https://example.com"));
     }
 }
