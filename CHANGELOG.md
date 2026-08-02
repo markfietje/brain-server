@@ -12,6 +12,42 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-08-02
+
+**Bug-fix release on top of v1.9.0** (post-release security + correctness audit
+of v1.7.0–v1.9.0). Three fixes, no new features.
+
+### Fixed
+
+- **Near-duplicate detection now covers the live corpus** (`consolidate.rs`).
+  v1.8.0's `find_near_duplicates` JOINed the legacy `embeddings` JSON table,
+  which froze at v0.9.0 — production ingests write only `vec_knowledge`, so on
+  the live DB the scan silently covered 2 of 8538 chunks. It now reads
+  `embedding_int8` from the vec0 index and dequantizes via the (previously
+  dead) `decode_embedding` helper. Regression test ingests two near-identical
+  chunks through the real `vec_quantize_int8` path (zero `embeddings` rows)
+  and asserts they are proposed.
+- **Suggest feedback is last-wins per `(chunk_id, session)`** (`suggest.rs`).
+  The v1.9.0 ledger was append-only with no idempotency: a client retry or
+  replay recorded duplicate rows, poisoning the false-positive metric that is
+  the v1.9 roadmap exit criterion. A unique expression index on
+  `(chunk_id, COALESCE(session, ''))` + an upsert make feedback one signal per
+  surfaced suggestion per session; a changed mind overwrites instead of
+  double-counting. Pre-existing duplicates are deduped before the index is
+  created. Schema stamp 1.9.0 → 1.9.1.
+- **Removed misleading dead code in `build_explanation_paths`** (`main.rs`).
+  The v1.7.0 doc comment claimed intermediate node names were "looked up in a
+  single batched query" — no query ran and the collected id set was never used.
+  The comment is now honest (intermediates surface as ids; agents resolve via
+  `/get/{id}`) and the dead collection is deleted.
+
+### Notes
+
+- Feedback/metrics tenant scoping stays row-level (`tenant_id`), not a full
+  `authorize()` gate, and `/suggest` returns content without principal scoping
+  — both are safe in the current single-tenant deployment and are carried
+  forward as v2.0 multi-tenancy work (the audit flagged them, not this fix).
+
 ## [1.9.0] — 2026-08-02
 
 **"Suggest" — opt-in, non-interrupting anticipation (light cut).**

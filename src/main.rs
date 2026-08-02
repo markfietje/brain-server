@@ -2994,31 +2994,13 @@ fn traverse_row_mapper(
 /// reconstruction from the CTE output; a true path-aware walk would carry
 /// (entity, rel) tuples through the recursion. That's a larger change; this is
 /// the smallest faithful explanation that reuses the existing bounded BFS and
-/// stays inside MAX_VISITED. The intermediate node names are looked up in a
-/// single batched query so this stays O(paths), not O(paths × depth).
+/// stays inside MAX_VISITED. Intermediate node names are NOT resolved here —
+/// hops surface the seed name, the leaf name, and every id; a consuming agent
+/// that needs an intermediate's name calls `/get/{id}` on the id.
 fn build_explanation_paths(rows: &[serde_json::Value]) -> Vec<serde_json::Value> {
     if rows.is_empty() {
         return Vec::new();
     }
-    // Collect every distinct intermediate entity id we need to resolve. The
-    // path string is `id->id->...`; parse out the integers.
-    let mut needed_ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
-    for row in rows {
-        if let Some(path) = row.get("path").and_then(|v| v.as_str()) {
-            for part in path.split("->") {
-                if let Ok(id) = part.parse::<i64>() {
-                    needed_ids.insert(id);
-                }
-            }
-        }
-    }
-    // We can't run SQL here (no connection); the caller already has the leaf
-    // and from_entity names on the row. The intermediate ids in `path` are
-    // best-effort: we surface them as ids in the explanation, with names where
-    // the row already provides them (the from_entity + leaf entity fields).
-    // This is the honest "faithful but bounded" explanation: the consuming
-    // agent sees the structure (which hops, which relations) without us
-    // pretending to resolve every intermediate name in a separate query.
     rows.iter()
         .map(|row| {
             let path_str = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
