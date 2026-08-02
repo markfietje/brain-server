@@ -741,12 +741,44 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
-    // Bumped once per release that changes this function. v1.5–v1.8 were light
-    // cuts with no schema change, so the stamp stayed at 1.4.0; v1.9 adds the
-    // suggest_feedback table; v1.9.1 adds the dedup unique index.
+    // ── v1.10.0 "Procedural": ordered steps + memory classification. ─────
+    // Repurpose the v1.4.0-reserved `knowledge.node_kind` column to carry the
+    // memory classification (fact/procedure/step/decision). v1.4 reserved it
+    // as 'event'/'session'/'topic' for a worker that never shipped; v1.10 makes
+    // it the Mem0-style `memory_kind` — but populated deterministically
+    // (keyword router), not via cloud LLM. Legacy 'event' rows become 'fact'
+    // (every prior chunk is declarative). No data loss; backward-compatible.
+    db.execute_batch(
+        "UPDATE knowledge SET node_kind = 'fact'
+         WHERE node_kind = 'event' OR node_kind IS NULL OR node_kind = '';",
+    )?;
+    // Ordered-step support on the existing evidence_links table: a `next_step`
+    // edge with an explicit step_index. Reuses the typed-edge infra (no new
+    // table) — Graphiti's NextEpisodeEdge pattern at chunk level.
+    let has_step_index: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('evidence_links') WHERE name='step_index'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_step_index {
+        db.execute(
+            "ALTER TABLE evidence_links ADD COLUMN step_index INTEGER",
+            [],
+        )?;
+    }
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.9.1')
-         ON CONFLICT(key) DO UPDATE SET value = '1.9.1';",
+        "CREATE INDEX IF NOT EXISTS idx_evidence_links_step
+         ON evidence_links(step_index) WHERE step_index IS NOT NULL;",
+        [],
+    )?;
+
+    // Bumped once per release that changes this function.
+    db.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.10.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.10.0';",
         [],
     )?;
 

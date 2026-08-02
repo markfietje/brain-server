@@ -133,6 +133,10 @@ fn main() {
         "suggest" => cmd_suggest(rest),
         "suggest-feedback" => cmd_suggest_feedback(rest),
         "suggest-metrics" => cmd_suggest_metrics(rest),
+        // v1.10.0 "Procedural": procedural memory + deterministic categorization.
+        "procedure" => cmd_procedure(rest),
+        "classify" => cmd_classify(rest),
+        "evaluate" => cmd_evaluate(rest),
         "connect" => cmd_connect(rest),
         "sync" => cmd_sync(rest),
         "connector-status" => cmd_connector_status(rest),
@@ -189,6 +193,9 @@ usage:
   brain suggest "<context>" [--exclude id[,id...]] [--k N] [--domain D] [--session S]
   brain suggest-feedback <chunk_id> accept|dismiss [--reason "..."] [--session S]
   brain suggest-metrics [--session S] [--since DATE]
+  brain procedure <title> [--step "title: content" ...] [--domain D]
+  brain classify "<text>"
+  brain evaluate <decision_id> --var name=value [--var name=value ...]
   brain connect github --app-id N --install-id N --key-file PATH \
                       --repo owner/repo [...] [--webhook-secret-file PATH]
   brain sync [github] [--config PATH]
@@ -1220,6 +1227,189 @@ fn cmd_suggest_metrics(args: &[String]) -> Result<(), String> {
         let since = w.get("since").and_then(|s| s.as_str()).unwrap_or("-");
         let session = w.get("session").and_then(|s| s.as_str()).unwrap_or("-");
         println!("  window              : since={since} session={session}");
+    }
+    Ok(())
+}
+
+// ── v1.10.0 "Procedural": procedural-memory + categorization CLI ──────────
+
+/// `brain procedure <title> [--step "title: content" ...] [--domain D]`:
+/// ingest a procedure with ordered steps. Each `--step` is `"title: content"`
+/// (colon-separated); step order = flag order. The procedure root + steps are
+/// stored as `procedure`/`step`-kind chunks linked by `next_step` edges.
+fn cmd_procedure(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let title = require_positional(&positionals, "title")?;
+    if title.trim().is_empty() {
+        return Err("title must be non-empty".into());
+    }
+    let raw_steps = multi_flag(args, "step");
+    let mut steps: Vec<serde_json::Value> = Vec::new();
+    for (i, s) in raw_steps.iter().enumerate() {
+        let (step_title, step_content) = s
+            .split_once(':')
+            .ok_or_else(|| format!("--step {i} must be 'title: content' (colon-separated)"))?;
+        let t = step_title.trim();
+        let c = step_content.trim();
+        if t.is_empty() || c.is_empty() {
+            return Err(format!("--step {i}: title and content must be non-empty"));
+        }
+        steps.push(serde_json::json!({ "title": t, "content": c }));
+    }
+    let domain = flags.get("domain").and_then(|o| o.clone());
+    // Default content: the title itself (a procedure with no body, just steps).
+    let content = title.clone();
+    let mut body = serde_json::json!({ "title": title, "content": content });
+    if !steps.is_empty() {
+        body["steps"] = serde_json::json!(steps);
+    }
+    if let Some(d) = domain {
+        body["domain"] = serde_json::json!(d);
+    }
+    let resp = post(
+        &base_url(),
+        "/procedure",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let id = v["id"].as_i64().unwrap_or(0);
+    let step_ids = v["step_ids"].as_array().cloned().unwrap_or_default();
+    println!("created procedure {id} with {} step(s)", step_ids.len());
+    if !step_ids.is_empty() {
+        let ids: Vec<i64> = step_ids.iter().filter_map(|s| s.as_i64()).collect();
+        println!("  steps: {ids:?}");
+        println!("  retrieve with: brain get {} (root) or the step ids", id);
+    }
+    Ok(())
+}
+
+/// `brain classify "<text>"`: deterministic categorization. No LLM, no cloud.
+/// Returns the category + confidence + matched keywords. The premium Mem0
+/// feature, free and local.
+fn cmd_classify(args: &[String]) -> Result<(), String> {
+    let (positionals, _flags) = parse_flags(args);
+    let text = require_positional(&positionals, "text")?;
+    if text.trim().is_empty() {
+        return Err("text must be non-empty".into());
+    }
+    let body = serde_json::json!({ "text": text });
+    let resp = post(
+        &base_url(),
+        "/classify",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let cat = v["result"]["category"].as_str().unwrap_or("?");
+    let conf = v["result"]["confidence"].as_f64().unwrap_or(0.0);
+    let kws = v["result"]["matched_keywords"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    println!("category   : {cat}");
+    println!("confidence : {conf:.3}");
+    if !kws.is_empty() {
+        let kws: Vec<String> = kws
+            .iter()
+            .filter_map(|k| k.as_str().map(|s| s.to_string()))
+            .collect();
+        println!("matched    : {kws:?}");
+    } else {
+        println!("matched    : (none — fell through to 'general')");
+    }
+    let cats = v["categories"].as_array().cloned().unwrap_or_default();
+    if !cats.is_empty() {
+        let cats: Vec<String> = cats
+            .iter()
+            .filter_map(|c| c.as_str().map(|s| s.to_string()))
+            .collect();
+        println!("taxonomy   : {cats:?}");
+    }
+    Ok(())
+}
+
+/// `brain evaluate <decision_id> --var name=value [--var ...]`: evaluate a
+/// stored decision rule against numeric input variables. Returns the matched
+/// branch (or default) + the citation chain. The consultant's reasoning core,
+/// deterministic + auditable.
+fn cmd_evaluate(args: &[String]) -> Result<(), String> {
+    let (positionals, _flags) = parse_flags(args);
+    let id_str = require_positional(&positionals, "decision_id")?;
+    let id: i64 = id_str
+        .parse()
+        .map_err(|_| format!("decision_id must be an integer, got '{id_str}'"))?;
+    let vars = multi_flag(args, "var");
+    let mut variables = serde_json::Map::new();
+    for v in &vars {
+        let (name, val_str) = v
+            .split_once('=')
+            .ok_or_else(|| format!("--var must be name=value, got '{v}'"))?;
+        let val: f64 = val_str
+            .trim()
+            .parse()
+            .map_err(|_| format!("--var value must be numeric, got '{val_str}'"))?;
+        variables.insert(name.trim().to_string(), serde_json::json!(val));
+    }
+    let body = serde_json::json!({ "variables": variables });
+    let path = format!("/decision/{id}/evaluate");
+    let resp = post(
+        &base_url(),
+        &path,
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status == 404 {
+        return Err(format!("no decision rule with id {id}"));
+    }
+    if resp.status == 400 {
+        return Err(format!(
+            "stored content for chunk {id} is not a valid decision rule JSON"
+        ));
+    }
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let result = v["result"].as_str().unwrap_or("?");
+    let used_default = v["used_default"].as_bool().unwrap_or(false);
+    let matched = v["matched_condition"].as_str();
+    let citation = v["citation"].as_i64();
+    println!("result     : {result}");
+    if used_default {
+        println!("  (no branch matched — used the rule's default)");
+    } else if let Some(m) = matched {
+        println!("  matched   : {m}");
+    }
+    if let Some(c) = citation {
+        println!("  citation  : chunk {c} (verify with: brain verify {c} ...)");
     }
     Ok(())
 }

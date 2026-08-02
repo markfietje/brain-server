@@ -26,6 +26,7 @@ pub mod consolidate;
 pub mod domains;
 pub mod forget;
 pub mod ingest;
+pub mod procedure;
 pub mod recall;
 pub mod sources;
 pub mod suggest;

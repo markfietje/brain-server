@@ -62,6 +62,7 @@ mod domain_router;
 mod handlers;
 mod integrity;
 mod linker;
+mod procedural;
 mod temporal;
 // v1.4.0 "Calibrate" M3: TRACE typed-edge prefixes + validity-aware traversal.
 mod search;
@@ -3850,6 +3851,19 @@ async fn main_inner() -> Result<()> {
         .route("/suggest", post(handlers::suggest::suggest))
         .route("/suggest/feedback", post(handlers::suggest::feedback))
         .route("/suggest/metrics", get(handlers::suggest::metrics))
+        // v1.10.0 "Procedural": procedural memory + deterministic categorization
+        // + decision evaluation. `POST /procedure` ingests an ordered runbook;
+        // `GET /procedure/{id}/steps` returns the ordered chain; `POST /classify`
+        // categorizes text deterministically (Mem0's premium, free); `POST
+        // /decision/{id}/evaluate` runs a stored decision rule against input vars.
+        // All deterministic — no LLM, no cloud, no tokens.
+        .route("/procedure", post(handlers::procedure::create))
+        .route("/procedure/{id}/steps", get(handlers::procedure::steps))
+        .route("/classify", post(handlers::procedure::classify))
+        .route(
+            "/decision/{id}/evaluate",
+            post(handlers::procedure::evaluate),
+        )
         // v0.9.8 "Evidence" M2.3: reviewable consolidation. `propose` is pure
         // detection (no mutation); `apply` records operator-chosen typed links.
         .route("/consolidate/propose", post(handlers::consolidate::propose))
@@ -7060,12 +7074,13 @@ Final paragraph after the rule.";
         // v0.9.9: schema_version is recorded after migration and readable via
         // the shared helper. The rehearsal tool relies on this to refuse a
         // migrate-down without --force. v1.9.0 bumped this from 1.4.0 (the
-        // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumps
-        // it again for the feedback dedup index.
+        // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumped
+        // it for the feedback dedup index; v1.10.0 bumps it for the Procedural
+        // node_kind + step_index schema.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_9_1),
-            "schema_version must be recorded as 1.9.1 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_10_0),
+            "schema_version must be recorded as 1.10.0 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
@@ -7106,6 +7121,43 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(idx_exists, 1, "idx_suggest_feedback_tenant_ts must exist");
+
+        // v1.10.0 "Procedural": evidence_links gained step_index; legacy
+        // 'event' node_kind rows were relabeled to 'fact'.
+        let el_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(evidence_links)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            el_cols.contains("step_index"),
+            "v1.10.0: evidence_links.step_index column must exist after migration"
+        );
+        // Legacy node_kind relabel: insert an 'event' row, run the migration's
+        // UPDATE, confirm it became 'fact'. (We can't re-run the whole migration
+        // here, but we can assert the relabel SQL does the right thing on a row.)
+        db.execute(
+            "INSERT INTO knowledge(content, content_hash, node_kind)
+             VALUES ('legacy event row', 'ler-1', 'event')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE knowledge SET node_kind = 'fact'
+             WHERE node_kind = 'event' OR node_kind IS NULL OR node_kind = '';",
+            [],
+        )
+        .unwrap();
+        let kind: String = db
+            .query_row(
+                "SELECT node_kind FROM knowledge WHERE content_hash = 'ler-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "fact", "legacy 'event' rows must relabel to 'fact'");
     }
 
     /// Assert every route registered in `build_app` is documented in
@@ -7177,6 +7229,11 @@ Final paragraph after the rule.";
             "/suggest",
             "/suggest/feedback",
             "/suggest/metrics",
+            // v1.10.0 Procedural
+            "/procedure",
+            "/procedure/{id}/steps",
+            "/classify",
+            "/decision/{id}/evaluate",
             // v0.9.7 Guard
             "/webhooks/{kind}",
             "/audit",

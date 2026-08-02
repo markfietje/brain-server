@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.9.1
-  x-api-version: "1.9.1"
+  version: 1.10.0
+  x-api-version: "1.10.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -870,6 +870,150 @@ paths:
           description: Empty or oversized claim
         "404":
           description: No chunk with that id
+  /procedure:
+    post:
+      summary: Ingest a procedure with ordered steps (v1.10.0 "Procedural")
+      operationId: createProcedure
+      description: >
+        Ingests a procedure root chunk (node_kind='procedure') + each ordered
+        step as its own chunk in ONE transaction. Steps are linked to the root
+        via `next_step` edges carrying an explicit `step_index`. A step may
+        carry a decision rule (JSON in content, node_kind='decision'). Up to
+        100 steps. Embeddings are written best-effort after the commit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                title: { type: string, description: Non-empty, max 200 chars. }
+                content:
+                  type: string
+                  description: Procedure root body (overview / when-to-use).
+                steps:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [title, content]
+                    properties:
+                      title: { type: string }
+                      content: { type: string }
+                      is_decision:
+                        type: boolean
+                        default: false
+                        description: Store this step as a decision rule (JSON in content).
+                domain:
+                  type: string
+                  pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+      responses:
+        "200":
+          description: Procedure created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, description: Root chunk id. }
+                  status: { type: string, example: created }
+                  step_ids: { type: array, items: { type: integer } }
+        "400": { description: Empty/oversized title, content, step, or too many steps }
+        "413": { description: Content exceeds MAX_CONTENT bytes }
+  /procedure/{id}/steps:
+    get:
+      summary: Ordered step chain for a procedure (v1.10.0)
+      operationId: procedureSteps
+      description: >
+        Returns the root + its `next_step` children ordered by `step_index`.
+        Each step exposes its `memory_kind` (step/decision, normalized via
+        the forward-compat parse: unknown values fall back to fact).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Ordered steps
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  procedure_id: { type: integer }
+                  title: { type: string, nullable: true }
+                  content: { type: string, nullable: true }
+                  steps:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StepView"
+        "404": { description: No procedure with that id }
+  /classify:
+    post:
+      summary: Deterministic categorization (v1.10.0, Mem0's premium free)
+      operationId: classify
+      description: >
+        Keyword-router categorization — no LLM, no cloud, fully auditable.
+        Returns the winning category, confidence, the matched keywords, and
+        the full taxonomy. `general` (confidence 0.0) when no keyword clears
+        the threshold.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, description: Max MAX_CONTENT bytes. }
+      responses:
+        "200":
+          description: Classification
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result: { $ref: "#/components/schemas/CategoryResult" }
+                  categories: { type: array, items: { type: string } }
+        "400": { description: Empty text }
+        "413": { description: Text exceeds MAX_CONTENT bytes }
+  /decision/{id}/evaluate:
+    post:
+      summary: Evaluate a stored decision rule (v1.10.0)
+      operationId: evaluateDecision
+      description: >
+        Loads the decision rule stored as JSON content on the `decision`-kind
+        chunk `id` and evaluates it against numeric input variables. First
+        matching branch wins; otherwise the rule's default_branch. Pure rule
+        engine — no LLM.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                variables:
+                  type: object
+                  additionalProperties: { type: number }
+                  description: 'Numeric inputs, e.g. {"employee_count": 25}.'
+      responses:
+        "200":
+          description: Evaluation outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionOutcome"
+        "404": { description: No decision rule with that id }
+        "400": { description: Stored content is not valid decision JSON }
   /suggest:
     post:
       summary: Opt-in anticipation pull (v1.9.0 "Suggest")
@@ -1517,11 +1661,42 @@ components:
           description: >
             `[start, end)` byte offsets within chunk `content`. Capped at 100;
             further matches are not reported but do not change `supported`.
-          items:
-            type: array
-            items: { type: integer }
-            minItems: 2
-            maxItems: 2
+            items:
+              type: array
+              items: { type: integer }
+              minItems: 2
+              maxItems: 2
+    StepView:
+      type: object
+      description: One ordered step of a procedure (`GET /procedure/{id}/steps`).
+      properties:
+        step_index: { type: integer }
+        id: { type: integer }
+        title: { type: string, nullable: true }
+        content: { type: string }
+        memory_kind:
+          type: string
+          enum: [fact, procedure, step, decision]
+          description: >
+            Normalized node_kind of the step chunk. Unknown stored values fall
+            back to `fact` (forward-compat parse).
+    CategoryResult:
+      type: object
+      description: Deterministic classification result from `POST /classify`.
+      properties:
+        category:
+          type: string
+          enum: [technology, business_process, compliance, finance, vendor, assessment, infrastructure, general]
+        confidence: { type: number, format: float, description: In [0.0, 1.0]. }
+        matched_keywords: { type: array, items: { type: string } }
+    DecisionOutcome:
+      type: object
+      description: Result of evaluating a decision rule (`POST /decision/{id}/evaluate`).
+      properties:
+        result: { type: string }
+        matched_condition: { type: string, nullable: true }
+        citation: { type: integer, nullable: true, description: Chunk id justifying this branch. }
+        used_default: { type: boolean }
     SuggestionHit:
       type: object
       description: >
