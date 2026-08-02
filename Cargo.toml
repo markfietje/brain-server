@@ -28,7 +28,12 @@ multivec = []
 # Core Embedding
 model2vec-rs = "0.1.4"
 
-# Database Stack - Verified Absolute Latest
+# Database Stack - deliberately pinned (see audit G5, v1.11.0). "Absolute
+# latest" was aspirational, not true: rusqlite 0.40.1 exists but we stay on
+# 0.38.0 (locked) — a bump is behavior-affecting (savepoint API changed to
+# `savepoint_with_name(&mut self)`, per Agent 27 research) and out of scope
+# for a comment-cleanup release. sqlite-vec "0.1.6" resolves to 0.1.9 in the
+# lock; both stay. Bump versions deliberately, in their own commit.
 rusqlite = { version = "0.38.0", features = ["bundled"] }
 sqlite-vec = "0.1.6"
 r2d2 = "0.8.10"
@@ -94,7 +99,9 @@ jsonwebtoken = { version = "10.4", default-features = false, features = ["use_pe
 # transitive dep of `jsonwebtoken` when `rust_crypto` is on; declared directly
 # so the key-management code doesn't silently break if jsonwebtoken swaps backends.
 rsa = "0.9"
-# Random key generation (`brain key generate`) + UUIDv7 `jti` minting (v1.2.0).
+# Random key generation (`brain key generate`) + UUIDv4 `jti` minting (v1.2.0;
+# `Uuid::new_v4()` — the comment previously said UUIDv7, the code never used
+# it. Corrected in audit G5, v1.11.0).
 # `getrandom` feature is the only one needed; `serde`/`v4` already on `uuid`.
 rand = "0.8"
 # Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
