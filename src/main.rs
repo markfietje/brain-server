@@ -5260,22 +5260,28 @@ mod tests {
     // smallest checks that fail if the migration or the queries drift.
 
     #[test]
-    fn suggest_feedback_table_is_append_only_and_queryable() {
+    fn suggest_feedback_ledger_is_queryable_and_tenant_scoped() {
         // The handler's INSERT + the metrics GROUP BY against real rows.
+        // Each (chunk_id, session) key carries one signal (v1.9.1 dedup), so
+        // the sessions below are distinct — the counts exercise the exact
+        // GROUP BY shape the metrics handler issues.
         let db = test_db();
         let now = 1722500000i64;
-        // 3 accepts, 2 dismisses across two sessions, one tenant.
-        for &(fb, sess) in &[
+        // 3 accepts, 2 dismisses across five sessions, one tenant.
+        for (i, &(fb, sess)) in [
             ("accept", "s1"),
-            ("accept", "s1"),
-            ("dismiss", "s1"),
             ("accept", "s2"),
-            ("dismiss", "s2"),
-        ] {
+            ("dismiss", "s3"),
+            ("accept", "s4"),
+            ("dismiss", "s5"),
+        ]
+        .iter()
+        .enumerate()
+        {
             db.execute(
                 "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
                  VALUES (1, ?1, NULL, ?2, ?3, 'default')",
-                params![fb, now, sess],
+                params![fb, now + i as i64, sess],
             )
             .unwrap();
         }
@@ -5306,16 +5312,16 @@ mod tests {
         assert_eq!(total, 5);
         assert!((dismisses as f32 / total as f32 - 0.4).abs() < 1e-6);
 
-        // Session-scoped query (the handler's optional filter).
-        let s1_dismisses: i64 = db
+        // Session-scoped query (the handler's optional filter). s3 is dismiss.
+        let s3_dismisses: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM suggest_feedback
-                 WHERE tenant_id = 'default' AND session = 's1' AND feedback = 'dismiss'",
+                 WHERE tenant_id = 'default' AND session = 's3' AND feedback = 'dismiss'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(s1_dismisses, 1);
+        assert_eq!(s3_dismisses, 1);
 
         // Tenant isolation: a second tenant's rows are invisible to the first.
         db.execute(
@@ -5335,6 +5341,57 @@ mod tests {
             default_total, 5,
             "other-tenant row must not leak into default"
         );
+    }
+
+    #[test]
+    fn suggest_feedback_last_wins_per_chunk_session() {
+        // v1.9.1 (S2): the handler's upsert + unique index must make feedback
+        // one-signal-per-(chunk, session). A replay or a changed mind updates
+        // the existing row instead of appending, so the false-positive metric
+        // can't be poisoned by duplicate rows.
+        let db = test_db();
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'x', 'h1')",
+            [],
+        )
+        .unwrap();
+        let now = 1722500000i64;
+        // The exact INSERT ... ON CONFLICT the feedback handler issues.
+        let upsert = "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
+             VALUES (?1, ?2, NULL, ?3, ?4, 'default')
+             ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
+               feedback = excluded.feedback, reason_hash = excluded.reason_hash, ts = excluded.ts";
+        // accept then dismiss for the same chunk+session → one row, dismiss wins.
+        db.execute(upsert, params![1, "accept", now, "s1"]).unwrap();
+        db.execute(upsert, params![1, "dismiss", now + 1, "s1"])
+            .unwrap();
+        // Same chunk, different session → distinct signal (legit).
+        db.execute(upsert, params![1, "accept", now, "s2"]).unwrap();
+        // Session-less replay (NULL session) → collapses too, via COALESCE.
+        db.execute(upsert, params![1, "dismiss", now, Option::<String>::None])
+            .unwrap();
+        db.execute(upsert, params![1, "accept", now + 1, Option::<String>::None])
+            .unwrap();
+        let total: i64 = db
+            .query_row("SELECT COUNT(*) FROM suggest_feedback", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3, "3 distinct (chunk, session) keys, not 5 rows");
+        let s1_outcome: String = db
+            .query_row(
+                "SELECT feedback FROM suggest_feedback WHERE chunk_id = 1 AND session = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(s1_outcome, "dismiss", "changed mind: last signal wins");
+        let null_outcome: String = db
+            .query_row(
+                "SELECT feedback FROM suggest_feedback WHERE chunk_id = 1 AND session IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(null_outcome, "accept", "session-less replay collapses to last-wins");
     }
 
     #[test]
@@ -7013,12 +7070,13 @@ Final paragraph after the rule.";
 
         // v0.9.9: schema_version is recorded after migration and readable via
         // the shared helper. The rehearsal tool relies on this to refuse a
-        // migrate-down without --force. v1.9.0 bumps this from 1.4.0 (the
-        // light-cut releases v1.5–v1.8 made no schema changes).
+        // migrate-down without --force. v1.9.0 bumped this from 1.4.0 (the
+        // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumps
+        // it again for the feedback dedup index.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_9_0),
-            "schema_version must be recorded as 1.9.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_9_1),
+            "schema_version must be recorded as 1.9.1 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.

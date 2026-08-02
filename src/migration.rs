@@ -718,12 +718,35 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
+    // ── v1.9.1 "Harden": feedback is last-wins per (chunk_id, session). ──
+    // The v1.9.0 ledger was append-only with no idempotency: a client retry
+    // or replay recorded duplicate rows, poisoning the false-positive metric
+    // that is the v1.9 roadmap exit criterion. A unique index on
+    // (chunk_id, COALESCE(session,'')) makes the handler's upsert one signal
+    // per surfaced suggestion per session — replays collapse, and a changed
+    // mind (accept → dismiss) overwrites instead of double-counting.
+    // Dedup any pre-existing duplicate rows first (keep the latest per key)
+    // so the index can be created on any DB.
+    db.execute(
+        "DELETE FROM suggest_feedback
+         WHERE id NOT IN (
+             SELECT MAX(id) FROM suggest_feedback
+             GROUP BY chunk_id, COALESCE(session, '')
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_suggest_feedback_chunk_session
+         ON suggest_feedback(chunk_id, COALESCE(session, ''));",
+        [],
+    )?;
+
     // Bumped once per release that changes this function. v1.5–v1.8 were light
     // cuts with no schema change, so the stamp stayed at 1.4.0; v1.9 adds the
-    // suggest_feedback table.
+    // suggest_feedback table; v1.9.1 adds the dedup unique index.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.9.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.9.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.9.1')
+         ON CONFLICT(key) DO UPDATE SET value = '1.9.1';",
         [],
     )?;
 

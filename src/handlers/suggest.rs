@@ -343,7 +343,11 @@ pub async fn feedback(
         }
         conn.execute(
             "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
+               feedback = excluded.feedback,
+               reason_hash = excluded.reason_hash,
+               ts = excluded.ts",
             rusqlite::params![chunk_id, outcome_str, reason_hash, ts, session, tenant],
         )
         .map_err(|e| HandlerError::internal(format!("feedback insert failed: {e}")))?;
