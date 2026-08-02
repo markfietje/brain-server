@@ -24,6 +24,7 @@ use super::{
     normalize_domain, normalize_name, normalize_rel_type, IngestResponse, MAX_CONTENT,
     MAX_ENTITIES, MAX_RELATIONS, MAX_TITLE,
 };
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 
 /// A normalized relation ready for insert: (from, to, kind, optional explicit
@@ -67,6 +68,7 @@ pub struct IngestRequest {
 /// `POST /ingest`
 pub async fn ingest(
     State(_state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, HandlerError> {
     // v0.9.9: refuse new writes when over the capacity envelope (HTTP 507).
@@ -123,6 +125,11 @@ pub async fn ingest(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
+    // v1.2.0 M3 AuthZ: write gate at handler entry, scoped to the actual
+    // target domain (forced, else "global"). Back-compat — `None` principal
+    // (no JWT) is superuser.
+    let gate_domain = forced_domain.as_deref().unwrap_or("global");
+    super::authorize(&principal.0, crate::auth::Action::Write, "", gate_domain)?;
 
     // Normalize + validate every entity/relation. Collect normalized forms
     // so downstream code can trust them.

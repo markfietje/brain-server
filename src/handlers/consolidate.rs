@@ -13,6 +13,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 use crate::consolidate;
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 use crate::AppState;
 
@@ -156,8 +157,11 @@ pub struct ApplyResponse {
 /// self-links are rejected per link (reported, not fatal). No content changes.
 pub async fn apply(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
     let links = req.links;
     let now_utc = chrono::Utc::now().to_rfc3339();
@@ -231,8 +235,11 @@ pub struct UndoResponse {
 /// `supersedes` evidence_link, atomically in one tx. Audited. Idempotent.
 pub async fn undo(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<UndoRequest>,
 ) -> Result<Json<UndoResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
     let chunks = req.old_chunks;
     let (undone, rejected) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {

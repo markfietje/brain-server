@@ -112,6 +112,7 @@ pub struct SuggestTelemetry {
 /// `POST /suggest` — opt-in anticipation. See module docs.
 pub async fn suggest(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<SuggestRequest>,
 ) -> Result<Json<SuggestResponse>, HandlerError> {
     if !config::brain_suggest_enabled() {
@@ -130,6 +131,15 @@ pub async fn suggest(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
+    // v1.2.0 M3 AuthZ: read gate — /suggest returns full chunk content, so it
+    // needs tenant/scope enforcement like any content-returning route (audit
+    // S1). Scoped to the actual target domain. `None` (no JWT) = superuser.
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )?;
 
     // Same prompt-injection defense as /recall: never embed adversarial input.
     if crate::contains_suspicious_pattern(&context) {
@@ -276,6 +286,8 @@ pub async fn feedback(
     principal: OptPrincipal,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     if !config::brain_suggest_enabled() {
         return Err(HandlerError::internal_with(
             "suggest_disabled",

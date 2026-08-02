@@ -16,6 +16,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 use crate::AppState;
 
@@ -51,8 +52,11 @@ pub struct DeleteSourceResponse {
 /// `POST /sources/reconcile`
 pub async fn reconcile(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<ReconcileRequest>,
 ) -> Result<Json<ReconcileResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let kind = req.kind.trim().to_lowercase();
     if kind.is_empty() {
         return Err(HandlerError::bad_request(
@@ -115,8 +119,11 @@ pub async fn reconcile(
 /// `DELETE /sources/{id}`
 pub async fn delete_source(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<DeleteSourceResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
 
     let deleted = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {

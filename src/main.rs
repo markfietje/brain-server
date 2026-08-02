@@ -501,6 +501,10 @@ pub enum AppError {
     NotFound(&'static str),
     /// v0.9.9 "Qualify": HTTP 507 — over capacity envelope.
     InsufficientStorage(String),
+    /// v1.11.0 "Associate": HTTP 403 — AuthZ gate (audit G1). The legacy
+    /// main.rs write handlers use `AppError`, so the JWT AuthZ gate needs a
+    /// 403 channel here (the modern `HandlerError` paths already have one).
+    Forbidden(String),
     Internal(String),
 }
 
@@ -514,6 +518,7 @@ impl axum::response::IntoResponse for AppError {
             AppError::BadRequest(s) => (StatusCode::BAD_REQUEST, s.to_string()),
             AppError::NotFound(s) => (StatusCode::NOT_FOUND, s.to_string()),
             AppError::InsufficientStorage(s) => (StatusCode::INSUFFICIENT_STORAGE, s),
+            AppError::Forbidden(s) => (StatusCode::FORBIDDEN, s),
             AppError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal error".to_string(),
@@ -557,8 +562,23 @@ fn guard_capacity(state: &AppState) -> Result<(), AppError> {
 #[inline(always)]
 async fn add_chunk(
     State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<AddRequest>,
 ) -> Json<AddResponse> {
+    // v1.11.0 "Associate" (audit G1): AuthZ write gate. `/add` is the legacy
+    // path — we return its existing `{ success: false, error }` shape rather
+    // than a real 403 so the response stays shape-compatible (mirrors the
+    // capacity-guard choice below). `None` principal (no JWT) = superuser.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
+    {
+        return Json(AddResponse {
+            success: false,
+            status: "error".to_string(),
+            chunk_id: None,
+            error: Some(e.inner.message),
+        });
+    }
     // v0.9.9: capacity guard. `/add` is the legacy path; we return its existing
     // `{ success: false, error }` shape rather than an HTTP 507 so the
     // response stays shape-compatible. The primary paths (`/ingest`,
@@ -901,7 +921,22 @@ async fn search(
     }
 }
 
-async fn ingest_memory(State(s): State<Arc<AppState>>, body: Body) -> Json<serde_json::Value> {
+async fn ingest_memory(
+    State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    body: Body,
+) -> Json<serde_json::Value> {
+    // v1.11.0 "Associate" (audit G1): AuthZ write gate. Legacy shape — see
+    // `/add`. `None` principal (no JWT) = superuser.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
+    {
+        return Json(serde_json::json!({
+            "success": false,
+            "status": "error",
+            "message": e.inner.message
+        }));
+    }
     let content = match to_bytes(body, MAX_REQUEST_SIZE).await {
         Ok(b) => String::from_utf8(b.to_vec())
             .unwrap_or_default()
@@ -1784,8 +1819,14 @@ pub(crate) fn suppress_flagged_evidence(
 
 async fn ingest_markdown(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(payload): Json<MarkdownPayload>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // v1.11.0 "Associate" (audit G1): AuthZ write gate. This is the primary
+    // vault ingest path, so it gets a proper HTTP 403 via AppError::Forbidden.
+    // `None` principal (no JWT) = superuser.
+    crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
+        .map_err(|e| AppError::Forbidden(e.inner.message))?;
     // v0.9.9: capacity guard — the primary vault ingest path returns a proper
     // HTTP 507 when the envelope is exceeded.
     guard_capacity(&state)?;
@@ -2334,7 +2375,17 @@ fn link_vault_source(
     Ok(())
 }
 
-async fn reindex(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn reindex(
+    State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+) -> Json<serde_json::Value> {
+    // v1.11.0 "Associate" (audit G1): AuthZ write gate. Legacy shape — see
+    // `/add`. `None` principal (no JWT) = superuser.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
+    {
+        return Json(serde_json::json!({ "error": e.inner.message }));
+    }
     let pool = s.pool.clone();
     let model = Arc::clone(&s.model);
     let res = task::spawn_blocking(move || -> Result<(usize, usize), anyhow::Error> {
@@ -2545,8 +2596,12 @@ async fn list_quarantined(
 /// flag so the chunk re-enters retrieval.
 async fn release_quarantine(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // v1.11.0 "Associate" (audit G1): AuthZ admin gate (operator action).
+    crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+        .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let pool = state.pool.clone();
     let released = task::spawn_blocking(move || -> Result<usize, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
@@ -2584,8 +2639,12 @@ async fn release_quarantine(
 /// the knowledge row + its vec0 index entry).
 async fn delete_quarantine(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // v1.11.0 "Associate" (audit G1): AuthZ admin gate (operator action).
+    crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+        .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let pool = state.pool.clone();
     let deleted = task::spawn_blocking(move || -> Result<usize, AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;

@@ -7,14 +7,18 @@ use axum::extract::{Path, State};
 use axum::response::Json;
 use std::sync::Arc;
 
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{ForgetResponse, HandlerError};
 use crate::AppState;
 
 /// `DELETE /memory/{id}`
 pub async fn forget(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<ForgetResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: write gate at handler entry. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     // `id` is extracted as i64 by axum; non-numeric already → 400 via extractor.
 
     let pool = state.pool.clone();

@@ -5,6 +5,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 use crate::AppState;
 use rusqlite::params;
@@ -139,10 +140,13 @@ pub async fn domains(
 /// per-domain pool is opened (creates DB file + runs migration) and returns `201`.
 pub async fn create_domain(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<CreateDomainRequest>,
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&req.name)?;
+    // v1.2.0 M3 AuthZ: write gate (creating a domain is a write). `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Write, "", &name)?;
 
     // Resolve the domain's pool — this creates the file in multi-db mode.
     let pool = state.registry.pool_for(&name).map_err(|e| {
@@ -182,11 +186,14 @@ pub async fn create_domain(
 /// typoed URL or replay can't destroy data by accident.
 pub async fn delete_domain(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(name): Path<String>,
     Query(q): Query<DeleteDomainQuery>,
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
+    // v1.2.0 M3 AuthZ: admin gate (destructive lifecycle op). `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
 
     if name == "global" {
         return Err(HandlerError::bad_request(
@@ -321,10 +328,13 @@ pub struct DeleteDomainQuery {
 /// Cheap operation; safe to run while the server is up.
 pub async fn vacuum_domain(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
+    // v1.2.0 M3 AuthZ: admin gate (maintenance op). `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
     let pool = state.registry.pool_for(&name).map_err(|e| {
         HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
     })?;
@@ -355,10 +365,13 @@ pub async fn vacuum_domain(
 /// `Content-Disposition: attachment; filename="brain-<domain>.db"` header.
 pub async fn export_domain(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(name): Path<String>,
 ) -> Result<Response, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
+    // v1.2.0 M3 AuthZ: read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", &name)?;
     let pool = state.registry.pool_for(&name).map_err(|e| {
         HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
     })?;
@@ -417,12 +430,15 @@ pub async fn export_domain(
 /// Returns 201 with `{ "name": ..., "imported": true, "bytes": N }`.
 pub async fn import_domain(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(name): Path<String>,
     body: axum::body::Body,
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     use axum::body::to_bytes;
     let name = normalize_domain(&name)?;
+    // v1.2.0 M3 AuthZ: admin gate (overwrites domain data). `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
     if name == "global" {
         // Importing into `global` would overwrite the legacy live DB.
         return Err(HandlerError::bad_request(

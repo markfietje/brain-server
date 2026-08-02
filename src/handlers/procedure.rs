@@ -8,6 +8,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_CONTENT, MAX_TITLE};
 use crate::procedural::{self, DecisionOutcome, DecisionRule, MemoryKind};
 use crate::AppState;
@@ -53,6 +54,7 @@ pub struct ProcedureResponse {
 /// `POST /procedure` — ingest a procedure + its ordered steps in one tx.
 pub async fn create(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<ProcedureRequest>,
 ) -> Result<Json<ProcedureResponse>, HandlerError> {
     let title = req.title.trim().to_string();
@@ -117,6 +119,13 @@ pub async fn create(
         Some(d) => Some(crate::handlers::normalize_domain(d)?),
         None => None,
     };
+    // v1.2.0 M3 AuthZ: write gate scoped to the actual target domain.
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Write,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )?;
     let domain_for_embed = domain.clone();
 
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
@@ -354,8 +363,12 @@ pub struct ClassifyRequest {
 /// full taxonomy so a client knows the universe of labels.
 pub async fn classify(
     State(_state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Json(req): Json<ClassifyRequest>,
 ) -> Result<Json<ClassifyResponse>, HandlerError> {
+    // v1.2.0 M3 AuthZ: read gate. Stateless pure function, but uniform gating
+    // keeps the surface predictable. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let text = req.text.trim().to_string();
     if text.is_empty() {
         return Err(HandlerError::bad_request(
@@ -396,9 +409,12 @@ pub struct EvaluateRequest {
 /// rule is loaded; the handler just loads + delegates.
 pub async fn evaluate(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(id): Path<i64>,
     Json(req): Json<EvaluateRequest>,
 ) -> Result<Json<DecisionOutcome>, HandlerError> {
+    // v1.2.0 M3 AuthZ: read gate (loads a chunk + runs the stored rule).
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<DecisionOutcome, HandlerError> {
         let conn = pool
