@@ -12,6 +12,54 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-08-02
+
+**"Procedural" — ordered steps + deterministic categorization + decision
+rules** (the finalized v1.10.0 cut on top of the v1.9.1 hotfix base).
+
+### Added
+
+- **`POST /procedure`** (`src/handlers/procedure.rs`) — ingest a procedure
+  root chunk + up to 100 ordered steps in ONE transaction. Steps are stored as
+  their own chunks (`node_kind` = `step` / `decision`) linked to the root via
+  `next_step` edges carrying an explicit `step_index` (Graphiti's
+  NextEpisodeEdge pattern at chunk level, reusing the v0.9.8 `evidence_links`
+  table). Embeddings are written best-effort after commit — a failure never
+  undoes the ingest (FTS5 keeps the chunks retrievable).
+- **`GET /procedure/{id}/steps`** — the ordered step chain for a procedure,
+  each step exposing its normalized `memory_kind`. The read path runs through
+  `MemoryKind::from_str` so an unknown stored kind falls back to `fact`
+  (forward-compat contract, now live code instead of a dead fn).
+- **`POST /classify`** — deterministic keyword-router categorization (Mem0's
+  premium feature, free): category + confidence + matched keywords (auditable)
+  + the full taxonomy. `general` with confidence 0.0 when no keyword clears
+  the threshold. No LLM, no cloud.
+- **`POST /decision/{id}/evaluate`** — load the decision rule stored as JSON
+  on a `decision`-kind chunk and evaluate it against numeric variables. First
+  matching branch wins; otherwise the rule's `default_branch`. Returns the
+  outcome + citation chain. Pure rule engine (no LLM).
+- **`knowledge.node_kind` repurposed** as the Mem0-style `memory_kind`
+  (fact/procedure/step/decision). Legacy `'event'` rows relabeled to `'fact'`;
+  the column default is now `'fact'` for fresh DBs. `Schema stamp → 1.10.0`.
+
+### Fixed
+
+- **`classify` matched-keywords bug** (`src/procedural.rs`) — the winning
+  category was correct but its keyword list came from the wrong lexicon: the
+  lookup used the *sorted* `scores` slot as the LEXICON index, and after
+  `sort_by` that slot no longer matches the category. Resolved via the
+  `CATEGORIES` position (shares LEXICON ordering). Pinned by
+  `classify_detects_compliance` (HIPAA + PII now both reported).
+
+### Notes
+
+- Pre-v1.10 DBs keep their `'event'` column default (SQLite can't ALTER a
+  column default without a table rebuild); the startup relabel + the read-path
+  normalization make the gap cosmetic, not functional — see the `ponytail:`
+  comment in `run_migration`.
+- Still no background worker and no auto-consolidation — procedures, steps,
+  and decisions are explicit, operator- or agent-authored writes.
+
 ## [1.9.1] — 2026-08-02
 
 **Bug-fix release on top of v1.9.0** (post-release security + correctness audit

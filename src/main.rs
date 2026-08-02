@@ -7061,7 +7061,8 @@ Final paragraph after the rule.";
                 "v1.4.0: knowledge.{col} column must exist after migration"
             );
         }
-        // node_kind defaults to 'event' for existing rows.
+        // v1.10.0 "Procedural": the repurposed node_kind defaults to 'fact'
+        // (the memory_kind of every declarative chunk) for fresh-DB inserts.
         let node_kind: String = db
             .query_row(
                 "SELECT node_kind FROM knowledge WHERE id = ?1",
@@ -7069,7 +7070,7 @@ Final paragraph after the rule.";
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(node_kind, "event", "node_kind defaults to 'event'");
+        assert_eq!(node_kind, "fact", "node_kind defaults to 'fact'");
 
         // v0.9.9: schema_version is recorded after migration and readable via
         // the shared helper. The rehearsal tool relies on this to refuse a
@@ -7121,6 +7122,20 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(idx_exists, 1, "idx_suggest_feedback_tenant_ts must exist");
+        // v1.9.1 "Harden": the last-wins dedup index also exists — without it
+        // the handler's upsert silently no-ops on a duplicate key error path
+        // and the false-positive metric can be poisoned by replays.
+        let dedup_idx: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_suggest_feedback_chunk_session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dedup_idx, 1,
+            "idx_suggest_feedback_chunk_session (v1.9.1) must exist"
+        );
 
         // v1.10.0 "Procedural": evidence_links gained step_index; legacy
         // 'event' node_kind rows were relabeled to 'fact'.

@@ -664,16 +664,18 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
     )?;
 
     // ── v1.4.0 "Calibrate" M3: TRACE hierarchical node reservation. ───────
-    // node_kind defaults to 'event' (every chunk is one ingest event). Higher
-    // levels — 'session' (a coherent batch) and 'topic' (a long-running theme)
-    // — are populated by the v1.8 Consolidate worker; nothing reads them yet.
-    // parent_id links a node to its enclosing session/topic.
+    // node_kind defaults to 'fact' (every declarative chunk is a fact). The
+    // column was originally reserved as 'event'/'session'/'topic' for a worker
+    // that never shipped; v1.10.0 "Procedural" repurposed it as the Mem0-style
+    // memory_kind (fact/procedure/step/decision) and relabels existing rows.
+    // The default was flipped to 'fact' so fresh DBs insert the repurposed
+    // value directly. parent_id links a node to its enclosing session/topic.
     //   ponytail: schema reservation only. Construction logic is deferred to
     //   v1.8 Consolidate (the only release with a worker that can group events
     //   into sessions). Adding the columns now keeps v1.4's migration additive
     //   and avoids a future ALTER on the hot knowledge table.
     for (col, def) in [
-        ("node_kind", "TEXT NOT NULL DEFAULT 'event'"),
+        ("node_kind", "TEXT NOT NULL DEFAULT 'fact'"),
         ("parent_id", "INTEGER"),
     ] {
         let present: bool = db
@@ -748,6 +750,11 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
     // it the Mem0-style `memory_kind` — but populated deterministically
     // (keyword router), not via cloud LLM. Legacy 'event' rows become 'fact'
     // (every prior chunk is declarative). No data loss; backward-compatible.
+    //   ponytail: the column DEFAULT is only 'fact' on fresh DBs. A pre-v1.10
+    //   DB keeps its 'event' default (SQLite can't ALTER a column default
+    //   without a table rebuild); new rows there stay 'event' until the next
+    //   startup's relabel, and `MemoryKind::from_str` normalizes 'event' to
+    //   'fact' at every read, so the gap is cosmetic, not functional.
     db.execute_batch(
         "UPDATE knowledge SET node_kind = 'fact'
          WHERE node_kind = 'event' OR node_kind IS NULL OR node_kind = '';",
