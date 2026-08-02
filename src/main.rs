@@ -5357,7 +5357,8 @@ mod tests {
         .unwrap();
         let now = 1722500000i64;
         // The exact INSERT ... ON CONFLICT the feedback handler issues.
-        let upsert = "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
+        let upsert =
+            "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
              VALUES (?1, ?2, NULL, ?3, ?4, 'default')
              ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
                feedback = excluded.feedback, reason_hash = excluded.reason_hash, ts = excluded.ts";
@@ -5370,8 +5371,11 @@ mod tests {
         // Session-less replay (NULL session) → collapses too, via COALESCE.
         db.execute(upsert, params![1, "dismiss", now, Option::<String>::None])
             .unwrap();
-        db.execute(upsert, params![1, "accept", now + 1, Option::<String>::None])
-            .unwrap();
+        db.execute(
+            upsert,
+            params![1, "accept", now + 1, Option::<String>::None],
+        )
+        .unwrap();
         let total: i64 = db
             .query_row("SELECT COUNT(*) FROM suggest_feedback", [], |r| r.get(0))
             .unwrap();
@@ -5391,7 +5395,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(null_outcome, "accept", "session-less replay collapses to last-wins");
+        assert_eq!(
+            null_outcome, "accept",
+            "session-less replay collapses to last-wins"
+        );
     }
 
     #[test]
