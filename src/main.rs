@@ -3638,6 +3638,15 @@ async fn main_inner() -> Result<()> {
     let profile = config::model_profile();
     let model_id = config::model_id_for_profile(profile);
     info!("Loading model: {} (profile: {})", model_id, profile);
+    // ponytail (audit G8, v1.11.0): the embedding model is a single source of
+    // truth fetched from HuggingFace at boot (`StaticModel::from_pretrained`).
+    // Risk: a transient HF outage or a model-repo takeover both present as the
+    // same failure mode, and every /recall + /ingest embedding depends on this
+    // one download. Upgrade path: vendor the model weights at install time (the
+    // `brain-migrate-rehearse`/install tooling already knows how to fetch) and
+    // load from a local path, so recall works offline and the boot-time fetch
+    // is eliminated. No-op today because the air-gapped Jetson deploy ships the
+    // weights separately (see IMPLEMENTATION_ROADMAP §v1.3).
     let model = Arc::new(
         StaticModel::from_pretrained(model_id, None, Some(true), None)
             .map_err(|e| anyhow::anyhow!("Model load failed: {}", e))?,
