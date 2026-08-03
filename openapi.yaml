@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.10.0
-  x-api-version: "1.10.0"
+  version: 1.11.0
+  x-api-version: "1.11.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -237,6 +237,9 @@ paths:
         - name: explain
           in: query
           schema: { type: boolean, description: return query_plan + telemetry (redacts content) }
+        - name: graph
+          in: query
+          schema: { type: boolean, description: "v1.11.0 Associate: enable the graph-PPR retriever as a third RRF leg (opt-in)." }
       responses:
         "200":
           description: Ranked results (or explain block when explain=true)
@@ -1541,6 +1544,7 @@ components:
         at: { type: string, nullable: true, description: "v1.4.0 Calibrate M1: bi-temporal valid-time filter (RFC3339 or YYYY-MM-DD). Only chunks whose valid-interval contains this instant are returned. Distinct from as_of (transaction-time recall)." }
         max_context_tokens: { type: integer, nullable: true, description: "v1.4.0 Calibrate M2: submodular evidence packing token budget. When set, results are re-ranked by budgeted monotone submodular maximization (relevance+coverage+representativeness+diversity) and truncated to fit." }
         gold_answer: { type: string, nullable: true, description: "v1.4.0 Calibrate M2: optional gold-answer substring for the answer_in_context diagnostic (did the gold survive packing?)." }
+        graph: { type: boolean, description: "v1.11.0 Associate: enable the graph-PPR retriever as a third RRF leg behind vector+FTS. Opt-in; default false keeps the two-retriever path unchanged. Deterministic, zero-token, no embeddings." }
     Evidence:
       type: object
       description: >-
@@ -1597,6 +1601,7 @@ components:
           properties:
             vector_rank: { type: integer, nullable: true }
             fts_rank: { type: integer, nullable: true }
+            graph_rank: { type: integer, nullable: true, description: "v1.11.0 Associate: rank assigned by the graph-PPR retriever (0 = best); null when the graph leg didn't retrieve the document." }
             fused_score: { type: number, nullable: true }
             rerank_score: { type: number, nullable: true }
             rerank_truncated: { type: boolean }
@@ -1626,6 +1631,7 @@ components:
           properties:
             vector_rank: { type: integer, nullable: true }
             fts_rank: { type: integer, nullable: true }
+            graph_rank: { type: integer, nullable: true, description: "v1.11.0 Associate: rank assigned by the graph-PPR retriever (0 = best); null when the graph leg didn't retrieve the document." }
             fused_score: { type: number, nullable: true }
             rerank_score: { type: number, nullable: true }
             rerank_truncated: { type: boolean }
@@ -1771,11 +1777,13 @@ components:
         embed_ms: { type: number }
         vector_ms: { type: number }
         fts_ms: { type: number }
+        graph_ms: { type: number, description: "v1.11.0 Associate: graph-PPR retrieval latency (ms); 0 when the graph leg was disabled." }
         fusion_ms: { type: number }
         prf_ms: { type: number }
         rerank_ms: { type: number }
         vec_candidates: { type: integer }
         fts_candidates: { type: integer }
+        graph_candidates: { type: integer, description: "v1.11.0 Associate: graph-PPR candidates before RRF." }
         fused_count: { type: integer }
         rrf_k: { type: integer }
         embedding_query: { type: string, nullable: true }
