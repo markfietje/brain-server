@@ -270,6 +270,22 @@ pub fn brain_suggest_enabled() -> bool {
     )
 }
 
+/// v1.12.0 "Discern": whether the complexity-gated graph rescue is live.
+/// Defaults to `true` (the feature ships on); set `BRAIN_GRAPH_RESCUE_ENABLED
+/// =false` to restore exact v1.11.0 abstention behavior (a `ClarifyQuery`
+/// query always returns the empty `low_confidence` envelope). Same pattern as
+/// [`brain_suggest_enabled`]: an operator who measures an unacceptable
+/// rescue-latency cost can disable it without a rebuild.
+pub fn brain_graph_rescue_enabled() -> bool {
+    !matches!(
+        std::env::var("BRAIN_GRAPH_RESCUE_ENABLED")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 /// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to
 /// `edge-default`. Unknown values fall back to `edge-default`.
 pub fn model_profile() -> &'static str {

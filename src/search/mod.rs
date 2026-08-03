@@ -47,6 +47,9 @@ pub enum SearchSource {
 pub enum RetrievalStrategy {
     Hybrid,
     HybridPrf,
+    /// v1.12.0 "Discern": the estimator classified the query as low-confidence
+    /// and the graph leg was engaged as a second pass before abstention.
+    HybridGraph,
 }
 
 /// PRF execution decision for observability.
@@ -612,6 +615,11 @@ pub struct SearchTelemetry {
     pub fts_candidates: usize,
     /// v1.11.0: graph-PPR candidates before RRF.
     pub graph_candidates: usize,
+    /// v1.12.0 "Discern": the graph leg was auto-engaged as a complexity-gated
+    /// rescue pass (the estimator said `ClarifyQuery` and the caller had not
+    /// enabled `graph`). `false` on the normal path.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub graph_rescued: bool,
     /// Results after RRF fusion.
     pub fused_count: usize,
     /// RRF k parameter used.
@@ -1050,7 +1058,11 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// a document strong for the unexpanded query keeps its pass-1 rank
 /// contribution even if query drift pushed it down in pass-2. Deterministic;
 /// no comparison of incomparable raw scores across passes.
-pub fn fuse_prf_passes(
+/// Shared two-pass RRF fuse (v1.12.0 "Discern": also used by the graph
+/// rescue, so the `prf_expanded` flag is NOT set here — see
+/// [`fuse_prf_passes`]). Deterministic: dedup by id, per-pass RRF
+/// contributions `1/(k+rank)` summed, original-pass order wins ties.
+fn fuse_pass_lists(
     pass1: &[SearchResult],
     pass2: &[SearchResult],
     k: usize,
@@ -1079,7 +1091,6 @@ pub fn fuse_prf_passes(
         let mut item = r.clone();
         item.score = c1 + c2;
         item.provenance.fused_score = Some(c1 + c2);
-        item.provenance.prf_expanded = true;
         fused.push(item);
     }
     fused.sort_by(|a, b| {
@@ -1089,6 +1100,34 @@ pub fn fuse_prf_passes(
     });
     fused.truncate(limit);
     fused
+}
+
+/// Two-pass RRF fuse for PRF expansion: identical to [`fuse_pass_lists`] plus
+/// the `prf_expanded` provenance flag (the second pass WAS query-expanded).
+pub fn fuse_prf_passes(
+    pass1: &[SearchResult],
+    pass2: &[SearchResult],
+    k: usize,
+    limit: usize,
+) -> Vec<SearchResult> {
+    let mut fused = fuse_pass_lists(pass1, pass2, k, limit);
+    for r in &mut fused {
+        r.provenance.prf_expanded = true;
+    }
+    fused
+}
+
+/// v1.12.0 "Discern": complexity-gated graph activation (arXiv:2602.03578).
+/// The graph leg is auto-engaged ONLY when the calibrated estimator says the
+/// query is too weak to answer (`ClarifyQuery`) and the graph leg did not
+/// already run in pass 1 (`graph_enabled`). `enabled` is the
+/// `BRAIN_GRAPH_RESCUE_ENABLED` kill switch. Pure — the caller decides.
+pub fn should_attempt_graph_rescue(
+    recommendation: Option<Recommendation>,
+    graph_enabled: bool,
+    enabled: bool,
+) -> bool {
+    enabled && !graph_enabled && matches!(recommendation, Some(Recommendation::ClarifyQuery))
 }
 
 // ── Vector + lexical retrieval ──────────────────────────────────────────────
@@ -1640,13 +1679,42 @@ pub fn perform_search_with_prf(
 
     let t_prf = Instant::now();
     let (mut candidates, final_strategy) = match assessment.recommendation {
-        Recommendation::Return
-        | Recommendation::RunReranker
-        | Recommendation::IncreaseTopK
-        | Recommendation::ClarifyQuery => {
+        Recommendation::Return | Recommendation::RunReranker | Recommendation::IncreaseTopK => {
             let mut p1 = pass1;
             p1.truncate(window);
             (p1, RetrievalStrategy::Hybrid)
+        }
+        Recommendation::ClarifyQuery => {
+            // v1.12.0 "Discern": complexity-gated graph activation. The
+            // calibrated estimator said this query is too weak to answer —
+            // but the graph leg (the associative-memory retriever) never ran
+            // (caller did not set `graph`). Run one bounded graph pass and
+            // fuse; strictly additive — this path would otherwise return
+            // zero hits (v1.5.0 abstention), so any result is a rescue and
+            // an empty result keeps the abstention contract intact.
+            let mut p1 = pass1;
+            p1.truncate(window);
+            if should_attempt_graph_rescue(
+                Some(assessment.recommendation),
+                filters.graph,
+                crate::config::brain_graph_rescue_enabled(),
+            ) {
+                let mut rescue_filters = filters.clone();
+                rescue_filters.graph = true;
+                let (pass2, _) = perform_search_traced(
+                    pool,
+                    model,
+                    q.clone(),
+                    prf_depth,
+                    &rescue_filters,
+                    &mut tel,
+                )?;
+                tel.graph_rescued = true;
+                let fused = fuse_pass_lists(&p1, &pass2, RRF_K, window);
+                (fused, RetrievalStrategy::HybridGraph)
+            } else {
+                (p1, RetrievalStrategy::Hybrid)
+            }
         }
         Recommendation::RunPrf => {
             // v0.9.1 M4.1: prefer FTS5-vocabulary-weighted term extraction

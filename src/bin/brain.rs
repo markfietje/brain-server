@@ -442,6 +442,7 @@ fn print_telemetry(tel: &serde_json::Value) {
         "fts_candidates",
         "graph_candidates",
         "graph_ms",
+        "graph_rescued",
         "confidence",
         "recommendation",
     ] {

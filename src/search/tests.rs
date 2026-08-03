@@ -458,3 +458,42 @@ fn enrich_evidence_surfaces_contradiction_links_for_conflict_flag() {
         .any(|l| l.kind == crate::consolidate::LINK_CONTRADICTS && l.to_chunk == 1);
     assert!(has_contradiction, "contradiction link should be surfaced");
 }
+
+// ── v1.12.0 "Discern" — complexity-gated graph activation ────────────────
+
+/// Plan verification #4: the rescue gate fires ONLY on `ClarifyQuery` with
+/// the graph leg disabled and the kill switch on.
+#[test]
+fn should_attempt_graph_rescue_matrix() {
+    use Recommendation::*;
+    assert!(should_attempt_graph_rescue(Some(ClarifyQuery), false, true));
+    // Explicit ?graph=true already ran the leg in pass 1 → no rescue.
+    assert!(!should_attempt_graph_rescue(Some(ClarifyQuery), true, true));
+    // Other recommendations never trigger the rescue (they produced hits).
+    for r in [Return, RunPrf, RunReranker, IncreaseTopK] {
+        assert!(!should_attempt_graph_rescue(Some(r), false, true), "{r:?}");
+    }
+    // Kill switch off → never; missing recommendation → never.
+    assert!(!should_attempt_graph_rescue(
+        Some(ClarifyQuery),
+        false,
+        false
+    ));
+    assert!(!should_attempt_graph_rescue(None, false, true));
+}
+
+/// Plan verification #6: the shared two-pass fuse must NOT claim PRF
+/// expansion for a graph rescue — that flag belongs to `fuse_prf_passes`
+/// alone; the fused ranking is identical.
+#[test]
+fn graph_rescue_fuse_does_not_mark_prf_expanded() {
+    let p1 = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
+    let p2 = vec![sr(3, 1.0, "c"), sr(2, 0.5, "b")];
+    let fused = fuse_pass_lists(&p1, &p2, RRF_K, 10);
+    assert!(fused.iter().all(|r| !r.provenance.prf_expanded));
+    let prf_fused = fuse_prf_passes(&p1, &p2, RRF_K, 10);
+    assert!(prf_fused.iter().all(|r| r.provenance.prf_expanded));
+    let ids: Vec<i64> = fused.iter().map(|r| r.id).collect();
+    let prf_ids: Vec<i64> = prf_fused.iter().map(|r| r.id).collect();
+    assert_eq!(ids, prf_ids, "same fusion result aside from the flag");
+}
