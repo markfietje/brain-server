@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.11.0
-  x-api-version: "1.11.0"
+  version: 1.12.0
+  x-api-version: "1.12.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1784,6 +1784,7 @@ components:
         vec_candidates: { type: integer }
         fts_candidates: { type: integer }
         graph_candidates: { type: integer, description: "v1.11.0 Associate: graph-PPR candidates before RRF." }
+        graph_rescued: { type: boolean, description: "v1.12.0 Discern: the graph leg was auto-engaged as a complexity-gated rescue pass (estimator said ClarifyQuery, caller had not enabled graph)." }
         fused_count: { type: integer }
         rrf_k: { type: integer }
         embedding_query: { type: string, nullable: true }
