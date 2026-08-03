@@ -15,6 +15,11 @@ AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 - **Embeddings:** static (no neural net) via `model2vec` / `minishlab/potion-retrieval-32M`. Stored as int8-quantized vectors in `vec0` with binary bit vectors for archive tier.
 - **Lexical index:** SQLite FTS5 (`porter unicode61` tokenizer) on title + content.
 - **Fusion:** Reciprocal Rank Fusion (RRF, `k=60`) merges vec0 KNN and FTS5 BM25 ranks.
+- **Graph retrieval (v1.11.0 "Associate"):** optional third RRF leg — deterministic
+  Personalized PageRank over the existing `entities`/`relationships` KG
+  (`?graph=true` on `/search`/`/recall`; opt-in, disabled path adds zero latency).
+  Query→entity seeding via exact entity-name containment; seed→chunk expansion
+  via `relationships.knowledge_id`. No LLM, no embeddings in the graph leg.
 - **Quality assessment:** Heuristic estimator computes overlap, gap, reciprocal rank, lexical density → emits `Recommendation` (`Return | RunPrf | RunReranker | IncreaseTopK | ClarifyQuery`).
 - **Optional PRF:** When confidence is moderate, top-K vector hits expand the query with high-weight FTS terms; re-search fused with original via RRF.
 - **Storage:** embedded SQLite (WAL), one database file.

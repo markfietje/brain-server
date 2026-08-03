@@ -12,6 +12,58 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-08-03
+
+**"Associate" — HippoRAG-2-style graph retrieval (light cut, roadmap-compliant).**
+
+Deterministic Personalized PageRank over the existing `entities`/`relationships`
+knowledge graph as a third, opt-in RRF leg (`?graph=true` / `--graph`) on
+`/search` + `/recall`. Targets the multi-hop association gap that lexical+vector
+retrieval cannot bridge. **No LLM, no new schema, no embeddings in the graph
+leg, `< 5W`** — the low-power manifesto holds.
+
+### Added
+- **`src/search/graph_ppr.rs`** (pure safe Rust, `#![deny(unsafe_code)]`): a
+  sparse undirected weighted entity graph (`SparseGraph`), deterministic
+  query→entity seeding via the existing linker vocabulary (case-insensitive
+  exact name containment), power-iteration personalized PageRank
+  (`π = (1−α)s + α·Pᵀπ`, `α = 0.5` matched to the HippoRAG 2 config default,
+  L1 convergence at `1e-6`, bounded at `MAX_PPR_ITER = 50`), reachability
+  pruning capped at `trace::MAX_VISITED = 256`, and seed→chunk expansion via
+  `relationships.knowledge_id` with the same `flagged=0`/`valid_to IS NULL`
+  visibility rules as the other retrievers.
+- **Third RRF leg**: `SearchSource::Graph`, `Provenance.graph_rank`,
+  `SearchTelemetry.graph_ms`/`graph_candidates`, and a 3-way `rrf_fuse` (the
+  same formula, same `RRF_K = 60`). The graph leg runs concurrently on its own
+  pooled read connection inside the existing `std::thread::scope`; the disabled
+  path pays zero latency (`graph_ms = 0`).
+- **Opt-in plumbing**: `graph: bool` on `SearchFilters`, `QueryDoc`,
+  `RecallRequest`, GET `/search` `SearchParams`, and `brain query --graph`.
+- **4 plan verifications**: `ppr_ranks_connected_entities_higher_than_unrelated`,
+  `ppr_seed_from_query_uses_exact_entity_names`, `rrf_fuses_graph_leg_with_vector_and_fts`,
+  `ppr_bounded_by_max_visited`, plus the self-loop/zero-weight guards.
+
+### Verification
+- `cargo test --features bench,migrate`: **455 passed, 1 ignored** (was 447).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+- **Live smoke on a copy of the live 8538-doc DB**: `graph=true` returns
+  `graph_candidates=107–112`, `graph_ms≈4ms`; exact entity-name queries seed the
+  graph leg and surface `source=graph` / `both` hits that the vector+lexical
+  legs miss (e.g. `acme_v17c_1785593852 ceo` → the `dave works at acme_v17c` +
+  `acme_v17c ceo is carol` pair at `graph_rank 0/1`).
+
+### Honest ceilings (carried into v2.0)
+- **Live two-hop quality is corpus-bound**: on the live 8538-doc DB, ~94% of
+  KG edges are `tagged_with` taxonomy noise; the graph leg still retrieves
+  but the cleanest multi-hop paths are the synthetic `dave/acme/carol` bench
+  fixture. The mechanism ships; corpus quality is an operator concern.
+- No DPR passage scores in the seed (the plan forbids an embedding in this
+  leg) — `PASSAGE_NODE_WEIGHT = 0.05` documents the upgrade path.
+- `classify` remains a deterministic keyword router, not a learned classifier.
+- `/suggest` still lacks principal/tenant scoping (S1 from the v1.9.1 audit);
+  `authorize()` remains unwired — v2.0 multi-tenancy work.
+
 ## [1.10.0] — 2026-08-02
 
 **"Procedural" — ordered steps + deterministic categorization + decision
