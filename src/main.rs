@@ -380,6 +380,10 @@ struct SearchParams {
     /// mode). Falls back to "global" when absent.
     #[serde(default)]
     domain: Option<String>,
+    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg.
+    /// Opt-in; default `false` keeps the two-retriever path unchanged.
+    #[serde(default)]
+    graph: bool,
 }
 
 #[derive(Deserialize)]
@@ -801,6 +805,7 @@ async fn search(
         include_flagged: p.include_flagged,
         as_of: p.as_of.filter(|s| !s.trim().is_empty()),
         evidence: p.evidence,
+        graph: p.graph,
         ..Default::default()
     };
     if let Some(lex) = p.lex.filter(|s| !s.trim().is_empty()) {

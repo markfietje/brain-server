@@ -181,7 +181,7 @@ fn print_usage() {
 usage:
   brain query "<q>" [--k N] [--source S ...] [--phrase P ...]
                  [--exclude E ...] [--code C ...] [--since ISO]
-                 [--intent I] [--profile P] [--explain]
+                 [--intent I] [--profile P] [--graph] [--explain]
   brain explain "<q>" [--source S ...] [--since ISO]
   brain get <id>
   brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
@@ -332,6 +332,12 @@ fn build_query_doc(
     }
     if let Some(s) = profile {
         body["profile"] = serde_json::json!(s);
+    }
+    if let Some(v) = flags.get("graph") {
+        // Bare `--graph` (None) or `--graph=true` enable the leg; only an
+        // explicit `--graph=false` opts out.
+        let off = v.as_deref().map(str::to_ascii_lowercase) == Some("false".to_string());
+        body["graph"] = serde_json::json!(!off);
     }
     if explain {
         // `explain` maps to the unified prove nance/telemetry envelope on /recall.
