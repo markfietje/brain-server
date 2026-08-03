@@ -46,15 +46,37 @@ pub const MAX_PPR_ITER: usize = 50;
 #[allow(dead_code)] // ponytail: reserved for the DPR-passage-seed upgrade path.
 pub const PASSAGE_NODE_WEIGHT: f64 = 0.05;
 
+// ── v1.12.0 "Discern" noise-aware weights ─────────────────────────────────
+// Research basis (2026-08-03): GAAMA (arXiv:2603.27910) hub dampening
+// `w_ij · min(1, θ/deg(i))` per source node, θ = 50. The live corpus is 94%
+// `tagged_with` taxonomy edges with degree-73/101/150 mega-hubs; both
+// mechanisms are pure arithmetic over the existing adjacency — no schema,
+// no re-ingest, still deterministic and `#![deny(unsafe_code)]`.
+/// Hub dampening threshold θ (GAAMA Table-2 convention). A source vertex with
+/// more than θ distinct neighbors scales each outgoing half-edge by θ/deg.
+pub const HUB_DAMPING_THETA: f64 = 50.0;
+
+/// Per-relation-type base weight: taxonomy edges (`tagged_with` from
+/// frontmatter tags, `alias_of` from aliases) are weak association signals
+/// that dilute PPR mass, so their evidence counts weigh 0.1; semantic
+/// relation types keep full weight. Static (no query-conditioning — the
+/// MemORAI-style learned weights are v2.x; see the v1.12.0 plan).
+pub fn type_base_weight(rel_type: &str) -> f64 {
+    match rel_type {
+        "tagged_with" | "alias_of" => 0.1,
+        _ => 1.0,
+    }
+}
+
 /// A sparse, undirected, weighted entity graph.
 ///
 /// Vertices are `entities.id`; an edge `(a, b, w)` exists for every distinct
 /// `(from_entity_id, to_entity_id)` pair in `relationships`, with weight =
-/// `COUNT(DISTINCT knowledge_id)` — the count of distinct chunks providing
-/// evidence for that pair (the same "edge has evidence" signal v0.9.8 uses).
-/// This is HippoRAG 2's `node_to_node_stats` fact-edge count at the pair
-/// level, aggregated across `relation_type` so multi-rel pairs aren't
-/// over-represented by taxonomy noise.
+/// the type-weighted sum of `COUNT(DISTINCT knowledge_id)` per relation type
+/// (v1.12.0 "Discern": taxonomy types weigh 0.1 via [`type_base_weight`]) —
+/// the count of distinct chunks providing evidence for that pair (the same
+/// "edge has evidence" signal v0.9.8 uses). This is HippoRAG 2's
+/// `node_to_node_stats` fact-edge count at the pair level.
 pub struct SparseGraph {
     /// CSR-style adjacency. `adj[i]` = `(neighbor_vertex, weight)`.
     adj: Vec<Vec<(usize, f64)>>,
@@ -103,6 +125,26 @@ impl SparseGraph {
     /// Index of a vertex id, if present.
     fn idx(&self, id: i64) -> Option<usize> {
         self.id_to_idx.get(&id).copied()
+    }
+
+    /// v1.12.0 "Discern": GAAMA-style hub dampening. Every directed half-edge
+    /// weight is scaled by `min(1, θ/deg(i))` for its **source** vertex's
+    /// degree (distinct-neighbor count) — a mega-hub spreads proportionally
+    /// less mass per edge, so a 150-degree tag cloud can't wash PPR out.
+    /// Per-source asymmetry is intentional (matches the reference); the
+    /// row-normalization in [`personalized_pagerank`] handles non-uniform
+    /// weights. Degree is bounded by [`MAX_VISITED`], so this is O(edges).
+    fn dampen_hubs(&mut self, theta: f64) {
+        for row in &mut self.adj {
+            let deg = row.len() as f64;
+            if deg <= 0.0 {
+                continue;
+            }
+            let f = (theta / deg).min(1.0);
+            for (_, w) in row.iter_mut() {
+                *w *= f;
+            }
+        }
     }
 }
 
@@ -286,27 +328,38 @@ pub fn graph_retrieve(
     }
 
     // 2. Load the weighted adjacency restricted to entities that share at
-    //    least one evidence chunk. One aggregate query, bounded by SQLite's
-    //    own row limit (practical cap = distinct entity pairs).
+    //    least one evidence chunk. v1.12.0 "Discern": the aggregation keeps
+    //    `relation_type` so each pair's evidence count is scaled by
+    //    [`type_base_weight`] before summing — taxonomy edges contribute
+    //    a tenth of semantic ones. Bounded by SQLite's own row limit.
     let mut stmt = conn.prepare(
-        "SELECT from_entity_id, to_entity_id, COUNT(DISTINCT knowledge_id) \
+        "SELECT from_entity_id, to_entity_id, relation_type, COUNT(DISTINCT knowledge_id) \
          FROM relationships \
          WHERE knowledge_id IS NOT NULL \
-         GROUP BY from_entity_id, to_entity_id",
+         GROUP BY from_entity_id, to_entity_id, relation_type",
     )?;
-    let edge_rows: Vec<(i64, i64, f64)> = stmt
-        .query_map([], |row| {
-            let c: i64 = row.get(2)?;
-            Ok((row.get(0)?, row.get(1)?, c as f64))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let mut pair_w: HashMap<(i64, i64), f64> = HashMap::new();
+    for row in stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })? {
+        let (a, b, rel, count): (i64, i64, String, i64) = row?;
+        *pair_w.entry((a, b)).or_insert(0.0) += count as f64 * type_base_weight(&rel);
+    }
+    // Sort by (a, b) so vertex admission order is deterministic regardless of
+    // SQLite's GROUP BY ordering (PPR values are order-independent; the
+    // stable tie-break in expand_to_chunks is not).
+    let mut edge_rows: Vec<(i64, i64, f64)> =
+        pair_w.into_iter().map(|((a, b), w)| (a, b, w)).collect();
+    edge_rows.sort_by_key(|x| (x.0, x.1));
 
     // 3. Build the bounded graph. Prune to the component reachable from the
-    //    seeds and cap total vertices at MAX_VISITED.
+    //    seeds and cap total vertices at MAX_VISITED. v1.12.0 "Discern": hub
+    //    dampening must run AFTER the reachable prune (degree reflects the
+    //    bounded graph).
     let mut graph = build_graph(&edge_rows);
     // Restrict vertices to those reachable from seeds (BFS, bounded).
     graph = restrict_to_reachable(graph, &seeds);
+    graph.dampen_hubs(HUB_DAMPING_THETA);
 
     // 4. Power-iteration PPR.
     let seed_idx: Vec<usize> = seeds.iter().filter_map(|&id| graph.idx(id)).collect();
@@ -482,5 +535,138 @@ mod tests {
         let mut r = sr(42, 0.5, "chunk");
         r.source = Some(crate::search::SearchSource::Graph);
         assert_eq!(r.source, Some(crate::search::SearchSource::Graph));
+    }
+
+    // ── v1.12.0 "Discern" — noise-aware weights + hub dampening ─────────────
+
+    /// Plan verification #1: the taxonomy weight table contract.
+    #[test]
+    fn type_base_weight_downgrades_taxonomy_noise() {
+        assert_eq!(type_base_weight("tagged_with"), 0.1);
+        assert_eq!(type_base_weight("alias_of"), 0.1);
+        assert_eq!(type_base_weight("works_at"), 1.0);
+        assert_eq!(type_base_weight("references"), 1.0);
+        assert_eq!(type_base_weight("contradicts"), 1.0);
+        // Unknown types stay at full weight (semantic default).
+        assert_eq!(type_base_weight("future_relation"), 1.0);
+    }
+
+    /// Plan verification #2: hub dampening exact math. A deg-100 source at
+    /// θ=50 scales each outgoing half-edge by 0.5; a deg-10 source is
+    /// unchanged (θ/deg = 5 → min → 1.0). Damping is per-SOURCE-node, so a
+    /// light vertex's half-edge toward the hub is untouched.
+    #[test]
+    fn hub_dampening_scales_heavy_hubs_but_not_light() {
+        let mut g = SparseGraph::new();
+        // Hub id 1 with 100 leaves, weight 3.0 each (deg 100 → ×0.5).
+        for i in 2..=101 {
+            g.add_edge(1, i, 3.0);
+        }
+        // Light vertex id 300 with 10 neighbors, weight 2.0 each (deg 10 → ×1).
+        for i in 200..=209 {
+            g.add_edge(300, i, 2.0);
+        }
+        g.dampen_hubs(HUB_DAMPING_THETA);
+
+        let hub_row = &g.adj[g.idx(1).unwrap()];
+        assert_eq!(hub_row.len(), 100);
+        assert!((hub_row[0].1 - 1.5).abs() < 1e-9, "3.0 × 0.5 = 1.5");
+
+        let light_row = &g.adj[g.idx(300).unwrap()];
+        assert!(
+            (light_row[0].1 - 2.0).abs() < 1e-9,
+            "deg 10 must be unchanged"
+        );
+
+        // Per-source damping: the leaf's half-edge TOWARD the hub is not
+        // scaled by the hub's degree.
+        let leaf_row = &g.adj[g.idx(2).unwrap()];
+        assert!((leaf_row[0].1 - 3.0).abs() < 1e-9, "leaf outflow unchanged");
+    }
+
+    /// Plan verification #3: `graph_retrieve` over a mixed hub — 2 semantic
+    /// (`works_at`) neighbors vs a 100-edge `tagged_with` cloud. Type weights
+    /// and hub dampening must rank the semantic-backed chunk (102) above the
+    /// tag-cloud chunk (103); under the v1.11.0 unweighted graph the tag
+    /// cloud wins (2×0.00123 < 4×0.00123), so this test fails on that code.
+    #[test]
+    fn graph_retrieve_weights_semantic_over_tag_cloud() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE relationships (
+                 from_entity_id INTEGER NOT NULL,
+                 to_entity_id INTEGER NOT NULL,
+                 relation_type TEXT NOT NULL,
+                 knowledge_id INTEGER
+             );
+             CREATE TABLE knowledge (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT,
+                 content TEXT NOT NULL,
+                 valid_to TEXT,
+                 flagged INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO entities (id, name) VALUES (1, 'alpha')", [])
+            .unwrap();
+        conn.execute("INSERT INTO entities (id, name) VALUES (2, 'hub')", [])
+            .unwrap();
+        conn.execute("INSERT INTO entities (id, name) VALUES (3, 'neon1')", [])
+            .unwrap();
+        conn.execute("INSERT INTO entities (id, name) VALUES (4, 'neon2')", [])
+            .unwrap();
+        for i in 0..100 {
+            conn.execute(
+                "INSERT INTO entities (id, name) VALUES (?1, ?2)",
+                rusqlite::params![11 + i, format!("tag{i}")],
+            )
+            .unwrap();
+        }
+        for (kid, text) in [
+            (101, "seed chunk"),
+            (102, "semantic chunk"),
+            (103, "tag cloud chunk"),
+        ] {
+            conn.execute(
+                "INSERT INTO knowledge (id, title, content) VALUES (?1, ?2, ?3)",
+                rusqlite::params![kid, text, text],
+            )
+            .unwrap();
+        }
+        // Seed → hub (semantic, chunk 101).
+        conn.execute(
+            "INSERT INTO relationships VALUES (1, 2, 'manages', 101)",
+            [],
+        )
+        .unwrap();
+        // Hub → 2 semantic neighbors, both backed by chunk 102.
+        conn.execute(
+            "INSERT INTO relationships VALUES (2, 3, 'works_at', 102)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO relationships VALUES (2, 4, 'works_at', 102)",
+            [],
+        )
+        .unwrap();
+        // Hub → 100 tag neighbors, one tagged chunk 103.
+        for i in 0..100 {
+            conn.execute(
+                "INSERT INTO relationships VALUES (2, ?1, 'tagged_with', 103)",
+                rusqlite::params![11 + i],
+            )
+            .unwrap();
+        }
+
+        let res = graph_retrieve(&conn, "which alpha thing", 8, false).unwrap();
+        assert_eq!(res[0].id, 101, "seed-backed chunk must win");
+        let pos = |id: i64| res.iter().position(|r| r.id == id).unwrap();
+        assert!(
+            pos(102) < pos(103),
+            "semantic-neighbor chunk (102) must rank above the tagged_with cloud (103)"
+        );
     }
 }
