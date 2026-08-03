@@ -12,6 +12,67 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-08-03
+
+**"Discern" — noise-aware graph retrieval + complexity-gated activation
+(light cut, roadmap-compliant).**
+
+The v1.11.0 graph leg learns to *discern*: taxonomy edges (`tagged_with` /
+`alias_of` — 94% of the live corpus's 2376 edges) weigh 0.1 against semantic
+relations, mega-hub outflow is damped (GAAMA `θ = 50`), and the graph leg is
+auto-engaged exactly when the query is hard — a `ClarifyQuery` query gets one
+bounded graph pass before the v1.5.0 abstention path gives up. **No LLM, no
+new schema, no re-ingest, no embeddings in the graph leg** — pure arithmetic
+over the existing tables at query time. Research basis: GAAMA
+(arXiv:2603.27910), MemORAI (arXiv:2605.01386), "Use Graph When It Needs"
+(arXiv:2602.03578); their *arithmetic* only — LLM extraction parts forbidden
+per the plan.
+
+### Added
+- **`src/search/graph_ppr.rs`**: `type_base_weight()` — `tagged_with`/
+  `alias_of` → 0.1, semantic types → 1.0, applied at aggregation (the pair
+  SQL now groups by `relation_type`; the weighted sums feed `build_graph`
+  unchanged); `SparseGraph::dampen_hubs(θ)` — per-source-node
+  `w_ij · min(1, θ/deg(i))`, θ = 50, applied to the reachable-bounded graph
+  before PPR. Both deterministic, bounded by the existing `MAX_VISITED`/
+  `MAX_PPR_ITER` caps, `#![deny(unsafe_code)]`.
+- **Complexity-gated graph rescue** (`src/search/mod.rs` +
+  `src/handlers/recall.rs`): when the calibrated estimator says
+  `ClarifyQuery` and the caller did not enable `graph`, one bounded
+  graph-augmented pass runs and fuses via the shared RRF two-pass fuse;
+  abstention is re-scoped to the final outcome (`low_confidence` only when
+  `ClarifyQuery` AND zero hits). Strictly additive — the rescued path
+  previously returned empty hits.
+- **`should_attempt_graph_rescue()`** — pure gate (recommendation, explicit
+  `graph`, kill switch); **`config::brain_graph_rescue_enabled()`** behind
+  `BRAIN_GRAPH_RESCUE_ENABLED` (default true; `false` restores exact v1.11.0
+  abstention). `RetrievalStrategy::HybridGraph` + `SearchTelemetry.graph_rescued`
+  for observability; `brain query` telemetry prints it.
+- **`fuse_pass_lists()`** — the two-pass RRF fuse extracted from
+  `fuse_prf_passes` (which is now a thin wrapper adding `prf_expanded`); the
+  graph rescue reuses it without claiming PRF expansion.
+
+### Changed
+- `recall.rs` `abstention_decision(recommendation, hits_empty)`: abstains
+  only on `ClarifyQuery` with an empty final hit list (v1.5.0 contract
+  preserved on the non-rescue path).
+- OpenAPI → 1.12.0 (`graph_rescued` on `SearchTelemetry`); README, ROADMAP,
+  AGENTS updated.
+
+### Fixed
+- Nothing regressed: the v1.11.0 unweighted graph ranked the `tagged_with`
+  cloud above semantic neighbors on mixed hubs — pinned by
+  `graph_retrieve_weights_semantic_over_tag_cloud` (verified: fails on the
+  old arithmetic).
+
+### Tests
+- 460 passed / 1 ignored (was 455; +5: `type_base_weight_downgrades_taxonomy_noise`,
+  `hub_dampening_scales_heavy_hubs_but_not_light`,
+  `graph_retrieve_weights_semantic_over_tag_cloud`,
+  `should_attempt_graph_rescue_matrix`,
+  `graph_rescue_fuse_does_not_mark_prf_expanded` + the abstention test's
+  rescue arm). clippy `-D warnings` + fmt clean.
+
 ## [1.11.0] — 2026-08-03
 
 **"Associate" — HippoRAG-2-style graph retrieval (light cut, roadmap-compliant).**
