@@ -8,6 +8,7 @@
 #![deny(unsafe_code)]
 
 use crate::config::{QualityConfig, MAX_SNIPPET_CHARS, SNIPPET_CONTEXT_CHARS};
+use crate::search::graph_ppr::graph_retrieve;
 use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualityEstimator};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
@@ -36,6 +37,7 @@ pub const RRF_OVERFETCH: usize = 20;
 pub enum SearchSource {
     Vector,
     Fts,
+    Graph,
     Both,
 }
 
@@ -67,6 +69,10 @@ pub struct Provenance {
     pub vector_rank: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fts_rank: Option<usize>,
+    /// v1.11.0 "Associate": rank assigned by the graph-PPR retriever
+    /// (0 = best). `None` when the graph leg didn't retrieve the document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph_rank: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fused_score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,6 +215,7 @@ pub struct SearchResult {
 fn provenance_is_empty(p: &Provenance) -> bool {
     p.vector_rank.is_none()
         && p.fts_rank.is_none()
+        && p.graph_rank.is_none()
         && p.fused_score.is_none()
         && p.rerank_score.is_none()
         && !p.rerank_truncated
@@ -524,6 +531,10 @@ pub struct SearchFilters {
     /// Distinct from `as_of` (revision/transaction-time point-in-time recall).
     /// Graphiti valid_at/invalid_at semantics (Context7-verified 2026-07-30).
     pub at: Option<String>,
+    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg
+    /// behind the existing vector + lexical fusion. Opt-in (the roadmap's
+    /// no-default-cost guardrail): `false` = the graph leg never runs.
+    pub graph: bool,
 }
 
 impl Default for SearchFilters {
@@ -542,6 +553,7 @@ impl Default for SearchFilters {
             evidence: false,
             freshness_tiebreak: true,
             at: None,
+            graph: false,
         }
     }
 }
@@ -588,6 +600,9 @@ pub struct SearchTelemetry {
     pub embed_ms: f32,
     pub vector_ms: f32,
     pub fts_ms: f32,
+    /// v1.11.0 "Associate": graph-PPR retrieval latency. `0` when the graph
+    /// leg was disabled (`graph=false`).
+    pub graph_ms: f32,
     pub fusion_ms: f32,
     pub prf_ms: f32,
     pub rerank_ms: f32,
@@ -595,6 +610,8 @@ pub struct SearchTelemetry {
     pub vec_candidates: usize,
     /// FTS retrieval candidates before RRF.
     pub fts_candidates: usize,
+    /// v1.11.0: graph-PPR candidates before RRF.
+    pub graph_candidates: usize,
     /// Results after RRF fusion.
     pub fused_count: usize,
     /// RRF k parameter used.
@@ -645,16 +662,21 @@ pub fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
 
 // ── Reciprocal Rank Fusion ─────────────────────────────────────────────────
 
-/// Reciprocal Rank Fusion (RRF). Merges two ranked result lists into one
+/// Reciprocal Rank Fusion (RRF). Merges the ranked result lists into one
 /// without learned weights: `score(d) = Σ 1/(k + rank_i(d))`. Pure and
 /// testable — operates only on the rank positions, never the raw scores
 /// (which are incomparable between cosine similarity and BM25).
+///
+/// v1.11.0 "Associate": a third, optional graph-PPR list folds in with the
+/// same formula. Pass `&[]` (or a graph-disabled empty list) for the
+/// legacy two-retriever behavior.
 ///
 /// Each input list MUST already be sorted best-first (rank 0 = strongest).
 /// Records per-retriever ranks and the fused score in each result's provenance.
 pub fn rrf_fuse(
     vec_results: &[SearchResult],
     fts_results: &[SearchResult],
+    graph_results: &[SearchResult],
     k: usize,
     limit: usize,
 ) -> Vec<SearchResult> {
@@ -670,24 +692,40 @@ pub fn rrf_fuse(
         .enumerate()
         .map(|(rank, r)| (r.id, rank))
         .collect();
+    let graph_rank: HashMap<i64, usize> = graph_results
+        .iter()
+        .enumerate()
+        .map(|(rank, r)| (r.id, rank))
+        .collect();
 
     let mut seen: HashSet<i64> = HashSet::new();
-    let mut fused: Vec<SearchResult> = Vec::with_capacity(vec_results.len() + fts_results.len());
-    for r in vec_results.iter().chain(fts_results.iter()) {
+    let mut fused: Vec<SearchResult> =
+        Vec::with_capacity(vec_results.len() + fts_results.len() + graph_results.len());
+    for r in vec_results
+        .iter()
+        .chain(fts_results.iter())
+        .chain(graph_results.iter())
+    {
         if !seen.insert(r.id) {
             continue;
         }
         let vr = vec_rank.get(&r.id).copied();
         let fr = fts_rank.get(&r.id).copied();
+        let gr = graph_rank.get(&r.id).copied();
         let vc = vr.map(|rank| 1.0 / (k as f32 + rank as f32)).unwrap_or(0.0);
         let fc = fr.map(|rank| 1.0 / (k as f32 + rank as f32)).unwrap_or(0.0);
-        let source = match (vc > 0.0, fc > 0.0) {
-            (true, true) => SearchSource::Both,
-            (true, false) => SearchSource::Vector,
-            (false, true) => SearchSource::Fts,
-            (false, false) => continue,
+        let gc = gr.map(|rank| 1.0 / (k as f32 + rank as f32)).unwrap_or(0.0);
+        let source = match (vc > 0.0, fc > 0.0, gc > 0.0) {
+            (true, true, true) => SearchSource::Both,
+            (true, true, false) => SearchSource::Both,
+            (true, false, true) => SearchSource::Both,
+            (false, true, true) => SearchSource::Both,
+            (true, false, false) => SearchSource::Vector,
+            (false, true, false) => SearchSource::Fts,
+            (false, false, true) => SearchSource::Graph,
+            (false, false, false) => continue,
         };
-        let fused_score = vc + fc;
+        let fused_score = vc + fc + gc;
         fused.push(SearchResult {
             id: r.id,
             score: fused_score,
@@ -699,6 +737,7 @@ pub fn rrf_fuse(
             provenance: Provenance {
                 vector_rank: vr,
                 fts_rank: fr,
+                graph_rank: gr,
                 fused_score: Some(fused_score),
                 rerank_score: None,
                 rerank_truncated: false,
@@ -1298,7 +1337,14 @@ fn perform_search_legacy(
 
 /// Result of the concurrent vector/FTS retrieval scope: each stage yields its
 /// results plus the stage's own latency in milliseconds.
-type ScopedRetrieval = Result<((Vec<SearchResult>, f32), (Vec<SearchResult>, f32)), anyhow::Error>;
+type ScopedRetrieval = Result<
+    (
+        (Vec<SearchResult>, f32),
+        (Vec<SearchResult>, f32),
+        (Vec<SearchResult>, f32),
+    ),
+    anyhow::Error,
+>;
 
 /// Hybrid search: run vector (vec0 KNN) and lexical (FTS5 BM25) retrieval
 /// concurrently on independent read connections, then fuse with RRF.
@@ -1357,6 +1403,7 @@ pub fn perform_search_traced(
             evidence: filters.evidence,
             freshness_tiebreak: filters.freshness_tiebreak,
             at: normalized_at,
+            graph: filters.graph,
         }
     } else {
         filters.clone()
@@ -1374,60 +1421,103 @@ pub fn perform_search_traced(
     let fq = q.clone();
 
     let t_par = Instant::now();
-    let ((vec_res, _), (fts_res, _)) = std::thread::scope(|scope| -> ScopedRetrieval {
-        let vh = scope.spawn(move || -> Result<(Vec<SearchResult>, f32)> {
-            let conn = vec_pool.get().context("DB connection failed (vector)")?;
-            let t_vec = Instant::now();
-            let vec_count: i64 = conn
-                .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
-                .unwrap_or(0);
-            let res = if vec_count == 0 {
-                perform_search_legacy(&conn, &vq, overfetch)
+    let graph_q = q.clone();
+    let graph_filters = filters.clone();
+    let graph_enabled = filters.graph;
+    let graph_pool = pool.clone();
+    let ((vec_res, _), (fts_res, _), (graph_res, graph_ms)) =
+        std::thread::scope(|scope| -> ScopedRetrieval {
+            let vh = scope.spawn(move || -> Result<(Vec<SearchResult>, f32)> {
+                let conn = vec_pool.get().context("DB connection failed (vector)")?;
+                let t_vec = Instant::now();
+                let vec_count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
+                    .unwrap_or(0);
+                let res = if vec_count == 0 {
+                    perform_search_legacy(&conn, &vq, overfetch)
+                } else {
+                    vec0_knn(&conn, &vq, overfetch, &vfilters)
+                }?;
+                Ok((res, t_vec.elapsed().as_secs_f32() * 1000.0))
+            });
+            let fh = scope.spawn(move || -> (Vec<SearchResult>, f32) {
+                let t_fts = Instant::now();
+                let res = match fts_pool.get() {
+                    Ok(conn) => fts_search(&conn, &fq, overfetch, &ffilters).unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                (res, t_fts.elapsed().as_secs_f32() * 1000.0)
+            });
+            // v1.11.0 "Associate": graph-PPR retriever as a third RRF leg. Runs
+            // concurrently on its own pooled read connection (same pattern as the
+            // vector/FTS stages) so the disabled path never pays for the graph.
+            // Deterministic, zero-token, no embeddings.
+            let gh = if graph_enabled {
+                let gpool = graph_pool.clone();
+                let gfilters = graph_filters.clone();
+                let gq = graph_q.clone();
+                Some(scope.spawn(move || -> (Vec<SearchResult>, f32) {
+                    let t_g = Instant::now();
+                    let res = match gpool.get() {
+                        Ok(conn) => graph_retrieve(&conn, &gq, overfetch, gfilters.include_flagged)
+                            .unwrap_or_default(),
+                        Err(_) => Vec::new(),
+                    };
+                    (res, t_g.elapsed().as_secs_f32() * 1000.0)
+                }))
             } else {
-                vec0_knn(&conn, &vq, overfetch, &vfilters)
-            }?;
-            Ok((res, t_vec.elapsed().as_secs_f32() * 1000.0))
-        });
-        let fh = scope.spawn(move || -> (Vec<SearchResult>, f32) {
-            let t_fts = Instant::now();
-            let res = match fts_pool.get() {
-                Ok(conn) => fts_search(&conn, &fq, overfetch, &ffilters).unwrap_or_default(),
-                Err(_) => Vec::new(),
+                None
             };
-            (res, t_fts.elapsed().as_secs_f32() * 1000.0)
-        });
-        let (vec_res, vec_ms) = vh.join().unwrap_or_else(|_| Ok((Vec::new(), 0.0)))?;
-        let (fts_res, fts_ms) = fh.join().unwrap_or((Vec::new(), 0.0));
-        tel.retrieval_ms_vec = vec_ms;
-        tel.retrieval_ms_fts = fts_ms;
-        Ok(((vec_res, vec_ms), (fts_res, fts_ms)))
-    })?;
+            let (vec_res, vec_ms) = vh.join().unwrap_or_else(|_| Ok((Vec::new(), 0.0)))?;
+            let (fts_res, fts_ms) = fh.join().unwrap_or((Vec::new(), 0.0));
+            let (graph_res, graph_ms) = match gh {
+                Some(h) => h.join().unwrap_or((Vec::new(), 0.0)),
+                None => (Vec::new(), 0.0),
+            };
+            tel.retrieval_ms_vec = vec_ms;
+            tel.retrieval_ms_fts = fts_ms;
+            Ok(((vec_res, vec_ms), (fts_res, fts_ms), (graph_res, graph_ms)))
+        })?;
     let mut vec_results = vec_res;
     let mut fts_results = fts_res;
+    let mut graph_results = graph_res;
     let par_ms = t_par.elapsed().as_secs_f32() * 1000.0;
-    // Concurrent: attribute wall time to both stages for a conservative view.
+    // Concurrent: attribute wall time to all enabled stages.
     tel.vector_ms = par_ms;
     tel.fts_ms = par_ms;
+    tel.graph_ms = if graph_enabled { graph_ms } else { 0.0 };
+    tel.vec_candidates = vec_results.len();
+    tel.fts_candidates = fts_results.len();
+    tel.graph_candidates = graph_results.len();
 
     let t_fuse = Instant::now();
-    let mut fused = if fts_results.is_empty() {
+    let mut fused = if fts_results.is_empty() && graph_results.is_empty() {
         for (rank, r) in vec_results.iter_mut().enumerate() {
             r.source = Some(SearchSource::Vector);
             r.provenance.vector_rank = Some(rank);
         }
         vec_results.truncate(k);
         vec_results
-    } else if vec_results.is_empty() {
+    } else if vec_results.is_empty() && graph_results.is_empty() {
         for (rank, r) in fts_results.iter_mut().enumerate() {
             r.source = Some(SearchSource::Fts);
             r.provenance.fts_rank = Some(rank);
         }
         fts_results.truncate(k);
         fts_results
+    } else if vec_results.is_empty() && fts_results.is_empty() {
+        // Graph-only retrieval (sparse/unlinked corpus): tag and truncate.
+        for (rank, r) in graph_results.iter_mut().enumerate() {
+            r.source = Some(SearchSource::Graph);
+            r.provenance.graph_rank = Some(rank);
+        }
+        graph_results.truncate(k);
+        graph_results
     } else {
-        rrf_fuse(&vec_results, &fts_results, RRF_K, k)
+        rrf_fuse(&vec_results, &fts_results, &graph_results, RRF_K, k)
     };
     tel.fusion_ms = t_fuse.elapsed().as_secs_f32() * 1000.0;
+    tel.fused_count = fused.len();
 
     // Set top_retrieval_mode on the best result for provenance.
     if let Some(top) = fused.first_mut() {
@@ -1625,6 +1715,9 @@ pub mod quality;
 
 // ── v1.4.0 "Calibrate" M2: budgeted monotone submodular evidence packing ──
 pub mod packing;
+
+// ── v1.11.0 "Associate": deterministic PPR over the existing KG ──────────
+pub mod graph_ppr;
 
 #[cfg(test)]
 mod tests;

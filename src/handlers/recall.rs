@@ -117,6 +117,11 @@ pub struct RecallRequest {
     /// in telemetry when `provenance=true`.
     #[serde(default)]
     pub gold_answer: Option<String>,
+    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg.
+    /// Opt-in; default `false` keeps the two-retriever (vector + FTS) path
+    /// unchanged. Deterministic, zero-token, no embeddings.
+    #[serde(default)]
+    pub graph: bool,
 }
 
 fn default_limit() -> u32 {
@@ -267,6 +272,7 @@ pub async fn recall(
             .map(|s| crate::search::normalize_since(s.trim()))
             .transpose()
             .map_err(|e| HandlerError::bad_request("at_invalid", e.to_string()))?,
+        graph: req.graph,
         ..Default::default()
     };
     let (_qtext, base_filters) = match doc.into_filters() {
@@ -460,6 +466,7 @@ fn map_source(src: Option<crate::SearchSource>) -> HitSource {
     match src {
         Some(SearchSource::Vector) => HitSource::Vector,
         Some(SearchSource::Fts) => HitSource::Fts,
+        Some(SearchSource::Graph) => HitSource::Graph,
         Some(SearchSource::Both) => HitSource::Both,
         None => HitSource::Vector,
     }
@@ -572,6 +579,7 @@ mod tests {
             at: None,
             max_context_tokens: None,
             gold_answer: None,
+            graph: false,
         }
     }
 
@@ -604,6 +612,7 @@ mod tests {
             at: None,
             max_context_tokens: None,
             gold_answer: None,
+            graph: false,
         };
         let err = validate_recall(&r).unwrap_err();
         assert_eq!(err.inner.code, "query_too_long");

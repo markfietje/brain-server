@@ -77,6 +77,10 @@ pub struct QueryDoc {
     /// instant are returned. Distinct from `as_of` (transaction-time recall).
     #[serde(default)]
     pub at: Option<String>,
+    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg
+    /// (opt-in; default `false` keeps the two-retriever path unchanged).
+    #[serde(default)]
+    pub graph: bool,
 }
 
 impl QueryDoc {
@@ -136,6 +140,7 @@ impl QueryDoc {
                 evidence: self.evidence,
                 freshness_tiebreak: true,
                 at,
+                graph: self.graph,
             },
         ))
     }
@@ -161,6 +166,7 @@ impl Default for QueryDoc {
             as_of: None,
             evidence: false,
             at: None,
+            graph: false,
         }
     }
 }

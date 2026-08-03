@@ -25,7 +25,7 @@ fn sr(id: i64, score: f32, content: &str) -> SearchResult {
 fn rrf_dedupe_and_source_tagging() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
     let fts = vec![sr(1, 5.0, "a"), sr(3, 3.0, "c")];
-    let fused = rrf_fuse(&vec, &fts, RRF_K, 10);
+    let fused = rrf_fuse(&vec, &fts, &[], RRF_K, 10);
 
     assert_eq!(fused.len(), 3, "should dedupe to 3 unique ids");
     assert_eq!(fused[0].id, 1);
@@ -42,7 +42,7 @@ fn rrf_dedupe_and_source_tagging() {
 fn rrf_formula_correctness() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
     let fts = vec![sr(1, 5.0, "a")];
-    let fused = rrf_fuse(&vec, &fts, 60, 10);
+    let fused = rrf_fuse(&vec, &fts, &[], 60, 10);
 
     let expected_top = 2.0 / 60.0;
     let expected_second = 1.0 / 61.0;
@@ -62,24 +62,57 @@ fn rrf_formula_correctness() {
 fn rrf_caps_at_limit() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.8, "b"), sr(3, 0.7, "c")];
     let fts = vec![sr(4, 5.0, "d"), sr(5, 3.0, "e")];
-    let fused = rrf_fuse(&vec, &fts, 60, 2);
+    let fused = rrf_fuse(&vec, &fts, &[], 60, 2);
     assert_eq!(fused.len(), 2, "should cap at limit");
 }
 
 #[test]
 fn rrf_empty_inputs() {
-    assert!(rrf_fuse(&[], &[], 60, 5).is_empty());
-    assert_eq!(rrf_fuse(&[sr(1, 0.9, "a")], &[], 60, 5).len(), 1);
-    assert_eq!(rrf_fuse(&[], &[sr(1, 5.0, "a")], 60, 5).len(), 1);
+    assert!(rrf_fuse(&[], &[], &[], 60, 5).is_empty());
+    assert_eq!(rrf_fuse(&[sr(1, 0.9, "a")], &[], &[], 60, 5).len(), 1);
+    assert_eq!(rrf_fuse(&[], &[sr(1, 5.0, "a")], &[], 60, 5).len(), 1);
 }
 
 #[test]
 fn rrf_cross_ranked_rescue() {
     let vec = vec![sr(99, 0.95, "x"), sr(42, 0.30, "y"), sr(7, 0.25, "z")];
     let fts = vec![sr(42, 8.0, "y"), sr(7, 5.0, "z"), sr(99, 1.0, "x")];
-    let fused = rrf_fuse(&vec, &fts, 60, 3);
+    let fused = rrf_fuse(&vec, &fts, &[], 60, 3);
     assert_eq!(fused.len(), 3);
     assert_eq!(fused[0].id, 42, "FTS-rank-0 + vec-rank-1 should win");
+}
+
+/// Plan verification #3: the v1.11.0 "Associate" graph leg folds into the
+/// existing RRF merge with the same formula — no learned weights, no special
+/// case. A document retrieved by graph only (rank 0) participates on equal
+/// footing with vector/FTS retrievers; a graph-only hit is tagged `Graph` and
+/// carries `graph_rank`.
+#[test]
+fn rrf_fuses_graph_leg_with_vector_and_fts() {
+    let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
+    let fts = vec![sr(2, 5.0, "b"), sr(3, 3.0, "c")];
+    let graph = vec![sr(3, 1.0, "c"), sr(4, 0.8, "d")];
+    let fused = rrf_fuse(&vec, &fts, &graph, RRF_K, 10);
+
+    assert_eq!(fused.len(), 4, "all four unique ids present");
+    // id 3 appears in both FTS (rank 1) and graph (rank 0): Both source.
+    let by_id: HashMap<i64, SearchResult> = fused.iter().cloned().map(|r| (r.id, r)).collect();
+    assert_eq!(by_id.get(&3).unwrap().source, Some(SearchSource::Both));
+    assert_eq!(by_id.get(&3).unwrap().provenance.fts_rank, Some(1));
+    assert_eq!(by_id.get(&3).unwrap().provenance.graph_rank, Some(0));
+    // id 4 is graph-only → Graph source + graph_rank, no vector/fts ranks.
+    assert_eq!(by_id.get(&4).unwrap().source, Some(SearchSource::Graph));
+    assert_eq!(by_id.get(&4).unwrap().provenance.graph_rank, Some(1));
+    assert_eq!(by_id.get(&4).unwrap().provenance.vector_rank, None);
+    assert_eq!(by_id.get(&4).unwrap().provenance.fts_rank, None);
+    // id 1 is vector-only; its fused score is unchanged by the graph list.
+    assert_eq!(by_id.get(&1).unwrap().source, Some(SearchSource::Vector));
+    assert!((by_id.get(&1).unwrap().score - 1.0 / 60.0).abs() < 1e-6);
+    // A graph-only hit rescues a document neither dense nor lexical leg found.
+    assert!(
+        by_id.get(&4).unwrap().score > 0.0,
+        "graph-only hit must contribute to the fused score"
+    );
 }
 
 #[test]

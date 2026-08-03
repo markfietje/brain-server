@@ -228,6 +228,7 @@ mod tests {
             provenance: Provenance {
                 vector_rank: vr,
                 fts_rank: fr,
+                graph_rank: None,
                 fused_score: Some(score),
                 rerank_score: None,
                 rerank_truncated: false,
