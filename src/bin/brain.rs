@@ -440,6 +440,8 @@ fn print_telemetry(tel: &serde_json::Value) {
         "rrf_k",
         "vec_candidates",
         "fts_candidates",
+        "graph_candidates",
+        "graph_ms",
         "confidence",
         "recommendation",
     ] {
