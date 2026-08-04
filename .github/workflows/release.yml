@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build binaries + create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries (linux x86_64)
+        run: cargo build --release
+        continue-on-error: true
+
+      - name: Build release binaries (linux aarch64 via cross)
+        run: |
+          cargo install cross --locked
+          cross build --release --target aarch64-unknown-linux-gnu
+        continue-on-error: true
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          for b in brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh; do
+            cp -f "target/release/$b" "dist/${b}-linux-x86_64" 2>/dev/null || true
+            cp -f "target/aarch64-unknown-linux-gnu/release/$b" "dist/${b}-linux-aarch64" 2>/dev/null || true
+          done
+          ls -la dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: false
