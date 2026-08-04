@@ -1,0 +1,23 @@
+# cargo-audit configuration (consumed by the CI `cargo audit` job).
+#
+# RUSTSEC-2023-0071 (rsa 0.9.10 "Marvin Attack", timing sidechannel on RSA
+# private-key operations, severity 5.9) — accepted with documentation:
+#
+# 1. NO fixed version exists anywhere. Verified 2026-08-04: the advisory is
+#    still active against rsa 0.10.0-rc.18, and jsonwebtoken 11.0.0 (latest)
+#    still depends on rsa ^0.9.6, so bumping the JWT stack cannot clear it.
+# 2. Threat model: brain-server mints/verifies JWTs for its own local daemon
+#    (loopback, single-tenant default). The advisory's own workaround is that
+#    local use on a non-compromised computer is acceptable — an attacker with
+#    local process timing access already controls the machine.
+# 3. Defense in depth: signing keys are PEM files at mode 0600 in a 0700 dir
+#    (enforced + tested), and deployments that must minimize RSA exposure
+#    can issue EdDSA (Ed25519) keys, which use no RSA and have been supported
+#    since v1.2.0.
+# 4. Re-audit trigger: this ignore should be revisited whenever rsa publishes
+#    a patched release (watch the advisory page) or a dependency stops
+#    depending on rsa.
+#
+# Re-check with: cargo audit (exit 0 required for green CI).
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

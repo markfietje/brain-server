@@ -12,6 +12,46 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.12.2] — 2026-08-04
+
+**"Harden" — audit-fix release (refresh-race serialization + dependency bumps + green CI).**
+
+Deep-stability audit of v1.12.1 surfaced one security race, one stale
+dependency stack, and one permanently-red CI job. All three closed.
+
+### Changes
+- **`/auth/refresh` check-then-act race fixed** (`src/auth/revocation.rs`):
+  `record_refresh_use` + `rotate_chain` ran as two separate steps, so two
+  concurrent presentations of the SAME refresh token could both read
+  `current_jti == presented`, both pass, and both mint — silently defeating
+  reuse detection. New `record_and_rotate` runs the check + rotation under
+  `BEGIN IMMEDIATE`: presentations serialize, the loser is detected as reuse,
+  and the family is burned exactly once (the burn is committed even when the
+  error is returned). Mutation-proven by
+  `concurrent_refresh_serializes_exactly_one_winner` (removing the
+  `BEGIN IMMEDIATE` makes it fail).
+- **Database stack bumped**: rusqlite 0.38.0 → 0.40.1, sqlite-vec 0.1.6 →
+  0.1.9, r2d2_sqlite 0.32.0 → 0.35.0. Bundled SQLite rises 3.51.1 → 3.53.2
+  (fts3_tokenizer hardening + CVE-2022-35737-related security fixes). The
+  v1.11.0-comment concern (`savepoint_with_name(&mut self)`) is unused — the
+  codebase uses raw-SQL SAVEPOINT (v1.1.2). `sqlite3_vec_init` FFI unchanged.
+- **CI `cargo audit` job turned green**: the sole red job since v1.12.1 was
+  RUSTSEC-2023-0071 (rsa 0.9.10 "Marvin" timing sidechannel). Verified
+  2026-08-04 that **no fixed release exists anywhere** (rsa 0.10.0-rc.18 and
+  jsonwebtoken 11 both still depend on the affected rsa). Accepted with
+  documentation in `.cargo/audit.toml` (local-daemon timing model, 0600 keys,
+  EdDSA keys avoid RSA entirely since v1.2); rows added to `SECURITY.md` +
+  `THREAT_MODEL.md`. Two unmaintained-crate *warnings* remain (number_prefix,
+  paste — transitive via model2vec-rs/tokenizers, no failing impact).
+- **Docs**: README/CHANGELOG/AGENTS version bump; `.cargo/audit.toml` created.
+
+### Verification
+- `cargo test --features bench,migrate`: **466 passed, 1 ignored** (was 465;
+  +1 race regression test).
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean. `cargo audit`: exit 0.
+- `cargo build --release --features bench,migrate`: all 5 binaries clean.
+
 ## [1.12.1] — 2026-08-04
 
 **"Harden" — AuthZ wiring completion (closes the v1.2 S1 audit finding).**

@@ -101,6 +101,7 @@ against the controls below, see [`SECURITY.md`](./SECURITY.md).
 | **I**nformation disclosure | Source leaks secrets | Audited; no secrets in repo; `.env*` in `.gitignore` | ✅ |
 | **D**enial of service | CVE in dep causes crash | `CatchPanicLayer`; advisory monitoring; rapid patch process | ✅ |
 | **E**levation of privilege | Dep with CVE pre-auth | Pin versions; `cargo audit --deny warnings` in CI | ✅ |
+| **T**ampering | Timing sidechannel on RSA private-key ops (`rsa` crate, RUSTSEC-2023-0071 "Marvin") | No fixed release exists anywhere (verified 2026-08-04: `rsa` 0.10.0-rc.18 and `jsonwebtoken` 11 both still affected). Accepted with documentation in `.cargo/audit.toml`: local-daemon timing model (attacker with local timing access already owns the machine), keys at 0600, EdDSA (Ed25519) keys avoid RSA entirely and are supported since v1.2 | audit.toml ignore + docs |
 
 ### Asset 5: Network transport
 

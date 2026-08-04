@@ -85,6 +85,7 @@ ownership... log access control failures."
 | Pinned direct deps in `Cargo.toml` | repo | ✅ |
 | Optional features for high-surface deps (reqwest, jsonwebtoken) | Cargo features | ✅ |
 | Reproducible release build | `Cargo.lock`, `opt-level="z"`, `lto="fat"` | ✅ |
+| Known-issue ledger: RUSTSEC-2023-0071 (rsa "Marvin") — no fix exists in any release (verified 2026-08-04); accepted + documented in `.cargo/audit.toml`; local-daemon timing model, keys 0600, EdDSA avoids RSA entirely | `.cargo/audit.toml` + `THREAT_MODEL.md` | ✅ accepted |
 
 ### A04:2025 — Cryptographic Failures ✅
 
@@ -97,6 +98,7 @@ ownership... log access control failures."
 | HMAC-SHA256 for webhook verification (v0.9.7) | `webhook.rs` | ✅ |
 | SQLCipher at rest (AES-256 per-page) | KMS trait | 🚧 v3.7 |
 | No hardcoded secrets (env / file / KMS) | all of `config.rs` | ✅ |
+| Dependency timing sidechannels (RSA "Marvin", RUSTSEC-2023-0071) | documented accept: `.cargo/audit.toml`; EdDSA keys avoid RSA (supported since v1.2) | ✅ accepted |
 
 **Citation:** OWASP Secrets Management Cheat Sheet — "Transitioning to
 passwordless authentication shifts security requirements toward protecting

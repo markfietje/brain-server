@@ -23,9 +23,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::auth::jwt::{verify_access_token, TokenType};
-use crate::auth::revocation::{
-    record_refresh_use, revoke, revoke_chain, rotate_chain, RefreshError,
-};
+use crate::auth::revocation::{record_and_rotate, revoke, revoke_chain, RefreshError};
 use crate::auth::{AuthError, Claims};
 use crate::AppState;
 
@@ -143,39 +141,38 @@ pub async fn refresh(
     let refresh_token = req.refresh_token.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<TokenPair, AuthHandlerError> {
         let conn = pool.get().map_err(|_| AuthHandlerError::internal())?;
-        match record_refresh_use(&conn, &chain_id, &claims.iss, &claims.jti) {
+        let signing = key_store
+            .signing_key()
+            .ok_or_else(AuthHandlerError::no_signing_key)?;
+        let encoding_key = build_encoding_key(signing)?;
+        let new_pair = mint_pair(
+            &signing.kid,
+            &encoding_key,
+            signing.verifying.alg,
+            &issuer_clone,
+            &audience_clone,
+            &claims,
+            &chain_id,
+        )
+        .map_err(AuthHandlerError::internal_msg)?;
+        // v1.12.2 audit: `record_and_rotate` runs the reuse check + chain
+        // rotation under `BEGIN IMMEDIATE` so two concurrent presentations of
+        // the same refresh token cannot both pass (the prior check-then-act
+        // race). On reuse it burns the chain exactly once and returns the
+        // error after the burn is committed.
+        match record_and_rotate(
+            &conn,
+            &chain_id,
+            &claims.iss,
+            &extract_jti(&new_pair.refresh_token).unwrap_or_default(),
+            &claims.jti,
+            claims.exp,
+        ) {
             Ok(()) => {
-                // Legitimate refresh — rotate the chain.
-                let signing = key_store
-                    .signing_key()
-                    .ok_or_else(AuthHandlerError::no_signing_key)?;
-                let encoding_key = build_encoding_key(signing)?;
-                let new_pair = mint_pair(
-                    &signing.kid,
-                    &encoding_key,
-                    signing.verifying.alg,
-                    &issuer_clone,
-                    &audience_clone,
-                    &claims,
-                    &chain_id,
-                )
-                .map_err(AuthHandlerError::internal_msg)?;
-                // Rotate: revoke the old refresh jti, point the chain at the new one.
-                rotate_chain(
-                    &conn,
-                    &chain_id,
-                    &claims.iss,
-                    &extract_jti(&new_pair.refresh_token).unwrap_or_default(),
-                    &claims.jti,
-                    claims.exp,
-                )
-                .map_err(|_| AuthHandlerError::internal())?;
                 rev_cache.invalidate(&claims.jti, &claims.iss);
                 Ok(new_pair)
             }
             Err(RefreshError::ReuseDetected) | Err(RefreshError::ChainBurned) => {
-                // Reuse! Burn the whole family.
-                let _ = revoke_chain(&conn, &chain_id, &claims.iss, None, "reuse_detected");
                 Err(AuthHandlerError::reuse_detected())
             }
             Err(_) => Err(AuthHandlerError::internal()),

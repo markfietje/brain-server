@@ -285,6 +285,54 @@ pub fn rotate_chain(
     Ok(())
 }
 
+/// Check + rotate atomically under `BEGIN IMMEDIATE`. The 2026-08-04 audit
+/// (v1.12.2 "Harden") found that `record_refresh_use` + `rotate_chain` as two
+/// separate steps had a check-then-act race: two concurrent presentations of
+/// the SAME refresh token could both read `current_jti == presented`, both
+/// pass, and both mint — silently defeating reuse detection for that token.
+/// `BEGIN IMMEDIATE` takes the write lock up front, so presentations
+/// serialize: the first rotates the chain, the second reads the NEW
+/// `current_jti` and is detected as reuse (chain burned, exactly once).
+///
+/// On `ReuseDetected`/`ChainBurned` the chain burn is committed (that is the
+/// point of detection) before the error is returned. On any other error the
+/// transaction rolls back — no partial state.
+pub fn record_and_rotate(
+    conn: &Connection,
+    chain_id: &str,
+    iss: &str,
+    new_jti: &str,
+    presented_jti: &str,
+    old_expires_at: u64,
+) -> Result<(), RefreshError> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match record_refresh_use(conn, chain_id, iss, presented_jti) {
+        Ok(()) => {
+            let r = rotate_chain(conn, chain_id, iss, new_jti, presented_jti, old_expires_at);
+            match r {
+                Ok(()) => {
+                    conn.execute_batch("COMMIT")?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e.into())
+                }
+            }
+        }
+        Err(e @ (RefreshError::ReuseDetected | RefreshError::ChainBurned)) => {
+            // Burn the family (idempotent), commit the burn, then report reuse.
+            let _ = revoke_chain(conn, chain_id, iss, None, "reuse_detected");
+            let _ = conn.execute_batch("COMMIT");
+            Err(e)
+        }
+        Err(e @ RefreshError::Rusqlite(_)) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum RefreshError {
     /// A refresh token from a non-current position in the chain was presented.
@@ -311,11 +359,9 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
-    fn mem_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE revoked_tokens (
+    const SCHEMA: &str = "CREATE TABLE revoked_tokens (
                 jti TEXT NOT NULL,
                 iss TEXT NOT NULL,
                 sub TEXT,
@@ -335,10 +381,54 @@ mod tests {
                 first_seen INTEGER NOT NULL,
                 burned_at INTEGER
              );
-             CREATE INDEX idx_refresh_chain ON refresh_chains(chain_id, iss);",
-        )
-        .unwrap();
+             CREATE INDEX idx_refresh_chain ON refresh_chains(chain_id, iss);";
+
+    fn mem_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
         conn
+    }
+
+    #[test]
+    fn concurrent_refresh_serializes_exactly_one_winner() {
+        // The 2026-08-04 audit race regression: without `BEGIN IMMEDIATE` in
+        // `record_and_rotate`, two threads presenting the SAME refresh token
+        // simultaneously both read "no prior chain" and both win — silently
+        // defeating reuse detection. With serialization, the second presenter
+        // sees the rotated chain and is caught as reuse; the family is burned.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("race.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+        }
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let b = barrier.clone();
+            let p = path.clone();
+            handles.push(std::thread::spawn(move || {
+                b.wait();
+                let conn = Connection::open(&p).unwrap();
+                conn.busy_timeout(Duration::from_secs(10)).unwrap();
+                record_and_rotate(&conn, "chain-race", "iss", "rt-new", "rt-presented", 9999)
+            }));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let wins = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!(
+            wins, 1,
+            "exactly one concurrent refresh presentation must win: {results:?}"
+        );
+        // The reuse detection burned the family: no token in the chain is
+        // usable afterward (winner's rotation happened, then the burn).
+        let conn = Connection::open(&path).unwrap();
+        let err =
+            record_and_rotate(&conn, "chain-race", "iss", "rt-new2", "rt-new", 9999).unwrap_err();
+        assert!(
+            matches!(err, RefreshError::ReuseDetected | RefreshError::ChainBurned),
+            "post-race family must be dead, got {err:?}"
+        );
     }
 
     #[test]
