@@ -48,9 +48,12 @@ brain-server.pid
 # Internal / pre-release documents (not shipped with source)
 /AGENTS.md
 /IMPLEMENTATION_PLAN_*.md
+/IMPLEMENTATION_ROADMAP_*.md
 /PLUGIN_INTEGRATION.md
 /ROADMAP.md
 /REALITY_CHECK.md
 /POSITIONING.md
 /IMPROVEMENTS.md
 /TODO.md
+/landing.html
+/landing-trust.html
