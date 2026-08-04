@@ -12,6 +12,65 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-08-04
+
+**"Harden" — AuthZ wiring completion (closes the v1.2 S1 audit finding).**
+
+The v1.2.0 AuthZ layer shipped with `authorize()` called from ~15 handlers and
+**20 routes unwired** — every one of those relied on the middleware's "any
+valid bearer passes" alone. This release completes the wiring: every
+non-public route now enforces its §3.3 matrix action at handler entry.
+
+### Changes
+- **20 previously-ungated handlers wired** with the matrix action:
+  - Read: `GET /search`, `GET /stats` (domain-scoped), `GET /get/{id}`,
+    `POST /multi-get`, `GET /graph/entity/{name}`, `GET /graph/relations`,
+    `GET /graph/traverse` (all `X-Brain-Domain`-scoped), `GET /quarantine`,
+    `GET /metrics`, `POST /recall` (domain-scoped), `POST /verify`
+    (domain-scoped), `POST /consolidate/propose`, `GET /connectors`,
+    `GET /domains`, `GET /suggest/metrics`, `GET /procedure/{id}/steps`
+  - Write: `POST /v1/embeddings`
+  - Admin: `GET /audit`, `GET /audit/verify`, `POST /auth/revoke` (the route
+    comment always said "requires admin auth" — now enforced)
+- **Two actions upgraded to the matrix**: `POST /reindex` and
+  `DELETE /memory/{id}` were Write; §3.3 puts both on the Admin surface.
+- **`/audit` tenant scoping**: new `handlers::audit_scope()` — a principal can
+  only ever read its own tenant's rows; requesting another tenant's filter is
+  a 403 (the matrix's "cross-tenant forbidden"). Superuser (`None` principal,
+  opaque mode) keeps the v1.1 passthrough.
+- **`AuthHandlerError::forbidden()`** for the revoke gate.
+
+### Tests (+5 → 465 passed, 1 ignored)
+- `authz_gates_cover_every_non_public_route` — a 40-route contract table
+  (mirrors `test_openapi_covers_routes`) whose source-scan asserts every
+  handler body calls `authorize()` with the matrix action. Mutation-proven:
+  a wrong action in the table fails the test. A route shipped without a gate
+  fails it too.
+- `auth_middleware_enforces_presentation_and_public_bypass` +
+  `jwt_middleware_requires_jws_in_jwt_mode` — router-level middleware tests
+  (new `tower` dev-dep, already in the lock): missing/wrong token → 401,
+  valid opaque token → pass, public + `/webhooks/*` bypass, JWT mode 401s
+  without a valid JWS.
+- `audit_scope_forces_own_tenant_and_blocks_cross_tenant` +
+  `audit_scope_none_principal_passes_requested_tenant_through`.
+
+### Back-compat (unchanged behavior in default mode)
+- `None` principal = superuser: opaque-token mode has no tenants, so every
+  existing install keeps working with zero config change. In JWT mode, opaque
+  tokens are already rejected by the JWT layer, so the superuser path is
+  unreachable there.
+- `/webhooks/{kind}` remains HMAC-verified inside the handler (GitHub cannot
+  present a brain bearer token) — by design, not a gap.
+- Public routes (`/health`, `/ready`, `/version`, `/openapi.yaml`,
+  `/.well-known/*`, `/auth/refresh`, `/auth/logout`) stay gate-free.
+
+### Honest ceilings (carried into v2.0)
+- The wiring-guard table is hand-maintained (same convention as the OpenAPI
+  coverage test): a new route needs a table row + a gate, or the test fails.
+- `?cross_domain=true` on `/graph/traverse` gates on the base domain only.
+- Distributed revocation, hot key reload, EC/Ed JWKS emission remain v2.1+
+  (unchanged from v1.2).
+
 ## [1.12.0] — 2026-08-03
 
 **"Discern" — noise-aware graph retrieval + complexity-gated activation

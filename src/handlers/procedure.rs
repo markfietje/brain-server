@@ -290,8 +290,11 @@ pub struct ProcedureStepsResponse {
 /// `GET /procedure/{id}/steps` — the ordered step chain for a procedure.
 pub async fn steps(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<ProcedureStepsResponse>, HandlerError> {
+    // v1.12.1 "Harden": AuthZ read gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let procedure_id = id;
     let view =

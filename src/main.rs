@@ -771,8 +771,15 @@ async fn add_chunk(
 
 async fn search(
     State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Query(p): Query<SearchParams>,
 ) -> Json<serde_json::Value> {
+    // v1.12.1 "Harden": AuthZ read gate. Legacy shape — see `/add`.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
+    {
+        return Json(serde_json::json!({ "success": false, "error": e.inner.message }));
+    }
     let q = p.q.trim().to_string();
     if q.len() > MAX_QUERY_LENGTH {
         return Json(serde_json::json!({ "success": false, "error": "Query too long" }));
@@ -1385,11 +1392,25 @@ async fn health_db(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// v1.1.0: optional `tenant` filter scopes rows at the SQL layer.
 async fn list_audit(
     State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Query(params): Query<AuditQuery>,
 ) -> Json<serde_json::Value> {
+    // v1.12.1 "Harden": Admin gate + tenant scope. The v1.2 matrix makes
+    // `/audit` an Admin surface AND forbids cross-tenant reads: a principal
+    // only ever sees its own tenant's rows (superuser `None` keeps v1.1
+    // passthrough). Legacy shape.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+    {
+        return Json(serde_json::json!({ "error": e.inner.message }));
+    }
+    let tenant_scope = match crate::handlers::audit_scope(&principal.0, &params.tenant) {
+        Ok(t) => t,
+        Err(e) => return Json(serde_json::json!({ "error": e.inner.message })),
+    };
     let limit = params.limit.unwrap_or(100).min(config::MAX_MULTI_GET);
     let kind = params.kind.clone();
-    let tenant = params.tenant.clone();
+    let tenant = tenant_scope;
     let pool = s.pool.clone();
     let rows = task::spawn_blocking(move || -> Vec<audit::AuditRow> {
         match pool.get() {
@@ -1420,7 +1441,17 @@ struct AuditQuery {
 /// ponytail: hand-rolled text format (4 lines of HELP/TYPE + gauge). Pulling
 /// `prometheus` or `metrics` crate for this would be a 12+ transitive-dep tax
 /// for a feature the plan itself flags as risky. Format is stable and trivial.
-async fn metrics(State(s): State<Arc<AppState>>) -> (axum::http::StatusCode, String) {
+async fn metrics(
+    State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+) -> (axum::http::StatusCode, String) {
+    // v1.12.1 "Harden": AuthZ read gate. Prometheus text is the body; a 403
+    // with the reason keeps the non-JSON contract.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
+    {
+        return (axum::http::StatusCode::FORBIDDEN, e.inner.message);
+    }
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
     let audit_cache = s.audit_chain_cache.clone();
@@ -1494,7 +1525,16 @@ async fn metrics(State(s): State<Arc<AppState>>) -> (axum::http::StatusCode, Str
 /// chain is intact. Returns `{ "ok": bool }`. Exposed separately from
 /// `GET /audit` because the chain check is a full-table scan and shouldn't run
 /// on every list call.
-async fn verify_audit_chain(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn verify_audit_chain(
+    State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+) -> Json<serde_json::Value> {
+    // v1.12.1 "Harden": Admin gate (tamper-detection surface). Legacy shape.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+    {
+        return Json(serde_json::json!({ "error": e.inner.message }));
+    }
     let pool = s.pool.clone();
     let ok = task::spawn_blocking(move || -> bool {
         pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false)
@@ -1506,8 +1546,18 @@ async fn verify_audit_chain(State(s): State<Arc<AppState>>) -> Json<serde_json::
 
 async fn stats(
     State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Query(params): Query<StatsQuery>,
 ) -> Json<serde_json::Value> {
+    // v1.12.1 "Harden": AuthZ read gate. Legacy shape — see `/add`.
+    if let Err(e) = crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        params.domain.as_deref().unwrap_or("global"),
+    ) {
+        return Json(serde_json::json!({ "success": false, "error": e.inner.message }));
+    }
     // v1.0.0: resolve per-domain pool from the ?domain= query param.
     let pool = match handlers::resolve_domain_pool(&s.registry, params.domain.as_deref()) {
         Ok(p) => p,
@@ -1575,8 +1625,17 @@ struct StatsQuery {
 
 async fn embeddings(
     State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<EmbeddingsRequest>,
 ) -> Json<serde_json::Value> {
+    // v1.12.1 "Harden": AuthZ write gate. Legacy OpenAI-style shape.
+    if let Err(e) =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
+    {
+        return Json(serde_json::json!({
+            "error": { "message": e.inner.message, "type": "forbidden" }
+        }));
+    }
     let inputs = match &req.input {
         EmbeddingsInput::Single(s) if s.trim().is_empty() => {
             return Json(serde_json::json!({
@@ -2384,10 +2443,10 @@ async fn reindex(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Json<serde_json::Value> {
-    // v1.11.0 "Associate" (audit G1): AuthZ write gate. Legacy shape — see
-    // `/add`. `None` principal (no JWT) = superuser.
+    // v1.12.1 "Harden": AuthZ admin gate (v1.2 matrix: reindex is an operator
+    // surface). Legacy shape — see `/add`. `None` principal (no JWT) = superuser.
     if let Err(e) =
-        crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
     {
         return Json(serde_json::json!({ "error": e.inner.message }));
     }
@@ -2442,11 +2501,20 @@ async fn reindex(
 
 async fn get_chunk(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let row = task::spawn_blocking(move || -> Result<Option<serde_json::Value>, AppError> {
@@ -2499,14 +2567,23 @@ struct MultiGetRequest {
 
 async fn multi_get(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Json(req): Json<MultiGetRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     if req.ids.len() > MAX_MULTI_GET {
         return Err(AppError::BadRequest("too many ids"));
     }
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let ids = req.ids;
@@ -2562,8 +2639,12 @@ struct QuarantineListParams {
 /// `GET /quarantine` — list flagged (quarantined) chunks for operator review.
 async fn list_quarantined(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Query(p): Query<QuarantineListParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // v1.12.1 "Harden": AuthZ read gate (operator review surface).
+    crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
+        .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let limit = p.limit.unwrap_or(100).clamp(1, config::MAX_MULTI_GET);
     let pool = state.pool.clone();
     let rows = task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, AppError> {
@@ -2692,6 +2773,7 @@ async fn delete_quarantine(
 
 async fn get_entity(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -2705,8 +2787,16 @@ async fn get_entity(
         return Err(AppError::BadRequest("Invalid entity name"));
     }
 
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let name_lower = name.to_lowercase();
@@ -2759,6 +2849,7 @@ async fn get_entity(
 
 async fn get_relations(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Query(params): Query<RelationsQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
@@ -2768,8 +2859,16 @@ async fn get_relations(
         _ => return Err(AppError::BadRequest("Must specify 'from' or 'to'")),
     };
 
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let param_lower = param.to_lowercase();
@@ -2814,9 +2913,19 @@ async fn get_relations(
 
 async fn traverse_graph(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Query(params): Query<TraverseQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let entity = params.start.unwrap_or_default();
     // v1.4.0 "Calibrate" M3: hard-cap traversal depth at trace::MAX_HOPS
     // (forbidden-list rule: no unbounded graph walks).
@@ -7892,5 +8001,376 @@ Final paragraph after the rule.";
         assert!(handlers::authorize(&Some(admin.clone()), auth::Action::Read, "t", "l1").is_ok());
         assert!(handlers::authorize(&Some(admin.clone()), auth::Action::Write, "t", "l1").is_ok());
         assert!(handlers::authorize(&Some(admin), auth::Action::Admin, "t", "l1").is_ok());
+    }
+
+    /// v1.12.1 "Harden": audit-surface tenant scope. A non-superuser principal
+    /// may only read its own tenant's audit rows; cross-tenant requests 403.
+    #[test]
+    fn audit_scope_forces_own_tenant_and_blocks_cross_tenant() {
+        let eve = auth::Principal {
+            sub: "user:eve".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![auth::Scope::parse("admin:team-alpha/*").unwrap()],
+            jti: "jti-eve".to_string(),
+        };
+        // No requested tenant -> forced to own tenant.
+        assert_eq!(
+            handlers::audit_scope(&Some(eve.clone()), &None).unwrap(),
+            Some("team-alpha".to_string())
+        );
+        // Requesting own tenant -> allowed, own tenant applied.
+        assert_eq!(
+            handlers::audit_scope(&Some(eve.clone()), &Some("team-alpha".to_string())).unwrap(),
+            Some("team-alpha".to_string())
+        );
+        // Requesting another tenant -> 403 (cross-tenant forbidden).
+        let err = handlers::audit_scope(&Some(eve), &Some("team-beta".to_string())).unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// v1.12.1 "Harden": superuser (None principal) keeps the v1.1 passthrough
+    /// — the requested tenant filter applies verbatim.
+    #[test]
+    fn audit_scope_none_principal_passes_requested_tenant_through() {
+        assert_eq!(
+            handlers::audit_scope(&None, &Some("any-team".to_string())).unwrap(),
+            Some("any-team".to_string())
+        );
+        assert_eq!(handlers::audit_scope(&None, &None).unwrap(), None);
+    }
+
+    /// v1.12.1 "Harden" wiring guard: every non-public route's handler must
+    /// call `authorize()` with the v1.2-matrix action. Mirrors
+    /// `test_openapi_covers_routes` (hardcoded contract table). A route that
+    /// ships without a gate fails here — this is the test Agent 38's S1
+    /// finding would have caught.
+    #[test]
+    fn authz_gates_cover_every_non_public_route() {
+        // (route, expected `Action::X` literal in the handler body)
+        // PUBLIC by design (no gate): /health, /health/db, /ready, /version,
+        // /openapi.yaml, /.well-known/*, /auth/refresh, /auth/logout.
+        // /webhooks/* verifies its own HMAC inside the handler (GitHub cannot
+        // present a brain bearer token) — no authorize() by design.
+        let table: &[(&str, &str)] = &[
+            ("/add", "Write"),
+            ("/ingest/memory", "Write"),
+            ("/search", "Read"),
+            ("/v1/embeddings", "Write"),
+            ("/ingest/markdown", "Write"),
+            ("/reindex", "Admin"),
+            ("/get/{id}", "Read"),
+            ("/multi-get", "Read"),
+            ("/graph/entity/{name}", "Read"),
+            ("/graph/relations", "Read"),
+            ("/graph/traverse", "Read"),
+            ("/recall", "Read"),
+            ("/ingest", "Write"),
+            ("/memory/{id}", "Admin"),
+            ("/domains", "Read"),
+            ("/domains/{name}", "Admin"),
+            ("/domains/{name}/vacuum", "Admin"),
+            ("/domains/{name}/export", "Read"),
+            ("/domains/{name}/import", "Admin"),
+            ("/sources/reconcile", "Write"),
+            ("/sources/{id}", "Write"),
+            ("/connectors", "Read"),
+            ("/verify", "Read"),
+            ("/suggest", "Read"),
+            ("/suggest/feedback", "Write"),
+            ("/suggest/metrics", "Read"),
+            ("/procedure", "Write"),
+            ("/procedure/{id}/steps", "Read"),
+            ("/classify", "Read"),
+            ("/decision/{id}/evaluate", "Read"),
+            ("/consolidate/propose", "Read"),
+            ("/consolidate/apply", "Write"),
+            ("/consolidate/undo", "Write"),
+            ("/audit", "Admin"),
+            ("/audit/verify", "Admin"),
+            ("/metrics", "Read"),
+            ("/quarantine", "Read"),
+            ("/quarantine/{id}/release", "Admin"),
+            ("/quarantine/{id}/delete", "Admin"),
+            ("/auth/revoke", "Admin"),
+        ];
+
+        let main_src = include_str!("main.rs");
+        // (path, (method, handler)) from every `.route(...)` registration in
+        // build_app. Hand-rolled scan (no regex dep): `.route("/path",
+        // [axum::handler::](get|post|delete|put)(handler))` — one- or two-line.
+        let mut handler_for: std::collections::HashMap<&str, (&str, &str)> =
+            std::collections::HashMap::new();
+        let mut rest = main_src;
+        while let Some(rel) = rest.find(".route(") {
+            let after = &rest[rel + 7..];
+            let after = after.trim_start(); // tolerate multi-line registrations
+            if !after.starts_with('"') {
+                break;
+            }
+            // after[0] is the opening quote; find the closing one.
+            let Some(close) = after[1..].find('"') else {
+                break;
+            };
+            let path = &after[1..1 + close];
+            let Some(h_end) = after.find(')') else { break };
+            let call = after[1 + close + 1..h_end]
+                .trim_start_matches(',')
+                .trim()
+                .trim_start_matches("axum::handler::");
+            let (method, handler) = match call.split_once('(') {
+                Some((m, h)) if ["get", "post", "delete", "put", "patch"].contains(&m) => (m, h),
+                _ => {
+                    rest = &after[h_end..];
+                    continue;
+                }
+            };
+            handler_for.insert(path, (method, handler));
+            rest = &after[h_end..];
+        }
+
+        for (route, action) in table {
+            let (method, handler) = handler_for
+                .get(route)
+                .unwrap_or_else(|| panic!("route {route} not found in build_app registration"));
+            let handler_name = handler.rsplit(':').next().expect("handler name");
+            let src = if handler.contains("::") {
+                let module = handler.rsplit("::").nth(1).expect("module");
+                match module {
+                    "recall" => include_str!("handlers/recall.rs"),
+                    "consolidate" => include_str!("handlers/consolidate.rs"),
+                    "sources" => include_str!("handlers/sources.rs"),
+                    "verify" => include_str!("handlers/verify.rs"),
+                    "connectors" => include_str!("handlers/connectors.rs"),
+                    "procedure" => include_str!("handlers/procedure.rs"),
+                    "suggest" => include_str!("handlers/suggest.rs"),
+                    "domains" => include_str!("handlers/domains.rs"),
+                    "forget" => include_str!("handlers/forget.rs"),
+                    "webhooks" => include_str!("handlers/webhooks.rs"),
+                    "well_known" => include_str!("handlers/well_known.rs"),
+                    "auth" => include_str!("handlers/auth.rs"),
+                    "ingest" => include_str!("handlers/ingest.rs"),
+                    m => panic!("no source mapping for handlers module {m}"),
+                }
+            } else {
+                main_src
+            };
+            let body = handler_body(src, handler_name)
+                .unwrap_or_else(|| panic!("handler `fn {handler_name}` not found in source"));
+            assert!(
+                body.contains("authorize"),
+                "{method} {route} (`{handler_name}`) has no authorize() gate"
+            );
+            assert!(
+                body.contains(&format!("Action::{action}")),
+                "{method} {route} (`{handler_name}`) does not enforce Action::{action}"
+            );
+        }
+    }
+
+    /// Extract the body of `async fn {name}` (brace-balanced, string-aware) so
+    /// the wiring guard can assert the gate lives inside the handler.
+    fn handler_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        let needle = format!("fn {name}(");
+        let start = src.find(&needle)?;
+        let mut parens = 0i32;
+        let mut in_str = false;
+        let mut esc = false;
+        let mut chars = src[start..].char_indices();
+        while let Some((i, c)) = chars.next() {
+            if in_str {
+                if esc {
+                    esc = false;
+                } else if c == '\\' {
+                    esc = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '(' => parens += 1,
+                ')' => parens -= 1,
+                '{' if parens == 0 => {
+                    let mut depth = 1i32;
+                    let mut inner = chars.as_str().char_indices();
+                    for (j, c) in inner.by_ref() {
+                        if c == '"' && !esc {
+                            in_str = !in_str;
+                            esc = false;
+                        } else if in_str {
+                            esc = c == '\\' && !esc;
+                        } else if c == '{' {
+                            depth += 1;
+                        } else if c == '}' {
+                            depth -= 1;
+                            if depth == 0 {
+                                let end = start + i + 1 + j;
+                                return Some(&src[start + i + 1..end]);
+                            }
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// v1.12.1 "Harden": auth presentation at the middleware layer. Non-public
+    /// routes 401 without a token; public + webhook prefixes bypass; a valid
+    /// opaque token passes. The per-handler action gates are pinned separately
+    /// by `authz_gates_cover_every_non_public_route`.
+    #[tokio::test]
+    async fn auth_middleware_enforces_presentation_and_public_bypass() {
+        use axum::routing::{get, post};
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        // Inject a known token via the file-reload path (no env races under
+        // parallel tests); mirror the auth module's own rotation-test pattern
+        // (sleep so the second write advances the 1s mtime resolution).
+        let f = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(f.path(), "test-tok-1\n").unwrap();
+        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(f.path(), "test-tok-1\n").unwrap();
+        assert!(store.reload_if_changed_from(vec!["test-tok-1".to_string()]));
+
+        let app = axum::Router::new()
+            .route("/health", get(stub))
+            .route("/webhooks/gh", post(stub))
+            .route("/private", get(stub))
+            .with_state(store.clone())
+            .layer(middleware::from_fn_with_state(store, auth_middleware));
+
+        // No token on a non-public route -> 401.
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Wrong token on a non-public route -> 401.
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .header("authorization", "Bearer wrong-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Public route bypasses without a token.
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Webhook prefix bypasses (HMAC is verified inside the handler).
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/webhooks/gh")
+                    .method("POST")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Valid opaque token on the non-public route passes.
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .header("authorization", "Bearer test-tok-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// v1.12.1 "Harden": in JWT mode the JWT layer 401s non-public requests
+    /// without a valid JWS, even when no opaque token file is configured.
+    #[tokio::test]
+    async fn jwt_middleware_requires_jws_in_jwt_mode() {
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let mgr = SqliteConnectionManager::memory();
+        let pool: Pool = r2d2::Pool::builder().max_size(2).build(mgr).expect("pool");
+        let jwt_state = Arc::new(JwtMiddlewareState {
+            auth_mode: auth::AuthMode::Jwt,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent")).unwrap(),
+            jwt_issuer: "https://issuer.test".to_string(),
+            jwt_audience: "brain".to_string(),
+            pool,
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            db_path: std::path::PathBuf::from("/nonexistent/brain.db"),
+        });
+        let store = TokenStore::from_file(None);
+        let app = axum::Router::new()
+            .route("/private", get(stub))
+            .route("/health", get(stub))
+            .with_state((store.clone(), jwt_state.clone()))
+            .layer(middleware::from_fn_with_state(store, auth_middleware))
+            .layer(middleware::from_fn_with_state(
+                jwt_state,
+                jwt_auth_middleware,
+            ));
+
+        // No token in JWT mode -> 401 (the JWT layer, outermost).
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Public path still bypasses in JWT mode.
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 }

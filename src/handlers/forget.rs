@@ -17,8 +17,10 @@ pub async fn forget(
     principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<ForgetResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: write gate at handler entry. `None` (no JWT) = superuser.
-    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
+    // v1.12.1 "Harden": AuthZ admin gate — the v1.2 matrix puts DELETE
+    // /memory/{id} on the Admin surface (destructive operator action).
+    // `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     // `id` is extracted as i64 by axum; non-numeric already → 400 via extractor.
 
     let pool = state.pool.clone();

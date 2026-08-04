@@ -18,6 +18,8 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::handlers::auth::OptPrincipal;
+
 use crate::handlers::{HandlerError, MAX_QUERY};
 use crate::AppState;
 
@@ -51,9 +53,19 @@ pub struct VerifyResponse {
 /// `POST /verify`
 pub async fn verify(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
     headers: axum::http::HeaderMap,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, HandlerError> {
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // `None` (no JWT) = superuser.
+    let domain = crate::handlers::domain_from_headers(&headers);
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )?;
     let claim = req.claim.trim().to_string();
     if claim.is_empty() {
         return Err(HandlerError::bad_request(
@@ -69,7 +81,6 @@ pub async fn verify(
     }
 
     // v1.0.0: resolve pool from X-Brain-Domain header (same path as /get/{id}).
-    let domain = crate::handlers::domain_from_headers(&headers);
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let chunk_id = req.chunk_id;

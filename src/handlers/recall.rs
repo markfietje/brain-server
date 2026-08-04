@@ -141,6 +141,7 @@ fn default_limit() -> u32 {
 /// library call (zero embedding-API cost). One search per turn.
 pub async fn recall(
     State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<RecallResponse>, HandlerError> {
     // ---- validation (fail fast; never embed on bad input) ----
@@ -153,6 +154,14 @@ pub async fn recall(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
+    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // `None` (no JWT) = superuser.
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        forced_domain.as_deref().unwrap_or("global"),
+    )?;
     // `strict` controls cross-domain fan-out: when true, stay in the resolved
     // domain even on miss/low-confidence; when false (default), federate. Used
     // below in the no-confident-route branch.

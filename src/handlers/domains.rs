@@ -35,7 +35,10 @@ pub struct CreateDomainRequest {
 /// In multi-db mode each file is its own domain.
 pub async fn domains(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
 ) -> Result<Json<DomainsResponse>, HandlerError> {
+    // v1.12.1 "Harden": AuthZ read gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let multi_db = state.registry.is_multi_db();
     let pool = state.pool.clone();
 

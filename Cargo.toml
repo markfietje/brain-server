@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.12.0"
+version = "1.12.1"
 edition = "2021"
 
 [features]
@@ -119,6 +119,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 
 [dev-dependencies]
 tempfile = "3.27"
+# Router-level middleware tests (`Router::oneshot`). Already in the lock as an
+# axum dependency — declared here so tests can import the trait.
+tower = { version = "0.5", features = ["util"] }
 # Property-based testing (v1.3.0 Bedrock M6). Generates random inputs to test
 # invariants across input spaces. Used for chunker byte-range, RRF merge, and
 # validator idempotency properties. Benchmark score 91.11 (Context7-verified).

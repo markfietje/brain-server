@@ -235,8 +235,13 @@ fn default_revoke_reason() -> String {
 
 pub async fn revoke_handler(
     State(s): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<RevokeRequest>,
 ) -> Result<StatusCode, AuthHandlerError> {
+    // v1.12.1 "Harden": the route comment says "requires admin auth" — enforce
+    // it. `None` (no JWT) = superuser (v1.1 opaque back-compat).
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+        .map_err(|e| AuthHandlerError::forbidden(e.inner.message))?;
     let pool = s.pool.clone();
     let cache = s.revocation_cache.clone();
     let exp = req
@@ -341,6 +346,14 @@ impl AuthHandlerError {
         AuthHandlerError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal",
+            message: msg,
+        }
+    }
+
+    pub fn forbidden(msg: String) -> Self {
+        AuthHandlerError {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
             message: msg,
         }
     }

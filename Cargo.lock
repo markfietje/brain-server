@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "brain-server"
-version = "1.12.0"
+version = "1.12.1"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -331,6 +331,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tokio",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",

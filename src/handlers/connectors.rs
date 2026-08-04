@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::sync::Arc;
 
 use crate::connector::ConnectorRow;
+use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 use crate::AppState;
 
@@ -23,7 +24,10 @@ pub struct ListConnectorsResponse {
 /// `(kind, instance)`. Empty list if none registered.
 pub async fn list(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
 ) -> Result<Json<ListConnectorsResponse>, HandlerError> {
+    // v1.12.1 "Harden": AuthZ read gate. `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
         let conn = pool

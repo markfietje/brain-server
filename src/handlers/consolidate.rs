@@ -66,7 +66,11 @@ pub struct ConflictView {
 /// `POST /consolidate/propose` — pure detection, zero mutation.
 pub async fn propose(
     State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
 ) -> Result<Json<ConsolidateProposal>, HandlerError> {
+    // v1.12.1 "Harden": AuthZ read gate (detection surface, zero mutation).
+    // `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let (exact_duplicates, conflicts, unresolved, stale, near_dups) =
         tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {

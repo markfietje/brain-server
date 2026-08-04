@@ -437,6 +437,9 @@ pub async fn metrics(
     principal: OptPrincipal,
     axum::extract::Query(params): axum::extract::Query<MetricsParams>,
 ) -> Result<Json<MetricsResponse>, HandlerError> {
+    // v1.12.1 "Harden": AuthZ read gate (matches the other /suggest surface).
+    // `None` (no JWT) = superuser.
+    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     if !config::brain_suggest_enabled() {
         return Err(HandlerError::internal_with(
             "suggest_disabled",

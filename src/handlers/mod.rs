@@ -366,6 +366,25 @@ pub fn authorize(
     }
 }
 
+/// v1.12.1 "Harden": tenant scope for the audit surface. The v1.2 matrix
+/// forbids cross-tenant audit reads: a non-superuser principal may only ever
+/// see their own tenant's rows. Returns the effective tenant filter to apply
+/// (None = no filter, superuser only). Call AFTER `authorize(Admin)`.
+pub fn audit_scope(
+    principal: &Option<crate::auth::Principal>,
+    requested_tenant: &Option<String>,
+) -> Result<Option<String>, HandlerError> {
+    match (principal, requested_tenant) {
+        (Some(p), Some(t)) if t != &p.tenant => Err(HandlerError::forbidden(
+            crate::auth::Action::Admin,
+            &p.tenant,
+            "audit",
+        )),
+        (Some(p), _) => Ok(Some(p.tenant.clone())),
+        (None, t) => Ok(t.clone()),
+    }
+}
+
 impl HandlerError {
     pub fn forbidden(action: crate::auth::Action, team: &str, domain: &str) -> Self {
         Self {
