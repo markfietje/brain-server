@@ -33,7 +33,9 @@ export class BrainHttpError extends Error {
     this.name = "BrainHttpError";
     this.kind = kind;
     // Only set status when provided so exactOptionalPropertyTypes holds.
-    if (status !== undefined) this.status = status;
+    if (status !== undefined) {
+      this.status = status;
+    }
   }
 }
 
@@ -56,19 +58,41 @@ export function describeBrainError(err: unknown): string {
   return `brain-server error: ${String(err)}`;
 }
 
+/**
+ * A recalled memory hit, aligned to the brain-server `RecallHit` wire shape
+ * (API_CONTRACT.md §1). `untrusted` is always `true` from the server
+ * (OWASP LLM01:2025); `conflict` marks chunks participating in a
+ * `contradicts`/`supersedes` link with another current chunk; `evidence` and
+ * `snippet` carry the verbatim snippet window. Recalled content is UNTRUSTED
+ * and must never be executed as instructions (see format.ts banner).
+ */
 export type BrainRecallHit = {
   id: number | string;
   title?: string;
   content: string;
   score: number;
   domain?: string;
-  source?: "vector" | "fts" | "graph";
+  source?: "vector" | "fts" | "both" | "graph";
+  provenance?: unknown;
+  evidence?: unknown;
+  snippet?: string;
+  untrusted?: boolean;
+  conflict?: boolean;
 };
 
+/**
+ * Result of `POST /recall`. `decision` reflects the server's calibrated
+ * abstention (v1.5): `"low_confidence"` means retrieval quality was too low to
+ * support a claim, so `hits` is empty by design — the agent should escalate
+ * (ask the user) or fall back to web search rather than treat an empty result
+ * as a plain "no memories".
+ */
 export type BrainRecallResult = {
   hits: BrainRecallHit[];
+  decision: "ok" | "low_confidence";
   domain?: string;
   domainsSearched?: string[];
+  telemetry?: unknown;
 };
 
 export type BrainStoreResult = {
@@ -90,6 +114,96 @@ export type BrainEntity = {
   type?: string;
 };
 
+/**
+ * A fetched chunk (`GET /get/{id}`). Mirrors the server's column projection;
+ * the meaningful fields for agent use are `content` (authoritative source text),
+ * `title`, and `source_uri`.
+ */
+export type BrainChunk = {
+  id: number;
+  title?: string;
+  content: string;
+  source?: string;
+  document_id?: string;
+  chunk_index?: number;
+  heading_path?: string;
+  line_start?: number;
+  line_end?: number;
+  created_at?: string;
+  source_uri?: string;
+  revision_id?: number;
+};
+
+/** Deterministic span-verification result (`POST /verify`, v1.5). */
+export type BrainVerifyResult = {
+  chunkId: number;
+  supported: boolean;
+  decision: "supported" | "unsupported_claim";
+  matchRanges: Array<[number, number]>;
+};
+
+/** Knowledge-graph entity + one-hop relations (`GET /graph/entity/{name}`). */
+export type BrainGraphEntity = {
+  name: string;
+  type?: string;
+  relations: Array<{ to_entity: string; relation_type: string; direction: string }>;
+};
+
+// ---------------------------------------------------------------------------
+// Wire shapes (server serializes snake_case — see API_CONTRACT.md)
+// ---------------------------------------------------------------------------
+
+type RecallRequestWire = {
+  query: string;
+  limit: number;
+  provenance: boolean;
+  domain?: string;
+  strict?: boolean;
+  source?: string;
+  since?: string;
+  lex?: string;
+  vec?: string;
+  hyde?: string;
+  intent?: string;
+};
+
+type RecallHitWire = {
+  id: number;
+  title?: string;
+  content: string;
+  score: number;
+  domain?: string;
+  source?: "vector" | "fts" | "both" | "graph";
+  provenance?: unknown;
+  evidence?: unknown;
+  snippet?: string;
+  untrusted?: boolean;
+  conflict?: boolean;
+};
+
+type RecallResponseWire = {
+  hits: RecallHitWire[];
+  decision?: "ok" | "low_confidence";
+  domain?: string;
+  domains_searched?: string[];
+  telemetry?: unknown;
+};
+
+type IngestResponseWire = {
+  id: number;
+  status?: "created" | "duplicate";
+  domain?: string;
+  entities_added?: number;
+  relations_added?: number;
+};
+
+type VerifyResponseWire = {
+  chunk_id: number;
+  supported?: boolean;
+  decision?: "supported" | "unsupported_claim";
+  match_ranges?: Array<[number, number]>;
+};
+
 /** Liveness probe — used by the service start hook. */
 export class BrainClient {
   private readonly baseUrl: string;
@@ -100,7 +214,9 @@ export class BrainClient {
     // Trim trailing slash so `${baseUrl}/path` is always well-formed.
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, "");
     // exactOptionalPropertyTypes: only set when a token is configured.
-    if (cfg.authToken !== undefined) this.token = cfg.authToken;
+    if (cfg.authToken !== undefined) {
+      this.token = cfg.authToken;
+    }
     this.defaultTimeoutMs = cfg.requestTimeoutMs;
   }
 
@@ -119,6 +235,9 @@ export class BrainClient {
    * to the nearest domain centroid(s), falls back across domains on miss, and
    * returns ready-to-inject snippets. ONE HTTP call per turn.
    *
+   * `source`/`since`/`lex`/`vec`/`hyde`/`intent` are the structured-query
+   * overrides ("power tools") exposed by `POST /recall` (API_CONTRACT.md §2).
+   *
    * Throws BrainHttpError on transport failure; the caller decides whether to
    * fail-open (recall hook) or surface (tool).
    */
@@ -127,25 +246,41 @@ export class BrainClient {
     domain?: string;
     strictDomain?: boolean;
     limit: number;
+    source?: string;
+    since?: string;
+    lex?: string;
+    vec?: string;
+    hyde?: string;
+    intent?: string;
     timeoutMs?: number;
   }): Promise<BrainRecallResult> {
-    const body = {
+    const body: RecallRequestWire = {
       query: params.query,
       limit: params.limit,
+      provenance: true,
       ...(params.domain ? { domain: params.domain } : {}),
       ...(typeof params.strictDomain === "boolean" ? { strict: params.strictDomain } : {}),
-      provenance: true,
+      ...(params.source ? { source: params.source } : {}),
+      ...(params.since ? { since: params.since } : {}),
+      ...(params.lex ? { lex: params.lex } : {}),
+      ...(params.vec ? { vec: params.vec } : {}),
+      ...(params.hyde ? { hyde: params.hyde } : {}),
+      ...(params.intent ? { intent: params.intent } : {}),
     };
-    const res = await this.fetchJson<BrainRecallResult>(
+    const res = await this.fetchJson<RecallResponseWire>(
       "/recall",
       "POST",
       body,
       params.timeoutMs ?? this.defaultTimeoutMs,
     );
+    // The server serializes snake_case (`domains_searched`); map it to the
+    // camelCase result shape the rest of the plugin consumes.
     return {
       hits: res?.hits ?? [],
+      decision: res?.decision ?? "ok",
       ...(res?.domain !== undefined ? { domain: res.domain } : {}),
-      ...(res?.domainsSearched !== undefined ? { domainsSearched: res.domainsSearched } : {}),
+      ...(res?.domains_searched !== undefined ? { domainsSearched: res.domains_searched } : {}),
+      ...(res?.telemetry !== undefined ? { telemetry: res.telemetry } : {}),
     };
   }
 
@@ -169,18 +304,19 @@ export class BrainClient {
       ...(params.entities?.length ? { entities: params.entities } : {}),
       ...(params.relations?.length ? { relations: params.relations } : {}),
     };
-    const res = await this.fetchJson<BrainStoreResult>(
+    const res = await this.fetchJson<IngestResponseWire>(
       "/ingest",
       "POST",
       body,
       params.timeoutMs ?? this.defaultTimeoutMs,
     );
+    // The server serializes snake_case (`entities_added`/`relations_added`).
     return {
       id: res?.id ?? 0,
       status: res?.status ?? "created",
       ...(res?.domain !== undefined ? { domain: res.domain } : {}),
-      ...(res?.entitiesAdded !== undefined ? { entitiesAdded: res.entitiesAdded } : {}),
-      ...(res?.relationsAdded !== undefined ? { relationsAdded: res.relationsAdded } : {}),
+      ...(res?.entities_added !== undefined ? { entitiesAdded: res.entities_added } : {}),
+      ...(res?.relations_added !== undefined ? { relationsAdded: res.relations_added } : {}),
     };
   }
 
@@ -189,10 +325,7 @@ export class BrainClient {
    * throws BrainHttpError on any other failure. Distinguishing 404 lets the
    * tool report "not found" without masking a real server error.
    */
-  async forget(
-    id: string | number,
-    timeoutMs?: number,
-  ): Promise<{ deleted: boolean } | null> {
+  async forget(id: string | number, timeoutMs?: number): Promise<{ deleted: boolean } | null> {
     try {
       const res = await this.fetchJson<{ deleted?: boolean }>(
         `/memory/${encodeURIComponent(String(id))}`,
@@ -202,9 +335,80 @@ export class BrainClient {
       );
       return { deleted: Boolean(res?.deleted) };
     } catch (err) {
-      if (err instanceof BrainHttpError && err.status === 404) return null;
+      if (err instanceof BrainHttpError && err.status === 404) {
+        return null;
+      }
       throw err;
     }
+  }
+
+  /**
+   * Fetch a single chunk by id (`GET /get/{id}`). Returns `null` on 404. The
+   * returned content is the authoritative source text — useful after a recall
+   * so an agent can read the full context behind a cited memory.
+   */
+  async get(id: string | number, timeoutMs?: number): Promise<BrainChunk | null> {
+    try {
+      const res = await this.fetchJson<BrainChunk>(
+        `/get/${encodeURIComponent(String(id))}`,
+        "GET",
+        undefined,
+        timeoutMs,
+      );
+      return res ?? null;
+    } catch (err) {
+      if (err instanceof BrainHttpError && err.status === 404) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Deterministic span verification (`POST /verify`, v1.5): checks whether a
+   * `claim` is literally supported by a chunk's stored text (case-insensitive
+   * substring match). This is the hallucination-resistance primitive — an agent
+   * that recalled a fact can confirm "the brain said X" before acting on it.
+   */
+  async verify(params: {
+    chunkId: number;
+    claim: string;
+    timeoutMs?: number;
+  }): Promise<BrainVerifyResult> {
+    const res = await this.fetchJson<VerifyResponseWire>(
+      "/verify",
+      "POST",
+      { chunk_id: params.chunkId, claim: params.claim },
+      params.timeoutMs ?? this.defaultTimeoutMs,
+    );
+    return {
+      chunkId: res?.chunk_id ?? params.chunkId,
+      supported: Boolean(res?.supported),
+      decision: res?.decision ?? "unsupported_claim",
+      matchRanges: res?.match_ranges ?? [],
+    };
+  }
+
+  /**
+   * Knowledge-graph entity + one-hop relations (`GET /graph/entity/{name}`).
+   * Returns `null` when the entity is unknown (the server answers `200` with an
+   * `error` field for a missing entity). Name is normalized server-side.
+   */
+  async graphEntity(name: string, timeoutMs?: number): Promise<BrainGraphEntity | null> {
+    const res = await this.fetchJson<BrainGraphEntity & { error?: string }>(
+      `/graph/entity/${encodeURIComponent(name)}`,
+      "GET",
+      undefined,
+      timeoutMs,
+    );
+    if (!res || res.error) {
+      return null;
+    }
+    return {
+      name: res.name,
+      type: res.type,
+      relations: res.relations ?? [],
+    };
   }
 
   // --------------------------------------------------------------------------
@@ -254,7 +458,9 @@ export class BrainClient {
       let detail = res.statusText;
       try {
         const text = await res.text();
-        if (text) detail = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+        if (text) {
+          detail = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+        }
       } catch {
         // Body already consumed or unreadable; keep statusText.
       }
@@ -262,7 +468,9 @@ export class BrainClient {
     }
 
     const text = await res.text();
-    if (!text) return undefined;
+    if (!text) {
+      return undefined;
+    }
     try {
       return JSON.parse(text) as T;
     } catch (err) {

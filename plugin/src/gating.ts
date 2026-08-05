@@ -29,15 +29,21 @@ export type GateContext = {
 export type GateDecision = { allowed: true } | { allowed: false; reason: string };
 
 export function isRecallAllowed(cfg: ResolvedBrainConfig, ctx: GateContext): GateDecision {
-  if (!cfg.enabled) return { allowed: false, reason: "plugin disabled" };
+  if (!cfg.enabled) {
+    return { allowed: false, reason: "plugin disabled" };
+  }
 
   // Per-agent opt-in (least privilege). Empty allowlist => disabled until at
   // least one agent is listed (OWASP LLM06: memory is a granted capability).
   if (cfg.agents.length === 0) {
     return { allowed: false, reason: "no agents opted in; set config.agents to enable memory" };
   }
-  if (!ctx.agentId || !cfg.agents.includes(ctx.agentId)) {
-    return { allowed: false, reason: `agent ${ctx.agentId ?? "<none>"} not in allowlist` };
+  if (!ctx.agentId) {
+    return { allowed: false, reason: "no agent id on hook context" };
+  }
+  // `"*"` opts every agent in (operator shorthand for "all agents").
+  if (!cfg.agents.includes("*") && !cfg.agents.includes(ctx.agentId)) {
+    return { allowed: false, reason: `agent ${ctx.agentId} not in allowlist` };
   }
 
   // Chat-type gating.
@@ -84,6 +90,8 @@ export function deriveChatType(ctx: {
     return trigger.includes("channel") ? "channel" : "group";
   }
   // No channel + no multi-user trigger => direct.
-  if (!channel) return "direct";
+  if (!channel) {
+    return "direct";
+  }
   return "group";
 }

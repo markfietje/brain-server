@@ -1,5 +1,4 @@
 import { describe, expect, test } from "vitest";
-
 import { DEFAULTS, resolveConfig } from "./config.js";
 
 describe("resolveConfig", () => {

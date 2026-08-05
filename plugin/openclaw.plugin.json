@@ -8,7 +8,14 @@
   },
   "commandAliases": [{ "name": "brain" }],
   "contracts": {
-    "tools": ["memory_recall", "memory_store", "memory_forget"]
+    "tools": [
+      "memory_recall",
+      "memory_store",
+      "memory_forget",
+      "memory_verify",
+      "memory_get",
+      "memory_graph_entity"
+    ]
   },
   "configSchema": {
     "type": "object",
@@ -22,7 +29,7 @@
       },
       "authToken": {
         "type": "string",
-        "description": "Optional bearer token. Must match BRAIN_TOKEN on the server (v1.1.0+).",
+        "description": "Optional bearer token. Must match AUTH_TOKEN / AUTH_TOKEN_FILE on the server.",
         "sensitive": true
       },
       "agents": {
@@ -85,7 +92,7 @@
     "authToken": {
       "label": "Auth Token",
       "sensitive": true,
-      "help": "Bearer token matching BRAIN_TOKEN on the server (required once server auth ships in v1.1.0)."
+      "help": "Bearer token matching AUTH_TOKEN / AUTH_TOKEN_FILE on the server. Both are sent as Authorization: Bearer."
     },
     "agents": {
       "label": "Target Agents",

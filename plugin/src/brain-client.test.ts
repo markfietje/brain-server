@@ -5,7 +5,6 @@
  * to a silent `undefined`.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
-
 import { BrainClient, BrainHttpError, describeBrainError } from "./brain-client.js";
 import { resolveConfig } from "./config.js";
 
@@ -37,6 +36,47 @@ describe("BrainClient.recall", () => {
     const res = await client.recall({ query: "q", limit: 5 });
     expect(res.hits).toHaveLength(1);
     expect(res.domain).toBe("health");
+  });
+
+  test("maps snake_case domains_searched to domainsSearched (server contract)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ hits: [], domains_searched: ["health", "global"] }),
+    );
+    const client = new BrainClient(cfg());
+    const res = await client.recall({ query: "q", limit: 5 });
+    expect(res.domainsSearched).toEqual(["health", "global"]);
+  });
+
+  test("surfaces the calibrated-abstention decision (low_confidence)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ hits: [], decision: "low_confidence" }),
+    );
+    const client = new BrainClient(cfg());
+    const res = await client.recall({ query: "q", limit: 5 });
+    expect(res.decision).toBe("low_confidence");
+    expect(res.hits).toEqual([]);
+  });
+
+  test("forwards structured-query power-tools in the /recall body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const client = new BrainClient(cfg());
+    await client.recall({
+      query: "q",
+      limit: 5,
+      source: "structured",
+      since: "2026-01-01",
+      lex: "inflammation -fever",
+      vec: "immune support",
+      hyde: "Vitamin D3 reduces inflammation",
+      intent: "lookup",
+    });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.source).toBe("structured");
+    expect(body.since).toBe("2026-01-01");
+    expect(body.lex).toBe("inflammation -fever");
+    expect(body.vec).toBe("immune support");
+    expect(body.hyde).toBe("Vitamin D3 reduces inflammation");
+    expect(body.intent).toBe("lookup");
   });
 
   test("empty 2xx body => empty hits, no throw", async () => {
@@ -108,7 +148,7 @@ describe("BrainClient.store", () => {
 
   test("201 => returns created status + id", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ id: 42, status: "created", domain: "health", entitiesAdded: 2 }),
+      mockResponse({ id: 42, status: "created", domain: "health", entities_added: 2 }),
     );
     const client = new BrainClient(cfg());
     const res = await client.store({ title: "t", content: "c" });
@@ -117,10 +157,20 @@ describe("BrainClient.store", () => {
     expect(res.entitiesAdded).toBe(2);
   });
 
-  test("omits entities/relations from body when empty", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ id: 1, status: "created" }),
+  test("maps snake_case entities_added/relations_added (server contract)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ id: 7, status: "created", entities_added: 3, relations_added: 1 }),
     );
+    const client = new BrainClient(cfg());
+    const res = await client.store({ title: "t", content: "c" });
+    expect(res.entitiesAdded).toBe(3);
+    expect(res.relationsAdded).toBe(1);
+  });
+
+  test("omits entities/relations from body when empty", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ id: 1, status: "created" }));
     const client = new BrainClient(cfg());
     await client.store({ title: "t", content: "c" });
     const sentBody = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
@@ -142,6 +192,96 @@ describe("BrainClient.health", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("nope"));
     const client = new BrainClient(cfg());
     await expect(client.health()).resolves.toBe(false);
+  });
+});
+
+describe("BrainClient.get", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("returns the chunk on 200", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ id: 42, title: "Bignay", content: "an antioxidant fruit" }),
+    );
+    const client = new BrainClient(cfg());
+    await expect(client.get(42)).resolves.toMatchObject({
+      id: 42,
+      content: "an antioxidant fruit",
+    });
+  });
+
+  test("404 => resolves to null (not found)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("nope", { status: 404 }));
+    const client = new BrainClient(cfg());
+    await expect(client.get(999)).resolves.toBeNull();
+  });
+
+  test("500 => throws (not masked as not-found)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("boom", { status: 500 }));
+    const client = new BrainClient(cfg());
+    await expect(client.get(42)).rejects.toMatchObject({ kind: "http", status: 500 });
+  });
+});
+
+describe("BrainClient.verify", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("maps snake_case verify response to camelCase result", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        chunk_id: 42,
+        supported: true,
+        decision: "supported",
+        match_ranges: [[0, 4]],
+      }),
+    );
+    const client = new BrainClient(cfg());
+    await expect(client.verify({ chunkId: 42, claim: "vitamin" })).resolves.toEqual({
+      chunkId: 42,
+      supported: true,
+      decision: "supported",
+      matchRanges: [[0, 4]],
+    });
+  });
+
+  test("unsupported claim surfaces decision + empty matches", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        chunk_id: 42,
+        supported: false,
+        decision: "unsupported_claim",
+        match_ranges: [],
+      }),
+    );
+    const client = new BrainClient(cfg());
+    await expect(client.verify({ chunkId: 42, claim: "missing" })).resolves.toMatchObject({
+      supported: false,
+      decision: "unsupported_claim",
+    });
+  });
+});
+
+describe("BrainClient.graphEntity", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("returns entity + one-hop relations", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        name: "bignay",
+        type: "fruit",
+        relations: [{ to_entity: "blueberry", relation_type: "alternative_to", direction: "in" }],
+      }),
+    );
+    const client = new BrainClient(cfg());
+    const res = await client.graphEntity("bignay");
+    expect(res).toMatchObject({ name: "bignay", type: "fruit" });
+    expect(res?.relations).toHaveLength(1);
+    expect(res?.relations?.[0]?.relation_type).toBe("alternative_to");
+  });
+
+  test("unknown entity (200 with error field) => null", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ error: "Entity not found" }));
+    const client = new BrainClient(cfg());
+    await expect(client.graphEntity("missing")).resolves.toBeNull();
   });
 });
 

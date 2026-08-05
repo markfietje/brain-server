@@ -25,26 +25,19 @@
  *   - api.resolvePath, api.logger, api.pluginConfig, api.runtime.config.current()
  */
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import type {
-  PluginHookAgentContext,
-  PluginHookAgentEndEvent,
-} from "openclaw/plugin-sdk/types";
 import { Type } from "typebox";
-
 import { BrainClient, describeBrainError } from "./src/brain-client.js";
 import { brainPluginConfigSchema, resolveConfig, type ResolvedBrainConfig } from "./src/config.js";
 import {
-  deriveChatType,
-  isRecallAllowed,
-  type GateContext,
-} from "./src/gating.js";
-import {
+  RECALL_ABSTENTION,
   STATIC_SYSTEM_GUIDANCE,
   formatRecallContext,
   latestUserText,
   looksCaptureWorthy,
   normalizeRecallQuery,
+  sanitizeForBlock,
 } from "./src/format.js";
+import { deriveChatType, isRecallAllowed, type GateContext } from "./src/gating.js";
 
 const PLUGIN_ID = "brain-server";
 
@@ -63,7 +56,9 @@ export default definePluginEntry({
     const liveCfg = (): ResolvedBrainConfig => {
       try {
         const current = api.runtime.config?.current;
-        if (!current) return cfg;
+        if (!current) {
+          return cfg;
+        }
         // Plugin config is authoritative; re-resolve from the live object.
         return resolveConfig(api.pluginConfig);
       } catch {
@@ -92,8 +87,12 @@ export default definePluginEntry({
       "before_prompt_build",
       async (event, ctx) => {
         const c = liveCfg();
-        if (!c.autoRecall || !c.enabled) return undefined;
-        if (!event.prompt || event.prompt.length < c.minQueryLength) return undefined;
+        if (!c.autoRecall || !c.enabled) {
+          return undefined;
+        }
+        if (!event.prompt || event.prompt.length < c.minQueryLength) {
+          return undefined;
+        }
 
         const gate = mapCtx(ctx);
         const decision = isRecallAllowed(c, gate);
@@ -105,7 +104,9 @@ export default definePluginEntry({
         const querySource =
           latestUserText(Array.isArray(event.messages) ? event.messages : []) ?? event.prompt;
         const query = normalizeRecallQuery(querySource, c.recallMaxChars);
-        if (query.length < c.minQueryLength) return undefined;
+        if (query.length < c.minQueryLength) {
+          return undefined;
+        }
 
         try {
           const result = await client.recall({
@@ -116,12 +117,25 @@ export default definePluginEntry({
             limit: c.autoRecallTopK,
             timeoutMs: c.autoRecallTimeoutMs,
           });
-          if (!result.hits.length) return undefined;
+          if (!result.hits.length) {
+            // Calibrated abstention (v1.5): the server returned no hits on
+            // purpose because quality was too low. Fail-open — inject nothing.
+            if (result.decision === "low_confidence") {
+              api.logger.info?.(
+                `${PLUGIN_ID}: recall abstained (low confidence) for "${query}"; skipping injection`,
+              );
+            }
+            return undefined;
+          }
 
           const block = formatRecallContext(result.hits);
-          if (!block) return undefined;
+          if (!block) {
+            return undefined;
+          }
 
-          api.logger.info?.(`${PLUGIN_ID}: injecting ${result.hits.length} memories (domain=${result.domain ?? "auto"})`);
+          api.logger.info?.(
+            `${PLUGIN_ID}: injecting ${result.hits.length} memories (domain=${result.domain ?? "auto"})`,
+          );
           // Dynamic recall => prependContext (per-turn, NOT cached).
           // Static guidance is handled separately via registerMemoryCapability (cacheable).
           return { prependContext: block };
@@ -140,15 +154,23 @@ export default definePluginEntry({
     // ------------------------------------------------------------------------
     api.on("agent_end", async (event, ctx) => {
       const c = liveCfg();
-      if (!c.autoCapture || !c.enabled) return;
-      if (!event.success) return;
+      if (!c.autoCapture || !c.enabled) {
+        return;
+      }
+      if (!event.success) {
+        return;
+      }
       const messages = event.messages;
       const gate = mapCtx(ctx);
-      if (!isRecallAllowed(c, gate).allowed) return;
+      if (!isRecallAllowed(c, gate).allowed) {
+        return;
+      }
 
       try {
         for (const text of extractUserTexts(messages)) {
-          if (!looksCaptureWorthy(text)) continue;
+          if (!looksCaptureWorthy(text)) {
+            continue;
+          }
           await client.store({
             title: text.slice(0, 80),
             content: text,
@@ -173,18 +195,53 @@ export default definePluginEntry({
         name: "memory_recall",
         label: "Memory Recall",
         description:
-          "Search long-term memory. Use for past decisions, preferences, or previously discussed topics.",
+          "Search long-term memory. Use for past decisions, preferences, or previously discussed topics. Optionally scope by source or time, or override the semantic query.",
         parameters: Type.Object({
           query: Type.String({ description: "Search query" }),
-          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: "Max results (default 5)" })),
-          domain: Type.Optional(Type.String({ description: "Force a specific domain (auto-routing is default)" })),
+          limit: Type.Optional(
+            Type.Integer({ minimum: 1, maximum: 50, description: "Max results (default 5)" }),
+          ),
+          domain: Type.Optional(
+            Type.String({ description: "Force a specific domain (auto-routing is default)" }),
+          ),
+          source: Type.Optional(Type.String({ description: "Filter by knowledge source id/name" })),
+          since: Type.Optional(
+            Type.String({
+              description: "Only rows with created_at after this ISO-8601/RFC3339 time",
+            }),
+          ),
+          lex: Type.Optional(
+            Type.String({
+              description: "Lexical (FTS5) query override: exact terms, phrases, -exclusions",
+            }),
+          ),
+          vec: Type.Optional(Type.String({ description: "Semantic embedding-query override" })),
+          hyde: Type.Optional(
+            Type.String({ description: "Hypothetical-answer embedding override (beats vec)" }),
+          ),
+          intent: Type.Optional(
+            Type.String({ description: "Free-form intent label, recorded for provenance" }),
+          ),
         }),
         async execute(_toolCallId, params) {
           const c = liveCfg();
-          const p = (params ?? {}) as { query?: string; limit?: number; domain?: string };
-          const query = normalizeRecallQuery(String(p.query ?? ""), c.recallMaxChars);
+          const p = (params ?? {}) as {
+            query?: string;
+            limit?: number;
+            domain?: string;
+            source?: string;
+            since?: string;
+            lex?: string;
+            vec?: string;
+            hyde?: string;
+            intent?: string;
+          };
+          const query = normalizeRecallQuery(p.query ?? "", c.recallMaxChars);
           if (!query) {
-            return { content: [{ type: "text" as const, text: "No query provided." }], details: { count: 0 } };
+            return {
+              content: [{ type: "text" as const, text: "No query provided." }],
+              details: { count: 0 },
+            };
           }
           let result;
           try {
@@ -192,22 +249,45 @@ export default definePluginEntry({
               query,
               ...(p.domain ? { domain: p.domain } : {}),
               limit: p.limit ?? 5,
+              source: p.source,
+              since: p.since,
+              lex: p.lex,
+              vec: p.vec,
+              hyde: p.hyde,
+              intent: p.intent,
               timeoutMs: c.requestTimeoutMs,
             });
           } catch (err) {
             // Tools surface the failure so the agent can react; recall errors
             // are not silent here (unlike the fail-open auto-recall hook).
             return {
-              content: [{ type: "text" as const, text: `Recall failed: ${describeBrainError(err)}` }],
+              content: [
+                { type: "text" as const, text: `Recall failed: ${describeBrainError(err)}` },
+              ],
               details: { count: 0, error: describeBrainError(err) },
             };
           }
+          if (result.decision === "low_confidence") {
+            // Calibrated abstention (v1.5): empty by design, not a miss.
+            return {
+              content: [{ type: "text" as const, text: RECALL_ABSTENTION }],
+              details: { count: 0, decision: result.decision },
+            };
+          }
           if (!result.hits.length) {
-            return { content: [{ type: "text" as const, text: "No relevant memories found." }], details: { count: 0 } };
+            return {
+              content: [{ type: "text" as const, text: "No relevant memories found." }],
+              details: { count: 0, decision: result.decision },
+            };
           }
           return {
             content: [{ type: "text" as const, text: formatRecallContext(result.hits) }],
-            details: { count: result.hits.length, memories: result.hits },
+            details: {
+              count: result.hits.length,
+              decision: result.decision,
+              domainsSearched: result.domainsSearched,
+              memories: result.hits,
+            },
           };
         },
       },
@@ -222,28 +302,43 @@ export default definePluginEntry({
           "Save a durable fact/decision to long-term memory. Optionally include entities/relations for the knowledge graph.",
         parameters: Type.Object({
           text: Type.String({ description: "Information to remember" }),
-          title: Type.Optional(Type.String({ description: "Short title (default: first 80 chars)" })),
+          title: Type.Optional(
+            Type.String({ description: "Short title (default: first 80 chars)" }),
+          ),
           domain: Type.Optional(Type.String()),
           entities: Type.Optional(
-            Type.Array(Type.Object({
-              name: Type.String(),
-              type: Type.Optional(Type.String()),
-            })),
+            Type.Array(
+              Type.Object({
+                name: Type.String(),
+                type: Type.Optional(Type.String()),
+              }),
+            ),
           ),
           relations: Type.Optional(
-            Type.Array(Type.Object({
-              from: Type.String(),
-              to: Type.String(),
-              type: Type.String(),
-            })),
+            Type.Array(
+              Type.Object({
+                from: Type.String(),
+                to: Type.String(),
+                type: Type.String(),
+              }),
+            ),
           ),
         }),
         async execute(_toolCallId, params) {
           const c = liveCfg();
-          const p = (params ?? {}) as { text?: string; title?: string; domain?: string; entities?: unknown; relations?: unknown };
-          const text = String(p.text ?? "").trim();
+          const p = (params ?? {}) as {
+            text?: string;
+            title?: string;
+            domain?: string;
+            entities?: unknown;
+            relations?: unknown;
+          };
+          const text = (p.text ?? "").trim();
           if (!text) {
-            return { content: [{ type: "text" as const, text: "No text provided." }], details: { stored: false } };
+            return {
+              content: [{ type: "text" as const, text: "No text provided." }],
+              details: { stored: false },
+            };
           }
           let res;
           try {
@@ -257,7 +352,9 @@ export default definePluginEntry({
             });
           } catch (err) {
             return {
-              content: [{ type: "text" as const, text: `Store failed: ${describeBrainError(err)}` }],
+              content: [
+                { type: "text" as const, text: `Store failed: ${describeBrainError(err)}` },
+              ],
               details: { stored: false, error: describeBrainError(err) },
             };
           }
@@ -281,10 +378,12 @@ export default definePluginEntry({
           const p = (params ?? {}) as { id?: string };
           let res;
           try {
-            res = await client.forget(String(p.id ?? ""), c.requestTimeoutMs);
+            res = await client.forget(p.id ?? "", c.requestTimeoutMs);
           } catch (err) {
             return {
-              content: [{ type: "text" as const, text: `Forget failed: ${describeBrainError(err)}` }],
+              content: [
+                { type: "text" as const, text: `Forget failed: ${describeBrainError(err)}` },
+              ],
               details: { deleted: false, error: describeBrainError(err) },
             };
           }
@@ -297,6 +396,155 @@ export default definePluginEntry({
         },
       },
       { name: "memory_forget" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_verify",
+        label: "Memory Verify",
+        description:
+          "Deterministic span verification (no LLM): checks whether a claim is literally supported by a chunk's stored text. Use after recalling a fact to confirm the brain actually said it before acting on it.",
+        parameters: Type.Object({
+          chunk_id: Type.Integer({ description: "Chunk/memory id (from a recall hit)" }),
+          claim: Type.String({ description: "The claim to verify against the chunk text" }),
+        }),
+        async execute(_toolCallId, params) {
+          const c = liveCfg();
+          const p = (params ?? {}) as { chunk_id?: number; claim?: string };
+          const claim = (p.claim ?? "").trim();
+          if (!claim || typeof p.chunk_id !== "number") {
+            return {
+              content: [{ type: "text" as const, text: "Both chunk_id and claim are required." }],
+              details: { verified: false },
+            };
+          }
+          try {
+            const res = await client.verify({
+              chunkId: p.chunk_id,
+              claim,
+              timeoutMs: c.requestTimeoutMs,
+            });
+            const text = res.supported
+              ? `Supported: the chunk ${res.chunkId} contains the claim (${res.matchRanges.length} match${res.matchRanges.length === 1 ? "" : "es"}).`
+              : `Not supported: the chunk ${res.chunkId} does not contain the claim. Do not present it as memory-backed.`;
+            return {
+              content: [{ type: "text" as const, text }],
+              details: { verified: res.supported, decision: res.decision, chunkId: res.chunkId },
+            };
+          } catch (err) {
+            return {
+              content: [
+                { type: "text" as const, text: `Verify failed: ${describeBrainError(err)}` },
+              ],
+              details: { verified: false, error: describeBrainError(err) },
+            };
+          }
+        },
+      },
+      { name: "memory_verify" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_get",
+        label: "Memory Get",
+        description:
+          "Fetch the full stored text of a memory/chunk by id. Use to read the complete context behind a recalled snippet before relying on it.",
+        parameters: Type.Object({
+          id: Type.Integer({ description: "Chunk/memory id (from a recall hit)" }),
+        }),
+        async execute(_toolCallId, params) {
+          const c = liveCfg();
+          const p = (params ?? {}) as { id?: number };
+          if (typeof p.id !== "number") {
+            return {
+              content: [{ type: "text" as const, text: "id is required." }],
+              details: { found: false },
+            };
+          }
+          try {
+            const chunk = await client.get(p.id, c.requestTimeoutMs);
+            if (!chunk) {
+              return {
+                content: [{ type: "text" as const, text: `No memory with id ${p.id}.` }],
+                details: { found: false, id: p.id },
+              };
+            }
+            const title = chunk.title?.trim() ? `\n${chunk.title}` : "";
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `Memory ${chunk.id}:${title}\n${sanitizeForBlock(chunk.content)}`,
+                },
+              ],
+              details: { found: true, id: chunk.id, title: chunk.title },
+            };
+          } catch (err) {
+            return {
+              content: [{ type: "text" as const, text: `Get failed: ${describeBrainError(err)}` }],
+              details: { found: false, error: describeBrainError(err) },
+            };
+          }
+        },
+      },
+      { name: "memory_get" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_graph_entity",
+        label: "Memory Graph Entity",
+        description:
+          "Look up an entity in the knowledge graph and its one-hop relations. Use to explore how a concept connects to others.",
+        parameters: Type.Object({
+          name: Type.String({ description: "Entity name (e.g. 'vitamin d3')" }),
+        }),
+        async execute(_toolCallId, params) {
+          const c = liveCfg();
+          const p = (params ?? {}) as { name?: string };
+          const name = (p.name ?? "").trim();
+          if (!name) {
+            return {
+              content: [{ type: "text" as const, text: "name is required." }],
+              details: { found: false },
+            };
+          }
+          try {
+            const entity = await client.graphEntity(name, c.requestTimeoutMs);
+            if (!entity) {
+              return {
+                content: [
+                  { type: "text" as const, text: `No entity named "${name}" in the graph.` },
+                ],
+                details: { found: false, name },
+              };
+            }
+            const etype = entity.type ? ` (${entity.type})` : "";
+            const rels =
+              entity.relations.length === 0
+                ? " (no relations)"
+                : entity.relations
+                    .map(
+                      (r) =>
+                        `\n  - ${r.direction === "out" ? "→" : "←"} ${r.relation_type} ${r.to_entity}`,
+                    )
+                    .join("");
+            return {
+              content: [{ type: "text" as const, text: `${entity.name}${etype}${rels}` }],
+              details: { found: true, name: entity.name, relations: entity.relations },
+            };
+          } catch (err) {
+            return {
+              content: [
+                { type: "text" as const, text: `Graph lookup failed: ${describeBrainError(err)}` },
+              ],
+              details: { found: false, error: describeBrainError(err) },
+            };
+          }
+        },
+      },
+      { name: "memory_graph_entity" },
     );
 
     // ------------------------------------------------------------------------
@@ -325,14 +573,34 @@ export default definePluginEntry({
 // Helpers
 // ------------------------------------------------------------------------
 
+/**
+ * Minimal projection of the SDK hook agent context used for gating. `api.on`
+ * already types the handler params via `PluginHookHandlerMap`; this structural
+ * type keeps the module from importing the plugin-internal hook types directly.
+ */
+type HookContextLike = {
+  agentId?: string;
+  chatId?: string;
+  channelId?: string;
+  chatType?: "direct" | "group" | "channel" | "explicit";
+  channel?: string;
+  trigger?: string;
+};
+
 /** Map the SDK hook context into the minimal GateContext used for gating. */
-function mapCtx(ctx: PluginHookAgentContext | undefined): GateContext {
-  if (!ctx) return {};
-  const chatType = deriveChatType({
-    ...(ctx.channel !== undefined ? { channel: ctx.channel } : {}),
-    ...(ctx.trigger !== undefined ? { trigger: ctx.trigger } : {}),
-    ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
-  });
+function mapCtx(ctx: HookContextLike | undefined): GateContext {
+  if (!ctx) {
+    return {};
+  }
+  // Prefer the gateway's already-classified chatType (e.g. telegram DM => "direct").
+  // deriveChatType is a fail-closed fallback for contexts that omit it.
+  const chatType =
+    ctx.chatType ??
+    deriveChatType({
+      ...(ctx.channel !== undefined ? { channel: ctx.channel } : {}),
+      ...(ctx.trigger !== undefined ? { trigger: ctx.trigger } : {}),
+      ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
+    });
   return {
     ...(ctx.agentId !== undefined ? { agentId: ctx.agentId } : {}),
     ...((ctx.chatId ?? ctx.channelId) !== undefined
@@ -347,7 +615,9 @@ function extractUserTexts(messages: ReadonlyArray<unknown>): string[] {
   const out: string[] = [];
   for (const m of messages) {
     const msg = m as { role?: string; content?: unknown } | null;
-    if (!msg || msg.role !== "user") continue;
+    if (!msg || msg.role !== "user") {
+      continue;
+    }
     const content = msg.content;
     if (typeof content === "string") {
       out.push(content);

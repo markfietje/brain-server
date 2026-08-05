@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-
 import type { BrainRecallHit } from "./brain-client.js";
 import {
   MEMORY_BANNER,
+  RECALL_ABSTENTION,
   STATIC_SYSTEM_GUIDANCE,
   formatRecallContext,
   looksCaptureWorthy,
@@ -49,6 +49,23 @@ describe("formatRecallContext", () => {
     expect(out).not.toContain("\u0000");
     expect(out).not.toContain("\u0007");
   });
+
+  test("flags contested (conflict) hits so they are not treated as settled fact", () => {
+    const out = formatRecallContext([hit({ conflict: true, content: "X is 5" })]);
+    expect(out).toContain("conflicted");
+  });
+
+  test("accepts the server's 'both' source value", () => {
+    const out = formatRecallContext([hit({ source: "both" as const, content: "hybrid hit" })]);
+    expect(out).toContain("hybrid hit");
+  });
+});
+
+describe("RECALL_ABSTENTION", () => {
+  test("tells the agent to clarify / fall back instead of fabricating", () => {
+    expect(RECALL_ABSTENTION).toContain("low confidence");
+    expect(RECALL_ABSTENTION).toContain("clarify");
+  });
 });
 
 describe("sanitizeForBlock", () => {
@@ -86,7 +103,15 @@ describe("latestUserText", () => {
   });
 
   test("joins text blocks for array content", () => {
-    const msgs = [{ role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }];
+    const msgs = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "a" },
+          { type: "text", text: "b" },
+        ],
+      },
+    ];
     expect(latestUserText(msgs)).toBe("a\nb");
   });
 

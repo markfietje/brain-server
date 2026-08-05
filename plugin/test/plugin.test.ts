@@ -1,3 +1,4 @@
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 /**
  * Brain Server plugin integration tests.
  *
@@ -23,14 +24,14 @@
  *      — the behavior added so an agent gets actionable feedback.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
-
 import plugin from "../index.js";
 
 /**
- * Structural mock of OpenClawPluginApi. We do NOT import the real SDK type here
- * — the mock is a plain recording object. The real `definePluginEntry` (imported
- * by index.ts from the SDK) is what runs at registration time; this object just
- * captures what the plugin registers so we can invoke it directly.
+ * Structural mock of OpenClawPluginApi. We only import the SDK *type* for the
+ * register-boundary cast — the mock object itself is a plain recorder. The real
+ * `definePluginEntry` (imported by index.ts from the SDK) is what runs at
+ * registration time; this object just captures what the plugin registers so we
+ * can invoke it directly.
  */
 type HookHandler = (...args: unknown[]) => unknown;
 type MockApi = {
@@ -74,18 +75,22 @@ function registerPlugin(pluginConfig: unknown) {
     registerTool: vi.fn((tool, opts) => {
       const t = tool as { name?: string; execute?: (...a: unknown[]) => unknown };
       const name = opts?.name ?? t.name;
-      if (name && t.execute) tools.set(name, t as { execute: (...a: unknown[]) => unknown });
+      if (name && t.execute) {
+        tools.set(name, t as { execute: (...a: unknown[]) => unknown });
+      }
     }),
     registerService: vi.fn((s) => services.push(s)),
     registerMemoryCapability: vi.fn(),
   };
 
-  plugin.register(api);
+  plugin.register(api as unknown as OpenClawPluginApi);
   return { hooks, tools, services, logger };
 }
 
-const getHook = <T>(hooks: Map<string, HookHandler>, name: string): T =>
-  hooks.get(name) as T;
+/** Typed projection of a registered hook handler used across these tests. */
+type HookHandlerFn = (e: unknown, ctx: unknown) => Promise<unknown>;
+const getHook = (hooks: Map<string, HookHandler>, name: string): HookHandlerFn =>
+  hooks.get(name) as HookHandlerFn;
 
 // ---------------------------------------------------------------------------
 
@@ -100,6 +105,10 @@ describe("plugin registration", () => {
     expect(tools.has("memory_recall")).toBe(true);
     expect(tools.has("memory_store")).toBe(true);
     expect(tools.has("memory_forget")).toBe(true);
+    // brain-server differentiated surfaces (span verify, fetch, knowledge graph).
+    expect(tools.has("memory_verify")).toBe(true);
+    expect(tools.has("memory_get")).toBe(true);
+    expect(tools.has("memory_graph_entity")).toBe(true);
   });
 
   test("registers a static memory capability (prompt-cached system guidance)", () => {
@@ -113,7 +122,7 @@ describe("plugin registration", () => {
       registerService: vi.fn(),
       registerMemoryCapability,
     } as unknown as MockApi;
-    plugin.register(api);
+    plugin.register(api as unknown as OpenClawPluginApi);
     expect(registerMemoryCapability).toHaveBeenCalledTimes(1);
     const cap = registerMemoryCapability.mock.calls[0]?.[0] as { promptBuilder: () => unknown[] };
     // Static guidance must mention treating memories as untrusted (LLM01/LLM02).
@@ -131,16 +140,16 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
       .mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "prefers Helix", score: 0.9 }] }));
 
     const { hooks } = registerPlugin({ agents: ["main"] });
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
-      { prompt: "what editor?", messages: [{ role: "user", content: "what editor should i use?" }] },
+    const result = await getHook(hooks, "before_prompt_build")(
+      {
+        prompt: "what editor?",
+        messages: [{ role: "user", content: "what editor should i use?" }],
+      },
       { agentId: "main" },
     );
 
     // One HTTP call to the Rust server's /recall — that is the whole turn's cost.
-    const recallCalls = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/recall"));
+    const recallCalls = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/recall"));
     expect(recallCalls).toHaveLength(1);
     expect(result).toEqual({ prependContext: expect.stringContaining("prefers Helix") });
     // Anti-injection banner rides along on every injected block.
@@ -150,10 +159,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
   test("empty hits => undefined (inject nothing, no banner)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"] });
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
+    const result = await getHook(hooks, "before_prompt_build")(
       { prompt: "hello", messages: [{ role: "user", content: "hello there" }] },
       { agentId: "main" },
     );
@@ -163,10 +169,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
   test("FAILS OPEN on network error: undefined + warn, never throws", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("connection refused"));
     const { hooks, logger } = registerPlugin({ agents: ["main"] });
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
+    const result = await getHook(hooks, "before_prompt_build")(
       { prompt: "query", messages: [{ role: "user", content: "a real query here" }] },
       { agentId: "main" },
     );
@@ -177,10 +180,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
   test("FAILS OPEN on HTTP 500: undefined (must not stall the agent)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("boom", { status: 500 }));
     const { hooks } = registerPlugin({ agents: ["main"] });
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
+    const result = await getHook(hooks, "before_prompt_build")(
       { prompt: "query", messages: [{ role: "user", content: "a real query here" }] },
       { agentId: "main" },
     );
@@ -190,7 +190,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
   test("prompt shorter than minQueryLength => no /recall call", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"] });
-    await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(hooks, "before_prompt_build")(
+    await getHook(hooks, "before_prompt_build")(
       { prompt: "hi", messages: [{ role: "user", content: "hi" }] },
       { agentId: "main" },
     );
@@ -201,7 +201,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"], autoRecall: false });
     // Hook stays registered (SDK inert when disabled) but does no work.
-    await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(hooks, "before_prompt_build")(
+    await getHook(hooks, "before_prompt_build")(
       { prompt: "a longer query", messages: [{ role: "user", content: "a longer query" }] },
       { agentId: "main" },
     );
@@ -211,7 +211,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
   test("forwards defaultDomain to /recall only when set to a non-global domain", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"], defaultDomain: "health" });
-    await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(hooks, "before_prompt_build")(
+    await getHook(hooks, "before_prompt_build")(
       { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
       { agentId: "main" },
     );
@@ -226,10 +226,7 @@ describe("gating — per-agent + chat-type (brain-server-specific, not in lanced
   test("group chat is blocked even with autoRecall on (data-leakage prevention)", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"] });
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
+    const result = await getHook(hooks, "before_prompt_build")(
       { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
       { agentId: "main", channel: "discord", chatId: "c1" },
     );
@@ -240,10 +237,7 @@ describe("gating — per-agent + chat-type (brain-server-specific, not in lanced
   test("agent not in allowlist => blocked (least privilege)", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"] });
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
+    const result = await getHook(hooks, "before_prompt_build")(
       { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
       { agentId: "other-agent" },
     );
@@ -255,10 +249,7 @@ describe("gating — per-agent + chat-type (brain-server-specific, not in lanced
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     // agents omitted => defaults to [] => memory disabled until an agent opts in.
     const { hooks } = registerPlugin({});
-    const result = await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(
-      hooks,
-      "before_prompt_build",
-    )(
+    const result = await getHook(hooks, "before_prompt_build")(
       { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
       { agentId: "main" },
     );
@@ -276,7 +267,7 @@ describe("agent_end — autoCapture to POST /ingest", () => {
       .mockResolvedValue(mockResponse({ id: 9, status: "created" }));
     const { hooks } = registerPlugin({ agents: ["main"], autoCapture: true });
 
-    await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(hooks, "agent_end")(
+    await getHook(hooks, "agent_end")(
       {
         success: true,
         messages: [
@@ -287,14 +278,14 @@ describe("agent_end — autoCapture to POST /ingest", () => {
       { agentId: "main" },
     );
 
-    const ingestCalls = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/ingest"));
+    const ingestCalls = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/ingest"));
     expect(ingestCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   test("skips capture on a failed turn (success:false)", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ id: 1 }));
     const { hooks } = registerPlugin({ agents: ["main"], autoCapture: true });
-    await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(hooks, "agent_end")(
+    await getHook(hooks, "agent_end")(
       {
         success: false,
         messages: [{ role: "user", content: "I decided to remember this important fact" }],
@@ -307,7 +298,7 @@ describe("agent_end — autoCapture to POST /ingest", () => {
   test("autoCapture off => no /ingest call even with worthy text", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ id: 1 }));
     const { hooks } = registerPlugin({ agents: ["main"], autoCapture: false });
-    await getHook<(e: unknown, ctx: unknown) => Promise<unknown>>(hooks, "agent_end")(
+    await getHook(hooks, "agent_end")(
       {
         success: true,
         messages: [{ role: "user", content: "I decided to remember this important fact today" }],
@@ -340,7 +331,7 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
 
   test("memory_store returns the server's id + status on success", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ id: 42, status: "created", entitiesAdded: 2 }),
+      mockResponse({ id: 42, status: "created", entities_added: 2 }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools.get("memory_store")!.execute("call-1", { text: "a durable fact" });
@@ -348,5 +339,56 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
     expect(details.id).toBe(42);
     expect(details.status).toBe("created");
     expect(details.stored).toBe(true);
+  });
+
+  test("memory_recall surfaces calibrated abstention (low_confidence) to the agent", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ hits: [], decision: "low_confidence" }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_recall")!.execute("call-1", { query: "vague query" });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("low confidence");
+    expect(text).toContain("clarify");
+  });
+
+  test("memory_verify reports supported vs unsupported claim", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ chunk_id: 7, supported: true, decision: "supported", match_ranges: [[0, 5]] }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_verify")!.execute("call-1", {
+      chunk_id: 7,
+      claim: "vitamin",
+    });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("Supported");
+    expect((res as { details: { verified: boolean } }).details.verified).toBe(true);
+  });
+
+  test("memory_get returns the full chunk text", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ id: 7, title: "Bignay", content: "an antioxidant fruit" }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_get")!.execute("call-1", { id: 7 });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("an antioxidant fruit");
+    expect((res as { details: { found: boolean } }).details.found).toBe(true);
+  });
+
+  test("memory_graph_entity returns entity relations", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        name: "bignay",
+        type: "fruit",
+        relations: [{ to_entity: "blueberry", relation_type: "alternative_to", direction: "in" }],
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_graph_entity")!.execute("call-1", { name: "bignay" });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("alternative_to");
+    expect((res as { details: { found: boolean } }).details.found).toBe(true);
   });
 });

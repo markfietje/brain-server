@@ -5,23 +5,27 @@
  * Lakera AI Agent Security model (per-agent rating + Data Leakage Prevention):
  *   - memory is opt-in per agent (empty `agents` => disabled)
  *   - group/channel chats excluded by default to prevent private-memory leakage
+ *
+ * Server auth: the opaque bearer token lives on the server as `AUTH_TOKEN` (or
+ * `AUTH_TOKEN_FILE`, preferred). This plugin's `authToken` config must match it
+ * verbatim; both are sent as `Authorization: Bearer <token>`.
  */
 import { Type, type Static } from "typebox";
 
 export const brainConfigSchema = Type.Object({
   enabled: Type.Optional(Type.Boolean()),
-  baseUrl: Type.Optional(
-    Type.String({ default: "http://127.0.0.1:8765" }),
-  ),
+  baseUrl: Type.Optional(Type.String({ default: "http://127.0.0.1:8765" })),
   authToken: Type.Optional(Type.String()),
   agents: Type.Optional(Type.Array(Type.String())),
   allowedChatTypes: Type.Optional(
-    Type.Array(Type.Union([
-      Type.Literal("direct"),
-      Type.Literal("group"),
-      Type.Literal("channel"),
-      Type.Literal("explicit"),
-    ])),
+    Type.Array(
+      Type.Union([
+        Type.Literal("direct"),
+        Type.Literal("group"),
+        Type.Literal("channel"),
+        Type.Literal("explicit"),
+      ]),
+    ),
   ),
   allowedChatIds: Type.Optional(Type.Array(Type.String())),
   deniedChatIds: Type.Optional(Type.Array(Type.String())),

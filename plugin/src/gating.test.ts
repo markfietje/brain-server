@@ -1,8 +1,7 @@
 import { describe, expect, test } from "vitest";
-
 import { DEFAULTS } from "./config.js";
-import { deriveChatType, isRecallAllowed, type GateContext } from "./gating.js";
 import type { ResolvedBrainConfig } from "./config.js";
+import { deriveChatType, isRecallAllowed } from "./gating.js";
 
 const baseCfg = (): ResolvedBrainConfig => ({
   enabled: true,
@@ -61,7 +60,7 @@ describe("isRecallAllowed", () => {
     cfg.agents = ["main"];
     const d = isRecallAllowed(cfg, { agentId: "main", chatType: "group" });
     expect(d.allowed).toBe(false);
-    expect(d.allowed === false && d.reason).toContain("data-leakage");
+    expect(!d.allowed && d.reason).toContain("data-leakage");
   });
 
   test("channel chat type blocked by default", () => {
