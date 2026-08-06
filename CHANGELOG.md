@@ -12,6 +12,47 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-08-06
+
+**"Route" — real domain auto-routing (root-cause fix + relabel migration).**
+
+Fixes the domain-routing lie that shipped at v1.0: ingest never auto-routed
+(an omitted domain always fell to `global`), and `recompute_centroid` read the
+frozen legacy `embeddings` JSON table (2 rows since v0.9.0) so every centroid
+was ~empty. Live DB was 99% in `global`. This release makes auto-routing real
+and gives the operator a non-re-ingest migration path. No schema migration —
+`knowledge.domain`, `domain_centroids`, and `vec_knowledge` all already exist.
+
+### Changes
+- **M1 — centroid source fixed** (`src/domain_router.rs`): new
+  `read_domain_vectors` reads `vec_knowledge` (matching `find_near_duplicates`)
+  joined to `knowledge` with `valid_to IS NULL` (superseded chunks excluded),
+  dequantized via `decode_embedding`. `recompute_centroid` uses it. The old
+  code read the frozen `embeddings` table, silently zeroing every centroid.
+- **M2 — ingest auto-routing** (`src/handlers/ingest.rs` + `domain_router.rs`):
+  `route_domain_label(forced, embedding, centroids)` — an explicit domain wins;
+  otherwise the chunk embedding (already computed for insert) is auto-routed
+  against the stored centroids, falling back to `global` with no confident
+  match. Zero extra embedding work; deterministic (same `route()` recall uses).
+- **M3 — `POST /domains/move`** (`src/handlers/domains.rs`): bulk-relabel
+  chunks into a target domain in ONE transaction (provenance fields untouched),
+  then recomputes affected centroids. Guards: `to` may not be `global`;
+  draining `global` requires `?confirm=global` (typo-replay); every id must
+  exist; bounded by `MAX_MULTI_GET`. `brain domain-move <id>... --to <domain>
+  [--confirm global]` CLI.
+- **M4 — `POST /domains/recompute`** (`src/handlers/domains.rs` +
+  `domain_router.rs`): one-shot sweep of every known domain's centroid from the
+  corrected source, cleaning stale centroids for emptied domains.
+  `DOMAIN_MIN_COUNT` knob (default 1 — a no-op unless raised) suppresses
+  sub-N domains. `brain domains-recompute` CLI.
+- **Deployment runbook (order matters)**: deploy → run `domains-recompute`
+  immediately → `domain-move` keyword passes → verify `domains_searched`.
+
+### Verification
+- `cargo test --features bench,migrate`: **477 passed, 1 ignored**.
+- `cargo clippy --all-targets --features bench,migrate -- -D warnings`: clean.
+- `cargo fmt --check`: clean.
+
 ## [1.12.2] — 2026-08-04
 
 **"Harden" — audit-fix release (refresh-race serialization + dependency bumps + green CI).**
