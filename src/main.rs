@@ -3638,7 +3638,10 @@ async fn main_inner() -> Result<()> {
         .max_lifetime(Some(StdDuration::from_secs(POOL_MAX_LIFETIME_SECS)))
         .idle_timeout(Some(StdDuration::from_secs(POOL_IDLE_TIMEOUT_SECS)))
         .test_on_check_out(true)
-        .build(SqliteConnectionManager::file(&db_path))?;
+        .build(
+            SqliteConnectionManager::file(&db_path)
+                .with_init(|c| c.execute_batch("PRAGMA busy_timeout=5000;")),
+        )?;
 
     // ── Pre-migration safety backup (plan v0.9.0 M4) ─────────────────────
     // One-shot `VACUUM INTO` snapshot taken BEFORE the first v0.9.0 migration

@@ -158,7 +158,8 @@ fn open_with_migration(path: &Path) -> Result<BrainPool, DomainRegistryError> {
              PRAGMA synchronous=NORMAL; \
              PRAGMA foreign_keys=ON; \
              PRAGMA cache_size=-64000; \
-             PRAGMA temp_store=MEMORY;",
+             PRAGMA temp_store=MEMORY; \
+             PRAGMA busy_timeout=5000;",
         )
     });
     let pool: Pool<SqliteConnectionManager> = r2d2::Pool::builder()

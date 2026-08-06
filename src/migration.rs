@@ -23,7 +23,8 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
          PRAGMA foreign_keys=ON; \
          PRAGMA cache_size=-64000; \
          PRAGMA temp_store=MEMORY; \
-         PRAGMA mmap_size={mmap_bytes};"
+         PRAGMA mmap_size={mmap_bytes}; \
+         PRAGMA busy_timeout=5000;"
     );
     db.execute_batch(&pragmas)?;
 
