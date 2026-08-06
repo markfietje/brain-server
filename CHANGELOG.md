@@ -10,6 +10,20 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.13.5] — 2026-08-07
+
+**`/metrics` `brain_rss_mib` now reports the process's own RSS.**
+
+- The gauge was emitting `System::used_memory()` (system-wide used memory)
+  while its HELP text claims "Process RSS in MiB". On a busy host the value
+  was ~50x the process's real footprint (live: ~10,485 MiB reported vs ~181 MB
+  actual, per `ps`), so Prometheus consumers of the capacity story were
+  misled and the 320 MiB envelope was invisible in metrics. It now calls the
+  same `process_rss_mib()` used by the `/health` capacity envelope
+  (main.rs), so `/metrics` and `/health` agree on the same number.
+- Added `process_rss_mib_reports_plausible_process_footprint` regression
+  test (bounds the gauge to a process-scale value, not host-scale).
+
 ## [1.13.4] — 2026-08-06
 
 **POST /recall query-string `source` parity.**
