@@ -312,6 +312,29 @@ pub fn split_source_filter(filter: Option<&SourceFilter>) -> (Option<String>, Op
     }
 }
 
+/// v1.13.4: resolve the `source` filter for `POST /recall` from BOTH the JSON
+/// body and the query string (`?source=`), so a query-string value is honored
+/// instead of silently ignored (parity with `GET /search`). Body `source` wins
+/// when both are present; the query string fills in when the body omits it. An
+/// unknown value in *either* is rejected. Pure + unit-testable; the handler
+/// maps the error to HTTP 422.
+pub fn resolve_source_filter(
+    body: Option<&str>,
+    query: Option<&str>,
+) -> Result<(Option<String>, Option<LegFilter>), SourceFilterError> {
+    let body_f = body
+        .filter(|s| !s.trim().is_empty())
+        .map(parse_source_filter)
+        .transpose()?;
+    let query_f = query
+        .filter(|s| !s.trim().is_empty())
+        .map(parse_source_filter)
+        .transpose()?;
+    let (body_kind, body_leg) = split_source_filter(body_f.as_ref());
+    let (query_kind, query_leg) = split_source_filter(query_f.as_ref());
+    Ok((body_kind.or(query_kind), body_leg.or(query_leg)))
+}
+
 /// Rejection of an unknown `source` value. Renders with the full valid-value
 /// list so the 422 body tells the caller exactly what to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -532,5 +555,30 @@ mod tests {
             split_source_filter(Some(&SourceFilter::Leg(LegFilter::Vector))),
             (None, Some(LegFilter::Vector))
         );
+    }
+
+    #[test]
+    fn resolve_source_filter_body_wins_query_fills_unknown_rejected() {
+        // Body wins when both present.
+        assert_eq!(
+            resolve_source_filter(Some("memory"), Some("markdown")).unwrap(),
+            (Some("memory".into()), None)
+        );
+        // Query string fills in when the body omits `source`.
+        assert_eq!(
+            resolve_source_filter(None, Some("vector")).unwrap(),
+            (None, Some(LegFilter::Vector))
+        );
+        // "both" in either slot is unrestricted.
+        assert_eq!(
+            resolve_source_filter(Some("both"), None).unwrap(),
+            (None, None)
+        );
+        // Unknown value in EITHER slot -> Err (no silent ignore — the fix).
+        assert!(resolve_source_filter(Some("web"), None).is_err());
+        assert!(resolve_source_filter(None, Some("web")).is_err());
+        assert!(resolve_source_filter(Some("memory"), Some("web")).is_err());
+        // Both absent -> unrestricted.
+        assert_eq!(resolve_source_filter(None, None).unwrap(), (None, None));
     }
 }

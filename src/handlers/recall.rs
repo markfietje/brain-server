@@ -10,7 +10,10 @@
 //!   - Heavy logic: v0.9.0 Phase 1 (sqlite-vec) + Phase 2 (hybrid + RRF),
 //!     and v1.0.0 Phase 3 (per-domain DBs + centroid routing).
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use serde::de::Error as _;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -131,6 +134,16 @@ fn default_limit() -> u32 {
     DEFAULT_RECALL_LIMIT
 }
 
+/// v1.13.4: optional query-string `?source=` on `POST /recall`. The JSON body
+/// `source` is primary; this fills the gap when the body omits it and is always
+/// validated (422 on unknown), so a query-string value is never silently
+/// ignored. Parity with `GET /search?source=`.
+#[derive(Debug, Default, Deserialize)]
+pub struct RecallSourceQuery {
+    #[serde(default)]
+    source: Option<String>,
+}
+
 /// `POST /recall` — deterministic end-to-end recall.
 ///
 /// v0.9.0 scope: single-DB treated as the `global` domain. Reuses the proven
@@ -145,6 +158,7 @@ fn default_limit() -> u32 {
 pub async fn recall(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
+    source_query: Query<RecallSourceQuery>,
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<RecallResponse>, HandlerError> {
     // ---- validation (fail fast; never embed on bad input) ----
@@ -289,19 +303,17 @@ pub async fn recall(
     }
 
     let k = req.limit as usize;
-    // v1.13.3 "SourceFix" M1: parse `source` once at the handler boundary.
-    // Ingest-kind values (memory|markdown|…) stay SQL equality; retrieval-leg
-    // values (vector|fts|graph) become a post-fusion filter; "both" is
-    // unrestricted; anything else is rejected with 422 before any DB/embed work.
-    let source_filter = req
-        .source
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(crate::search::query::parse_source_filter)
-        .transpose()
-        .map_err(|e| HandlerError::unprocessable("invalid_source", e.to_string()))?;
-    let (source_kind, source_leg) =
-        crate::search::query::split_source_filter(source_filter.as_ref());
+    // v1.13.3 "SourceFix" M1 + v1.13.4: parse `source` from the body AND the
+    // query string. Ingest-kind values stay SQL equality; retrieval-leg values
+    // become a post-fusion filter; "both" is unrestricted. Body `source` wins
+    // when both are present; the query string fills in when the body omits it.
+    // Unknown values in either are rejected with 422 before any DB/embed work —
+    // a query-string `?source=` is never silently ignored (GET /search parity).
+    let (source_kind, source_leg) = crate::search::query::resolve_source_filter(
+        req.source.as_deref(),
+        source_query.source.as_deref(),
+    )
+    .map_err(|e| HandlerError::unprocessable("invalid_source", e.to_string()))?;
     // Lower the request into the shared v0.9.5 structured QueryDoc so recall
     // and search use one lexical compiler + validation path. The bare `query`
     // is the embedding/lexical fallback; structured `lex`/`vec`/`hyde` override.

@@ -10,6 +10,20 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.13.4] — 2026-08-06
+
+**POST /recall query-string `source` parity.**
+
+- **`POST /recall` now honors and validates a query-string `?source=`**, matching
+  `GET /search`. Previously the handler read `source` from the JSON body only (no
+  `Query<>` extractor), so `?source=` was silently ignored — `?source=web`
+  returned 200 unfiltered instead of 422, and a caller could get unfiltered
+  results thinking they had filtered. Body `source` still wins when both are
+  present; the query string fills in when the body omits it; an unknown value in
+  either is rejected with 422 via the shared `resolve_source_filter` parser
+  (`src/search/query.rs`). Harmless for the plugin (it sends a body); closes the
+  consistency gap between the two retrieval endpoints.
+
 ## [1.13.3] — 2026-08-06
 
 **Retrieval source-filter contract repair + ingest response honesty.**

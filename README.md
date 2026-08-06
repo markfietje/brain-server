@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.13.3 "SourceFix" (repaired `source` retrieval-filter contract; `/ingest/memory` returns real chunk ids; `domains_searched` always present) |
+| **Version** | 1.13.4 "RecallQs" (POST /recall honors & validates query-string `?source=` — 422 on unknown; parity with GET /search) · prev 1.13.3 "SourceFix" |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
