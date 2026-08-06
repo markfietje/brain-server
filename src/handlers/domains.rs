@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 use crate::AppState;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 #[derive(Debug, Serialize)]
 pub struct DomainInfo {
@@ -27,6 +27,31 @@ pub struct DomainsResponse {
 #[derive(Debug, Deserialize)]
 pub struct CreateDomainRequest {
     pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MoveDomainsRequest {
+    pub ids: Vec<i64>,
+    pub to: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct MoveDomainsQuery {
+    #[serde(default)]
+    pub confirm: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MoveDomainsResponse {
+    pub to: String,
+    pub moved: usize,
+    pub from_domains: Vec<String>,
+    pub recomputed: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecomputeResponse {
+    pub recomputed: Vec<(String, usize)>,
 }
 
 /// `GET /domains` — list domains with per-domain counts.
@@ -519,6 +544,188 @@ pub async fn import_domain(
     ))
 }
 
+/// `POST /domains/move` — relabel chunks from one domain to another.
+///
+/// v1.13.0 "Route" M3: the migration mechanism for fixing the 99%-in-`global`
+/// corpus. Relabels `knowledge.domain` in ONE transaction (provenance fields
+/// `source`/`authority`/`observed_at` are untouched), then recomputes the
+/// centroids of every domain touched so routing sees the move. This is the
+/// non-re-ingest cure: re-ingesting is blocked by the global `content_hash`
+/// dedup and wastes a re-embed, while a relabel needs no schema change
+/// (`vec_knowledge` has no domain column — filtering is on `knowledge.domain`).
+///
+/// Guards: `to` may not be `global` (the fallback bucket); moving rows OUT of
+/// `global` requires `?confirm=global` (typo-replay protection, mirror of the
+/// v1.0 delete guard). Each id must exist. Bounded by `MAX_MULTI_GET`/call.
+pub async fn move_domains(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<MoveDomainsQuery>,
+    Json(req): Json<MoveDomainsRequest>,
+) -> Result<Json<MoveDomainsResponse>, HandlerError> {
+    use super::normalize_domain;
+    let to = normalize_domain(&req.to)?;
+    // v1.13.0 M3 AuthZ: Admin gate (bulk relabel of memory).
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", &to)?;
+    if to == "global" {
+        return Err(HandlerError::bad_request(
+            "domain_protected",
+            "the 'global' domain is the fallback bucket; do not move INTO it",
+        ));
+    }
+    if req.ids.is_empty() {
+        return Err(HandlerError::bad_request("ids_empty", "no ids to move"));
+    }
+    if req.ids.len() > crate::config::MAX_MULTI_GET {
+        return Err(HandlerError::bad_request_with(
+            "too_many_ids",
+            format!(
+                "ids exceed {} per call; batch the migration",
+                crate::config::MAX_MULTI_GET
+            ),
+            serde_json::json!({ "max": crate::config::MAX_MULTI_GET }),
+        ));
+    }
+    let confirm = q.confirm.as_deref().unwrap_or("").trim().to_lowercase();
+
+    let pool = state.registry.pool_for(&to).map_err(|e| {
+        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
+    })?;
+    let to_c = to.clone();
+    let ids = req.ids;
+
+    let (moved, from_domains) = tokio::task::spawn_blocking(move || {
+        let mut conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        relabel_chunks(&mut conn, &ids, &to_c, &confirm)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+
+    // Recompute centroids for every domain touched so routing sees the move.
+    // Best-effort: a centroid failure must not fail an otherwise-successful move.
+    let mut recomputed: Vec<String> = Vec::new();
+    let mut domains = from_domains.clone();
+    if !domains.contains(&to) {
+        domains.push(to.clone());
+    }
+    for d in domains {
+        if let Ok(dp) = state.registry.pool_for(&d) {
+            let _ = crate::domain_router::recompute_centroid(&dp, &d, &state.pool);
+            recomputed.push(d);
+        }
+    }
+
+    Ok(Json(MoveDomainsResponse {
+        to,
+        moved,
+        from_domains,
+        recomputed,
+    }))
+}
+
+/// `POST /domains/recompute` — v1.13.0 M4: one-shot recompute of every known
+/// domain's centroid from the corrected M1 source. The post-migration catch-up
+/// that makes M2's auto-route meaningful (until real centroids exist, `route()`
+/// only ever sees `global`). Runs on the caller's pool in a blocking task.
+/// Admin-gated.
+pub async fn recompute_domains(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+) -> Result<Json<RecomputeResponse>, HandlerError> {
+    // v1.13.0 M4 AuthZ: Admin gate (operator sweep over all domains).
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let pool = state.pool.clone();
+    let result =
+        tokio::task::spawn_blocking(move || crate::domain_router::recompute_all_centroids(&pool))
+            .await
+            .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
+            .map_err(|e| HandlerError::internal(format!("recompute sweep failed: {e}")))?;
+    Ok(Json(RecomputeResponse { recomputed: result }))
+}
+
+/// The relabel transaction core of `move_domains`, extracted for testability.
+/// Validates every id exists, derives the source domains, enforces the
+/// `?confirm=global` guard when draining the fallback bucket, then relabels in
+/// ONE transaction (only rows currently in a different domain; provenance
+/// fields `source`/`authority`/`observed_at` are untouched). Returns the
+/// number actually moved + the distinct source domains.
+pub(crate) fn relabel_chunks(
+    conn: &mut Connection,
+    ids: &[i64],
+    to: &str,
+    confirm: &str,
+) -> Result<(usize, Vec<String>), HandlerError> {
+    let ph = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // Validate every id exists before touching anything (provenance safety).
+    let existing: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM knowledge WHERE id IN ({ph})"),
+            rusqlite::params_from_iter(ids.iter()),
+            |r| r.get(0),
+        )
+        .map_err(|e| HandlerError::internal(format!("id check failed: {e}")))?;
+    if existing as usize != ids.len() {
+        return Err(HandlerError::bad_request(
+            "id_not_found",
+            format!(
+                "{}/{} ids do not exist",
+                ids.len() - existing as usize,
+                ids.len()
+            ),
+        ));
+    }
+
+    // Source domains involved; draining `global` needs ?confirm=global.
+    let mut from_domains: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT DISTINCT domain FROM knowledge WHERE id IN ({ph})"
+            ))
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        for r in rows.flatten() {
+            from_domains.push(r);
+        }
+    }
+    if from_domains.iter().any(|d| d == "global") && confirm != "global" {
+        return Err(HandlerError::bad_request_with(
+            "confirm_required",
+            "moving rows out of 'global' requires ?confirm=global",
+            serde_json::json!({ "domain": "global" }),
+        ));
+    }
+
+    // One tx: relabel only rows currently in a different domain.
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
+    params_vec.push(Box::new(to.to_string()));
+    for id in ids {
+        params_vec.push(Box::new(*id));
+    }
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let tx = conn
+        .transaction()
+        .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
+    let changed = tx
+        .execute(
+            &format!("UPDATE knowledge SET domain = ?1 WHERE id IN ({ph}) AND domain != ?1"),
+            param_refs.as_slice(),
+        )
+        .map_err(|e| HandlerError::internal(format!("relabel failed: {e}")))?;
+    tx.commit()
+        .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
+    Ok((changed, from_domains))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,5 +833,142 @@ mod tests {
             .unwrap();
         assert_eq!(health_rows, 0, "deleted domain's rows are gone");
         assert_eq!(business_rows, 2, "other domains' rows are intact");
+    }
+
+    /// v1.13.0 M3: the relabel core moves only the requested ids into the target
+    /// domain, reports the distinct source domains, and leaves provenance
+    /// fields (`source`/`authority`/`observed_at`) untouched. Draining rows OUT
+    /// of the fallback bucket requires `?confirm=global`.
+    #[test]
+    fn relabel_chunks_moves_rows_and_preserves_provenance() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+            .expect("migration");
+
+        let mut global_ids = Vec::new();
+        for i in 0..2 {
+            conn.execute(
+                "INSERT INTO knowledge (title, content, source, content_hash, domain)
+                 VALUES (?1, ?2, 'structured', ?3, 'global')",
+                params![
+                    format!("g{i}"),
+                    format!("global content {i}"),
+                    format!("hg{i}")
+                ],
+            )
+            .unwrap();
+            global_ids.push(conn.last_insert_rowid());
+        }
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash, domain)
+             VALUES ('b0', 'biz', 'structured', 'hb0', 'business')",
+            [],
+        )
+        .unwrap();
+
+        // No confirm -> draining global is refused.
+        let err = super::relabel_chunks(&mut conn, &global_ids, "business", "").unwrap_err();
+        assert_eq!(
+            err.inner.code, "confirm_required",
+            "got: {:?}",
+            err.inner.code
+        );
+
+        // With confirm -> both rows move; business rows untouched.
+        let (moved, from) =
+            super::relabel_chunks(&mut conn, &global_ids, "business", "global").unwrap();
+        assert_eq!(moved, 2);
+        assert_eq!(from, vec!["global".to_string()]);
+
+        let biz_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE domain = 'business' AND id IN (?, ?)",
+                params![global_ids[0], global_ids[1]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(biz_rows, 2, "relabeled rows now live in the target domain");
+        // Provenance preserved.
+        let src: String = conn
+            .query_row(
+                "SELECT source FROM knowledge WHERE id = ?1",
+                params![global_ids[0]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(src, "structured", "provenance field untouched by relabel");
+    }
+
+    #[test]
+    fn relabel_chunks_rejects_missing_ids() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+            .expect("migration");
+        let err = super::relabel_chunks(&mut conn, &[999999], "business", "global").unwrap_err();
+        assert_eq!(
+            err.inner.code, "id_not_found",
+            "expected id_not_found, got: {:?}",
+            err.inner.code
+        );
+    }
+
+    /// v1.13.0 M4: the one-shot sweep recomputes every known domain's centroid
+    /// from vec_knowledge and cleans a stale centroid for an emptied domain.
+    /// Driven through the real vec0 + `recompute_all_centroids` path (a Pool is
+    /// required, so this spins up a real pool on a temp file like the M1 tests).
+    #[test]
+    fn recompute_sweep_recomputes_all_and_cleans_stale() {
+        crate::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sweep.db");
+        // Schema first on a raw connection (the pool reads the same file).
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+                .expect("migration");
+            conn.execute(
+                "INSERT INTO knowledge(id, content, content_hash, domain) VALUES
+                    (1, 'a', 'a', 'visa')",
+                [],
+            )
+            .unwrap();
+            let v: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
+            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            conn.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (1, vec_quantize_int8(?1, 'unit'), vec_quantize_binary(?1), 'test', datetime('now'))",
+                rusqlite::params![blob],
+            )
+            .unwrap();
+            // A stale centroid for a domain with zero rows must be cleaned.
+            conn.execute(
+                "INSERT INTO domain_centroids (domain, centroid, count) VALUES ('dead', X'ABCD', 3)",
+                [],
+            )
+            .unwrap();
+        }
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .build(r2d2_sqlite::SqliteConnectionManager::file(&path))
+            .expect("pool build");
+        let out = crate::domain_router::recompute_all_centroids(&pool).unwrap();
+        let rows: std::collections::BTreeMap<String, usize> = out.into_iter().collect();
+        assert_eq!(rows.get("visa"), Some(&1), "visa recomputed from vec0");
+        assert_eq!(
+            rows.get("dead"),
+            Some(&0),
+            "emptied domain processed with count 0 (centroid cleaned)"
+        );
+        let dead_rows: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM domain_centroids WHERE domain='dead'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dead_rows, 0, "stale centroid deleted");
     }
 }

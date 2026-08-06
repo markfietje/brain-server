@@ -1345,6 +1345,81 @@ paths:
                   bytes: { type: integer }
         "400": { $ref: "#/components/responses/BadRequest" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+  /domains/move:
+    post:
+      summary: Bulk-relabel chunks into a target domain (v1.13.0 Route)
+      operationId: moveDomains
+      description: >
+        The non-re-ingest fix for the 99%-in-`global` corpus. Relabels
+        `knowledge.domain` for the given ids in ONE transaction (provenance
+        fields `source`/`authority`/`observed_at` are untouched), then
+        recomputes the centroids of every domain touched so routing sees the
+        move. `to` may not be `global` (the fallback bucket); moving rows OUT
+        of `global` requires `?confirm=global` (typo-replay guard). Admin-only.
+      parameters:
+        - name: confirm
+          in: query
+          required: false
+          schema: { type: string }
+          description: Must equal `global` to move rows out of the fallback bucket.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids, to]
+              properties:
+                ids:
+                  type: array
+                  items: { type: integer }
+                  description: Chunk ids to relabel (max 1000 per call).
+                to: { type: string, description: Target domain (never `global`). }
+      responses:
+        "200":
+          description: Moved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  to: { type: string }
+                  moved: { type: integer }
+                  from_domains:
+                    type: array
+                    items: { type: string }
+                  recomputed:
+                    type: array
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /domains/recompute:
+    post:
+      summary: One-shot recompute of every domain's routing centroid (v1.13.0 Route)
+      operationId: recomputeDomains
+      description: >
+        The post-migration catch-up sweep that makes auto-routing meaningful:
+        recomputes every known domain's centroid from the live `vec_knowledge`
+        index and deletes stale centroids for domains that emptied out. Run
+        right after deploying v1.13.0 (before auto-routed ingests accumulate)
+        and again after `POST /domains/move` passes. Admin-only.
+      responses:
+        "200":
+          description: Recomputed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recomputed:
+                    type: array
+                    description: (domain, vector count) per domain.
+                    items:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      items: {}
+        "403": { $ref: "#/components/responses/Forbidden" }
   /auth/refresh:
     post:
       summary: Exchange a refresh token for a new access + refresh token pair (v1.2 AuthN)

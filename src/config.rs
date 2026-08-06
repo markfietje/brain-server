@@ -286,6 +286,19 @@ pub fn brain_graph_rescue_enabled() -> bool {
     )
 }
 
+/// v1.13.0 M4: minimum chunk count for a domain to keep a routing centroid.
+/// Defaults to 1 (a 1-vector centroid is exact for that vector, so nothing is
+/// suppressed). A domain below this floor gets its centroid deleted so `route()`
+/// stops sending traffic to a near-empty bucket. `ponytail:` corpus-tuned, not
+/// learned — an operator who measures weak routing on sub-N domains raises it.
+pub fn brain_domain_min_count() -> i64 {
+    std::env::var("DOMAIN_MIN_COUNT")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1)
+        .max(1)
+}
+
 /// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to
 /// `edge-default`. Unknown values fall back to `edge-default`.
 pub fn model_profile() -> &'static str {

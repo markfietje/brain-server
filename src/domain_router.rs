@@ -107,7 +107,15 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
     drop(dconn);
 
     let count = vectors.len();
-    let centroid = mean_vector(&vectors);
+    // v1.13.0 M4: a domain below DOMAIN_MIN_COUNT (default 1) keeps no centroid
+    // so `route()` stops sending traffic to a near-empty bucket. Default 1 is a
+    // no-op — nothing is suppressed unless the operator raises the floor.
+    let min_count = crate::config::brain_domain_min_count() as usize;
+    let centroid = if count >= min_count {
+        mean_vector(&vectors)
+    } else {
+        Vec::new()
+    };
     let gconn = global_pool
         .get()
         .context("centroid compute: global DB connection failed")?;

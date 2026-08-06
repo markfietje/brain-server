@@ -3997,6 +3997,15 @@ async fn main_inner() -> Result<()> {
             get(handlers::domains::domains).post(handlers::domains::create_domain),
         )
         .route("/domains/{name}", delete(handlers::domains::delete_domain))
+        // v1.13.0 M3: bulk relabel of chunks across domains (the non-re-ingest
+        // fix for the 99%-in-global corpus). A POST on a distinct path, so it
+        // cannot collide with the `/domains/{name}` DELETE above.
+        .route("/domains/move", post(handlers::domains::move_domains))
+        // v1.13.0 M4: one-shot recompute sweep over every domain's centroid.
+        .route(
+            "/domains/recompute",
+            post(handlers::domains::recompute_domains),
+        )
         // v1.0.0 M5: per-domain lifecycle. Vacuum reclaims free pages; export
         // streams a consistent snapshot; import restores a snapshot into a new
         // domain name. `name` is validated inside each handler.
@@ -7500,6 +7509,10 @@ Final paragraph after the rule.";
             "/domains/{name}/vacuum",
             "/domains/{name}/export",
             "/domains/{name}/import",
+            // v1.13.0 M3: bulk relabel across domains.
+            "/domains/move",
+            // v1.13.0 M4: one-shot recompute sweep.
+            "/domains/recompute",
             "/sources/reconcile",
             "/sources/{id}",
             // v0.9.6 Bridge
@@ -8155,6 +8168,8 @@ Final paragraph after the rule.";
             ("/domains/{name}/vacuum", "Admin"),
             ("/domains/{name}/export", "Read"),
             ("/domains/{name}/import", "Admin"),
+            ("/domains/move", "Admin"),
+            ("/domains/recompute", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
             ("/connectors", "Read"),

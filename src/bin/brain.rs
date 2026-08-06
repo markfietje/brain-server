@@ -126,6 +126,8 @@ fn main() {
         "ingest-dir" => cmd_ingest_dir(rest),
         "reconcile" => cmd_reconcile(rest),
         "resolve" => cmd_resolve(rest),
+        "domain-move" => cmd_domain_move(rest),
+        "domains-recompute" => cmd_domains_recompute(rest),
         "undo-resolve" => cmd_undo_resolve(rest),
         "check-consistency" => cmd_check_consistency(rest),
         "source-delete" => cmd_source_delete(rest),
@@ -187,6 +189,8 @@ usage:
   brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
   brain reconcile <path> [--kind vault] [--dry-run]
   brain resolve <new_id> <old_id>
+  brain domain-move <id> [<id> ...] --to <domain> [--confirm global]
+  brain domains-recompute
   brain undo-resolve <old_id> [<old_id> ...]
   brain check-consistency
   brain source-delete <id>
@@ -890,6 +894,105 @@ fn cmd_resolve(args: &[String]) -> Result<(), String> {
     }
     println!("resolved: chunk {new_id} supersedes chunk {old_id} (old chunk expired; ");
     println!("  still retrievable via /recall?at=<before-now>)");
+    Ok(())
+}
+
+/// `brain domain-move <id> [<id> ...] --to <domain> [--confirm global]`:
+/// v1.13.0 M3 — bulk-relabel chunks across domains via `POST /domains/move`.
+/// This is the non-re-ingest fix for the 99%-in-`global` corpus: relabels
+/// `knowledge.domain`, recomputes the affected centroids, and leaves the
+/// content (and its embedding) untouched. Moving rows OUT of `global` needs
+/// `--confirm global` (typo-replay guard, mirror of `DELETE /domains/{name}`).
+fn cmd_domain_move(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    if positionals.is_empty() {
+        return Err(
+            "usage: brain domain-move <id> [<id> ...] --to <domain> [--confirm global]".into(),
+        );
+    }
+    let to = flags
+        .get("to")
+        .and_then(|v| v.clone())
+        .ok_or_else(|| "missing required flag: --to <domain>".to_string())?;
+    let mut ids: Vec<i64> = Vec::new();
+    for p in &positionals {
+        ids.push(
+            p.parse()
+                .map_err(|_| format!("id must be an integer, got '{p}'"))?,
+        );
+    }
+    let body = serde_json::json!({ "ids": ids, "to": to });
+    let mut query: Vec<(String, String)> = Vec::new();
+    if let Some(confirm) = flags.get("confirm").and_then(|v| v.clone()) {
+        query.push(("confirm".to_string(), confirm));
+    }
+    let resp = post(
+        &base_url(),
+        "/domains/move",
+        &query,
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let moved = v.get("moved").and_then(|n| n.as_u64()).unwrap_or(0);
+    let from_domains: Vec<String> = v
+        .get("from_domains")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    println!("moved {moved} chunk(s) {} -> {to}", from_domains.join(","));
+    if from_domains.iter().any(|d| d == "global") {
+        println!("  note: these were in 'global'; still retrievable via the global domain's historical paths");
+    }
+    Ok(())
+}
+
+/// `brain domains-recompute`: v1.13.0 M4 — one-shot recompute of every known
+/// domain's centroid via `POST /domains/recompute`. Run once right after
+/// deploying v1.13.0 (before any auto-routed ingest accumulates) so M2's
+/// auto-route sees real centroids, and again after `domain-move` passes.
+fn cmd_domains_recompute(_args: &[String]) -> Result<(), String> {
+    let resp = post(
+        &base_url(),
+        "/domains/recompute",
+        &[],
+        "application/json",
+        "{}",
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let rows = v.get("recomputed").and_then(|a| a.as_array()).unwrap();
+    if rows.is_empty() {
+        println!("no domains to recompute");
+        return Ok(());
+    }
+    println!("domain : chunks");
+    for r in rows {
+        let d = r.get(0).and_then(|x| x.as_str()).unwrap_or("?");
+        let c = r.get(1).and_then(|x| x.as_u64()).unwrap_or(0);
+        println!("  {d:<20} {c}");
+    }
     Ok(())
 }
 
