@@ -10,7 +10,24 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [1.13.1] — 2026-08-06
+## [1.13.2] — 2026-08-06
+
+**Hardening pass (post-1.13.1 review).**
+
+- **`PRAGMA busy_timeout=5000` on every pool init** (`src/main.rs` main pool,
+  `src/domain_registry.rs` `open_with_migration`, `src/migration.rs` pragma
+  batch). Previously only `auth/revocation.rs` set a busy timeout, so concurrent
+  writers against `POOL_MAX_SIZE=20` connections could fail immediately with
+  `SQLITE_BUSY` instead of waiting. Write contention now queues up to 5 s.
+- **`POST /recall` accepts `explain` as an alias for `provenance`**
+  (`src/handlers/recall.rs`). `GET /search` had always gated telemetry on
+  `explain`; `/recall` used `provenance`, so the same intent needed two flag
+  names depending on the endpoint. Both spellings now work on `/recall`.
+- **`GET /graph/traverse` accepts `name`/`entity` as aliases for `start`**
+  (`src/main.rs` `TraverseQuery`). Docs canon is `start` (openapi.yaml, README),
+  but the response field is `entity` and sibling routes use `name`/`entity`, so
+  callers can now mirror the field back. Back-compat preserved.
+
 
 **"Recall" fix — automatic retrieval routing (v1.15.0 M1 hotfix).**
 
