@@ -60,6 +60,7 @@ mod consolidate;
 mod domain_registry;
 mod domain_router;
 mod handlers;
+mod hygiene;
 mod integrity;
 mod linker;
 mod procedural;
@@ -612,8 +613,11 @@ async fn add_chunk(
         return Json(AddResponse::error(msg));
     }
 
-    let text = req.text.trim().to_string();
-    if text.is_empty() {
+    // v1.13.6 "Hygiene": strip reasoning/trace blocks from the raw text before
+    // it is embedded/stored (manual `/add` is single explicit text, so the
+    // skip-pattern drop is not applied here — that's for batch `/ingest/memory`).
+    let text = hygiene::strip_reasoning_blocks(req.text.trim());
+    if text.trim().is_empty() {
         return Json(AddResponse::error("text cannot be empty"));
     }
 
@@ -1194,7 +1198,14 @@ fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> {
         entries.push((current.trim().to_string(), title));
     }
 
+    // v1.13.6 "Hygiene": strip reasoning/trace blocks; drop entries matching a
+    // BRAIN_INGEST_SKIP_PATTERNS prefix (autoCapture dream prompts). Stops the
+    // bleeding at the ingest door; historical cleanup is a separate sweep.
+    let patterns = hygiene::skip_patterns();
     entries
+        .into_iter()
+        .filter_map(|(t, title)| hygiene::clean(&t, &patterns).map(|c| (c, title)))
+        .collect()
 }
 
 /// v0.9.9 "Qualify": measure the current capacity utilization and classify it
