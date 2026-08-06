@@ -42,6 +42,45 @@ pub async fn jwks(State(s): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// `GET /.well-known/security.txt` (RFC 9116). Public/no-auth — the disclosure
+/// endpoint procurement and the EU Cyber Resilience Act look for. `Contact`
+/// defaults to the project's private-vuln-reporting URL; override with
+/// `BRAIN_SECURITY_CONTACT`. `Expires` is computed (now + 1 year) so it never
+/// goes stale. `Canonical` is included when `BRAIN_PUBLIC_BASE_URL` is set.
+pub async fn security_txt() -> Response {
+    // Default matches SECURITY.md's disclosure address; override with
+    // BRAIN_SECURITY_CONTACT (mailto: or https:// to a private-vuln-report URL).
+    let contact = std::env::var("BRAIN_SECURITY_CONTACT")
+        .unwrap_or_else(|_| "mailto:security@openclaw.dev".to_string());
+    let expires = chrono::Utc::now()
+        .checked_add_signed(chrono::TimeDelta::days(365))
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default();
+    let canonical = std::env::var("BRAIN_PUBLIC_BASE_URL").ok().map(|b| {
+        let base = b.trim_end_matches('/');
+        format!("{base}/.well-known/security.txt")
+    });
+    let body = build_security_txt(&contact, &expires, canonical.as_deref());
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Pure builder for the RFC 9116 `security.txt` body. Split out so the field
+/// layout is unit-tested without env/time.
+fn build_security_txt(contact: &str, expires: &str, canonical: Option<&str>) -> String {
+    let mut s = format!("Contact: {contact}\nExpires: {expires}\nPreferred-Languages: en\n");
+    if let Some(c) = canonical {
+        s.push_str(&format!("Canonical: {c}\n"));
+    }
+    s
+}
+
 /// Build the JWKS HTTP response once, with a long cache header. Clients cache
 /// the key set; the cache header tells them how long. During rotation, the
 /// old key stays in the set until every cached client's token has expired,
@@ -136,5 +175,21 @@ mod tests {
     fn oidc_config_trims_trailing_slash() {
         let c = OidcConfig::build("https://brain.example.com/");
         assert_eq!(c.issuer, "https://brain.example.com/");
+    }
+
+    #[test]
+    fn security_txt_has_rfc9116_fields_and_optional_canonical() {
+        let without = build_security_txt("mailto:sec@example.com", "2030-01-01T00:00:00Z", None);
+        assert!(without.contains("Contact: mailto:sec@example.com"));
+        assert!(without.contains("Expires: 2030-01-01T00:00:00Z"));
+        assert!(without.contains("Preferred-Languages: en"));
+        assert!(!without.contains("Canonical"));
+
+        let with = build_security_txt(
+            "mailto:sec@example.com",
+            "2030-01-01T00:00:00Z",
+            Some("https://brain.example.com/.well-known/security.txt"),
+        );
+        assert!(with.contains("Canonical: https://brain.example.com/.well-known/security.txt"));
     }
 }

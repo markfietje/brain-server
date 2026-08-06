@@ -3365,6 +3365,7 @@ async fn jwt_auth_middleware(
             | "/openapi.yaml"
             | "/.well-known/openid-configuration"
             | "/.well-known/jwks.json"
+            | "/.well-known/security.txt"
             | "/auth/refresh"
             | "/auth/logout"
     ) || path.starts_with("/webhooks/");
@@ -3485,6 +3486,7 @@ async fn auth_middleware(
         // verify tokens). `/auth/refresh` verifies its own refresh token;
         // `/auth/logout` reads the principal set by the access-token request.
         | "/.well-known/openid-configuration" | "/.well-known/jwks.json"
+        | "/.well-known/security.txt"
         | "/auth/refresh" | "/auth/logout"
     ) || path.starts_with("/webhooks/");
     // Webhook endpoints are authenticated by their own HMAC signature check
@@ -4099,6 +4101,10 @@ async fn main_inner() -> Result<()> {
             get(handlers::well_known::openid_configuration),
         )
         .route("/.well-known/jwks.json", get(handlers::well_known::jwks))
+        .route(
+            "/.well-known/security.txt",
+            get(handlers::well_known::security_txt),
+        )
         .route("/auth/refresh", post(handlers::auth::refresh))
         .route("/auth/logout", post(handlers::auth::logout))
         .route("/auth/revoke", post(handlers::auth::revoke_handler))

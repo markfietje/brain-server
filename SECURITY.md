@@ -16,6 +16,14 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 | 0.9.x   | :white_check_mark: | Maintained for back-compat |
 | < 0.9   | :x:                | Unsupported |
 
+**Support window.** The current minor (`1.13.x`) and the previous minor receive
+fixes; the `0.9.x`/`1.0.x` lines receive back-compat/security fixes only. There
+is no fixed end-of-life date; any line's deprecation is announced at least one
+minor release in advance. A machine-readable disclosure endpoint is published at
+[`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
+(RFC 9116) — `Contact`/`Expires`/`Canonical` fields, overridable via
+`BRAIN_SECURITY_CONTACT` / `BRAIN_PUBLIC_BASE_URL`.
+
 ## Reporting a Vulnerability
 
 **Please do not file public issues for security vulnerabilities.**
@@ -25,7 +33,15 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 - **SLA**: Acknowledgement within 48 hours; fix timeline within 5 business days;
   public disclosure coordinated with reporter (90-day default per Project Zero).
 - **PGP-encrypted reports preferred** for sensitive disclosures (key on the
-  project's `/.well-known/security.txt` once published).
+  project's `/.well-known/security.txt`).
+
+## SBOM (Software Bill of Materials)
+
+A CycloneDX SBOM is generated for each release by `scripts/sbom.sh` (requires
+`cargo cyclonedx`; writes `sbom/brain-server-<version>.cdx.json`). The SBOM
+lists the full dependency tree from `Cargo.lock` so consumers can scan for
+known vulnerabilities (EU CRA Art 13/14; OWASP A03:2025 supply-chain coverage).
+Generate at release time: `scripts/sbom.sh`.
 
 ---
 
