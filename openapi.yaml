@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.13.5
-  x-api-version: "1.13.5"
+  version: 1.13.6
+  x-api-version: "1.13.6"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1574,6 +1574,29 @@ paths:
                 properties:
                   code: { type: string, example: jwks_unavailable }
                   error: { type: string }
+  /.well-known/security.txt:
+    get:
+      summary: security.txt (RFC 9116) disclosure endpoint (v1.13.6 Hygiene)
+      description: >
+        PUBLIC route. Machine-readable vulnerability disclosure: Contact,
+        Expires, Preferred-Languages, and Canonical (when BRAIN_PUBLIC_BASE_URL
+        is set). Contact defaults to security@openclaw.dev; override with
+        BRAIN_SECURITY_CONTACT. Expires is now + 1 year (never stale).
+      operationId: getSecurityTxt
+      responses:
+        "200":
+          description: RFC 9116 security.txt
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "public, max-age=3600" }
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  Contact: mailto:security@openclaw.dev
+                  Expires: 2027-08-07T00:00:00+00:00
+                  Preferred-Languages: en
 components:
   responses:
     BadRequest:

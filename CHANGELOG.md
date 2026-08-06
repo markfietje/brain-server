@@ -10,6 +10,30 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.13.6] — 2026-08-07
+
+**"Hygiene" — CRA conformance bundle + ingest capture hygiene.**
+
+- **`GET /.well-known/security.txt`** (RFC 9116, public). Machine-readable
+  vulnerability disclosure: `Contact` (default `security@openclaw.dev`, override
+  `BRAIN_SECURITY_CONTACT`), `Expires` (now + 1 year, never stale),
+  `Preferred-Languages`, and `Canonical` (when `BRAIN_PUBLIC_BASE_URL` is set).
+  Procurement + EU Cyber Resilience Act look for this before features.
+- **`scripts/sbom.sh`** — generates a CycloneDX SBOM per release via
+  `cargo-cyclonedx` (`sbom/brain-server-<version>.cdx.json`); SECURITY.md gains
+  a support-window statement + an SBOM subsection (OWASP A03:2025).
+- **Ingest capture hygiene** (`src/hygiene.rs`). The raw-text ingest doors
+  (`/ingest/memory`, `/add`) now strip model reasoning/trace blocks
+  (`<thinking>`, `<think>`, `<reasoning>`, `<reflection>`, `<analysis>` —
+  case-insensitive, including unclosed trailing) before storage, and `/ingest/memory`
+  drops entries matching a `BRAIN_INGEST_SKIP_PATTERNS` prefix (the autoCapture
+  dream-prompt mechanism). "brain-server never silently stores reasoning traces"
+  is now a tested invariant. Curated ingest (`/ingest`, `/ingest/markdown`) is
+  deliberately untouched; historical cleanup is a separate ROADMAP sweep.
+
+No schema change, no new runtime dependency, no `unsafe`. Gates: fmt, clippy
+`-D warnings`, `cargo test --features bench`.
+
 ## [1.13.5] — 2026-08-07
 
 **`/metrics` `brain_rss_mib` now reports the process's own RSS.**

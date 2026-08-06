@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.13.5 "MetricsRSS" (`/metrics` `brain_rss_mib` now reports process RSS, not host RAM) · prev 1.13.4 "RecallQs" (POST /recall `?source=` parity) · 1.13.3 "SourceFix" |
+| **Version** | 1.13.6 "Hygiene" (`/.well-known/security.txt` + SBOM script + ingest reasoning-trace stripping) · prev 1.13.5 "MetricsRSS" · 1.13.4 "RecallQs" · 1.13.3 "SourceFix" |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
