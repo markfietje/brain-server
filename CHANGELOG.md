@@ -10,6 +10,36 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.13.3] — 2026-08-06
+
+**Retrieval source-filter contract repair + ingest response honesty.**
+
+- **P0 — the `source` retrieval filter is fixed for every documented value.**
+  `POST /recall` and legacy `GET /search` now honor `source` as documented:
+  ingest kinds (`memory` | `markdown` | `structured` | `manual` | `vault`)
+  filter in SQL before ranking; retrieval legs (`vector` | `fts` | `graph`)
+  filter post-fusion on the `SearchSource` tag; `both` is unrestricted; any
+  other value (e.g. `web`) is rejected with **HTTP 422** before any DB/embed
+  work. Previously *all* documented values returned 0 hits — the filter was SQL
+  equality against the ingest-kind column, where leg names exist nowhere, and
+  `both` is a fusion concept equality can never match. One pure parser
+  (`parse_source_filter`) is shared by both handlers so the contract and engine
+  cannot drift (`src/search/query.rs`, `src/search/mod.rs`).
+- **P1 — `/ingest/memory` returns real chunk ids.** The response used to lie:
+  `entry_id` was the *count* of entries added, not a chunk id. It now reports
+  `chunk_id` (first real inserted rowid, `null` when nothing added),
+  `chunk_ids` (all inserted rowids), `entries_added`, and `duplicates_skipped`.
+  `entry_id` is kept as a deprecated alias of `chunk_id` (`src/main.rs`).
+- **P2 — `domains_searched` is present on every `/recall` response** (empty
+  array when no hits), no longer gated on `provenance`. Telemetry stays
+  provenance-gated (`src/handlers/recall.rs`).
+- **Docs:** `sources` (plural) is documented as an OR filter over ingest kind
+  (not source URIs); MCP schema, CLI help, plugin type, README, API_CONTRACT,
+  and openapi all reflect the repaired `source` contract.
+
+No schema migration. Response-shape changes are additive or on the
+documented-but-broken `source` contract (422 for invalid values).
+
 ## [1.13.2] — 2026-08-06
 
 **Hardening pass (post-1.13.1 review).**

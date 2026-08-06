@@ -213,6 +213,11 @@ usage:
   brain status
   brain doctor [--backup <path> [--passphrase-file PATH]]
 
+filters:
+  --source S   OR filter over ingest kind (memory | markdown | structured |
+               manual | vault); repeatable. Filters the `source` column, NOT
+               source URIs. Sent as the `sources` list to /recall.
+
 auth:
   Reads BRAIN_TOKEN_FILE, then BRAIN_TOKEN, then
   ~/.config/brain-server/auth-token (written by install-service.sh)."#

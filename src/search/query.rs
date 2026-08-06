@@ -37,10 +37,15 @@ pub struct QueryDoc {
     /// Free-form intent label, recorded for provenance/explain only.
     #[serde(default)]
     pub intent: Option<String>,
-    /// Multi-source OR scope. Empty = no source restriction.
+    /// OR filter over ingest kind (`memory` | `markdown` | `structured` |
+    /// `manual` | `vault`) — applied to the `source` column, NOT to source URIs.
+    /// Empty = unrestricted. Document/source-URI scoping is a future param.
     #[serde(default)]
     pub sources: Vec<String>,
-    /// Legacy single-source equality (back-compat with `GET /search?source=`).
+    /// Single-source filter. Accepts an ingest kind (`memory` | `markdown` |
+    /// `structured` | `manual` | `vault`) OR a retrieval leg (`vector` | `fts` |
+    /// `graph`) OR `both`. Kinds filter in SQL; legs filter post-fusion; `both`
+    /// is unrestricted. Unknown values are rejected with 422 at the handler.
     #[serde(default)]
     pub source: Option<String>,
     /// Validated ISO-8601 / `YYYY-MM-DD HH:MM:SS` lower bound on `created_at`.
@@ -132,6 +137,7 @@ impl QueryDoc {
                     .filter(|s| !s.trim().is_empty())
                     .collect(),
                 source: self.source.filter(|s| !s.trim().is_empty()),
+                source_leg: None,
                 since,
                 domain: self.domain.filter(|s| !s.trim().is_empty()),
                 profile: self.profile.filter(|s| !s.trim().is_empty()),
@@ -237,6 +243,94 @@ pub fn compile_lex(spec: &LexSpec) -> String {
     }
     parts.join(" ")
 }
+
+// ── v1.13.3 "SourceFix": the `source` retrieval-filter contract ───────────
+
+/// The parsed `source` retrieval filter. One parser ([`parse_source_filter`])
+/// is used at both handler boundaries (`POST /recall`, `GET /search`) so the
+/// wire contract and the retrieval engine can never drift.
+///
+/// Before this, every documented value (`vector` | `fts` | `both` | `graph`)
+/// returned 0 hits: the legacy single-source filter was SQL equality against the
+/// ingest-kind column, where retrieval-leg names exist nowhere, and `"both"` is
+/// a fusion concept equality can never match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceFilter {
+    /// Ingest-kind equality (`memory` | `markdown` | `structured` | `manual` |
+    /// `vault`). Applied in SQL *before* ranking on both retriever legs, so the
+    /// kind-restricted top-k is returned (not the top-of-mixed with other kinds
+    /// filtered out post-hoc — that would silently starve the result).
+    Kind(String),
+    /// Retrieval-leg restriction (`vector` | `fts` | `graph`). Applied
+    /// post-fusion on the already-computed `SearchSource` tag — a fusion concept
+    /// SQL equality cannot express.
+    Leg(LegFilter),
+    /// `"both"` — no restriction (the union of all legs). Same shape as omitting
+    /// the param, but explicit.
+    Any,
+}
+
+/// Which retrieval leg to keep after fusion. `Both`-tagged hits survive every
+/// variant (they appeared in ≥2 legs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegFilter {
+    Vector,
+    Fts,
+    Graph,
+}
+
+/// ponytail: this mirrors the live `k.source` / `v.source` column values. The
+/// columns are the source of truth; this is the parser's allow-list. If a new
+/// ingest kind is added, extend it here.
+pub const INGEST_KINDS: &[&str] = &["memory", "markdown", "structured", "manual", "vault"];
+
+/// Parse a raw `source` string into a [`SourceFilter`]. Lowercases nothing —
+/// values are case-sensitive (the stored column values are lowercase). Empty
+/// input is the caller's "omitted" signal and must NOT reach here.
+pub fn parse_source_filter(raw: &str) -> Result<SourceFilter, SourceFilterError> {
+    match raw.trim() {
+        "vector" => Ok(SourceFilter::Leg(LegFilter::Vector)),
+        "fts" => Ok(SourceFilter::Leg(LegFilter::Fts)),
+        "graph" => Ok(SourceFilter::Leg(LegFilter::Graph)),
+        "both" => Ok(SourceFilter::Any),
+        kind if INGEST_KINDS.contains(&kind) => Ok(SourceFilter::Kind(kind.to_string())),
+        other => Err(SourceFilterError {
+            raw: other.to_string(),
+        }),
+    }
+}
+
+/// Lower a parsed [`SourceFilter`] into the two `SearchFilters` slots: the SQL
+/// ingest-kind string (present only for [`SourceFilter::Kind`]) and the
+/// post-fusion leg (present only for [`SourceFilter::Leg`]). Called once per
+/// handler so the engine never re-parses.
+pub fn split_source_filter(filter: Option<&SourceFilter>) -> (Option<String>, Option<LegFilter>) {
+    match filter {
+        None | Some(SourceFilter::Any) => (None, None),
+        Some(SourceFilter::Kind(k)) => (Some(k.clone()), None),
+        Some(SourceFilter::Leg(l)) => (None, Some(*l)),
+    }
+}
+
+/// Rejection of an unknown `source` value. Renders with the full valid-value
+/// list so the 422 body tells the caller exactly what to send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFilterError {
+    pub raw: String,
+}
+
+impl std::fmt::Display for SourceFilterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "invalid source '{}': valid values are {}, vector, fts, graph, both",
+            self.raw,
+            INGEST_KINDS.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for SourceFilterError {}
 
 /// Query-document validation failure, rendered to the uniform error envelope by
 /// the handlers.
@@ -380,5 +474,63 @@ mod tests {
             d.into_filters(),
             Err(QueryDocError::InvalidSince(_))
         ));
+    }
+
+    // ── v1.13.3 "SourceFix": parse_source_filter contract ──────────────────
+
+    #[test]
+    fn parse_source_filter_accepts_all_ingest_kinds() {
+        for k in INGEST_KINDS {
+            assert_eq!(
+                parse_source_filter(k),
+                Ok(SourceFilter::Kind((*k).to_string())),
+                "kind {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_source_filter_accepts_retrieval_legs_and_both() {
+        assert_eq!(
+            parse_source_filter("vector"),
+            Ok(SourceFilter::Leg(LegFilter::Vector))
+        );
+        assert_eq!(
+            parse_source_filter("fts"),
+            Ok(SourceFilter::Leg(LegFilter::Fts))
+        );
+        assert_eq!(
+            parse_source_filter("graph"),
+            Ok(SourceFilter::Leg(LegFilter::Graph))
+        );
+        assert_eq!(parse_source_filter("both"), Ok(SourceFilter::Any));
+    }
+
+    #[test]
+    fn parse_source_filter_rejects_unknown_values_with_the_valid_list() {
+        // `web` is the documented broken value; garbage and case-variants too
+        // (column values are lowercase, the parser is case-sensitive).
+        for bad in ["web", "VECTOR", "document.md", "src", "uri://x"] {
+            let err = parse_source_filter(bad).expect_err(bad);
+            let msg = err.to_string();
+            assert!(msg.contains("memory"), "msg: {msg}");
+            assert!(msg.contains("vector"), "msg: {msg}");
+            assert!(msg.contains("both"), "msg: {msg}");
+            assert!(msg.contains(bad), "should echo the bad value: {msg}");
+        }
+    }
+
+    #[test]
+    fn split_source_filter_routes_kind_to_sql_and_leg_to_post_fusion() {
+        assert_eq!(split_source_filter(None), (None, None));
+        assert_eq!(split_source_filter(Some(&SourceFilter::Any)), (None, None));
+        assert_eq!(
+            split_source_filter(Some(&SourceFilter::Kind("memory".into()))),
+            (Some("memory".into()), None)
+        );
+        assert_eq!(
+            split_source_filter(Some(&SourceFilter::Leg(LegFilter::Vector))),
+            (None, Some(LegFilter::Vector))
+        );
     }
 }

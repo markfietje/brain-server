@@ -134,8 +134,9 @@ pub struct RecallResponse {
     pub decision: RecallDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub domains_searched: Option<Vec<String>>,
+    /// v1.13.3 "SourceFix" M4: domains of the returned hits. Always present
+    /// (empty array when no hits); no longer gated on `provenance`.
+    pub domains_searched: Vec<String>,
     /// Per-stage retrieval telemetry, included when `provenance` is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<crate::search::SearchTelemetry>,
@@ -224,6 +225,15 @@ impl HandlerError {
         Self {
             status: StatusCode::NOT_FOUND,
             inner: ApiError::new("not_found", message.into()),
+        }
+    }
+    /// v1.13.3 "SourceFix": HTTP 422 — the request was well-formed JSON but a
+    /// field value is rejected by the contract (e.g. an unknown `source`). Loud
+    /// and early, before any DB/embed work.
+    pub fn unprocessable(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            inner: ApiError::new(code, message.into()),
         }
     }
     pub fn unauthorized(message: impl Into<String>) -> Self {

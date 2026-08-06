@@ -82,7 +82,9 @@ pub struct RecallRequest {
     pub hyde: Option<String>,
     #[serde(default)]
     pub intent: Option<String>,
-    /// Multi-source OR scope (v0.9.5 M1). Empty = unrestricted.
+    /// OR filter over ingest kind (`memory` | `markdown` | `structured` |
+    /// `manual` | `vault`) — applied to the `source` column, NOT source URIs.
+    /// Empty = unrestricted. Document/source-URI scoping is a future param.
     #[serde(default)]
     pub sources: Vec<String>,
     /// Retrieval profile hint (passthrough in M1).
@@ -287,6 +289,19 @@ pub async fn recall(
     }
 
     let k = req.limit as usize;
+    // v1.13.3 "SourceFix" M1: parse `source` once at the handler boundary.
+    // Ingest-kind values (memory|markdown|…) stay SQL equality; retrieval-leg
+    // values (vector|fts|graph) become a post-fusion filter; "both" is
+    // unrestricted; anything else is rejected with 422 before any DB/embed work.
+    let source_filter = req
+        .source
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(crate::search::query::parse_source_filter)
+        .transpose()
+        .map_err(|e| HandlerError::unprocessable("invalid_source", e.to_string()))?;
+    let (source_kind, source_leg) =
+        crate::search::query::split_source_filter(source_filter.as_ref());
     // Lower the request into the shared v0.9.5 structured QueryDoc so recall
     // and search use one lexical compiler + validation path. The bare `query`
     // is the embedding/lexical fallback; structured `lex`/`vec`/`hyde` override.
@@ -298,7 +313,7 @@ pub async fn recall(
             .filter(|s| !s.trim().is_empty())
             .cloned()
             .collect(),
-        source: req.source.filter(|s| !s.is_empty()),
+        source: source_kind,
         since: req.since.filter(|s| !s.is_empty()),
         domain: forced_domain.clone(),
         vec: req.vec.filter(|s| !s.trim().is_empty()),
@@ -318,7 +333,7 @@ pub async fn recall(
         graph: req.graph,
         ..Default::default()
     };
-    let (_qtext, base_filters) = match doc.into_filters() {
+    let (_qtext, mut base_filters) = match doc.into_filters() {
         Ok(pair) => pair,
         Err(e) => {
             return Err(crate::handlers::HandlerError::bad_request(
@@ -327,6 +342,7 @@ pub async fn recall(
             ))
         }
     };
+    base_filters.source_leg = source_leg;
     let snippet_q = base_filters
         .lex
         .clone()
@@ -429,14 +445,11 @@ pub async fn recall(
     let hits = results_to_hits(tagged, req.provenance);
     let decision = abstention_decision(tel.recommendation, hits.is_empty());
 
-    let domains_searched = if req.provenance {
-        let mut seen: Vec<String> = hits.iter().filter_map(|h| h.domain.clone()).collect();
-        seen.sort();
-        seen.dedup();
-        Some(seen)
-    } else {
-        None
-    };
+    // v1.13.3 "SourceFix" M4: domains of the returned hits, always present
+    // (empty array when no hits). Only telemetry stays provenance-gated.
+    let mut domains_searched: Vec<String> = hits.iter().filter_map(|h| h.domain.clone()).collect();
+    domains_searched.sort();
+    domains_searched.dedup();
 
     Ok(Json(RecallResponse {
         hits,

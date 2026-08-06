@@ -10,6 +10,7 @@
 use crate::config::{QualityConfig, MAX_SNIPPET_CHARS, SNIPPET_CONTEXT_CHARS};
 use crate::search::graph_ppr::graph_retrieve;
 use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualityEstimator};
+use crate::search::query::LegFilter;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use model2vec_rs::model::StaticModel;
@@ -488,6 +489,11 @@ pub struct SearchFilters {
     /// Deprecated single-source equality. Retained for the legacy
     /// `GET /search?source=` path; new callers use `sources` (OR scope).
     pub source: Option<String>,
+    /// v1.13.3 "SourceFix": parsed retrieval-leg restriction (`vector` | `fts` |
+    /// `graph`). `None` for ingest-kind filters and unrestricted queries. Set by
+    /// the handler from [`crate::search::query::split_source_filter`]; applied
+    /// post-fusion on the `SearchSource` tag, never as SQL.
+    pub source_leg: Option<LegFilter>,
     /// Multi-source OR scope (v0.9.5 M1). Empty = unrestricted.
     pub sources: Vec<String>,
     /// Validated ISO-8601 timestamp (RFC3339 or `YYYY-MM-DD HH:MM:SS`); rows
@@ -544,6 +550,7 @@ impl Default for SearchFilters {
     fn default() -> Self {
         Self {
             source: None,
+            source_leg: None,
             sources: Vec::new(),
             since: None,
             domain: None,
@@ -681,12 +688,18 @@ pub fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// Each input list MUST already be sorted best-first (rank 0 = strongest).
 /// Records per-retriever ranks and the fused score in each result's provenance.
+///
+/// v1.13.3 "SourceFix": `leg` optionally restricts the fused output to one
+/// retrieval leg (`vector` | `fts` | `graph`), keyed on the `SearchSource` tag
+/// computed during fusion. `Both`-tagged hits survive every leg filter. Applied
+/// BEFORE truncation so the leg-restricted top-k is honest. `None` = unrestricted.
 pub fn rrf_fuse(
     vec_results: &[SearchResult],
     fts_results: &[SearchResult],
     graph_results: &[SearchResult],
     k: usize,
     limit: usize,
+    leg: Option<LegFilter>,
 ) -> Vec<SearchResult> {
     use std::collections::{HashMap, HashSet};
 
@@ -762,6 +775,16 @@ pub fn rrf_fuse(
         });
     }
 
+    // v1.13.3 "SourceFix": the retrieval-leg filter is a fusion concept. Apply
+    // it on the fused candidate list — keyed on the `SearchSource` tag just
+    // computed — BEFORE truncation, so `source:"vector"` returns the top-k
+    // vector hits, not "the vector hits that happened to survive into the top-k
+    // mixed set". Candidate lists are small (≤ k per leg + rescues), so this
+    // retain is O(candidates) with no extra SQL.
+    if let Some(leg) = leg {
+        fused.retain(|r| leg_keeps(leg, r.source));
+    }
+
     fused.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -769,6 +792,18 @@ pub fn rrf_fuse(
     });
     fused.truncate(limit);
     fused
+}
+
+/// v1.13.3 "SourceFix": does a fused hit tagged `source` survive the requested
+/// `leg`? `Both` (appeared in ≥2 legs) survives every leg filter; a single-leg
+/// tag survives only its own leg. Untagged hits (none post-fusion) are kept.
+fn leg_keeps(leg: LegFilter, source: Option<SearchSource>) -> bool {
+    match source {
+        Some(SearchSource::Both) | None => true,
+        Some(SearchSource::Vector) => leg == LegFilter::Vector,
+        Some(SearchSource::Fts) => leg == LegFilter::Fts,
+        Some(SearchSource::Graph) => leg == LegFilter::Graph,
+    }
 }
 
 // ── Pseudo-relevance feedback (PRF) ─────────────────────────────────────────
@@ -1430,6 +1465,7 @@ pub fn perform_search_traced(
     let filters = if normalized_since.is_some() || normalized_at.is_some() {
         SearchFilters {
             source: filters.source.clone(),
+            source_leg: filters.source_leg,
             sources: filters.sources.clone(),
             since: normalized_since,
             domain: filters.domain.clone(),
@@ -1553,8 +1589,22 @@ pub fn perform_search_traced(
         graph_results.truncate(k);
         graph_results
     } else {
-        rrf_fuse(&vec_results, &fts_results, &graph_results, RRF_K, k)
+        rrf_fuse(
+            &vec_results,
+            &fts_results,
+            &graph_results,
+            RRF_K,
+            k,
+            filters.source_leg,
+        )
     };
+    // v1.13.3 "SourceFix": the mixed-leg path is filtered inside `rrf_fuse`
+    // (before truncation). The single-leg fast paths above are tagged uniformly,
+    // so this retain is a no-op there when the leg matches and empties it
+    // otherwise — e.g. `source:"fts"` on a query where only the vector leg ran.
+    if let Some(leg) = filters.source_leg {
+        fused.retain(|r| leg_keeps(leg, r.source));
+    }
     tel.fusion_ms = t_fuse.elapsed().as_secs_f32() * 1000.0;
     tel.fused_count = fused.len();
 

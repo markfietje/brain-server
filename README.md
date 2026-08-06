@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.13.2 "Harden" (busy_timeout on all SQLite pools + `/graph/traverse` & `/recall` API aliases) |
+| **Version** | 1.13.3 "SourceFix" (repaired `source` retrieval-filter contract; `/ingest/memory` returns real chunk ids; `domains_searched` always present) |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
@@ -82,11 +82,17 @@ curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
 | GET | `/stats`, `/version` | Counts + model + version |
 | GET | `/openapi.yaml` | Full API contract |
 | POST | `/add` | Raw text ingest *(deprecated)* |
-| POST | `/ingest/memory` | Structured memory ingest |
+| POST | `/ingest/memory` | Structured memory ingest (returns real `chunk_id`/`chunk_ids`; v1.13.3) |
 | POST | `/ingest/markdown` | Markdown ingest + graph extraction |
 | POST | `/ingest` | Structured ingest (explicit entities/relations) |
-| GET | `/search?q=&k=&lex=&sources=` | Semantic search *(deprecated; use `/recall`)* |
+| GET | `/search?q=&k=&source=&sources=` | Semantic search *(deprecated; use `/recall`)* |
 | POST | `/recall` | Structured recall (`QueryDoc`, primary endpoint) |
+
+**`source` filter (v1.13.3)** on `/recall` and `/search`: an ingest kind
+(`memory` · `markdown` · `structured` · `manual` · `vault`) filters in SQL; a
+retrieval leg (`vector` · `fts` · `graph`) filters post-fusion; `both` is
+unrestricted. Unknown values return **422**. `sources` (plural) is an OR filter
+over ingest kind (not source URIs).
 | POST | `/verify` | Span verification — is a claim supported by a chunk's text? (v1.5) |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | POST | `/reindex` | Rebuild vector/FTS indexes |

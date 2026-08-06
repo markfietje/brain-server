@@ -153,13 +153,30 @@ export type BrainGraphEntity = {
 // Wire shapes (server serializes snake_case — see API_CONTRACT.md)
 // ---------------------------------------------------------------------------
 
+/**
+ * v1.13.3 "SourceFix": valid `source` values for /recall and GET /search.
+ * - ingest kind: memory | markdown | structured | manual | vault (SQL filter)
+ * - retrieval leg: vector | fts | graph (post-fusion filter)
+ * - both: unrestricted. Unknown values are rejected with HTTP 422.
+ */
+export type BrainSourceFilter =
+  | "memory"
+  | "markdown"
+  | "structured"
+  | "manual"
+  | "vault"
+  | "vector"
+  | "fts"
+  | "graph"
+  | "both";
+
 type RecallRequestWire = {
   query: string;
   limit: number;
   provenance: boolean;
   domain?: string;
   strict?: boolean;
-  source?: string;
+  source?: BrainSourceFilter;
   since?: string;
   lex?: string;
   vec?: string;
@@ -246,7 +263,8 @@ export class BrainClient {
     domain?: string;
     strictDomain?: boolean;
     limit: number;
-    source?: string;
+    /** Ingest kind, retrieval leg, or `both` — see {@link BrainSourceFilter}. */
+    source?: BrainSourceFilter;
     since?: string;
     lex?: string;
     vec?: string;
@@ -406,7 +424,8 @@ export class BrainClient {
     }
     return {
       name: res.name,
-      type: res.type,
+      // exactOptionalPropertyTypes: omit `type` when absent, not set undefined.
+      ...(res.type !== undefined ? { type: res.type } : {}),
       relations: res.relations ?? [],
     };
   }

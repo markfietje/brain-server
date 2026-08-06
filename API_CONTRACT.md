@@ -158,7 +158,7 @@ cross-encoder rerank → cross-domain fallback on miss → cap → return.
   "strict": false,           // optional: true = no cross-domain fallback
   "provenance": true,        // optional: include per-hit domain + source + provenance + telemetry
   // ── optional structured-query overrides (power tools) ──
-  "source": "structured",    // filter by knowledge.source
+  "source": "structured",    // filter: ingest kind, retrieval leg, or both (see table)
   "since": "2026-01-01",     // ISO-8601 / RFC3339; rows with created_at > since
   "lex": "inflammation -fever", // lexical (FTS5) query override
   "vec": "immune support",   // semantic embedding-query override
@@ -172,8 +172,9 @@ cross-encoder rerank → cross-domain fallback on miss → cap → return.
 | `limit` | integer | no | `5` | capped 1–100 |
 | `domain` | string | no | (auto-route) | force a specific domain |
 | `strict` | boolean | no | `false` | disable fallback fan-out |
-| `provenance` | boolean | no | `false` | include `domain`/`source`/`provenance` per hit + `domainsSearched` + `telemetry` |
-| `source` | string | no | — | filter by `knowledge.source` |
+| `provenance` | boolean | no | `false` | include `domain`/`source`/`provenance` per hit + `telemetry` (`domainsSearched` is always present) |
+| `source` | string | no | — | **v1.13.3:** an ingest kind (`memory`·`markdown`·`structured`·`manual`·`vault`) filters in SQL; a retrieval leg (`vector`·`fts`·`graph`) filters post-fusion; `both` is unrestricted. Unknown values return **422**. |
+| `sources` | string[] | no | — | OR filter over ingest kind (`memory`·`markdown`·`structured`·`manual`·`vault`) — filters the `source` column, NOT source URIs. |
 | `since` | string | no | — | ISO-8601 (RFC3339 or `YYYY-MM-DD HH:MM:SS`). Validated inside the search path; a malformed value is **silently swallowed** on the recall path today (the failing target contributes no hits) rather than surfacing a 400 |
 | `lex` | string | no | — | lexical (FTS5) query override (exact terms, phrases, `-exclusions`) |
 | `vec` | string | no | — | semantic embedding-query override |
@@ -196,7 +197,7 @@ cross-encoder rerank → cross-domain fallback on miss → cap → return.
 |---|---|---|---|
 | `hits` | `RecallHit[]` | yes | ordered by descending `score`; length ≤ `limit` |
 | `domain` | string | yes | the **primary** domain chosen by routing (or the forced domain) |
-| `domainsSearched` | string[] | no | every domain queried (incl. fallback). Present when `provenance=true`. |
+| `domainsSearched` | string[] | yes | domains of the returned hits (empty array when no hits). Always present (v1.13.3); no longer gated on `provenance`. |
 | `telemetry` | object | no | per-stage retrieval telemetry. Present when `provenance=true`. |
 
 ### `telemetry` (per-response)
@@ -432,8 +433,8 @@ pub struct RecallResponse {
     pub hits: Vec<RecallHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub domains_searched: Option<Vec<String>>,
+    /// v1.13.3 "SourceFix": always present (empty when no hits).
+    pub domains_searched: Vec<String>,
     /// Per-stage retrieval telemetry. Present only when `provenance=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<crate::search::SearchTelemetry>,
@@ -679,3 +680,10 @@ and `/ingest/markdown` routes remain (with `Deprecation: version="0.9.5"`
 header). The primary write path is now `POST /ingest`; the primary read path is
 `POST /recall`. A future major version may remove the legacy routes after a
 deprecation window of at least one minor cycle.
+
+**`/ingest/memory` response (v1.13.3).** `POST /ingest/memory` now returns real
+chunk ids: `chunk_id` (first inserted rowid, `null` when nothing added),
+`chunk_ids` (all inserted rowids), `entries_added`, `duplicates_skipped`, and
+`status` (`success`|`unchanged`|`error`). `entry_id` is retained as a
+**deprecated** alias of `chunk_id` (it previously held the *count* of entries
+added, not a usable id). `similarity_score: 1.0` is kept as a legacy field.

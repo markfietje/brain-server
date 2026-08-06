@@ -179,8 +179,8 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
                     "phrases": { "type": "array", "items": { "type": "string" }, "description": "Quoted phrase matches." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Terms to exclude (FTS5 NOT)." },
                     "code": { "type": "array", "items": { "type": "string" }, "description": "Exact identifier / code path." },
-                    "sources": { "type": "array", "items": { "type": "string" }, "description": "Multi-source OR scope." },
-                    "source": { "type": "string", "description": "Single-source equality (legacy)." },
+                    "sources": { "type": "array", "items": { "type": "string" }, "description": "OR filter over ingest kind: memory | markdown | structured | manual | vault." },
+                    "source": { "type": "string", "description": "Ingest kind (memory|markdown|structured|manual|vault), retrieval leg (vector|fts|graph), or both. Unknown values are rejected." },
                     "since": { "type": "string", "description": "Only results newer than an ISO timestamp." },
                     "intent": { "type": "string", "description": "Intent label, recorded for provenance only." },
                     "provenance": { "type": "boolean", "description": "Include per-retriever provenance + telemetry." }
@@ -199,9 +199,9 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
                     "phrases": { "type": "array", "items": { "type": "string" }, "description": "Quoted phrase matches." },
                     "exclude": { "type": "array", "items": { "type": "string" }, "description": "Terms to exclude (FTS5 NOT)." },
                     "code": { "type": "array", "items": { "type": "string" }, "description": "Exact identifier / code path." },
-                    "sources": { "type": "array", "items": { "type": "string" }, "description": "Multi-source OR scope." },
+                    "sources": { "type": "array", "items": { "type": "string" }, "description": "OR filter over ingest kind: memory | markdown | structured | manual | vault." },
                     "domain": { "type": "string", "description": "Optional domain label." },
-                    "source": { "type": "string", "description": "Filter by source." },
+                    "source": { "type": "string", "description": "Ingest kind (memory|markdown|structured|manual|vault), retrieval leg (vector|fts|graph), or both. Unknown values are rejected." },
                     "since": { "type": "string", "description": "Only results newer than an ISO timestamp." },
                     "intent": { "type": "string", "description": "Intent label, recorded for provenance only." },
                     "provenance": { "type": "boolean", "description": "Include per-retriever provenance + telemetry." }

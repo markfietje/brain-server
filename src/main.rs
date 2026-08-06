@@ -395,14 +395,37 @@ struct AddRequest {
     source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct AddResponse {
     success: bool,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     chunk_id: Option<i64>,
+    /// v1.13.3 "SourceFix" M3: every real inserted rowid from this request
+    /// (empty for the single-chunk `/add` path and for no-op/duplicate runs).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    chunk_ids: Vec<i64>,
+    /// v1.13.3 "SourceFix" M3: count of chunks actually inserted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    entries_added: Option<i64>,
+    /// v1.13.3 "SourceFix" M3: count of dedup-skipped entries.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    duplicates_skipped: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+impl AddResponse {
+    /// Legacy error envelope: `{ success: false, status: "error", error: msg }`.
+    /// The shape `/add` and `/ingest/memory` have always returned on failure.
+    fn error(msg: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            status: "error".to_string(),
+            error: Some(msg.into()),
+            ..Default::default()
+        }
+    }
 }
 
 fn default_source() -> String {
@@ -579,34 +602,19 @@ async fn add_chunk(
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
     {
-        return Json(AddResponse {
-            success: false,
-            status: "error".to_string(),
-            chunk_id: None,
-            error: Some(e.inner.message),
-        });
+        return Json(AddResponse::error(e.inner.message));
     }
     // v0.9.9: capacity guard. `/add` is the legacy path; we return its existing
     // `{ success: false, error }` shape rather than an HTTP 507 so the
     // response stays shape-compatible. The primary paths (`/ingest`,
     // `/ingest/markdown`) return a proper 507 via HandlerError.
     if let Err(AppError::InsufficientStorage(msg)) = guard_capacity(&s) {
-        return Json(AddResponse {
-            success: false,
-            status: "error".to_string(),
-            chunk_id: None,
-            error: Some(msg),
-        });
+        return Json(AddResponse::error(msg));
     }
 
     let text = req.text.trim().to_string();
     if text.is_empty() {
-        return Json(AddResponse {
-            success: false,
-            status: "error".to_string(),
-            chunk_id: None,
-            error: Some("text cannot be empty".to_string()),
-        });
+        return Json(AddResponse::error("text cannot be empty"));
     }
 
     // v0.9.7 Guard: injection policy. `Reject` keeps the old HTTP-400; `Allow`
@@ -614,12 +622,7 @@ async fn add_chunk(
     if config::injection_policy() == config::InjectionPolicy::Reject
         && contains_suspicious_pattern(&text)
     {
-        return Json(AddResponse {
-            success: false,
-            status: "error".to_string(),
-            chunk_id: None,
-            error: Some("Input contains suspicious patterns".to_string()),
-        });
+        return Json(AddResponse::error("Input contains suspicious patterns"));
     }
 
     let model = Arc::clone(&s.model);
@@ -631,12 +634,7 @@ async fn add_chunk(
         let embedding = match model.encode(std::slice::from_ref(&text)).into_iter().next() {
             Some(e) => e,
             None => {
-                return AddResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    chunk_id: None,
-                    error: Some("Embedding generation failed".to_string()),
-                };
+                return AddResponse::error("Embedding generation failed");
             }
         };
 
@@ -644,12 +642,7 @@ async fn add_chunk(
         let mut conn = match pool.get() {
             Ok(c) => c,
             Err(e) => {
-                return AddResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    chunk_id: None,
-                    error: Some(format!("DB connection failed: {}", e)),
-                };
+                return AddResponse::error(format!("DB connection failed: {}", e));
             }
         };
 
@@ -667,19 +660,14 @@ async fn add_chunk(
                 success: true,
                 status: "duplicate".to_string(),
                 chunk_id: Some(0),
-                error: None,
+                ..Default::default()
             };
         }
 
         let tx = match conn.transaction() {
             Ok(t) => t,
             Err(e) => {
-                return AddResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    chunk_id: None,
-                    error: Some(format!("Transaction failed: {}", e)),
-                };
+                return AddResponse::error(format!("Transaction failed: {}", e));
             }
         };
 
@@ -687,12 +675,7 @@ async fn add_chunk(
             "INSERT INTO knowledge(content, title, source, content_hash) VALUES(?, ?, ?, ?)",
             params![text, title, source, content_hash],
         ) {
-            return AddResponse {
-                success: false,
-                status: "error".to_string(),
-                chunk_id: None,
-                error: Some(format!("Insert failed: {}", e)),
-            };
+            return AddResponse::error(format!("Insert failed: {}", e));
         }
 
         let chunk_id = tx.last_insert_rowid();
@@ -703,12 +686,7 @@ async fn add_chunk(
                  VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), ?3, datetime('now'))",
                 params![chunk_id, embedding.as_bytes(), &source],
             ) {
-                return AddResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    chunk_id: None,
-                    error: Some(format!("vec0 insert failed: {}", e)),
-                };
+                return AddResponse::error(format!("vec0 insert failed: {}", e));
             }
 
             // v0.9.0 DoD: raw f32 vectors are no longer written to the legacy
@@ -717,12 +695,7 @@ async fn add_chunk(
             // backfill of pre-v0.9.0 DBs (see run_migration).
 
             if let Err(e) = tx.commit() {
-                return AddResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    chunk_id: None,
-                    error: Some(format!("Commit failed: {}", e)),
-                };
+                return AddResponse::error(format!("Commit failed: {}", e));
             }
 
             // v0.9.7 Guard: under Quarantine policy, flag the just-inserted row
@@ -743,32 +716,17 @@ async fn add_chunk(
                 success: true,
                 status: "created".to_string(),
                 chunk_id: Some(chunk_id),
-                error: None,
+                ..Default::default()
             }
         } else {
-            AddResponse {
-                success: false,
-                status: "error".to_string(),
-                chunk_id: None,
-                error: Some("Failed to get chunk_id".to_string()),
-            }
+            AddResponse::error("Failed to get chunk_id")
         }
     });
 
     match timeout(StdDuration::from_secs(30), add_future).await {
         Ok(Ok(resp)) => Json(resp),
-        Ok(Err(_)) => Json(AddResponse {
-            success: false,
-            status: "error".to_string(),
-            chunk_id: None,
-            error: Some("Task join error".to_string()),
-        }),
-        Err(_) => Json(AddResponse {
-            success: false,
-            status: "error".to_string(),
-            chunk_id: None,
-            error: Some("Request timed out".to_string()),
-        }),
+        Ok(Err(_)) => Json(AddResponse::error("Task join error")),
+        Err(_) => Json(AddResponse::error("Request timed out")),
     }
 }
 
@@ -776,29 +734,58 @@ async fn search(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Query(p): Query<SearchParams>,
-) -> Json<serde_json::Value> {
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
     // v1.12.1 "Harden": AuthZ read gate. Legacy shape — see `/add`.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
     {
-        return Json(serde_json::json!({ "success": false, "error": e.inner.message }));
+        return (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({ "success": false, "error": e.inner.message })),
+        );
     }
     let q = p.q.trim().to_string();
     if q.len() > MAX_QUERY_LENGTH {
-        return Json(serde_json::json!({ "success": false, "error": "Query too long" }));
-    }
-    if contains_suspicious_pattern(&q) {
-        return Json(
-            serde_json::json!({ "success": false, "error": "Input contains suspicious patterns" }),
+        return (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({ "success": false, "error": "Query too long" })),
         );
     }
+    if contains_suspicious_pattern(&q) {
+        return (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({
+                "success": false,
+                "error": "Input contains suspicious patterns"
+            })),
+        );
+    }
+    // v1.13.3 "SourceFix" M1: parse `source` once. Ingest-kind → SQL equality;
+    // retrieval-leg → post-fusion filter; "both"/omitted → unrestricted. Unknown
+    // values get HTTP 422 before any DB/embed work (the one place this legacy
+    // 200-envelope endpoint fails loud, matching `POST /recall`).
+    let source_filter = p
+        .source
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(crate::search::query::parse_source_filter)
+        .transpose();
+    let (source_kind, source_leg) = match source_filter {
+        Ok(f) => crate::search::query::split_source_filter(f.as_ref()),
+        Err(e) => {
+            return (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "success": false, "error": e.to_string() })),
+            );
+        }
+    };
 
     // Lower the legacy GET params into the v0.9.5 structured QueryDoc. The old
     // raw `lex` string maps to LexSpec.terms (now FTS5-quoted, strictly safer).
     let mut doc = QueryDoc {
         q: Some(q.clone()),
         k: p.k.map(|k| k as u32),
-        source: p.source.filter(|s| !s.is_empty()),
+        source: source_kind,
         sources: p
             .sources
             .iter()
@@ -826,16 +813,27 @@ async fn search(
         .k
         .map(|k| (k as usize).clamp(1, MAX_K))
         .unwrap_or(DEFAULT_K);
-    let (qtext, filters) = match doc.into_filters() {
+    let (qtext, mut filters) = match doc.into_filters() {
         Ok(pair) => pair,
-        Err(e) => return Json(serde_json::json!({ "success": false, "error": e.to_string() })),
+        Err(e) => {
+            return (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({ "success": false, "error": e.to_string() })),
+            );
+        }
     };
+    filters.source_leg = source_leg;
 
     let model = Arc::clone(&s.model);
     // v1.0.0: resolve pool from domain param (defaults to global).
     let pool = match handlers::resolve_domain_pool(&s.registry, p.domain.as_deref()) {
         Ok(p) => p,
-        Err(e) => return Json(serde_json::json!({ "success": false, "error": e.inner.message })),
+        Err(e) => {
+            return (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({ "success": false, "error": e.inner.message })),
+            );
+        }
     };
 
     let task_filters = filters.clone();
@@ -857,83 +855,88 @@ async fn search(
         )
     });
 
-    match timeout(StdDuration::from_secs(8), search_future).await {
-        Ok(Ok(Ok((mut results, tel, snippet_q)))) => {
-            // M2.1: enrich each hit with span + source link + highlights via one
-            // batched join (best-effort; enrichment failure must not fail search).
-            if let Ok(conn) = s.pool.get() {
-                let _ = crate::search::SearchResult::enrich_evidence(
-                    &conn,
-                    &mut results,
-                    &snippet_q,
-                    filters.as_of.is_some(),
-                );
-            }
-
-            // v0.9.7 Guard: strip snippet/evidence for flagged hits (after
-            // enrichment, which would otherwise re-populate evidence) unless the
-            // request opted into flagged rows (operator review path).
-            for r in &mut results {
-                suppress_flagged_evidence(r, filters.include_flagged);
-            }
-
-            if p.explain {
-                // M2.4 redaction: explain never serializes full `content` beyond
-                // the bounded `evidence.text`/`snippet` windows, so the payload
-                // cannot leak unrelated source text. Drop `content` per result.
-                let mut redacted: Vec<serde_json::Value> = results
-                    .iter()
-                    .map(serde_json::to_value)
-                    .collect::<Result<_, _>>()
-                    .unwrap_or_default();
-                for r in redacted.iter_mut() {
-                    if let Some(obj) = r.as_object_mut() {
-                        obj.remove("content");
-                    }
+    (
+        axum::http::StatusCode::OK,
+        match timeout(StdDuration::from_secs(8), search_future).await {
+            Ok(Ok(Ok((mut results, tel, snippet_q)))) => {
+                // M2.1: enrich each hit with span + source link + highlights via one
+                // batched join (best-effort; enrichment failure must not fail search).
+                if let Ok(conn) = s.pool.get() {
+                    let _ = crate::search::SearchResult::enrich_evidence(
+                        &conn,
+                        &mut results,
+                        &snippet_q,
+                        filters.as_of.is_some(),
+                    );
                 }
-                let payload = serde_json::json!({
-                    "results": redacted,
-                    "telemetry": tel,
-                    "query_plan": {
-                        "k": k,
-                        "lex": filters.lex,
-                        "vec": p.vec,
-                        "hyde": p.hyde,
-                        "intent": filters.intent,
-                        "sources": filters.sources,
-                        "source": filters.source,
-                        "domain": filters.domain,
-                        "since": filters.since,
-                        "profile": filters.profile,
-                        "embedding_query": tel.embedding_query,
+
+                // v0.9.7 Guard: strip snippet/evidence for flagged hits (after
+                // enrichment, which would otherwise re-populate evidence) unless the
+                // request opted into flagged rows (operator review path).
+                for r in &mut results {
+                    suppress_flagged_evidence(r, filters.include_flagged);
+                }
+
+                if p.explain {
+                    // M2.4 redaction: explain never serializes full `content` beyond
+                    // the bounded `evidence.text`/`snippet` windows, so the payload
+                    // cannot leak unrelated source text. Drop `content` per result.
+                    let mut redacted: Vec<serde_json::Value> = results
+                        .iter()
+                        .map(serde_json::to_value)
+                        .collect::<Result<_, _>>()
+                        .unwrap_or_default();
+                    for r in redacted.iter_mut() {
+                        if let Some(obj) = r.as_object_mut() {
+                            obj.remove("content");
+                        }
                     }
-                });
-                // Hard cap: if the explain payload still exceeds the redaction
-                // budget (e.g. very many hits), return the summary only.
-                if serde_json::to_vec(&payload).map(|b| b.len()).unwrap_or(0) > MAX_EXPLAIN_BYTES {
-                    Json(serde_json::json!({
+                    let payload = serde_json::json!({
+                        "results": redacted,
                         "telemetry": tel,
                         "query_plan": {
+                            "k": k,
                             "lex": filters.lex,
                             "vec": p.vec,
                             "hyde": p.hyde,
                             "intent": filters.intent,
                             "sources": filters.sources,
+                            "source": filters.source,
+                            "domain": filters.domain,
+                            "since": filters.since,
+                            "profile": filters.profile,
                             "embedding_query": tel.embedding_query,
-                            "note": "results omitted: explain payload exceeded size cap",
                         }
-                    }))
+                    });
+                    // Hard cap: if the explain payload still exceeds the redaction
+                    // budget (e.g. very many hits), return the summary only.
+                    if serde_json::to_vec(&payload).map(|b| b.len()).unwrap_or(0)
+                        > MAX_EXPLAIN_BYTES
+                    {
+                        Json(serde_json::json!({
+                            "telemetry": tel,
+                            "query_plan": {
+                                "lex": filters.lex,
+                                "vec": p.vec,
+                                "hyde": p.hyde,
+                                "intent": filters.intent,
+                                "sources": filters.sources,
+                                "embedding_query": tel.embedding_query,
+                                "note": "results omitted: explain payload exceeded size cap",
+                            }
+                        }))
+                    } else {
+                        Json(payload)
+                    }
                 } else {
-                    Json(payload)
+                    Json(serde_json::json!({ "results": results }))
                 }
-            } else {
-                Json(serde_json::json!({ "results": results }))
             }
-        }
-        Ok(Ok(Err(e))) => Json(serde_json::json!({ "error": e.to_string() })),
-        Ok(Err(_)) => Json(serde_json::json!({ "error": "Search task failed" })),
-        Err(_) => Json(serde_json::json!({ "error": "Search timed out" })),
-    }
+            Ok(Ok(Err(e))) => Json(serde_json::json!({ "error": e.to_string() })),
+            Ok(Err(_)) => Json(serde_json::json!({ "error": "Search task failed" })),
+            Err(_) => Json(serde_json::json!({ "error": "Search timed out" })),
+        },
+    )
 }
 
 async fn ingest_memory(
@@ -986,29 +989,23 @@ async fn ingest_memory(
 
         if entries.is_empty() {
             tracker.release(conn_id);
-            return AddResponse {
-                success: false,
-                status: "error".to_string(),
-                chunk_id: None,
-                error: Some("No valid entries found".to_string()),
-            };
+            return AddResponse::error("No valid entries found");
         }
 
         let mut conn = match pool.get() {
             Ok(c) => c,
             Err(e) => {
                 tracker.release(conn_id);
-                return AddResponse {
-                    success: false,
-                    status: "error".to_string(),
-                    chunk_id: None,
-                    error: Some(format!("DB connection failed: {}", e)),
-                };
+                return AddResponse::error(format!("DB connection failed: {}", e));
             }
         };
 
         let mut added = 0;
         let mut duplicates = 0;
+        // v1.13.3 "SourceFix" M3: capture the real inserted rowids so the
+        // response can name what it just wrote (the old `entry_id` was the
+        // COUNT of added rows — useless for delete/verify round-trips).
+        let mut chunk_ids: Vec<i64> = Vec::new();
 
         for (text, title) in entries {
             let content_hash = format!("{:016x}", xxh3_64(text.as_bytes()));
@@ -1117,6 +1114,7 @@ async fn ingest_memory(
                 flag_if_quarantined(&tx, chunk_id, &text);
                 if tx.commit().is_ok() {
                     added += 1;
+                    chunk_ids.push(chunk_id);
                     // v0.9.7 Guard: audit successful ingest (hash only).
                     audit::record(
                         &conn,
@@ -1134,7 +1132,10 @@ async fn ingest_memory(
         AddResponse {
             success: true,
             status: "completed".to_string(),
-            chunk_id: Some(added as i64),
+            chunk_id: chunk_ids.first().copied(),
+            chunk_ids,
+            entries_added: Some(added as i64),
+            duplicates_skipped: Some(duplicates as i64),
             error: if duplicates > 0 {
                 Some(format!("{} duplicates skipped", duplicates))
             } else {
@@ -1145,14 +1146,17 @@ async fn ingest_memory(
 
     match timeout(StdDuration::from_secs(60), ingest_future).await {
         Ok(Ok(resp)) => {
-            let status = if resp.chunk_id == Some(0) {
-                "unchanged"
-            } else {
-                "success"
-            };
+            let added = resp.entries_added.unwrap_or(0);
+            let status = if added == 0 { "unchanged" } else { "success" };
             Json(serde_json::json!({
                 "status": status,
-                "entry_id": resp.chunk_id.unwrap_or(0),
+                // v1.13.3 "SourceFix" M3: real first inserted rowid (null when
+                // nothing was added). `entry_id` is the deprecated alias.
+                "chunk_id": resp.chunk_id,
+                "chunk_ids": resp.chunk_ids,
+                "entries_added": added,
+                "duplicates_skipped": resp.duplicates_skipped.unwrap_or(0),
+                "entry_id": resp.chunk_id,
                 "similarity_score": 1.0
             }))
         }

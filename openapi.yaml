@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.13.2
-  x-api-version: "1.13.2"
+  version: 1.13.3
+  x-api-version: "1.13.3"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -197,8 +197,22 @@ paths:
               schema:
                 type: object
                 properties:
-                  status: { type: string }
-                  entry_id: { type: integer }
+                  status: { type: string, description: "success | unchanged | error" }
+                  chunk_id:
+                    type: integer
+                    nullable: true
+                    description: First inserted rowid (null when nothing was added). v1.13.3.
+                  chunk_ids:
+                    type: array
+                    items: { type: integer }
+                    description: All inserted rowids this request. v1.13.3.
+                  entries_added: { type: integer, description: Chunks actually inserted. v1.13.3. }
+                  duplicates_skipped: { type: integer, description: Dedup-skipped entries. v1.13.3. }
+                  entry_id:
+                    type: integer
+                    nullable: true
+                    deprecated: true
+                    description: Deprecated alias of chunk_id (was previously the count added).
                   similarity_score: { type: number }
   /search:
     get:
@@ -218,10 +232,13 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 100 }
         - name: source
           in: query
-          schema: { type: string }
+          schema:
+            type: string
+            enum: [memory, markdown, structured, manual, vault, vector, fts, graph, both]
+            description: "v1.13.3: ingest kind (SQL filter), retrieval leg (post-fusion filter), or both. Unknown values return 422."
         - name: sources
           in: query
-          schema: { type: string, description: comma-separated OR scope }
+          schema: { type: string, description: "comma-separated OR filter over ingest kind: memory,markdown,structured,manual,vault" }
         - name: since
           in: query
           schema: { type: string, description: ISO-8601 or YYYY-MM-DD HH:MM:SS }
@@ -248,15 +265,25 @@ paths:
               schema:
                 type: object
                 properties:
+                  success: { type: boolean }
+                  error: { type: string }
                   results:
                     type: array
                     items:
                       $ref: "#/components/schemas/SearchResult"
-                  error: { type: string }
                   query_plan:
                     $ref: "#/components/schemas/QueryPlan"
                   telemetry:
                     $ref: "#/components/schemas/SearchTelemetry"
+        "422":
+          description: Unknown `source` value (v1.13.3). Body lists valid values.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, default: false }
+                  error: { type: string }
   /v1/embeddings:
     post:
       summary: OpenAI-style embeddings
@@ -838,10 +865,16 @@ paths:
                   domain: { type: string, nullable: true }
                   domains_searched:
                     type: array
-                    nullable: true
                     items: { type: string }
+                    description: "Domains of the returned hits. Always present (empty array when no hits); v1.13.3."
                   telemetry:
                     $ref: "#/components/schemas/SearchTelemetry"
+        "422":
+          description: Unknown `source` value (v1.13.3). Body lists valid values.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /verify:
     post:
       summary: Verify a claim against a chunk's actual text (v1.5.0)
@@ -1605,8 +1638,11 @@ components:
         sources:
           type: array
           items: { type: string }
-          description: multi-source OR scope
-        source: { type: string, description: legacy single-source equality }
+          description: "OR filter over ingest kind: memory | markdown | structured | manual | vault (filters the source column, NOT source URIs)."
+        source:
+          type: string
+          enum: [memory, markdown, structured, manual, vault, vector, fts, graph, both]
+          description: "v1.13.3: ingest kind (SQL filter), retrieval leg (post-fusion filter), or both (unrestricted). Unknown values are rejected with 422."
         since: { type: string, description: ISO-8601 / YYYY-MM-DD HH:MM:SS lower bound }
         domain: { type: string, description: domain isolation label }
         k: { type: integer, description: result count (GET /search) }

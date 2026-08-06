@@ -25,7 +25,7 @@ fn sr(id: i64, score: f32, content: &str) -> SearchResult {
 fn rrf_dedupe_and_source_tagging() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
     let fts = vec![sr(1, 5.0, "a"), sr(3, 3.0, "c")];
-    let fused = rrf_fuse(&vec, &fts, &[], RRF_K, 10);
+    let fused = rrf_fuse(&vec, &fts, &[], RRF_K, 10, None);
 
     assert_eq!(fused.len(), 3, "should dedupe to 3 unique ids");
     assert_eq!(fused[0].id, 1);
@@ -42,7 +42,7 @@ fn rrf_dedupe_and_source_tagging() {
 fn rrf_formula_correctness() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
     let fts = vec![sr(1, 5.0, "a")];
-    let fused = rrf_fuse(&vec, &fts, &[], 60, 10);
+    let fused = rrf_fuse(&vec, &fts, &[], 60, 10, None);
 
     let expected_top = 2.0 / 60.0;
     let expected_second = 1.0 / 61.0;
@@ -62,22 +62,22 @@ fn rrf_formula_correctness() {
 fn rrf_caps_at_limit() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.8, "b"), sr(3, 0.7, "c")];
     let fts = vec![sr(4, 5.0, "d"), sr(5, 3.0, "e")];
-    let fused = rrf_fuse(&vec, &fts, &[], 60, 2);
+    let fused = rrf_fuse(&vec, &fts, &[], 60, 2, None);
     assert_eq!(fused.len(), 2, "should cap at limit");
 }
 
 #[test]
 fn rrf_empty_inputs() {
-    assert!(rrf_fuse(&[], &[], &[], 60, 5).is_empty());
-    assert_eq!(rrf_fuse(&[sr(1, 0.9, "a")], &[], &[], 60, 5).len(), 1);
-    assert_eq!(rrf_fuse(&[], &[sr(1, 5.0, "a")], &[], 60, 5).len(), 1);
+    assert!(rrf_fuse(&[], &[], &[], 60, 5, None).is_empty());
+    assert_eq!(rrf_fuse(&[sr(1, 0.9, "a")], &[], &[], 60, 5, None).len(), 1);
+    assert_eq!(rrf_fuse(&[], &[sr(1, 5.0, "a")], &[], 60, 5, None).len(), 1);
 }
 
 #[test]
 fn rrf_cross_ranked_rescue() {
     let vec = vec![sr(99, 0.95, "x"), sr(42, 0.30, "y"), sr(7, 0.25, "z")];
     let fts = vec![sr(42, 8.0, "y"), sr(7, 5.0, "z"), sr(99, 1.0, "x")];
-    let fused = rrf_fuse(&vec, &fts, &[], 60, 3);
+    let fused = rrf_fuse(&vec, &fts, &[], 60, 3, None);
     assert_eq!(fused.len(), 3);
     assert_eq!(fused[0].id, 42, "FTS-rank-0 + vec-rank-1 should win");
 }
@@ -92,7 +92,7 @@ fn rrf_fuses_graph_leg_with_vector_and_fts() {
     let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
     let fts = vec![sr(2, 5.0, "b"), sr(3, 3.0, "c")];
     let graph = vec![sr(3, 1.0, "c"), sr(4, 0.8, "d")];
-    let fused = rrf_fuse(&vec, &fts, &graph, RRF_K, 10);
+    let fused = rrf_fuse(&vec, &fts, &graph, RRF_K, 10, None);
 
     assert_eq!(fused.len(), 4, "all four unique ids present");
     // id 3 appears in both FTS (rank 1) and graph (rank 0): Both source.
@@ -112,6 +112,102 @@ fn rrf_fuses_graph_leg_with_vector_and_fts() {
     assert!(
         by_id.get(&4).unwrap().score > 0.0,
         "graph-only hit must contribute to the fused score"
+    );
+}
+
+// ── v1.13.3 "SourceFix": post-fusion retrieval-leg filter ───────────────────
+
+/// v1.13.3 "SourceFix" M1: a `Both`-tagged hit (appeared in ≥2 legs) survives
+/// every leg filter, while single-leg hits survive only their own leg.
+#[test]
+fn rrf_leg_filter_keeps_matching_leg_and_both() {
+    use crate::search::query::LegFilter;
+    // id 1 = Both (vec+fts); id 2 = Vector; id 3 = Fts; id 4 = Graph.
+    let vec = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
+    let fts = vec![sr(1, 5.0, "a"), sr(3, 3.0, "c")];
+    let graph = vec![sr(4, 1.0, "d")];
+
+    let ids = |fused: Vec<SearchResult>| -> Vec<i64> {
+        let mut v: Vec<i64> = fused.into_iter().map(|r| r.id).collect();
+        v.sort();
+        v
+    };
+
+    // vector leg → id 1 (Both) + id 2 (Vector); Fts/Graph dropped.
+    assert_eq!(
+        ids(rrf_fuse(
+            &vec,
+            &fts,
+            &graph,
+            RRF_K,
+            10,
+            Some(LegFilter::Vector)
+        )),
+        vec![1, 2]
+    );
+    // fts leg → id 1 (Both) + id 3 (Fts); Vector/Graph dropped.
+    assert_eq!(
+        ids(rrf_fuse(
+            &vec,
+            &fts,
+            &graph,
+            RRF_K,
+            10,
+            Some(LegFilter::Fts)
+        )),
+        vec![1, 3]
+    );
+    // graph leg → id 4 (Graph) + the Both hit (Both survives every leg).
+    assert_eq!(
+        ids(rrf_fuse(
+            &vec,
+            &fts,
+            &graph,
+            RRF_K,
+            10,
+            Some(LegFilter::Graph)
+        )),
+        vec![1, 4]
+    );
+    // graph leg with NO graph candidates and NO Both → empty (abstention shape).
+    let fts_only = vec![sr(3, 3.0, "c")];
+    assert_eq!(
+        ids(rrf_fuse(
+            &[],
+            &fts_only,
+            &[],
+            RRF_K,
+            10,
+            Some(LegFilter::Graph)
+        )),
+        Vec::<i64>::new()
+    );
+    // None leg → the unrestricted union (same as omitting the param).
+    assert_eq!(
+        ids(rrf_fuse(&vec, &fts, &graph, RRF_K, 10, None)),
+        vec![1, 2, 3, 4]
+    );
+}
+
+/// v1.13.3 "SourceFix" M1: the leg filter applies BEFORE truncation, so a leg
+/// filter returns the top-k of THAT leg — not "the leg's hits that happened to
+/// survive into the top-k mixed set". Without pre-truncation filtering, a
+/// dominating FTS list would starve a `source:"vector"` query.
+#[test]
+fn rrf_leg_filter_truncates_after_filtering_not_before() {
+    use crate::search::query::LegFilter;
+    // 3 vector hits + 3 FTS hits, all distinct. With k=3 and leg=Vector we must
+    // get all 3 vector ids, even though FTS hits interleave in the fused ranking.
+    let vec = vec![sr(1, 0.9, "a"), sr(2, 0.8, "b"), sr(3, 0.7, "c")];
+    let fts = vec![sr(4, 5.0, "d"), sr(5, 3.0, "e"), sr(6, 1.0, "f")];
+
+    let fused = rrf_fuse(&vec, &fts, &[], RRF_K, 3, Some(LegFilter::Vector));
+    let mut ids: Vec<i64> = fused.iter().map(|r| r.id).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![1, 2, 3],
+        "all 3 vector hits survive, not truncated to <3"
     );
 }
 
