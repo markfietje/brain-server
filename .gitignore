@@ -46,6 +46,7 @@ brain-server.pid
 *.backup_*
 
 # Internal / pre-release documents (not shipped with source)
+/research/
 /AGENTS.md
 /IMPLEMENTATION_PLAN_*.md
 /IMPLEMENTATION_ROADMAP_*.md
