@@ -1463,15 +1463,17 @@ async fn metrics(
     let db_path = s.db_path.clone();
     let audit_cache = s.audit_chain_cache.clone();
     let body = task::spawn_blocking(move || -> String {
-        let mut sys = System::new();
-        sys.refresh_memory();
         let pool_state = pool.state();
         let busy = pool_state
             .connections
             .saturating_sub(pool_state.idle_connections);
         // Reuse the capacity measurement so `/metrics` and `/health` agree.
         let cap = pool.get().ok().map(|c| measure_capacity(&c, &db_path));
-        let used_mib = sys.used_memory() / 1_000_000;
+        // v1.13.5: report THIS process's RSS, not system-wide used memory.
+        // `System::used_memory()` is the whole-host figure; the gauge's HELP
+        // says "Process RSS in MiB" and must match the per-process 320 MB
+        // capacity envelope that `/health` reports (see `process_rss_mib`).
+        let used_mib = process_rss_mib();
         let cap_status = cap
             .as_ref()
             .and_then(|c| c.get("status"))
@@ -4255,6 +4257,20 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_rss_mib_reports_plausible_process_footprint() {
+        // v1.13.5 regression guard: the /metrics gauge must reflect THIS
+        // process's RSS, not system-wide used memory (which is ~50x larger on
+        // a busy host and would silently mislead Prometheus consumers).
+        let rss = process_rss_mib();
+        // Fail-open is 0; a healthy process here is tens to a few hundred MB.
+        assert!(rss > 0, "process_rss_mib returned 0 (lookup failed)");
+        assert!(
+            rss < 4096,
+            "process_rss_mib {rss} MiB looks like host memory, not process RSS"
+        );
+    }
 
     #[test]
     fn test_connection_tracker_track() {
