@@ -10,7 +10,7 @@
 //! corpus needs sharper separation.
 
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 use crate::search::cosine_sim;
 use crate::Pool;
@@ -88,24 +88,7 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
     let dconn = domain_pool
         .get()
         .context("centroid compute: domain DB connection failed")?;
-    let mut stmt = dconn.prepare(
-        "SELECT e.vector FROM embeddings e
-         JOIN knowledge k ON k.id = e.knowledge_id
-         WHERE k.domain = ?1",
-    )?;
-    let mut vectors: Vec<Vec<f32>> = Vec::new();
-    let rows = stmt.query_map(params![domain], |row| {
-        let json: String = row.get(0)?;
-        Ok(json)
-    })?;
-    for json in rows.flatten() {
-        if let Ok(v) = serde_json::from_str::<Vec<f32>>(&json) {
-            if !v.is_empty() {
-                vectors.push(v);
-            }
-        }
-    }
-    drop(stmt);
+    let vectors = read_domain_vectors(&dconn, domain)?;
     drop(dconn);
 
     let count = vectors.len();
@@ -130,6 +113,61 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
         )?;
     }
     Ok(count)
+}
+
+/// v1.13.0 M4: one-shot recompute of every known domain's centroid from the
+/// corrected M1 source. Domain set = `DISTINCT knowledge.domain` ∪ existing
+/// `domain_centroids` rows (so a domain that emptied out also gets its stale
+/// centroid cleaned). In shim mode all domains share the global pool. Returns
+/// `(domain, vector_count)` per domain — the post-migration catch-up sweep
+/// that makes M2's auto-route meaningful (until real centroids exist, `route()`
+/// only ever sees `global`).
+pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)>> {
+    let conn = global_pool
+        .get()
+        .context("centroid sweep: DB connection failed")?;
+    let mut domains: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for sql in [
+        "SELECT DISTINCT domain FROM knowledge",
+        "SELECT DISTINCT domain FROM domain_centroids",
+    ] {
+        let mut stmt = conn.prepare(sql)?;
+        for d in stmt.query_map([], |r| r.get::<_, String>(0))?.flatten() {
+            domains.insert(d);
+        }
+    }
+    drop(conn);
+    let mut out = Vec::new();
+    for d in domains {
+        let count = recompute_centroid(global_pool, &d, global_pool)?;
+        out.push((d, count));
+    }
+    Ok(out)
+}
+
+/// Read a domain's current (non-superseded) chunk vectors from the live vec0
+/// index. v1.13.0 fix: was reading the frozen legacy `embeddings` JSON table
+/// (2 rows since v0.9.0), which silently zeroed every centroid. Now reads
+/// `vec_knowledge`, matching `find_near_duplicates` (consolidate.rs:260), and
+/// dequantizes via `decode_embedding`. `valid_to IS NULL` excludes superseded
+/// chunks (the loser of a contradiction resolution) so a centroid isn't pulled
+/// toward outdated content. Kept Connection-taking so tests use `test_db()`.
+pub(crate) fn read_domain_vectors(conn: &Connection, domain: &str) -> Result<Vec<Vec<f32>>> {
+    let mut stmt = conn.prepare(
+        "SELECT v.embedding_int8
+         FROM vec_knowledge v
+         JOIN knowledge k ON k.id = v.knowledge_id
+         WHERE k.domain = ?1 AND k.valid_to IS NULL",
+    )?;
+    let rows = stmt.query_map(params![domain], |row| row.get::<_, Vec<u8>>(0))?;
+    let mut vectors: Vec<Vec<f32>> = Vec::new();
+    for blob in rows.flatten() {
+        let v = crate::consolidate::decode_embedding(&blob);
+        if !v.is_empty() {
+            vectors.push(v);
+        }
+    }
+    Ok(vectors)
 }
 
 fn f32_to_blob(v: &[f32]) -> Vec<u8> {

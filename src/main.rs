@@ -5430,6 +5430,90 @@ mod tests {
         );
     }
 
+    // ── v1.13.0 "Route" M1: centroid reads the live vec0 index ──────────
+    //
+    // v1.13.0 root-cause regression (domain auto-routing): recompute_centroid
+    // used to read the frozen legacy `embeddings` JSON table (2 rows since
+    // v0.9.0), so every centroid was ~empty and non-global domains lost theirs.
+    // read_domain_vectors must read vec_knowledge. Regression: the old code
+    // returns 0 vectors here → the centroid gets deleted.
+
+    #[test]
+    fn recompute_centroid_reads_vec_not_legacy_embeddings() {
+        let db = test_db();
+        let v: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash, domain) VALUES (1, 'a', 'a', 'visa')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+             VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'test', datetime('now'))",
+            rusqlite::params![1i64, v.as_bytes()],
+        )
+        .unwrap();
+        // The legacy JSON table stays empty — modern ingests never write it.
+        let legacy: i64 = db
+            .query_row("SELECT COUNT(*) FROM embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy, 0, "no embeddings row written by modern ingests");
+        let vectors = crate::domain_router::read_domain_vectors(&db, "visa").unwrap();
+        assert_eq!(
+            vectors.len(),
+            1,
+            "must read from vec_knowledge, not the frozen embeddings table"
+        );
+    }
+
+    #[test]
+    fn centroid_count_matches_vec_not_embeddings_and_excludes_superseded() {
+        let db = test_db();
+        let v1: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
+        let v2: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01 + 1.0).cos()).collect();
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash, domain) VALUES
+                (1, 'a', 'a', 'visa'), (2, 'b', 'b', 'visa')",
+            [],
+        )
+        .unwrap();
+        for (kid, vv) in [(1i64, &v1), (2, &v2)] {
+            db.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'test', datetime('now'))",
+                rusqlite::params![kid, vv.as_bytes()],
+            )
+            .unwrap();
+        }
+        // A superseded chunk (valid_to set) must be excluded from the centroid.
+        db.execute(
+            "INSERT INTO knowledge(id, content, content_hash, domain, valid_to) VALUES
+                (3, 'old', 'old', 'visa', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+             VALUES (3, vec_quantize_int8(?1, 'unit'), vec_quantize_binary(?1), 'test', datetime('now'))",
+            rusqlite::params![v1.as_bytes()],
+        )
+        .unwrap();
+
+        let vectors = crate::domain_router::read_domain_vectors(&db, "visa").unwrap();
+        assert_eq!(
+            vectors.len(),
+            2,
+            "count must match vec_knowledge rows (2), excluding the superseded one"
+        );
+        assert_eq!(
+            crate::domain_router::read_domain_vectors(&db, "other")
+                .unwrap()
+                .len(),
+            0,
+            "a different domain sees nothing"
+        );
+    }
+
     // ── v1.9.0 "Suggest" integration tests ──────────────────────────────
     //
     // The pure-function tests in handlers/suggest.rs cover validation,

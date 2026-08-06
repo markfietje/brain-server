@@ -343,7 +343,7 @@ pub fn find_near_duplicates(
 /// scale mismatch would only nudge the query vector, never the reported
 /// similarity (which comes from the vec0 distance). If sqlite-vec changes its
 /// blob format, the round-trip test below catches it.
-fn decode_embedding(blob: &[u8]) -> Vec<f32> {
+pub(crate) fn decode_embedding(blob: &[u8]) -> Vec<f32> {
     blob.iter().map(|&b| (b as i8 as f32) / 127.0).collect()
 }
 
