@@ -65,6 +65,7 @@ pub struct RecallRequest {
     #[serde(default)]
     pub strict: bool,
     #[serde(default)]
+    #[serde(alias = "explain")]
     pub provenance: bool,
     #[serde(default)]
     pub source: Option<String>,

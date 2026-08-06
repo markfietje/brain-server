@@ -475,6 +475,9 @@ struct RelationsQuery {
 
 #[derive(Deserialize)]
 struct TraverseQuery {
+    /// Start entity. `name` and `entity` accepted as aliases (the response
+    /// field is `entity`, so callers may mirror it back). Docs canonical: `start`.
+    #[serde(alias = "name", alias = "entity")]
     start: Option<String>,
     max_depth: Option<u8>,
     /// v1.0.0 M3: when true, walk edges across every known domain pool
