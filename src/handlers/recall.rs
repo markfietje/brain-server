@@ -193,10 +193,43 @@ pub async fn recall(
             targets.push((d.clone(), p));
         }
         None if !multi_db => {
-            let p = state.registry.pool_for("global").map_err(|e| {
-                HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-            })?;
-            targets.push(("global".to_string(), p));
+            // v1.15.0 M1 hotfix: automatic retrieval routing in shim mode. The
+            // old code pushed the `global` pool and skipped centroid routing
+            // entirely — so after v1.13.0 moved rows into a non-global label,
+            // they became unreachable by default recall (a `k.domain='global'`-
+            // scoped search). Routing here makes the matched domain reachable
+            // AND stops a bulk domain from dominating un-routed queries.
+            if !crate::config::brain_recall_routing_enabled() {
+                // Kill switch: legacy shim behavior — search global only.
+                let p = state.registry.pool_for("global").map_err(|e| {
+                    HandlerError::bad_request(
+                        "domain_invalid",
+                        format!("cannot resolve domain: {e}"),
+                    )
+                })?;
+                targets.push(("global".to_string(), p));
+            } else {
+                // Centroid routing: encode once, compare to each centroid.
+                let qvec = {
+                    let m = Arc::clone(&model);
+                    m.encode(std::slice::from_ref(&query))
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default()
+                };
+                let centroids =
+                    crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
+                routed = crate::domain_router::route(&qvec, &centroids);
+                for d in shim_routing_targets(routed.as_deref()) {
+                    let p = state.registry.pool_for(&d).map_err(|e| {
+                        HandlerError::bad_request(
+                            "domain_invalid",
+                            format!("cannot resolve domain: {e}"),
+                        )
+                    })?;
+                    targets.push((d, p));
+                }
+            }
         }
         None => {
             // Centroid routing: encode the query once, compare to each domain
@@ -417,6 +450,24 @@ pub async fn recall(
 // Pure helpers (testable without AppState / StaticModel)
 // ---------------------------------------------------------------------------
 
+/// v1.15.0 M1 hotfix: resolve the shim-mode target domains given the
+/// centroid-route result. Pure + deterministic.
+///
+/// - `Some(d)`, `d != "global"`: `[d, global]` — the routed domain is primary,
+///   and a `global` rescue leg keeps the real working-memory corpus reachable
+///   (in shim mode both labels share one physical pool, so this is a label
+///   scope, not a second search pool).
+/// - `Some("global")` or `None` (below the confidence threshold): `[global]` —
+///   the real working-memory corpus. Deliberately NOT federating into the bulk
+///   domain; that federation is what let a 90%-of-rows domain swamp un-routed
+///   working-memory queries.
+fn shim_routing_targets(route: Option<&str>) -> Vec<String> {
+    match route {
+        Some(d) if d != "global" => vec![d.to_string(), "global".to_string()],
+        _ => vec!["global".to_string()],
+    }
+}
+
 /// Map the final outcome to the recall decision: abstain (`low_confidence`)
 /// only when the calibrated estimator said `ClarifyQuery` AND the retrieval
 /// still produced zero hits (v1.12.0 "Discern": a graph-rescue pass may have
@@ -593,6 +644,27 @@ mod tests {
             gold_answer: None,
             graph: false,
         }
+    }
+
+    #[test]
+    fn shim_routing_targets_routed_domain_plus_global_rescue() {
+        assert_eq!(
+            shim_routing_targets(Some("gutmindsynergy")),
+            vec!["gutmindsynergy", "global"]
+        );
+    }
+
+    #[test]
+    fn shim_routing_targets_routed_to_global_scopes_to_global() {
+        assert_eq!(shim_routing_targets(Some("global")), vec!["global"]);
+    }
+
+    #[test]
+    fn shim_routing_targets_unrouted_scopes_to_global_not_bulk_domain() {
+        // Below the confidence threshold (None): the real working-memory
+        // corpus only — never federate into a bulk domain. This is the
+        // blog-domination regression guard.
+        assert_eq!(shim_routing_targets(None), vec!["global"]);
     }
 
     #[test]

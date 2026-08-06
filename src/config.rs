@@ -286,6 +286,22 @@ pub fn brain_graph_rescue_enabled() -> bool {
     )
 }
 
+/// v1.15.0 M1 hotfix: whether automatic retrieval routing is live. Defaults to
+/// `true` (the fix ships on); set `BRAIN_RECALL_ROUTING_ENABLED=false` to
+/// restore the exact pre-v1.15.0 shim behavior (recall searches the `global`
+/// pool only, no centroid routing). Same kill-switch pattern as
+/// [`brain_suggest_enabled`]/[`brain_graph_rescue_enabled`]: an operator who
+/// measures a routing regression can disable it without a rebuild.
+pub fn brain_recall_routing_enabled() -> bool {
+    !matches!(
+        std::env::var("BRAIN_RECALL_ROUTING_ENABLED")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 /// v1.13.0 M4: minimum chunk count for a domain to keep a routing centroid.
 /// Defaults to 1 (a 1-vector centroid is exact for that vector, so nothing is
 /// suppressed). A domain below this floor gets its centroid deleted so `route()`

@@ -10,6 +10,30 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.13.1] — 2026-08-06
+
+**"Recall" fix — automatic retrieval routing (v1.15.0 M1 hotfix).**
+
+Shim-mode recall previously never centroid-routed: `src/handlers/recall.rs` had a
+`None if !multi_db` short-circuit that searched the `global` pool only. After
+v1.13.0 moved rows into a non-`global` label (`gutmindsynergy`), those rows
+became **unreachable by the default recall** the agent uses each turn (a
+`k.domain='global'`-scoped search) — a regression introduced by the relabel
+migration. This hotfix makes routing automatic on retrieval in shim mode too:
+
+- **Automatic centroid routing on recall.** The routed domain is searched
+  primarily, plus a `global` rescue leg (the real working-memory corpus). An
+  un-routed query (below `DOMAIN_CONFIDENCE_THRESHOLD`) scopes to `global` and
+  **never federates into a bulk domain** — so a 90%-of-rows domain can no longer
+  swamp working-memory queries. Pure helper `shim_routing_targets()`.
+- **Kill switch** `BRAIN_RECALL_ROUTING_ENABLED` (default on). Set to `false` to
+  restore the exact pre-v1.13.1 shim behavior (global-only, no routing) without
+  a rebuild.
+- 3 new unit tests. Live-verified: a blog query now returns the moved
+  `gutmindsynergy` rows (`domains_searched: ['global','gutmindsynergy']`);
+  working-memory queries stay in `global`; the kill switch reproduces legacy
+  `['global']`.
+
 ## [Unreleased]
 
 ## [1.13.0] — 2026-08-06
