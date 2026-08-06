@@ -176,7 +176,8 @@ type RecallRequestWire = {
   provenance: boolean;
   domain?: string;
   strict?: boolean;
-  source?: BrainSourceFilter;
+  /** Ingest kind, retrieval leg, or `both` (see {@link BrainSourceFilter}). */
+  source?: string;
   since?: string;
   lex?: string;
   vec?: string;
@@ -263,8 +264,8 @@ export class BrainClient {
     domain?: string;
     strictDomain?: boolean;
     limit: number;
-    /** Ingest kind, retrieval leg, or `both` — see {@link BrainSourceFilter}. */
-    source?: BrainSourceFilter;
+    /** Ingest kind, retrieval leg, or `both` (see {@link BrainSourceFilter}). */
+    source?: string;
     since?: string;
     lex?: string;
     vec?: string;
