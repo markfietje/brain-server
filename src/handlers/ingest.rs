@@ -204,16 +204,10 @@ pub async fn ingest(
 
     // ---- heavy logic ----
     // embed via model2vec, dedup via xxh3-64 content_hash, route to the
-    // resolved domain (forced, else "global"), and insert knowledge + vec0 +
-    // legacy embedding + entities + relations in a single SQLite transaction.
-    let domain_label = forced_domain
-        .clone()
-        .unwrap_or_else(|| "global".to_string());
+    // resolved domain (forced, else auto-routed via centroids), and insert
+    // knowledge + vec0 + legacy embedding + entities + relations in a single
+    // SQLite transaction.
     let model = Arc::clone(&_state.model);
-    // Resolve the domain's pool via the registry (shim mode → global pool).
-    let pool = _state.registry.pool_for(&domain_label).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-    })?;
     let entities_norm = entities;
     let relations_norm = relations;
     let content_for_embed = content.clone();
@@ -228,6 +222,19 @@ pub async fn ingest(
     .await
     .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))?
     .ok_or_else(|| HandlerError::internal("embedding produced no vector"))?;
+
+    // v1.13.0 M2: auto-route when the caller omits a domain. The chunk
+    // embedding is already computed above — reuse it against the stored
+    // centroids. No confident centroid → fall back to `global` (the designed
+    // safety net). Deterministic + zero extra embedding work.
+    let domain_label = {
+        let centroids = crate::domain_router::read_centroids(&_state.pool).unwrap_or_default();
+        crate::domain_router::route_domain_label(&forced_domain, &embedding, &centroids)
+    };
+    // Resolve the domain's pool via the registry (shim mode → global pool).
+    let pool = _state.registry.pool_for(&domain_label).map_err(|e| {
+        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
+    })?;
 
     let result = tokio::task::spawn_blocking(move || -> Result<IngestResponse, HandlerError> {
         let mut conn = pool

@@ -62,6 +62,21 @@ pub fn route(query: &[f32], centroids: &[(String, Vec<f32>)]) -> Option<String> 
     })
 }
 
+/// Resolve the target domain for an ingest. A caller-forced domain always
+/// wins; otherwise auto-route the chunk embedding against the stored
+/// centroids, falling back to `global` when no centroid clears the confidence
+/// threshold. v1.13.0 M2. Pure + deterministic — the same `route()` recall uses.
+pub fn route_domain_label(
+    forced: &Option<String>,
+    embedding: &[f32],
+    centroids: &[(String, Vec<f32>)],
+) -> String {
+    match forced {
+        Some(d) => d.clone(),
+        None => route(embedding, centroids).unwrap_or_else(|| "global".to_string()),
+    }
+}
+
 /// Read every stored `(domain, centroid)` from the global DB's centroid table.
 pub fn read_centroids(global_pool: &Pool) -> Result<Vec<(String, Vec<f32>)>> {
     let conn = global_pool
@@ -251,5 +266,52 @@ mod tests {
         for (a, b) in got.iter().zip(v.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
+    }
+
+    // ── v1.13.0 M2: ingest auto-routing (pure decision) ──────────────────
+
+    #[test]
+    fn route_domain_label_forced_wins_over_centroids() {
+        // An explicit domain always beats routing, even if a centroid matches.
+        let forced = Some("visa".to_string());
+        let embedding = vec![1.0, 0.0];
+        let centroids = vec![("visa".to_string(), vec![1.0, 0.0])];
+        assert_eq!(route_domain_label(&forced, &embedding, &centroids), "visa");
+    }
+
+    #[test]
+    fn route_domain_label_auto_routes_when_omitted() {
+        // No forced domain + a centroid clearing the threshold → routed domain.
+        let forced = None;
+        let embedding = vec![1.0, 0.0];
+        let centroids = vec![
+            ("cooking".to_string(), vec![0.0, 1.0]),
+            ("rust".to_string(), vec![0.99, 0.01]),
+        ];
+        assert_eq!(
+            route_domain_label(&forced, &embedding, &centroids),
+            "rust",
+            "omitted domain auto-routes to the best-matching centroid"
+        );
+    }
+
+    #[test]
+    fn route_domain_label_defaults_to_global_without_centroids() {
+        // Empty centroids → global (back-compat: a fresh DB behaves as before).
+        let forced = None;
+        assert_eq!(route_domain_label(&forced, &[1.0, 0.0], &[]), "global");
+    }
+
+    #[test]
+    fn route_domain_label_is_deterministic() {
+        let forced = None;
+        let embedding = vec![0.5, -0.3];
+        let centroids = vec![
+            ("a".to_string(), vec![1.0, 0.0]),
+            ("b".to_string(), vec![-1.0, 0.0]),
+        ];
+        let first = route_domain_label(&forced, &embedding, &centroids);
+        let second = route_domain_label(&forced, &embedding, &centroids);
+        assert_eq!(first, second, "same content + same centroids → same domain");
     }
 }
