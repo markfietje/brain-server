@@ -10,6 +10,65 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.14.0] — 2026-08-07
+
+**"Gate" — write-back gating + trust surfaces.** The Alex Xu thread's #1 ask —
+"make the write path deliberate" — answered with zero tokens and no auto-promote.
+Human-in-the-loop write-back, per-chunk decay, and a GDPR lifecycle, on top of
+the v1.2 AuthZ foundation. No new model, no background worker, no autonomous
+deletion.
+
+- **M1 — Write-back gate (`POST /ingest/proposal`).** A proposal stores a
+  *candidate* memory scored deterministically — novelty via the existing
+  vec0 KNN (`crate::gate::novelty`), conflict via the consolidate machinery
+  (`find_conflict`), salience via a length/entity heuristic — but creates **no**
+  `knowledge` row. It becomes memory only when a human approves
+  (`POST /proposals/{id}/approve`), which embeds + inserts the chunk and marks
+  the proposal approved in **one transaction**; optional `?supersedes=<id>`
+  calls `resolve_supersession` in the same tx (old fact expires atomically).
+  `POST /proposals/{id}/reject` creates nothing. `GET /proposals` lists the
+  queue. New `proposals` table (append-only review ledger, audited via
+  `AuditKind::Ingest`/`Reconcile`).
+- **M2 — Decay + GDPR lifecycle.** Per-chunk `expires_at` with strict `<`
+  query-time filtering (default excludes decayed chunks; `?include_decayed=true`
+  returns them tagged `decayed`). Nothing decays autonomously. `GET /decayed`
+  is the operator review list. `GET /export` is portable JSON (live rows +
+  graph + proposals ledger; `pii_map` excluded by default). `POST /purge` is a
+  hard, explicit, audited delete across knowledge + vec0 + relationships +
+  proposals references in one tx, leaving a tombstone + `/audit` event, by id
+  list or owner anchor. New `tombstones` columns (`content_hash`, `purged_at`).
+- **M3 — Confidence + stated-vs-inferred + relevance tier.** `confidence`
+  (deterministic, stored-rule factors: source authority + conflict presence +
+  assertion) and `assertion_kind` (`stated`/`observed`/`inferred`) surface on
+  every chunk and every `RecallHit`; `derived_from` chunks read `inferred`.
+  `min_relevance` (high/medium) filters low-tier hits at query time.
+- **M4 — Access scope, owner, PII.** Record-level `access_scope`
+  (private/domain/team/public; default `private` = back-compat) + `owner`
+  (principal subject) with a **deny-by-default** data-layer filter in JWT mode
+  (`scope_filter`); loopback/opaque mode trusts localhost (documented posture).
+  PII: `scan_pii` (email/phone/Luhn card) sets a `pii` flag at ingest; recall
+  **redacts** output to `[redacted:email]`/`[redacted:phone]` unless the
+  principal is loopback or `Admin`. Opt-in write-time placeholder mode
+  (`BRAIN_REDACT_PII=1`) stores `[pii:email]` in `knowledge.content` with the
+  real value only in `pii_map`; `pii:read` resolves it, `/export` excludes it.
+- **M5 — `episodic` memory_kind** + `?memory_kind=` filter (legacy rows default
+  `fact`), wired through the shared `push_gate_filters` SQL used by both vec0
+  and FTS retrievers.
+
+**Migration:** additive `proposals` + `pii_map` tables; `knowledge` columns
+`expires_at`, `access_scope`, `assertion_kind`, `confidence`, `owner`, `pii`;
+`tombstones` columns `content_hash` + `purged_at` (idempotent-guarded
+`ALTER TABLE` — the old CREATE TABLE IF NOT EXISTS was a silent no-op against
+the v0.9.1 schema and would have failed the purge INSERT on real DBs).
+`schema_version` → `1.14.0`.
+
+**Routes:** `/ingest/proposal`, `/proposals`, `/proposals/{id}/approve`,
+`/proposals/{id}/reject`, `/decayed`, `/export`, `/purge`.
+
+**Gates:** fmt, clippy `-D warnings`, `cargo test --features bench,migrate`
+(512 passed, 1 ignored), all 5 release binaries build. Live smoke is an
+operator step (`scripts/install-service.sh`).
+
 ## [1.13.6] — 2026-08-07
 
 **"Hygiene" — CRA conformance bundle + ingest capture hygiene.**

@@ -25,6 +25,7 @@ pub mod connectors;
 pub mod consolidate;
 pub mod domains;
 pub mod forget;
+pub mod gate;
 pub mod ingest;
 pub mod procedure;
 pub mod recall;
@@ -108,6 +109,21 @@ pub struct RecallHit {
     /// contested. Absent (`None`) when not computed or when no conflict exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict: Option<bool>,
+    /// v1.14.0 "Gate" M3: deterministic stored confidence (0..1). Surfaced so
+    /// the caller can see how much weight a fact deserves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    /// v1.14.0 "Gate" M3: `assertion_kind` (stated|observed|inferred).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assertion_kind: Option<String>,
+    /// v1.14.0 "Gate" M3: relevance tier (high|medium|low) derived from the
+    /// fused score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance: Option<&'static str>,
+    /// v1.14.0 "Gate" M2: true when this chunk's `expires_at` is in the past.
+    /// Only present when the caller opted into decayed results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decayed: Option<bool>,
 }
 
 /// v1.5.0 "Epistemic" — calibrated abstention. When the existing

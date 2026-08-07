@@ -1,0 +1,499 @@
+//! v1.14.0 "Gate" — write-back gating, decay, and trust surfaces.
+//!
+//! The thread's missing **front door**: today `/ingest/*` writes straight into
+//! long-term memory with no gate, no confidence, no decay, no access scope, and
+//! no stated-vs-inferred distinction. This module closes that loop with the
+//! same discipline as every release since v0.9: deterministic, zero-token,
+//! human-in-the-loop, no LLM, no background worker, no autonomous anything.
+//!
+//! Pure, unit-testable helpers live here; handlers (`src/handlers/gate.rs`) do
+//! the HTTP + transaction wiring. The human decides what becomes memory —
+//! novelty/conflict/salience rank candidates, they never promote.
+
+use rusqlite::{params, Connection};
+
+/// Minimum content length below which a candidate is treated as filler
+/// (bounded by [`MAX_SALIENCE_LEN`]). Constants tuned to the repo's ingest
+/// corpus; a `ponytail:` note — corpus-calibrated, not learned.
+pub const MIN_SALIENCE_LEN: usize = 24;
+pub const MAX_SALIENCE_LEN: usize = 3000;
+
+/// PII pattern kinds. `Luhn` requires the Luhn checksum to hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiiKind {
+    Email,
+    Phone,
+    Card,
+}
+
+/// Run a deterministic PII scan over `text`. Returns the distinct kinds found.
+/// Structural pattern matching only (the repo's injection-quarantine posture:
+/// a control, not a classifier, auditable). `Luhn`-check card numbers use the
+/// standard Luhn checksum so random digit runs aren't flagged as cards.
+pub fn scan_pii(text: &str) -> Vec<PiiKind> {
+    let mut kinds = Vec::new();
+    if has_email(text) {
+        kinds.push(PiiKind::Email);
+    }
+    if has_phone(text) {
+        kinds.push(PiiKind::Phone);
+    }
+    if has_luhn_card(text) {
+        kinds.push(PiiKind::Card);
+    }
+    kinds
+}
+
+fn has_email(text: &str) -> bool {
+    // Scan each '@'; check the immediate local-part (the contiguous
+    // non-whitespace token before it) and a dotted domain after it. Only the
+    // token boundary matters — text before the local-part ("reach me at
+    // bob@...") is irrelevant. Conservative + minimal.
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'@' {
+            // Local-part: walk back over the contiguous email-char run ending at i.
+            let mut s = i;
+            while s > 0 && is_local_char(bytes[s - 1]) {
+                s -= 1;
+            }
+            let local_ok = i > s && s > 0; // non-empty, preceded by a boundary
+            let domain = &text[i + 1..];
+            let dot = domain
+                .find('.')
+                .is_some_and(|d| d > 0 && d < domain.len() - 1);
+            // A domain must not contain whitespace before its dot (otherwise
+            // "at bob@example.com or" is fine but "bob@example .com" is not).
+            let domain_ok =
+                dot && !domain[..domain.find('.').unwrap()].contains(char::is_whitespace);
+            if local_ok && domain_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_local_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+')
+}
+
+fn has_phone(text: &str) -> bool {
+    // Phone mobile pattern: a full contiguous digit run (ignoring the common
+    // separators `  -().+`) of 10-15 digits with a `+` country prefix or a
+    // 3-digit area code. Conservative: requires the WHOLE run to land in
+    // 10..=15, so a 16-digit Luhn card run never matches here (it belongs to
+    // `has_luhn_card`), and short dates/ids never reach 10.
+    let mut digits = 0;
+    for b in text.bytes() {
+        if b.is_ascii_digit() {
+            digits += 1;
+        } else if matches!(b, b' ' | b'-' | b'(' | b')' | b'+' | b'.') {
+            continue; // separator: stays inside the same run
+        } else {
+            if (10..=15).contains(&digits) {
+                return true;
+            }
+            digits = 0;
+        }
+    }
+    (10..=15).contains(&digits)
+}
+
+fn has_luhn_card(text: &str) -> bool {
+    // Collect runs of 13-19 digits (card lengths) and Luhn-check them.
+    let bytes: Vec<u8> = text.bytes().filter(|b| b.is_ascii_digit()).collect();
+    let mut start = 0;
+    while start < bytes.len() {
+        // A "run" is contiguous digits; card numbers are usually contiguous
+        // (16 digits). Check any 13..=19 length suffix window starting at a
+        // digit that is preceded by a non-digit or start.
+        if start > 0 && bytes[start - 1].is_ascii_digit() {
+            // We're mid-run; the Luhn check happens at the run start below.
+            start += 1;
+            continue;
+        }
+        let run_end = bytes[start..]
+            .iter()
+            .position(|b| !b.is_ascii_digit())
+            .map(|d| start + d)
+            .unwrap_or(bytes.len());
+        let run = &bytes[start..run_end];
+        if (13..=19).contains(&run.len()) && luhn_ok(run) {
+            return true;
+        }
+        start = run_end + 1;
+    }
+    false
+}
+
+/// Luhn checksum (ISO/IEC 7812). Standard double-every-second-digit-from-right
+/// with the doubled>9 → -9 adjustment.
+fn luhn_ok(digits: &[u8]) -> bool {
+    if digits.len() < 2 {
+        return false;
+    }
+    let mut sum = 0u32;
+    let mut double = false;
+    for &d in digits.iter().rev() {
+        if !d.is_ascii_digit() {
+            return false;
+        }
+        let mut v = (d - b'0') as u32;
+        if double {
+            v *= 2;
+            if v > 9 {
+                v -= 9;
+            }
+        }
+        sum += v;
+        double = !double;
+    }
+    sum.is_multiple_of(10)
+}
+
+/// Deterministic salience: 0..1. Longer-than-filler-but-not-verbatim-log, with
+/// an entity-density bump. Length is the primary signal (bounded band); entity
+/// density via the caller-supplied count is a secondary nudge. Corpus-
+/// calibrated constants, documented as such (never learned, never decisive).
+pub fn salience(content: &str, entity_count: usize) -> f32 {
+    let len = content.trim().chars().count();
+    if len < MIN_SALIENCE_LEN {
+        return 0.1;
+    }
+    if len > MAX_SALIENCE_LEN {
+        return 0.3; // verbatim log / transcript
+    }
+    // In-band: base on normalized length, bump slightly for entities.
+    let len_score = ((len - MIN_SALIENCE_LEN) as f32
+        / (MAX_SALIENCE_LEN - MIN_SALIENCE_LEN) as f32)
+        .clamp(0.0, 1.0);
+    let entity_bump = (entity_count.min(8) as f32 / 8.0) * 0.2;
+    (0.5 * len_score + entity_bump).clamp(0.0, 1.0)
+}
+
+/// Compute `novelty = 1 − max cosine` of `embedding` against existing current
+/// chunks via the vec0 index. Near-duplicate → ≈0. Uses the same in-SQL
+/// `vec_quantize_int8(...,'unit')` KNN the retrieval engine uses. Returns a
+/// 0..1 value; `None` when there are no current chunks to compare against
+/// (first memory → novelty 1.0).
+pub fn novelty(conn: &Connection, embedding: &[f32]) -> Option<f32> {
+    let emb_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let mut knn = conn
+        .prepare(
+            "SELECT v.distance
+             FROM vec_knowledge v
+             JOIN knowledge k ON k.id = v.knowledge_id
+             WHERE k.valid_to IS NULL
+               AND v.embedding_int8 MATCH vec_quantize_int8(?1, 'unit')
+               AND v.k = 1
+             ORDER BY v.distance LIMIT 1",
+        )
+        .ok()?;
+    let mut rows = knn
+        .query_map(params![emb_bytes], |r| r.get::<_, f32>(0))
+        .ok()?;
+    let best = rows.next().and_then(|r| r.ok());
+    rows.for_each(drop);
+    best.map(|d| (1.0 - d).clamp(0.0, 1.0)).map(|sim| 1.0 - sim)
+}
+
+/// Deterministic confidence (M3). Base 1.0, each factor is a stored,
+/// inspectable rule: connector-sourced ×0.9 (unverified external), live
+/// contradiction ×0.8, inferred assertion ×0.9. Every factor is auditable; the
+/// product is clamped to 0..1.
+pub fn confidence(source: Option<&str>, has_conflict: bool, assertion: &str) -> f32 {
+    let mut c = 1.0f32;
+    if let Some(s) = source {
+        let s = s.to_ascii_lowercase();
+        // Connector kinds are unverified external sources (github://, webhook).
+        if s.contains("connector") || s.contains("github") || s.contains("web") {
+            c *= 0.9;
+        }
+    }
+    if has_conflict {
+        c *= 0.8;
+    }
+    if assertion == "inferred" {
+        c *= 0.9;
+    }
+    c.clamp(0.0, 1.0)
+}
+
+/// A relevance tier from a fused RRF score (M3). Score bands are corpus-
+/// calibrated; `low` is the "poison the context window" band that
+/// `min_relevance` drops.
+pub fn relevance_tier(score: f32) -> &'static str {
+    if score >= 0.4 {
+        "high"
+    } else if score >= 0.2 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+/// True when a chunk (given its `expires_at` unix ts, if any) is decayed as of
+/// `now_unix`. NULL = no decay. Historical recall passes the queried instant,
+/// not now, so decay and supersession compose orthogonally.
+pub fn is_decayed(expires_at: Option<i64>, now_unix: i64) -> bool {
+    expires_at.is_some_and(|e| e < now_unix)
+}
+
+/// True when a principal may read resolved PII (M4). `None` (opaque/loopback)
+/// always may (trusts localhost, SECURITY.md posture). In JWT mode, an
+/// `admin:*/*` scope is the `pii:read` capability for v1.14 — the full
+/// `<action>:<team>/<domain>` grammar can't express a `pii:read` action yet.
+///
+/// ponytail: a dedicated `pii:read` scope is a v2.0 ACL refinement; for now
+/// "admin" is the standing "trusted reader" group, which is exactly the
+/// loopback-trust posture the plan documents. Non-admin JWT principals never
+/// resolve PII.
+pub fn has_pii_read(principal: &Option<crate::auth::Principal>) -> bool {
+    match principal {
+        None => true,
+        Some(p) => p
+            .scopes
+            .iter()
+            .any(|s| s.action == crate::auth::Action::Admin),
+    }
+}
+
+/// v1.14.0 "Gate" M4: output redaction. When `content` was PII-flagged at
+/// ingest AND the principal does not hold `pii:read`, replace every PII span
+/// with a `[redacted:<kind>]` placeholder. Loopback/opaque (`None`) and admin
+/// principals get the full text (trusts localhost, SECURITY.md posture).
+///
+/// ponytail: this re-runs the scanner over the stored text rather than
+/// tracking exact spans at write time, so it can't guarantee span-identity with
+/// the original (patterns may drift). It flags the chunk, not exact offsets —
+/// the deterministic "structural control, not a classifier" posture. v3.7
+/// write-time `pii_map` placeholders replace this heuristic for the opt-in
+/// path.
+pub fn redact_content(
+    content: &str,
+    pii: bool,
+    principal: &Option<crate::auth::Principal>,
+) -> String {
+    if !pii || has_pii_read(principal) {
+        return content.to_string();
+    }
+    // Deterministic pass over the flagged content: mask emails and phone/card
+    // digit-runs. Order matters (mask_email first so phone masking doesn't
+    // mangle the domain we just consumed).
+    let mut out = content.to_string();
+    mask_email(&mut out);
+    mask_phone(&mut out);
+    out
+}
+
+fn mask_email(out: &mut String) {
+    let mut result = String::with_capacity(out.len());
+    let mut rest = out.as_str();
+    while let Some(idx) = rest.find('@') {
+        // Walk back over the local part (contiguous email chars).
+        let head = &rest[..idx];
+        let local = head
+            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+')))
+            .next()
+            .unwrap_or("");
+        let local_len = local.len();
+        let prefix = &head[..head.len() - local_len];
+        result.push_str(prefix);
+        result.push_str("[redacted:email]");
+        rest = &rest[idx..];
+        // Skip to the end of the domain (next whitespace or end).
+        if let Some(sp) = rest.find(char::is_whitespace) {
+            rest = &rest[sp..];
+        } else {
+            rest = "";
+        }
+    }
+    result.push_str(rest);
+    *out = result;
+}
+
+fn mask_phone(out: &mut String) {
+    // Mask runs of 10-15 digits (optionally separated by ` -().+`) with the
+    // placeholder, so phone numbers (and card-number runs that share the shape
+    // but aren't Luhn) never leak to non-admin readers.
+    let mut result = String::with_capacity(out.len());
+    let bytes = out.as_bytes();
+    let mut i = 0;
+    let mut in_run = false;
+    let mut run_start = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b.is_ascii_digit() || matches!(b, b' ' | b'-' | b'(' | b')' | b'+' | b'.') {
+            if !in_run {
+                in_run = true;
+                run_start = i;
+            }
+            i += 1;
+        } else {
+            if in_run {
+                let run = &out[run_start..i];
+                if (10..=15).contains(&count_digits(run)) {
+                    result.push_str("[redacted:phone]");
+                } else {
+                    result.push_str(run);
+                }
+                in_run = false;
+            }
+            result.push(out[i..i + 1].chars().next().unwrap());
+            i += 1;
+        }
+    }
+    if in_run {
+        let run = &out[run_start..];
+        if (10..=15).contains(&count_digits(run)) {
+            result.push_str("[redacted:phone]");
+        } else {
+            result.push_str(run);
+        }
+    }
+    *out = result;
+}
+
+fn count_digits(s: &str) -> usize {
+    s.bytes().filter(|b| b.is_ascii_digit()).count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pii_scan_finds_email_phone_and_card() {
+        assert_eq!(
+            scan_pii("reach me at bob@example.com or +1 (555) 123 4567"),
+            vec![PiiKind::Email, PiiKind::Phone]
+        );
+        // Luhn-valid card 16 digits.
+        assert_eq!(scan_pii("card 4111 1111 1111 1111"), vec![PiiKind::Card]);
+    }
+
+    #[test]
+    fn pii_scan_is_conservative_on_plain_text() {
+        assert!(scan_pii("the meeting is on 2026-08-07 at 10:30").is_empty());
+        assert!(scan_pii("version 1.2.3 and id 45678 are fine").is_empty());
+    }
+
+    #[test]
+    fn luhn_checksum_accepts_valid_rejects_invalid() {
+        assert!(luhn_ok(b"4111111111111111"));
+        assert!(!luhn_ok(b"4111111111111112"));
+        assert!(scan_pii("4111 1111 1111 1111").contains(&PiiKind::Card));
+        assert!(!scan_pii("4111 1111 1111 1112").contains(&PiiKind::Card));
+    }
+
+    #[test]
+    fn salience_bands_are_length_and_entity_aware() {
+        // Too short = filler (low score).
+        assert!(salience("short", 0) < 0.2);
+        // Longer in-band content with entities scores strictly higher.
+        let medium = salience("x".repeat(800).as_str(), 4);
+        assert!(medium > salience("short", 0));
+        // Entity density bumps the score (all else equal).
+        assert!(salience("y".repeat(800).as_str(), 8) > salience("y".repeat(800).as_str(), 0));
+        // Verbatim log / transcript is capped low.
+        assert!(salience("y".repeat(5000).as_str(), 0) <= 0.3);
+    }
+
+    #[test]
+    fn confidence_factors_are_stored_rules() {
+        assert_eq!(confidence(None, false, "stated"), 1.0);
+        assert!((confidence(Some("github"), false, "stated") - 0.9).abs() < 1e-6);
+        assert!((confidence(None, true, "stated") - 0.8).abs() < 1e-6);
+        assert!((confidence(None, false, "inferred") - 0.9).abs() < 1e-6);
+        assert!((confidence(Some("github"), true, "inferred") - 0.9 * 0.8 * 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn relevance_tiers_follow_bands() {
+        assert_eq!(relevance_tier(0.5), "high");
+        assert_eq!(relevance_tier(0.3), "medium");
+        assert_eq!(relevance_tier(0.1), "low");
+    }
+
+    #[test]
+    fn decay_is_nullable_and_instant_based() {
+        assert!(!is_decayed(None, 1000));
+        assert!(is_decayed(Some(500), 1000));
+        assert!(!is_decayed(Some(1500), 1000));
+        assert!(!is_decayed(Some(1000), 1000)); // strict <
+    }
+
+    fn admin() -> Option<crate::auth::Principal> {
+        use crate::auth::{Action, Scope};
+        Some(crate::auth::Principal {
+            sub: "admin".into(),
+            tenant: "alpha".into(),
+            scopes: vec![Scope {
+                action: Action::Admin,
+                team: "*".into(),
+                domain: "*".into(),
+            }],
+            jti: "t".into(),
+        })
+    }
+
+    #[test]
+    fn redaction_masks_pii_for_non_admin_and_passes_admin() {
+        let text = "contact bob@example.com or +1 (555) 123 4567";
+        let none: Option<crate::auth::Principal> = None; // loopback trusts localhost
+                                                         // Non-admin JWT principal → masked.
+        let p = crate::auth::Principal {
+            sub: "user".into(),
+            tenant: "alpha".into(),
+            scopes: vec![crate::auth::Scope {
+                action: crate::auth::Action::Read,
+                team: "alpha".into(),
+                domain: "alpha".into(),
+            }],
+            jti: "t".into(),
+        };
+        let masked = redact_content(text, true, &Some(p));
+        assert!(masked.contains("[redacted:email]"));
+        assert!(masked.contains("[redacted:phone]"));
+        assert!(!masked.contains("bob@example.com"));
+        assert!(!masked.contains("555"));
+        // Loopback + admin → full text.
+        assert_eq!(redact_content(text, true, &none), text);
+        assert_eq!(redact_content(text, true, &admin()), text);
+        // Non-flagged content passes through unmasked for everyone.
+        assert_eq!(redact_content("plain text", false, &none), "plain text");
+    }
+
+    #[test]
+    fn has_pii_read_admin_or_loopback() {
+        let none: Option<crate::auth::Principal> = None;
+        assert!(has_pii_read(&none));
+        assert!(has_pii_read(&admin()));
+        let p = crate::auth::Principal {
+            sub: "user".into(),
+            tenant: "alpha".into(),
+            scopes: vec![crate::auth::Scope {
+                action: crate::auth::Action::Read,
+                team: "alpha".into(),
+                domain: "alpha".into(),
+            }],
+            jti: "t".into(),
+        };
+        assert!(!has_pii_read(&Some(p)));
+    }
+
+    #[test]
+    fn novelty_without_vec_index_is_safe_none() {
+        // vec0 requires the sqlite-vec extension, which a bare unit test can't
+        // load (it's registered by the server at startup). Assert the safe
+        // path: no vec_knowledge table → `novelty` returns None (the caller
+        // treats None as "first memory → novelty 1.0"), never panics.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE knowledge(id INTEGER PRIMARY KEY, valid_to TEXT);")
+            .unwrap();
+        assert!(novelty(&conn, &[0.1, 0.2]).is_none());
+    }
+}

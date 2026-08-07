@@ -147,6 +147,11 @@ impl QueryDoc {
                 freshness_tiebreak: true,
                 at,
                 graph: self.graph,
+                include_decayed: false,
+                now_unix: 0,
+                memory_kind: None,
+                min_relevance: None,
+                access_scopes: None,
             },
         ))
     }

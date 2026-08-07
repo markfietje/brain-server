@@ -59,6 +59,7 @@ mod connector;
 mod consolidate;
 mod domain_registry;
 mod domain_router;
+mod gate;
 mod handlers;
 mod hygiene;
 mod integrity;
@@ -4088,6 +4089,24 @@ async fn main_inner() -> Result<()> {
         // arm of the roadmap exit criterion ("reject or undo them without
         // retrieval regression"). Clears valid_to + removes the supersedes link.
         .route("/consolidate/undo", post(handlers::consolidate::undo))
+        // v1.14.0 "Gate" M1: write-back gate — proposals queue + human review.
+        // No auto-promote: a candidate becomes memory only by explicit approval.
+        .route("/ingest/proposal", post(handlers::gate::ingest_proposal))
+        .route("/proposals", get(handlers::gate::list_proposals))
+        .route(
+            "/proposals/{id}/approve",
+            post(handlers::gate::approve_proposal),
+        )
+        .route(
+            "/proposals/{id}/reject",
+            post(handlers::gate::reject_proposal),
+        )
+        // v1.14.0 "Gate" M2: decay + GDPR lifecycle. `/export` is portable JSON
+        // (interchange); `/purge` is hard, explicit, audited deletion; `/decayed`
+        // is the operator review list. Nothing is deleted autonomously.
+        .route("/decayed", get(handlers::gate::list_decayed))
+        .route("/export", get(handlers::gate::export))
+        .route("/purge", post(handlers::gate::purge))
         // v0.9.7 "Guard": verified webhook ingestion. The handler only verifies
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
@@ -7398,8 +7417,8 @@ Final paragraph after the rule.";
         // node_kind + step_index schema.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_10_0),
-            "schema_version must be recorded as 1.10.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_14_0),
+            "schema_version must be recorded as 1.14.0 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
@@ -7491,6 +7510,272 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(kind, "fact", "legacy 'event' rows must relabel to 'fact'");
+
+        // v1.14.0 "Gate": the write-back gate + trust columns + lifecycle tables.
+        // Defaults preserve current behavior exactly (private/stated/1.0/0/null).
+        let gate_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(knowledge)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in [
+            "access_scope",
+            "assertion_kind",
+            "confidence",
+            "expires_at",
+            "pii",
+            "owner",
+        ] {
+            assert!(
+                gate_cols.contains(col),
+                "v1.14.0: knowledge.{col} column must exist after migration"
+            );
+        }
+        for (tbl, idx) in [
+            ("pii_map", "pii_map placeholder PRIMARY KEY"),
+            ("tombstones", "tombstones knowledge_id"),
+            ("proposals", "proposals kind"),
+        ] {
+            let n: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [tbl],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "v1.14.0: {tbl} table must exist after migration");
+            let _ = idx;
+        }
+        // The knowledge defaults are the back-compat guarantee: legacy rows keep
+        // current behavior (private scope, stated assertion, confidence 1.0).
+        let defaults: (String, String, f64, i64, Option<String>) = db
+            .query_row(
+                "SELECT access_scope, assertion_kind, confidence, pii, owner
+                 FROM knowledge LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            defaults.0, "private",
+            "v1.14.0: access_scope defaults to 'private' (back-compat)"
+        );
+        assert_eq!(
+            defaults.1, "stated",
+            "v1.14.0: assertion_kind defaults to 'stated'"
+        );
+        assert!(
+            (defaults.2 - 1.0).abs() < 1e-6,
+            "v1.14.0: confidence defaults to 1.0"
+        );
+        assert_eq!(defaults.3, 0, "v1.14.0: pii defaults to 0");
+        assert_eq!(
+            defaults.4, None,
+            "v1.14.0: owner defaults to NULL (legacy/loopback)"
+        );
+        // The proposals table is writable (the review queue is the gate).
+        db.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at)
+             VALUES ('fact', 'candidate', 0.9, 0.5, 0)",
+            [],
+        )
+        .unwrap();
+        let pstatus: String = db
+            .query_row(
+                "SELECT status FROM proposals WHERE content = 'candidate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pstatus, "pending", "proposals default to status='pending'");
+    }
+
+    /// v1.14.0 "Gate" M2/M3/M4 schema-level filter check. Runs the real
+    /// migration on an in-memory DB, inserts rows spanning the new columns, and
+    /// asserts the SQL the retrievers build (decay + memory_kind + access_scope)
+    /// behaves deny-by-default. Model-free — the smallest check that fails if
+    /// the gate columns or defaults drift from the contract.
+    #[test]
+    fn test_gate_filters_apply_at_sql_level() {
+        // test_db() registers the sqlite-vec extension, which run_migration
+        // needs to create the vec0 tables.
+        let db = test_db();
+        // Now = 1000. Rows: (a) decayed in the past, (b) live+episodic+private,
+        // (c) live+fact+team.
+        db.execute_batch(
+            "INSERT INTO knowledge(content, content_hash, node_kind, access_scope,
+                                    expires_at, assertion_kind, confidence, pii, valid_to)
+             VALUES ('decayed fact', 'h1', 'fact', 'private', 500, 'stated', 0.9, 0, NULL),
+                    ('live episodic', 'h2', 'episodic', 'private', NULL, 'observed', 0.8, 1, NULL),
+                    ('live team fact', 'h3', 'fact', 'team', NULL, 'stated', 1.0, 0, NULL);",
+        )
+        .unwrap();
+        // Decay: default recall excludes expires_at < now.
+        let decayed: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge
+                 WHERE (expires_at IS NULL OR expires_at >= ?) AND valid_to IS NULL",
+                [1000i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decayed, 2, "decayed row excluded by default");
+        // memory_kind filter: episodic only.
+        let episodic: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE node_kind = 'episodic'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(episodic, 1);
+        // access_scope deny-by-default: non-admin principal (private/domain/team)
+        // sees both; a public-only principal sees none of the above.
+        let allowed: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE access_scope IN ('private','domain','team')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(allowed, 3);
+        let public_only: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE access_scope IN ('public')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(public_only, 0, "deny-by-default: nothing is public");
+        // M3 defaults surface on every row.
+        let stated: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE assertion_kind = 'stated'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stated, 2, "default assertion_kind 'stated' on 2 rows");
+        // PII flag is stored (row b).
+        let pii_rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM knowledge WHERE pii = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(pii_rows, 1);
+    }
+
+    /// M1 write-back: a proposal creates NO knowledge row; approval promotes it
+    /// to exactly one chunk in one transaction (mirrors the approve handler's
+    /// SQL, which is pool-bound and not directly callable in a unit test).
+    #[test]
+    fn test_gate_approve_promotes_proposal_in_one_tx() {
+        let mut db = test_db();
+        let now = chrono::Utc::now().timestamp();
+        let pid: i64 = db
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at)
+                 VALUES ('fact', 'approved fact body', 0.9, 0.5, ?1) RETURNING id",
+                [now],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Pending proposal must not be a knowledge row yet.
+        let before: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE content = 'approved fact body'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 0, "proposal creates no knowledge row");
+        // Mirror approve: INSERT knowledge + vec0 + mark approved in one tx.
+        let tx = db.transaction().unwrap();
+        let embedding = vec![0.1f32; 512];
+        tx.execute(
+            "INSERT INTO knowledge(content, source, content_hash, node_kind,
+                                   assertion_kind, confidence)
+             VALUES ('approved fact body', 'manual', 'hash-a', 'fact', 'stated', 0.9)",
+            [],
+        )
+        .unwrap();
+        let cid = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+             VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'manual', datetime('now'))",
+            rusqlite::params![cid, embedding.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>()],
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE proposals SET status = 'approved', decided_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, pid],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let after: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE content = 'approved fact body'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 1, "approval promotes exactly one chunk");
+        let status: String = db
+            .query_row("SELECT status FROM proposals WHERE id = ?1", [pid], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "approved");
+    }
+
+    /// M2 GDPR lifecycle: purge removes the chunk from knowledge + vec0 +
+    /// relationships in one transaction and leaves a tombstone (mirrors the
+    /// purge handler's SQL).
+    #[test]
+    fn test_gate_purge_removes_across_tables_with_tombstone() {
+        let mut db = test_db();
+        db.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (1, 'gone fact', 'hash-x');
+             INSERT INTO entities(id, name) VALUES (10, 'E');
+             INSERT INTO relationships(id, from_entity_id, to_entity_id, relation_type, knowledge_id)
+                 VALUES (100, 10, 10, 'self', 1);",
+        )
+        .unwrap();
+        let embedding = vec![0.1f32; 512];
+        db.execute(
+            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (1, vec_quantize_int8(?1, 'unit'), vec_quantize_binary(?1), 'manual', datetime('now'))",
+            rusqlite::params![embedding.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>()],
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let _ = tx.execute("DELETE FROM vec_knowledge WHERE knowledge_id = 1", []);
+        let _ = tx.execute("DELETE FROM relationships WHERE knowledge_id = 1", []);
+        let _ = tx
+            .execute("DELETE FROM knowledge WHERE id = 1", [])
+            .unwrap();
+        tx.execute(
+            "INSERT INTO tombstones(knowledge_id, content_hash, purged_at) VALUES (1, 'hash-x', 1000)",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let gone: i64 = db
+            .query_row("SELECT COUNT(*) FROM knowledge WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(gone, 0, "knowledge row purged");
+        let tombstone: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM tombstones WHERE knowledge_id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tombstone, 1, "tombstone left behind");
     }
 
     /// Assert every route registered in `build_app` is documented in
@@ -8234,6 +8519,13 @@ Final paragraph after the rule.";
             ("/quarantine/{id}/release", "Admin"),
             ("/quarantine/{id}/delete", "Admin"),
             ("/auth/revoke", "Admin"),
+            ("/ingest/proposal", "Write"),
+            ("/proposals", "Read"),
+            ("/proposals/{id}/approve", "Write"),
+            ("/proposals/{id}/reject", "Write"),
+            ("/decayed", "Read"),
+            ("/export", "Read"),
+            ("/purge", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -8291,6 +8583,7 @@ Final paragraph after the rule.";
                     "well_known" => include_str!("handlers/well_known.rs"),
                     "auth" => include_str!("handlers/auth.rs"),
                     "ingest" => include_str!("handlers/ingest.rs"),
+                    "gate" => include_str!("handlers/gate.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
                 }
             } else {

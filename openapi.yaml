@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.13.6
-  x-api-version: "1.13.6"
+  version: 1.14.0
+  x-api-version: "1.14.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1171,6 +1171,128 @@ paths:
               schema: { $ref: "#/components/schemas/SuggestMetrics" }
         "501":
           description: BRAIN_SUGGEST_ENABLED=false — surface disabled
+  /ingest/proposal:
+    post:
+      summary: Write-back gate — propose a candidate memory (v1.14.0 M1)
+      operationId: ingestProposal
+      description: >
+        Human-in-the-loop write-back. A proposal stores a *candidate* memory
+        scored deterministically (novelty via vec0 KNN, conflict via the
+        consolidate machinery, salience via a length/entity heuristic) but
+        creates NO `knowledge` row — the candidate becomes memory only when a
+        human approves it (`POST /proposals/{id}/approve`). No auto-promote.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 2000 }
+                kind: { type: string, enum: [fact, procedure, step, decision, episodic], default: fact }
+                source: { type: string }
+                authority: { type: number }
+                observed_at: { type: integer }
+                domain: { type: string }
+      responses:
+        "200":
+          description: Proposal queued with deterministic scores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  status: { type: string, enum: [pending] }
+                  novelty: { type: number }
+                  conflict_with: { type: integer }
+                  salience: { type: number }
+  /proposals:
+    get:
+      summary: List the review queue (v1.14.0 M1)
+      operationId: listProposals
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, approved, rejected] }
+      responses:
+        "200":
+          description: Proposals in the queue
+  /proposals/{id}/approve:
+    post:
+      summary: Approve a proposal — promote to memory in one tx (v1.14.0 M1)
+      operationId: approveProposal
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+        - in: query
+          name: supersedes
+          schema: { type: integer }
+          description: Expire an existing chunk via resolve_supersession in the same tx.
+      responses:
+        "200":
+          description: Proposal approved and promoted to a knowledge row
+  /proposals/{id}/reject:
+    post:
+      summary: Reject a proposal — creates nothing (v1.14.0 M1)
+      operationId: rejectProposal
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Proposal rejected
+  /decayed:
+    get:
+      summary: List decayed chunks for operator review (v1.14.0 M2)
+      operationId: listDecayed
+      description: >
+        Chunks whose `expires_at` is in the past. Nothing is deleted
+        autonomously; the operator reviews and purges explicitly.
+      responses:
+        "200":
+          description: Decayed chunks
+  /export:
+    get:
+      summary: Portable JSON export for data portability (v1.14.0 M2)
+      operationId: exportData
+      description: >
+        Live `knowledge` rows + graph + proposals ledger. `pii_map` values are
+        excluded by default; only included with `?include_pii_map=true` AND a
+        `pii:read` principal.
+      parameters:
+        - in: query
+          name: include_pii_map
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Portable JSON export
+  /purge:
+    post:
+      summary: Hard, explicit, audited deletion across all tables (v1.14.0 M2)
+      operationId: purge
+      description: >
+        Removes a chunk from knowledge + vec_knowledge + relationships +
+        proposals references in one transaction and leaves a tombstone. Accepts
+        `ids` or an `owner` (principal subject) anchor. Nothing is deleted
+        autonomously.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids: { type: array, items: { type: integer } }
+                owner: { type: string }
+      responses:
+        "200":
+          description: Number of chunks purged
   /ingest:
     post:
       summary: Structured ingest (v1.0 primary path)

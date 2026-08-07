@@ -31,6 +31,9 @@ pub enum MemoryKind {
     /// A conditional branch — the consultant's core reasoning primitive
     /// ("If HIPAA-relevant → recommend BAA-reviewed tools").
     Decision,
+    /// v1.14.0 "Gate" M5: a dated event record where `observed_at` is
+    /// first-class (an episodic memory). The natural TTL candidate (M2).
+    Episodic,
 }
 
 impl MemoryKind {
@@ -41,6 +44,7 @@ impl MemoryKind {
             MemoryKind::Procedure => "procedure",
             MemoryKind::Step => "step",
             MemoryKind::Decision => "decision",
+            MemoryKind::Episodic => "episodic",
         }
     }
     /// Parse from the stored string. Unknown values fall back to `Fact`
@@ -51,8 +55,23 @@ impl MemoryKind {
             "procedure" => MemoryKind::Procedure,
             "step" => MemoryKind::Step,
             "decision" => MemoryKind::Decision,
+            "episodic" => MemoryKind::Episodic,
             _ => MemoryKind::Fact,
         }
+    }
+    /// All valid kinds for the write-back gate's `kind` field. Unlike
+    /// [`MemoryKind::from_str`] (which falls back to Fact on unknown input for
+    /// read-path forward-compat), the gate REJECTS unknown kinds at ingest —
+    /// a proposal must name a real memory kind, not silently degrade.
+    pub fn is_valid_for_gate(self) -> bool {
+        matches!(
+            self,
+            MemoryKind::Fact
+                | MemoryKind::Procedure
+                | MemoryKind::Step
+                | MemoryKind::Decision
+                | MemoryKind::Episodic
+        )
     }
     /// Default for new chunks that don't specify a kind. Reserved for the
     /// migration's column default + any future caller that needs the literal;

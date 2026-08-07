@@ -783,10 +783,106 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
+    // ── v1.14.0 "Gate": write-back gating + decay + trust surfaces. ─────
+    // All additive; defaults preserve current behavior exactly. Columns:
+    //   access_scope  — private(default)|domain|team|public; enforced only in
+    //                   JWT mode (loopback trusts localhost, SECURITY.md).
+    //   assertion_kind — stated(default)|observed|inferred (M3 provenance).
+    //   confidence    — 0..1 deterministic derivation, default 1.0 (M3).
+    //   expires_at    — unix ts, NULL = no decay (M2; default off).
+    //   pii           — 1 when the ingest-time pattern scanner flagged PII (M4).
+    //   owner         — creating principal TEXT, NULL for legacy/loopback (M4).
+    for (col, def) in [
+        ("access_scope", "TEXT NOT NULL DEFAULT 'private'"),
+        ("assertion_kind", "TEXT NOT NULL DEFAULT 'stated'"),
+        ("confidence", "REAL NOT NULL DEFAULT 1.0"),
+        ("expires_at", "INTEGER"),
+        ("pii", "INTEGER NOT NULL DEFAULT 0"),
+        ("owner", "TEXT"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE knowledge ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+
+    // Write-time PII placeholder vault (M4). Only populated with
+    // BRAIN_REDACT_PII=1 or per-ingest `redact:true`. Holds placeholder→value
+    // so text stays coherent and dedupe/supersession still work while the real
+    // values never live in content/embeddings. At-rest encryption deferred to
+    // v3.7 (SQLCipher + KMS) — documented ceiling, ponytail.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS pii_map (
+            placeholder TEXT PRIMARY KEY,
+            value       TEXT NOT NULL,
+            created_at  INTEGER NOT NULL
+         );",
+        [],
+    )?;
+
+    // Purge audit trail (M2/GDPR). Append-only; keeps the audit chain
+    // verifiable (knowledge_id + content_hash + purged_at, no raw content).
+    // The v0.9.1 tombstones table already exists, so we ADD the two purge
+    // columns idempotently (CREATE TABLE IF NOT EXISTS would be a silent
+    // no-op against the old schema and the purge INSERT would fail).
+    for (col, def) in [("content_hash", "TEXT"), ("purged_at", "INTEGER")] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('tombstones') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE tombstones ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tombstones_kid_v2 ON tombstones(knowledge_id)",
+        [],
+    )?;
+
+    // ── v1.14.0 M1 "Write-back gate": the proposal review queue. ─────────
+    // A proposal stores a *candidate* memory — scored deterministically
+    // (novelty / conflict / salience) — with NO `knowledge` row until a human
+    // approves. status: pending|approved|rejected. decided_at set on decision.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS proposals (
+            id           INTEGER PRIMARY KEY,
+            kind         TEXT NOT NULL DEFAULT 'fact',
+            content      TEXT NOT NULL,
+            source       TEXT,
+            authority    REAL,
+            observed_at  INTEGER,
+            novelty      REAL NOT NULL,
+            conflict_with INTEGER,
+            salience     REAL NOT NULL DEFAULT 0.5,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            created_at   INTEGER NOT NULL,
+            decided_at   INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status)",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.10.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.10.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.14.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.14.0';",
         [],
     )?;
 

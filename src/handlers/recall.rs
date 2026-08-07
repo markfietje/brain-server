@@ -128,6 +128,20 @@ pub struct RecallRequest {
     /// unchanged. Deterministic, zero-token, no embeddings.
     #[serde(default)]
     pub graph: bool,
+    /// v1.14.0 "Gate" M2: include decayed chunks (`expires_at` in the past) in
+    /// the results, tagged `decayed: true`. Default false — decayed facts are
+    /// excluded from current recall (the operator review path opts in).
+    #[serde(default)]
+    pub include_decayed: bool,
+    /// v1.14.0 "Gate" M3: `memory_kind` filter (fact|procedure|step|decision|
+    /// episodic). Restricts retrieval to that `knowledge.node_kind`.
+    #[serde(default)]
+    pub memory_kind: Option<String>,
+    /// v1.14.0 "Gate" M3: minimum relevance tier (high|medium|low). Drops
+    /// lower-tier hits after fusion — the "stop poisoning the context window"
+    /// filter, deterministic and zero-token.
+    #[serde(default)]
+    pub min_relevance: Option<String>,
 }
 
 fn default_limit() -> u32 {
@@ -355,6 +369,20 @@ pub async fn recall(
         }
     };
     base_filters.source_leg = source_leg;
+    // v1.14.0 "Gate": decay + memory_kind + min_relevance + access scope.
+    base_filters.include_decayed = req.include_decayed;
+    base_filters.now_unix = chrono::Utc::now().timestamp();
+    base_filters.memory_kind = req.memory_kind.as_deref().map(str::to_string);
+    if let Some(t) = &req.min_relevance {
+        if !matches!(t.as_str(), "high" | "medium" | "low") {
+            return Err(HandlerError::bad_request(
+                "invalid_min_relevance",
+                "min_relevance must be high|medium|low",
+            ));
+        }
+        base_filters.min_relevance = Some(t.clone());
+    }
+    base_filters.access_scopes = crate::handlers::gate::scope_filter(&principal.0);
     let snippet_q = base_filters
         .lex
         .clone()
@@ -436,6 +464,17 @@ pub async fn recall(
         tagged = packed.results.into_iter().zip(domains).collect();
     }
 
+    // v1.14.0 "Gate": post-fusion relevance-tier filter (min_relevance drops
+    // low-tier hits — the "poison the context window" ask, zero-token) and
+    // decay tagging (include_decayed returns decayed chunks tagged decayed).
+    let min_tier = req.min_relevance.clone();
+    let include_decayed = req.include_decayed;
+    tagged.retain(|(r, _)| match min_tier.as_deref() {
+        Some("high") => crate::gate::relevance_tier(r.score) == "high",
+        Some("medium") => crate::gate::relevance_tier(r.score) != "low",
+        _ => true,
+    });
+
     // ---- render (RecallHit carries its source domain for federation) ----
     let primary_domain = forced_domain
         .clone()
@@ -454,7 +493,7 @@ pub async fn recall(
     // `Recommendation`, which is what the evidence-gated roadmap requires
     // ("no fixed universal confidence threshold until held-out benefit is
     // demonstrated").
-    let hits = results_to_hits(tagged, req.provenance);
+    let hits = results_to_hits(tagged, req.provenance, include_decayed, &principal.0);
     let decision = abstention_decision(tel.recommendation, hits.is_empty());
 
     // v1.13.3 "SourceFix" M4: domains of the returned hits, always present
@@ -521,13 +560,16 @@ fn abstention_decision(
 fn results_to_hits(
     results: Vec<(crate::SearchResult, String)>,
     include_provenance: bool,
+    include_decayed: bool,
+    principal: &Option<crate::auth::Principal>,
 ) -> Vec<RecallHit> {
+    let now_unix = chrono::Utc::now().timestamp();
     results
         .into_iter()
         .map(|(r, domain)| RecallHit {
             id: r.id,
             title: r.title,
-            content: r.content,
+            content: crate::gate::redact_content(&r.content, r.pii, principal),
             score: r.score,
             domain: Some(domain),
             source: Some(map_source(r.source)),
@@ -544,6 +586,10 @@ fn results_to_hits(
                     .iter()
                     .any(|l| l.kind == "contradicts" || l.kind == "supersedes")
             }),
+            confidence: r.confidence,
+            assertion_kind: r.assertion_kind,
+            relevance: Some(crate::gate::relevance_tier(r.score)),
+            decayed: include_decayed.then(|| crate::gate::is_decayed(r.expires_at, now_unix)),
         })
         .collect()
 }
@@ -669,6 +715,9 @@ mod tests {
             max_context_tokens: None,
             gold_answer: None,
             graph: false,
+            include_decayed: false,
+            memory_kind: None,
+            min_relevance: None,
         }
     }
 
@@ -723,6 +772,9 @@ mod tests {
             max_context_tokens: None,
             gold_answer: None,
             graph: false,
+            include_decayed: false,
+            memory_kind: None,
+            min_relevance: None,
         };
         let err = validate_recall(&r).unwrap_err();
         assert_eq!(err.inner.code, "query_too_long");
@@ -798,6 +850,8 @@ mod tests {
                 .map(|r| (r, "health".to_string()))
                 .collect(),
             false,
+            false,
+            &None,
         );
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, 1);
@@ -857,6 +911,8 @@ mod tests {
                 .map(|r| (r, "global".to_string()))
                 .collect(),
             false,
+            false,
+            &None,
         );
         let ids: Vec<i64> = hits.iter().map(|h| h.id).collect();
         assert_eq!(ids, vec![10, 11, 12]);
@@ -866,7 +922,13 @@ mod tests {
 
     #[test]
     fn results_to_hits_empty() {
-        assert!(results_to_hits(Vec::<(crate::SearchResult, String)>::new(), false).is_empty());
+        assert!(results_to_hits(
+            Vec::<(crate::SearchResult, String)>::new(),
+            false,
+            false,
+            &None
+        )
+        .is_empty());
     }
 
     /// Cross-domain RRF: results are ranked by their RRF contribution
@@ -960,7 +1022,12 @@ mod tests {
                 dom.to_string(),
             )
         };
-        let hits = results_to_hits(vec![mk(1, "work"), mk(2, "health"), mk(3, "work")], false);
+        let hits = results_to_hits(
+            vec![mk(1, "work"), mk(2, "health"), mk(3, "work")],
+            false,
+            false,
+            &None,
+        );
         let domains: Vec<&str> = hits.iter().map(|h| h.domain.as_deref().unwrap()).collect();
         assert_eq!(domains, vec!["work", "health", "work"]);
     }
@@ -983,7 +1050,7 @@ mod tests {
             evidence: None,
             ..Default::default()
         };
-        let hits = results_to_hits(vec![(r, "health".into())], true);
+        let hits = results_to_hits(vec![(r, "health".into())], true, false, &None);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].provenance.is_some());
         assert_eq!(hits[0].provenance.as_ref().unwrap().vector_rank, Some(0));

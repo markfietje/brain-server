@@ -281,9 +281,15 @@ pub async fn ingest(
         }
 
         tx.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash, domain)
-             VALUES (?1, ?2, 'structured', ?3, ?4)",
-            rusqlite::params![&title_for_store, &content, &content_hash, &domain_label],
+            "INSERT INTO knowledge (title, content, source, content_hash, domain, pii)
+             VALUES (?1, ?2, 'structured', ?3, ?4, ?5)",
+            rusqlite::params![
+                &title_for_store,
+                &content,
+                &content_hash,
+                &domain_label,
+                !crate::gate::scan_pii(&content).is_empty()
+            ],
         )
         .map_err(|e| HandlerError::internal(format!("insert knowledge failed: {e}")))?;
         let id: i64 = tx.last_insert_rowid();

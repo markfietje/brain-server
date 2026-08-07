@@ -593,3 +593,47 @@ fn graph_rescue_fuse_does_not_mark_prf_expanded() {
     let prf_ids: Vec<i64> = prf_fused.iter().map(|r| r.id).collect();
     assert_eq!(ids, prf_ids, "same fusion result aside from the flag");
 }
+
+/// v1.14.0 "Gate" M2/M3/M4: the shared SQL filter builder emits decay,
+/// memory_kind, and access-scope clauses with params in order. This is the
+/// single function both retrievers call, so one test pins all three filters
+/// (a regression here would silently affect vec0 AND FTS retrieval).
+#[test]
+fn push_gate_filters_emits_decay_kind_and_scope() {
+    use super::{push_gate_filters, SearchFilters};
+    let mut sql = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let filters = SearchFilters {
+        include_decayed: false,
+        now_unix: 42,
+        memory_kind: Some("episodic".into()),
+        access_scopes: Some(vec!["private".into(), "domain".into()]),
+        ..Default::default()
+    };
+    push_gate_filters(&mut sql, &mut params, &filters);
+    // Decay: excluded by default (expires_at NULL or future).
+    assert!(
+        sql.contains("k.expires_at IS NULL OR k.expires_at >= ?"),
+        "decay clause"
+    );
+    // memory_kind equality.
+    assert!(sql.contains("k.node_kind = ?"), "kind clause");
+    // Access scope: deny-by-default IN list with 2 placeholders.
+    assert!(sql.contains("k.access_scope IN (?,?)"), "scope clause");
+    assert_eq!(params.len(), 4, "now_unix + kind + 2 scope params");
+
+    // include_decayed=true emits NO decay clause.
+    let mut sql2 = String::from("SELECT 1");
+    let mut p2: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let f2 = SearchFilters {
+        include_decayed: true,
+        now_unix: 42,
+        ..Default::default()
+    };
+    push_gate_filters(&mut sql2, &mut p2, &f2);
+    assert!(
+        !sql2.contains("expires_at"),
+        "include_decayed must skip the decay clause"
+    );
+    assert!(p2.is_empty());
+}

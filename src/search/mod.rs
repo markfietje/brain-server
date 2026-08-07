@@ -214,6 +214,23 @@ pub struct SearchResult {
     /// by `enrich_evidence` after retrieval; absent if enrichment is skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
+    /// v1.14.0 "Gate" M3: `assertion_kind` (stated|observed|inferred) read from
+    /// `knowledge.assertion_kind`. Ranking-neutral; surfaced so the caller can
+    /// weigh a fact. `None` for legacy rows.
+    #[serde(skip)]
+    pub assertion_kind: Option<String>,
+    /// v1.14.0 "Gate" M3: deterministic stored confidence (0..1). Ranking-
+    /// neutral; `None` for legacy rows.
+    #[serde(skip)]
+    pub confidence: Option<f32>,
+    /// v1.14.0 "Gate" M2: the chunk's `expires_at` (unix ts), used to compute
+    /// the `decayed` flag at query time. `None` = no decay.
+    #[serde(skip)]
+    pub expires_at: Option<i64>,
+    /// v1.14.0 "Gate" M4: whether the chunk was PII-flagged at ingest. Never
+    /// serialized (drives read-path redaction only).
+    #[serde(skip)]
+    pub pii: bool,
 }
 
 fn provenance_is_empty(p: &Provenance) -> bool {
@@ -242,6 +259,10 @@ impl SearchResult {
             evidence: None,
             observed_at: None,
             authority: None,
+            assertion_kind: None,
+            confidence: None,
+            expires_at: None,
+            pii: false,
         }
     }
 
@@ -371,6 +392,10 @@ impl SearchResult {
                 evidence: None,
                 observed_at: None,
                 authority: None,
+                assertion_kind: None,
+                confidence: None,
+                expires_at: None,
+                pii: false,
             };
             snap.with_snippet(snippet_q);
             let text = snap.snippet.clone().unwrap_or_default();
@@ -544,6 +569,27 @@ pub struct SearchFilters {
     /// behind the existing vector + lexical fusion. Opt-in (the roadmap's
     /// no-default-cost guardrail): `false` = the graph leg never runs.
     pub graph: bool,
+    /// v1.14.0 "Gate" M2: when `false` (default), decayed chunks
+    /// (`expires_at < now`) are excluded from retrieval; `true` returns them
+    /// (operator review). Historical `?at=` is unaffected — decay and
+    /// supersession compose. Applied as SQL, like `valid_to`.
+    pub include_decayed: bool,
+    /// v1.14.0 "Gate" M2: the query-time instant (unix ts) used to evaluate
+    /// `expires_at`. Defaults to now; historical recall could pin it. Kept as a
+    /// field so the retriever SQL is a pure function of the filters.
+    pub now_unix: i64,
+    /// v1.14.0 "Gate" M3: `memory_kind` (fact/procedure/step/decision/episodic)
+    /// filter. `Some` restricts retrieval to that `knowledge.node_kind`.
+    pub memory_kind: Option<String>,
+    /// v1.14.0 "Gate" M3: minimum relevance tier (`high`|`medium`|`low`).
+    /// `Some` drops lower-tier hits after fusion (the "stop poisoning the
+    /// context window" filter), evaluated on the fused RRF score.
+    pub min_relevance: Option<String>,
+    /// v1.14.0 "Gate" M4: record-level access-scope filter, JWT mode only.
+    /// `Some` (list of allowed scopes from the principal) is applied as a
+    /// deny-by-default `WHERE access_scope ∈ allowed`. `None` (loopback/
+    /// opaque) = no scope restriction (trusts localhost).
+    pub access_scopes: Option<Vec<String>>,
 }
 
 impl Default for SearchFilters {
@@ -564,6 +610,11 @@ impl Default for SearchFilters {
             freshness_tiebreak: true,
             at: None,
             graph: false,
+            include_decayed: false,
+            now_unix: 0,
+            memory_kind: None,
+            min_relevance: None,
+            access_scopes: None,
         }
     }
 }
@@ -772,6 +823,10 @@ pub fn rrf_fuse(
             evidence: None,
             observed_at: r.observed_at.clone(),
             authority: r.authority,
+            assertion_kind: r.assertion_kind.clone(),
+            confidence: r.confidence,
+            expires_at: r.expires_at,
+            pii: r.pii,
         });
     }
 
@@ -1167,6 +1222,34 @@ pub fn should_attempt_graph_rescue(
 
 // ── Vector + lexical retrieval ──────────────────────────────────────────────
 
+/// v1.14.0 "Gate": append the SQL for decay, memory_kind, and access-scope
+/// filters to a retriever query, pushing any bound params in order. Shared by
+/// both retrievers so the filters can never drift between vec0 and FTS. Pure
+/// SQL construction; params are appended in SQL-parameter order.
+fn push_gate_filters(
+    sql: &mut String,
+    params_vec: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    filters: &SearchFilters,
+) {
+    if !filters.include_decayed {
+        sql.push_str(" AND (k.expires_at IS NULL OR k.expires_at >= ?)");
+        params_vec.push(Box::new(filters.now_unix));
+    }
+    if let Some(kind) = &filters.memory_kind {
+        sql.push_str(" AND k.node_kind = ?");
+        params_vec.push(Box::new(kind.clone()));
+    }
+    if let Some(scopes) = &filters.access_scopes {
+        let ph = std::iter::repeat_n("?", scopes.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND k.access_scope IN ({ph})"));
+        for s in scopes {
+            params_vec.push(Box::new(s.clone()));
+        }
+    }
+}
+
 pub fn vec0_knn(
     conn: &Connection,
     query_vec: &[f32],
@@ -1175,7 +1258,8 @@ pub fn vec0_knn(
 ) -> Result<Vec<SearchResult>> {
     let mut sql = String::from(
         "SELECT k.id, k.title, k.content, v.distance, k.flagged,
-                k.observed_at, k.authority
+                k.observed_at, k.authority, k.assertion_kind, k.confidence,
+                k.expires_at, k.pii
          FROM vec_knowledge v
          JOIN knowledge k ON k.id = v.knowledge_id
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -1253,6 +1337,7 @@ pub fn vec0_knn(
             sql.push_str(" AND k.valid_to IS NULL");
         }
     }
+    push_gate_filters(&mut sql, &mut params_vec, filters);
     sql.push_str(" ORDER BY v.distance");
 
     let mut stmt = conn.prepare(&sql)?;
@@ -1265,6 +1350,10 @@ pub fn vec0_knn(
                 .with_flagged(row.get(4)?);
             r.observed_at = row.get(5)?;
             r.authority = row.get::<_, Option<f64>>(6)?.map(|a| a as f32);
+            r.assertion_kind = row.get(7)?;
+            r.confidence = row.get::<_, Option<f64>>(8)?.map(|c| c as f32);
+            r.expires_at = row.get(9)?;
+            r.pii = row.get::<_, i64>(10)? != 0;
             Ok(r)
         })?
         .filter_map(|r| r.ok())
@@ -1281,7 +1370,8 @@ fn fts_search(
 ) -> Result<Vec<SearchResult>> {
     let mut sql = String::from(
         "SELECT k.id, k.title, k.content, bm25(knowledge_fts) AS score, k.flagged,
-                k.observed_at, k.authority
+                k.observed_at, k.authority, k.assertion_kind, k.confidence,
+                k.expires_at, k.pii
          FROM knowledge_fts
          JOIN knowledge k ON k.id = knowledge_fts.rowid
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -1342,6 +1432,7 @@ fn fts_search(
             sql.push_str(" AND k.valid_to IS NULL");
         }
     }
+    push_gate_filters(&mut sql, &mut params_vec, filters);
     sql.push_str(" ORDER BY score LIMIT ?");
     params_vec.push(Box::new(k as i64));
 
@@ -1359,6 +1450,10 @@ fn fts_search(
             .with_flagged(row.get(4)?);
             r.observed_at = row.get(5)?;
             r.authority = row.get::<_, Option<f64>>(6)?.map(|a| a as f32);
+            r.assertion_kind = row.get(7)?;
+            r.confidence = row.get::<_, Option<f64>>(8)?.map(|c| c as f32);
+            r.expires_at = row.get(9)?;
+            r.pii = row.get::<_, i64>(10)? != 0;
             Ok(r)
         })?
         .filter_map(|r| r.ok())
@@ -1479,6 +1574,11 @@ pub fn perform_search_traced(
             freshness_tiebreak: filters.freshness_tiebreak,
             at: normalized_at,
             graph: filters.graph,
+            include_decayed: filters.include_decayed,
+            now_unix: filters.now_unix,
+            memory_kind: filters.memory_kind.clone(),
+            min_relevance: filters.min_relevance.clone(),
+            access_scopes: filters.access_scopes.clone(),
         }
     } else {
         filters.clone()

@@ -26,6 +26,10 @@ use rusqlite::Connection;
 /// the audit-chain columns (`tenant_id`, `prev_hash`) and the
 /// `idx_audit_tenant` index.
 pub const SCHEMA_VERSION_V1_10_0: &str = "1.10.0";
+/// v1.14.0 "Gate" schema: knowledge gains access_scope/assertion_kind/
+/// confidence/expires_at/pii/owner; new pii_map + tombstones + proposals
+/// tables. Defaults preserve current behavior (no data loss, no re-ingest).
+pub const SCHEMA_VERSION_V1_14_0: &str = "1.14.0";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
 pub const SCHEMA_VERSION_V1_2_0: &str = "1.2.0";

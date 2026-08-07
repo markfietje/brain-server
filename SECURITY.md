@@ -16,7 +16,7 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 | 0.9.x   | :white_check_mark: | Maintained for back-compat |
 | < 0.9   | :x:                | Unsupported |
 
-**Support window.** The current minor (`1.13.x`) and the previous minor receive
+**Support window.** The current minor (`1.14.x`) and the previous minor receive
 fixes; the `0.9.x`/`1.0.x` lines receive back-compat/security fixes only. There
 is no fixed end-of-life date; any line's deprecation is announced at least one
 minor release in advance. A machine-readable disclosure endpoint is published at
@@ -54,7 +54,7 @@ Full threat model in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Summary here.
 | **S**poofing | Agent → brain-server, brain-server → peer (A2A) | Bearer token (v1.1) / JWT/JWS (v1.2); mTLS (v3.7) | ✅ / 🚧 |
 | **T**ampering | Audit log, content at rest, JWT payload | Hash-chained audit (v1.1 M2.3); parameterized SQL (all versions); JWS signature (v1.2) | ✅ |
 | **R**epudiation | "Who did this write?" | Append-only audit with `(actor, ts, hash, prev_hash)` (v1.1 M2) | ✅ |
-| **I**nformation disclosure | Cross-tenant leak, PII egress | Per-tenant file isolation (v1.0); AuthZ layer (v1.2); SQLCipher + per-field encryption (v3.7) | ✅ / 🚧 |
+| **I**nformation disclosure | Cross-tenant leak, PII egress | Per-tenant file isolation (v1.0); AuthZ layer (v1.2); record-level `access_scope` + owner (v1.14, JWT-mode deny-by-default filter); PII output redaction + opt-in write-time placeholder mode (`pii_map`, v1.14); SQLCipher + per-field encryption (v3.7) | ✅ / 🚧 |
 | **D**enial of service | Burst, large body, vector query | Body limit + per-IP limiter (v0.9.4); per-tenant + tiered limiter (v2.1) | ✅ / 🚧 |
 | **E**levation of privilege | Token scope escalation | Constant-time token compare (v1.1); AuthZ trait with deny-by-default (v1.2) | ✅ |
 
