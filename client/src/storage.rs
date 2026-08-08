@@ -39,12 +39,6 @@ pub fn load_token() -> Option<String> {
         .ok()
 }
 
-/// Remove the saved token (logout). Best-effort — a missing entry is fine.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn delete_token() {
-    let _ = keyring::Entry::new(SERVICE, ACCOUNT).and_then(|e| e.delete_credential());
-}
-
 // Web: no-op. The token is in-memory only (the `Signal<ApiClient>`).
 #[cfg(target_arch = "wasm32")]
 pub fn save_token(_token: &str) -> Result<(), String> {
@@ -54,8 +48,6 @@ pub fn save_token(_token: &str) -> Result<(), String> {
 pub fn load_token() -> Option<String> {
     None
 }
-#[cfg(target_arch = "wasm32")]
-pub fn delete_token() {}
 
 /// v1.16.6 M2: persist the token ONLY when one was actually provided. A loopback
 /// connect (empty token) must not overwrite a previously-saved remote token with
