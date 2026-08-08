@@ -30,6 +30,9 @@ pub const SCHEMA_VERSION_V1_10_0: &str = "1.10.0";
 /// confidence/expires_at/pii/owner; new pii_map + tombstones + proposals
 /// tables. Defaults preserve current behavior (no data loss, no re-ingest).
 pub const SCHEMA_VERSION_V1_14_0: &str = "1.14.0";
+/// v1.15.0 "Observe" schema: new recall_traces + dsar_requests tables;
+/// tombstones gains reason + origin_id. Additive, defaults preserved.
+pub const SCHEMA_VERSION_V1_15_0: &str = "1.15.0";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
 pub const SCHEMA_VERSION_V1_2_0: &str = "1.2.0";

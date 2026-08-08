@@ -315,6 +315,70 @@ pub fn brain_domain_min_count() -> i64 {
         .max(1)
 }
 
+// ── v1.15.0 "Observe": read-event audit + DSAR ─────────────────────────
+
+/// Whether read events (`/recall`, `/search`, `/get`, `/multi-get`) are
+/// appended to the audit hash chain. `BRAIN_AUDIT_READ_EVENTS` explicit value
+/// wins; when unset the default follows the posture: **on in JWT mode** (the
+/// enterprise posture — the plan's "default on for JWT"), **off for loopback/
+/// opaque personal use** (noise + the personal-use contract). Read events are
+/// hash-only (chunk id + scores + decision; never content) and never change
+/// the primary action — best-effort by construction.
+pub fn audit_read_events(principal_is_jwt: bool) -> bool {
+    match std::env::var("BRAIN_AUDIT_READ_EVENTS")
+        .map(|v| v.trim().to_lowercase())
+        .ok()
+        .as_deref()
+    {
+        Some("on" | "true" | "1" | "yes") => true,
+        Some("off" | "false" | "0" | "no") => false,
+        _ => principal_is_jwt, // unset: JWT on, loopback off
+    }
+}
+
+/// Sampling rate for read events (0.0..=1.0, default 1.0 = all). A sampled-out
+/// read event is simply not recorded (no trace). Bounded below 1.0 so an
+/// operator can cut the noise on a busy multi-tenant server.
+pub fn audit_read_sample_rate() -> f64 {
+    std::env::var("BRAIN_AUDIT_READ_SAMPLE_RATE")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1.0_f64)
+        .clamp(0.0, 1.0)
+}
+
+/// Read-event / audit retention window in days. Unset = keep forever (the
+/// personal-use contract). When set (deployers: ≥180 per AI Act Art 26(6)),
+/// rows older than the window are pruned on read-event writes and the chain
+/// re-anchored to the oldest survivor. Never runs when unset.
+pub fn audit_read_retention_days() -> Option<u32> {
+    std::env::var("BRAIN_AUDIT_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|d| *d > 0)
+}
+
+/// Optional Art 19 onward-notification webhook. When set, a completed DSAR
+/// purge POSTs `{subject, certified_at, certificate_id}` to this URL, HMAC-
+/// signed with [`dsar_webhook_secret`]. Fail-soft: a webhook failure never
+/// rolls back the purge.
+pub fn dsar_webhook_url() -> Option<String> {
+    std::env::var("BRAIN_DSAR_WEBHOOK_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// HMAC secret for the DSAR webhook signature (`X-Brain-Signature-256`).
+/// When unset, the webhook is sent unsigned (documented — the caller should
+/// still receive the notification; signing is best practice).
+pub fn dsar_webhook_secret() -> Option<String> {
+    std::env::var("BRAIN_DSAR_WEBHOOK_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to
 /// `edge-default`. Unknown values fall back to `edge-default`.
 pub fn model_profile() -> &'static str {

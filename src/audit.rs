@@ -45,6 +45,12 @@ pub enum AuditKind {
     Reconcile,
     Backup,
     Connector,
+    /// v1.15.0 "Observe" M1: read-event kinds — a `/recall`, `/search`,
+    /// `/get`, or `/multi-get` that injected memory into a decision path.
+    /// Recorded only when the read-event audit is enabled (JWT mode default).
+    Recall,
+    Search,
+    Get,
 }
 
 impl AuditKind {
@@ -56,6 +62,9 @@ impl AuditKind {
             AuditKind::Reconcile => "reconcile",
             AuditKind::Backup => "backup",
             AuditKind::Connector => "connector",
+            AuditKind::Recall => "recall",
+            AuditKind::Search => "search",
+            AuditKind::Get => "get",
         }
     }
 }
@@ -112,6 +121,10 @@ pub const DEFAULT_TENANT: &str = "global";
 /// hashed identifiers where the value is sensitive. `tenant` scopes the row;
 /// pass [`DEFAULT_TENANT`] when the caller has no tenant context.
 ///
+/// Returns the inserted row id (`Some`) or `None` if the write failed. Most
+/// callers ignore the return; the DSAR/trace paths use it to key a replayable
+/// trace row.
+///
 /// The hash-chain link is read + written inside a single transaction so the
 /// read-modify-write is atomic under SQLite's single-writer lock.
 pub fn record(
@@ -121,11 +134,12 @@ pub fn record(
     target: &str,
     status: AuditStatus,
     detail: &str,
-) {
+) -> Option<i64> {
     record_tenant(conn, kind, actor, target, status, detail, DEFAULT_TENANT)
 }
 
-/// Per-tenant variant of [`record`]. Same best-effort semantics.
+/// Per-tenant variant of [`record`]. Same best-effort semantics; returns the
+/// inserted row id on success, `None` on failure.
 ///
 /// The chain-tip read + INSERT are wrapped in a `SAVEPOINT` so the
 /// read-modify-write is atomic even for autocommit callers. `SAVEPOINT`
@@ -142,7 +156,7 @@ pub fn record_tenant(
     status: AuditStatus,
     detail: &str,
     tenant: &str,
-) {
+) -> Option<i64> {
     let target_hash = hash(target);
     let detail_hash = hash(detail);
     let kind_str = kind.as_str();
@@ -188,6 +202,11 @@ pub fn record_tenant(
             ],
         )
         .is_ok();
+    let id = if inserted {
+        conn.last_insert_rowid()
+    } else {
+        -1
+    };
     if sp_ok {
         // Release on success (commits the savepoint); roll back on failure so
         // a partial write doesn't leave a dangling tip. Rolling back the
@@ -205,6 +224,7 @@ pub fn record_tenant(
             let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
         }
     }
+    (id >= 0).then_some(id)
 }
 
 /// Decoded prior-row fields needed to compute the chain link for the next row.
@@ -214,6 +234,158 @@ struct ChainTip {
     actor: String,
     target_hash: String,
     prev_hash: String,
+}
+
+/// v1.15.0 "Observe" M1/M2: record a read event AND persist its replayable
+/// decision-path trace. The audit row is hash-only (chunk ids + scores go into
+/// `detail_hash`; never content). The full trace detail (non-content decision
+/// metadata: ids, scores, ranks, decision, scope, principal, query) lives in
+/// the `recall_traces` side table keyed by the audit row id, so `/recall/{id}/
+/// trace` can replay it without touching the tamper-evident chain. Returns the
+/// audit row id (the trace id), or `None` if the audit write failed.
+///
+/// `trace_detail` is optional — non-recall read events (`/search`, `/get`,
+/// `/multi-get`) record the audit row only, with no replay artifact.
+pub fn record_read_event(
+    conn: &Connection,
+    kind: AuditKind,
+    actor: &str,
+    target: &str,
+    trace_detail: Option<&str>,
+    tenant: &str,
+) -> Option<i64> {
+    let detail = trace_detail.unwrap_or(target);
+    let id = record_tenant(conn, kind, actor, target, AuditStatus::Ok, detail, tenant)?;
+    if let Some(t) = trace_detail {
+        let _ = conn.execute(
+            "INSERT INTO recall_traces(audit_id, trace_json) VALUES (?1, ?2)",
+            params![id, t],
+        );
+    }
+    Some(id)
+}
+
+/// Fetch a stored recall trace by audit row id (the `?trace=true` id returned
+/// by `/recall`). Returns the raw JSON string or `None` when absent.
+pub fn read_trace(conn: &Connection, audit_id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT trace_json FROM recall_traces WHERE audit_id = ?1",
+        params![audit_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// v1.15.0 "Observe" M1.3: bounded audit retention. Removes rows older than
+/// `retention_days` and re-anchors the hash chain so the oldest surviving row
+/// becomes the new genesis. Called on read-event writes (only when
+/// `BRAIN_AUDIT_RETENTION_DAYS` is set), guarded so a steady-state pass with
+/// nothing to prune costs one cheap COUNT. Returns the number pruned.
+///
+/// `audit_events.ts` is stored as SQLite `CURRENT_TIMESTAMP` (`YYYY-MM-DD
+/// HH:MM:SS` UTC), which sorts lexicographically, so the cutoff is computed in
+/// SQL and compared as text.
+///
+/// ponytail: re-anchoring rewrites `prev_hash` for every surviving row (O(n))
+/// and only runs when there ARE expired rows — rare, so the occasional cost is
+/// acceptable for a multi-thousand-row audit log. A >1M-row log would want a
+/// periodic checkpoint instead (verify_chain already notes the same ceiling).
+pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i64> {
+    let cutoff: String = conn
+        .query_row(
+            "SELECT datetime('now', ?1)",
+            params![format!("-{retention_days} days")],
+            |r| r.get(0),
+        )
+        .ok()?;
+    let expired: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE ts < ?1",
+            params![cutoff],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if expired == 0 {
+        return Some(0);
+    }
+    let tx = conn.unchecked_transaction().ok()?;
+    // Remove expired rows from the head.
+    tx.execute("DELETE FROM audit_events WHERE ts < ?1", params![cutoff])
+        .ok()?;
+    // Re-anchor: the oldest survivor becomes the genesis (NULL prev_hash), and
+    // every subsequent survivor's prev_hash is recomputed so the retained
+    // window stays internally tamper-evident.
+    let mut ids: Vec<i64> = Vec::new();
+    {
+        let mut stmt = tx
+            .prepare("SELECT id FROM audit_events ORDER BY id ASC")
+            .ok()?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).ok()?;
+        for v in rows.flatten() {
+            ids.push(v);
+        }
+    }
+    let mut prev: Option<String> = None;
+    for (i, id) in ids.iter().enumerate() {
+        let row: Option<(String, String, String, String, Option<String>)> = tx
+            .query_row(
+                "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                        r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                        r.get(4)?,
+                    ))
+                },
+            )
+            .ok();
+        let (ts, kind, actor, th, _old_prev) = row?;
+        let new_prev = if i == 0 {
+            None // genesis
+        } else {
+            Some(chain_link(
+                &ts,
+                &kind,
+                &actor,
+                &th,
+                prev.as_deref().unwrap_or(""),
+            ))
+        };
+        let _ = tx.execute(
+            "UPDATE audit_events SET prev_hash = ?1 WHERE id = ?2",
+            params![new_prev, id],
+        );
+        prev = new_prev;
+    }
+    tx.commit().ok()?;
+    Some(expired)
+}
+
+/// The current hash-chain head: the link a new audit row would chain from
+/// (SHA-256 hex of the newest row's `(ts, kind, actor, target_hash, prev_hash)`).
+/// Used by DSAR certificates as the `chain_head` evidence of a valid chain at
+/// certification time.
+pub fn chain_head(conn: &Connection) -> Option<String> {
+    let row: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT ts, kind, actor, target_hash, prev_hash \
+              FROM audit_events ORDER BY id DESC LIMIT 1",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .ok();
+    row.map(|(ts, kind, actor, th, prev)| chain_link(&ts, &kind, &actor, &th, &prev))
 }
 
 /// Verify the audit hash chain end-to-end. Returns `false` if any v1.1 row's
