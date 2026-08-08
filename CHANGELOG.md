@@ -16,6 +16,82 @@ _(nothing pending)_
 
 ---
 
+## [1.16.7] — 2026-08-08
+
+Client-only release landing the two remaining testable milestones of the
+v1.16.7 "Integrated" plan (deep links + PWA) plus the command palette, the
+recall debounce, and the carried-over client hardening (drawer focus trap,
+aria-live regions, `dir="auto"` RTL). Server + API contract unchanged. Client
+1.16.6 → 1.16.7.
+
+### Added
+
+- **M1 — Deep links.** Two new routes (`/review/:proposal_id`,
+  `/subjects/certificate/:dsar_id`) make the proposal-detail and DSAR-
+  certificate views URL-addressable; `RecallTrace` (`/recall/:trace_id`,
+  shipped in v1.16.0) completes the set. Leaf components (`ReviewDetail`,
+  `DsarDetail`) render the same data a panel's drawer would, and the review
+  card title + certificate subject are now real `<Link>`s. Pure helpers
+  `locate_proposal`/`subject_of` pinned by tests.
+- **M2 — PWA.** `client/pwa/manifest.webmanifest` (standalone, `#0b0d10`
+  theme) + `client/pwa/sw.js` (offline shell: caches only `/app/index.html`
+  + `/app/assets/*`, never the API; navigation falls back to the shell).
+  `deploy-web.sh` ships both into `dist/` and injects the manifest link,
+  theme-color, and service-worker registration into `index.html`.
+- **M4 — Paginated audit.** `GET /audit?offset=` (server, `OFFSET` in the
+  SQL) + a client Load-more button with a boundary-id dedup guard. The
+  server `recent_tenant` now pages; the client fetches 100 at a time.
+- **M5 — Command palette.** ⌘K / Ctrl+K overlay listing navigation targets +
+  a sign-out action, filterable and keyboard-navigable (↑/↓/Enter/Esc).
+  Pure `palette_commands`/`filter_commands`/`command_label` pinned by tests.
+- **M6 — Recall debounce.** The recall query input commits 300ms after typing
+  stops (generation-guarded so a stale pending timer never overwrites a newer
+  query). Pure `debounce_commit` pinned by a test.
+
+### Hardened
+
+- **M7.3 — Drawer focus trap.** Tab / Shift+Tab now cycle focus inside the
+  dialog (hand-rolled `document::eval`; the `dx components add dialog` route
+  is unreachable — registry dead — so the shadcn/Radix upgrade stays a
+  documented ceiling).
+- **M7.5 — aria-live regions.** `role="status"` + `aria-live="polite"` on
+  the review batch summary, the DSAR certificate chain badge, and the audit
+  export announcement — mutation outcomes are read aloud.
+- **M7.6 — RTL.** `<html dir="auto">` injected at deploy time so memory
+  content in RTL scripts flows correctly while the shell stays LTR (no i18n
+  extraction — that is v2.x).
+
+### Fixed / changed
+
+- **M3 wasm-split is a documented ceiling, not code.** Dioxus 0.7.10 has no
+  wasm-split feature and the official docs still list bundle splitting + lazy
+  components as "planned". No code — recorded in the plan.
+- **M7.7 stays an operator/native-toolchain step** (no Android SDK /
+  cargo-ndk here): lib.rs mobile entry, probe pause/resume, store readiness,
+  MASVS tables are documented, not compiled in.
+
+### Verification
+
+- Client: 43 tests, `clippy --all-targets -- -D warnings` clean, `cargo fmt
+  --check` clean, `cargo build --target wasm32-unknown-unknown` clean.
+- Server: 436 lib + audit/integration green (`cargo test --features
+  bench,migrate`); the only server change is the additive `offset` param on
+  `/audit`.
+- Live `/app`: 200; `/app/manifest.webmanifest` + `/app/sw.js` 200; dist
+  carries the hashed JS/WASM/CSS + manifest + sw + `dir="auto"`.
+
+### Honest ceilings (carried into v1.16.8)
+
+- **M3 wasm-split not built** (Dioxus upstream, not yet implemented).
+- **Drawer focus trap is hand-rolled** (`document::eval`), not the shadcn/
+  Radix Dialog with full focus restoration — `dx components add dialog` can't
+  run (registry unreachable).
+- **RTL is `dir="auto"` only** — no i18n string extraction, no per-locale
+  switch (v2.x).
+- **M7.7 Mobile milestones remain operator/native-toolchain steps.**
+
+---
+
 ## [1.16.5] — 2026-08-08
 
 ### "Secure" (client-only — JWT refresh lifecycle + principal)
