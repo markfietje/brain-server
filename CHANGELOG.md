@@ -30,6 +30,11 @@ been run, it is marked **pending** rather than asserted.
   disclosure (Art 50 machine-readable origin notice); §6.4 points at
   `/.well-known/ai-literacy` + `docs/AI_LITERACY.md`. `docs/compliance.md`
   framework row updated to match.
+- **Wiki mirror** — the three new `docs/` artifacts (AI_LITERACY, RFP
+  response kit, MemGhost mitigation) are now mirrored as hand-authored wiki
+  pages (`AI-Literacy`, `RFP-Response-Kit`, `MemGhost-Mitigation`) and wired
+  into `_Sidebar` + `Home` quick links, so the procurement-facing wiki
+  surfaces the same governance story as the repo.
 
 ## [1.16.7] — 2026-08-08
 

@@ -22,6 +22,9 @@ Local-first semantic-memory & knowledge-graph server for AI agents.
 
 - [Governance & Compliance](Governance-and-Compliance)
 - [Security](Security)
+- [AI Literacy](AI-Literacy)
+- [MemGhost Mitigation](MemGhost-Mitigation)
+- [RFP Response Kit](RFP-Response-Kit)
 
 **Reference**
 

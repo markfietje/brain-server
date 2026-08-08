@@ -38,6 +38,8 @@ Brain Server inverts all three: **zero per-query cost, zero data egress, zero ne
 - **[API Reference](API-Reference)** — the full HTTP contract
 - **[Security](Security)** — authentication, access control, data protections
 - **[Governance & Compliance](Governance-and-Compliance)** — audit, DSAR, GDPR, ISO 42001 / NIST / SOC 2
+- **[AI Literacy](AI-Literacy)** — the Art 4 operator playbook
+- **[RFP Response Kit](RFP-Response-Kit)** — features mapped to enterprise RFP sections
 - **[Features](Features)** — everything it can do
 - **[Client GUI](Client-GUI)** — the visual control surface
 - **[Roadmap & Release History](Roadmap-and-Release-History)** — the version line
