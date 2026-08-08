@@ -50,6 +50,39 @@ async fn probe_sleep(secs: u64) {
     let _ = document::eval(&js).await;
 }
 
+/// v1.16.2: the connect-time base URL. An empty field resolves to the same-origin
+/// the page was served from (brain-server serves the client under /app, so
+/// same-origin needs no CORS and works for 127.0.0.1 and localhost alike);
+/// non-empty input is used verbatim (remote/JWT mode). Pure so it's testable.
+fn resolve_base(raw: &str, origin: Option<String>) -> String {
+    let trimmed = raw.trim().trim_end_matches('/').to_string();
+    if trimmed.is_empty() {
+        origin.unwrap_or_else(|| "http://127.0.0.1:8765".into())
+    } else {
+        trimmed
+    }
+}
+
+/// v1.16.2: the origin brain-server is being served from, for the same-origin
+/// Connect default. Web only (eval + window.location); None elsewhere falls
+/// back to the loopback default. ponytail: `window.location.origin` is exactly
+/// the origin (scheme+host+port, no trailing slash / path), which is what the
+/// API base wants — a path-prefixed /app page still hits the same origin.
+async fn page_origin() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        document::eval("return window.location.origin")
+            .join::<String>()
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
 /// The connection indicator. Shared via context; read by AppShell (chrome) +
 /// every panel (mutation freeze). Set-don't-accumulate is the cancel-safety
 /// guard (DESIGN §6): the probe future only writes a single enum value, so a
@@ -265,21 +298,20 @@ fn app() -> Element {
 /// a live `/health` probe on Connect, then a guided first value. No feature tour.
 #[component]
 fn Connect() -> Element {
-    let mut url = use_signal(|| "http://127.0.0.1:8765".to_string());
+    // v1.16.2: default to same-origin — brain-server serves this client under
+    // /app, so an empty base means "the page's own origin" (no CORS, works for
+    // 127.0.0.1 and localhost alike). The field stays editable for remote mode.
+    let mut url = use_signal(String::new);
     let mut token = use_signal(String::new);
     let mut remote = use_signal(|| false);
-    let mut status = use_signal(|| None::<Result<String, String>>);
+    let status = use_signal(|| None::<Result<String, String>>);
     let busy = use_signal(|| false);
     let api_signal = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let nav = navigator();
 
     let connect = move |_| {
-        let base = url().trim().trim_end_matches('/').to_string();
-        if base.is_empty() {
-            status.set(Some(Err("enter a backend URL".into())));
-            return;
-        }
+        let raw_url = url().trim().trim_end_matches('/').to_string();
         let token_val = if token().trim().is_empty() {
             None
         } else {
@@ -293,6 +325,9 @@ fn Connect() -> Element {
         let nav = nav;
         spawn(async move {
             busy.set(true);
+            // v1.16.2: empty base = same-origin (the page brain-server is served
+            // from) — no CORS, works for 127.0.0.1 and localhost alike.
+            let base = resolve_base(&raw_url, page_origin().await);
             // M2.1: principal is set at connect time (identity pillar). Loopback
             // mode has no identity to claim; remote/JWT shows the sub.
             let principal = if is_remote {
@@ -337,6 +372,7 @@ fn Connect() -> Element {
                     class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full mb-2",
                     value: "{url}",
                     oninput: move |e| url.set(e.value()),
+                    placeholder: "blank = this page's origin (same-server)",
                     "aria-label": "backend URL",
                 }
                 label { class: "block text-sm mb-1", "Token" }
@@ -629,6 +665,34 @@ mod tests {
             );
         }
         assert_eq!(probe_state(0, true), Conn::Connected);
+    }
+
+    /// v1.16.2: an empty base resolves to the page's same-origin (the root of
+    /// the "cannot reach brain-server" bug — the client was served under /app
+    /// but defaulted to a hardcoded host, hitting cross-origin CORS). Non-empty
+    /// input is used verbatim for remote/JWT mode; trailing slashes are trimmed.
+    #[test]
+    fn connect_resolves_empty_base_to_same_origin() {
+        // Empty + an origin → the origin, trailing slash stripped.
+        assert_eq!(
+            resolve_base("", Some("http://127.0.0.1:8765".into())),
+            "http://127.0.0.1:8765"
+        );
+        // Empty + no origin (desktop) → loopback fallback.
+        assert_eq!(resolve_base("", None), "http://127.0.0.1:8765");
+        // Whitespace-only counts as empty.
+        assert_eq!(
+            resolve_base("  ", Some("http://localhost:8765".into())),
+            "http://localhost:8765"
+        );
+        // Explicit URL is used verbatim (remote/JWT).
+        assert_eq!(
+            resolve_base(
+                "https://brain.example.com/",
+                Some("http://127.0.0.1:8765".into())
+            ),
+            "https://brain.example.com"
+        );
     }
 
     /// v1.16.2 "Harden" M2: the XSS gate. Dioxus escapes text by default;

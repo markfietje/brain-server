@@ -25,12 +25,16 @@ CSS="$(basename "$(ls "$SRC"/assets/tailwind-*.css | head -1)")"
 
 rm -rf dist && mkdir -p dist/assets
 cp "$SRC/index.html" dist/
-# Resolve concrete filenames (not globs) — dx rebuilds target/ async-ish and a
-# bare glob can race the copy, matching nothing mid-rebuild.
-JS="$(basename "$(ls "$SRC"/assets/brain-client-*.js | head -1)")"
-WASM="$(basename "$(ls "$SRC"/assets/brain-client_bg-*.wasm | head -1)")"
-[[ -n "$JS" && -n "$WASM" ]] || { echo "no js/wasm in bundle"; exit 1; }
-cp "$SRC/assets/$JS" "$SRC/assets/$WASM" dist/assets/
+# Resolve the JS name from the freshly-written index.html itself (NOT a glob —
+# dx leaves stale hashed assets in target/ between rebuilds and a bare glob
+# races it, matching an old build while index.html references the new one).
+# The WASM name is inside the JS (loaded via import), so derive it from there.
+JS="$(grep -oE 'assets/brain-client-[^"]+\.js' "$SRC/index.html" | head -1 | xargs basename)"
+[[ -n "$JS" ]] || { echo "no js in index.html"; exit 1; }
+cp "$SRC/assets/$JS" dist/assets/
+WASM="$(grep -oE 'brain-client_bg-[^"]+\.wasm' "$SRC/assets/$JS" | head -1)"
+[[ -n "$WASM" ]] || { echo "no wasm in $JS"; exit 1; }
+cp "$SRC/assets/$WASM" dist/assets/
 cp "$SRC/assets/$CSS" dist/assets/
 
 python3 - dist/index.html "$CSS" <<'EOF'
