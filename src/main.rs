@@ -882,6 +882,23 @@ async fn search(
                     suppress_flagged_evidence(r, filters.include_flagged);
                 }
 
+                // v1.15.0 "Observe" M1: read-event audit for search reads
+                // (best-effort, never fails the search the caller asked for).
+                if crate::config::audit_read_events(principal.0.is_some()) {
+                    if let Ok(conn) = s.pool.get() {
+                        let actor = handlers::recall::principal_label(&principal.0);
+                        let tenant = handlers::recall::principal_tenant(&principal.0);
+                        crate::audit::record_read_event(
+                            &conn,
+                            crate::audit::AuditKind::Search,
+                            &actor,
+                            &q,
+                            None,
+                            &tenant,
+                        );
+                    }
+                }
+
                 if p.explain {
                     // M2.4 redaction: explain never serializes full `content` beyond
                     // the bounded `evidence.text`/`snippet` windows, so the payload
@@ -2576,7 +2593,25 @@ async fn get_chunk(
     .map_err(|_| AppError::Internal("Task join error".into()))??;
 
     match row {
-        Some(v) => Ok(Json(v)),
+        Some(v) => {
+            // v1.15.0 "Observe" M1: read-event audit for direct chunk reads
+            // (best-effort). Target is the chunk id — no content leaves the row.
+            if crate::config::audit_read_events(principal.0.is_some()) {
+                if let Ok(conn) = state.pool.get() {
+                    let actor = handlers::recall::principal_label(&principal.0);
+                    let tenant = handlers::recall::principal_tenant(&principal.0);
+                    crate::audit::record_read_event(
+                        &conn,
+                        crate::audit::AuditKind::Get,
+                        &actor,
+                        &format!("chunk:{id}"),
+                        None,
+                        &tenant,
+                    );
+                }
+            }
+            Ok(Json(v))
+        }
         None => Err(AppError::NotFound("chunk not found")),
     }
 }
@@ -2643,6 +2678,23 @@ async fn multi_get(
     })
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
+
+    // v1.15.0 "Observe" M1: read-event audit for batched reads (best-effort).
+    // One event per request; target = the chunk count, never content.
+    if crate::config::audit_read_events(principal.0.is_some()) {
+        if let Ok(conn) = state.pool.get() {
+            let actor = handlers::recall::principal_label(&principal.0);
+            let tenant = handlers::recall::principal_tenant(&principal.0);
+            crate::audit::record_read_event(
+                &conn,
+                crate::audit::AuditKind::Get,
+                &actor,
+                &format!("chunks:{}", rows.len()),
+                None,
+                &tenant,
+            );
+        }
+    }
 
     Ok(Json(serde_json::json!({ "chunks": rows })))
 }
@@ -4107,6 +4159,21 @@ async fn main_inner() -> Result<()> {
         .route("/decayed", get(handlers::gate::list_decayed))
         .route("/export", get(handlers::gate::export))
         .route("/purge", post(handlers::gate::purge))
+        // v1.15.0 "Observe": read-event trace + DSAR workflow. `/recall/{id}/
+        // trace` replays a recorded recall decision path; `/dsar` is the GDPR
+        // Art 15/17 workflow (locate → export → purge → certificate);
+        // `/tombstones` is the queryable deletion registry; `/dsar/{id}/
+        // certificate` re-fetches a past deletion certificate.
+        .route(
+            "/recall/{trace_id}/trace",
+            get(handlers::observe::get_trace),
+        )
+        .route("/dsar", post(handlers::observe::post_dsar))
+        .route("/tombstones", get(handlers::observe::list_tombstones))
+        .route(
+            "/dsar/{id}/certificate",
+            get(handlers::observe::get_dsar_certificate),
+        )
         // v0.9.7 "Guard": verified webhook ingestion. The handler only verifies
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
@@ -7414,11 +7481,11 @@ Final paragraph after the rule.";
         // migrate-down without --force. v1.9.0 bumped this from 1.4.0 (the
         // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumped
         // it for the feedback dedup index; v1.10.0 bumps it for the Procedural
-        // node_kind + step_index schema.
+        // node_kind + step_index schema; v1.15.0 bumps it for Observe.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_14_0),
-            "schema_version must be recorded as 1.14.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_15_0),
+            "schema_version must be recorded as 1.15.0 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
@@ -7590,6 +7657,32 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(pstatus, "pending", "proposals default to status='pending'");
+
+        // v1.15.0 "Observe": read-event trace + DSAR ledger tables, and the
+        // tombstone columns the DSAR purge writes.
+        for tbl in ["recall_traces", "dsar_requests"] {
+            let n: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [tbl],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "v1.15.0: {tbl} table must exist after migration");
+        }
+        let tomb_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(tombstones)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in ["reason", "origin_id"] {
+            assert!(
+                tomb_cols.contains(col),
+                "v1.15.0: tombstones.{col} column must exist after migration"
+            );
+        }
     }
 
     /// v1.14.0 "Gate" M2/M3/M4 schema-level filter check. Runs the real
@@ -7778,6 +7871,296 @@ Final paragraph after the rule.";
         assert_eq!(tombstone, 1, "tombstone left behind");
     }
 
+    // ── v1.15.0 "Observe" ────────────────────────────────────────────────
+
+    /// M1: a recall read event lands in the hash-chained audit (hash-only
+    /// invariant) and its trace is replayable via `read_trace`. The smallest
+    /// check that fails if the read-event wiring or the recall_traces side
+    /// table drifts.
+    #[test]
+    fn test_observe_read_event_recorded_and_trace_replayable() {
+        let db = test_db();
+        let trace =
+            r#"{"query":"visa deadline","decision":"ok","domains_searched":["global"],"hits":[]}"#;
+        let id = crate::audit::record_read_event(
+            &db,
+            crate::audit::AuditKind::Recall,
+            "alice",
+            "visa deadline",
+            Some(trace),
+            crate::audit::DEFAULT_TENANT,
+        )
+        .expect("read event recorded");
+        let (kind, detail_hash): (String, String) = db
+            .query_row(
+                "SELECT kind, detail_hash FROM audit_events WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "recall");
+        // Hash-only invariant: the raw query never appears in the audit row.
+        assert!(!detail_hash.contains("visa"));
+        // The trace is replayable by the returned id.
+        let replayed = crate::audit::read_trace(&db, id).expect("trace stored");
+        assert!(
+            replayed.contains("visa deadline"),
+            "trace replays the query"
+        );
+        assert!(replayed.contains("ok"), "trace replays the decision");
+        // A non-recall read event records the audit row without a trace.
+        let sid = crate::audit::record_read_event(
+            &db,
+            crate::audit::AuditKind::Search,
+            "alice",
+            "query text",
+            None,
+            crate::audit::DEFAULT_TENANT,
+        )
+        .expect("search event recorded");
+        assert_eq!(
+            crate::audit::read_trace(&db, sid),
+            None,
+            "no trace side-row for non-recall events"
+        );
+    }
+
+    /// M1: the read-event kill switch default. Unset → on for JWT principals
+    /// (real principal), off for loopback (no principal). `BRAIN_AUDIT_READ_EVENTS`
+    /// overrides both directions.
+    #[test]
+    fn test_observe_read_events_default_on_for_jwt_off_for_loopback() {
+        std::env::remove_var("BRAIN_AUDIT_READ_EVENTS");
+        assert!(
+            crate::config::audit_read_events(true),
+            "JWT mode: read events on by default"
+        );
+        assert!(
+            !crate::config::audit_read_events(false),
+            "loopback/opaque: read events off by default"
+        );
+        std::env::set_var("BRAIN_AUDIT_READ_EVENTS", "on");
+        assert!(
+            crate::config::audit_read_events(false),
+            "explicit override turns loopback auditing on"
+        );
+        std::env::set_var("BRAIN_AUDIT_READ_EVENTS", "off");
+        assert!(
+            !crate::config::audit_read_events(true),
+            "explicit override turns JWT auditing off"
+        );
+        std::env::remove_var("BRAIN_AUDIT_READ_EVENTS");
+    }
+
+    /// M3: the DSAR locate walk finds owner roots AND transitive
+    /// `derived_from` descendants, and `purge_chunk_ids` stamps the registry
+    /// with the owner reason + derived origin. The SQL the handler orchestrates
+    /// — smallest check that fails if the M3 mechanism drifts.
+    #[test]
+    fn test_observe_dsar_locate_and_purge_semantics() {
+        let mut db = test_db();
+        db.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
+                 (1, 'alice root', 'h1', 'alice@example.com'),
+                 (2, 'alice derived', 'h2', NULL),
+                 (3, 'bob chunk', 'h3', 'bob@example.com');
+             INSERT INTO evidence_links(kind, from_chunk, to_chunk)
+                 VALUES ('derived_from', 1, 2);",
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let (roots, derived) =
+            handlers::observe::dsar_locate(&tx, "alice@example.com").expect("locate");
+        assert_eq!(roots, vec![1], "owner rows located");
+        assert_eq!(
+            derived,
+            vec![(2, 1)],
+            "transitive derived_from descendant located with its root"
+        );
+        // Purge exactly like `POST /dsar` does: roots with the owner reason,
+        // derived with the origin stamp.
+        let now = chrono::Utc::now().timestamp();
+        crate::handlers::gate::purge_chunk_ids(&tx, &roots, now, "owner:alice@example.com", None)
+            .expect("roots purged");
+        crate::handlers::gate::purge_chunk_ids(&tx, &[2], now, "derived", Some(1))
+            .expect("derived purged");
+        tx.commit().unwrap();
+        let remaining: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id IN (1, 2)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "subject records gone");
+        let bob: i64 = db
+            .query_row("SELECT COUNT(*) FROM knowledge WHERE id = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(bob, 1, "other subjects untouched");
+        let (reason, origin): (Option<String>, Option<i64>) = db
+            .query_row(
+                "SELECT reason, origin_id FROM tombstones WHERE knowledge_id = 2",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reason.as_deref(), Some("derived"));
+        assert_eq!(origin, Some(1), "derived tombstone points at its root");
+    }
+
+    /// M3: a DSAR deletion certificate anchors to the audit chain head and the
+    /// chain verifies — the certificate's tamper-evidence promise.
+    #[test]
+    fn test_observe_deletion_certificate_chain_anchors_and_verifies() {
+        let db = test_db();
+        for i in 0..3 {
+            crate::audit::record(
+                &db,
+                crate::audit::AuditKind::Reconcile,
+                "api",
+                &format!("dsar:subject-{i}"),
+                crate::audit::AuditStatus::Ok,
+                "dsar",
+            );
+        }
+        assert!(crate::audit::verify_chain(&db), "chain intact");
+        let head = crate::audit::chain_head(&db).expect("chain head exists");
+        // The certificate shape the handler stores.
+        let cert = serde_json::json!({
+            "subject": "alice@example.com",
+            "action": "both",
+            "found_count": 2,
+            "purged_ids": [1, 2],
+            "tombstone_root": 1,
+            "certified_at": "2026-08-08T00:00:00Z",
+            "chain_head": head,
+        });
+        let stored = cert.to_string();
+        let replay: serde_json::Value =
+            serde_json::from_str(&stored).expect("certificate round-trips");
+        assert_eq!(replay["chain_head"], head);
+        assert!(
+            crate::audit::verify_chain(&db),
+            "certified chain still verifies"
+        );
+    }
+
+    /// M3: the Art 19 webhook fires on a completed DSAR purge — one signed
+    /// POST carrying the subject. Fail-soft (retries + warn) is not asserted
+    /// here; the happy path is.
+    #[test]
+    fn test_observe_art19_webhook_posts_on_purge() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/art19");
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            let _ = sent_tx.send(buf);
+        });
+        std::env::set_var("BRAIN_DSAR_WEBHOOK_URL", &url);
+        std::env::set_var("BRAIN_DSAR_WEBHOOK_SECRET", "s3cret");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            handlers::observe::notify_art19("alice@example.com".to_string(), 7, "now".to_string());
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        });
+        std::env::remove_var("BRAIN_DSAR_WEBHOOK_URL");
+        std::env::remove_var("BRAIN_DSAR_WEBHOOK_SECRET");
+        let req = sent_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap_or_default();
+        thread.join().unwrap();
+        let req = String::from_utf8_lossy(&req);
+        assert!(
+            req.starts_with("POST /art19 HTTP/1.1"),
+            "webhook POSTs the URL: {req}"
+        );
+        assert!(
+            req.contains("alice@example.com"),
+            "webhook body carries the subject"
+        );
+        assert!(
+            req.contains("x-brain-signature-256: sha256="),
+            "webhook is HMAC-signed when a secret is set"
+        );
+        assert!(
+            req.contains("\"certificate_id\":7"),
+            "webhook body carries the certificate id"
+        );
+    }
+
+    /// M1.3: audit retention prunes rows older than the window and re-anchors
+    /// the hash chain so the retained window still verifies end-to-end.
+    #[test]
+    fn test_observe_audit_retention_prunes_and_reanchors() {
+        let db = test_db();
+        for i in 0..4 {
+            crate::audit::record(
+                &db,
+                crate::audit::AuditKind::Ingest,
+                "api",
+                &format!("old-{i}"),
+                crate::audit::AuditStatus::Ok,
+                "manual",
+            );
+        }
+        // Age the first three rows past the window (ts is SQLite
+        // CURRENT_TIMESTAMP text; the cutoff compares lexicographically).
+        db.execute_batch(
+            "UPDATE audit_events SET ts = datetime('now', '-400 days') WHERE id IN (1, 2, 3)",
+        )
+        .unwrap();
+        let pruned = crate::audit::prune_audit_retention(&db, 30).expect("prune");
+        assert_eq!(pruned, 3, "expired rows pruned");
+        let remaining: i64 = db
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1, "retained window kept");
+        assert!(
+            crate::audit::verify_chain(&db),
+            "re-anchored chain verifies after pruning"
+        );
+        // Genesis survivor: NULL prev_hash (re-anchor rewrote it).
+        let prev: Option<String> = db
+            .query_row(
+                "SELECT prev_hash FROM audit_events ORDER BY id ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(prev, None, "oldest survivor re-anchored as genesis");
+        // A subsequent record chains off the re-anchored head.
+        crate::audit::record(
+            &db,
+            crate::audit::AuditKind::Ingest,
+            "api",
+            "fresh",
+            crate::audit::AuditStatus::Ok,
+            "manual",
+        );
+        assert!(
+            crate::audit::verify_chain(&db),
+            "chain holds after new record"
+        );
+    }
+
     /// Assert every route registered in `build_app` is documented in
     /// `openapi.yaml` (embedded via `OPENAPI_YAML`). This is the single test
     /// that catches a route shipping without a contract before it reaches a
@@ -7868,6 +8251,19 @@ Final paragraph after the rule.";
             "/consolidate/propose",
             "/consolidate/apply",
             "/consolidate/undo",
+            // v1.14.0 Gate
+            "/ingest/proposal",
+            "/proposals",
+            "/proposals/{id}/approve",
+            "/proposals/{id}/reject",
+            "/decayed",
+            "/export",
+            "/purge",
+            // v1.15.0 Observe
+            "/recall/{trace_id}/trace",
+            "/dsar",
+            "/tombstones",
+            "/dsar/{id}/certificate",
             // v1.2.0 AuthN
             "/auth/refresh",
             "/auth/logout",
@@ -8526,6 +8922,11 @@ Final paragraph after the rule.";
             ("/decayed", "Read"),
             ("/export", "Read"),
             ("/purge", "Admin"),
+            // v1.15.0 Observe: trace replay + DSAR are operator surfaces.
+            ("/recall/{trace_id}/trace", "Admin"),
+            ("/dsar", "Admin"),
+            ("/tombstones", "Admin"),
+            ("/dsar/{id}/certificate", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -8584,6 +8985,7 @@ Final paragraph after the rule.";
                     "auth" => include_str!("handlers/auth.rs"),
                     "ingest" => include_str!("handlers/ingest.rs"),
                     "gate" => include_str!("handlers/gate.rs"),
+                    "observe" => include_str!("handlers/observe.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
                 }
             } else {
