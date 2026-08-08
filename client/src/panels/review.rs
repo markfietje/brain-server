@@ -8,7 +8,8 @@
 //! suggest-re-ingest. The connection mutation freeze (M1) disables the buttons
 //! when `writes_enabled` is false.
 
-use crate::api::{ApiClient, ApiError, Proposal};
+use crate::api::{error_message, ApiClient, ApiError, Proposal};
+use crate::panels::{use_document_title, PageTitle};
 use crate::{DrawerContent, UiState};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -47,6 +48,45 @@ fn clear_pending_selection(
         .copied()
         .filter(|id| !matches!(outcomes.get(id), Some(RowOutcome::Pending)))
         .collect()
+}
+
+/// M3 pure: summarize a batch's per-row outcomes (v1.16.2 M6 — the listed
+/// `batch_outcome`). Drives the batch-finished UI: counts + whether any row
+/// failed so the panel can surface partial failure honestly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct BatchSummary {
+    pub done: usize,
+    pub already_done: usize,
+    pub failed: usize,
+    pub pending: usize,
+}
+
+pub fn batch_outcome(outcomes: &HashMap<i64, RowOutcome>) -> BatchSummary {
+    let mut s = BatchSummary::default();
+    for o in outcomes.values() {
+        match o {
+            RowOutcome::Done(_) => s.done += 1,
+            RowOutcome::AlreadyDone => s.already_done += 1,
+            RowOutcome::Failed(_) => s.failed += 1,
+            RowOutcome::Pending => s.pending += 1,
+        }
+    }
+    s
+}
+
+/// v1.16.2 M6: render the batch summary line once a batch has run (rows
+/// settled out of Pending). Surfaces partial failure honestly.
+fn batch_summary(outcomes: &HashMap<i64, RowOutcome>) -> Element {
+    let s = batch_outcome(outcomes);
+    if (s.done + s.already_done + s.failed) > 0 && s.pending == 0 {
+        rsx! {
+            p { class: "text-xs text-ink-muted mb-1",
+                "batch: {s.done} approved · {s.already_done} already decided · {s.failed} failed"
+            }
+        }
+    } else {
+        rsx! {}
+    }
 }
 
 /// M3 cancel-safety (DESIGN §6): clears `Pending` rows from the selection
@@ -92,6 +132,7 @@ enum ReviewKey {
 }
 
 pub fn panel() -> Element {
+    use_document_title(|| "Review — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let mut ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)(); // read once; re-renders when it changes
@@ -223,7 +264,7 @@ pub fn panel() -> Element {
 
     rsx! {
         div { tabindex: "0", onkeydown,
-            h1 { "Review queue" }
+            PageTitle { "Review queue" }
             div { class: "flex gap-2 my-2 items-center flex-wrap",
                 button {
                     class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",
@@ -252,6 +293,9 @@ pub fn panel() -> Element {
                     "keys (A/S/R/J/K)"
                 }
             }
+            // v1.16.2 M6: one-line batch summary — surfaces partial failure
+            // honestly once a batch has run (rows settle out of Pending).
+            { batch_summary(&outcomes()) }
             match &*proposals.read() {
             Some(Ok(list)) if !list.is_empty() => rsx! {
                 ul { class: "divide-y hairline",
@@ -284,7 +328,7 @@ pub fn panel() -> Element {
                         "Ingest a sample proposal to try the gate"
                     }
                 },
-                Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {e}" } },
+                Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {error_message(&e)}" } },
                 None => rsx! { p { class: "text-ink-muted mt-2", "…" } },
             }
             // M3: reject-with-reason + suggest-re-ingest. Modal-ish inline editors.
@@ -586,5 +630,29 @@ mod tests {
         // Unrelated keys are unhandled.
         assert_eq!(key_action(&Key::Character("z".into()), true), None);
         assert_eq!(key_action(&Key::Enter, true), None);
+    }
+
+    /// v1.16.2 M6: `batch_outcome` summarizes the per-row outcomes so the
+    /// batch UI can surface partial failure honestly.
+    #[test]
+    fn batch_outcome_counts_rows_and_flags_failure() {
+        let mut outcomes = HashMap::new();
+        outcomes.insert(1, RowOutcome::Done(10));
+        outcomes.insert(2, RowOutcome::AlreadyDone);
+        outcomes.insert(3, RowOutcome::Failed("boom".into()));
+        outcomes.insert(4, RowOutcome::Pending);
+        let s = batch_outcome(&outcomes);
+        assert_eq!(
+            s,
+            BatchSummary {
+                done: 1,
+                already_done: 1,
+                failed: 1,
+                pending: 1,
+            }
+        );
+        assert!(s.failed > 0, "a failed row must be surfaced");
+        // An empty batch is all zeros.
+        assert_eq!(batch_outcome(&HashMap::new()), BatchSummary::default());
     }
 }

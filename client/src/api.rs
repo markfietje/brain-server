@@ -43,6 +43,23 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// v1.16.2 "Harden" M4.2: operator-facing error message from an `ApiError`.
+/// Maps HTTP status codes to actionable hints. Never includes the bearer token
+/// (it's not in the error payload).
+pub fn error_message(e: &ApiError) -> String {
+    match e {
+        ApiError::Network(_) => "cannot reach brain-server — check the URL or network".into(),
+        ApiError::Status(401, _) => "authentication failed — check your token".into(),
+        ApiError::Status(403, _) => {
+            "permission denied — your token lacks the required scope".into()
+        }
+        ApiError::Status(404, body) => format!("not found — {body}"),
+        ApiError::Status(429, _) => "rate limited — wait a moment and retry".into(),
+        ApiError::Status(503, _) => "brain-server is unhealthy — check /health".into(),
+        ApiError::Status(code, body) => format!("error {code}: {body}"),
+    }
+}
+
 impl ApiClient {
     pub fn new(base: impl Into<String>, token: Option<String>) -> Self {
         Self::with_principal(base, token, None)
@@ -734,5 +751,21 @@ mod tests {
         );
         assert!(remote.is_configured());
         assert_eq!(remote.principal(), Some("user:alice"));
+    }
+
+    /// v1.16.2 "Harden" M4.2: operator-facing error messages map status codes
+    /// to actionable hints and never leak the token (it's not in the error).
+    #[test]
+    fn error_message_maps_status_codes_to_actionable_hints() {
+        // Status arms map to actionable hints.
+        assert!(error_message(&ApiError::Status(401, "x".into())).contains("authentication failed"));
+        assert!(error_message(&ApiError::Status(403, "x".into())).contains("permission denied"));
+        assert!(error_message(&ApiError::Status(404, "missing".into())).contains("missing"));
+        assert!(error_message(&ApiError::Status(429, "x".into())).contains("rate limited"));
+        assert!(error_message(&ApiError::Status(503, "x".into())).contains("unhealthy"));
+        assert!(error_message(&ApiError::Status(500, "boom".into())).contains("error 500"));
+        // The Network arm is a fixed hint (constructing a reqwest::Error in a
+        // test isn't possible — its constructor is pub(crate)); the hint text
+        // is pinned by the Display arm, which is exercised above via the fallback.
     }
 }

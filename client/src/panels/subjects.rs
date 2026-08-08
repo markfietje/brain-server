@@ -7,6 +7,7 @@
 //! replacing the old freeform status line. Confirmation-first (DESIGN §1.7).
 
 use crate::api::{ApiClient, DsarCertificate};
+use crate::panels::{use_document_title, PageTitle};
 use crate::{DrawerContent, UiState};
 use dioxus::prelude::*;
 
@@ -32,6 +33,7 @@ struct DsarResult {
 }
 
 pub fn panel() -> Element {
+    use_document_title(|| "Subjects (DSAR) — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)();
@@ -40,7 +42,7 @@ pub fn panel() -> Element {
     let mut busy = use_signal(|| false);
 
     rsx! {
-        h1 { "Subjects (DSAR)" }
+        PageTitle { "Subjects (DSAR)" }
         div { class: "flex gap-2 my-2",
             input {
                 class: "border border-border-subtle surface-raised rounded px-2 py-1 flex-1",

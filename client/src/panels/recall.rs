@@ -7,7 +7,8 @@
 //! slider, and the `?trace=true` decision-path artifact (deep-linkable via
 //! `/recall/:trace_id`).
 
-use crate::api::{ApiClient, Hit, RecallResponse};
+use crate::api::{error_message, ApiClient, Hit, RecallResponse};
+use crate::panels::{use_document_title, PageTitle};
 use crate::Route;
 use crate::{DrawerContent, UiState};
 use dioxus::prelude::*;
@@ -35,6 +36,7 @@ pub fn drop_low_relevance(hits: Vec<Hit>, min: Option<&str>) -> Vec<Hit> {
 }
 
 pub fn panel() -> Element {
+    use_document_title(|| "Recall — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let mut query = use_signal(String::new);
     let mut trace = use_signal(|| false); // M4.2: ?trace=true toggle
@@ -53,7 +55,7 @@ pub fn panel() -> Element {
     });
 
     rsx! {
-        h1 { "Recall inspector" }
+        PageTitle { "Recall inspector" }
         input {
             class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full",
             placeholder: "query brain-server (min 5 chars)…",
@@ -128,7 +130,9 @@ fn recall_view(
             }
         }
         Some(Ok(_)) => rsx! { p { class: "text-ink-muted mt-2", "no hits" } },
-        Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "recall failed: {e}" } },
+        Some(Err(e)) => {
+            rsx! { p { class: "text-danger mt-2", "recall failed: {error_message(&e)}" } }
+        }
         None => rsx! { p { class: "text-ink-muted mt-2", "…" } },
     }
 }
@@ -227,18 +231,19 @@ fn trace_hit_row(h: &serde_json::Value) -> Element {
 /// Based-Auditing decision-path pillar + the Art 22 "meaningful information
 /// about the logic" evidence.
 pub fn trace_panel(trace_id: i64) -> Element {
+    use_document_title(move || format!("Recall trace #{trace_id} — brain"));
     let api = use_context::<Signal<ApiClient>>();
     let trace = use_resource(move || {
         let api = api();
         async move { api.recall_trace(trace_id).await }
     });
     rsx! {
-        h1 { "Recall trace #{trace_id}" }
+        PageTitle { "Recall trace #{trace_id}" }
         p { class: "text-xs text-ink-muted mb-2",
             "the recorded decision path for a past recall (replayable audit artifact)" }
         match &*trace.read() {
             Some(Ok(v)) => rsx! { TraceCard { trace: v.clone() } },
-            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "trace failed: {e}" } },
+            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "trace failed: {error_message(&e)}" } },
             None => rsx! { p { class: "text-ink-muted mt-2", "loading…" } },
         }
         p { class: "mt-3" , Link { to: Route::Recall {}, "← back to recall" } }

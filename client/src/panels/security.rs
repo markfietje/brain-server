@@ -5,6 +5,7 @@
 //! unauthenticated-memory-access class.
 
 use crate::api::{ApiClient, AuditRow};
+use crate::panels::{use_document_title, PageTitle};
 use crate::UiState;
 use dioxus::prelude::*;
 
@@ -19,6 +20,7 @@ pub fn auth_failures(rows: &[AuditRow]) -> Vec<AuditRow> {
 }
 
 pub fn panel() -> Element {
+    use_document_title(|| "Security — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let mut ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)();
@@ -61,7 +63,7 @@ pub fn panel() -> Element {
     };
 
     rsx! {
-        h1 { "Security" }
+        PageTitle { "Security" }
         div { class: "flex gap-2 my-2 items-center",
             button {
                 class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",

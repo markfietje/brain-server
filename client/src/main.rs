@@ -232,7 +232,32 @@ fn app() -> Element {
 
     rsx! {
         document::Stylesheet { href: "/assets/tailwind.css".to_string() }
-        Router::<Route> {}
+        // v1.16.2 "Harden" M4.1: an ErrorBoundary around the router so a panic
+        // in a child panel renders an operator-facing fallback instead of a
+        // blank screen. Errors are Debug-formatted; no sensitive data leaks
+        // (the client holds no secrets beyond the token, which is never in an
+        // error message).
+        ErrorBoundary {
+            handle_error: |errors: ErrorContext| rsx! {
+                div { class: "min-h-screen flex items-center justify-center bg-surface text-ink p-4",
+                    div { class: "max-w-md",
+                        h1 { class: "text-xl text-danger", "Something went wrong" }
+                        p { class: "text-ink-muted mt-2",
+                            "The client hit an unexpected error. Reload to retry."
+                        }
+                        pre { class: "text-xs text-ink-faint mt-4 overflow-auto",
+                            "{errors:?}"
+                        }
+                        button {
+                            class: "mt-4 border border-border-subtle rounded px-3 py-1 text-sm",
+                            onclick: move |_| errors.clear_errors(),
+                            "Dismiss"
+                        }
+                    }
+                }
+            },
+            Router::<Route> {}
+        }
     }
 }
 
@@ -604,5 +629,107 @@ mod tests {
             );
         }
         assert_eq!(probe_state(0, true), Conn::Connected);
+    }
+
+    /// v1.16.2 "Harden" M2: the XSS gate. Dioxus escapes text by default;
+    /// `dangerous_inner_html` is the ONLY XSS vector. Fail if any source file
+    /// uses it. Greps the whole client/src tree (the panels + api.rs + main.rs).
+    /// The needle is built by concatenation so this test's own source doesn't
+    /// contain the literal token and self-match.
+    #[test]
+    fn xss_escape_hatch_is_unused() {
+        let needle = concat!("dangerous_inner", "_html");
+        let mut violations = Vec::new();
+        for entry in walk_dir("src") {
+            let src = std::fs::read_to_string(&entry).unwrap();
+            for (i, line) in src.lines().enumerate() {
+                // Skip comment/doc lines — they may legitimately mention the
+                // escape hatch; the guard is for *usage*, not prose.
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if line.contains(needle) {
+                    violations.push(format!("{}:{}", entry.display(), i + 1));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "XSS risk — the raw-HTML escape hatch found in: {violations:?}"
+        );
+    }
+
+    /// v1.16.2 "Harden" M5: the token-hygiene gate. The token must stay in
+    /// memory (Signal<ApiClient>). `use_persistent` on web backs to localStorage
+    /// which is XSS-readable. Fail if the token touches it. The needles are
+    /// built by concatenation so this test's own source doesn't self-match.
+    #[test]
+    fn credentials_stay_in_memory() {
+        let persistent = concat!("use_", "persistent");
+        let token = concat!("to", "ken");
+        let flag = format!("{persistent} near {token}");
+        for entry in walk_dir("src") {
+            let src = std::fs::read_to_string(&entry).unwrap();
+            for (i, line) in src.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if line.contains(persistent) && line.to_lowercase().contains(token) {
+                    panic!(
+                        "{flag} at {}:{} — the credential must stay in-memory",
+                        entry.display(),
+                        i + 1
+                    );
+                }
+            }
+        }
+    }
+
+    /// v1.16.3 M2.2: the semantic-audit gate (WCAG 2.1.1 + ARIA in HTML):
+    /// clickable elements must be real `<button>`s, never `<div onclick>` —
+    /// a div's click is unreachable to keyboard + screen-reader users. Greps
+    /// the whole source tree; skips comment lines. (Keydown handlers on a
+    /// `tabindex="0"` focus container are legitimate and not flagged — only a
+    /// div that claims click without the button semantics is the bug.)
+    #[test]
+    fn interactive_elements_are_buttons() {
+        let click = concat!("on", "click");
+        for entry in walk_dir("src") {
+            let src = std::fs::read_to_string(&entry).unwrap();
+            for (i, line) in src.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if line.contains(click) && line.contains("div") {
+                    panic!(
+                        "{click} on a div at {}:{} — use a <button> (WCAG 2.1.1 \
+                         Keyboard + ARIA in HTML)",
+                        entry.display(),
+                        i + 1
+                    );
+                }
+            }
+        }
+    }
+
+    /// Walk `src` (recursively) returning `.rs` file paths. Relative to the
+    /// client crate root (CWD when cargo runs tests). ponytail: a tiny helper
+    /// avoids a `walkdir` dep for two grep guards.
+    fn walk_dir(dir: &str) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    out.extend(walk_dir(&p.to_string_lossy()));
+                } else if p.extension().map(|x| x == "rs").unwrap_or(false) {
+                    out.push(p);
+                }
+            }
+        }
+        out
     }
 }

@@ -14,7 +14,7 @@
   --color-border-strong: #343b46;
   --color-ink: #e7eaee;            /* primary text */
   --color-ink-muted: #9aa3ae;      /* secondary text */
-  --color-ink-faint: #6b7380;      /* tertiary / disabled */
+  --color-ink-faint: #7c8492;      /* tertiary / disabled (v1.16.3 AA 4.6:1) */
 
   /* --- Single brand accent ------------------------------------------------ */
   --color-accent: #5b9dff;
@@ -53,6 +53,11 @@
   .focus-ring:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+  }
+  /* v1.16.3 M1.3: WCAG 2.4.11/2.4.12 Focus Not Obscured — every focused
+     element scrolls past the sticky nav when the browser scrolls to it. */
+  *:focus-visible {
+    scroll-margin-top: 4rem;
   }
 }
 

@@ -8,6 +8,7 @@
 //! triggers a download via `document::eval` (no new server route).
 
 use crate::api::{ApiClient, AuditRow};
+use crate::panels::{use_document_title, PageTitle};
 use crate::UiState;
 use dioxus::prelude::*;
 
@@ -55,6 +56,7 @@ fn ts_on_or_after(ts: &str, date: &str) -> bool {
 }
 
 pub fn panel() -> Element {
+    use_document_title(|| "Audit — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)();
@@ -90,7 +92,7 @@ pub fn panel() -> Element {
     };
 
     rsx! {
-        h1 { "Audit" }
+        PageTitle { "Audit" }
         match &*audit.read() {
             Some(Ok(resp)) => rsx! {
                 p { class: "text-ink-muted text-sm",

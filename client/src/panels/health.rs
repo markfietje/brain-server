@@ -1,11 +1,13 @@
 //! Health panel — the connect-first probe + capacity story (DESIGN §4.5).
 //! One resource, rendered as the capacity envelope (docs/RSS vs cap).
 
-use crate::api::ApiClient;
+use crate::api::{error_message, ApiClient};
+use crate::panels::{use_document_title, PageTitle};
 use crate::UiState;
 use dioxus::prelude::*;
 
 pub fn panel() -> Element {
+    use_document_title(|| "Health — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let _ui = use_context::<UiState>();
     let health = use_resource(move || {
@@ -18,7 +20,7 @@ pub fn panel() -> Element {
     });
 
     rsx! {
-        h1 { "Health" }
+        PageTitle { "Health" }
         match &*health.read() {
             Some(Ok(h)) => rsx! {
                 dl { class: "mt-2 grid grid-cols-2 gap-1 text-sm tabular",
@@ -37,7 +39,7 @@ pub fn panel() -> Element {
                     }
                 }
             },
-            Some(Err(e)) => rsx! { p { class: "text-danger", "health failed: {e}" } },
+            Some(Err(e)) => rsx! { p { class: "text-danger", "health failed: {error_message(&e)}" } },
             None => rsx! { p { class: "text-ink-muted", "…" } },
         }
         match &*stats.read() {
