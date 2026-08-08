@@ -19,6 +19,8 @@ root.
 | [Deployment](./deployment.md) | Service install, configuration, backup/restore, operational health |
 | [Security](./security.md) | Threat model, authentication modes, and the controls that protect data |
 | [MemGhost mitigation](./MEMGHOST_MITIGATION.md) | How brain-server neutralizes the memory-poisoning attack (arXiv 2607.05189) |
+| [AI literacy (Art 4)](./AI_LITERACY.md) | Operator playbook for the EU AI Act Art 4 literacy obligation |
+| [RFP response kit](./RFP_RESPONSE_KIT.md) | Map brain-server features to common enterprise RFP sections |
 | [Compliance](./compliance.md) | ISO 42001 / NIST AI RMF / SOC 2 posture, DSAR, retention, jurisdiction |
 | [API](./api.md) | Endpoint reference and links to the full contract |
 | [Roadmap](./roadmap.md) | The shipped release history and the path forward |

@@ -10,6 +10,22 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [Unreleased]
+
+### Docs
+
+- **`docs/AI_LITERACY.md`** (new) — EU AI Act Art 4 deployer playbook: what
+  the memory component is/is not, the inspectable controls that are the
+  literacy substance (trace, proposal gate, quarantine, DSAR, audit chain),
+  and a weekly verify + DSAR-drill cadence. Cross-linked from `COMPLIANCE.md`
+  §6.4 and `README.md`.
+- **`docs/RFP_RESPONSE_KIT.md`** (new) — map brain-server features to common
+  enterprise RFP sections (security, privacy/DSAR, AI governance, ops) with
+  the evidence artifact behind each claim.
+- **COMPLIANCE.md** — §7 now references the live `/.well-known/ai-notice`
+  disclosure (Art 50 machine-readable origin notice). `docs/compliance.md`
+  framework row updated to match.
+
 ## [1.16.7] — 2026-08-08
 
 Server + client release. **Server** (Cargo.toml 1.16.6 → 1.16.7): hardening +

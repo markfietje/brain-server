@@ -166,7 +166,8 @@ The deployer's literacy evidence for the memory component: the dashboard's
 controls (`/proposals` review queue, `/quarantine`, `/audit`, `/tombstones`)
 and the trace endpoint make the component's decisions inspectable —
 "what informed this retrieval, and who approved this write" — which is the
-operational substance of Art 4 literacy for a memory component.
+operational substance of Art 4 literacy for a memory component. See
+`docs/AI_LITERACY.md` for the operator-facing literacy playbook.
 
 ## 7. Machine-Readable Origin Metadata (Art 50 transparency bridge)
 
@@ -176,6 +177,15 @@ memory | markdown | structured) and, where present, `assertion_kind`
 the content, so a memory export can state *how a memory entered the system and
 with what provenance* — the transparency bridge for model-vs-human origin.
 (Forward link: UMP wire-format conformance is a later release.)
+
+**Machine-readable disclosure.** The server also serves the Art 50 disclosure
+itself at `GET /.well-known/ai-notice` (public, no auth) — a JSON document
+with `art_50: true`, the human-readable disclosure that stored content may be
+AI-generated, the `origin_metadata` fields a consumer can read per row
+(`source` / `assertion_kind` / `confidence`), `effective_date: 2026-08-02`,
+and `jurisdiction: EU AI Act Article 50 (Regulation (EU) 2024/1689)`. A
+deployer can point a consumer or auditor at the URL and at an `/export` bundle
+to close the model-origin transparency loop without pasting a policy.
 
 ## 8. Retention Classes
 

@@ -80,7 +80,7 @@ its predecessor; `/audit/verify` proves integrity; `/metrics` reports
 | **ISO/IEC 42001** | AI management-system posture documented; algorithmic-risk controls (abstention, human-in-the-loop write-back) |
 | **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle |
 | **SOC 2** | Audit log, access control, encryption-at-rest (backup), change control |
-| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note |
+| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)) |
 | **GDPR / CCPA / PH DPA** | Data portability, erasure, DSAR workflow, jurisdiction posture |
 
 The full, row-by-row mapping with the intent-based-auditing coverage and the
