@@ -9,7 +9,7 @@ pub fn panel() -> Element {
     // In the full app this is provided at the root after connect-first onboarding.
     // For the scaffold, default to the loopback brain-server.
     let api = use_context::<Signal<ApiClient>>();
-    let query = use_signal(String::new);
+    let mut query = use_signal(String::new);
 
     // use_resource subscribes to `query` (reads it) → reruns on change.
     let recall = use_resource(move || {

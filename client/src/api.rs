@@ -97,7 +97,7 @@ struct RecallResponse {
     hits: Vec<Hit>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Hit {
     pub id: i64,
     pub content: String,

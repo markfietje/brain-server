@@ -8,6 +8,10 @@
 //!   Root context provides an ApiClient (bearer attached) the panels read via
 //!   `use_resource`, which auto-refetches on signal change.
 
+// The #[component] macro nests the fn body in an extra block, so one-line
+// route components trip unused_braces — a macro artifact, not our code.
+#![allow(unused_braces)]
+
 use dioxus::prelude::*;
 use panels::{audit, health, recall, review, security, subjects};
 
