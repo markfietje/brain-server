@@ -126,7 +126,7 @@ pub fn panel() -> Element {
     let rows = filter_audit(&events(), &filter());
 
     rsx! {
-        PageTitle { "Audit" }
+        PageTitle { {crate::i18n::t("audit_title")} }
         div { class: "card mt-2",
             div { class: "card-body",
                 match (events().is_empty(), &page_err()) {

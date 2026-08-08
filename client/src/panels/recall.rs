@@ -98,7 +98,7 @@ pub fn panel() -> Element {
     });
 
     rsx! {
-        PageTitle { "Recall inspector" }
+        PageTitle { {crate::i18n::t("recall_title")} }
         input {
             class: "input w-full",
             placeholder: "query brain-server (min 5 chars)…",

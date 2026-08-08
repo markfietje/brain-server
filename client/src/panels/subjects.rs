@@ -42,7 +42,7 @@ pub fn panel() -> Element {
     let mut busy = use_signal(|| false);
 
     rsx! {
-        PageTitle { "Subjects (DSAR)" }
+        PageTitle { {crate::i18n::t("subjects_title")} }
         div { class: "card mt-2",
             div { class: "card-body space-y-3",
                 div { class: "flex gap-2",
@@ -121,7 +121,7 @@ pub fn detail(dsar_id: i64) -> Element {
         async move { api.dsar_certificate(dsar_id).await }
     });
     rsx! {
-        PageTitle { "Deletion certificate #{dsar_id}" }
+        PageTitle { {format!("{} #{dsar_id}", crate::i18n::t("deletion_certificate"))} }
         p { class: "text-xs text-muted-foreground mb-3",
             Link { to: Route::Subjects {}, "← back to subjects" } }
         match &*cert.read() {

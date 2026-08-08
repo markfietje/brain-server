@@ -4,13 +4,13 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.16.7 "Integrated" (shipped)
+## Status — v1.16.8 "Global" (shipped)
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
 mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`.
 
-**v1.16.7 ships the full v1.16.x client line** (43 tests, clippy `-D warnings`
+**v1.16.8 ships the full v1.16.x client line** (48 tests, clippy `-D warnings`
 + fmt clean):
 
 | M | Feature | Detail |
@@ -29,7 +29,10 @@ CSP, ErrorBoundary, WCAG 2.2 AA pass, focus-to-heading, aria-live) · v1.16.4
 shadcn-style design-system restyle · v1.16.5 JWT refresh lifecycle +
 principal · v1.16.6 mobile: secure token storage (OS keyring) + responsive
 bottom-tab layout · v1.16.7 deep links + PWA (offline shell, never the API)
-+ ⌘K command palette + recall debounce.
++ ⌘K command palette + recall debounce · **v1.16.8 Global**: i18n (`en`/`de`/
+`fr`/`es` via zero-dep FTL-subset `t()`), light/dark theme + density toggles
+(persisted, sanitized), RTL `dir` readiness, locale-aware number grouping, and
+a privacy-transparency block on the connect screen.
 
 | Panel | Backend route(s) | v1.16.0 additions |
 |---|---|---|
@@ -130,6 +133,7 @@ cp "$SRC/assets/brain-client-*.js" "$SRC/assets/brain-client_bg-*.wasm" dist/ass
 ## Next
 
 Accessibility + i18n (v1.18.0), integration (v1.19.0), polish (v1.20.0), and
-the v1.16.7 ceilings: wasm-split code-splitting (M3, blocked on Dioxus),
-Radix/`dx components` focus restoration (registry unreachable), and the
-v1.16.8 "Global" milestone.
+the v1.16.x ceilings: wasm-split code-splitting (M3, blocked on Dioxus),
+Radix/`dx components` focus restoration (registry unreachable), the simple
+FTL-subset i18n (fluent/plurals/RTL-locale files are the upgrade path), and
+system-color-scheme auto-follow.

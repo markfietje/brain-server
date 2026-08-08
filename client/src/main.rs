@@ -21,6 +21,9 @@ use panels::{audit, health, recall, review, security, subjects};
 // The serde round-trip tests pin them; not dead, just waiting.
 #[allow(dead_code)]
 mod api;
+// v1.16.8 M1–M5: i18n (t / LOCALE), RTL readiness, theme + density toggles,
+// and locale-aware number formatting. Zero-dep FTL parsing — see the module.
+mod i18n;
 mod panels;
 // v1.16.6 M2: the secure-token storage seam (OS keyring on non-web, no-op on
 // web). save/load (connect + auto-reconnect) and delete (v1.16.7 M7.1 logout)
@@ -28,6 +31,7 @@ mod panels;
 mod storage;
 
 use api::ApiClient;
+use i18n::t;
 
 // ---------------------------------------------------------------------------
 // v1.16.0 M1 — the connection state machine (DESIGN §2 + §6, the correctness
@@ -223,6 +227,42 @@ fn app() -> Element {
         auth_failures_count: Signal::new(0),
         drawer: Signal::new(None),
         palette_open: Signal::new(false),
+    });
+
+    // v1.16.8: restore persisted UI prefs (theme / density / locale) on launch.
+    // Best-effort (web localStorage; no-op elsewhere); sanitized so a corrupt
+    // stored value can never produce an unsupported theme/density/locale.
+    use_future(|| async move {
+        if let Some(v) = i18n::pref_load("theme").await {
+            i18n::theme().set(i18n::pick_theme(&v));
+        }
+        if let Some(v) = i18n::pref_load("density").await {
+            i18n::density().set(i18n::pick_density(&v));
+        }
+        if let Some(v) = i18n::pref_load("locale").await {
+            i18n::locale().set(i18n::pick_locale(&v));
+        }
+    });
+
+    // v1.16.8 M3/M4/M2: apply theme + density + RTL dir to the document root.
+    // Each effect reads its signal, so it re-runs when the pref changes (no
+    // page reload). `{theme:?}` emits a JS-quoted string literal.
+    use_effect(move || {
+        let theme = i18n::theme()();
+        document::eval(&format!(
+            "document.documentElement.dataset.theme = {theme:?}"
+        ));
+    });
+    use_effect(move || {
+        let density = i18n::density()();
+        document::eval(&format!(
+            "document.documentElement.dataset.density = {density:?}"
+        ));
+    });
+    use_effect(move || {
+        let locale = i18n::locale()();
+        let dir = if i18n::is_rtl(locale) { "rtl" } else { "ltr" };
+        document::eval(&format!("document.documentElement.dir = {dir:?}"));
     });
 
     // M1.1: the single background probe. Owns its timer; survives panel
@@ -437,30 +477,30 @@ fn Connect() -> Element {
                     div {
                         h1 { class: "text-xl font-semibold tracking-tight", "brain" }
                         p { class: "text-sm text-muted-foreground",
-                            "Governed memory, on your hardware." }
+                            {t("connect_welcome")} }
                     }
                 }
                 div { class: "card",
-                    div { class: "card-header", div { class: "card-title", "Connect to brain-server" } }
+                    div { class: "card-header", div { class: "card-title", {t("connect_title")} } }
                     div { class: "card-body space-y-4",
                         label { class: "block space-y-1",
-                            span { class: "label", "Backend URL" }
+                            span { class: "label", {t("backend_url")} }
                             input {
                                 class: "input w-full",
                                 value: "{url}",
                                 oninput: move |e| url.set(e.value()),
-                                placeholder: "blank = this page's origin (same-server)",
+                                placeholder: t("url_placeholder"),
                                 "aria-label": "backend URL",
                             }
                         }
                         label { class: "block space-y-1",
-                            span { class: "label", "Token" }
+                            span { class: "label", {t("token_label")} }
                             input {
                                 class: "input w-full",
                                 "type": "password",
                                 value: "{token}",
                                 oninput: move |e| token.set(e.value()),
-                                placeholder: if jwt_pair() { "access token (JWT)" } else { "optional (loopback)" },
+                                placeholder: if jwt_pair() { t("token_access_placeholder") } else { t("token_placeholder") },
                                 "aria-label": "auth token",
                             }
                         }
@@ -476,17 +516,17 @@ fn Connect() -> Element {
                                 checked: jwt_pair(),
                                 onchange: move |e| jwt_pair.set(e.value() == "true"),
                             }
-                            "JWT pair (access + refresh) — enables silent refresh"
+                            {t("jwt_pair")}
                         }
                         if jwt_pair() {
                             label { class: "block space-y-1",
-                                span { class: "label", "Refresh token" }
+                                span { class: "label", {t("refresh_token_label")} }
                                 input {
                                     class: "input w-full",
                                     "type": "password",
                                     value: "{refresh_token}",
                                     oninput: move |e| refresh_token.set(e.value()),
-                                    placeholder: "from `brain key mint` or an IdP",
+                                    placeholder: t("refresh_token_placeholder"),
                                     "aria-label": "refresh token",
                                 }
                             }
@@ -495,7 +535,7 @@ fn Connect() -> Element {
                             class: "btn btn-primary btn-md w-full",
                             disabled: busy(),
                             onclick: connect,
-                            if busy() { "Connecting…" } else { "Connect" }
+                            if busy() { {t("connecting")} } else { {t("connect_button")} }
                         }
                         if let Some(Ok(msg)) = &*status.read() {
                             p { class: "text-ok text-sm", "{msg}" }
@@ -506,7 +546,29 @@ fn Connect() -> Element {
                     }
                 }
                 p { class: "text-center text-xs text-ink-faint",
-                    "One-line install:  curl -fsSL … | sh   then  brain doctor"
+                    {t("install_hint")}
+                }
+                // v1.16.8 M6.2 — data-flow transparency on the connect screen.
+                // States exactly what the client sends / stores / never does.
+                details { class: "card card-body text-xs text-muted-foreground",
+                    summary { class: "cursor-pointer text-sm text-muted-foreground", {t("privacy_title")} }
+                    p { class: "mt-2 text-muted-foreground", {t("privacy_sends")} }
+                    ul { class: "list-disc pl-4 mt-1",
+                        li { {t("privacy_sends_1")} }
+                        li { {t("privacy_sends_2")} }
+                    }
+                    p { class: "mt-2 text-muted-foreground", {t("privacy_stores")} }
+                    ul { class: "list-disc pl-4 mt-1",
+                        li { {t("privacy_stores_1")} }
+                        li { {t("privacy_stores_2")} }
+                    }
+                    p { class: "mt-2 text-muted-foreground", {t("privacy_not")} }
+                    ul { class: "list-disc pl-4 mt-1",
+                        li { {t("privacy_not_1")} }
+                        li { {t("privacy_not_2")} }
+                        li { {t("privacy_not_3")} }
+                        li { {t("privacy_not_4")} }
+                    }
                 }
             }
         }
@@ -542,6 +604,38 @@ fn AppShell() -> Element {
     let security_badge = quarantine as u64 + auth_fail as u64;
     let palette_open = (ui.palette_open)();
 
+    // v1.16.8 M1: localize the shell chrome. Precomputed so the rsx can use
+    // `"{var}"` / bare-expression interpolation — a literal `t("key")` call
+    // inside a formatted string (nested quotes) breaks the rsx parser. Reading
+    // `t()` here subscribes this component to locale changes, so switching the
+    // locale re-renders the shell in the new language.
+    let conn_text = t(conn_label(conn));
+    // M5: locale-aware digit grouping on the shell counts.
+    let pending_label = format!("{} {pending}", i18n::format_number(pending as u64));
+    let flags_label = format!(
+        "{} {}",
+        i18n::format_number(security_badge as u64),
+        t("flags")
+    );
+    let principal_label = principal
+        .as_ref()
+        .map(|p| format!("{} {p}", t("acting_as")));
+    let theme_label = t("theme_label");
+    let density_label = t("density_label");
+    let locale_label = t("locale_label");
+    let nav_review = t("nav_review");
+    let nav_recall = t("nav_recall");
+    let nav_subjects = t("nav_subjects");
+    let nav_security = t("nav_security");
+    let nav_audit = t("nav_audit");
+    let nav_health = t("nav_health");
+    let review_title = t("review_title");
+    let sign_out = t("sign_out");
+    let loopback = t("loopback");
+    let audit_chain = t("audit_chain");
+    let disconnected = t("disconnected");
+    let reverifying = t("reverifying");
+
     // v1.16.7 M5: cmd/ctrl+K toggles the command palette. Handled on the shell
     // root (focused by default when the app has focus); the palette's own input
     // captures its keys while open.
@@ -571,40 +665,40 @@ fn AppShell() -> Element {
                 nav { class: "flex-1 overflow-y-auto p-3 nav",
                     // M2.1: F-pattern anchor — pending review count on the rail.
                     div { class: "mb-1 flex items-center justify-between px-2.5 text-xs text-muted-foreground",
-                        span { "Review queue" }
-                        span { class: "tabular", "pending {pending}" }
+                        span { "{review_title}" }
+                        span { class: "tabular", "{pending_label}" }
                     }
-                    NavLink { to: Route::Review {}, "Review" }
-                    NavLink { to: Route::Recall {}, "Recall" }
-                    NavLink { to: Route::Subjects {}, "Subjects" }
-                    NavLink { to: Route::Security {}, badge: Some(security_badge), "Security" }
-                    NavLink { to: Route::Audit {}, dirty: audit_dirty, "Audit" }
-                    NavLink { to: Route::Health {}, "Health" }
+                    NavLink { to: Route::Review {}, "{nav_review}" }
+                    NavLink { to: Route::Recall {}, "{nav_recall}" }
+                    NavLink { to: Route::Subjects {}, "{nav_subjects}" }
+                    NavLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
+                    NavLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
+                    NavLink { to: Route::Health {}, "{nav_health}" }
                 }
                 div { class: "border-t border-border p-3",
-                    div { class: "flex items-center gap-2 text-sm",
-                        span { class: conn_dot(conn), "●" }
-                        span { class: "text-xs text-muted-foreground", "{conn_label(conn)}" }
+                div { class: "flex items-center gap-2 text-sm",
+                    span { class: conn_dot(conn), "●" }
+                    span { class: "text-xs text-muted-foreground", "{conn_text}" }
+                }
+                if let Some(p) = &principal_label {
+                    p { class: "mt-1 truncate text-xs text-muted-foreground tabular", "{p}" }
+                } else {
+                    p { class: "mt-1 text-xs text-ink-faint", "{loopback}" }
+                }
+                // v1.16.7 M7.1: explicit logout. Clears the OS-keyring token,
+                // resets the in-memory ApiClient, and returns to Connect so a
+                // signed-out operator never auto-reconnects with a saved token.
+                if api().is_configured() {
+                    button {
+                        class: "btn btn-ghost btn-sm w-full mt-2 justify-center",
+                        onclick: move |_| {
+                            storage::delete_token();
+                            api.set(ApiClient::unconfigured());
+                            navigator().replace(Route::Connect {});
+                        },
+                        "{sign_out}"
                     }
-                    if let Some(ref p) = principal {
-                        p { class: "mt-1 truncate text-xs text-muted-foreground tabular", "acting as {p}" }
-                    } else {
-                        p { class: "mt-1 text-xs text-ink-faint", "loopback" }
-                    }
-                    // v1.16.7 M7.1: explicit logout. Clears the OS-keyring token,
-                    // resets the in-memory ApiClient, and returns to Connect so a
-                    // signed-out operator never auto-reconnects with a saved token.
-                    if api().is_configured() {
-                        button {
-                            class: "btn btn-ghost btn-sm w-full mt-2 justify-center",
-                            onclick: move |_| {
-                                storage::delete_token();
-                                api.set(ApiClient::unconfigured());
-                                navigator().replace(Route::Connect {});
-                            },
-                            "Sign out"
-                        }
-                    }
+                }
                 }
             }
             // v1.16.6 M3: mobile bottom tab bar. `position: fixed`; CSS shows it
@@ -613,33 +707,73 @@ fn AppShell() -> Element {
             nav {
                 class: "tab-bar",
                 "aria-label": "primary navigation (mobile)",
-                TabLink { to: Route::Review {}, "Review" }
-                TabLink { to: Route::Recall {}, "Recall" }
-                TabLink { to: Route::Subjects {}, "Subjects" }
-                TabLink { to: Route::Security {}, badge: Some(security_badge), "Security" }
-                TabLink { to: Route::Audit {}, dirty: audit_dirty, "Audit" }
-                TabLink { to: Route::Health {}, "Health" }
+                TabLink { to: Route::Review {}, "{nav_review}" }
+                TabLink { to: Route::Recall {}, "{nav_recall}" }
+                TabLink { to: Route::Subjects {}, "{nav_subjects}" }
+                TabLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
+                TabLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
+                TabLink { to: Route::Health {}, "{nav_health}" }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
-                // Slim top bar: connection + pending summary.
+                // Slim top bar: connection + pending summary + prefs.
                 header { class: "sticky top-0 z-10 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur",
                     span {
                         class: "font-mono text-sm",
                         "aria-label": "connection status",
                         span { class: conn_dot(conn), "●" }
-                        " {conn_label(conn)}"
+                        " {conn_text}"
                     }
                     span { class: "text-sm text-muted-foreground tabular",
-                        "pending {pending}"
+                        "{pending_label}"
                     }
                     if security_badge > 0 {
-                        span { class: "badge badge-warn", "{security_badge} flags" }
+                        span { class: "badge badge-warn", "{flags_label}" }
                     }
                     if audit_dirty {
-                        span { class: "badge badge-danger", "audit chain!" }
+                        span { class: "badge badge-danger", "{audit_chain}" }
+                    }
+                    // v1.16.8 M3/M4/M1: theme + density toggles + locale switch.
+                    // Non-sensitive UI prefs, persisted to localStorage; changing
+                    // them re-runs the root effects (tokens/dir swap, no reload).
+                    div { class: "ml-auto flex items-center gap-1.5",
+                        button {
+                            class: "btn btn-ghost btn-sm",
+                            "aria-label": "{theme_label}",
+                            title: "{theme_label}",
+                            onclick: move |_| {
+                                let next = if i18n::theme()() == "dark" { "light" } else { "dark" };
+                                i18n::theme().set(next);
+                                i18n::pref_save("theme", next);
+                            },
+                            if i18n::theme()() == "dark" { "☀" } else { "☾" }
+                        }
+                        button {
+                            class: "btn btn-ghost btn-sm",
+                            "aria-label": "{density_label}",
+                            title: "{density_label}",
+                            onclick: move |_| {
+                                let next = if i18n::density()() == "compact" { "comfortable" } else { "compact" };
+                                i18n::density().set(next);
+                                i18n::pref_save("density", next);
+                            },
+                            if i18n::density()() == "compact" { "comfortable" } else { "compact" }
+                        }
+                        select {
+                            class: "select h-7 w-auto px-1.5 text-xs",
+                            "aria-label": "{locale_label}",
+                            value: "{i18n::locale()()}",
+                            onchange: move |e| {
+                                let next = i18n::pick_locale(&e.value());
+                                i18n::locale().set(next);
+                                i18n::pref_save("locale", next);
+                            },
+                            for l in i18n::SUPPORTED_LOCALES {
+                                option { value: l, "{l}" }
+                            }
+                        }
                     }
                     if let Some(p) = &principal {
-                        span { class: "ml-auto text-xs text-muted-foreground tabular", "{p}" }
+                        span { class: "text-xs text-muted-foreground tabular", "{p}" }
                     }
                 }
                 div { class: "flex flex-1",
@@ -657,14 +791,14 @@ fn AppShell() -> Element {
             div {
                 class: "border-b border-warn/40 bg-warn/10 px-4 py-1 text-sm text-warn",
                 role: "status",
-                "Disconnected — showing last-known state. Write actions disabled."
+                "{disconnected}"
             }
         }
         if !writes && conn == Conn::Connected && pending_reverify {
             div {
                 class: "border-b border-info/40 bg-info/10 px-4 py-1 text-sm text-info",
                 role: "status",
-                "Reconnected — verifying audit chain before enabling writes…"
+                "{reverifying}"
             }
         }
         // v1.16.7 M5: the command palette overlay (cmd/ctrl+K). Rendered last so
@@ -928,6 +1062,9 @@ if (root) {{
 fn Drawer() -> Element {
     let mut ui = use_context::<UiState>();
     let content = (ui.drawer)();
+    let detail = t("detail");
+    let close_drawer = t("close_drawer");
+    let nothing_selected = t("nothing_selected");
     rsx! {
         aside {
             class: "drawer",
@@ -945,10 +1082,10 @@ fn Drawer() -> Element {
                 }
             },
             div { class: "flex justify-between items-center mb-3",
-                h2 { class: "text-sm font-semibold text-muted-foreground", "Detail" }
+                h2 { class: "text-sm font-semibold text-muted-foreground", "{detail}" }
                 button {
                     class: "btn btn-ghost btn-sm",
-                    "aria-label": "close drawer",
+                    "aria-label": "{close_drawer}",
                     onclick: move |_| ui.drawer.set(None),
                     "✕"
                 }
@@ -990,7 +1127,7 @@ fn Drawer() -> Element {
                         }
                     }
                 },
-                None => rsx! { p { class: "text-ink-faint text-sm", "nothing selected" } },
+                None => rsx! { p { class: "text-ink-faint text-sm", "{nothing_selected}" } },
             }
         }
     }

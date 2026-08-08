@@ -36,6 +36,83 @@ been run, it is marked **pending** rather than asserted.
   into `_Sidebar` + `Home` quick links, so the procurement-facing wiki
   surfaces the same governance story as the repo.
 
+## [1.16.8] — 2026-08-08
+
+Client-only release: the v1.16.8 "Global" plan — locale (i18n) + light/dark
+theme + density + locale-aware number formatting + a privacy block on the
+connect screen. **Server + API contract unchanged** (server stays at 1.16.7).
+
+### Client — Added
+
+- **M1 i18n (`src/i18n.rs` + `locales/*/main.ftl`).** Zero-dependency FTL-subset
+  translation: `en`/`de`/`fr`/`es` bundles are compiled in at build time via
+  `include_str!` and parsed once. `t()` resolves current-locale → `en` → the key
+  itself (visible fallback, never blank), so a partial locale degrades to English.
+  A `locales/<code>/main.ftl` file is added per language; RTL-ready via `is_rtl`.
+  `fluent`/`fluent-langneg` are the documented upgrade path (ponytail: a simple
+  key=value subset + a three-tier fallback is a fraction of a Fluent dependency
+  for human-authored short strings).
+- **M2 RTL readiness.** `dir` on `<html>` flips to `rtl` for `ar`/`he`/`fa`/`ur`
+  locales (none ship in v1.16.8; the layout + CSS are RTL-ready when one is added).
+- **M3 light theme.** A top-bar toggle flips `data-theme="light"` on `<html>`;
+  `input.css` swaps every token (dark-first stays the default), keeping the state
+  hue *names* identical so the recall/security tests pinning them need no change.
+- **M4 density.** A toggle flips `data-density="compact"` on `<html>` (14px root
+  font, ~12.5% denser rem-based spacing) — a pure CSS knob, no JS, for high-volume
+  reviewers. Comfortable is the default.
+- **M5 locale-aware numbers.** `format_number` groups per locale (`en` → `,`,
+  `de`/`fr`/`es` → `.`), wired into the shell pending/flags counts. Deviates from
+  the plan's `Intl.NumberFormat`-via-`document::eval` because eval is async (no
+  sync path in Dioxus 0.7); the pure fn is synchronous + testable.
+- **M6.2 privacy block.** The connect screen now has a `<details>` transparency
+  panel stating exactly what the client sends (URL + token, token to the backend
+  only), stores (nothing on web — the v1.16.1 in-memory posture; the OS keyring on
+  native), and never does (no telemetry, no analytics, no third-party requests).
+  Locale-aware like the rest of the shell.
+- **Pref persistence.** Theme / density / locale are persisted to web
+  `localStorage` (best-effort, sanitized, non-sensitive) and restored on launch;
+  never the auth token (`credentials_stay_in_memory` guard still enforced).
+
+### Client — Changed
+
+- **Shell chrome localized** — rail + mobile tab-bar nav, top-bar counts,
+  pending/flags/audit badges, connection + principal pillars, sign-out, degrade
+  banners, and the context drawer header all render through `t()` (precomputed
+  locals so the `rsx!` text-node interpolation never holds a nested `t("…")` call).
+- **`deploy-web.sh` now compiles Tailwind.** `dx bundle` does **not** recompile
+  Tailwind in build mode (the `[tailwind] input` here is `styles/input.css`, not a
+  root `tailwind.css`, so dx's auto-watch never fires) — it copies+hashes the
+  pre-built `assets/tailwind.css`, so CSS edits silently never reached the bundle
+  (the stale-CSS class of bug Agent 50 fixed). The script now runs
+  `npx @tailwindcss/cli -i styles/input.css -o assets/tailwind.css` first, per the
+  Dioxus 0.7 docs. Verified: the fresh bundle carries `data-theme`/`data-density`.
+
+### Client — Tests
+
+- **48 passed** (was 43; +5 i18n tests): `resolve` fallback chain, per-locale
+  `group_digits`, RTL detection, persisted-pref sanitizers, and a guard that every
+  locale's keys exist in `en` (the `.ftl` files actually load). Pure cores are
+  signal-free so the unit tests need no Dioxus runtime.
+
+### Fixed
+
+- **Dioxus global signals** exposed as accessor `fn`s (not `static`s) — a `static
+  Signal` can't be mutated (`.set()`) without an immutable-static borrow error;
+  the accessor-fn pattern is Dioxus' documented idiom for global state.
+
+### Honest ceilings (carried into v1.17.0)
+
+- The i18n is a simple FTL subset — no ICU plurals/term references, no message
+  arguments (all strings are static; numbers are concatenated). `fluent` is the
+  upgrade path.
+- `fr` digit grouping uses `.` (a narrow no-break space would be more correct).
+- No RTL locales ship yet; `dir` + CSS are ready but unexercised by a real RTL
+  string set (a buyer locale is the acceptance test).
+- Theme/density are cosmetic (no system-color-scheme auto-follow); `color-scheme`
+  flips correctly.
+- The `.ftl` files are hand-maintained alongside the string keys — a missing key
+  degrades to the key name (visible) rather than failing, by design.
+
 ## [1.16.7] — 2026-08-08
 
 Server + client release. **Server** (Cargo.toml 1.16.6 → 1.16.7): hardening +

@@ -63,7 +63,7 @@ pub fn panel() -> Element {
     };
 
     rsx! {
-        PageTitle { "Security" }
+        PageTitle { {crate::i18n::t("security_title")} }
         div { class: "card",
             div { class: "card-header",
                 div { class: "card-title", "Audit chain" }

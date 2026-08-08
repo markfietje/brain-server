@@ -20,7 +20,7 @@ pub fn panel() -> Element {
     });
 
     rsx! {
-        PageTitle { "Health" }
+        PageTitle { {crate::i18n::t("health_title")} }
         div { class: "mt-2 grid gap-4 md:grid-cols-2",
             match &*health.read() {
                 Some(Ok(h)) => rsx! {

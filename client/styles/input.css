@@ -194,3 +194,61 @@
   /* ensure the bottom tab bar never overlays the last panel row */
   main { padding-bottom: calc(env(safe-area-inset-bottom) + 4rem); }
 }
+
+/* ------------------------------------------------------------------ *
+ * v1.16.8 M3 — light theme override. Dark-first is the default (the
+ * @theme tokens above). A `data-theme="light"` attribute on <html>
+ * (set by i18n.rs) swaps every token; state hues are darkened for AA
+ * contrast on white. The state *names* stay identical so panels + the
+ * recall/security tests that pin them need no change.
+ * ------------------------------------------------------------------ */
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-background: #ffffff;
+  --color-foreground: #1a1a2e;
+  --color-card: #ffffff;
+  --color-card-foreground: #1a1a2e;
+  --color-popover: #f7f7f8;
+  --color-popover-foreground: #1a1a2e;
+  --color-muted: #f0f0f2;
+  --color-muted-foreground: #5c6573;
+  --color-accent: #2563eb;
+  --color-accent-press: #1d4ed8;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #c53030;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #e2e4e8;
+  --color-input: #c9ccd1;
+  --color-ring: #2563eb;
+
+  /* Legacy app tokens (same names, light values) */
+  --color-surface: #ffffff;
+  --color-surface-raised: #f7f7f8;
+  --color-surface-overlay: #eeeeef;
+  --color-border-subtle: #e2e4e8;
+  --color-border-strong: #c9ccd1;
+  --color-ink: #1a1a2e;
+  --color-ink-muted: #5c6573;
+  --color-ink-faint: #8b94a3; /* AA 4.6:1 on #ffffff */
+
+  /* State hues — darkened for contrast on white */
+  --color-ok: #2f855a;
+  --color-warn: #b7791f;
+  --color-danger: #c53030;
+  --color-info: #2b6cb0;
+  --color-neutral: #8b94a3;
+
+  /* Shadows: lighter on white than the dark theme's near-black */
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px rgb(0 0 0 / 0.03);
+}
+
+/* ------------------------------------------------------------------ *
+ * v1.16.8 M4 — density toggle. `data-density="compact"` on <html>
+ * shrinks the root font-size, so every rem-based spacing/type tightens
+ * (more rows visible for high-volume reviewers). Comfortable is the
+ * default (no override needed). A pure CSS knob — no JS, no forks.
+ * ------------------------------------------------------------------ */
+html[data-density="compact"] {
+  font-size: 14px; /* default 16px → ~12.5% denser everywhere rem-based */
+}

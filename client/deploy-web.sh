@@ -17,6 +17,13 @@ export PATH="$HOME/.cargo/bin:$PATH"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
 
+# v1.16.8: compile Tailwind FIRST. `dx bundle` does NOT recompile tailwind — it
+# copies+hashes the pre-built assets/tailwind.css (the [tailwind] input here is
+# styles/input.css, not a root tailwind.css, so dx's auto-watch never fires in
+# build mode). Without this, CSS edits silently never reach the bundle (the
+# stale-CSS class of bug Agent 50 fixed). Dioxus 0.7 documents this exact CLI.
+npx --yes @tailwindcss/cli@4 -i styles/input.css -o assets/tailwind.css
+
 dx bundle --platform web --release --base-path /app >/dev/null 2>&1 || true
 
 SRC="target/dx/brain-client/release/web/public"

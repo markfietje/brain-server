@@ -264,7 +264,7 @@ pub fn panel() -> Element {
 
     rsx! {
         div { tabindex: "0", onkeydown,
-            PageTitle { "Review queue" }
+            PageTitle { {crate::i18n::t("review_title")} }
             div { class: "flex gap-2 my-2 items-center flex-wrap",
                 button {
                     class: "btn btn-outline btn-md",
@@ -276,7 +276,7 @@ pub fn panel() -> Element {
                     class: "btn btn-primary btn-md",
                     disabled: !writes || selected().is_empty(),
                     onclick: move |_| run_batch(selected().iter().copied().collect(), false, None),
-                    "Approve selected ({selected().len()})"
+                    {crate::i18n::t("approve")} " selected (" {selected().len().to_string()} ")"
                 }
                 button {
                     class: "btn btn-ghost btn-md",
@@ -319,7 +319,7 @@ pub fn panel() -> Element {
                 Some(Ok(_)) => rsx! {
                     div { class: "card mt-2",
                         div { class: "card-body text-center",
-                            p { class: "text-muted-foreground", "No pending proposals." }
+                            p { class: "text-muted-foreground", {crate::i18n::t("no_pending")} }
                             button {
                                 class: "btn btn-outline btn-md mt-3",
                                 onclick: move |_| async move {
@@ -405,21 +405,21 @@ fn card(
                             class: "btn btn-primary btn-sm",
                             disabled: !writes,
                             onclick: move |_| decide(id, None, false),
-                            "Approve"
+                            {crate::i18n::t("approve")}
                         }
                         if conflict.is_some() {
                             button {
                                 class: "btn btn-outline btn-sm",
                                 disabled: !writes,
                                 onclick: move |_| decide(id, conflict, false),
-                                "Approve & supersede"
+                                {crate::i18n::t("approve")} " & supersede"
                             }
                         }
                         button {
                             class: "btn btn-outline btn-sm",
                             disabled: !writes,
                             onclick: move |_| reject_for.set(Some(id)),
-                            "Reject"
+                            {crate::i18n::t("reject")}
                         }
                         // M3: suggest re-ingest as a proposal with edits (no silent drop).
                         button {
@@ -500,7 +500,7 @@ fn RejectEditor(
                                 reject_for.set(None);
                             });
                         },
-                        "Reject"
+                        {crate::i18n::t("reject")}
                     }
                 }
             }
@@ -584,7 +584,7 @@ pub fn detail(proposal_id: i64) -> Element {
         _ => None,
     };
     rsx! {
-        PageTitle { "Proposal #{proposal_id}" }
+        PageTitle { {format!("{} #{proposal_id}", crate::i18n::t("proposal"))} }
         p { class: "text-xs text-muted-foreground mb-3",
             Link { to: Route::Review {}, "← back to the review queue" } }
         match found {
@@ -646,8 +646,8 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
     };
     rsx! {
         div { class: "flex gap-2 items-center flex-wrap",
-            button { class: "btn btn-primary btn-md", disabled: !writes, onclick: approve, "Approve" }
-            button { class: "btn btn-destructive btn-md", disabled: !writes, onclick: reject, "Reject" }
+            button { class: "btn btn-primary btn-md", disabled: !writes, onclick: approve, {crate::i18n::t("approve")} }
+            button { class: "btn btn-destructive btn-md", disabled: !writes, onclick: reject, {crate::i18n::t("reject")} }
             if !state().is_empty() { span { class: "text-danger text-sm", "{state}" } }
         }
     }
