@@ -303,14 +303,16 @@ struct DsarOutcome {
     certified_at: String,
 }
 
-/// `GET /tombstones?subject=&since=` — the queryable deletion registry (the
-/// EDPB Coordinated Enforcement Framework ask). Hash-only, append-only rows.
-/// `subject` filters by the `owner:<subject>` purge reason; `since` filters
-/// by `purged_at`. `?principal=` is reserved (tombstones are tenant-global).
+/// `GET /tombstones?subject=&since=&limit=` — the queryable deletion registry
+/// (the EDPB Coordinated Enforcement Framework ask). Hash-only, append-only
+/// rows. `subject` filters by the `owner:<subject>` purge reason; `since`
+/// filters by `purged_at`; `limit` caps the page (default 100, clamped to
+/// `MAX_TOMBSTONES`). `?principal=` is reserved (tombstones are tenant-global).
 #[derive(Debug, Default, Deserialize)]
 pub struct TombstonesQuery {
     pub subject: Option<String>,
     pub since: Option<i64>,
+    pub limit: Option<i64>,
 }
 
 pub async fn list_tombstones(
@@ -322,6 +324,7 @@ pub async fn list_tombstones(
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let subject = q.subject.clone();
     let since = q.since;
+    let limit = q.limit.map(|l| l.clamp(1, MAX_TOMBSTONES)).unwrap_or(100);
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
             .get()
@@ -345,7 +348,7 @@ pub async fn list_tombstones(
             sql.push_str(&clauses.join(" AND "));
         }
         sql.push_str(" ORDER BY purged_at DESC LIMIT ?");
-        params.push(Box::new(MAX_TOMBSTONES));
+        params.push(Box::new(limit));
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| HandlerError::internal(e.to_string()))?;

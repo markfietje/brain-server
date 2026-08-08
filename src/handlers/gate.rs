@@ -748,7 +748,7 @@ pub async fn export(
         {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, content, node_kind, authority, assertion_kind, confidence,
+                    "SELECT id, content, node_kind, source, authority, assertion_kind, confidence,
                             access_scope, owner, observed_at, valid_from, valid_to,
                             content_hash
                      FROM knowledge ORDER BY id",
@@ -760,15 +760,16 @@ pub async fn export(
                         "id": r.get::<_, i64>(0)?,
                         "content": r.get::<_, String>(1)?,
                         "memory_kind": r.get::<_, String>(2)?,
-                        "authority": r.get::<_, Option<f32>>(3)?,
-                        "assertion_kind": r.get::<_, String>(4)?,
-                        "confidence": r.get::<_, f32>(5)?,
-                        "access_scope": r.get::<_, String>(6)?,
-                        "owner": r.get::<_, Option<String>>(7)?,
-                        "observed_at": r.get::<_, Option<String>>(8)?,
-                        "valid_from": r.get::<_, Option<String>>(9)?,
-                        "valid_to": r.get::<_, Option<String>>(10)?,
-                        "content_hash": r.get::<_, Option<String>>(11)?,
+                        "source": r.get::<_, String>(3)?,
+                        "authority": r.get::<_, Option<f32>>(4)?,
+                        "assertion_kind": r.get::<_, String>(5)?,
+                        "confidence": r.get::<_, f32>(6)?,
+                        "access_scope": r.get::<_, String>(7)?,
+                        "owner": r.get::<_, Option<String>>(8)?,
+                        "observed_at": r.get::<_, Option<String>>(9)?,
+                        "valid_from": r.get::<_, Option<String>>(10)?,
+                        "valid_to": r.get::<_, Option<String>>(11)?,
+                        "content_hash": r.get::<_, Option<String>>(12)?,
                     }))
                 })
                 .map_err(|e| HandlerError::internal(e.to_string()))?;

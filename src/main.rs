@@ -8766,6 +8766,11 @@ Final paragraph after the rule.";
     #[test]
     fn v1_export_import_roundtrip_preserves_data() {
         use tempfile::NamedTempFile;
+        // Register sqlite_vec BEFORE migration (migration builds the vec0
+        // index). Same pattern as every other test that runs run_migration —
+        // otherwise this test passes only because a sibling test's global
+        // register_sqlite_vec() side-effect leaked in.
+        register_sqlite_vec();
         let src = NamedTempFile::new().expect("src temp file");
         let mgr = SqliteConnectionManager::file(src.path());
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("src pool");
