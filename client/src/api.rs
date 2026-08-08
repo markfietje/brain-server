@@ -26,10 +26,21 @@ struct TokenState {
     refresh: Option<String>,
 }
 
+/// v1.16.7 M7.2: the shared refresh single-flight guard. Held across a clone
+/// boundary (inside the `Arc`) so two concurrent panel requests awaiting the
+/// mutex can't both present the SAME refresh token — the loser would be burned
+/// by brain-server's `refresh_reuse_detected` (v1.12.2) and logged out. The
+/// winner rotates the pair; the waiter re-reads the NEW token and does a legit
+/// rotation (no reuse). Serializing the read+POST is the whole fix.
+struct SharedTokens {
+    state: RwLock<TokenState>,
+    refresh_lock: tokio::sync::Mutex<()>,
+}
+
 #[derive(Clone)]
 pub struct ApiClient {
     base: String,
-    tokens: Arc<RwLock<TokenState>>,
+    tokens: Arc<SharedTokens>,
     /// v1.16.0 M2.1: the authenticated principal (identity pillar). `None` in
     /// loopback mode (no identity to claim); `Some(sub)` in remote/JWT mode.
     principal: Option<String>,
@@ -89,6 +100,13 @@ impl ApiClient {
         Self::with_principal(base, token, None)
     }
 
+    /// v1.16.7 M7.1: the pre-connect / signed-out state (empty base, no token,
+    /// no principal). The logout flow sets this back into the shared signal so
+    /// every panel stops using the old identity.
+    pub fn unconfigured() -> Self {
+        Self::new("", None)
+    }
+
     /// v1.16.0 M2.1: connect with a known principal (remote/JWT mode). A
     /// v1.16.5 M2 refinement: when `principal` is `None` but the access token
     /// is a JWT, the principal is derived from its `sub` claim (the identity
@@ -102,10 +120,13 @@ impl ApiClient {
         let principal = principal.or_else(|| derive_principal(token.as_deref()));
         Self {
             base: base.into().trim_end_matches('/').to_string(),
-            tokens: Arc::new(RwLock::new(TokenState {
-                access: token,
-                refresh: None,
-            })),
+            tokens: Arc::new(SharedTokens {
+                state: RwLock::new(TokenState {
+                    access: token,
+                    refresh: None,
+                }),
+                refresh_lock: tokio::sync::Mutex::new(()),
+            }),
             principal,
             http: reqwest::Client::new(),
         }
@@ -122,7 +143,10 @@ impl ApiClient {
         let principal = derive_principal(access.as_deref());
         Self {
             base: base.into().trim_end_matches('/').to_string(),
-            tokens: Arc::new(RwLock::new(TokenState { access, refresh })),
+            tokens: Arc::new(SharedTokens {
+                state: RwLock::new(TokenState { access, refresh }),
+                refresh_lock: tokio::sync::Mutex::new(()),
+            }),
             principal,
             http: reqwest::Client::new(),
         }
@@ -131,7 +155,7 @@ impl ApiClient {
     /// v1.16.5 M5.2: `true` when the current access token is a JWT within
     /// `REFRESH_AHEAD_SECS` of expiry AND a refresh token is available.
     pub fn should_preemptive_refresh(&self) -> bool {
-        let state = self.tokens.read().expect("token lock poisoned");
+        let state = self.tokens.state.read().expect("token lock poisoned");
         state.refresh.is_some()
             && state
                 .access
@@ -188,6 +212,7 @@ impl ApiClient {
 
     fn access_token(&self) -> Option<String> {
         self.tokens
+            .state
             .read()
             .expect("token lock poisoned")
             .access
@@ -196,6 +221,7 @@ impl ApiClient {
 
     fn refresh_token(&self) -> Option<String> {
         self.tokens
+            .state
             .read()
             .expect("token lock poisoned")
             .refresh
@@ -205,7 +231,16 @@ impl ApiClient {
     /// v1.16.5 M3.2: `POST /auth/refresh` — rotates the chain, stores the new
     /// pair in the shared state. brain-server serializes concurrent rotations
     /// under `BEGIN IMMEDIATE`; the loser gets 403 `refresh_reuse_detected`.
+    ///
+    /// v1.16.7 M7.2: single-flight. The `refresh_lock` serializes the read+POST
+    /// across every clone sharing this `Arc`. A concurrent caller awaits the
+    /// mutex, then re-reads the ROTATED refresh token (the winner already wrote
+    /// it) and does a fresh rotation — never presenting the same stale token, so
+    /// the server never burns a legitimate session on a reuse race.
     async fn refresh(&self) -> Result<(), ApiError> {
+        // Held across the await; clippy's `await_holding_lock` does not flag a
+        // `tokio::sync::Mutex` (it's an async-aware guard, not a std RwLock).
+        let _serialize = self.tokens.refresh_lock.lock().await;
         let refresh_tok = match self.refresh_token() {
             Some(t) => t,
             None => return Err(ApiError::Status(401, "no refresh token".into())),
@@ -224,7 +259,7 @@ impl ApiClient {
             return Err(ApiError::Status(code, body));
         }
         let pair: TokenPair = resp.json().await.map_err(ApiError::Network)?;
-        let mut state = self.tokens.write().expect("token lock poisoned");
+        let mut state = self.tokens.state.write().expect("token lock poisoned");
         state.access = Some(pair.access_token);
         state.refresh = Some(pair.refresh_token);
         Ok(())
@@ -373,6 +408,13 @@ impl ApiClient {
     /// `kind=auth`, then the client filters `status == "denied"`).
     pub async fn audit_kind(&self, kind: &str) -> Result<AuditResponse, ApiError> {
         self.get_json(&format!("/audit?kind={kind}")).await
+    }
+
+    /// v1.16.7 M4: GET /audit?limit=N&offset=N — one page of the hash-chain
+    /// browser (newest-first). The audit panel accumulates pages via this.
+    pub async fn audit_page(&self, offset: usize, limit: usize) -> Result<AuditResponse, ApiError> {
+        self.get_json(&format!("/audit?limit={limit}&offset={offset}"))
+            .await
     }
 
     /// GET /audit/verify — chain integrity.

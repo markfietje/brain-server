@@ -23,9 +23,8 @@ use panels::{audit, health, recall, review, security, subjects};
 mod api;
 mod panels;
 // v1.16.6 M2: the secure-token storage seam (OS keyring on non-web, no-op on
-// web). `allow(dead_code)` covers the web no-op fns (compiled but never called
-// in the wasm build — same class as the api wire types, ponytail comment above).
-#[allow(dead_code)]
+// web). save/load (connect + auto-reconnect) and delete (v1.16.7 M7.1 logout)
+// each have a caller in every cfg variant, so no `allow(dead_code)`.
 mod storage;
 
 use api::ApiClient;
@@ -121,6 +120,8 @@ struct UiState {
     auth_failures_count: Signal<u32>,
     /// M2.2: the open context drawer's content (None = closed).
     drawer: Signal<Option<DrawerContent>>,
+    /// v1.16.7 M5: the command palette's open state.
+    palette_open: Signal<bool>,
 }
 
 /// M2.2: typed drawer content. Panels push already-fetched data in (no
@@ -176,6 +177,9 @@ enum Route {
     #[layout(AppShell)]
     #[route("/review")]
     Review {},
+    /// v1.16.7 M1: a deep-linkable specific proposal (share a review card).
+    #[route("/review/:proposal_id")]
+    ReviewDetail { proposal_id: i64 },
     #[route("/recall")]
     Recall {},
     /// M4.2: deep-linkable decision-path artifact (`?trace=true` → trace_id).
@@ -183,6 +187,9 @@ enum Route {
     RecallTrace { trace_id: i64 },
     #[route("/subjects")]
     Subjects {},
+    /// v1.16.7 M1: a deep-linkable deletion certificate (GDPR Art 17 evidence).
+    #[route("/subjects/certificate/:dsar_id")]
+    DsarDetail { dsar_id: i64 },
     #[route("/security")]
     Security {},
     #[route("/audit")]
@@ -215,6 +222,7 @@ fn app() -> Element {
         audit_dirty: Signal::new(false),
         auth_failures_count: Signal::new(0),
         drawer: Signal::new(None),
+        palette_open: Signal::new(false),
     });
 
     // M1.1: the single background probe. Owns its timer; survives panel
@@ -516,7 +524,7 @@ fn Connect() -> Element {
 /// stay real `<button>`s.
 #[component]
 fn AppShell() -> Element {
-    let api = use_context::<Signal<ApiClient>>();
+    let mut api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let conn = (ui.conn)();
     let writes = (ui.writes_enabled)();
@@ -532,9 +540,24 @@ fn AppShell() -> Element {
     let pending_reverify = (ui.pending_reverify)();
 
     let security_badge = quarantine as u64 + auth_fail as u64;
+    let palette_open = (ui.palette_open)();
+
+    // v1.16.7 M5: cmd/ctrl+K toggles the command palette. Handled on the shell
+    // root (focused by default when the app has focus); the palette's own input
+    // captures its keys while open.
+    let toggle_palette = move |e: Event<KeyboardData>| {
+        let mut ui = ui;
+        if e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER) {
+            if let Key::Character(c) = e.key() {
+                if c.eq_ignore_ascii_case("k") {
+                    ui.palette_open.set(!(ui.palette_open)());
+                }
+            }
+        }
+    };
 
     rsx! {
-        div { class: "flex min-h-screen bg-background text-foreground",
+        div { class: "flex min-h-screen bg-background text-foreground", onkeydown: toggle_palette,
             // Fixed sidebar: brand + primary nav + identity footer.
             aside {
                 class: "nav-rail sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card",
@@ -567,6 +590,20 @@ fn AppShell() -> Element {
                         p { class: "mt-1 truncate text-xs text-muted-foreground tabular", "acting as {p}" }
                     } else {
                         p { class: "mt-1 text-xs text-ink-faint", "loopback" }
+                    }
+                    // v1.16.7 M7.1: explicit logout. Clears the OS-keyring token,
+                    // resets the in-memory ApiClient, and returns to Connect so a
+                    // signed-out operator never auto-reconnects with a saved token.
+                    if api().is_configured() {
+                        button {
+                            class: "btn btn-ghost btn-sm w-full mt-2 justify-center",
+                            onclick: move |_| {
+                                storage::delete_token();
+                                api.set(ApiClient::unconfigured());
+                                navigator().replace(Route::Connect {});
+                            },
+                            "Sign out"
+                        }
                     }
                 }
             }
@@ -630,6 +667,177 @@ fn AppShell() -> Element {
                 "Reconnected — verifying audit chain before enabling writes…"
             }
         }
+        // v1.16.7 M5: the command palette overlay (cmd/ctrl+K). Rendered last so
+        // it sits above the drawer.
+        if palette_open {
+            CommandPalette { }
+        }
+    }
+}
+
+/// v1.16.7 M5: the command palette. A cmd/ctrl+K overlay listing navigation
+/// targets + actions, filterable by typing, keyboard-navigable (↑/↓/Enter/Esc).
+/// `Command` is a plain enum so the list + filtering are pure (testable); the
+/// component just maps a selection to a navigation or a sign-out.
+#[derive(Clone, PartialEq)]
+enum Command {
+    Navigate(Route),
+    SignOut,
+}
+
+/// M5 pure: the static command list. Navigation targets mirror the nav rail;
+/// SignOut is the one action (needs a configured client to be useful).
+fn palette_commands(configured: bool) -> Vec<Command> {
+    let mut v = vec![
+        Command::Navigate(Route::Review {}),
+        Command::Navigate(Route::Recall {}),
+        Command::Navigate(Route::Subjects {}),
+        Command::Navigate(Route::Security {}),
+        Command::Navigate(Route::Audit {}),
+        Command::Navigate(Route::Health {}),
+    ];
+    if configured {
+        v.push(Command::SignOut);
+    }
+    v
+}
+
+/// M5 pure: case-insensitive substring filter over a command's label.
+fn filter_commands(commands: &[Command], needle: &str) -> Vec<Command> {
+    let n = needle.trim().to_lowercase();
+    if n.is_empty() {
+        return commands.to_vec();
+    }
+    commands
+        .iter()
+        .filter(|c| command_label(c).to_lowercase().contains(&n))
+        .cloned()
+        .collect()
+}
+
+/// M5 pure: a command's search label.
+fn command_label(c: &Command) -> &'static str {
+    match c {
+        Command::Navigate(Route::Review {}) => "Review queue",
+        Command::Navigate(Route::Recall {}) => "Recall",
+        Command::Navigate(Route::Subjects {}) => "Subjects (DSAR)",
+        Command::Navigate(Route::Security {}) => "Security",
+        Command::Navigate(Route::Audit {}) => "Audit",
+        Command::Navigate(Route::Health {}) => "Health",
+        Command::SignOut => "Sign out",
+        // The deep-link / Connect variants never appear in the palette list.
+        Command::Navigate(_) => "Open",
+    }
+}
+
+#[component]
+fn CommandPalette() -> Element {
+    let mut ui = use_context::<UiState>();
+    let mut api = use_context::<Signal<ApiClient>>();
+    let configured = api().is_configured();
+    let nav = navigator();
+    let mut needle = use_signal(String::new);
+    let mut cursor = use_signal(|| 0usize);
+
+    let commands = filter_commands(&palette_commands(configured), &needle());
+    if cursor() >= commands.len().max(1) {
+        cursor.set(0);
+    }
+
+    // `select` does its signal writes inside `spawn` (moving copies of the Copy
+    // signals in), so the closure itself only *copies* its captures → it is
+    // `Fn` + `Copy`, which every event handler below can grab without a borrow
+    // conflict. Direct `Signal::set/write` would force `FnMut` and break that.
+    let select = move |c: &Command| {
+        match c {
+            Command::Navigate(route) => {
+                nav.push(route.clone());
+            }
+            Command::SignOut => {
+                spawn(async move {
+                    storage::delete_token();
+                    *api.write() = ApiClient::unconfigured();
+                });
+            }
+        }
+        spawn(async move {
+            *ui.palette_open.write() = false;
+        });
+    };
+
+    let close_ui = ui;
+    let cmds = commands.clone();
+    let select_copy = select;
+    let cursor_copy = cursor;
+    let items = commands.clone();
+
+    rsx! {
+        div {
+            class: "fixed inset-0 z-50 bg-surface-overlay/70 flex items-start justify-center pt-24 p-4",
+            role: "dialog", "aria-modal": "true", "aria-label": "command palette",
+            onmousedown: move |_| {
+                *ui.palette_open.write() = false;
+            },
+            div {
+                class: "card w-full max-w-md bg-popover shadow-xl",
+                onmousedown: move |e| e.stop_propagation(),
+                onkeydown: move |e| {
+                    let mut cursor = cursor_copy;
+                    let mut close_ui = close_ui;
+                    let cmds = cmds.clone();
+                    match e.key() {
+                        Key::Escape => { *close_ui.palette_open.write() = false; }
+                        Key::ArrowDown => cursor.set((cursor() + 1).min(cmds.len().saturating_sub(1))),
+                        Key::ArrowUp => cursor.set(cursor().saturating_sub(1)),
+                        Key::Enter => {
+                            let idx = cursor();
+                            if let Some(c) = cmds.get(idx) {
+                                select_copy(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                },
+                input {
+                    class: "input w-full border-b border-border rounded-b-none",
+                    placeholder: "type a command… (↑↓ to move, Enter to run, Esc to close)",
+                    value: "{needle}",
+                    oninput: move |e| {
+                        let mut cursor = cursor;
+                        needle.set(e.value());
+                        cursor.set(0);
+                    },
+                    onmounted: move |el| {
+                        let el = el.data();
+                        spawn(async move { let _ = el.set_focus(true).await; });
+                    },
+                    "aria-label": "command filter",
+                }
+                ul { class: "max-h-80 overflow-y-auto p-1.5",
+                    if items.is_empty() {
+                        li { class: "px-3 py-2 text-sm text-muted-foreground", "no match" }
+                    }
+                    for (i, c) in items.clone().into_iter().enumerate() {
+                        li {
+                            class: if cursor() == i {
+                                "cursor-pointer rounded-md px-3 py-2 text-sm bg-accent/10 text-accent"
+                            } else {
+                                "cursor-pointer rounded-md px-3 py-2 text-sm"
+                            },
+                            onmouseenter: move |_| {
+                                let mut cursor = cursor;
+                                cursor.set(i);
+                            },
+                            onclick: move |_ev| {
+                                let c = c.clone();
+                                select(&c);
+                            },
+                            "{command_label(&c)}"
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -688,9 +896,34 @@ fn TabLink(
     }
 }
 
-/// M2.2: the context drawer. Esc closes (clears the signal); full Radix
-/// Tab-cycling focus trap is the v1.18.0 pass. The content is already-fetched
-/// data pushed by a panel (no duplicate fetch).
+/// v1.16.7 M7.3: a real Tab-cycling focus trap for a dialog, hand-rolled
+/// (`dx components add dialog` needs the registry, which is unreachable here —
+/// ponytail ceiling). Runs a small JS snippet via `document::eval` to gather
+/// the focusable descendants of the dialog and wrap Tab/Shift+Tab between the
+/// first and last, so keyboard focus can't escape into the page behind the
+/// modal. The host dialog keeps its own `onkeydown` for Escape (not handled
+/// here, so callers can own it).
+async fn focus_trap(dialog_selector: &str, is_shift_tab: bool) {
+    let js = format!(
+        r#"
+const root = document.querySelector({dialog_selector:?});
+if (root) {{
+  const f = Array.from(root.querySelectorAll(
+    'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'));
+  if (f.length === 0) return;
+  const i = f.indexOf(document.activeElement);
+  const next = {is_shift_tab} ? (i <= 0 ? f[f.length - 1] : f[i - 1]) : (i < 0 ? f[0] : f[(i + 1) % f.length]);
+  next.focus();
+  if (next.tagName === 'A') next.setAttribute('tabindex', '0');
+}}
+"#
+    );
+    let _ = document::eval(&js).await;
+}
+
+/// M2.2: the context drawer. Esc closes (clears the signal); Tab-cycling focus
+/// trap (M7.3) wraps keyboard focus inside the dialog. The content is
+/// already-fetched data pushed by a panel (no duplicate fetch).
 #[component]
 fn Drawer() -> Element {
     let mut ui = use_context::<UiState>();
@@ -703,9 +936,12 @@ fn Drawer() -> Element {
             "aria-label": "detail drawer",
             tabindex: "0",
             onkeydown: move |e: Event<KeyboardData>| {
-                // Esc (and the web `Escape` code) closes the drawer.
+                // Esc closes; Tab / Shift+Tab cycle focus within the dialog.
                 if e.key() == Key::Escape {
                     ui.drawer.set(None);
+                } else if e.key() == Key::Tab {
+                    let shift = e.modifiers().contains(Modifiers::SHIFT);
+                    spawn(async move { focus_trap(".drawer", shift).await; });
                 }
             },
             div { class: "flex justify-between items-center mb-3",
@@ -780,6 +1016,11 @@ fn conn_label(conn: Conn) -> &'static str {
 fn Review() -> Element {
     review::panel()
 }
+/// v1.16.7 M1: the deep-linkable single proposal (`/review/:proposal_id`).
+#[component]
+fn ReviewDetail(proposal_id: i64) -> Element {
+    review::detail(proposal_id)
+}
 #[component]
 fn Recall() -> Element {
     recall::panel()
@@ -793,6 +1034,11 @@ fn RecallTrace(trace_id: i64) -> Element {
 #[component]
 fn Subjects() -> Element {
     subjects::panel()
+}
+/// v1.16.7 M1: the deep-linkable deletion certificate (`/subjects/certificate/:dsar_id`).
+#[component]
+fn DsarDetail(dsar_id: i64) -> Element {
+    subjects::detail(dsar_id)
 }
 #[component]
 fn Security() -> Element {
@@ -995,5 +1241,35 @@ mod tests {
             }
         }
         out
+    }
+
+    /// v1.16.7 M5: the palette lists the six nav targets + (only when a client
+    /// is configured) Sign out.
+    #[test]
+    fn palette_lists_nav_targets_and_conditional_signout() {
+        let configured = palette_commands(true);
+        let count: usize = configured
+            .iter()
+            .filter(|c| matches!(c, Command::Navigate(_)))
+            .count();
+        assert_eq!(count, 6, "the six nav targets");
+        assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
+        let anonymous = palette_commands(false);
+        assert!(
+            !anonymous.iter().any(|c| matches!(c, Command::SignOut)),
+            "no sign-out for an unconfigured client"
+        );
+    }
+
+    /// v1.16.7 M5: filtering is a case-insensitive substring match; empty
+    /// needle returns everything.
+    #[test]
+    fn palette_filter_is_case_insensitive_substring() {
+        let commands = palette_commands(true);
+        assert_eq!(filter_commands(&commands, "").len(), commands.len());
+        let sec = filter_commands(&commands, "SECURITY");
+        assert_eq!(sec.len(), 1);
+        assert_eq!(command_label(&sec[0]), "Security");
+        assert!(filter_commands(&commands, "zzz-no-such").is_empty());
     }
 }

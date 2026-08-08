@@ -12,7 +12,7 @@ use crate::panels::{use_document_title, PageTitle};
 use crate::UiState;
 use dioxus::prelude::*;
 
-const MAX_ROWS: usize = 100; // mirrors the backend's default audit limit
+const PAGE: usize = 100; // page size for the server-side audit pagination (M4)
 
 /// M7: the client-side filter state. `None`/empty = unconstrained on that axis.
 #[derive(Clone, Default, PartialEq)]
@@ -60,47 +60,82 @@ pub fn panel() -> Element {
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)();
-    let audit = use_resource(move || {
-        let api = api();
-        async move { api.audit().await }
-    });
     let mut filter = use_signal(AuditFilter::default);
+    // v1.16.7 M4: server-side pagination. Accumulate pages (newest-first); the
+    // first page loads here, "Load more" appends the next offset until the
+    // server returns a short page (no more rows).
+    let mut events = use_signal(Vec::<AuditRow>::new);
+    let mut offset = use_signal(|| 0usize);
+    let mut has_more = use_signal(|| true);
+    let mut page_err = use_signal(|| None::<String>);
+    let refresh = use_signal(|| 0u32);
+
+    // Keep the first-page resource alive (not `let _`, which clippy flags as a
+    // dropped future); a named binding holds it across re-renders.
+    let _first_page = use_resource(move || {
+        let api = api();
+        let _ = refresh();
+        async move {
+            match api.audit_page(0, PAGE).await {
+                Ok(resp) => {
+                    events.set(resp.events.clone());
+                    has_more.set(resp.events.len() >= PAGE);
+                    offset.set(resp.events.len());
+                    page_err.set(None);
+                }
+                Err(e) => page_err.set(Some(e.to_string())),
+            }
+        }
+    });
+
+    let load_more = move |_| {
+        let api = api();
+        let off = offset();
+        spawn(async move {
+            match api.audit_page(off, PAGE).await {
+                Ok(resp) => {
+                    let mut all = events();
+                    let mut next = resp.events;
+                    let tail = all.last().map(|r| r.id);
+                    // Server pages are newest-first and disjoint; guard against
+                    // a stray duplicate boundary row so ids never repeat.
+                    if let Some(tid) = tail {
+                        next.retain(|r| r.id < tid);
+                    }
+                    let n = next.len();
+                    all.extend(next);
+                    events.set(all);
+                    has_more.set(n >= PAGE);
+                    offset.set(off + n);
+                    page_err.set(None);
+                }
+                Err(e) => page_err.set(Some(e.to_string())),
+            }
+        });
+    };
 
     // The distinct kinds present in the data drive the kind dropdown (so the
     // filter reflects what's actually there, not a hardcoded list).
-    let kinds: Vec<String> = match &*audit.read() {
-        Some(Ok(resp)) => {
-            let mut k: Vec<String> = resp.events.iter().map(|r| r.kind.clone()).collect();
-            k.sort();
-            k.dedup();
-            k
-        }
-        _ => Vec::new(),
+    let kinds: Vec<String> = {
+        let mut k: Vec<String> = events().iter().map(|r| r.kind.clone()).collect();
+        k.sort();
+        k.dedup();
+        k
     };
 
-    let rows = match &*audit.read() {
-        Some(Ok(resp)) => filter_audit(
-            resp.events
-                .iter()
-                .take(MAX_ROWS)
-                .cloned()
-                .collect::<Vec<_>>()
-                .as_slice(),
-            &filter(),
-        ),
-        _ => Vec::new(),
-    };
+    let rows = filter_audit(&events(), &filter());
 
     rsx! {
         PageTitle { "Audit" }
         div { class: "card mt-2",
             div { class: "card-body",
-                match &*audit.read() {
-                    Some(Ok(resp)) => rsx! {
+                match (events().is_empty(), &page_err()) {
+                    (_, Some(e)) => rsx! { p { class: "text-danger text-sm", "audit failed: {e}" } },
+                    (true, None) => rsx! { p { class: "text-muted-foreground text-sm", "no events" } },
+                    (false, None) => rsx! {
                         p { class: "text-muted-foreground text-sm",
-                            "{resp.events.len()} events loaded · {rows.len()} after filter (hash-only — no raw content)" }
+                            "{events().len()} events loaded · {rows.len()} after filter (hash-only — no raw content)" }
                     },
-                    _ => rsx! {},
                 }
                 // M7.1: client-side filter controls.
                 div { class: "flex gap-2 my-3 flex-wrap items-center",
@@ -149,6 +184,12 @@ pub fn panel() -> Element {
                         },
                         "Export JSON"
                     }
+                    // M7.5: announce the export to screen readers.
+                    if !rows.is_empty() {
+                        span { class: "sr-only", role: "status", "aria-live": "polite",
+                            "{rows.len()} audit rows exported"
+                        }
+                    }
                 }
                 div { class: "overflow-x-auto" }
                 table { class: "table",
@@ -174,6 +215,18 @@ pub fn panel() -> Element {
                                 }
                                 td { class: "font-mono text-xs", "{row.target_hash}" }
                             }
+                        }
+                    }
+                }
+                // v1.16.7 M4: paginated tail. Load the next page (append) until
+                // the server returns a short page. A real scroll-detect needs
+                // viewport JS; a button is the honest no-JS equivalent.
+                if has_more() {
+                    div { class: "mt-3 text-center",
+                        button {
+                            class: "btn btn-outline btn-md",
+                            onclick: load_more,
+                            "Load more ({events().len()} loaded)"
                         }
                     }
                 }
@@ -274,5 +327,25 @@ mod tests {
         assert!(ts_on_or_after("2026-08-08T12:00:00Z", "2026-08-08"));
         assert!(ts_on_or_after("2026-08-09T00:00:00Z", "2026-08-08"));
         assert!(!ts_on_or_after("2026-07-31T23:59:59Z", "2026-08-01"));
+    }
+
+    /// v1.16.7 M4: merging the next page never repeats a boundary id. A server
+    /// that (defensively) returned an overlapping boundary row is deduped.
+    #[test]
+    fn merge_page_never_repeats_boundary_id() {
+        let page0 = vec![
+            row(4, "auth", "a", "ok", "t4"),
+            row(3, "auth", "a", "ok", "t3"),
+        ];
+        let page1 = vec![
+            row(3, "auth", "a", "ok", "t3"),
+            row(2, "auth", "a", "ok", "t2"),
+        ];
+        let mut all = page0;
+        let tid = all.last().map(|r| r.id).unwrap();
+        let mut next = page1;
+        next.retain(|r| r.id < tid);
+        all.extend(next);
+        assert_eq!(all.iter().map(|r| r.id).collect::<Vec<_>>(), vec![4, 3, 2]);
     }
 }

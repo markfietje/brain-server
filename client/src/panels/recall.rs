@@ -13,6 +13,22 @@ use crate::Route;
 use crate::{DrawerContent, UiState};
 use dioxus::prelude::*;
 
+/// v1.16.7 M6: search-as-you-type debounce. Wait this long after the last
+/// keystroke before firing `/recall`, so a fast typist sends one request per
+/// pause instead of one per character. 300ms is the 2026 industry default.
+const DEBOUNCE_MS: u32 = 300;
+
+/// v1.16.7 M6 pure: the debounce cancel-safety rule. `gen_at_spawn` is the
+/// keystroke generation when the delayed commit was scheduled; `gen_now` is the
+/// current generation when the delay elapses. Commit only if they match — a
+/// newer keystroke bumped the generation, so the scheduled value is stale and
+/// must be dropped (the newer keystroke scheduled its own commit). This is the
+/// cancel-safety check that replaces real future-cancellation (Dioxus does not
+/// cancel `spawn`ed futures when an effect re-runs).
+fn debounce_commit(gen_at_spawn: u64, gen_now: u64) -> bool {
+    gen_at_spawn == gen_now
+}
+
 /// Relevance tier → numeric threshold for the `drop_low_relevance` filter.
 /// `high` keeps only high; `medium` keeps high+medium; `low`/None keeps all.
 fn tier_rank(tier: Option<&str>) -> u8 {
@@ -38,9 +54,36 @@ pub fn drop_low_relevance(hits: Vec<Hit>, min: Option<&str>) -> Vec<Hit> {
 pub fn panel() -> Element {
     use_document_title(|| "Recall — brain".into());
     let api = use_context::<Signal<ApiClient>>();
+    // v1.16.7 M6: two signals — `input` (raw, per keystroke, drives the box) and
+    // `query` (debounced, drives the use_resource). The resource never sees a
+    // per-keystroke value, so it only refetches once per pause.
+    let mut input = use_signal(String::new);
     let mut query = use_signal(String::new);
+    // The keystroke generation: bumped on every input; a delayed commit commits
+    // only if its generation still matches (cancel-safe — see `debounce_commit`).
+    let mut gen = use_signal(|| 0u64);
     let mut trace = use_signal(|| false); // M4.2: ?trace=true toggle
     let mut min_rel = use_signal(String::new); // M4.1: high|medium|low|""
+
+    // v1.16.7 M6: schedule a debounced commit on every keystroke. The delayed
+    // future sleeps via the JS engine (dependency-free, mirrors probe_sleep in
+    // main.rs), then checks the generation — a newer keystroke cancels it.
+    let oninput = move |e: Event<FormData>| {
+        input.set(e.value());
+        gen += 1;
+        let gen_at_spawn = gen();
+        let val = input();
+        spawn(async move {
+            // Dependency-free sleep: web + desktop webviews both have a JS engine.
+            let _ = document::eval(&format!(
+                "return await new Promise(r => setTimeout(r, {DEBOUNCE_MS}));"
+            ))
+            .await;
+            if debounce_commit(gen_at_spawn, gen()) {
+                query.set(val);
+            }
+        });
+    };
 
     // use_resource subscribes to `query` + `trace` + `min_rel` → reruns on change.
     let recall = use_resource(move || {
@@ -59,8 +102,8 @@ pub fn panel() -> Element {
         input {
             class: "input w-full",
             placeholder: "query brain-server (min 5 chars)…",
-            value: "{query}",
-            oninput: move |e| query.set(e.value()),
+            value: "{input}",
+            oninput,
             "aria-label": "recall query",
         }
         div { class: "flex gap-4 my-3 items-center text-sm flex-wrap",
@@ -346,5 +389,17 @@ mod tests {
         assert_eq!(relevance_color("medium"), "text-info");
         assert_eq!(relevance_color("low"), "text-ink-faint");
         assert_eq!(relevance_color("unknown"), "");
+    }
+
+    /// v1.16.7 M6: the debounce cancel-safety rule. A delayed commit fires only
+    /// if no newer keystroke bumped the generation in the meantime.
+    #[test]
+    fn debounce_commits_only_when_generation_unchanged() {
+        // Generation matched at spawn and now → commit.
+        assert!(debounce_commit(3, 3));
+        // A newer keystroke bumped the generation → the scheduled value is stale.
+        assert!(!debounce_commit(3, 4));
+        // An older/lower generation can't be current → never commits.
+        assert!(!debounce_commit(5, 3));
     }
 }

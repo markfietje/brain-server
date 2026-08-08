@@ -29,6 +29,8 @@ CSS="$(basename "$(ls -t "$SRC"/assets/tailwind-*.css | head -1)")"
 
 rm -rf dist && mkdir -p dist/assets
 cp "$SRC/index.html" dist/
+cp pwa/manifest.webmanifest dist/manifest.webmanifest
+cp pwa/sw.js dist/sw.js
 # Resolve the JS name from the freshly-written index.html itself (NOT a glob —
 # dx leaves stale hashed assets in target/ between rebuilds and a bare glob
 # races it, matching an old build while index.html references the new one).
@@ -45,9 +47,28 @@ python3 - dist/index.html "$CSS" <<'EOF'
 import sys
 idx, css = sys.argv[1], sys.argv[2]
 html = open(idx).read()
-link = f'    <link rel="stylesheet" href="/app/assets/{css}" type="text/css">'
+css_link = f'    <link rel="stylesheet" href="/app/assets/{css}" type="text/css">'
+manifest = '    <link rel="manifest" href="/app/manifest.webmanifest">'
+theme = '    <meta name="theme-color" content="#0b0d10">'
+sw_reg = ('    <script>\n'
+          '        if ("serviceWorker" in navigator) {\n'
+          '            window.addEventListener("load", () =>\n'
+          '                navigator.serviceWorker.register("/app/sw.js"));\n'
+          '        }\n'
+          '    </script>')
+# M7.6 RTL: dir="auto" lets the browser choose LTR/RTL per element content,
+# so memory text (e.g. Arabic/Hebrew notes) flows correctly while the shell
+# stays LTR — no JS, no i18n extraction (that's a v2.x concern).
+if 'dir="auto"' not in html and '<html' in html:
+    html = html.replace('<html', '<html dir="auto"', 1)
 if 'rel="stylesheet"' not in html:
-    html = html.replace('</head>', link + '\n    </head>')
+    html = html.replace('</head>', css_link + '\n    </head>')
+if 'manifest.webmanifest' not in html:
+    html = html.replace('</head>', manifest + '\n    </head>')
+if 'theme-color' not in html:
+    html = html.replace('</head>', theme + '\n    </head>')
+if 'sw.js' not in html:
+    html = html.replace('</body>', sw_reg + '\n    </body>')
 open(idx, 'w').write(html)
 EOF
 

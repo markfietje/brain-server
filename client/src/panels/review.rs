@@ -10,7 +10,7 @@
 
 use crate::api::{error_message, ApiClient, ApiError, Proposal};
 use crate::panels::{use_document_title, PageTitle};
-use crate::{DrawerContent, UiState};
+use crate::{Route, UiState};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -80,7 +80,7 @@ fn batch_summary(outcomes: &HashMap<i64, RowOutcome>) -> Element {
     let s = batch_outcome(outcomes);
     if (s.done + s.already_done + s.failed) > 0 && s.pending == 0 {
         rsx! {
-            p { class: "text-xs text-muted-foreground mb-1",
+            p { class: "text-xs text-muted-foreground mb-1", role: "status", "aria-live": "polite",
                 "batch: {s.done} approved · {s.already_done} already decided · {s.failed} failed"
             }
         }
@@ -310,7 +310,6 @@ pub fn panel() -> Element {
                             writes,
                             decide,
                             toggle_sel,
-                            ui,
                             reject_for,
                             reingest_for,
                         ) }
@@ -361,7 +360,6 @@ fn card(
     writes: bool,
     decide: impl Fn(i64, Option<i64>, bool) + Copy + 'static,
     mut toggle: impl FnMut(i64) + Copy + 'static,
-    mut ui: UiState,
     mut reject_for: Signal<Option<i64>>,
     mut reingest_for: Signal<Option<(i64, String)>>,
 ) -> Element {
@@ -389,9 +387,9 @@ fn card(
                 }
                 div { class: "flex-1",
                     div { class: "flex justify-between items-center gap-2",
-                        button {
+                        Link {
                             class: "font-mono text-sm text-accent hover:underline text-left",
-                            onclick: move |_| ui.drawer.set(Some(DrawerContent::Proposal(proposal.clone()))),
+                            to: Route::ReviewDetail { proposal_id: id },
                             "proposal #{id} · {proposal.kind}"
                         }
                         span { class: "text-xs text-muted-foreground tabular",
@@ -563,6 +561,98 @@ fn ReingestEditor(
     }
 }
 
+/// v1.16.7 M1: locate a proposal in a pending list by id. Pure so the
+/// deep-link detail view can find its card without an extra server roundtrip
+/// (there's no `GET /proposals/{id}`; the pending queue is bounded).
+fn locate_proposal(list: &[Proposal], id: i64) -> Option<Proposal> {
+    list.iter().find(|p| p.id == id).cloned()
+}
+
+/// v1.16.7 M1: the deep-linkable proposal detail (`/review/:proposal_id`).
+/// Renders one card read-only + Approve/Reject, so a reviewer can share the
+/// *specific* item. A proposal already decided by someone else is not in the
+/// pending list → shown as "no longer pending", not an error.
+pub fn detail(proposal_id: i64) -> Element {
+    use_document_title(move || format!("Proposal #{proposal_id} — brain"));
+    let api = use_context::<Signal<ApiClient>>();
+    let proposals = use_resource(move || {
+        let api = api();
+        async move { api.proposals("pending").await }
+    });
+    let found = match &*proposals.read() {
+        Some(Ok(list)) => locate_proposal(list, proposal_id),
+        _ => None,
+    };
+    rsx! {
+        PageTitle { "Proposal #{proposal_id}" }
+        p { class: "text-xs text-muted-foreground mb-3",
+            Link { to: Route::Review {}, "← back to the review queue" } }
+        match found {
+            Some(p) => rsx! {
+                div { class: "card",
+                    div { class: "card-header",
+                        h2 { class: "card-title", "Proposal #{proposal_id} · {p.kind}" }
+                    }
+                    div { class: "card-body space-y-2",
+                        p { class: "text-sm text-foreground", "{p.content}" }
+                        p { class: "text-xs text-muted-foreground tabular",
+                            "novelty {p.novelty:.2} · salience {p.salience:.2} · created {p.created_at}" }
+                        if let Some(c) = p.conflict_with {
+                            p { class: "text-sm text-warn", "conflicts with chunk #{c} — approve to supersede" }
+                        }
+                    }
+                    div { class: "card-footer", DetailActions { api, proposal_id } }
+                }
+            },
+            None => rsx! {
+                div { class: "card",
+                    div { class: "card-body text-muted-foreground",
+                        p { "No pending proposal #{proposal_id} (already decided?)." } }
+                }
+            },
+        }
+    }
+}
+
+/// v1.16.7 M1: Approve/Reject for the deep-linked proposal. On success it
+/// returns to the queue (the item is gone); on failure it shows the reason
+/// inline rather than silently dropping.
+#[component]
+fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
+    let writes = (use_context::<UiState>().writes_enabled)();
+    let state = use_signal(String::new);
+    let nav = navigator();
+    let approve = move |_| {
+        let mut state = state;
+        spawn(async move {
+            match api().approve_proposal(proposal_id, None).await {
+                Ok(_) => {
+                    nav.replace(Route::Review {});
+                }
+                Err(e) => state.set(error_message(&e)),
+            }
+        });
+    };
+    let reject = move |_| {
+        let mut state = state;
+        spawn(async move {
+            match api().reject_proposal(proposal_id, None).await {
+                Ok(_) => {
+                    nav.replace(Route::Review {});
+                }
+                Err(e) => state.set(error_message(&e)),
+            }
+        });
+    };
+    rsx! {
+        div { class: "flex gap-2 items-center flex-wrap",
+            button { class: "btn btn-primary btn-md", disabled: !writes, onclick: approve, "Approve" }
+            button { class: "btn btn-destructive btn-md", disabled: !writes, onclick: reject, "Reject" }
+            if !state().is_empty() { span { class: "text-danger text-sm", "{state}" } }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // M3 tests — the runnable checks for the honest-batch rules (DESIGN §4.1).
 // ---------------------------------------------------------------------------
@@ -659,5 +749,25 @@ mod tests {
         assert!(s.failed > 0, "a failed row must be surfaced");
         // An empty batch is all zeros.
         assert_eq!(batch_outcome(&HashMap::new()), BatchSummary::default());
+    }
+
+    /// v1.16.7 M1: the deep-link detail locates a proposal by id; an absent
+    /// id is `None` (renders as "no longer pending"), not a panic.
+    #[test]
+    fn locate_proposal_finds_by_id_or_returns_none() {
+        let list = vec![Proposal {
+            id: 7,
+            kind: "fact".into(),
+            content: "x".into(),
+            source: None,
+            authority: None,
+            novelty: 0.1,
+            conflict_with: None,
+            salience: 0.2,
+            created_at: 1,
+        }];
+        assert_eq!(locate_proposal(&list, 7).map(|p| p.id), Some(7));
+        assert_eq!(locate_proposal(&list, 99), None);
+        assert_eq!(locate_proposal(&[], 7), None);
     }
 }

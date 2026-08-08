@@ -8,7 +8,7 @@
 
 use crate::api::{ApiClient, DsarCertificate};
 use crate::panels::{use_document_title, PageTitle};
-use crate::{DrawerContent, UiState};
+use crate::{Route, UiState};
 use dioxus::prelude::*;
 
 const MAX_SUBJECT: usize = 2000; // mirrors the backend's bound
@@ -98,14 +98,49 @@ pub fn panel() -> Element {
     }
 }
 
+/// v1.16.7 M1: subject shown on the certificate card header — read straight
+/// off the cert object (the `/dsar/{id}/certificate` response carries it).
+/// Pure so the deep-link detail can rebuild the `DsarResult` from a fetch.
+fn subject_of(cert: &DsarCertificate) -> String {
+    cert.certificate
+        .get("subject")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// v1.16.7 M1: the deep-linkable deletion certificate (`/subjects/certificate/:dsar_id`).
+/// Re-fetches `GET /dsar/{id}/certificate` and renders the SAME card the
+/// Subjects panel shows, with the LIVE chain badge — GDPR Art 17 evidence a
+/// subject (or auditor) can be pointed at directly.
+pub fn detail(dsar_id: i64) -> Element {
+    use_document_title(move || format!("Deletion certificate #{dsar_id} — brain"));
+    let api = use_context::<Signal<ApiClient>>();
+    let cert = use_resource(move || {
+        let api = api();
+        async move { api.dsar_certificate(dsar_id).await }
+    });
+    rsx! {
+        PageTitle { "Deletion certificate #{dsar_id}" }
+        p { class: "text-xs text-muted-foreground mb-3",
+            Link { to: Route::Subjects {}, "← back to subjects" } }
+        match &*cert.read() {
+            Some(Ok(v)) => {
+                let c = DsarCertificate::from_value(v.clone());
+                rsx! { CertificateCard { result: DsarResult { id: dsar_id, subject: subject_of(&c), cert: c } } }
+            }
+            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "certificate failed: {e}" } },
+            None => rsx! { p { class: "text-muted-foreground mt-2", "loading…" } },
+        }
+    }
+}
+
 /// M5.1: the structured certificate card — the defining screenshot. Renders
 /// found_count, purged_ids (monospace), tombstone_root, certified_at, chain_head,
 /// and the LIVE green/red chain badge (re-checked via GET /dsar/{id}/certificate).
 #[component]
 fn CertificateCard(result: DsarResult) -> Element {
-    let ui = use_context::<UiState>();
     let cert = result.cert.clone();
-    let mut ui = ui;
     let (badge_class, badge_text) = chain_badge(cert.chain_verifies);
     let purged = cert
         .purged_ids
@@ -121,9 +156,9 @@ fn CertificateCard(result: DsarResult) -> Element {
         div { class: "card mt-2",
             div { class: "card-header",
                 h2 { class: "card-title", "Deletion certificate #{result.id}" }
-                button {
+                Link {
                     class: "font-mono text-xs text-accent hover:underline",
-                    onclick: move |_| ui.drawer.set(Some(DrawerContent::Certificate(cert.clone()))),
+                    to: Route::DsarDetail { dsar_id: result.id },
                     "subject: {result.subject}"
                 }
             }
@@ -140,7 +175,8 @@ fn CertificateCard(result: DsarResult) -> Element {
                 dd { class: "font-mono text-xs", "{cert.chain_head}" }
             }
             div { class: "card-footer",
-                span { class: "{badge_class} font-semibold text-sm", "{badge_text}" }
+                span { class: "{badge_class} font-semibold text-sm", role: "status", "aria-live": "polite",
+                    "{badge_text}" }
             }
         }
     }
@@ -213,5 +249,19 @@ mod tests {
         assert_eq!(cert.chain_head, "deadbeef");
         assert_eq!(cert.certified_at, "2026-08-08T01:02:03Z");
         assert!(cert.chain_verifies);
+    }
+
+    /// v1.16.7 M1: the deep-link cert header subject reads off the cert object;
+    /// absent subject → empty string (the card renders it as the id).
+    #[test]
+    fn subject_of_reads_cert_object_subject() {
+        let v = serde_json::json!({
+            "certificate": { "subject": "alice", "action": "purge", "found_count": 1 },
+            "chain_verifies": true
+        });
+        let cert = DsarCertificate::from_value(v);
+        assert_eq!(subject_of(&cert), "alice");
+        let bare = DsarCertificate::from_value(serde_json::json!({ "chain_verifies": true }));
+        assert_eq!(subject_of(&bare), "");
     }
 }

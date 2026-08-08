@@ -49,6 +49,22 @@ pub fn load_token() -> Option<String> {
     None
 }
 
+/// v1.16.7 M7.1: clear the saved token from the OS keyring. Best-effort — a
+/// missing/expired keyring entry is a successful no-op (there's nothing to
+/// remove). The logout flow calls this before clearing the in-memory token so a
+/// signed-out operator never auto-reconnects with a stale saved credential.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn delete_token() {
+    if let Ok(entry) = keyring::Entry::new(SERVICE, ACCOUNT) {
+        // `NoEntry`/`NotFound` → nothing was saved → already logged out.
+        let _ = entry.delete_credential();
+    }
+}
+
+// Web: no-op — the token was never persisted (in-memory only).
+#[cfg(target_arch = "wasm32")]
+pub fn delete_token() {}
+
 /// v1.16.6 M2: persist the token ONLY when one was actually provided. A loopback
 /// connect (empty token) must not overwrite a previously-saved remote token with
 /// nothing. Extracted pure for the connect-flow gate + a unit test.
