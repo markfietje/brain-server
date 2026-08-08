@@ -12,7 +12,47 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
-_(nothing pending)_
+Server-only hardening + compliance round (security + fixes + Art 50). No
+client or API-contract break.
+
+### Security
+
+- **Snapshot permissions (P0).** SQLite snapshots written by the integrity
+  loop (`integrity.rs`) and the restore/import safety snapshot (`backup.rs`)
+  were created with the process umask (world-readable `0644`); each is a
+  plaintext copy of the whole store. All three `VACUUM INTO` sites now chmod
+  the resulting `.bak` to `0600`.
+- **`/health` never leaks content.** Extracted the response into a pure
+  `health_body()` builder and pinned a regression test asserting the top-level
+  key set carries no content/PII/text field (CVE-2026-29787 class: an
+  unauthenticated health endpoint disclosing store contents).
+
+### Added
+
+- **`GET /.well-known/ai-notice`** (EU AI Act Art 50 transparency). New public
+  route + handler + pure builder disclosing that the service stores and may
+  return AI-generated content, with origin-metadata + effective date. Registered
+  in both auth-public path lists, the router, and `openapi.yaml`.
+- **`docs/MEMGHOST_MITIGATION.md`** — operator-facing map of the MemGhost
+  memory-poisoning attack (arXiv 2607.05189) onto brain-server's HITL /
+  audit / DSAR / provenance controls. Linked from `docs/README.md`.
+
+### Fixed
+
+- **`GET /tombstones?limit=` was silently ignored.** The query struct had no
+  `limit` field, so the param was accepted and dropped, returning all rows.
+  Now honored (default 100, clamped to `MAX_TOMBSTONES`).
+- **`/export` omitted the `source` column** COMPLIANCE.md §7 claims it emits.
+  Added `source` to the export SELECT + per-row JSON (back-compat additive).
+- **Test isolation.** `v1_export_import_roundtrip_preserves_data` ran
+  `run_migration` (which builds the `vec0` index) without `register_sqlite_vec()`,
+  so it only passed in the full suite via a sibling test's global side-effect
+  and failed in isolation (`no such module: vec0`). Now self-registers, matching
+  every other migration test.
+
+### Changed
+
+- COMPLIANCE.md stamp updated 1.16.2 → 1.16.7.
 
 ---
 
