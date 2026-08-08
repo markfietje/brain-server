@@ -1818,8 +1818,8 @@ paths:
       description: >
         PUBLIC route. Machine-readable vulnerability disclosure: Contact,
         Expires, Preferred-Languages, and Canonical (when BRAIN_PUBLIC_BASE_URL
-        is set). Contact defaults to security@openclaw.dev; override with
-        BRAIN_SECURITY_CONTACT. Expires is now + 1 year (never stale).
+        is set). Contact is set via BRAIN_SECURITY_CONTACT and omitted when
+        unset. Expires is now + 1 year (never stale).
       operationId: getSecurityTxt
       responses:
         "200":
@@ -1832,7 +1832,6 @@ paths:
               schema:
                 type: string
                 example: |
-                  Contact: mailto:security@openclaw.dev
                   Expires: 2027-08-07T00:00:00+00:00
                   Preferred-Languages: en
 components:

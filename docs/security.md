@@ -93,8 +93,8 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
 | < 0.9 | Unsupported |
 
 Disclosure endpoint: `/.well-known/security.txt` (RFC 9116). To report a
-vulnerability, use the GitHub Security Advisories tab or email
-security@openclaw.dev — **do not file public issues for security findings.**
+vulnerability, use the GitHub Security Advisories tab. **Do not file public
+issues for security findings.**
 
 ---
 

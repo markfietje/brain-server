@@ -63,8 +63,7 @@ be asked to fix them.
 ## Security
 
 - **Do not file public issues for security vulnerabilities.** Use the GitHub
-  "Report a vulnerability" tab or email security@openclaw.dev (see
-  `SECURITY.md` for the full policy and SLA).
+  "Report a vulnerability" tab. See `SECURITY.md` for the full policy and SLA.
 - Never commit secrets, keys, or tokens. The live auth token is loaded from
   `AUTH_TOKEN_FILE`/`AUTH_TOKEN`; nothing like it belongs in the tree.
 - Every non-public route is authz-gated; new routes must call `authorize(...)`

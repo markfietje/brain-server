@@ -656,9 +656,9 @@ operator step (`scripts/install-service.sh`).
 **"Hygiene" — CRA conformance bundle + ingest capture hygiene.**
 
 - **`GET /.well-known/security.txt`** (RFC 9116, public). Machine-readable
-  vulnerability disclosure: `Contact` (default `security@openclaw.dev`, override
-  `BRAIN_SECURITY_CONTACT`), `Expires` (now + 1 year, never stale),
-  `Preferred-Languages`, and `Canonical` (when `BRAIN_PUBLIC_BASE_URL` is set).
+  vulnerability disclosure: `Contact` (via `BRAIN_SECURITY_CONTACT`; omitted
+  when unset), `Expires` (now + 1 year, never stale), `Preferred-Languages`,
+  and `Canonical` (when `BRAIN_PUBLIC_BASE_URL` is set).
   Procurement + EU Cyber Resilience Act look for this before features.
 - **`scripts/sbom.sh`** — generates a CycloneDX SBOM per release via
   `cargo-cyclonedx` (`sbom/brain-server-<version>.cdx.json`); SECURITY.md gains
