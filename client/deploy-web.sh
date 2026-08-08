@@ -20,7 +20,11 @@ cd "$DIR"
 dx bundle --platform web --release --base-path /app >/dev/null 2>&1 || true
 
 SRC="target/dx/brain-client/release/web/public"
-CSS="$(basename "$(ls "$SRC"/assets/tailwind-*.css | head -1)")"
+# Pick the FRESHEST tailwind build. dx leaves stale hashed CSS in target/ between
+# rebuilds; a bare `ls | head -1` glob races it and can copy an old stylesheet
+# (matching the stale-JS bug this script already fixes for the JS name). The
+# newest mtime IS the just-completed `dx bundle` output.
+CSS="$(basename "$(ls -t "$SRC"/assets/tailwind-*.css | head -1)")"
 [[ -n "$CSS" ]] || { echo "no tailwind css in bundle"; exit 1; }
 
 rm -rf dist && mkdir -p dist/assets

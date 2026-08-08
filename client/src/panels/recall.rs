@@ -57,17 +57,18 @@ pub fn panel() -> Element {
     rsx! {
         PageTitle { "Recall inspector" }
         input {
-            class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full",
+            class: "input w-full",
             placeholder: "query brain-server (min 5 chars)…",
             value: "{query}",
             oninput: move |e| query.set(e.value()),
             "aria-label": "recall query",
         }
-        div { class: "flex gap-3 my-2 items-center text-sm",
+        div { class: "flex gap-4 my-3 items-center text-sm flex-wrap",
             // M4.2: the trace toggle produces a deep-linkable trace_id.
-            label { class: "flex items-center gap-1",
+            label { class: "flex items-center gap-1.5",
                 input {
                     "type": "checkbox",
+                    class: "accent-accent",
                     checked: trace(),
                     onchange: move |e| trace.set(e.value() == "true"),
                     // M1 amber rule: trace is a READ control (re-recall only);
@@ -78,10 +79,10 @@ pub fn panel() -> Element {
             }
             // M4.1: min_relevance post-fusion filter (the "stop poisoning the
             // context window" slider — deterministic, zero-token).
-            label { class: "flex items-center gap-1",
+            label { class: "flex items-center gap-1.5",
                 "min relevance"
                 select {
-                    class: "border border-border-subtle surface-raised rounded px-1 py-0.5",
+                    class: "select",
                     value: "{min_rel}",
                     onchange: move |e| min_rel.set(e.value()),
                     option { value: "", "any" }
@@ -112,15 +113,15 @@ fn recall_view(
                 },
             );
             rsx! {
-                div {
-                    p { class: "text-sm text-ink-muted", "decision: {r.decision} · {hits.len()} hits" }
-                    ul { class: "mt-2 divide-y hairline",
+                div { class: "mt-2 space-y-3",
+                    p { class: "text-sm text-muted-foreground", "decision: {r.decision} · {hits.len()} hits" }
+                    ul { class: "divide-y divide-border",
                         for h in &hits { HitRow { hit: h.clone() } }
                     }
                     // M4.2: the trace artifact is deep-linkable — render a link
                     // to /recall/:trace_id so the decision path is shareable.
                     if let Some(tid) = r.trace_id {
-                        p { class: "mt-2 text-xs text-ink-muted",
+                        p { class: "text-xs text-muted-foreground",
                             Link { to: Route::RecallTrace { trace_id: tid },
                                 "decision-path trace #{tid} ↗"
                             }
@@ -129,11 +130,11 @@ fn recall_view(
                 }
             }
         }
-        Some(Ok(_)) => rsx! { p { class: "text-ink-muted mt-2", "no hits" } },
+        Some(Ok(_)) => rsx! { p { class: "text-muted-foreground mt-2", "no hits" } },
         Some(Err(e)) => {
             rsx! { p { class: "text-danger mt-2", "recall failed: {error_message(&e)}" } }
         }
-        None => rsx! { p { class: "text-ink-muted mt-2", "…" } },
+        None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
     }
 }
 
@@ -143,15 +144,15 @@ fn HitRow(hit: Hit) -> Element {
     let prov = hit.provenance.clone();
     let rel = hit.relevance.clone();
     rsx! {
-        li { class: "py-2",
-            div { class: "flex justify-between items-center",
+        li { class: "py-3",
+            div { class: "flex justify-between items-center gap-2",
                 button {
                     class: "font-mono text-sm text-accent hover:underline text-left",
                     onclick: move |_| ui.drawer.set(Some(DrawerContent::Hit(hit.clone()))),
                     "chunk #{hit.id}"
                 }
                 // M4.1: per-retriever ranks + fused score (monospace, tabular).
-                span { class: "font-mono text-xs text-ink-muted tabular",
+                span { class: "font-mono text-xs text-muted-foreground tabular",
                     {
                         let v = prov.as_ref().and_then(|p| p.vector_rank).map(|_| "v").unwrap_or("");
                         let f = prov.as_ref().and_then(|p| p.fts_rank).map(|_| "f").unwrap_or("");
@@ -161,9 +162,9 @@ fn HitRow(hit: Hit) -> Element {
                     }
                 }
             }
-            div { class: "flex gap-2 text-xs mt-0.5 flex-wrap",
+            div { class: "flex gap-2 text-xs mt-0.5 flex-wrap items-center",
                 if let Some(src) = &hit.source {
-                    span { class: "text-ink-faint", "via {src}" }
+                    span { class: "badge", "via {src}" }
                 }
                 if let Some(r) = &rel {
                     span { class: relevance_color(r), "relevance: {r}" }
@@ -172,7 +173,7 @@ fn HitRow(hit: Hit) -> Element {
                     span { class: "text-info", "{a}" }
                 }
                 if let Some(c) = hit.confidence {
-                    span { class: "text-ink-muted tabular", "conf {c:.2}" }
+                    span { class: "text-muted-foreground tabular", "conf {c:.2}" }
                 }
                 if hit.decayed == Some(true) {
                     span { class: "text-warn", "decayed" }
@@ -181,7 +182,7 @@ fn HitRow(hit: Hit) -> Element {
                     span { class: "text-warn", "superseded" }
                 }
             }
-            p { class: "text-sm text-ink mt-1", "{hit.content}" }
+            p { class: "text-sm text-foreground mt-1", "{hit.content}" }
         }
     }
 }
@@ -239,12 +240,12 @@ pub fn trace_panel(trace_id: i64) -> Element {
     });
     rsx! {
         PageTitle { "Recall trace #{trace_id}" }
-        p { class: "text-xs text-ink-muted mb-2",
+        p { class: "text-xs text-muted-foreground mb-2",
             "the recorded decision path for a past recall (replayable audit artifact)" }
         match &*trace.read() {
             Some(Ok(v)) => rsx! { TraceCard { trace: v.clone() } },
             Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "trace failed: {error_message(&e)}" } },
-            None => rsx! { p { class: "text-ink-muted mt-2", "loading…" } },
+            None => rsx! { p { class: "text-muted-foreground mt-2", "loading…" } },
         }
         p { class: "mt-3" , Link { to: Route::Recall {}, "← back to recall" } }
     }
@@ -262,21 +263,21 @@ fn TraceCard(trace: serde_json::Value) -> Element {
     let scope = trace.get("applied_scope").and_then(|v| v.as_str());
     let hits = trace.get("hits").and_then(|v| v.as_array());
     rsx! {
-        div { class: "surface-raised border hairline rounded p-3 text-sm",
+        div { class: "card p-3 text-sm",
             dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1",
-                dt { class: "text-ink-muted", "query" }    dd { "{q}" }
-                dt { class: "text-ink-muted", "decision" } dd { class: "font-mono", "{decision}" }
-                dt { class: "text-ink-muted", "actor" }    dd { class: "font-mono", "{actor}" }
-                if let Some(s) = scope { dt { class: "text-ink-muted", "scope" } dd { "{s}" } }
+                dt { class: "text-muted-foreground", "query" }    dd { "{q}" }
+                dt { class: "text-muted-foreground", "decision" } dd { class: "font-mono", "{decision}" }
+                dt { class: "text-muted-foreground", "actor" }    dd { class: "font-mono", "{actor}" }
+                if let Some(s) = scope { dt { class: "text-muted-foreground", "scope" } dd { "{s}" } }
             }
             if let Some(domains) = domains {
-                p { class: "mt-2 text-xs text-ink-muted",
+                p { class: "mt-2 text-xs text-muted-foreground",
                     "domains: "
                     { domains.iter().filter_map(|d| d.as_str()).collect::<Vec<_>>().join(", ") }
                 }
             }
             if let Some(hits) = hits {
-                table { class: "w-full text-xs tabular mt-2",
+                table { class: "table mt-2",
                     thead { tr {
                         th { class: "text-left pr-2", "id" }
                         th { class: "text-left pr-2", "score" }

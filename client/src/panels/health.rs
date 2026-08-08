@@ -21,40 +21,47 @@ pub fn panel() -> Element {
 
     rsx! {
         PageTitle { "Health" }
-        match &*health.read() {
-            Some(Ok(h)) => rsx! {
-                dl { class: "mt-2 grid grid-cols-2 gap-1 text-sm tabular",
-                    dt { class: "text-ink-muted", "status" }  dd { "{h.status}" }
-                    dt { class: "text-ink-muted", "version" } dd { "{h.version}" }
-                    if let Some(c) = &h.capacity {
-                        dt { class: "text-ink-muted", "docs" }     dd { "{c.docs} / {c.max_docs}" }
-                        dt { class: "text-ink-muted", "rss" }      dd { "{c.rss_mib} / {c.max_rss_mib} MiB" }
-                        dt { class: "text-ink-muted", "capacity" } dd { span { class: cap_class(&c.status), "{c.status}" } }
-                    } else {
-                        dt { class: "text-ink-muted", "capacity" } dd { "unavailable" }
+        div { class: "mt-2 grid gap-4 md:grid-cols-2",
+            match &*health.read() {
+                Some(Ok(h)) => rsx! {
+                    div { class: "card",
+                        div { class: "card-header", div { class: "card-title", "Service" } }
+                        dl { class: "card-body grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular",
+                            dt { class: "text-muted-foreground", "status" }  dd { "{h.status}" }
+                            dt { class: "text-muted-foreground", "version" } dd { "{h.version}" }
+                            if let Some(c) = &h.capacity {
+                                dt { class: "text-muted-foreground", "docs" }     dd { "{c.docs} / {c.max_docs}" }
+                                dt { class: "text-muted-foreground", "rss" }      dd { "{c.rss_mib} / {c.max_rss_mib} MiB" }
+                                dt { class: "text-muted-foreground", "capacity" } dd { span { class: cap_class(&c.status), "{c.status}" } }
+                            } else {
+                                dt { class: "text-muted-foreground", "capacity" } dd { "unavailable" }
+                            }
+                            if let Some(h2) = &h.hardening {
+                                dt { class: "text-muted-foreground", "unsafe blocks" } dd { "{h2.unsafe_blocks}" }
+                                dt { class: "text-muted-foreground", "panics caught" } dd { "{h2.panics_caught}" }
+                            }
+                        }
                     }
-                    if let Some(h2) = &h.hardening {
-                        dt { class: "text-ink-muted", "unsafe blocks" } dd { "{h2.unsafe_blocks}" }
-                        dt { class: "text-ink-muted", "panics caught" } dd { "{h2.panics_caught}" }
+                },
+                Some(Err(e)) => rsx! { p { class: "text-danger", "health failed: {error_message(&e)}" } },
+                None => rsx! { p { class: "text-muted-foreground", "…" } },
+            }
+            match &*stats.read() {
+                Some(Ok(s)) => rsx! {
+                    div { class: "card",
+                        div { class: "card-header", div { class: "card-title", "Corpus" } }
+                        dl { class: "card-body grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular",
+                            dt { class: "text-muted-foreground", "chunks" }        dd { "{s.count}" }
+                            dt { class: "text-muted-foreground", "embeddings" }    dd { "{s.embeddings}" }
+                            dt { class: "text-muted-foreground", "entities" }      dd { "{s.entities}" }
+                            dt { class: "text-muted-foreground", "relationships" } dd { "{s.relationships}" }
+                            dt { class: "text-muted-foreground", "model" }         dd { "{s.model}" }
+                        }
                     }
-                }
-            },
-            Some(Err(e)) => rsx! { p { class: "text-danger", "health failed: {error_message(&e)}" } },
-            None => rsx! { p { class: "text-ink-muted", "…" } },
-        }
-        match &*stats.read() {
-            Some(Ok(s)) => rsx! {
-                h2 { class: "text-lg mt-4", "Corpus" }
-                dl { class: "grid grid-cols-2 gap-1 text-sm tabular",
-                    dt { class: "text-ink-muted", "chunks" }        dd { "{s.count}" }
-                    dt { class: "text-ink-muted", "embeddings" }    dd { "{s.embeddings}" }
-                    dt { class: "text-ink-muted", "entities" }      dd { "{s.entities}" }
-                    dt { class: "text-ink-muted", "relationships" } dd { "{s.relationships}" }
-                    dt { class: "text-ink-muted", "model" }         dd { "{s.model}" }
-                }
-            },
-            Some(Err(_)) => rsx! {}, // stats is a bonus; health carries the panel
-            None => rsx! {},
+                },
+                Some(Err(_)) => rsx! {}, // stats is a bonus; health carries the panel
+                None => rsx! {},
+            }
         }
     }
 }

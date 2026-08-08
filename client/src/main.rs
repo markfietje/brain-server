@@ -272,17 +272,17 @@ fn app() -> Element {
         // error message).
         ErrorBoundary {
             handle_error: |errors: ErrorContext| rsx! {
-                div { class: "min-h-screen flex items-center justify-center bg-surface text-ink p-4",
+                div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
                     div { class: "max-w-md",
                         h1 { class: "text-xl text-danger", "Something went wrong" }
-                        p { class: "text-ink-muted mt-2",
+                        p { class: "text-muted-foreground mt-2",
                             "The client hit an unexpected error. Reload to retry."
                         }
                         pre { class: "text-xs text-ink-faint mt-4 overflow-auto",
                             "{errors:?}"
                         }
                         button {
-                            class: "mt-4 border border-border-subtle rounded px-3 py-1 text-sm",
+                            class: "btn btn-outline btn-sm mt-4",
                             onclick: move |_| errors.clear_errors(),
                             "Dismiss"
                         }
@@ -363,48 +363,66 @@ fn Connect() -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen flex items-center justify-center bg-surface text-ink p-4",
-            div { class: "w-full max-w-md",
-                h1 { class: "text-xl", "brain — governed memory, on your hardware." }
-                p { class: "text-ink-muted mb-4", "Connect your brain-server to begin." }
-                label { class: "block text-sm mb-1", "Backend URL" }
-                input {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full mb-2",
-                    value: "{url}",
-                    oninput: move |e| url.set(e.value()),
-                    placeholder: "blank = this page's origin (same-server)",
-                    "aria-label": "backend URL",
-                }
-                label { class: "block text-sm mb-1", "Token" }
-                input {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full mb-2",
-                    "type": "password",
-                    value: "{token}",
-                    oninput: move |e| token.set(e.value()),
-                    placeholder: "optional (loopback)",
-                    "aria-label": "auth token",
-                }
-                label { class: "flex items-center gap-2 text-sm mb-4",
-                    input {
-                        "type": "checkbox",
-                        checked: remote(),
-                        onchange: move |e| remote.set(e.value() == "true"),
+        div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
+            div { class: "w-full max-w-md space-y-6",
+                div { class: "flex items-center gap-3",
+                    div { class: "flex size-10 items-center justify-center rounded-lg bg-accent/15 text-accent",
+                        span { class: "font-mono text-lg font-bold", "b" }
                     }
-                    "Remote / pilot (JWT mode; shows the principal)"
+                    div {
+                        h1 { class: "text-xl font-semibold tracking-tight", "brain" }
+                        p { class: "text-sm text-muted-foreground",
+                            "Governed memory, on your hardware." }
+                    }
                 }
-                button {
-                    class: "border border-border-subtle rounded px-4 py-2 bg-accent text-white disabled:opacity-50",
-                    disabled: busy(),
-                    onclick: connect,
-                    if busy() { "Connecting…" } else { "Connect" }
+                div { class: "card",
+                    div { class: "card-header", div { class: "card-title", "Connect to brain-server" } }
+                    div { class: "card-body space-y-4",
+                        label { class: "block space-y-1",
+                            span { class: "label", "Backend URL" }
+                            input {
+                                class: "input w-full",
+                                value: "{url}",
+                                oninput: move |e| url.set(e.value()),
+                                placeholder: "blank = this page's origin (same-server)",
+                                "aria-label": "backend URL",
+                            }
+                        }
+                        label { class: "block space-y-1",
+                            span { class: "label", "Token" }
+                            input {
+                                class: "input w-full",
+                                "type": "password",
+                                value: "{token}",
+                                oninput: move |e| token.set(e.value()),
+                                placeholder: "optional (loopback)",
+                                "aria-label": "auth token",
+                            }
+                        }
+                        label { class: "flex items-center gap-2 text-sm text-muted-foreground",
+                            input {
+                                "type": "checkbox",
+                                class: "accent-accent",
+                                checked: remote(),
+                                onchange: move |e| remote.set(e.value() == "true"),
+                            }
+                            "Remote / pilot (JWT mode; shows the principal)"
+                        }
+                        button {
+                            class: "btn btn-primary btn-md w-full",
+                            disabled: busy(),
+                            onclick: connect,
+                            if busy() { "Connecting…" } else { "Connect" }
+                        }
+                        if let Some(Ok(msg)) = &*status.read() {
+                            p { class: "text-ok text-sm", "{msg}" }
+                        }
+                        if let Some(Err(msg)) = &*status.read() {
+                            p { class: "text-danger text-sm", "{msg}" }
+                        }
+                    }
                 }
-                if let Some(Ok(msg)) = &*status.read() {
-                    p { class: "text-ok mt-3", "{msg}" }
-                }
-                if let Some(Err(msg)) = &*status.read() {
-                    p { class: "text-danger mt-3", "{msg}" }
-                }
-                p { class: "text-xs text-ink-faint mt-6",
+                p { class: "text-center text-xs text-ink-faint",
                     "One-line install:  curl -fsSL … | sh   then  brain doctor"
                 }
             }
@@ -416,6 +434,11 @@ fn Connect() -> Element {
 /// M2: F-pattern top bar with `Pending: N`, left-rail count badges, principal
 /// identity, and the read-only degrade banner (M1) + context drawer (M2.2).
 /// On mobile (v1.17.0) the same routes render under a bottom tab bar.
+///
+/// v1.16.4 restyle: modern shadcn-style dashboard — fixed sidebar with brand +
+/// grouped nav (count badges on the rail), a slim top bar, and the drawer on
+/// the right. Every nav target stays a real `<Link>` (a11y gate), all actions
+/// stay real `<button>`s.
 #[component]
 fn AppShell() -> Element {
     let api = use_context::<Signal<ApiClient>>();
@@ -433,47 +456,73 @@ fn AppShell() -> Element {
     let drawer_open = ui.drawer.read().is_some();
     let pending_reverify = (ui.pending_reverify)();
 
+    let security_badge = quarantine as u64 + auth_fail as u64;
+
     rsx! {
-        div { class: "flex min-h-screen bg-surface text-ink",
-            nav {
-                class: "flex gap-2 p-2 border-b hairline surface-raised items-center flex-wrap",
-                span {
-                    class: "font-mono text-sm",
-                    "aria-label": "connection status",
-                    span { class: conn_dot(conn), "●" }
-                    " {conn_label(conn)} "
-                }
-                span { class: "text-ink font-semibold ml-2 tabular", "Pending: {pending}" }
-                Link { to: Route::Review {}, active_class: "font-bold", "Review" }
-                Link { to: Route::Recall {}, active_class: "font-bold", "Recall" }
-                Link { to: Route::Subjects {}, active_class: "font-bold", "Subjects" }
-                Link { to: Route::Security {}, active_class: "font-bold",
-                    "Security"
-                    if quarantine > 0 || auth_fail > 0 {
-                        span { class: "ml-1 px-1 rounded bg-warn text-surface text-xs tabular",
-                            "{quarantine + auth_fail as u64}"
-                        }
+        div { class: "flex min-h-screen bg-background text-foreground",
+            // Fixed sidebar: brand + primary nav + identity footer.
+            aside {
+                class: "sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card",
+                "aria-label": "primary navigation",
+                div { class: "flex items-center gap-2 border-b border-border px-4 h-14",
+                    div { class: "flex size-8 items-center justify-center rounded-md bg-accent/15 text-accent",
+                        span { class: "font-mono text-sm font-bold", "b" }
                     }
+                    span { class: "font-semibold tracking-tight", "brain" }
                 }
-                Link { to: Route::Audit {}, active_class: "font-bold",
-                    "Audit"
-                    if audit_dirty {
-                        span { class: "ml-1 text-danger", "!" }
+                nav { class: "flex-1 overflow-y-auto p-3 nav",
+                    // M2.1: F-pattern anchor — pending review count on the rail.
+                    div { class: "mb-1 flex items-center justify-between px-2.5 text-xs text-muted-foreground",
+                        span { "Review queue" }
+                        span { class: "tabular", "pending {pending}" }
                     }
+                    NavLink { to: Route::Review {}, "Review" }
+                    NavLink { to: Route::Recall {}, "Recall" }
+                    NavLink { to: Route::Subjects {}, "Subjects" }
+                    NavLink { to: Route::Security {}, badge: Some(security_badge), "Security" }
+                    NavLink { to: Route::Audit {}, dirty: audit_dirty, "Audit" }
+                    NavLink { to: Route::Health {}, "Health" }
                 }
-                Link { to: Route::Health {}, active_class: "font-bold", "Health" }
-                // M2.1: identity pillar (top-right). Loopback shows no identity.
-                if let Some(p) = principal {
-                    span { class: "ml-auto text-xs text-ink-muted tabular", "acting as {p}" }
-                } else {
-                    span { class: "ml-auto text-xs text-ink-faint", "loopback" }
+                div { class: "border-t border-border p-3",
+                    div { class: "flex items-center gap-2 text-sm",
+                        span { class: conn_dot(conn), "●" }
+                        span { class: "text-xs text-muted-foreground", "{conn_label(conn)}" }
+                    }
+                    if let Some(ref p) = principal {
+                        p { class: "mt-1 truncate text-xs text-muted-foreground tabular", "acting as {p}" }
+                    } else {
+                        p { class: "mt-1 text-xs text-ink-faint", "loopback" }
+                    }
                 }
             }
-            div { class: "flex flex-1",
-                main { class: "p-4 flex-1", Outlet::<Route> {} }
-                // M2.2: the context drawer (right). Esc closes; ARIA dialog.
-                if drawer_open {
-                    Drawer { }
+            div { class: "flex min-w-0 flex-1 flex-col",
+                // Slim top bar: connection + pending summary.
+                header { class: "sticky top-0 z-10 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur",
+                    span {
+                        class: "font-mono text-sm",
+                        "aria-label": "connection status",
+                        span { class: conn_dot(conn), "●" }
+                        " {conn_label(conn)}"
+                    }
+                    span { class: "text-sm text-muted-foreground tabular",
+                        "pending {pending}"
+                    }
+                    if security_badge > 0 {
+                        span { class: "badge badge-warn", "{security_badge} flags" }
+                    }
+                    if audit_dirty {
+                        span { class: "badge badge-danger", "audit chain!" }
+                    }
+                    if let Some(p) = &principal {
+                        span { class: "ml-auto text-xs text-muted-foreground tabular", "{p}" }
+                    }
+                }
+                div { class: "flex flex-1",
+                    main { class: "flex-1 p-6", Outlet::<Route> {} }
+                    // M2.2: the context drawer (right). Esc closes; ARIA dialog.
+                    if drawer_open {
+                        Drawer { }
+                    }
                 }
             }
         }
@@ -496,6 +545,33 @@ fn AppShell() -> Element {
     }
 }
 
+/// v1.16.4: one pill nav link with an optional trailing count badge (state
+/// counts published by the panels). Active route gets the filled pill.
+#[component]
+fn NavLink(
+    to: Route,
+    badge: Option<u64>,
+    #[props(default)] dirty: bool,
+    children: Element,
+) -> Element {
+    rsx! {
+        Link {
+            to,
+            class: "nav-link",
+            active_class: "nav-link-active",
+            {children}
+            if let Some(n) = badge {
+                if n > 0 {
+                    span { class: "nav-badge", "{n}" }
+                }
+            }
+            if dirty {
+                span { class: "nav-badge nav-badge-alert", "!" }
+            }
+        }
+    }
+}
+
 /// M2.2: the context drawer. Esc closes (clears the signal); full Radix
 /// Tab-cycling focus trap is the v1.18.0 pass. The content is already-fetched
 /// data pushed by a panel (no duplicate fetch).
@@ -505,7 +581,7 @@ fn Drawer() -> Element {
     let content = (ui.drawer)();
     rsx! {
         aside {
-            class: "w-80 border-l hairline surface-raised p-4 overflow-auto",
+            class: "w-80 border-l border-border bg-card p-4 overflow-auto",
             role: "dialog",
             "aria-modal": "true",
             "aria-label": "detail drawer",
@@ -516,10 +592,10 @@ fn Drawer() -> Element {
                     ui.drawer.set(None);
                 }
             },
-            div { class: "flex justify-between items-center mb-2",
-                h2 { class: "text-sm font-semibold text-ink-muted", "Detail" }
+            div { class: "flex justify-between items-center mb-3",
+                h2 { class: "text-sm font-semibold text-muted-foreground", "Detail" }
                 button {
-                    class: "text-ink-faint hover:text-ink text-sm",
+                    class: "btn btn-ghost btn-sm",
                     "aria-label": "close drawer",
                     onclick: move |_| ui.drawer.set(None),
                     "✕"
@@ -527,31 +603,39 @@ fn Drawer() -> Element {
             }
             match &content {
                 Some(DrawerContent::Proposal(p)) => rsx! {
-                    div {
-                        p { class: "font-mono text-sm", "proposal #{p.id} · {p.kind}" }
-                        p { class: "text-xs text-ink-muted mt-1",
-                            "novelty {p.novelty:.2} · salience {p.salience:.2}" }
-                        p { class: "text-sm mt-2", "{p.content}" }
+                    div { class: "card",
+                        div { class: "card-body",
+                            p { class: "font-mono text-sm", "proposal #{p.id} · {p.kind}" }
+                            p { class: "text-xs text-muted-foreground mt-1",
+                                "novelty {p.novelty:.2} · salience {p.salience:.2}" }
+                            p { class: "text-sm mt-2", "{p.content}" }
+                        }
                     }
                 },
                 Some(DrawerContent::Hit(h)) => rsx! {
-                    div {
-                        p { class: "font-mono text-sm", "chunk #{h.id}" }
-                        p { class: "text-sm mt-2", "{h.content}" }
+                    div { class: "card",
+                        div { class: "card-body",
+                            p { class: "font-mono text-sm", "chunk #{h.id}" }
+                            p { class: "text-sm mt-2", "{h.content}" }
+                        }
                     }
                 },
                 Some(DrawerContent::Certificate(c)) => rsx! {
-                    div {
-                        p { class: "font-mono text-sm", "found {c.found_count}" }
-                        p { class: "text-xs text-ink-muted mt-1", "chain head {c.chain_head}" }
-                        p { class: "text-xs text-ink-muted", "certified {c.certified_at}" }
+                    div { class: "card",
+                        div { class: "card-body",
+                            p { class: "font-mono text-sm", "found {c.found_count}" }
+                            p { class: "text-xs text-muted-foreground mt-1", "chain head {c.chain_head}" }
+                            p { class: "text-xs text-muted-foreground", "certified {c.certified_at}" }
+                        }
                     }
                 },
                 Some(DrawerContent::AuthFailure(r)) => rsx! {
-                    div {
-                        p { class: "font-mono text-sm", "{r.kind} · {r.status}" }
-                        p { class: "text-xs text-ink-muted mt-1", "actor: {r.actor}" }
-                        p { class: "text-xs text-ink-muted", "{r.ts}" }
+                    div { class: "card",
+                        div { class: "card-body",
+                            p { class: "font-mono text-sm", "{r.kind} · {r.status}" }
+                            p { class: "text-xs text-muted-foreground mt-1", "actor: {r.actor}" }
+                            p { class: "text-xs text-muted-foreground", "{r.ts}" }
+                        }
                     }
                 },
                 None => rsx! { p { class: "text-ink-faint text-sm", "nothing selected" } },

@@ -64,36 +64,41 @@ pub fn panel() -> Element {
 
     rsx! {
         PageTitle { "Security" }
-        div { class: "flex gap-2 my-2 items-center",
-            button {
-                class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",
-                disabled: !writes,
-                onclick: move |_| async move {
-                    chain.set(Some(verify_chain(api()).await));
-                },
-                "Verify audit chain"
-            }
-            match &*chain.read() {
-                Some(Ok(true)) => rsx! { span { class: "text-ok", "chain ok" } },
-                Some(Ok(false)) => {
-                    ui.audit_dirty.set(true);
-                    rsx! { span { class: "text-danger", "CHAIN TAMPERED" } }
+        div { class: "card",
+            div { class: "card-header",
+                div { class: "card-title", "Audit chain" }
+                match &*chain.read() {
+                    Some(Ok(true)) => rsx! { span { class: "badge badge-ok", "chain ok" } },
+                    Some(Ok(false)) => {
+                        ui.audit_dirty.set(true);
+                        rsx! { span { class: "badge badge-danger", "CHAIN TAMPERED" } }
+                    }
+                    Some(Err(e)) => rsx! { span { class: "badge badge-danger", "{e}" } },
+                    None => rsx! { span { class: "badge", "the trust anchor" } },
                 }
-                Some(Err(e)) => rsx! { span { class: "text-danger", "{e}" } },
-                None => rsx! { span { class: "text-ink-faint text-sm", "the trust anchor" } },
+            }
+            div { class: "card-body flex items-center gap-3",
+                button {
+                    class: "btn btn-outline btn-md",
+                    disabled: !writes,
+                    onclick: move |_| async move {
+                        chain.set(Some(verify_chain(api()).await));
+                    },
+                    "Verify audit chain"
+                }
             }
         }
-        h2 { class: "text-lg mt-2", "Quarantine ({q_count})" }
+        h2 { class: "mt-4 text-base font-semibold", "Quarantine ({q_count})" }
         match &*quarantine.read() {
             Some(Ok(q)) if !q.quarantined.is_empty() => rsx! {
-                ul { class: "divide-y hairline",
+                ul { class: "mt-2 divide-y divide-border",
                     for row in &q.quarantined {
-                        li { class: "py-2",
+                        li { class: "py-2.5",
                             div { class: "flex justify-between items-center",
                                 span { class: "font-mono text-sm", "chunk #{row.id}" }
                                 span { class: "flex gap-2",
                                     button {
-                                        class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm disabled:opacity-50",
+                                        class: "btn btn-outline btn-sm",
                                         disabled: !writes,
                                         onclick: { let mut refresh = refresh; let id = row.id; move |_| async move {
                                             let _ = api().quarantine_action(id, "release").await;
@@ -102,7 +107,7 @@ pub fn panel() -> Element {
                                         "Release"
                                     }
                                     button {
-                                        class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm text-danger disabled:opacity-50",
+                                        class: "btn btn-destructive btn-sm",
                                         disabled: !writes,
                                         onclick: { let mut refresh = refresh; let id = row.id; move |_| async move {
                                             let _ = api().quarantine_action(id, "delete").await;
@@ -113,7 +118,7 @@ pub fn panel() -> Element {
                                 }
                             }
                             if let Some(src) = &row.source {
-                                p { class: "text-xs text-ink-faint", "source: {src}" }
+                                p { class: "text-xs text-ink-faint mt-0.5", "source: {src}" }
                             }
                             if let Some(h) = &row.content_hash {
                                 p { class: "text-xs font-mono text-ink-faint", "{h}" }
@@ -122,29 +127,31 @@ pub fn panel() -> Element {
                     }
                 }
             },
-            Some(Ok(_)) => rsx! { p { class: "text-ink-muted mt-2", "no quarantined chunks" } },
+            Some(Ok(_)) => rsx! { p { class: "text-muted-foreground mt-2", "no quarantined chunks" } },
             Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "quarantine failed: {e}" } },
-            None => rsx! { p { class: "text-ink-muted mt-2", "…" } },
+            None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
         }
         // M6: the auth-failure feed — recent 401/403s with principal + route.
-        h2 { class: "text-lg mt-4", "Auth failures ({failures.len()})" }
+        h2 { class: "mt-4 text-base font-semibold", "Auth failures ({failures.len()})" }
         if failures.is_empty() {
-            p { class: "text-ink-muted text-sm mt-1", "no recent denied-auth events" }
+            p { class: "text-muted-foreground text-sm mt-1", "no recent denied-auth events" }
         } else {
-            table { class: "w-full text-sm tabular mt-1",
-                thead { tr {
-                    th { class: "text-left pr-2", "ts" }
-                    th { class: "text-left pr-2", "actor" }
-                    th { class: "text-left pr-2", "target" }
-                    th { class: "text-left", "status" }
-                } }
-                tbody {
-                    for r in &failures {
-                        tr {
-                            td { class: "pr-2 whitespace-nowrap text-xs", "{r.ts}" }
-                            td { class: "pr-2 font-mono text-xs", "{r.actor}" }
-                            td { class: "pr-2 font-mono text-xs", "{r.target_hash}" }
-                            td { class: "pr-2 text-danger", "{r.status}" }
+            div { class: "card mt-2 overflow-x-auto",
+                table { class: "table",
+                    thead { tr {
+                        th { class: "text-left pr-2", "ts" }
+                        th { class: "text-left pr-2", "actor" }
+                        th { class: "text-left pr-2", "target" }
+                        th { class: "text-left", "status" }
+                    } }
+                    tbody {
+                        for r in &failures {
+                            tr {
+                                td { class: "pr-2 whitespace-nowrap text-xs", "{r.ts}" }
+                                td { class: "pr-2 font-mono text-xs", "{r.actor}" }
+                                td { class: "pr-2 font-mono text-xs", "{r.target_hash}" }
+                                td { class: "pr-2 text-danger", "{r.status}" }
+                            }
                         }
                     }
                 }

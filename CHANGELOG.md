@@ -16,6 +16,39 @@ _(nothing pending)_
 
 ---
 
+## [1.16.4] — 2026-08-08
+
+### "Styled" (client-only shadcn/ui design-system restyle)
+
+- **Sidebar dashboard shell** — `AppShell` moved from a top nav rail to a fixed
+  left sidebar (brand mark + grouped `nav-link` pills with live count badges on
+  the rail) + a slim sticky top bar (connection dot, pending count, Security
+  flags + Audit-chain badges, principal). The right-hand context drawer is a
+  `card`. No layout semantics changed — every nav target stays a real `<Link>`,
+  every action a real `<button>` (the `interactive_elements_are_buttons` gate
+  still passes).
+- **shadcn-style component layer in `input.css`** — semantic tokens
+  (`--color-background/foreground/card/popover/muted/accent/destructive/border/
+  input/ring`) mapped onto the app's own AA-verified palette (state hues
+  `ok`/`warn`/`danger`/`info`/`neutral` kept by name), a radius scale
+  (`--radius-sm…2xl`), subtle shadows, and reusable classes: `.card`,
+  `.btn`/`.btn-primary`/`.btn-outline`/`.btn-secondary`/`.btn-ghost`/
+  `.btn-destructive`/`.btn-sm`/`.btn-md`, `.input`/`.select`, `.badge` +
+  state badges, `.nav`/`.nav-link`/`.nav-badge`, and `.table`.
+- **Every panel restyled to the layer** — Review, Recall (+ trace card),
+  Subjects (DSAR cert card), Security (chain card + quarantine + auth-failure
+  table), Audit (filter bar + table), Health (Service + Corpus cards), and the
+  Connect screen (branded card) all use the new tokens/classes. All tests,
+  clippy `-D warnings`, and `cargo fmt --check` stay green (31 tests).
+- **`deploy-web.sh` stale-CSS fix** — the script's `ls | head -1` glob picked
+  the alphabetically-first (stale) hashed `tailwind-*.css` in `target/` between
+  rebuilds, so a restyle could deploy the old stylesheet while index.html
+  pointed at the new one. Now `ls -t | head -1` picks the freshest build.
+- **Version**: client 1.16.2 → 1.16.4 (client-only; server + API contract
+  unchanged at 1.16.2).
+
+---
+
 ## [1.16.2] — 2026-08-08
 
 ### "Harden" (server + client security/serving foundation)

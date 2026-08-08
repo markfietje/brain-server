@@ -80,7 +80,7 @@ fn batch_summary(outcomes: &HashMap<i64, RowOutcome>) -> Element {
     let s = batch_outcome(outcomes);
     if (s.done + s.already_done + s.failed) > 0 && s.pending == 0 {
         rsx! {
-            p { class: "text-xs text-ink-muted mb-1",
+            p { class: "text-xs text-muted-foreground mb-1",
                 "batch: {s.done} approved · {s.already_done} already decided · {s.failed} failed"
             }
         }
@@ -267,26 +267,27 @@ pub fn panel() -> Element {
             PageTitle { "Review queue" }
             div { class: "flex gap-2 my-2 items-center flex-wrap",
                 button {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",
+                    class: "btn btn-outline btn-md",
                     disabled: !writes || all_ids.is_empty(),
                     onclick: move |_| { selected.set(all_ids.iter().copied().collect()); },
                     "Select visible ({all_ids.len()})"
                 }
                 button {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",
+                    class: "btn btn-primary btn-md",
                     disabled: !writes || selected().is_empty(),
                     onclick: move |_| run_batch(selected().iter().copied().collect(), false, None),
                     "Approve selected ({selected().len()})"
                 }
                 button {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm",
+                    class: "btn btn-ghost btn-md",
                     onclick: move |_| selected.set(HashSet::new()),
                     "Clear"
                 }
                 // M3.2: WCAG 2.1.4 — single-char shortcuts must be turn-offable.
-                label { class: "flex items-center gap-1 text-xs text-ink-muted ml-2",
+                label { class: "flex items-center gap-1.5 text-xs text-muted-foreground ml-2",
                     input {
                         "type": "checkbox",
+                        class: "accent-accent",
                         checked: shortcuts(),
                         onchange: move |e| shortcuts.set(e.value() == "true"),
                     }
@@ -298,7 +299,7 @@ pub fn panel() -> Element {
             { batch_summary(&outcomes()) }
             match &*proposals.read() {
             Some(Ok(list)) if !list.is_empty() => rsx! {
-                ul { class: "divide-y hairline",
+                ul { class: "divide-y divide-border",
                     for (i, p) in list.iter().enumerate() {
                         { card(
                             p.clone(),
@@ -317,19 +318,23 @@ pub fn panel() -> Element {
                 }
             },
                 Some(Ok(_)) => rsx! {
-                    p { class: "text-ink-muted mt-2", "No pending proposals." }
-                    button {
-                        class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm mt-1",
-                        onclick: move |_| async move {
-                            let mut refresh = refresh;
-                            let _ = api().propose("sample proposal — approve me to try the gate").await;
-                            refresh += 1;
-                        },
-                        "Ingest a sample proposal to try the gate"
+                    div { class: "card mt-2",
+                        div { class: "card-body text-center",
+                            p { class: "text-muted-foreground", "No pending proposals." }
+                            button {
+                                class: "btn btn-outline btn-md mt-3",
+                                onclick: move |_| async move {
+                                    let mut refresh = refresh;
+                                    let _ = api().propose("sample proposal — approve me to try the gate").await;
+                                    refresh += 1;
+                                },
+                                "Ingest a sample proposal to try the gate"
+                            }
+                        }
                     }
                 },
                 Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {error_message(&e)}" } },
-                None => rsx! { p { class: "text-ink-muted mt-2", "…" } },
+                None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
             }
             // M3: reject-with-reason + suggest-re-ingest. Modal-ish inline editors.
             if let Some(id) = reject_for() {
@@ -372,10 +377,10 @@ fn card(
     };
     let content_for_reingest = proposal.content.clone();
     rsx! {
-        li { class: "py-2{ring}",
-            label { class: "flex items-start gap-2",
+        li { class: "py-2.5{ring}",
+            label { class: "flex items-start gap-3",
                 input {
-                    class: "mt-1",
+                    class: "mt-1 accent-accent",
                     "type": "checkbox",
                     checked,
                     disabled: !writes,
@@ -383,44 +388,44 @@ fn card(
                     "aria-label": "select proposal {id}",
                 }
                 div { class: "flex-1",
-                    div { class: "flex justify-between",
+                    div { class: "flex justify-between items-center gap-2",
                         button {
                             class: "font-mono text-sm text-accent hover:underline text-left",
                             onclick: move |_| ui.drawer.set(Some(DrawerContent::Proposal(proposal.clone()))),
                             "proposal #{id} · {proposal.kind}"
                         }
-                        span { class: "text-xs text-ink-muted tabular",
+                        span { class: "text-xs text-muted-foreground tabular",
                             "novelty {proposal.novelty:.2} · salience {proposal.salience:.2}" }
                     }
                     if let Some(c) = conflict {
                         p { class: "text-sm text-warn",
                             "conflicts with chunk #{c} — approve to supersede" }
                     }
-                    p { class: "text-sm text-ink mt-1", "{proposal.content}" }
-                    div { class: "flex gap-2 mt-1 items-center flex-wrap",
+                    p { class: "text-sm text-foreground mt-1", "{proposal.content}" }
+                    div { class: "flex gap-2 mt-1.5 items-center flex-wrap",
                         button {
-                            class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm bg-accent text-white disabled:opacity-50",
+                            class: "btn btn-primary btn-sm",
                             disabled: !writes,
                             onclick: move |_| decide(id, None, false),
                             "Approve"
                         }
                         if conflict.is_some() {
                             button {
-                                class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm disabled:opacity-50",
+                                class: "btn btn-outline btn-sm",
                                 disabled: !writes,
                                 onclick: move |_| decide(id, conflict, false),
                                 "Approve & supersede"
                             }
                         }
                         button {
-                            class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm disabled:opacity-50",
+                            class: "btn btn-outline btn-sm",
                             disabled: !writes,
                             onclick: move |_| reject_for.set(Some(id)),
                             "Reject"
                         }
                         // M3: suggest re-ingest as a proposal with edits (no silent drop).
                         button {
-                            class: "text-xs text-ink-muted hover:text-accent",
+                            class: "btn btn-ghost btn-sm",
                             onclick: move |_| reingest_for.set(Some((id, content_for_reingest.clone()))),
                             "suggest re-ingest"
                         }
@@ -436,7 +441,7 @@ fn card(
                                 span { class: "text-xs text-ok", "✓ approved → chunk #{cid}" }
                             },
                             RowOutcome::AlreadyDone => rsx! {
-                                span { class: "text-xs text-ink-muted", "already decided" }
+                                span { class: "text-xs text-muted-foreground", "already decided" }
                             },
                             RowOutcome::Failed(e) => rsx! {
                                 span { class: "text-xs text-danger", "failed: {e}" }
@@ -466,23 +471,23 @@ fn RejectEditor(
             class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4",
             role: "dialog", "aria-modal": "true", "aria-label": "reject with reason",
             onkeydown: move |e| if e.key() == Key::Escape { reject_for.set(None) },
-            div { class: "surface-overlay border hairline rounded p-4 w-full max-w-md",
-                h2 { class: "text-sm font-semibold", "Reject proposal #{id}" }
+            div { class: "card p-4 w-full max-w-md bg-popover",
+                h2 { class: "card-title", "Reject proposal #{id}" }
                 textarea {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full mt-2 text-sm",
+                    class: "input w-full mt-3 text-sm min-h-20",
                     rows: "3",
                     placeholder: "reason (recorded in the audit log)…",
                     value: "{reason}",
                     oninput: move |e| reason.set(e.value()),
                 }
-                div { class: "flex gap-2 mt-2 justify-end",
+                div { class: "flex gap-2 mt-3 justify-end",
                     button {
-                        class: "text-sm text-ink-muted px-2 py-1",
+                        class: "btn btn-ghost btn-md",
                         onclick: move |_| reject_for.set(None),
                         "Cancel"
                     }
                     button {
-                        class: "border border-border-subtle rounded px-3 py-1 text-sm bg-danger text-white",
+                        class: "btn btn-destructive btn-md",
                         onclick: move |_| {
                             let api = api;
                             let mut outcomes = outcomes;
@@ -522,22 +527,22 @@ fn ReingestEditor(
             class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4",
             role: "dialog", "aria-modal": "true", "aria-label": "suggest re-ingest",
             onkeydown: move |e| if e.key() == Key::Escape { reingest_for.set(None) },
-            div { class: "surface-overlay border hairline rounded p-4 w-full max-w-md",
-                h2 { class: "text-sm font-semibold", "Re-ingest proposal #{id} as a new proposal" }
+            div { class: "card p-4 w-full max-w-md bg-popover",
+                h2 { class: "card-title", "Re-ingest proposal #{id} as a new proposal" }
                 textarea {
-                    class: "border border-border-subtle surface-raised rounded px-2 py-1 w-full mt-2 text-sm",
+                    class: "input w-full mt-3 text-sm min-h-28",
                     rows: "5",
                     value: "{content}",
                     oninput: move |e| content.set(e.value()),
                 }
-                div { class: "flex gap-2 mt-2 justify-end",
+                div { class: "flex gap-2 mt-3 justify-end",
                     button {
-                        class: "text-sm text-ink-muted px-2 py-1",
+                        class: "btn btn-ghost btn-md",
                         onclick: move |_| reingest_for.set(None),
                         "Cancel"
                     }
                     button {
-                        class: "border border-border-subtle rounded px-3 py-1 text-sm bg-accent text-white",
+                        class: "btn btn-primary btn-md",
                         disabled: content().trim().is_empty(),
                         onclick: move |_| {
                             let api = api;

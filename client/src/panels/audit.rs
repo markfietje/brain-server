@@ -93,84 +93,88 @@ pub fn panel() -> Element {
 
     rsx! {
         PageTitle { "Audit" }
-        match &*audit.read() {
-            Some(Ok(resp)) => rsx! {
-                p { class: "text-ink-muted text-sm",
-                    "{resp.events.len()} events loaded · {rows.len()} after filter (hash-only — no raw content)" }
-            },
-            _ => rsx! {},
-        }
-        // M7.1: client-side filter controls.
-        div { class: "flex gap-2 my-2 flex-wrap items-center text-sm",
-            input {
-                class: "border border-border-subtle surface-raised rounded px-2 py-1",
-                placeholder: "principal…",
-                value: "{filter().principal}",
-                oninput: move |e| filter.write().principal = e.value(),
-                "aria-label": "filter by principal",
-            }
-            select {
-                class: "border border-border-subtle surface-raised rounded px-1 py-1",
-                value: "{filter().kind}",
-                onchange: move |e| filter.write().kind = e.value(),
-                "aria-label": "filter by kind",
-                option { value: "", "all kinds" }
-                for k in &kinds {
-                    option { value: "{k}", "{k}" }
+        div { class: "card mt-2",
+            div { class: "card-body",
+                match &*audit.read() {
+                    Some(Ok(resp)) => rsx! {
+                        p { class: "text-muted-foreground text-sm",
+                            "{resp.events.len()} events loaded · {rows.len()} after filter (hash-only — no raw content)" }
+                    },
+                    _ => rsx! {},
                 }
-            }
-            input {
-                class: "border border-border-subtle surface-raised rounded px-2 py-1",
-                "type": "date",
-                value: "{filter().since}",
-                oninput: move |e| filter.write().since = e.value(),
-                "aria-label": "filter since date",
-            }
-            // M7.1: export the filtered rows as JSON. Ponytail: no `/audit/export`
-            // server route exists and "the client adds no new server routes" — so
-            // we serialize the already-fetched rows client-side + trigger a
-            // download via eval (web) / no-op where eval is unavailable.
-            button {
-                class: "border border-border-subtle surface-raised rounded px-2 py-1 disabled:opacity-50",
-                disabled: !writes || rows.is_empty(),
-                onclick: move |_| {
-                    let payload = serde_json::json!({ "events": &rows });
-                    let s = payload.to_string();
-                    // Web: build a blob URL + click it. Desktop: same webview JS.
-                    // ponytail: untestable without `dx serve`; the fallback (no-op
-                    // on a renderer without JS) is acceptable — the data is still
-                    // visible in the table.
-                    let js = format!(
-                        "(function(){{var b=new Blob([{s:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='audit.json';a.click();URL.revokeObjectURL(u);}})();"
-                    );
-                    let _ = document::eval(&js);
-                },
-                "Export JSON"
-            }
-        }
-        div { class: "overflow-x-auto mt-2" }
-        table { class: "w-full text-sm tabular",
-            thead {
-                tr {
-                    th { class: "text-left pr-2", "id" }
-                    th { class: "text-left pr-2", "ts" }
-                    th { class: "text-left pr-2", "kind" }
-                    th { class: "text-left pr-2", "actor" }
-                    th { class: "text-left pr-2", "status" }
-                    th { class: "text-left", "target_hash" }
-                }
-            }
-            tbody {
-                for row in &rows {
-                    tr {
-                        td { class: "pr-2 font-mono", "{row.id}" }
-                        td { class: "pr-2 whitespace-nowrap", "{row.ts}" }
-                        td { class: "pr-2", "{row.kind}" }
-                        td { class: "pr-2 font-mono text-xs", "{row.actor}" }
-                        td { class: "pr-2",
-                            span { class: status_class(&row.status), "{row.status}" }
+                // M7.1: client-side filter controls.
+                div { class: "flex gap-2 my-3 flex-wrap items-center",
+                    input {
+                        class: "input",
+                        placeholder: "principal…",
+                        value: "{filter().principal}",
+                        oninput: move |e| filter.write().principal = e.value(),
+                        "aria-label": "filter by principal",
+                    }
+                    select {
+                        class: "select",
+                        value: "{filter().kind}",
+                        onchange: move |e| filter.write().kind = e.value(),
+                        "aria-label": "filter by kind",
+                        option { value: "", "all kinds" }
+                        for k in &kinds {
+                            option { value: "{k}", "{k}" }
                         }
-                        td { class: "font-mono text-xs", "{row.target_hash}" }
+                    }
+                    input {
+                        class: "input",
+                        "type": "date",
+                        value: "{filter().since}",
+                        oninput: move |e| filter.write().since = e.value(),
+                        "aria-label": "filter since date",
+                    }
+                    // M7.1: export the filtered rows as JSON. Ponytail: no `/audit/export`
+                    // server route exists and "the client adds no new server routes" — so
+                    // we serialize the already-fetched rows client-side + trigger a
+                    // download via eval (web) / no-op where eval is unavailable.
+                    button {
+                        class: "btn btn-outline btn-md ml-auto",
+                        disabled: !writes || rows.is_empty(),
+                        onclick: move |_| {
+                            let payload = serde_json::json!({ "events": &rows });
+                            let s = payload.to_string();
+                            // Web: build a blob URL + click it. Desktop: same webview JS.
+                            // ponytail: untestable without `dx serve`; the fallback (no-op
+                            // on a renderer without JS) is acceptable — the data is still
+                            // visible in the table.
+                            let js = format!(
+                                "(function(){{var b=new Blob([{s:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='audit.json';a.click();URL.revokeObjectURL(u);}})();"
+                            );
+                            let _ = document::eval(&js);
+                        },
+                        "Export JSON"
+                    }
+                }
+                div { class: "overflow-x-auto" }
+                table { class: "table",
+                    thead {
+                        tr {
+                            th { class: "text-left pr-2", "id" }
+                            th { class: "text-left pr-2", "ts" }
+                            th { class: "text-left pr-2", "kind" }
+                            th { class: "text-left pr-2", "actor" }
+                            th { class: "text-left pr-2", "status" }
+                            th { class: "text-left", "target_hash" }
+                        }
+                    }
+                    tbody {
+                        for row in &rows {
+                            tr {
+                                td { class: "pr-2 font-mono", "{row.id}" }
+                                td { class: "pr-2 whitespace-nowrap", "{row.ts}" }
+                                td { class: "pr-2", "{row.kind}" }
+                                td { class: "pr-2 font-mono text-xs", "{row.actor}" }
+                                td { class: "pr-2",
+                                    span { class: status_class(&row.status), "{row.status}" }
+                                }
+                                td { class: "font-mono text-xs", "{row.target_hash}" }
+                            }
+                        }
                     }
                 }
             }

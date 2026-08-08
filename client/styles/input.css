@@ -1,12 +1,36 @@
 /* brain-client design tokens — DESIGN_v1.16.0_Client.md §5
- * Tailwind 4 (Dioxus 0.7 auto-detect). Dark-first, token-based, minimal chrome.
- * Single source of truth for colors / type / spacing — keep values here, not
- * scattered utilities. */
+ * Tailwind 4 (Dioxus 0.7 auto-detect). Dark-first, shadcn/ui-flavored token +
+ * component layer. Single source of truth for colors / type / spacing /
+ * radius / elevation — keep values here, not scattered utilities.
+ *
+ * Naming stays shadcn/ui-compatible (background/card/popover/primary/secondary/
+ * muted/accent/destructive/border/input/ring/radius) so the panels read like
+ * stock shadcn, while the raw values keep this app's own AA-verified palette.
+ * The state hues (ok/warn/danger/info/neutral) stay dedicated tokens — tests
+ * and the recall/security panels rely on them by name. */
 @import "tailwindcss";
 @source "./src/**/*.{rs,html,css}";
 
 @theme {
-  /* --- Neutral chrome (monochrome base, dark-first) ---------------------- */
+  /* --- Neutral chrome (shadcn-style semantic names, dark-first) ----------- */
+  --color-background: #0b0d10;      /* page base */
+  --color-foreground: #e7eaee;      /* primary text */
+  --color-card: #13161b;            /* panels, cards, table header */
+  --color-card-foreground: #e7eaee;
+  --color-popover: #1a1e25;         /* drawers, popovers, command palette */
+  --color-popover-foreground: #e7eaee;
+  --color-muted: #1a1e25;           /* neutral fills */
+  --color-muted-foreground: #9aa3ae;/* secondary text */
+  --color-accent: #5b9dff;
+  --color-accent-press: #4a86e0;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #e0706b;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #232830;          /* hairline panel/table borders */
+  --color-input: #343b46;           /* stronger field borders */
+  --color-ring: #5b9dff;
+
+  /* --- Legacy app tokens (kept by name — recall/security tests + panels) --- */
   --color-surface: #0b0d10;        /* near-black page base */
   --color-surface-raised: #13161b; /* panels, cards, table header */
   --color-surface-overlay: #1a1e25;/* drawers, popovers, command palette */
@@ -16,16 +40,23 @@
   --color-ink-muted: #9aa3ae;      /* secondary text */
   --color-ink-faint: #7c8492;      /* tertiary / disabled (v1.16.3 AA 4.6:1) */
 
-  /* --- Single brand accent ------------------------------------------------ */
-  --color-accent: #5b9dff;
-  --color-accent-press: #4a86e0;
-
   /* --- State (the ONLY place hue lives) ----------------------------------- */
   --color-ok: #6fb98a;
   --color-warn: #d9a54a;
   --color-danger: #e0706b;
   --color-info: #6aa8d9;
   --color-neutral: #8b94a3;
+
+  /* --- Radius scale (shadcn default 0.75 → generous soft corners) --------- */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+
+  /* --- Elevation (subtle dark shadows for the card layer) ----------------- */
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.25), 0 1px 2px rgb(0 0 0 / 0.15);
 
   /* --- Type stack (DESIGN §5.2): Inter Variable + mono + system fallback -- */
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
@@ -38,27 +69,79 @@
 @layer base {
   html { color-scheme: dark; }
   body {
-    @apply bg-surface text-ink antialiased;
+    @apply bg-background text-foreground antialiased;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
   /* tabular numerals on anything columnar (ids/hashes/scores) */
   .tabular { font-variant-numeric: tabular-nums; }
   code, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 }
 
-/* A few component primitives (design tokens; extend per-panel) */
+/* --- Component layer (shadcn-flavored). Tests pin the state tokens below --- */
 @layer components {
-  .hairline { border-color: var(--color-border-subtle); }
-  .surface-raised { background: var(--color-surface-raised); }
-  .focus-ring:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+  /* Cards: the reusable panel surface. */
+  .card { @apply rounded-lg border border-border bg-card shadow-xs; }
+  .card-header { @apply flex items-start justify-between gap-2 border-b border-border px-4 py-3; }
+  .card-title { @apply text-sm font-semibold text-foreground; }
+  .card-desc { @apply text-xs text-muted-foreground; }
+  .card-body { @apply p-4; }
+  .card-footer { @apply border-t border-border px-4 py-2; }
+
+  /* Buttons — shadcn anatomy (default/outline/secondary/ghost/destructive). */
+  .btn {
+    @apply inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md text-sm font-medium
+      whitespace-nowrap transition-colors outline-none
+      focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1
+      focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50;
   }
-  /* v1.16.3 M1.3: WCAG 2.4.11/2.4.12 Focus Not Obscured — every focused
-     element scrolls past the sticky nav when the browser scrolls to it. */
-  *:focus-visible {
-    scroll-margin-top: 4rem;
+  .btn-primary { @apply bg-accent text-accent-foreground hover:bg-accent-press; }
+  .btn-outline { @apply border border-input bg-transparent text-foreground hover:bg-muted; }
+  .btn-secondary { @apply bg-muted text-foreground hover:bg-border; }
+  .btn-ghost { @apply text-muted-foreground hover:bg-muted hover:text-foreground; }
+  .btn-destructive { @apply bg-destructive text-destructive-foreground hover:opacity-90; }
+  .btn-sm { @apply h-7 px-2.5 text-xs; }
+  .btn-md { @apply h-9 px-4; }
+
+  /* Fields — inputs + selects share the field chrome. */
+  .input, .select {
+    @apply rounded-md border border-input bg-card px-2.5 py-1.5 text-sm text-foreground
+      placeholder:text-ink-faint outline-none transition-colors
+      focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30;
   }
+  .label { @apply text-sm font-medium text-foreground; }
+  .field-desc { @apply text-xs text-muted-foreground; }
+
+  /* Badges — pill states for counts / statuses / tags. */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border border-border bg-muted
+      px-2 py-0.5 text-xs font-medium text-muted-foreground;
+  }
+  .badge-primary { @apply border-transparent bg-accent/15 text-accent; }
+  .badge-ok { @apply border-transparent bg-ok/15 text-ok; }
+  .badge-warn { @apply border-transparent bg-warn/15 text-warn; }
+  .badge-danger { @apply border-transparent bg-danger/15 text-danger; }
+
+  /* Nav rail links — pill nav with an optional trailing count badge. */
+  .nav { @apply flex flex-col gap-1; }
+  .nav-link {
+    @apply flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground
+      transition-colors outline-none hover:bg-muted hover:text-foreground
+      focus-visible:ring-2 focus-visible:ring-ring;
+  }
+  .nav-link-active { @apply bg-muted font-medium text-foreground; }
+  .nav-badge { @apply ml-auto rounded-full bg-accent/15 px-1.5 py-0.5 text-xs text-accent; font-variant-numeric: tabular-nums; }
+  .nav-badge-alert { @apply bg-warn/20 text-warn; }
+
+  /* Connection dot (state-colored). */
+  .dot { @apply text-sm leading-none; }
+
+  /* Tables — the audit / trace / failure-feed grids. */
+  .table { @apply w-full text-sm; font-variant-numeric: tabular-nums; }
+  .table thead { @apply border-b border-border; }
+  .table th { @apply px-2 py-1.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint; }
+  .table td, .table th { @apply px-2 py-1.5; }
+  .table tbody tr { @apply border-b border-border/50 transition-colors hover:bg-muted/40; }
 }
 
 /* a11y: kill all motion for reduced-motion users (DESIGN §5.4) */

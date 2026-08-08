@@ -43,47 +43,53 @@ pub fn panel() -> Element {
 
     rsx! {
         PageTitle { "Subjects (DSAR)" }
-        div { class: "flex gap-2 my-2",
-            input {
-                class: "border border-border-subtle surface-raised rounded px-2 py-1 flex-1",
-                maxlength: MAX_SUBJECT,
-                placeholder: "subject / owner / principal…",
-                value: "{subject}",
-                oninput: move |e| subject.set(e.value()),
-                "aria-label": "subject to action",
+        div { class: "card mt-2",
+            div { class: "card-body space-y-3",
+                div { class: "flex gap-2",
+                    input {
+                        class: "input flex-1",
+                        maxlength: MAX_SUBJECT,
+                        placeholder: "subject / owner / principal…",
+                        value: "{subject}",
+                        oninput: move |e| subject.set(e.value()),
+                        "aria-label": "subject to action",
+                    }
+                }
+                div { class: "flex gap-2",
+                    button {
+                        class: "btn btn-outline btn-md",
+                        disabled: busy() || !writes,
+                        onclick: move |_| async move {
+                            let s = subject().trim().to_string();
+                            if s.is_empty() { result.set(Some(Err("enter a subject first".into()))); return; }
+                            busy.set(true);
+                            result.set(Some(run_dsar(api(), s, "export").await));
+                            busy.set(false);
+                        },
+                        "Locate & export"
+                    }
+                    button {
+                        class: "btn btn-destructive btn-md",
+                        disabled: busy() || !writes,
+                        onclick: move |_| async move {
+                            let s = subject().trim().to_string();
+                            if s.is_empty() { result.set(Some(Err("enter a subject first".into()))); return; }
+                            busy.set(true);
+                            result.set(Some(run_dsar(api(), s, "both").await));
+                            busy.set(false);
+                        },
+                        "Locate, export & purge"
+                    }
+                }
+                if busy() {
+                    p { class: "text-muted-foreground", "running…" }
+                }
+                match &*result.read() {
+                    Some(Ok(r)) => rsx! { CertificateCard { result: r.clone() } },
+                    Some(Err(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
+                    None => rsx! {},
+                }
             }
-            button {
-                class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",
-                disabled: busy() || !writes,
-                onclick: move |_| async move {
-                    let s = subject().trim().to_string();
-                    if s.is_empty() { result.set(Some(Err("enter a subject first".into()))); return; }
-                    busy.set(true);
-                    result.set(Some(run_dsar(api(), s, "export").await));
-                    busy.set(false);
-                },
-                "Locate & export"
-            }
-            button {
-                class: "border border-border-subtle rounded px-2 py-1 text-sm bg-danger text-white disabled:opacity-50",
-                disabled: busy() || !writes,
-                onclick: move |_| async move {
-                    let s = subject().trim().to_string();
-                    if s.is_empty() { result.set(Some(Err("enter a subject first".into()))); return; }
-                    busy.set(true);
-                    result.set(Some(run_dsar(api(), s, "both").await));
-                    busy.set(false);
-                },
-                "Locate, export & purge"
-            }
-        }
-        if busy() {
-            p { class: "text-ink-muted", "running…" }
-        }
-        match &*result.read() {
-            Some(Ok(r)) => rsx! { CertificateCard { result: r.clone() } },
-            Some(Err(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
-            None => rsx! {},
         }
         p { class: "text-ink-faint mt-4 text-sm",
             "Purge is irreversible: it writes a tombstone + hash-chain entry. "
@@ -112,28 +118,30 @@ fn CertificateCard(result: DsarResult) -> Element {
         .map(|r| format!("chunk #{r}"))
         .unwrap_or_else(|| "—".into());
     rsx! {
-        div { class: "surface-raised border hairline rounded p-4 mt-2",
-            div { class: "flex justify-between items-start",
-                h2 { class: "text-sm font-semibold", "Deletion certificate #{result.id}" }
+        div { class: "card mt-2",
+            div { class: "card-header",
+                h2 { class: "card-title", "Deletion certificate #{result.id}" }
                 button {
                     class: "font-mono text-xs text-accent hover:underline",
                     onclick: move |_| ui.drawer.set(Some(DrawerContent::Certificate(cert.clone()))),
                     "subject: {result.subject}"
                 }
             }
-            dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 mt-2 text-sm",
-                dt { class: "text-ink-muted", "found" }
+            dl { class: "card-body grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm",
+                dt { class: "text-muted-foreground", "found" }
                 dd { class: "font-mono tabular", "{cert.found_count}" }
-                dt { class: "text-ink-muted", "purged" }
+                dt { class: "text-muted-foreground", "purged" }
                 dd { class: "font-mono tabular", "{purged}" }
-                dt { class: "text-ink-muted", "tombstone root" }
+                dt { class: "text-muted-foreground", "tombstone root" }
                 dd { class: "font-mono", "{root}" }
-                dt { class: "text-ink-muted", "certified" }
+                dt { class: "text-muted-foreground", "certified" }
                 dd { "{cert.certified_at}" }
-                dt { class: "text-ink-muted", "chain head" }
+                dt { class: "text-muted-foreground", "chain head" }
                 dd { class: "font-mono text-xs", "{cert.chain_head}" }
             }
-            p { class: "{badge_class} font-semibold mt-2 text-sm", "{badge_text}" }
+            div { class: "card-footer",
+                span { class: "{badge_class} font-semibold text-sm", "{badge_text}" }
+            }
         }
     }
 }
