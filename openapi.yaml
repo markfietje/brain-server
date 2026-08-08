@@ -702,6 +702,12 @@ paths:
           schema:
             type: integer
           description: Max events to return (default 100, capped at MAX_MULTI_GET)
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: v1.16.7 — pagination cursor (rows are newest-first; offset past the last row returns []). Pair with limit for Load-more paging.
       responses:
         "200":
           description: Recent audit events (hashes only; no raw secrets)
