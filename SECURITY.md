@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-07-29 against OWASP Top 10:**2025** + Cheat Sheet Series
+**Last reviewed:** 2026-08-08 against OWASP Top 10:**2025** + Cheat Sheet Series
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
@@ -11,16 +11,19 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.2.x   | :white_check_mark: | Current — JWT/JWS + AuthZ |
-| 1.0.x   | :white_check_mark: | LTS line (opaque bearer) |
+| 1.16.x  | :white_check_mark: | Current — client ("Integrated") + v1.14/v1.15 governance |
+| 1.14.x  | :white_check_mark: | Gate — PII redaction + record-level access_scope |
+| 1.12.x  | :white_check_mark: | Harden line — AuthZ wiring + audit fixes |
+| 1.2.x   | :white_check_mark: | AuthN line — JWT/JWS + AuthZ foundation (opaque bearer back-compat) |
+| 1.0.x   | :white_check_mark: | LTS line (opaque bearer, domains) |
 | 0.9.x   | :white_check_mark: | Maintained for back-compat |
 | < 0.9   | :x:                | Unsupported |
 
-**Support window.** The current minor (`1.15.x`) and the previous minor receive
-fixes; the `0.9.x`/`1.0.x` lines receive back-compat/security fixes only. There
-is no fixed end-of-life date; any line's deprecation is announced at least one
-minor release in advance. A machine-readable disclosure endpoint is published at
-[`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
+**Support window.** The current minor (`1.16.x`) and the previous minor receive
+fixes; the `0.9.x`/`1.0.x`/`1.2.x` lines receive back-compat/security fixes only.
+There is no fixed end-of-life date; any line's deprecation is announced at least
+one minor release in advance. A machine-readable disclosure endpoint is published
+at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
 (RFC 9116) — `Contact`/`Expires`/`Canonical` fields, overridable via
 `BRAIN_SECURITY_CONTACT` / `BRAIN_PUBLIC_BASE_URL`.
 
@@ -506,6 +509,19 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.16.7 | 2026-08-08 | Client "Integrated": deep links + PWA (offline shell caches app shell only — never the API, no content caching) + paginated audit + command palette + recall debounce + hardening (drawer focus trap, aria-live, `dir="auto"`). Client-only; server + API contract unchanged |
+| 1.16.6 | 2026-08-08 | Client "Mobile": secure token storage via OS keyring (`keyring`, non-web; web stays in-memory — browser localStorage is not a secure credential store per MASVS-STORAGE) + responsive tab-bar UX; Dioxus pinned to 0.7.10 (wasm-hotpatch TOCTOU/UB + panic-resilience fixes compiled in) |
+| 1.16.5 | 2026-08-08 | Client "Secure": JWT refresh lifecycle — silent refresh-on-401 (single-flight mutex), pre-emptive expiry refresh, principal identity pillar, revocation-aware error mapping |
+| 1.16.4 | 2026-08-08 | Client "Styled": shadcn/ui design-system restyle; deploy-web.sh stale-CSS fix |
+| 1.16.3 | 2026-08-08 | Client "Serve": web bundle served under `/app`; path-aware CSP (`CLIENT_CSP` gains `'unsafe-eval'` for wasm-bindgen glue — API CSP stays strict); same-origin connect default |
+| 1.16.2 | 2026-08-08 | Client "Harden + Accessible": server serves the client + path-aware CSP; WCAG 2.2 AA client pass (focus-to-`<h1>`, document titles, no-`<div onclick>` semantic gate, AA-contrast token); ErrorBoundary + error mapping; cancel-safe batch summary; grep guards (`xss_escape_hatch_is_unused`, `credentials_stay_in_memory`) |
+| 1.16.0 | 2026-08-08 | Client "Client": Dioxus control surface (web + desktop + iOS + Android, one Rust codebase) — connection state machine, honest-batch review, recall decision-path viewer, DSAR certificate card, auth-failure feed, audit filters, semantic-token layer |
+| 1.15.0 | 2026-08-08 | "Observe": read-event audit (recall/search/get emit rows into the SHA-256 chain; opt-in), recall trace endpoint, DSAR workflow (locate→export→purge→chain-verifiable deletion certificate, `GET /tombstones`), Art 19 HMAC-SHA256 webhook (opt-in; reqwest now required for outbound HTTP); ISO 42001/NIST AI RMF/SOC 2 map in `COMPLIANCE.md` |
+| 1.14.0 | 2026-08-07 | "Gate": human-in-the-loop write-back (`POST /ingest/proposal` → `POST /proposals/{id}/approve`, one tx, optional `?supersedes`); per-chunk `expires_at` decay (strict `<`, nothing decays autonomously); record-level `access_scope` + `owner` (JWT-mode deny-by-default filter); PII output redaction (`[redacted:…]`) + opt-in write-time placeholder mode (`BRAIN_REDACT_PII=1`, `pii_map` vault); GDPR `GET /export` + `POST /purge` (hard audited delete across tables, tombstone + audit) |
+| 1.13.2 | 2026-08-06 | "Harden": `PRAGMA busy_timeout=5000` on every SQLite pool init (write contention now queues up to 5s instead of failing with `SQLITE_BUSY`); `/graph/traverse` `name`/`entity` aliases; `/recall` `explain` alias |
+| 1.13.1 | 2026-08-06 | "Recall" fix: automatic retrieval routing in shim mode (matched domain + `global` rescue leg); kill switch `BRAIN_RECALL_ROUTING_ENABLED` |
+| 1.13.0 | 2026-08-06 | "Route": domain relabeling migration (`global` + per-domain labels); retrieval routing by centroid |
+| 1.12.2 | 2026-08-04 | "Harden" (audit-fix): `/auth/refresh` check-then-act race closed (`record_and_rotate` under `BEGIN IMMEDIATE` — concurrent presentations serialize, exactly one winner, family burned once, mutation-proven); DB stack bumped (rusqlite 0.40.1 / sqlite-vec 0.1.9 / r2d2_sqlite 0.35.0 → bundled SQLite 3.53.2, fts3_tokenizer + CVE-2022-35737-class fixes); CI `cargo audit` green via `.cargo/audit.toml` (RUSTSEC-2023-0071 "Marvin" accepted + documented — no fixed release exists in any rsa/jsonwebtoken release; EdDSA keys avoid RSA entirely) |
 | 1.12.1 | 2026-08-04 | AuthZ wiring completion ("Harden"): closes the S1 audit finding — every non-public route now calls `authorize()` at handler entry with the v1.2 §3.3 matrix action (20 previously-ungated handlers wired: search/stats/embeddings/get*/multi-get/graph*/quarantine-list/audit/audit-verify/metrics/recall/verify/propose/connectors/revoke/domains/suggest-metrics/procedure-steps; `reindex` + `DELETE /memory/{id}` upgraded Write→Admin; `/audit` gains Admin gate + cross-tenant 403 via `audit_scope`; `/auth/revoke` finally enforces its documented admin requirement). Back-compat preserved: `None` principal (opaque mode) stays superuser; webhooks stay HMAC-internal. New wiring-guard test pins every non-public route to an `authorize()` call (mutation-proven) + router-level middleware tests. 465 tests green |
 | 1.12.0 | 2026-08-03 | Noise-aware graph retrieval + complexity-gated activation ("Discern"): edge-type weights (`tagged_with`/`alias_of` → 0.1 vs semantic types → 1.0) + GAAMA-style hub dampening (`w_ij·min(1, θ/deg(i))`, θ=50) tame the taxonomy-heavy KG (94% of live edges are tag noise; degree-73/101/150 mega-hubs); graph leg auto-engages as a bounded rescue pass on the would-be-abstention path (`ClarifyQuery` only, `BRAIN_GRAPH_RESCUE_ENABLED` kill switch, arXiv:2602.03578). Retrieval-only, deterministic, no LLM, no new schema, no re-ingest; θ and weights are corpus-calibrated constants, not learned |
 | 1.11.0 | 2026-08-03 | HippoRAG-2-style graph retrieval ("Associate"): deterministic Personalized PageRank over the existing `entities`/`relationships` KG as an opt-in third RRF leg (`?graph=true`). No new schema, no embeddings, no LLM; bounded power iteration (`MAX_PPR_ITER`/`MAX_VISITED`) prevents a dense/taxonomy-heavy KG from blowing the compute budget; exact-name entity seeding (no fuzzy matching on untrusted input); retrieval-only — the leg reads the KG and never writes |
