@@ -3302,14 +3302,18 @@ async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
 /// CSP for API routes — the strictest possible (JSON-only, no content executes).
 const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
 
-/// CSP for client routes — allows WASM compilation without eval(), same-origin
-/// API calls, self-hosted fonts/CSS. No CDN, no inline scripts.
-/// ponytail: style-src 'unsafe-inline' is needed because Dioxus may inject
-/// runtime <style> for certain operations. A nonce-based replacement is the
-/// v1.18.0 upgrade path if Dioxus adds nonce support to its style injection.
+/// CSP for client routes — allows WASM compilation + the wasm-bindgen glue's
+/// dynamic Function() instantiation, same-origin API calls, self-hosted
+/// fonts/CSS. No CDN, no inline scripts.
+/// ponytail: script-src 'unsafe-eval' is required because wasm-bindgen emits
+/// a `new Function()` for module instantiation — 'wasm-unsafe-eval' alone
+/// permits WASM compile/instantiate but not JS eval(), so the glue throws
+/// "call to Function() blocked by CSP" (v1.16.2 live fix). A build-time hash
+/// or a bundler that emits instantiateStreaming without eval is the upgrade
+/// path. style-src 'unsafe-inline' covers Dioxus runtime <style> injection.
 const CLIENT_CSP: &str = concat!(
     "default-src 'self'; ",
-    "script-src 'self' 'wasm-unsafe-eval'; ",
+    "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; ",
     "style-src 'self' 'unsafe-inline'; ",
     "connect-src 'self'; ",
     "img-src 'self' data:; ",
@@ -9374,6 +9378,10 @@ Final paragraph after the rule.";
             assert!(
                 hdr.contains("'wasm-unsafe-eval'"),
                 "client CSP must allow WASM"
+            );
+            assert!(
+                hdr.contains("'unsafe-eval'"),
+                "client CSP must allow the wasm-bindgen Function() glue (v1.16.2 live fix)"
             );
             assert!(
                 hdr.contains("connect-src 'self'"),
