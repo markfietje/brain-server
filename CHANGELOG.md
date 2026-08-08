@@ -72,6 +72,14 @@ awareness, and the honest revocation path. See
 
 ## [1.16.6] — 2026-08-08
 
+### Server version alignment (no functional server change)
+
+The server `Cargo.toml` was bumped 1.16.2 → **1.16.6** purely to keep the
+server and the Dioxus client versions in lockstep — `brain -V` now reports the
+same version as the GUI. The server binary is byte-identical in behavior to
+1.16.2; this is a version-alignment release, not a code change. `openapi.yaml`
+`version`/`x-api-version` and README updated to match.
+
 ### "Mobile" (client-only — secure token storage + responsive UX)
 
 Client 1.16.5 → 1.16.6; server + API contract unchanged. This release lands the
