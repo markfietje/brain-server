@@ -426,8 +426,9 @@ pub struct ApproveQuery {
 
 /// The owner string recorded on a chunk at ingest: the principal's subject when
 /// a JWT principal exists, else NULL (loopback/opaque = unowned, the documented
-/// legacy default).
-fn principal_to_owner(p: &Option<crate::auth::Principal>) -> Option<String> {
+/// legacy default). v1.17.1: now `pub` so the direct-ingest insert sites write it
+/// (fixing the DSAR locate gap — a real DSAR could find nothing by subject).
+pub fn principal_to_owner(p: &Option<crate::auth::Principal>) -> Option<String> {
     p.as_ref().map(|pr| pr.sub.clone())
 }
 

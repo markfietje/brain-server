@@ -634,6 +634,9 @@ async fn add_chunk(
     let pool = s.pool.clone();
     let title = req.title.filter(|t| !t.is_empty());
     let source = req.source;
+    // v1.17.1: record the creating principal (JWT `sub`) so `/dsar` + `/purge`
+    // can locate by subject. `None` (loopback/opaque) keeps the legacy NULL.
+    let owner = crate::handlers::gate::principal_to_owner(&principal.0);
 
     let add_future = task::spawn_blocking(move || {
         let embedding = match model.encode(std::slice::from_ref(&text)).into_iter().next() {
@@ -677,8 +680,8 @@ async fn add_chunk(
         };
 
         if let Err(e) = tx.execute(
-            "INSERT INTO knowledge(content, title, source, content_hash) VALUES(?, ?, ?, ?)",
-            params![text, title, source, content_hash],
+            "INSERT INTO knowledge(content, title, source, content_hash, owner) VALUES(?, ?, ?, ?, ?)",
+            params![text, title, source, content_hash, &owner],
         ) {
             return AddResponse::error(format!("Insert failed: {}", e));
         }
@@ -1004,6 +1007,8 @@ async fn ingest_memory(
     let model = Arc::clone(&s.model);
     let pool = s.pool.clone();
     let tracker = std::sync::Arc::clone(&s.connection_tracker);
+    // v1.17.1: record the creating principal (see add_chunk).
+    let owner = crate::handlers::gate::principal_to_owner(&principal.0);
 
     let ingest_future = task::spawn_blocking(move || {
         let conn_id = tracker.track("ingest_memory");
@@ -1067,8 +1072,8 @@ async fn ingest_memory(
 
             if tx
                 .execute(
-                    "INSERT INTO knowledge(content, title, source, content_hash) VALUES(?, ?, ?, ?)",
-                    params![text, title, "memory", content_hash],
+                    "INSERT INTO knowledge(content, title, source, content_hash, owner) VALUES(?, ?, ?, ?, ?)",
+                    params![text, title, "memory", content_hash, &owner],
                 )
                 .is_err()
             {
@@ -2137,6 +2142,8 @@ async fn ingest_markdown(
     let edges = kg_edges.clone();
     let raw_content_for_source = payload.content.clone();
     let replace = payload.replace;
+    // v1.17.1: record the creating principal (see add_chunk).
+    let owner = crate::handlers::gate::principal_to_owner(&principal.0);
     let result = task::spawn_blocking(move || -> Result<(i64, usize, usize), AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let tx = conn
@@ -2183,6 +2190,7 @@ async fn ingest_markdown(
             &edges,
             &raw_content_for_source,
             quarantine_flagged,
+            &owner,
         )?;
         tx.commit().map_err(|e| AppError::Internal(e.to_string()))?;
         // v0.9.7 Guard: audit successful markdown ingest (identifier only).
@@ -2270,6 +2278,7 @@ fn write_markdown_ingest(
     edges: &[(String, String, String)],
     raw_content: &str,
     quarantine_flagged: bool,
+    owner: &Option<String>,
 ) -> Result<(i64, usize, usize), AppError> {
     let mut first_id: i64 = 0;
     let mut inserted = 0usize;
@@ -2357,8 +2366,8 @@ fn write_markdown_ingest(
         tx.execute(
             "INSERT INTO knowledge
                (title, content, source, content_hash, document_id, chunk_index,
-                heading_path, line_start, line_end, source_path)
-             VALUES (?1, ?2, 'markdown', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                heading_path, line_start, line_end, source_path, owner)
+             VALUES (?1, ?2, 'markdown', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 doc_title,
                 &chunk.text,
@@ -2369,6 +2378,7 @@ fn write_markdown_ingest(
                 chunk.line_start as i64,
                 chunk.line_end as i64,
                 source_path,
+                owner,
             ],
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -5420,6 +5430,7 @@ mod tests {
             &edges,
             "ignore previous instructions",
             true,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6536,6 +6547,7 @@ mod tests {
             &[],
             "hello vault",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6574,6 +6586,7 @@ mod tests {
             &[],
             "unchanged content",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6591,6 +6604,7 @@ mod tests {
             &[],
             "unchanged content",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6629,6 +6643,7 @@ mod tests {
             &[],
             "original content",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6651,6 +6666,7 @@ mod tests {
             &[],
             "edited content",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6701,6 +6717,7 @@ mod tests {
             &[],
             "a chunk with content",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6853,6 +6870,7 @@ mod tests {
             &[],
             "legacy body",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6912,6 +6930,7 @@ mod tests {
             &[],
             "v1 body",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -6945,6 +6964,7 @@ mod tests {
             &[],
             "v2 body with new words",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -7171,6 +7191,7 @@ Final paragraph after the rule.";
             &[],
             raw_content,
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -7230,6 +7251,7 @@ Final paragraph after the rule.";
             &[],
             raw_content,
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -7273,6 +7295,7 @@ Final paragraph after the rule.";
             &edges,
             "see [[Bignay]] and [[Mangosteen]]",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -7333,6 +7356,7 @@ Final paragraph after the rule.";
             &edges,
             "body",
             false,
+            &None,
         )
         .unwrap();
         tx.commit().unwrap();
@@ -8103,6 +8127,58 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(reason.as_deref(), Some("derived"));
         assert_eq!(origin, Some(1), "derived tombstone points at its root");
+    }
+
+    /// v1.17.1 "Govern" M1: the drill's exact failure case now green. Ingest as
+    /// a JWT principal writes `owner = sub`, and `dsar_locate` then finds the
+    /// row by subject WITHOUT any manual owner-seeding — the fix's payoff.
+    #[test]
+    fn test_ingest_owner_flows_to_dsar_locate() {
+        use crate::auth::Principal;
+        let mut db = test_db();
+        let alice = Principal {
+            sub: "alice@example.com".to_string(),
+            tenant: "alpha".to_string(),
+            scopes: vec![crate::auth::Scope {
+                action: crate::auth::Action::Admin,
+                team: "*".to_string(),
+                domain: "*".to_string(),
+            }],
+            jti: "token-1".to_string(),
+        };
+        let owner = handlers::gate::principal_to_owner(&Some(alice));
+        assert_eq!(owner.as_deref(), Some("alice@example.com"));
+        // The INSERT shape the direct-ingest paths use (`add_chunk`-style).
+        db.execute(
+            "INSERT INTO knowledge(content, title, source, content_hash, owner)
+             VALUES (?1, ?2, 'memory', ?3, ?4)",
+            rusqlite::params!["alice's private memory", "note", "h-a1", &owner],
+        )
+        .unwrap();
+        let id: i64 = db
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        // Loopback / opaque ingest (owner = NULL) is NOT located by that subject.
+        let bob: i64 = db
+            .query_row(
+                "INSERT INTO knowledge(content, title, source, content_hash, owner)
+                 VALUES ('unowned', 'n', 'memory', 'h-b', NULL) RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let tx = db.transaction().unwrap();
+        let (roots, derived) =
+            handlers::observe::dsar_locate(&tx, "alice@example.com").expect("locate by subject");
+        assert_eq!(roots, vec![id], "DSAR finds the just-ingested owner row");
+        assert!(derived.is_empty());
+        let (roots_b, _) =
+            handlers::observe::dsar_locate(&tx, "alice@example.com").expect("locate again");
+        assert!(
+            !roots_b.contains(&bob),
+            "NULL-owner (loopback) chunk not attributed to alice"
+        );
+        drop(tx);
     }
 
     /// v1.16.1: a purge must cascade to `recall_traces`. The trace side table
@@ -9217,6 +9293,57 @@ Final paragraph after the rule.";
                 "{method} {route} (`{handler_name}`) does not enforce Action::{action}"
             );
         }
+    }
+
+    /// v1.17.1 "Govern" M1: every direct-ingest INSERT into `knowledge` writes
+    /// the `owner` column (the caller's JWT `sub`, else NULL), so `/dsar` +
+    /// `/purge` can locate by subject. Mirrors the `authz_gates` source-scan
+    /// style: a hand-maintained site table pinned against the live insert SQL.
+    #[test]
+    fn ingest_insert_sites_write_owner_column() {
+        let main_src = include_str!("main.rs");
+        let ingest_src = include_str!("handlers/ingest.rs");
+        // (source, handler name, the `knowledge` INSERT SQL fragment it must contain)
+        let sites: &[(&str, &str, &str)] = &[
+            // add_chunk
+            (
+                main_src,
+                "add_chunk",
+                "INSERT INTO knowledge(content, title, source, content_hash, owner)",
+            ),
+            // ingest_memory
+            (
+                main_src,
+                "ingest_memory",
+                "INSERT INTO knowledge(content, title, source, content_hash, owner)",
+            ),
+            // /ingest (structured)
+            (
+                ingest_src,
+                "ingest",
+                "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner)",
+            ),
+            // write_markdown_ingest
+            (
+                main_src,
+                "write_markdown_ingest",
+                "heading_path, line_start, line_end, source_path, owner)",
+            ),
+        ];
+        for (src, handler, sql) in sites {
+            let body = handler_body(src, handler)
+                .unwrap_or_else(|| panic!("handler `fn {handler}` not found"));
+            assert!(
+                body.contains(sql),
+                "`{handler}` knowledge INSERT does not write `owner` (DSAR locate would miss it)"
+            );
+        }
+        // The owner helper itself must stay the single sub→owner mapping.
+        let gate_src = include_str!("handlers/gate.rs");
+        assert!(
+            gate_src.contains("pub fn principal_to_owner"),
+            "principal_to_owner must be pub (the insert sites call it)"
+        );
     }
 
     /// Extract the body of `async fn {name}` (brace-balanced, string-aware) so
