@@ -9,7 +9,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![Version](https://img.shields.io/badge/version-1.16.7-blue.svg)](#)
-  [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](#)
+  [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
   [![CI](https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg)](https://github.com/markfietje/brain-server/actions/workflows/ci.yml)
   [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
