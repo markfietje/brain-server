@@ -233,6 +233,18 @@ cargo test --features bench
 
 ---
 
+## Contributing
+
+Contributions are welcome. Please read the
+[contributing guidelines](CONTRIBUTING.md) and our
+[code of conduct](CODE_OF_CONDUCT.md) before opening a PR. The quality gates
+(`cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`) are enforced in CI —
+please run them locally first.
+
+For security vulnerabilities, do **not** open a public issue — use the GitHub
+"Report a vulnerability" tab or email security@openclaw.dev (see
+[SECURITY.md](SECURITY.md)).
+
 ## License
 
 MIT.
