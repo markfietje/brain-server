@@ -12,6 +12,12 @@ been run, it is marked **pending** rather than asserted.
 
 ## [Unreleased]
 
+_(nothing pending)_
+
+---
+
+## [1.16.1] — 2026-08-08
+
 ### Operations
 
 - **RSS warning band raised 320 → 512 MiB** (`src/capacity.rs`, both targets):
@@ -24,6 +30,27 @@ been run, it is marked **pending** rather than asserted.
   accessible by integration" — an infra failure, not a code one). Added the
   permission on the audit job + bumped `actions/checkout` v4 → v5 (Node 24,
   clears the Node 20 deprecation).
+
+### Fixed
+
+- **`/tombstones` deletion registry under-reporting (Round 11 finding).**
+  Pre-v1.14 tombstone rows only set `deleted_at`; `purged_at` was NULL, and the
+  handler read it as a non-null `i64`, so `flatten()` silently dropped every
+  legacy row. Observed on the live DB: 6,008 of 6,009 registry rows invisible.
+  Fix: idempotent migration backfill (`purged_at` = epoch of `deleted_at`) +
+  handler reads `Option<i64>` and surfaces remaining NULLs as `null`. Registry
+  now shows the full deletion history.
+- **Purge/DSAR cascade to `recall_traces` (Round 11 finding).** `purge_chunk_ids`
+  now deletes recall traces whose hit list references a purged chunk (exact
+  JSON path via bundled JSON1, best-effort). DSAR additionally sweeps traces
+  whose raw **query text** mentions the subject — the trace side table held
+  query-text residue that no deletion path touched (no FK between
+  `recall_traces` and `audit_events`).
+- **Retention prune sweeps orphaned traces.** `prune_audit_retention` now
+  deletes `recall_traces` rows whose audit row was pruned, instead of leaving
+  them orphaned forever.
+- **Regression tests:** purge→trace cascade by hit id, retention sweep, and
+  legacy-tombstone backfill visibility all covered in `src/main.rs` tests.
 
 ---
 

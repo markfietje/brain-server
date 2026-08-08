@@ -360,6 +360,17 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
         );
         prev = new_prev;
     }
+    // v1.16.1: sweep orphaned trace artifacts. `recall_traces` is keyed by the
+    // audit row id with no FK; retention-pruned audit rows would otherwise
+    // leave their replay traces behind forever. Delete any trace whose audit
+    // row is gone. (The DSAR/purge cascade is handled in gate::purge_chunk_ids;
+    // this covers the retention path.)
+    tx.execute(
+        "DELETE FROM recall_traces
+          WHERE audit_id NOT IN (SELECT id FROM audit_events)",
+        [],
+    )
+    .ok()?;
     tx.commit().ok()?;
     Some(expired)
 }

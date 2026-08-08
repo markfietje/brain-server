@@ -683,6 +683,23 @@ pub(crate) fn purge_chunk_ids(
             "DELETE FROM proposals WHERE conflict_with = ?1",
             rusqlite::params![id],
         );
+        // v1.16.1: cascade to recall_traces. The trace side table (read-event
+        // replay artifact) embeds hit chunk ids in its JSON; a purged chunk
+        // must not leave a trace that still "proves" it was returned. JSON1
+        // is compiled into the bundled SQLite (rusqlite "bundled"), so the
+        // path filter is exact, not a LIKE. Best-effort: a trace with an
+        // unparseable JSON body is skipped rather than failing the purge.
+        let _ = tx.execute(
+            "DELETE FROM recall_traces WHERE audit_id IN (
+                 SELECT rt.audit_id FROM recall_traces rt
+                  WHERE json_valid(rt.trace_json)
+                    AND EXISTS (
+                        SELECT 1 FROM json_each(rt.trace_json, '$.hits')
+                         WHERE json_extract(value, '$.id') = ?1
+                    )
+             )",
+            rusqlite::params![id],
+        );
         let n = tx
             .execute("DELETE FROM knowledge WHERE id = ?1", rusqlite::params![id])
             .map_err(|e| HandlerError::internal(e.to_string()))?;

@@ -930,6 +930,20 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         }
     }
 
+    // v1.16.1: backfill legacy tombstones whose `purged_at` is NULL (rows
+    // written by pre-v1.14 builds only set `deleted_at`). `list_tombstones`
+    // reads `purged_at` as a non-null INTEGER, so NULL rows were silently
+    // dropped from the deletion registry (observed: 6,008 of 6,009 invisible).
+    // Map `deleted_at` (SQLite CURRENT_TIMESTAMP, UTC) to its unix epoch;
+    // rows with neither stay NULL (surfaced as `null` by the handler).
+    // Idempotent: only touches rows that still have NULL purged_at.
+    db.execute(
+        "UPDATE tombstones
+            SET purged_at = CAST(strftime('%s', deleted_at) AS INTEGER)
+          WHERE purged_at IS NULL AND deleted_at IS NOT NULL",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
         "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.15.0')

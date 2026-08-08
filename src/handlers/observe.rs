@@ -218,6 +218,19 @@ pub async fn post_dsar(
             }
             purged_ids.extend(roots.iter().copied());
         }
+
+        // v1.16.1: DSAR-specific trace residue sweep. Beyond the hit-id
+        // cascade in purge_chunk_ids, traces whose *query text* mentions the
+        // subject (e.g. an email/name typed into recall) are personal data of
+        // that subject too — the trace JSON stores the raw query. Sweep them
+        // in the same tx, best-effort (short common subjects over-match
+        // slightly; that is the erasure-safe direction).
+        if matches!(action.as_str(), "purge" | "both") && !subject.is_empty() {
+            let _ = tx.execute(
+                "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
+                rusqlite::params![format!("%{}%", subject)],
+            );
+        }
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
 
@@ -342,7 +355,7 @@ pub async fn list_tombstones(
                 Ok(serde_json::json!({
                     "knowledge_id": r.get::<_, i64>(0)?,
                     "content_hash": r.get::<_, Option<String>>(1)?,
-                    "purged_at": r.get::<_, i64>(2)?,
+                    "purged_at": r.get::<_, Option<i64>>(2)?,
                     "reason": r.get::<_, Option<String>>(3)?,
                     "origin_id": r.get::<_, Option<i64>>(4)?,
                 }))

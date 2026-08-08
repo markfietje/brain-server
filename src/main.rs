@@ -8010,6 +8010,119 @@ Final paragraph after the rule.";
         assert_eq!(origin, Some(1), "derived tombstone points at its root");
     }
 
+    /// v1.16.1: a purge must cascade to `recall_traces`. The trace side table
+    /// embeds hit chunk ids in its JSON; a purged chunk must not leave a trace
+    /// that still "proves" it was returned. (Round 11 finding: purge/DSAR did
+    /// not touch recall_traces at all.)
+    #[test]
+    fn test_purge_cascades_recall_traces_by_hit_id() {
+        let mut db = test_db();
+        db.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES
+                 (1, 'chunk a', 'h1'),
+                 (2, 'chunk b', 'h2');
+             INSERT INTO recall_traces(audit_id, trace_json) VALUES
+                 (101, '{\"query\":\"q\",\"decision\":\"ok\",\"hits\":[{\"id\":1,\"score\":0.9}]}'),
+                 (102, '{\"query\":\"q\",\"decision\":\"ok\",\"hits\":[{\"id\":2,\"score\":0.8}]}');",
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        crate::handlers::gate::purge_chunk_ids(&tx, &[1], 1_700_000_000, "explicit", None)
+            .expect("purge");
+        tx.commit().unwrap();
+        let remaining: i64 = db
+            .query_row("SELECT COUNT(*) FROM recall_traces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            remaining, 1,
+            "only the trace referencing the purged chunk goes"
+        );
+        let kept: Option<i64> = db
+            .query_row(
+                "SELECT audit_id FROM recall_traces WHERE audit_id = 102",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(kept, Some(102), "unrelated trace survives");
+    }
+
+    /// v1.16.1: retention pruning of audit rows must sweep the orphaned
+    /// `recall_traces` side rows (no FK between them — Round 11 finding).
+    #[test]
+    fn test_retention_prune_sweeps_orphaned_traces() {
+        let db = test_db();
+        // Old audit row (prunable) + its trace; fresh row + its trace.
+        db.execute_batch(
+            "INSERT INTO audit_events(id, ts, kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash)
+                 VALUES (1, datetime('now', '-30 days'), 'recall', 'alice', 't1', 'ok', 'd1', 'global', NULL),
+                        (2, datetime('now'), 'recall', 'alice', 't2', 'ok', 'd2', 'global', NULL);
+             INSERT INTO recall_traces(audit_id, trace_json) VALUES
+                 (1, '{\"query\":\"old\"}'),
+                 (2, '{\"query\":\"fresh\"}');",
+        )
+        .unwrap();
+        let pruned = crate::audit::prune_audit_retention(&db, 7).expect("prune");
+        assert_eq!(pruned, 1, "one expired audit row pruned");
+        let remaining: i64 = db
+            .query_row("SELECT COUNT(*) FROM recall_traces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1, "orphaned trace swept, fresh trace kept");
+        let kept: Option<i64> = db
+            .query_row(
+                "SELECT audit_id FROM recall_traces WHERE audit_id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(kept, Some(2), "fresh trace survives");
+    }
+
+    /// v1.16.1: legacy tombstones (pre-v1.14 rows with NULL `purged_at`,
+    /// only `deleted_at`) are backfilled to a unix epoch by the migration, and
+    /// the read path surfaces them (the Round 11 bug: `i64` get on NULL dropped
+    /// 6,008 of 6,009 registry rows silently via `flatten()`).
+    #[test]
+    fn test_tombstone_backfill_makes_legacy_rows_visible() {
+        let db = test_db();
+        // Simulate a legacy row: only deleted_at set, purged_at NULL.
+        db.execute(
+            "INSERT INTO tombstones(knowledge_id, document_id, deleted_at, content_hash, purged_at, reason, origin_id)
+             VALUES (999, 'doc-legacy', '2026-01-15 10:00:00', 'h-legacy', NULL, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        // Re-run the idempotent backfill (same statement the migration runs).
+        db.execute(
+            "UPDATE tombstones
+                SET purged_at = CAST(strftime('%s', deleted_at) AS INTEGER)
+              WHERE purged_at IS NULL AND deleted_at IS NOT NULL",
+            [],
+        )
+        .unwrap();
+        // The handler read path (Option<i64>, never drops NULLs).
+        let row: (i64, Option<i64>) = db
+            .query_row(
+                "SELECT knowledge_id, purged_at FROM tombstones WHERE knowledge_id = 999",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, 999);
+        let epoch = row.1.expect("purged_at backfilled from deleted_at");
+        assert!(epoch > 0, "epoch mapped, not NULL");
+        // And the ordering the handler uses puts backfilled rows first, so the
+        // registry no longer hides them behind the LIMIT.
+        let first: Option<i64> = db
+            .query_row(
+                "SELECT purged_at FROM tombstones ORDER BY purged_at DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert_eq!(first, Some(epoch), "legacy row is the newest visible entry");
+    }
+
     /// M3: a DSAR deletion certificate anchors to the audit chain head and the
     /// chain verifies — the certificate's tamper-evidence promise.
     #[test]
