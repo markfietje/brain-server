@@ -18,23 +18,25 @@ use panels::{audit, health, recall, review, security, subjects};
 mod api;
 mod panels;
 
+use api::ApiClient;
+
 /// The six task-oriented routes (DESIGN §2). Deep-linkable: a recall trace, a
 /// DSAR certificate, a specific proposal are all URL-addressable.
 #[derive(Clone, Debug, PartialEq, Routable)]
 enum Route {
     #[layout(AppShell)]
-        #[route("/")]
-        Review {},
-        #[route("/recall")]
-        Recall {},
-        #[route("/subjects")]
-        Subjects {},
-        #[route("/security")]
-        Security {},
-        #[route("/audit")]
-        Audit {},
-        #[route("/health")]
-        Health {},
+    #[route("/")]
+    Review {},
+    #[route("/recall")]
+    Recall {},
+    #[route("/subjects")]
+    Subjects {},
+    #[route("/security")]
+    Security {},
+    #[route("/audit")]
+    Audit {},
+    #[route("/health")]
+    Health {},
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -45,6 +47,9 @@ fn main() {
 }
 
 fn app() -> Element {
+    // Scaffold default: loopback brain-server, no token. The connect-first
+    // onboarding screen (DESIGN §3) replaces this with interactive URL+token.
+    let _ = use_context_provider(|| Signal::new(ApiClient::new("http://127.0.0.1:8765", None)));
     rsx! { Router::<Route> {} }
 }
 
@@ -68,17 +73,29 @@ fn AppShell() -> Element {
 }
 
 #[component]
-fn Review() -> Element { review::panel() }
+fn Review() -> Element {
+    review::panel()
+}
 #[component]
-fn Recall() -> Element { recall::panel() }
+fn Recall() -> Element {
+    recall::panel()
+}
 #[component]
-fn Subjects() -> Element { subjects::panel() }
+fn Subjects() -> Element {
+    subjects::panel()
+}
 #[component]
-fn Security() -> Element { security::panel() }
+fn Security() -> Element {
+    security::panel()
+}
 #[component]
-fn Audit() -> Element { audit::panel() }
+fn Audit() -> Element {
+    audit::panel()
+}
 #[component]
-fn Health() -> Element { health::panel() }
+fn Health() -> Element {
+    health::panel()
+}
 
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {

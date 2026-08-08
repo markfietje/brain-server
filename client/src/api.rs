@@ -17,7 +17,11 @@ pub struct ApiClient {
 
 #[derive(Debug)]
 pub enum ApiError {
+    // ponytail: payloads are carried now so the v1.16 error UI can render
+    // them (status + server body); today panels only Debug-print the error.
+    #[allow(dead_code)]
     Network(reqwest::Error),
+    #[allow(dead_code)]
     Status(u16, String),
 }
 
