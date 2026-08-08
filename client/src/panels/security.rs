@@ -1,16 +1,195 @@
-//! Security panel — quarantine review + auth-failure feed + audit-chain verify
-//! (DESIGN §4.4). Quarantine + /audit already exist; chain-verify is a client
-//! recompute over GET /audit.
+//! Security panel — quarantine review + audit-chain verify (DESIGN §4.4) + the
+//! v1.16.0 M6 auth-failure feed. The post-CVE-2026-59726 surface: injection
+//! suspects with their source, release / hard-delete, a one-click chain check,
+//! and a feed of recent 401/403s that proves the backend isn't the
+//! unauthenticated-memory-access class.
 
+use crate::api::{ApiClient, AuditRow};
+use crate::UiState;
 use dioxus::prelude::*;
 
+/// M6 pure: filter audit rows to denied-auth events (kind == "auth" AND
+/// status == "denied"). The backend records auth rejections with this pair;
+/// the client isolates them for the feed. Pure so the panel is plumbing.
+pub fn auth_failures(rows: &[AuditRow]) -> Vec<AuditRow> {
+    rows.iter()
+        .filter(|r| r.kind == "auth" && r.status == "denied")
+        .cloned()
+        .collect()
+}
+
 pub fn panel() -> Element {
+    let api = use_context::<Signal<ApiClient>>();
+    let mut ui = use_context::<UiState>();
+    let writes = (ui.writes_enabled)();
+    let refresh = use_signal(|| 0u32);
+    let mut chain = use_signal(|| None::<Result<bool, String>>);
+
+    let quarantine = use_resource(move || {
+        let api = api();
+        let _ = refresh();
+        async move { api.quarantine().await }
+    });
+
+    // M6: the auth-failure feed. `GET /audit?kind=auth` filters server-side;
+    // we then isolate `status == "denied"` (the actual rejections).
+    let auth = use_resource(move || {
+        let api = api();
+        async move { api.audit_kind("auth").await }
+    });
+
+    let q_count = match &*quarantine.read() {
+        Some(Ok(q)) => q.count,
+        _ => 0,
+    };
+
+    // Publish badges the AppShell rail reads (M2.1).
+    use_effect(move || {
+        ui.quarantine_count.set(q_count);
+    });
+    let fail_count = match &*auth.read() {
+        Some(Ok(resp)) => auth_failures(&resp.events).len() as u32,
+        _ => 0,
+    };
+    use_effect(move || {
+        ui.auth_failures_count.set(fail_count);
+    });
+
+    let failures = match &*auth.read() {
+        Some(Ok(resp)) => auth_failures(&resp.events),
+        _ => Vec::new(),
+    };
+
     rsx! {
         h1 { "Security" }
-        p { class: "text-gray-500",
-            "Quarantine review (GET /quarantine exists), auth-failure feed (GET /audit "
-            "kind=authz-denial), and the audit-chain verify button (client recomputes the "
-            "chain over GET /audit). The post-CVE-2026-59726 control surface."
+        div { class: "flex gap-2 my-2 items-center",
+            button {
+                class: "border border-border-subtle surface-raised rounded px-2 py-1 text-sm disabled:opacity-50",
+                disabled: !writes,
+                onclick: move |_| async move {
+                    chain.set(Some(verify_chain(api()).await));
+                },
+                "Verify audit chain"
+            }
+            match &*chain.read() {
+                Some(Ok(true)) => rsx! { span { class: "text-ok", "chain ok" } },
+                Some(Ok(false)) => {
+                    ui.audit_dirty.set(true);
+                    rsx! { span { class: "text-danger", "CHAIN TAMPERED" } }
+                }
+                Some(Err(e)) => rsx! { span { class: "text-danger", "{e}" } },
+                None => rsx! { span { class: "text-ink-faint text-sm", "the trust anchor" } },
+            }
         }
+        h2 { class: "text-lg mt-2", "Quarantine ({q_count})" }
+        match &*quarantine.read() {
+            Some(Ok(q)) if !q.quarantined.is_empty() => rsx! {
+                ul { class: "divide-y hairline",
+                    for row in &q.quarantined {
+                        li { class: "py-2",
+                            div { class: "flex justify-between items-center",
+                                span { class: "font-mono text-sm", "chunk #{row.id}" }
+                                span { class: "flex gap-2",
+                                    button {
+                                        class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm disabled:opacity-50",
+                                        disabled: !writes,
+                                        onclick: { let mut refresh = refresh; let id = row.id; move |_| async move {
+                                            let _ = api().quarantine_action(id, "release").await;
+                                            refresh += 1;
+                                        } },
+                                        "Release"
+                                    }
+                                    button {
+                                        class: "border border-border-subtle surface-raised rounded px-2 py-0.5 text-sm text-danger disabled:opacity-50",
+                                        disabled: !writes,
+                                        onclick: { let mut refresh = refresh; let id = row.id; move |_| async move {
+                                            let _ = api().quarantine_action(id, "delete").await;
+                                            refresh += 1;
+                                        } },
+                                        "Delete"
+                                    }
+                                }
+                            }
+                            if let Some(src) = &row.source {
+                                p { class: "text-xs text-ink-faint", "source: {src}" }
+                            }
+                            if let Some(h) = &row.content_hash {
+                                p { class: "text-xs font-mono text-ink-faint", "{h}" }
+                            }
+                        }
+                    }
+                }
+            },
+            Some(Ok(_)) => rsx! { p { class: "text-ink-muted mt-2", "no quarantined chunks" } },
+            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "quarantine failed: {e}" } },
+            None => rsx! { p { class: "text-ink-muted mt-2", "…" } },
+        }
+        // M6: the auth-failure feed — recent 401/403s with principal + route.
+        h2 { class: "text-lg mt-4", "Auth failures ({failures.len()})" }
+        if failures.is_empty() {
+            p { class: "text-ink-muted text-sm mt-1", "no recent denied-auth events" }
+        } else {
+            table { class: "w-full text-sm tabular mt-1",
+                thead { tr {
+                    th { class: "text-left pr-2", "ts" }
+                    th { class: "text-left pr-2", "actor" }
+                    th { class: "text-left pr-2", "target" }
+                    th { class: "text-left", "status" }
+                } }
+                tbody {
+                    for r in &failures {
+                        tr {
+                            td { class: "pr-2 whitespace-nowrap text-xs", "{r.ts}" }
+                            td { class: "pr-2 font-mono text-xs", "{r.actor}" }
+                            td { class: "pr-2 font-mono text-xs", "{r.target_hash}" }
+                            td { class: "pr-2 text-danger", "{r.status}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn verify_chain(api: ApiClient) -> Result<bool, String> {
+    match api.audit_verify().await {
+        Ok(v) => Ok(v.ok),
+        Err(e) => Err(format!("chain verify failed: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M6 tests — the auth-failure feed parses denied rows.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: i64, kind: &str, status: &str) -> AuditRow {
+        AuditRow {
+            id,
+            ts: "2026-08-08T00:00:00Z".into(),
+            kind: kind.into(),
+            actor: "api".into(),
+            target_hash: "/path".into(),
+            status: status.into(),
+            detail_hash: String::new(),
+            tenant_id: String::new(),
+        }
+    }
+
+    /// The feed isolates denied-auth rows: kind=auth AND status=denied.
+    #[test]
+    fn auth_failure_feed_parses_denied_rows() {
+        let rows = vec![
+            row(1, "auth", "denied"),
+            row(2, "auth", "ok"),       // successful auth — not a failure
+            row(3, "ingest", "denied"), // different kind — not auth
+            row(4, "auth", "denied"),
+            row(5, "recall", "ok"),
+        ];
+        let failures = auth_failures(&rows);
+        let ids: Vec<i64> = failures.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![1, 4]);
     }
 }
