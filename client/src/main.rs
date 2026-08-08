@@ -303,7 +303,11 @@ fn Connect() -> Element {
     // 127.0.0.1 and localhost alike). The field stays editable for remote mode.
     let mut url = use_signal(String::new);
     let mut token = use_signal(String::new);
-    let mut remote = use_signal(|| false);
+    // v1.16.5 M4: JWT-pair mode (access + refresh). When `jwt_pair` is on, the
+    // operator pastes an access + refresh token; otherwise a single opaque or
+    // long-lived JWT access token (loopback or single-token remote).
+    let mut jwt_pair = use_signal(|| false);
+    let mut refresh_token = use_signal(String::new);
     let status = use_signal(|| None::<Result<String, String>>);
     let busy = use_signal(|| false);
     let api_signal = use_context::<Signal<ApiClient>>();
@@ -312,12 +316,17 @@ fn Connect() -> Element {
 
     let connect = move |_| {
         let raw_url = url().trim().trim_end_matches('/').to_string();
-        let token_val = if token().trim().is_empty() {
+        let access_val = if token().trim().is_empty() {
             None
         } else {
             Some(token().trim().to_string())
         };
-        let is_remote = remote();
+        let refresh_val = if refresh_token().trim().is_empty() {
+            None
+        } else {
+            Some(refresh_token().trim().to_string())
+        };
+        let pair = jwt_pair();
         let mut status = status;
         let mut busy = busy;
         let mut api_signal = api_signal;
@@ -328,14 +337,15 @@ fn Connect() -> Element {
             // v1.16.2: empty base = same-origin (the page brain-server is served
             // from) — no CORS, works for 127.0.0.1 and localhost alike.
             let base = resolve_base(&raw_url, page_origin().await);
-            // M2.1: principal is set at connect time (identity pillar). Loopback
-            // mode has no identity to claim; remote/JWT shows the sub.
-            let principal = if is_remote {
-                Some("remote-user".to_string())
+            // M2.1 (v1.16.5): the principal (identity pillar) is derived from the
+            // JWT `sub` claim at connect time. JWT-pair mode uses `with_refresh_pair`
+            // (which also enables silent refresh); a single-token connect keeps the
+            // plain path (opaque loopback → None; a JWT without refresh → its sub).
+            let client = if pair {
+                ApiClient::with_refresh_pair(base.clone(), access_val, refresh_val)
             } else {
-                None
+                ApiClient::with_principal(base.clone(), access_val, None)
             };
-            let client = ApiClient::with_principal(base.clone(), token_val, principal);
             status.set(Some(match client.health().await {
                 Ok(h) => Ok(format!(
                     "connected — v{} · {}{}",
@@ -395,18 +405,36 @@ fn Connect() -> Element {
                                 "type": "password",
                                 value: "{token}",
                                 oninput: move |e| token.set(e.value()),
-                                placeholder: "optional (loopback)",
+                                placeholder: if jwt_pair() { "access token (JWT)" } else { "optional (loopback)" },
                                 "aria-label": "auth token",
                             }
                         }
+                        // v1.16.5 M4: JWT-pair mode — access + refresh tokens
+                        // (from `brain key mint` or an external IdP). Enables
+                        // silent refresh-on-401 + the identity pillar. A single
+                        // token (opaque loopback or long-lived JWT) stays the
+                        // default path.
                         label { class: "flex items-center gap-2 text-sm text-muted-foreground",
                             input {
                                 "type": "checkbox",
                                 class: "accent-accent",
-                                checked: remote(),
-                                onchange: move |e| remote.set(e.value() == "true"),
+                                checked: jwt_pair(),
+                                onchange: move |e| jwt_pair.set(e.value() == "true"),
                             }
-                            "Remote / pilot (JWT mode; shows the principal)"
+                            "JWT pair (access + refresh) — enables silent refresh"
+                        }
+                        if jwt_pair() {
+                            label { class: "block space-y-1",
+                                span { class: "label", "Refresh token" }
+                                input {
+                                    class: "input w-full",
+                                    "type": "password",
+                                    value: "{refresh_token}",
+                                    oninput: move |e| refresh_token.set(e.value()),
+                                    placeholder: "from `brain key mint` or an IdP",
+                                    "aria-label": "refresh token",
+                                }
+                            }
                         }
                         button {
                             class: "btn btn-primary btn-md w-full",

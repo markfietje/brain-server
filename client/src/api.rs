@@ -9,13 +9,27 @@
 //! backend's `lowercase`/`snake_case` JSON keys.
 
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 
 const MIN_QUERY: usize = 5; // mirrors brain-server's min_query_length
+/// v1.16.5 M3: refresh within this many seconds of `exp` to avoid the
+/// 401→refresh→retry latency on every expiry boundary (M5 pre-emptive).
+const REFRESH_AHEAD_SECS: i64 = 60;
+
+/// v1.16.5 M1: the mutable access+refresh token pair. Shared behind
+/// `Arc<RwLock>` across every `ApiClient` clone so a refresh-on-401 inside one
+/// panel's request propagates to all panels + the root `Signal<ApiClient>`
+/// (no per-panel rewiring). `refresh` is `None` in opaque-token mode.
+#[derive(Debug, Default)]
+struct TokenState {
+    access: Option<String>,
+    refresh: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct ApiClient {
     base: String,
-    token: Option<String>,
+    tokens: Arc<RwLock<TokenState>>,
     /// v1.16.0 M2.1: the authenticated principal (identity pillar). `None` in
     /// loopback mode (no identity to claim); `Some(sub)` in remote/JWT mode.
     principal: Option<String>,
@@ -46,10 +60,20 @@ impl std::error::Error for ApiError {}
 /// v1.16.2 "Harden" M4.2: operator-facing error message from an `ApiError`.
 /// Maps HTTP status codes to actionable hints. Never includes the bearer token
 /// (it's not in the error payload).
+/// v1.16.5 M6: revocation/reuse/expiry get specific, actionable messages
+/// (DESIGN §3.2 — never a generic "something went wrong").
 pub fn error_message(e: &ApiError) -> String {
     match e {
         ApiError::Network(_) => "cannot reach brain-server — check the URL or network".into(),
-        ApiError::Status(401, _) => "authentication failed — check your token".into(),
+        ApiError::Status(401, body) if body.contains("refresh_reuse_detected") => {
+            "session revoked (refresh token reuse detected) — reconnect".into()
+        }
+        ApiError::Status(401, _) => {
+            "authentication failed — session may have expired; reconnect".into()
+        }
+        ApiError::Status(403, body) if body.contains("refresh_reuse_detected") => {
+            "session revoked (refresh token reuse detected) — reconnect".into()
+        }
         ApiError::Status(403, _) => {
             "permission denied — your token lacks the required scope".into()
         }
@@ -65,18 +89,56 @@ impl ApiClient {
         Self::with_principal(base, token, None)
     }
 
-    /// v1.16.0 M2.1: connect with a known principal (remote/JWT mode).
+    /// v1.16.0 M2.1: connect with a known principal (remote/JWT mode). A
+    /// v1.16.5 M2 refinement: when `principal` is `None` but the access token
+    /// is a JWT, the principal is derived from its `sub` claim (the identity
+    /// pillar — the operator sees who they are acting as). Opaque tokens stay
+    /// `None` (loopback — no identity to claim).
     pub fn with_principal(
         base: impl Into<String>,
         token: Option<String>,
         principal: Option<String>,
     ) -> Self {
+        let principal = principal.or_else(|| derive_principal(token.as_deref()));
         Self {
             base: base.into().trim_end_matches('/').to_string(),
-            token,
+            tokens: Arc::new(RwLock::new(TokenState {
+                access: token,
+                refresh: None,
+            })),
             principal,
             http: reqwest::Client::new(),
         }
+    }
+
+    /// v1.16.5 M1.4: connect in JWT-pair mode (access + refresh). Enables silent
+    /// refresh-on-401 + pre-emptive expiry refresh. The principal is derived
+    /// from the JWT `sub` claim (M2) for the identity pillar.
+    pub fn with_refresh_pair(
+        base: impl Into<String>,
+        access: Option<String>,
+        refresh: Option<String>,
+    ) -> Self {
+        let principal = derive_principal(access.as_deref());
+        Self {
+            base: base.into().trim_end_matches('/').to_string(),
+            tokens: Arc::new(RwLock::new(TokenState { access, refresh })),
+            principal,
+            http: reqwest::Client::new(),
+        }
+    }
+
+    /// v1.16.5 M5.2: `true` when the current access token is a JWT within
+    /// `REFRESH_AHEAD_SECS` of expiry AND a refresh token is available.
+    pub fn should_preemptive_refresh(&self) -> bool {
+        let state = self.tokens.read().expect("token lock poisoned");
+        state.refresh.is_some()
+            && state
+                .access
+                .as_deref()
+                .and_then(decode_claims)
+                .map(|c| needs_refresh(Some(&c)))
+                .unwrap_or(false)
     }
 
     /// v1.16.0 M1.1: the probe skips an unconfigured client (empty base = the
@@ -91,19 +153,94 @@ impl ApiClient {
         self.principal.as_deref()
     }
 
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base, path)
+    /// v1.16.5 M3.2: the request core — wraps one HTTP call with pre-emptive
+    /// refresh + a single 401→refresh→retry. `f` builds the request (so the
+    /// bearer can be re-attached after rotation). Returns the deserialized
+    /// result, or the last error.
+    async fn request<T, F>(&self, f: F) -> Result<T, ApiError>
+    where
+        T: for<'de> Deserialize<'de>,
+        F: Fn(Option<&str>) -> reqwest::RequestBuilder,
+    {
+        // M5 pre-emptive: if the JWT is near expiry and we hold a refresh
+        // token, rotate before the request so we never burn a 401 on the
+        // first call at the expiry boundary.
+        if self.should_preemptive_refresh() {
+            let _ = self.refresh().await;
+        }
+        let resp = {
+            let tok = self.access_token();
+            f(tok.as_deref()).send().await.map_err(ApiError::Network)?
+        };
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            // One retry only (M3.1). If the refresh fails (reuse/expired) the
+            // error propagates; the caller surfaces the specific reason.
+            if self.refresh_token().is_some() && self.refresh().await.is_ok() {
+                let tok = self.access_token();
+                let resp = f(tok.as_deref()).send().await.map_err(ApiError::Network)?;
+                return self.unpack(resp).await;
+            }
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Status(401, body));
+        }
+        self.unpack(resp).await
     }
 
-    async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ApiError> {
+    fn access_token(&self) -> Option<String> {
+        self.tokens
+            .read()
+            .expect("token lock poisoned")
+            .access
+            .clone()
+    }
+
+    fn refresh_token(&self) -> Option<String> {
+        self.tokens
+            .read()
+            .expect("token lock poisoned")
+            .refresh
+            .clone()
+    }
+
+    /// v1.16.5 M3.2: `POST /auth/refresh` — rotates the chain, stores the new
+    /// pair in the shared state. brain-server serializes concurrent rotations
+    /// under `BEGIN IMMEDIATE`; the loser gets 403 `refresh_reuse_detected`.
+    async fn refresh(&self) -> Result<(), ApiError> {
+        let refresh_tok = match self.refresh_token() {
+            Some(t) => t,
+            None => return Err(ApiError::Status(401, "no refresh token".into())),
+        };
+        let body = serde_json::json!({ "refresh_token": refresh_tok });
         let resp = self
             .http
-            .get(self.url(path))
-            .bearer(self.token.as_deref())
+            .post(format!("{}{}", self.base, "/auth/refresh"))
+            .json(&body)
             .send()
             .await
             .map_err(ApiError::Network)?;
-        self.unpack(resp).await
+        if !resp.status().is_success() {
+            let code = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Status(code, body));
+        }
+        let pair: TokenPair = resp.json().await.map_err(ApiError::Network)?;
+        let mut state = self.tokens.write().expect("token lock poisoned");
+        state.access = Some(pair.access_token);
+        state.refresh = Some(pair.refresh_token);
+        Ok(())
+    }
+
+    async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ApiError> {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        self.request(move |tok| {
+            let mut rb = http.get(format!("{base}{path}"));
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
     }
 
     async fn post_json<T, B>(&self, path: &str, body: &B) -> Result<T, ApiError>
@@ -111,26 +248,31 @@ impl ApiClient {
         T: for<'de> Deserialize<'de>,
         B: Serialize + ?Sized,
     {
-        let resp = self
-            .http
-            .post(self.url(path))
-            .json(body)
-            .bearer(self.token.as_deref())
-            .send()
-            .await
-            .map_err(ApiError::Network)?;
-        self.unpack(resp).await
+        let base = self.base.clone();
+        let http = self.http.clone();
+        let body: serde_json::Value =
+            serde_json::to_value(body).map_err(|e| ApiError::Status(500, e.to_string()))?;
+        self.request(move |tok| {
+            let mut rb = http.post(format!("{base}{path}")).json(&body);
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
     }
 
     async fn post_empty<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ApiError> {
-        let resp = self
-            .http
-            .post(self.url(path))
-            .bearer(self.token.as_deref())
-            .send()
-            .await
-            .map_err(ApiError::Network)?;
-        self.unpack(resp).await
+        let base = self.base.clone();
+        let http = self.http.clone();
+        self.request(move |tok| {
+            let mut rb = http.post(format!("{base}{path}"));
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
     }
 
     async fn unpack<T: for<'de> Deserialize<'de>>(
@@ -271,17 +413,142 @@ impl ApiClient {
     }
 }
 
-// Helpers to attach the bearer token to a request builder (avoids the
-// one-off in every method).
-trait Bearer {
-    fn bearer(self, token: Option<&str>) -> reqwest::RequestBuilder;
+// --- v1.16.5 "Secure" helpers ------------------------------------------------
+
+/// v1.16.5 M1: decoded JWT claims the client reads for display + expiry
+/// tracking. NO signature verification — brain-server verifies on receipt;
+/// the client trusts the claims for UI only (never for authorization).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TokenClaims {
+    #[serde(default)]
+    pub sub: Option<String>,
+    #[serde(default)]
+    pub exp: Option<i64>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub team: Option<String>,
 }
-impl Bearer for reqwest::RequestBuilder {
-    fn bearer(self, token: Option<&str>) -> reqwest::RequestBuilder {
-        match token {
-            Some(t) => self.bearer_auth(t),
-            None => self,
+
+/// v1.16.5 M3: the `/auth/refresh` response pair. Mirrors openapi.yaml's
+/// `TokenPair`; `token_type`/`expires_in` are read but unused by the client.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct TokenPair {
+    access_token: String,
+    refresh_token: String,
+}
+
+/// v1.16.5 M1.2: decode the JWT payload (middle segment) WITHOUT signature
+/// verification. Ponytail: the client does NOT verify the JWT signature —
+/// brain-server verifies on receipt. A forged JWT would be rejected by
+/// brain-server on the next API call; the client reads claims for display +
+/// expiry tracking only, never for authorization. Returns `None` on any
+/// malformed input (not a 3-part JWT, bad base64url, non-JSON payload).
+pub fn decode_claims(token: &str) -> Option<TokenClaims> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let payload = base64url_decode(parts[1])?;
+    serde_json::from_slice(&payload).ok()
+}
+
+/// v1.16.5 M1.2: is this a JWT-shaped token (3 dot-separated segments)?
+/// Used to distinguish an opaque loopback token (no identity) from a JWT that
+/// failed payload decode (still shown a neutral identity label).
+fn is_jwt_shaped(token: Option<&str>) -> bool {
+    token.map(|t| t.split('.').count() == 3).unwrap_or(false)
+}
+
+/// v1.16.5 M2: derive the identity-pillar principal from an access token.
+/// `Some(sub)` when the token is a decodable JWT with a `sub`; a neutral
+/// label for a JWT-shaped token without one; `None` for an opaque token
+/// (loopback — the server trusts localhost, no identity to claim).
+fn derive_principal(token: Option<&str>) -> Option<String> {
+    match token.and_then(decode_claims) {
+        Some(c) => c.sub.or(Some("token (no sub)".into())),
+        None if is_jwt_shaped(token) => Some("token (no sub)".into()),
+        None => None,
+    }
+}
+
+/// v1.16.5 M1.2: base64url-decode (RFC 4648 §5, the JWT alphabet — `-`/`_`
+/// instead of `+`/`/`, padding optional). Ponytail: no base64 dep — the few
+/// lines beat a crate for one decode path. Returns `None` on invalid chars.
+fn base64url_decode(s: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut rev = [255u8; 256];
+    for (i, &c) in TABLE.iter().enumerate() {
+        rev[c as usize] = i as u8;
+    }
+    // Reject the unpadded-length variants that can't encode bytes cleanly.
+    let clean: String = s.chars().filter(|&c| c != '=').collect();
+    let n = clean.len();
+    if n % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n * 3 / 4);
+    let bytes: Vec<u8> = clean.bytes().collect();
+    for chunk in bytes.chunks(4) {
+        let mut acc: u32 = 0;
+        let mut bits = 0u32;
+        for &b in chunk {
+            let v = *rev.get(b as usize)?;
+            if v == 255 {
+                return None;
+            }
+            acc = (acc << 6) | v as u32;
+            bits += 6;
         }
+        // Emit full bytes only; trailing bits beyond a byte boundary are the
+        // JWT's zero-padding and dropped.
+        while bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// v1.16.5 M1.2: base64url-encode (RFC 4648 §5, the JWT alphabet — `-`/`_`,
+/// unpadded). Test-only mirror of the decode path (production never mints
+/// tokens, so encode exists only to build round-trip fixtures).
+fn base64url_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(n >> 6) as usize & 63] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[n as usize & 63] as char);
+        }
+    }
+    out
+}
+
+/// v1.16.5 M5.1: current unix time in seconds (the `exp` claim's unit).
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// v1.16.5 M5.1: pre-emptive expiry check, extracted pure for tests.
+/// `exp` within `REFRESH_AHEAD_SECS` of now → refresh needed. `None` exp
+/// (opaque token) → never.
+fn needs_refresh(claims: Option<&TokenClaims>) -> bool {
+    match claims.and_then(|c| c.exp) {
+        Some(exp) => exp - now_unix() < REFRESH_AHEAD_SECS,
+        None => false,
     }
 }
 
@@ -767,5 +1034,117 @@ mod tests {
         // The Network arm is a fixed hint (constructing a reqwest::Error in a
         // test isn't possible — its constructor is pub(crate)); the hint text
         // is pinned by the Display arm, which is exercised above via the fallback.
+    }
+
+    // --- v1.16.5 "Secure" tests --------------------------------------------
+
+    /// v1.16.5 M5.2: the pure pre-emptive refresh check — near expiry → true,
+    /// far expiry → false, opaque (no exp) → false.
+    #[test]
+    fn needs_refresh_fires_only_near_expiry() {
+        // exp = now + 30s (< 60) → refresh.
+        let soon = TokenClaims {
+            sub: Some("user:a".into()),
+            exp: Some(now_unix() + 30),
+            scope: None,
+            team: None,
+        };
+        assert!(needs_refresh(Some(&soon)));
+        // exp far out → no refresh.
+        let far = TokenClaims {
+            sub: None,
+            exp: Some(now_unix() + 3600),
+            scope: None,
+            team: None,
+        };
+        assert!(!needs_refresh(Some(&far)));
+        // No exp (opaque token) → never refresh.
+        assert!(!needs_refresh(None));
+        assert!(!needs_refresh(Some(&TokenClaims {
+            sub: None,
+            exp: None,
+            scope: None,
+            team: None,
+        })));
+    }
+
+    /// v1.16.5 M1.2: a real JWT payload decodes to its `sub`/`exp`. The header
+    /// and signature segments are arbitrary — the client reads only the payload.
+    #[test]
+    fn decode_claims_roundtrips_jwt_payload() {
+        let claims = TokenClaims {
+            sub: Some("user:alice".into()),
+            exp: Some(1750000000),
+            scope: Some("read:global".into()),
+            team: Some("alpha".into()),
+        };
+        let payload = serde_json::to_string(&claims).unwrap();
+        let b64 = base64url_encode(payload.as_bytes());
+        // header.ignore + payload + sig.ignore — a valid 3-part JWT shape.
+        let token = format!("e30.{b64}.e30");
+        let decoded = decode_claims(&token).unwrap();
+        assert_eq!(decoded.sub.as_deref(), Some("user:alice"));
+        assert_eq!(decoded.exp, Some(1750000000));
+        assert_eq!(decoded.team.as_deref(), Some("alpha"));
+    }
+
+    /// v1.16.5 M1.2: malformed input is `None`, never a panic — a forged/garbage
+    /// JWT falls through to the display fallback, and brain-server rejects it.
+    #[test]
+    fn decode_claims_rejects_malformed_input() {
+        assert!(decode_claims("").is_none());
+        assert!(decode_claims("not-a-jwt").is_none());
+        assert!(decode_claims("a.b").is_none()); // 2 parts, not 3
+        assert!(decode_claims("a.b.c").is_none()); // bad base64url
+        assert!(decode_claims("e30.!!!.e30").is_none()); // invalid chars
+                                                         // A valid-shaped JWT whose payload isn't JSON → None.
+        let b64 = base64url_encode(b"not json");
+        assert!(decode_claims(&format!("x.{b64}.x")).is_none());
+    }
+
+    /// v1.16.5 M1.2: base64url round-trip (the JWT alphabet + unpadded).
+    #[test]
+    fn base64url_encode_decode_roundtrip() {
+        for s in ["", "a", "ab", "abc", "abcd", "hello world", "user:alice"] {
+            let enc = base64url_encode(s.as_bytes());
+            assert!(
+                !enc.contains('+') && !enc.contains('/'),
+                "JWT alphabet only"
+            );
+            assert_eq!(base64url_decode(&enc).unwrap(), s.as_bytes());
+        }
+        // Decode rejects length≡1 mod 4 (can't encode whole bytes).
+        assert!(base64url_decode("A").is_none());
+    }
+
+    /// v1.16.5 M1.4: the JWT-pair constructor derives the principal from the
+    /// access token's `sub`; opaque mode keeps `None`.
+    #[test]
+    fn with_refresh_pair_derives_principal_from_sub() {
+        let claims = TokenClaims {
+            sub: Some("user:carol".into()),
+            exp: Some(now_unix() + 300),
+            scope: None,
+            team: None,
+        };
+        let payload = base64url_encode(serde_json::to_string(&claims).unwrap().as_bytes());
+        let jwt = format!("e30.{payload}.e30");
+        let c = ApiClient::with_refresh_pair("http://h", Some(jwt.clone()), Some("rt".to_string()));
+        assert_eq!(c.principal(), Some("user:carol"));
+
+        // A JWT without a sub still shows something for the identity pillar.
+        let no_sub = TokenClaims {
+            sub: None,
+            exp: None,
+            scope: None,
+            team: None,
+        };
+        let p2 = base64url_encode(serde_json::to_string(&no_sub).unwrap().as_bytes());
+        let c2 = ApiClient::with_refresh_pair("http://h", Some(format!("e30.{p2}.e30")), None);
+        assert_eq!(c2.principal(), Some("token (no sub)"));
+
+        // Opaque (non-JWT) access token → principal None (loopback).
+        let c3 = ApiClient::with_refresh_pair("http://h", Some("opaque-token".into()), None);
+        assert!(c3.principal().is_none());
     }
 }
