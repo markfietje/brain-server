@@ -2,7 +2,7 @@
 //! One resource, rendered as the capacity envelope (docs/RSS vs cap).
 
 use crate::api::{error_message, ApiClient};
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{use_document_title, PageTitle, RefreshButton};
 use crate::UiState;
 use dioxus::prelude::*;
 
@@ -10,17 +10,24 @@ pub fn panel() -> Element {
     use_document_title(|| "Health — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let _ui = use_context::<UiState>();
+    // v1.17.0 M2.4: a portable refresh trigger. Health reads live endpoints
+    // (probe + stats) whose numbers change on other panels' writes; the
+    // button bumps the signal the resources subscribe to.
+    let refresh = use_signal(|| 0u32);
     let health = use_resource(move || {
         let api = api;
+        let _ = refresh();
         async move { api().health().await }
     });
     let stats = use_resource(move || {
         let api = api;
+        let _ = refresh();
         async move { api().stats().await }
     });
 
     rsx! {
         PageTitle { {crate::i18n::t("health_title")} }
+        div { class: "flex justify-end my-2", RefreshButton { refresh } }
         div { class: "mt-2 grid gap-4 md:grid-cols-2",
             match &*health.read() {
                 Some(Ok(h)) => rsx! {

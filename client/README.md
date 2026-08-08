@@ -4,14 +4,25 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.16.8 "Global" (shipped)
+## Status — v1.17.0 "Mobile" (shipped)
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
 mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`.
 
-**v1.16.8 ships the full v1.16.x client line** (48 tests, clippy `-D warnings`
-+ fmt clean):
+**v1.17.0 ships the full client line** (49 tests, clippy `-D warnings` + fmt
+clean). The M1 secure-storage + M2 responsive-UX halves of the v1.17.0 Mobile
+plan shipped as v1.16.6 (OS-keyring/Keystore token seam; bottom-tab rail swap;
+drawer→sheet; ≥44pt touch targets; safe-area insets); v1.17.0 completes the
+mobile plan — **M2.4 portable refresh control** on Review/Audit/Health, **M3.3
+deep-link intent filters** (`brain://` scheme on iOS + Android), **M3.4 offline
+connect pre-fill** (last base URL persisted + specific failure, no crash), and
+**M3.1 store-readiness privacy labels** (`STORE_READINESS.md`, "no data
+collected" — accurate). Native iOS/Android bundling (`dx bundle --platform
+{ios,android}`) is an operator step (signing + Android SDK; not in this env).
+
+The v1.16.x line underneath:
+
 
 | M | Feature | Detail |
 |---|---|---|
@@ -32,7 +43,9 @@ bottom-tab layout · v1.16.7 deep links + PWA (offline shell, never the API)
 + ⌘K command palette + recall debounce · **v1.16.8 Global**: i18n (`en`/`de`/
 `fr`/`es`/`nl` via zero-dep FTL-subset `t()`), light/dark theme + density toggles
 (persisted, sanitized), RTL `dir` readiness, locale-aware number grouping, and
-a privacy-transparency block on the connect screen.
+a privacy-transparency block on the connect screen. **v1.17.0 Mobile**: portable
+refresh (Review/Audit/Health) + `brain://` deep-link intent filters + offline
+connect pre-fill + store-readiness privacy labels.
 
 | Panel | Backend route(s) | v1.16.0 additions |
 |---|---|---|

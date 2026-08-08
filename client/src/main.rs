@@ -71,6 +71,17 @@ fn resolve_base(raw: &str, origin: Option<String>) -> String {
     }
 }
 
+/// v1.17.0 M3.4: the offline-prefill rule — a remembered base pre-fills the
+/// URL field ONLY when the field is empty (never overwrite what the operator
+/// typed). Pure so the connect-screen effect is plumbing.
+fn prefill_if_empty(current: &str, remembered: &str) -> Option<String> {
+    if current.trim().is_empty() {
+        Some(remembered.to_string())
+    } else {
+        None
+    }
+}
+
 /// v1.16.2: the origin brain-server is being served from, for the same-origin
 /// Connect default. Web only (eval + window.location); None elsewhere falls
 /// back to the loopback default. ponytail: `window.location.origin` is exactly
@@ -396,6 +407,21 @@ fn Connect() -> Element {
         });
     }
 
+    // v1.17.0 M3.4: offline graceful — pre-fill the URL field with the last
+    // successful base (a non-secret UI pref, same localStorage seam as the
+    // theme/density prefs). The URL is not a credential, so it never touches
+    // the OS keyring; storing it lets a returning operator reconnect to the
+    // same self-hosted backend without retyping it after the auto-reconnect
+    // (token path) falls through to this form. `use_effect` runs once on mount.
+    use_effect(move || {
+        spawn(async move {
+            if let Some(last) = i18n::pref_load("last_base").await {
+                if let Some(prefill) = prefill_if_empty(&url(), &last) {
+                    url.set(prefill);
+                }
+            }
+        });
+    });
     let connect = move |_| {
         let raw_url = url().trim().trim_end_matches('/').to_string();
         let access_val = if token().trim().is_empty() {
@@ -454,6 +480,9 @@ fn Connect() -> Element {
                 if let Some(tok) = persist_token {
                     let _ = storage::save_token(&tok);
                 }
+                // v1.17.0 M3.4: remember the successful base (non-secret UI pref)
+                // so an offline/returning connect pre-fills the URL field.
+                i18n::pref_save("last_base", &base);
                 // Write the client in so every panel re-fetches through it.
                 // M1: a fresh connect is a clean connect — writes gate on the
                 // probe's first green, but no recovery re-verify is pending.
@@ -1275,6 +1304,25 @@ mod tests {
                 Some("http://127.0.0.1:8765".into())
             ),
             "https://brain.example.com"
+        );
+    }
+
+    /// v1.17.0 M3.4: the offline-prefill guard — a remembered base fills an
+    /// EMPTY field but never overwrites what the operator typed.
+    #[test]
+    fn offline_prefill_fills_empty_field_only() {
+        assert_eq!(
+            prefill_if_empty("", "https://brain.example.com"),
+            Some("https://brain.example.com".into())
+        );
+        assert_eq!(
+            prefill_if_empty("  ", "https://brain.example.com"),
+            Some("https://brain.example.com".into())
+        );
+        // A non-empty (even partial) field is left alone — the operator's input wins.
+        assert_eq!(
+            prefill_if_empty("https://other", "https://brain.example.com"),
+            None
         );
     }
 

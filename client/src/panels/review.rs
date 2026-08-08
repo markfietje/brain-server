@@ -9,7 +9,7 @@
 //! when `writes_enabled` is false.
 
 use crate::api::{error_message, ApiClient, ApiError, Proposal};
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{use_document_title, PageTitle, RefreshButton};
 use crate::{Route, UiState};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -293,6 +293,8 @@ pub fn panel() -> Element {
                     }
                     "keys (A/S/R/J/K)"
                 }
+                // v1.17.0 M2.4: portable refresh trigger (pull-to-refresh ceil).
+                div { class: "ml-auto", RefreshButton { refresh } }
             }
             // v1.16.2 M6: one-line batch summary — surfaces partial failure
             // honestly once a batch has run (rows settle out of Pending).

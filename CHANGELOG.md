@@ -36,6 +36,58 @@ been run, it is marked **pending** rather than asserted.
   into `_Sidebar` + `Home` quick links, so the procurement-facing wiki
   surfaces the same governance story as the repo.
 
+## [1.17.0] — 2026-08-08
+
+**v1.17.0 "Mobile" — client-only.** Completes the v1.17.0 Mobile plan on top of
+the v1.16.6 mobile groundwork (secure token storage seam + responsive bottom-tab
+UX). The M1 (Keychain/Keystore seam) and M2 (nav swap / sheet / touch targets /
+safe-area) halves shipped as v1.16.6; this release lands the remaining mobile +
+store-readiness milestones. Server + API contract unchanged (still 1.16.7).
+
+### Added (client)
+
+- **M2.4 portable refresh control** (`panels/mod.rs::RefreshButton`) — Review,
+  Audit, and Health now expose a refresh trigger that bumps their existing
+  `refresh` signal (re-fetch). Works on every renderer; the native
+  pull-to-refresh *gesture* remains a documented v1.18.0 ceiling (needs touch
+  events — untestable without `dx serve`).
+- **M3.3 deep-link intent filters** (`Dioxus.toml`) — iOS `url_schemes = ["brain"]`
+  + an Android `VIEW`/`BROWSABLE` intent filter for the `brain://` scheme, so a
+  custom-scheme link opens the app into the existing `Routable` router. Full
+  https universal-link parity is v1.19.0.
+- **M3.4 offline connect pre-fill** (`main.rs`) — the connect screen persists the
+  last successful base URL (non-secret UI pref via the existing `i18n` localStorage
+  seam; the token stays in the OS keyring only) and pre-fills the URL field on a
+  returning/offline connect. The specific `/health` failure was already shown (no
+  crash); the field now comes pre-populated too. Pure `prefill_if_empty` guard +
+  test.
+- **M3.1 store-readiness** (`client/STORE_READINESS.md` new) — App Store / Play
+  privacy-nutrition labels ("no data collected", accurate: one self-hosted
+  backend, no analytics/tracking/third-party SDKs) + icon/launch/screenshot +
+  submission checklist. Icon/screenshot generation + store upload are operator
+  steps.
+
+### Fixed / Changed (client)
+
+- Client version 1.16.8 → 1.17.0.
+
+### Tests
+
+49 client tests (was 48; +1 `offline_prefill_fills_empty_field_only`). Clippy
+`-D warnings` + fmt + wasm build clean.
+
+### Honest ceilings (carried into v1.18.0)
+
+- Native iOS/Android artifacts (`dx bundle --platform {ios,android}`) are an
+  **operator step** — requires code signing + an Android SDK, neither present in
+  this environment. The one-codebase compile is covered by the desktop + wasm
+  builds; the platform glue ships in `Dioxus.toml` + `storage.rs`.
+- Pull-to-refresh is a button today; the native gesture (touch events) is v1.18.0.
+- `brain://` deep links are registered but not fully routed to distinct panels
+  yet — URL parity is v1.19.0.
+- App-store review is an external gate (low risk: "no data collected" + a
+  governance tool, not social/UGC).
+
 ## [1.16.8] — 2026-08-08
 
 Client-only release: the v1.16.8 "Global" plan — locale (i18n) + light/dark

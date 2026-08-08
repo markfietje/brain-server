@@ -8,7 +8,7 @@
 //! triggers a download via `document::eval` (no new server route).
 
 use crate::api::{ApiClient, AuditRow};
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{use_document_title, PageTitle, RefreshButton};
 use crate::UiState;
 use dioxus::prelude::*;
 
@@ -167,23 +167,25 @@ pub fn panel() -> Element {
                     // server route exists and "the client adds no new server routes" — so
                     // we serialize the already-fetched rows client-side + trigger a
                     // download via eval (web) / no-op where eval is unavailable.
-                    button {
-                        class: "btn btn-outline btn-md ml-auto",
-                        disabled: !writes || rows.is_empty(),
-                        onclick: move |_| {
-                            let payload = serde_json::json!({ "events": &rows });
-                            let s = payload.to_string();
-                            // Web: build a blob URL + click it. Desktop: same webview JS.
-                            // ponytail: untestable without `dx serve`; the fallback (no-op
-                            // on a renderer without JS) is acceptable — the data is still
-                            // visible in the table.
-                            let js = format!(
-                                "(function(){{var b=new Blob([{s:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='audit.json';a.click();URL.revokeObjectURL(u);}})();"
-                            );
-                            let _ = document::eval(&js);
-                        },
-                        "Export JSON"
-                    }
+                        button {
+                            class: "btn btn-outline btn-md ml-auto",
+                            disabled: !writes || rows.is_empty(),
+                            onclick: move |_| {
+                                let payload = serde_json::json!({ "events": &rows });
+                                let s = payload.to_string();
+                                // Web: build a blob URL + click it. Desktop: same webview JS.
+                                // ponytail: untestable without `dx serve`; the fallback (no-op
+                                // on a renderer without JS) is acceptable — the data is still
+                                // visible in the table.
+                                let js = format!(
+                                    "(function(){{var b=new Blob([{s:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='audit.json';a.click();URL.revokeObjectURL(u);}})();"
+                                );
+                                let _ = document::eval(&js);
+                            },
+                            "Export JSON"
+                        }
+                        // v1.17.0 M2.4: portable refresh (resets pagination to page 0).
+                        div { class: "ml-1", RefreshButton { refresh } }
                     // M7.5: announce the export to screen readers.
                     if !rows.is_empty() {
                         span { class: "sr-only", role: "status", "aria-live": "polite",

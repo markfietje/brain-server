@@ -29,6 +29,10 @@ output = "assets/tailwind.css"
 # --- iOS (v1.17.0) -----------------------------------------------------------
 [ios]
 deployment_target = "15.0"
+# v1.17.0 M3.3: deep-link URL scheme so a `brain://...` link opens the app to
+# the right route (the shareable-review foundation). Full URL-router parity
+# (https universal links) is v1.19.0.
+url_schemes = ["brain"]
 
 # --- Android (v1.17.0) -------------------------------------------------------
 [android]
@@ -37,3 +41,15 @@ target_sdk = 34
 # ponytail: no permission beyond default INTERNET. The client talks to one
 # backend, stores only a token. No location/contacts/background — the privacy
 # nutrition label is honestly "no data collected".
+
+# v1.17.0 M3.3: deep-link intent filter so a `brain://` link opens the app.
+# The VIEW/BROWSABLE intent is how Android routes a custom-scheme URI to an
+# activity; the app's router (already Routable/URL-addressable) resolves it.
+[[android.intent_filters]]
+actions = ["android.intent.action.VIEW"]
+categories = ["android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"]
+auto_verify = true
+
+[[android.intent_filters.data]]
+scheme = "brain"
+

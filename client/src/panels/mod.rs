@@ -49,3 +49,21 @@ pub fn PageTitle(children: Element) -> Element {
         }
     }
 }
+
+/// v1.17.0 M2.4: a portable refresh control. The queue/list panels (Review,
+/// Audit, Health) re-fetch when their `refresh` signal bumps; this button is
+/// that trigger, exposed for the touch-first crowd. A native pull-to-refresh
+/// *gesture* is platform glue (needs touch events — the v1.18.0 pass); the
+/// button is the honest, testable equivalent that works on every renderer.
+#[component]
+pub fn RefreshButton(mut refresh: Signal<u32>) -> Element {
+    rsx! {
+        button {
+            class: "btn btn-ghost btn-md",
+            "aria-label": "refresh",
+            title: "refresh",
+            onclick: move |_| refresh += 1,
+            "⟳"
+        }
+    }
+}
