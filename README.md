@@ -11,7 +11,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
 | **Latency** | sub-50ms p99 recall on the reference device |
-| **Documentation** | [API Contract](./API_CONTRACT.md) · [`GET /openapi.yaml` live](#) · [Technical Spec](./SPECS.md) · [Compliance](./COMPLIANCE.md) |
+| **Documentation** | [docs/](./docs/) — [Overview](./docs/overview.md) · [Quickstart](./docs/quickstart.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [Security](./docs/security.md) · [Compliance](./docs/compliance.md) · [API](./docs/api.md) · [Roadmap](./docs/roadmap.md) · [API Contract](./API_CONTRACT.md) · [Technical Spec](./SPECS.md) |
 | **GUI** | [`client/`](./client/README.md) — Dioxus control surface (web + desktop + iOS + Android): connect-first onboarding + six wired panels, the v1.16.0 release (connection state machine with false-offline guard + chain-verify-before-writes, honest-batch review with A/S/R/J/K keyboard, recall decision-path artifact, DSAR certificate card with live chain badge, auth-failure feed, audit filters + export) |
 
 ---
