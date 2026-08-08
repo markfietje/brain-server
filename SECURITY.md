@@ -31,7 +31,6 @@ at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
 
 **Please do not file public issues for security vulnerabilities.**
 
-- **Email**: security@openclaw.dev (GPG key fingerprint published separately)
 - **GitHub Security Advisories**: Use the "Report a vulnerability" tab in this repository
 - **SLA**: Acknowledgement within 48 hours; fix timeline within 5 business days;
   public disclosure coordinated with reporter (90-day default per Project Zero).
