@@ -380,6 +380,11 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
         );
         conn.execute(&sql, [])
             .with_context(|| format!("safety VACUUM INTO {bak:?}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bak, std::fs::Permissions::from_mode(0o600))?;
+        }
     }
 
     // write the decrypted snapshot over the live DB

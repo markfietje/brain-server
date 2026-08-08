@@ -128,6 +128,14 @@ pub fn run_once(db_path: &Path) -> anyhow::Result<bool> {
     conn.execute(&sql, [])?;
     drop(conn);
 
+    // Snapshots are plaintext copies of the whole store; lock them to the
+    // owner so a world-readable backup is never left behind.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&snap, std::fs::Permissions::from_mode(0o600))?;
+    }
+
     // Integrity check on the SNAPSHOT (not the live DB) so a failure is
     // reproducible against the same bytes the operator could restore.
     let snap_conn = Connection::open(&snap)?;

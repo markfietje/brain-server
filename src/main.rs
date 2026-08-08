@@ -1305,46 +1305,69 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 
     match timeout(StdDuration::from_secs(3), health_future).await {
         Ok(Ok(Ok((used_mb, total_mb, pool_state, capacity, snapshot)))) => {
-            let mut body = serde_json::json!({
-                "status": "ok",
-                "version": SERVER_VERSION,
-                "model": MODEL_ID,
-                "system": {
-                    "memory_used_mb": used_mb,
-                    "memory_total_mb": total_mb,
-                    "memory_percent": if total_mb > 0 { (used_mb as f64 / total_mb as f64) * 100.0 } else { 0.0 }
-                },
-                "pool": {
-                    "connections": pool_state.connections,
-                    "idle_connections": pool_state.idle_connections,
-                    "busy_connections": pool_state.connections.saturating_sub(pool_state.idle_connections)
-                },
-                "backup": snapshot.to_json(),
-                // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
-                // memory-safety posture at a glance. `unsafe_blocks` is the
-                // audited count (each has a SAFETY comment); `panics_caught`
-                // comes from CatchPanicLayer (would be >0 only if a handler
-                // panicked and was caught).
-                "hardening": {
-                    "unsafe_blocks": 2, // register_sqlite_vec + migrate_rehearse's copy
-                    "panics_caught": 0,
-                    "memory_leaks_detected": 0
-                }
-            });
+            let backup = snapshot.to_json();
             // `capacity` is `Some` when the pool had a connection available,
             // `None` when the pool was momentarily exhausted — in which case
             // we omit the field rather than block /health.
-            if let Some(c) = capacity {
-                if let serde_json::Value::Object(ref mut m) = body {
-                    m.insert("capacity".to_string(), c);
-                }
-            }
-            Json(body)
+            Json(health_body(
+                used_mb,
+                total_mb,
+                pool_state.connections,
+                pool_state.idle_connections,
+                backup,
+                capacity,
+            ))
         }
         _ => Json(
             serde_json::json!({ "status": "error", "version": SERVER_VERSION, "error": "Health check failed" }),
         ),
     }
+}
+
+/// Build the `/health` response body. Extracted as a pure function so a
+/// regression test can pin the top-level key set — `/health` must never leak
+/// memory content or PII (CVE-2026-29787 class: unauthenticated health-endpoint
+/// information disclosure).
+fn health_body(
+    used_mb: u64,
+    total_mb: u64,
+    pool_connections: u32,
+    pool_idle: u32,
+    backup: serde_json::Value,
+    capacity: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "status": "ok",
+        "version": SERVER_VERSION,
+        "model": MODEL_ID,
+        "system": {
+            "memory_used_mb": used_mb,
+            "memory_total_mb": total_mb,
+            "memory_percent": if total_mb > 0 { (used_mb as f64 / total_mb as f64) * 100.0 } else { 0.0 }
+        },
+        "pool": {
+            "connections": pool_connections,
+            "idle_connections": pool_idle,
+            "busy_connections": pool_connections.saturating_sub(pool_idle)
+        },
+        "backup": backup,
+        // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
+        // memory-safety posture at a glance. `unsafe_blocks` is the
+        // audited count (each has a SAFETY comment); `panics_caught`
+        // comes from CatchPanicLayer (would be >0 only if a handler
+        // panicked and was caught).
+        "hardening": {
+            "unsafe_blocks": 2, // register_sqlite_vec + migrate_rehearse's copy
+            "panics_caught": 0,
+            "memory_leaks_detected": 0
+        }
+    });
+    if let Some(c) = capacity {
+        if let serde_json::Value::Object(ref mut m) = body {
+            m.insert("capacity".to_string(), c);
+        }
+    }
+    body
 }
 
 async fn ready(State(s): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
@@ -9452,5 +9475,34 @@ Final paragraph after the rule.";
             .await
             .unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// v1.16.x regression: `/health` must never leak memory content or PII
+    /// (CVE-2026-29787 class — an unauthenticated health endpoint returning
+    /// store contents). The body builder is pure; pin the top-level key set so
+    /// any future content-bearing field fails here.
+    #[test]
+    fn health_body_never_leaks_content_or_pii() {
+        let snapshot_json = serde_json::json!({ "note": "backup metadata only" });
+        let body = health_body(
+            100,
+            1000,
+            1,
+            1,
+            snapshot_json,
+            Some(serde_json::json!({ "max_docs": 100_000 })),
+        );
+        let obj = body.as_object().expect("health body is an object");
+        for key in obj.keys() {
+            let k = key.to_ascii_lowercase();
+            assert!(
+                !(k.contains("content") || k.contains("pii") || k.contains("text")),
+                "health leaked a content-bearing key: {key}"
+            );
+        }
+        assert!(obj.contains_key("status"));
+        assert!(obj.contains_key("version"));
+        assert!(obj.contains_key("hardening"));
+        assert!(obj.contains_key("capacity"));
     }
 }
