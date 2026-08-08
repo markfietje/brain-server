@@ -1,250 +1,195 @@
-# Brain Server
+# 🧠 Brain Server
 
-**A local-first semantic-memory and knowledge-graph server for AI agents. Runs on a 4 GB ARM device drawing < 5 W — no GPU, no cloud, no per-query cost.**
+**A local-first semantic memory and knowledge-graph server for AI agents. Runs on a 4 GB ARM device drawing under 5 W. No GPU, no cloud, no per-query cost.**
 
-Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-32M` make recall essentially free on CPU. Designed for edge hardware (Jetson Nano, Raspberry Pi 5, mini PC) but runs anywhere Rust compiles. The competitive wedge vs. cloud memory services (Zep, Mem0, Letta Cloud): **zero per-query cost, zero data egress, zero network latency on recall.**
-
-| | |
-|---|---|
-| **Version** | 1.16.7 (aligned with the client; server code functionally unchanged since 1.16.2 — a version-alignment release so `brain -V` matches the GUI) · prev 1.16.6 "Mobile" |
-| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
-| **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
-| **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
-| **Latency** | sub-50ms p99 recall on the reference device |
-| **Documentation** | [docs/](./docs/) — [Overview](./docs/overview.md) · [Quickstart](./docs/quickstart.md) · [Architecture](./docs/architecture.md) · [Deployment](./docs/deployment.md) · [Security](./docs/security.md) · [Compliance](./docs/compliance.md) · [API](./docs/api.md) · [Roadmap](./docs/roadmap.md) · [API Contract](./API_CONTRACT.md) · [Technical Spec](./SPECS.md) |
-| **GUI** | [`client/`](./client/README.md) — Dioxus control surface (web + desktop + iOS + Android): connect-first onboarding + six wired panels, the v1.16.0 release (connection state machine with false-offline guard + chain-verify-before-writes, honest-batch review with A/S/R/J/K keyboard, recall decision-path artifact, DSAR certificate card with live chain badge, auth-failure feed, audit filters + export) |
+Brain Server gives your agent a second brain that lives on your own device. It is written in Rust and wraps a deterministic retrieval engine, a static local embedding model, and a knowledge graph behind a versioned HTTP API. Recall never calls an LLM or an embedding API, so every query costs nothing and the data never leaves the machine.
 
 ---
+
+<p align="center">
+
+  [![Version](https://img.shields.io/badge/version-1.16.7-blue.svg)](#)
+  [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](#)
+  [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
+  [![CI](https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg)](https://github.com/markfietje/brain-server/actions/workflows/ci.yml)
+  [![Power](https://img.shields.io/badge/power-%3C5W-2ea44f.svg)](#)
+  [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
+  [![Privacy](https://img.shields.io/badge/privacy-100%25%20on-device-6f42c1.svg)](#)
+
+</p>
+
+<p align="center">
+  Web + desktop + mobile GUI (Dioxus) · OpenAI-compatible embeddings · MCP server · Native OpenClaw memory plugin
+</p>
+
+---
+
+## Why not a cloud memory service
+
+Zep, Mem0, and Letta Cloud charge per read and write, hold your agent's memory in someone else's datacenter, and add a round trip to every recall. Brain Server flips all three:
+
+| Cloud memory | Brain Server |
+|---|---|
+| Per-query cost | 0 decision tokens, 0 embedding tokens. Static local embeddings. |
+| Data egress | Data stays on the device. SQLite, no telemetry. |
+| Network latency | sub-50ms p99 recall, no round trip. |
+
+That is the whole pitch: zero per-query cost, zero data egress, zero recall latency, one Rust binary.
 
 ## Features
 
-- **Hybrid retrieval** — vector KNN (`vec0`) + lexical FTS5 (BM25) fused via Reciprocal Rank Fusion, with deterministic PRF query expansion and full per-result provenance.
-- **Structured query** — `QueryDoc` with `LexSpec` (phrases, exclusions, code paths), multi-source OR scope, temporal `since`/`as_of` predicates.
-- **Temporal evidence** — every ingest stamps `observed_at` / `valid_from` / `valid_to` / `authority`. Point-in-time recall returns the revision active at a timestamp. `RecallHit.conflict` flags contradictory/superseded hits.
-- **Knowledge graph** — entities and relationships extracted from `[[relation::entity]]` syntax in markdown. Traverse, query, and follow links. Multi-hop explanations via `/graph/traverse?explain=true` (structured hop chains); edge-type filter via `?kind=`.
-- **Source lifecycle** — every chunk carries provenance (`source` + immutable `revision`). Connectors backfill external sources through a supervised pipeline; `POST /reconcile` sweeps orphans from deleted sources.
-- **Connectors** — supervised ingesters (GitHub issues via App auth) that backfill through the existing source/revision pipeline. Extensible connector contract.
-- **Prompt-injection quarantine** — suspicious content stored but excluded from retrieval until reviewed.
-- **Append-only audit log** — ingest and auth-denial events recorded hash-only.
-- **Encrypted backup/restore** — AES-256-GCM, checksummed backups.
-- **OpenAI-compatible embeddings** — `POST /v1/embeddings`.
-- **MCP server** — `mcp` binary exposes search/recall/ingest as MCP tools.
-- **Calibrated abstention** (v1.5) — when retrieval quality is too low to support a claim, `/recall` returns `{decision: "low_confidence", hits: []}` instead of top-1 garbage.
-- **Span verification** (v1.5) — `POST /verify` checks whether a claim is supported by a chunk's actual text (deterministic lexical match, no LLM).
-- **Self-correction** (v1.6) — operator-approved `supersedes` links atomically expire the prior fact; historical recall (`?at=<past>`) still returns it. `brain resolve` + `brain check-consistency` surface action items.
-- **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
-- **Opt-in anticipation** (v1.9) — `POST /suggest` returns related-but-not-surfaced chunks (tagged `reason: "anticipated"`); `POST /suggest/feedback` records accept/dismiss; `GET /suggest/metrics` reports the false-positive rate. No push, no decay, no hidden personalization — the agent asks explicitly. `BRAIN_SUGGEST_ENABLED=false` disables the surface.
-- **Ordered procedures** (v1.10) — `POST /procedure` ingests a root + ordered steps in one transaction; `GET /procedure/{id}/steps` returns them via `next_step` edges. `POST /classify` deterministically routes text to a category by matched keywords (auditable); `POST /decision/{id}/evaluate` fires the matched branch of a stored decision rule. No LLM.
-- **Write-back gating** (v1.14) — `POST /ingest/proposal` scores a candidate (novelty via vec0 KNN, conflict via the consolidate machinery, salience via length/entity heuristic) but creates **no** `knowledge` row; it becomes memory only via human approval (`POST /proposals/{id}/approve[?supersedes=]`, one transaction). Per-chunk `expires_at` decay, `assertion_kind`/`confidence`/`min_relevance`, record-level `access_scope`+`owner` (JWT-mode deny-by-default). PII output redaction + opt-in write-time placeholder mode. GDPR `GET /export` + `POST /purge` (hard audited delete, tombstone + audit).
-- **Observe + compliance** (v1.15) — read-event audit (recall/search/get emit rows into the existing SHA-256 hash chain; opt-in), the recall trace endpoint (`POST /recall?trace=true` returns a `trace_id`; `GET /recall/{trace_id}/trace` replays the decision path), the DSAR workflow (`POST /dsar` locate→export→purge→chain-verifiable deletion certificate, `GET /tombstones` registry, `GET /dsar/{id}/certificate`), and an opt-in Art 19 HMAC-SHA256 webhook. See `COMPLIANCE.md` for the ISO 42001 / NIST AI RMF / SOC 2 map.
-- **Client control surface** (v1.16) — [`client/`](./client/) is the Dioxus app (web + desktop + iOS + Android, one Rust codebase). The v1.16.0 release ships the connection state machine (single `use_future` probe with a false-offline guard — N failures before amber — + chain-verify-before-writes recovery), honest-batch review (per-row `RowOutcome` tracking — a failed call is surfaced, never silently dropped; 404-no-pending = success; A/S/R/J/K keyboard with a WCAG 2.1.4 toggle; reject-with-reason + suggest-re-ingest), the recall decision-path viewer (per-retriever ranks, fused score, relevance tiers, `min_relevance` slider, deep-linkable `?trace=true` artifact), the DSAR certificate card with a live green/red chain badge, an auth-failure feed, audit client-side filters + export, and the full dark-first semantic-token visual layer.
-
----
+- **Hybrid retrieval.** Vector KNN plus lexical FTS5, merged with Reciprocal Rank Fusion and deterministic PRF expansion. Every result carries provenance.
+- **Knowledge graph.** Entities and relationships extracted from `[[relation::entity]]` in markdown, with faithful multi-hop explanations.
+- **Temporal evidence.** Every ingest records `observed_at`, `valid_from`, and `valid_to`. Ask for any point in time and get the fact as it was then.
+- **Honest when it is unsure.** Recall abstains with `{decision: "low_confidence"}` instead of returning a confident wrong answer. `/verify` checks that a claim really appears in a chunk's text.
+- **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it.
+- **Governance and compliance.** An append-only SHA-256 audit chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
+- **One binary for the edge.** Embedded SQLite and sqlite-vec, int8-quantized vectors, about 350 MB RSS on a 4 GB ARM board.
+- **Easy to wire up.** OpenAI-compatible embeddings, an MCP server, a `brain` CLI, a Dioxus GUI, and a native OpenClaw memory plugin.
 
 ## Quick start
 
 ```bash
-# Build all binaries
 cargo build --release --features bench
-# or: cargo build --release --features bench,connector-github
-
-# Run the server
 ./target/release/brain-server
+```
 
-# Or install as a service (macOS launchd)
+The server listens on `127.0.0.1:8765` and writes SQLite data to `brain.db` by default.
+
+```bash
+# Health
+curl http://localhost:8765/health
+
+# Ingest markdown. [[relation::entity]] links build the graph.
+curl -X POST http://localhost:8765/ingest/markdown \
+  -d '{"title":"Bignay","content":"Bignay is [[alternative_to::blueberry]]."}'
+
+# Recall
+curl -X POST http://localhost:8765/recall \
+  -d '{"query":"blueberry alternative","provenance":true}'
+```
+
+Run it as a launchd service on macOS:
+
+```bash
 scripts/install-service.sh
 ```
 
-The server binds to `127.0.0.1:8765` and creates a SQLite database at the configured path (default: `brain.db` in the current directory, or `BRAIN_DB_PATH`).
+## Documentation
+
+| | |
+|---|---|
+| **Wiki** | [brain-server Wiki](https://github.com/markfietje/brain-server/wiki) covers Overview, Quickstart, Architecture, Retrieval, the Knowledge Graph, Security, Compliance, API and CLI reference, FAQ, and Glossary. |
+| **Docs** | [`docs/`](./docs/): Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Roadmap. |
+| **API contract** | [`API_CONTRACT.md`](./API_CONTRACT.md) plus `GET /openapi.yaml` at runtime. |
+| **Compliance** | [`COMPLIANCE.md`](./COMPLIANCE.md): ISO 42001, NIST AI RMF, SOC 2, GDPR. |
+| **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |
+| **Roadmap** | [`ROADMAP.md`](./ROADMAP.md). |
+
+## Client GUI
+
+The Dioxus app in `client/` runs on web, desktop, iOS, and Android from one Rust codebase. It gives operators a visual, WCAG 2.2 AA compliant surface for six panels: Review (human-gated write-back with A/S/R/J/K keyboard), Recall (decision-path viewer), Subjects (DSAR certificate card), Security (audit chain and quarantine), Audit (filters and export), and Health.
 
 ```bash
-# Health check
-curl http://localhost:8765/health
-curl http://localhost:8765/stats
-
-# Ingest a markdown document
-curl -X POST http://localhost:8765/ingest/markdown \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Bignay","content":"Bignay is [[alternative_to::blueberry]]. It has [[has_property::antioxidants]]."}'
-
-# Structured recall
-curl -X POST http://localhost:8765/recall \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"blueberry alternative","provenance":true}'
-
-# Knowledge graph
-curl http://localhost:8765/graph/entity/bignay
-curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
+cd client && ./deploy-web.sh
 ```
-
----
-
-## API
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health`, `/health/db`, `/ready` | Liveness |
-| GET | `/stats`, `/version` | Counts + model + version |
-| GET | `/openapi.yaml` | Full API contract |
-| POST | `/add` | Raw text ingest *(deprecated)* |
-| POST | `/ingest/memory` | Structured memory ingest (returns real `chunk_id`/`chunk_ids`; v1.13.3) |
-| POST | `/ingest/markdown` | Markdown ingest + graph extraction |
-| POST | `/ingest` | Structured ingest (explicit entities/relations) |
-| GET | `/search?q=&k=&source=&sources=` | Semantic search *(deprecated; use `/recall`)* |
-| POST | `/recall` | Structured recall (`QueryDoc`, primary endpoint) |
-**`source` filter (v1.13.3)** on `/recall` and `/search`: an ingest kind
-(`memory` · `markdown` · `structured` · `manual` · `vault`) filters in SQL; a
-retrieval leg (`vector` · `fts` · `graph`) filters post-fusion; `both` is
-unrestricted. Unknown values return **422**. `sources` (plural) is an OR filter
-over ingest kind (not source URIs).
-| POST | `/verify` | Span verification — is a claim supported by a chunk's text? (v1.5) |
-| POST | `/procedure` · GET `/procedure/{id}/steps` | Ordered-step procedure ingest + step retrieval (v1.10) |
-| POST | `/classify` | Deterministic keyword categorization — category + confidence + matched keywords (v1.10) |
-| POST | `/decision/{id}/evaluate` | Evaluate a stored decision rule, fires the matched branch (v1.10) |
-| POST | `/ingest/proposal` | Score a write-back candidate; **no** `knowledge` row until approved (v1.14) |
-| GET | `/proposals?status=` | The human approval queue (v1.14) |
-| POST | `/proposals/{id}/approve[?supersedes=N]` · `/proposals/{id}/reject` | Promote / reject a candidate (v1.14) |
-| GET | `/decayed` | Operator review of decayed chunks (v1.14) |
-| GET | `/export[?include_pii_map=true]` | Portable JSON export — data portability, GDPR (v1.14) |
-| POST | `/purge` | Hard, explicit, audited deletion by id or owner — tombstone + audit (v1.14) |
-| POST | `/dsar` | GDPR Art 15/17 locate→export→purge→chain-verifiable deletion certificate (v1.15) |
-| GET | `/tombstones?subject=&since=` | Queryable deletion registry (v1.15) |
-| GET | `/dsar/{id}/certificate` | Re-fetch a deletion certificate + live chain check (v1.15) |
-| GET | `/recall/{trace_id}/trace` | Replay a recorded recall decision path (v1.15; Admin) |
-| GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
-| POST | `/reindex` | Rebuild vector/FTS indexes |
-| DELETE | `/memory/{id}` | Delete a chunk (tombstone) |
-| GET | `/graph/entity/{name}` | Entity + 1-hop relations |
-| GET | `/graph/relations?from=&to=` | Relations between entities |
-| GET | `/graph/traverse?start=&max_depth=&explain=&kind=` | Recursive walk (max 4); `explain=true` returns structured hop paths; `kind=` filters by edge type (v1.7) |
-| POST | `/sources/reconcile` · DELETE `/sources/{id}` | Source lifecycle |
-| GET | `/domains` · POST `/domains` · DELETE `/domains/{name}` | Multi-domain status + lifecycle |
-| POST | `/consolidate/propose` | Reviewable consolidation proposals: exact-dups, conflicts, contradictions, stale sources, near-duplicates |
-| POST | `/consolidate/apply` · POST `/consolidate/undo` | Record / reverse supersession links (v1.6/v1.8) |
-| POST | `/suggest` | Opt-in anticipation pull — related chunks the agent didn't directly retrieve (v1.9) |
-| POST | `/suggest/feedback` | Record accept/dismiss for a surfaced suggestion (v1.9) |
-| GET | `/suggest/metrics` | False-positive rate over the feedback ledger (v1.9 exit criterion) |
-| GET | `/connectors` | Registered connectors |
-| POST | `/webhooks/{kind}` | Verified webhook ingest (HMAC, replay-protected) |
-| POST | `/auth/refresh` · `/auth/logout` · `/auth/revoke` | Token lifecycle (JWT mode) |
-| GET | `/.well-known/openid-configuration` · `/.well-known/jwks.json` | OIDC discovery + JWKS |
-| GET | `/audit` | Append-only audit events (hash-only) |
-| GET | `/audit/verify` | Read-only check that the audit hash chain is intact |
-| GET | `/quarantine` · POST `/quarantine/{id}/release` · `/delete` | Injection review |
-| POST | `/v1/embeddings` | OpenAI-compatible embeddings |
-
-Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API_CONTRACT.md) and `GET /openapi.yaml`.
-
----
-
-## CLI (`brain`)
-
-| Command | Purpose |
-|---|---|
-| `brain doctor` / `brain status` | Health + stats |
-| `brain query "q"` [`--phrase` …] [`--exclude` …] [`--code` …] [`--source` …] [`--since` …] [`--k N`] [`--explain`] | Structured recall |
-| `brain get <id>` | Fetch a chunk |
-| `brain explain "q"` | Provenance + telemetry |
-| `brain ingest-dir <path>` [--dry-run] | Ingest a vault directory |
-| `brain reconcile <path>` [--dry-run] | Sweep deleted sources |
-| `brain resolve <new_id> <old_id>` | Mark new chunk as superseding old; expires old from current recall (v1.6) |
-| `brain undo-resolve <old_id> [<old_id> ...]` | Reverse a prior supersession; restores chunk to current recall (v1.8) |
-| `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates (v1.6/v1.8) |
-| `brain suggest "<context>"` `[--exclude id[,id...]]` `[--k N]` `[--session S]` | Opt-in anticipation pull (v1.9) |
-| `brain suggest-feedback <id> accept\|dismiss` `[--reason "..."]` `[--session S]` | Record a suggestion outcome (v1.9) |
-| `brain suggest-metrics` `[--session S]` `[--since DATE]` | False-positive rate over the feedback ledger (v1.9) |
-| `brain source-delete <id>` | Retire a source |
-| `brain connect github --app-id N --install-id N --key-file PATH --repo O/R` | Configure GitHub connector |
-| `brain sync [github]` `[--config PATH \| --instance NAME]` | Run a connector sync |
-| `brain connector-status` | List registered connectors |
-| `brain audit [--kind K] [--limit N]` | Read audit log |
-| `brain key generate` [`--kind rsa`] | Generate a JWT signing keypair (JWT mode) |
-| `brain key list` / `brain key prune` | List / prune JWT signing keys |
-| `brain procedure <title>` [`--step "title: content"` …] [`--domain D`] | Ingest a root + ordered steps in one transaction (v1.10) |
-| `brain classify "<text>"` | Deterministic keyword categorization — category + confidence + matched keywords (v1.10) |
-| `brain evaluate <decision_id>` `--var name=value` … | Evaluate a stored decision rule (v1.10) |
-| `brain backup <db> <out>` / `brain restore <backup> <db>` | Encrypted backup/restore |
-
----
 
 ## Configuration
 
+All settings are environment variables, resolved in `src/config.rs`.
+
 | Variable | Default | Description |
 |---|---|---|
-| `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` refused unless `BIND_PUBLIC=1`. |
-| `BIND_PORT` | `8765` | Listen port |
-| `BRAIN_DB_PATH` | `brain.db` | SQLite database path |
-| `CORS_ORIGINS` | `localhost:3000,localhost:8080` | CORS allowlist |
-| `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s) (v1.1 default). Newline-separated = live rotation. Off if unset. |
-| `BRAIN_JWT_ISSUER` | — | Enables **JWT mode** when set + keys loaded. URL of the issuer (verified against the `iss` claim). |
-| `BRAIN_JWT_KEY_DIR` | `~/.config/brain-server/keys/` | Directory holding JWT signing key PEMs (mode 0700; private keys 0600). |
-| `BRAIN_PUBLIC_BASE_URL` | — | Public base URL for OIDC discovery (`/.well-known/openid-configuration`). Never inferred from `Host`. |
-| `BRAIN_JWT_AUDIENCE` | `brain-server` | Expected `aud` claim value. |
-| `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
-| `PRF_ENABLED` / `PRF_DEPTH` / `PRF_TERMS` / `PRF_MAX_RANK` | `true` / `10` / `5` / `5` | PRF expansion |
-| `BRAIN_SUGGEST_ENABLED` | `true` | v1.9 kill switch: when `false`, the `/suggest/*` routes return `501` (the roadmap's "otherwise the feature is removed" guarantee). |
-| `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | v1.15 read-event audit: when `on`, `/recall`, `/search`, `/get/{id}`, `/multi-get` emit hash-chained audit rows (no content, no raw query). |
-| `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | v1.15 read-event sampling (0.0..=1.0); 1.0 = every read event. |
-| `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | v1.15 audit retention window; when set, expired rows are pruned on read-event writes and the chain re-anchored (deployers: ≥180 per AI Act Art 26(6) guidance). |
-| `BRAIN_DSAR_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_SECRET` | — | v1.15 opt-in Art 19 onward-notification: on a completed DSAR purge, POSTs `{subject, certified_at, certificate_id}` HMAC-SHA256-signed. Fail-soft (never rolls back the purge). |
+| `BIND_HOST` / `BIND_PORT` | `127.0.0.1` / `8765` | Bind address and port. `0.0.0.0` is refused unless `BIND_PUBLIC=1`. |
+| `BRAIN_DB_PATH` | `brain.db` | SQLite database path. |
+| `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | `(none)` | Opaque bearer token(s). Newline-separated enables live rotation. |
+| `BRAIN_JWT_ISSUER` | `(none)` | Enables JWT/JWS mode when set and keys are loaded. |
+| `INJECTION_POLICY` | `quarantine` | `quarantine`, `reject`, or `allow`. |
+| `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | Opt-in read-event audit. |
+| `BRAIN_AUDIT_RETENTION_DAYS` | `(none)` | Audit retention window. Unset keeps everything. |
+| `BRAIN_SUGGEST_ENABLED` | `true` | `/suggest/*` kill switch. |
 
-All tunables: [`src/config.rs`](./src/config.rs).
+The full list is on the [Configuration wiki page](https://github.com/markfietje/brain-server/wiki/Configuration).
 
----
+## API
+
+The complete contract is served at `GET /openapi.yaml` and documented in [`API_CONTRACT.md`](./API_CONTRACT.md). Every response carries `X-Api-Version`.
+
+**Core**
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/recall` | Structured recall, the primary endpoint. |
+| POST | `/ingest` · `/ingest/markdown` · `/ingest/memory` | Ingest structured, markdown, or memory. |
+| GET | `/get/{id}` · POST `/multi-get` | Fetch chunks by id. |
+| GET | `/graph/entity/{name}` · `/graph/traverse` | Knowledge-graph queries. |
+| POST | `/verify` | Claim span verification. |
+| POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization and decision rules. |
+
+**Governance and write-back**
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/ingest/proposal` · `/proposals/{id}/approve` | Human-in-the-loop write-back. |
+| POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation. |
+| POST | `/dsar` · GET `/tombstones` | DSAR and the deletion registry. |
+| GET | `/audit` · `/audit/verify` | Audit log and chain integrity. |
+| POST | `/suggest` · `/suggest/feedback` | Opt-in anticipation. |
+
+**Auth and discovery (JWT mode)**
+
+| Method | Path |
+|---|---|
+| POST | `/auth/refresh` · `/logout` · `/revoke` |
+| GET | `/.well-known/openid-configuration` · `/.well-known/jwks.json` |
+
+## CLI
+
+```bash
+brain status                  # health and stats
+brain query "q" --k 3         # structured recall
+brain explain "q"             # provenance and telemetry
+brain ingest-dir ./vault      # ingest a vault
+brain check-consistency       # duplicates, conflicts, stale sources
+brain resolve <new> <old>     # supersede a fact
+brain suggest "<context>"     # opt-in anticipation
+brain backup <db> <out>       # AES-256-GCM encrypted backup
+```
 
 ## Security
 
 - **Loopback-safe by default.** Refuses `0.0.0.0` unless `BIND_PUBLIC=1`.
-- **Two authentication modes** (JWT is opt-in, opaque is the default):
-  - **Opaque bearer** (v1.1 default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`.
-    Multiple tokens accepted (live rotation). Constant-time compare.
-  - **JWT/JWS** (v1.2 opt-in): set `BRAIN_JWT_ISSUER` + load keys via
-    `brain key generate`. RS256/ES256/EdDSA only (never HS256/`none`);
-    `(jti, iss)` revocation; refresh-chain reuse detection; per-route AuthZ.
-    OIDC discovery at `/.well-known/openid-configuration`, JWKS at
-    `/.well-known/jwks.json`.
-- **Verified webhooks** — HMAC verification, replay-window enforcement, idempotency.
-- **Append-only audit log** — ingest + auth-denial events, hash-only.
-- **Prompt-injection quarantine** — suspicious input stored but excluded from retrieval. Deterministic structural control, not a classifier.
-- **Untrusted-evidence boundary** (OWASP LLM01:2025) — every result serializes `untrusted: true`.
-- **Encrypted backup/restore** — AES-256-GCM, checksummed, excludes secrets.
-- Connector credentials at mode `0600` with atomic writes. Outbound HTTP is limited to the opt-in Art 19 DSAR webhook (v1.15); disabled unless `BRAIN_DSAR_WEBHOOK_URL` is set.
+- **Two auth modes.** Opaque bearer (default) or JWT/JWS (opt-in, RS256/ES256/EdDSA only) with per-route AuthZ and OIDC/JWKS discovery.
+- **Append-only SHA-256 audit chain.** Tamper-evident and hash-only.
+- **Prompt-injection quarantine.** Suspicious input is stored but excluded from retrieval.
+- **Untrusted-evidence boundary.** Every result serializes `untrusted: true` (OWASP LLM01:2025).
+- **Encrypted backup.** AES-256-GCM, checksummed, and excludes secrets.
 
-See [SECURITY.md](./SECURITY.md).
+See [`SECURITY.md`](./SECURITY.md) and the [Security wiki page](https://github.com/markfietje/brain-server/wiki/Security).
 
----
+## Tech stack
 
-## Build
+Rust · Axum · rusqlite (WAL) · r2d2 · tokio · model2vec (`minishlab/potion-retrieval-32M`) · Dioxus (client)
 
-The release profile is size-optimized: `opt-level="z"`, `lto="fat"`, `codegen-units=1`, `strip`, `panic="abort"`.
+| | |
+|---|---|
+| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, about 120 MiB RSS) |
+| **Power envelope** | under 5 W idle on Jetson Nano |
+| **Latency** | sub-50ms p99 recall |
+| **License** | MIT |
+
+## Contributing
+
+Contributions are welcome. Please read [`CONTRIBUTING.md`](./CONTRIBUTING.md) and the [Code of Conduct](./CODE_OF_CONDUCT.md). CI enforces these gates, so run them locally first:
 
 ```bash
-# Release build (all binaries: brain-server, brain, mcp, bench, brain-connector-stub)
-cargo build --release --features bench
-
-# With GitHub connector
-cargo build --release --features bench,connector-github
-
-# CI
 cargo fmt --check
 cargo clippy --all-targets --features bench -- -D warnings
 cargo test --features bench
 ```
 
----
-
-## Contributing
-
-Contributions are welcome. Please read the
-[contributing guidelines](CONTRIBUTING.md) and our
-[code of conduct](CODE_OF_CONDUCT.md) before opening a PR. The quality gates
-(`cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`) are enforced in CI —
-please run them locally first.
-
-For security vulnerabilities, do **not** open a public issue — use the GitHub
-"Report a vulnerability" tab or email security@openclaw.dev (see
-[SECURITY.md](SECURITY.md)).
+For security issues, do not open a public issue. Use the GitHub *Report a vulnerability* tab or email security@openclaw.dev.
 
 ## License
 
-MIT.
+[MIT](./LICENSE) © 2026 Mark Fietje
