@@ -43,15 +43,16 @@ pub async fn jwks(State(s): State<Arc<AppState>>) -> Response {
 }
 
 /// `GET /.well-known/security.txt` (RFC 9116). Public/no-auth — the disclosure
-/// endpoint procurement and the EU Cyber Resilience Act look for. `Contact`
-/// defaults to the project's private-vuln-reporting URL; override with
-/// `BRAIN_SECURITY_CONTACT`. `Expires` is computed (now + 1 year) so it never
-/// goes stale. `Canonical` is included when `BRAIN_PUBLIC_BASE_URL` is set.
+/// endpoint procurement and the EU Cyber Resilience Act look for. `Contact` is
+/// read from `BRAIN_SECURITY_CONTACT` (mailto: or https:// to a private-vuln-
+/// report URL) and omitted when unset, so the operator owns the address.
+/// `Expires` is computed (now + 1 year) so it never goes stale. `Canonical` is
+/// included when `BRAIN_PUBLIC_BASE_URL` is set.
 pub async fn security_txt() -> Response {
-    // Default matches SECURITY.md's disclosure address; override with
-    // BRAIN_SECURITY_CONTACT (mailto: or https:// to a private-vuln-report URL).
     let contact = std::env::var("BRAIN_SECURITY_CONTACT")
-        .unwrap_or_else(|_| "mailto:security@openclaw.dev".to_string());
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let expires = chrono::Utc::now()
         .checked_add_signed(chrono::TimeDelta::days(365))
         .map(|d| d.to_rfc3339())
@@ -60,7 +61,7 @@ pub async fn security_txt() -> Response {
         let base = b.trim_end_matches('/');
         format!("{base}/.well-known/security.txt")
     });
-    let body = build_security_txt(&contact, &expires, canonical.as_deref());
+    let body = build_security_txt(contact.as_deref(), &expires, canonical.as_deref());
     (
         [
             (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
@@ -72,9 +73,15 @@ pub async fn security_txt() -> Response {
 }
 
 /// Pure builder for the RFC 9116 `security.txt` body. Split out so the field
-/// layout is unit-tested without env/time.
-fn build_security_txt(contact: &str, expires: &str, canonical: Option<&str>) -> String {
-    let mut s = format!("Contact: {contact}\nExpires: {expires}\nPreferred-Languages: en\n");
+/// layout is unit-tested without env/time. `Contact` is emitted only when the
+/// operator configured an address.
+fn build_security_txt(contact: Option<&str>, expires: &str, canonical: Option<&str>) -> String {
+    let mut s = String::from("Expires: ");
+    s.push_str(expires);
+    s.push_str("\nPreferred-Languages: en\n");
+    if let Some(c) = contact {
+        s.push_str(&format!("Contact: {c}\n"));
+    }
     if let Some(c) = canonical {
         s.push_str(&format!("Canonical: {c}\n"));
     }
@@ -179,17 +186,24 @@ mod tests {
 
     #[test]
     fn security_txt_has_rfc9116_fields_and_optional_canonical() {
-        let without = build_security_txt("mailto:sec@example.com", "2030-01-01T00:00:00Z", None);
+        let without =
+            build_security_txt(Some("mailto:sec@example.com"), "2030-01-01T00:00:00Z", None);
         assert!(without.contains("Contact: mailto:sec@example.com"));
         assert!(without.contains("Expires: 2030-01-01T00:00:00Z"));
         assert!(without.contains("Preferred-Languages: en"));
         assert!(!without.contains("Canonical"));
 
         let with = build_security_txt(
-            "mailto:sec@example.com",
+            Some("mailto:sec@example.com"),
             "2030-01-01T00:00:00Z",
             Some("https://brain.example.com/.well-known/security.txt"),
         );
         assert!(with.contains("Canonical: https://brain.example.com/.well-known/security.txt"));
+    }
+
+    #[test]
+    fn security_txt_omits_contact_when_unconfigured() {
+        let out = build_security_txt(None, "2030-01-01T00:00:00Z", None);
+        assert!(!out.contains("Contact:"));
     }
 }
