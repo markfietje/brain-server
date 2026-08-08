@@ -4,25 +4,32 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.16.0 "Client" (shipped)
+## Status — v1.16.7 "Integrated" (shipped)
 
-All six panels are fully wired against the live brain-server API, behind a
+All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
 mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`.
 
-**v1.16.0 ships the DESIGN's UX + correctness hard-parts** (8 milestones,
-25 tests, clippy `-D warnings` + fmt clean):
+**v1.16.7 ships the full v1.16.x client line** (43 tests, clippy `-D warnings`
++ fmt clean):
 
 | M | Feature | Detail |
 |---|---|---|
-| **M1** | Connection state machine | Single `use_future` probe with a false-offline guard (N failures before amber) + chain-verify-before-writes recovery. Dependency-free sleep via `document::eval`+setTimeout (no tokio dep). Read-only degrade banner + mutation freeze when disconnected. |
-| **M2** | Nav badges + principal + drawer | F-pattern `Pending: N` top-left, Security/Audit count badges, principal identity pillar, Esc-closable context drawer (ARIA dialog). |
+| **M1** | Connection state machine | Single `use_future` probe with a false-offline guard (N failures before amber) + chain-verify-before-writes recovery. Dependency-free sleep via `document::eval`+setTimeout. Read-only degrade banner + mutation freeze when disconnected. |
+| **M2** | Nav badges + principal + drawer | F-pattern `Pending: N` top-left, Security/Audit count badges, principal identity pillar, Esc-closable context drawer (ARIA dialog, hand-rolled focus trap). |
 | **M3** | Honest-batch review | Per-row `RowOutcome` tracking (a failed call is surfaced, never silently dropped); 404-no-pending = success; `BatchGuard` DropGuard; A/S/R/J/K keyboard with a WCAG 2.1.4 toggle; reject-with-reason + suggest-re-ingest editors. |
 | **M4** | Recall decision-path viewer | Per-retriever ranks, fused score, relevance tiers, `assertion_kind`/`confidence`/`decayed` tags; `min_relevance` slider; deep-linkable `?trace=true` artifact via `/recall/:trace_id`. |
 | **M5** | DSAR certificate card | Structured card (found_count, purged_ids, tombstone_root, chain_head, certified_at) with a live green/red chain badge. |
 | **M6** | Auth-failure feed | `GET /audit?kind=auth` filtered to denied rows; count badge on Security. |
-| **M7** | Audit filters + export | Client-side principal/kind/since filters + JSON export (no new server route). |
+| **M7** | Audit filters + export | Client-side principal/kind/since filters + JSON export; v1.16.7 adds server-side pagination (`?limit=&offset=`) with a Load-more button. |
 | **M8** | Visual-token layer | Every panel uses the dark-first semantic tokens (`text-ink-muted`/`text-ok`/…) — zero ad-hoc color classes remain. |
+
+**v1.16.x additions after v1.16.0:** v1.16.2 hardened + accessible (path-aware
+CSP, ErrorBoundary, WCAG 2.2 AA pass, focus-to-heading, aria-live) · v1.16.4
+shadcn-style design-system restyle · v1.16.5 JWT refresh lifecycle +
+principal · v1.16.6 mobile: secure token storage (OS keyring) + responsive
+bottom-tab layout · v1.16.7 deep links + PWA (offline shell, never the API)
++ ⌘K command palette + recall debounce.
 
 | Panel | Backend route(s) | v1.16.0 additions |
 |---|---|---|
@@ -30,7 +37,7 @@ mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`.
 | Recall (decision viewer) | `/recall`, `/recall/{id}/trace` | richer hits, min_relevance slider, trace artifact |
 | Subjects (DSAR) | `/dsar`, `/dsar/{id}/certificate` | certificate card + live chain badge |
 | Security (quarantine + chain) | `/quarantine`, `/quarantine/{id}/release\|delete`, `/audit/verify`, `/audit?kind=auth` | auth-failure feed |
-| Audit (hash-chain browser) | `/audit` | client-side filters + JSON export |
+| Audit (hash-chain browser) | `/audit?limit=&offset=` | client-side filters + JSON export + Load-more paging |
 | Health (capacity + corpus) | `/health`, `/stats` | — |
 
 ## Prerequisites
@@ -59,7 +66,7 @@ every panel re-fetches through it.
 `dx serve` / `dx bundle` are **operator steps** — the Dioxus CLI is not part
  of this repo's CI (it must be installed via the curl one-liner above). The
  WASM build can be validated with `cargo check`/`cargo test` (both green here:
- **30 tests**, clippy-clean), but shipping the web bundle needs `dx`.
+ **43 tests**, clippy-clean), but shipping the web bundle needs `dx`.
 
 Tailwind v4 (v1.16.2): `styles/input.css` is the source and
 `assets/tailwind.css` the `asset!`-ed output. `dx bundle`/`dx serve` auto-run
@@ -123,4 +130,6 @@ cp "$SRC/assets/brain-client-*.js" "$SRC/assets/brain-client_bg-*.wasm" dist/ass
 ## Next
 
 Accessibility + i18n (v1.18.0), integration (v1.19.0), polish (v1.20.0), and
-the mobile bottom-tab responsive swap (v1.17.0).
+the v1.16.7 ceilings: wasm-split code-splitting (M3, blocked on Dioxus),
+Radix/`dx components` focus restoration (registry unreachable), and the
+v1.16.8 "Global" milestone.
