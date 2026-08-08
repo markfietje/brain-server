@@ -16,6 +16,60 @@ _(nothing pending)_
 
 ---
 
+## [1.16.5] — 2026-08-08
+
+### "Secure" (client-only — JWT refresh lifecycle + principal)
+
+Client 1.16.4 → 1.16.5; server + API contract unchanged. The client's JWT
+lifecycle: refresh-on-401, principal identity display, session-expiry
+awareness, and the honest revocation path. See
+`IMPLEMENTATION_PLAN_v1.16.5_Secure.md`.
+
+### Improvements
+
+- **JWT-aware `ApiClient` (M1)** — `TokenClaims` (sub/exp/scope/team) +
+  `decode_claims()` (base64url-payload decode, no crypto — brain-server
+  verifies on receipt; the client reads claims for display + expiry only).
+  `with_principal()`/`with_refresh_pair()` derive the identity pillar from the
+  JWT `sub` claim; `derive_principal()` distinguishes opaque loopback tokens
+  (None) from JWT-shaped ones.
+- **Principal display (M2)** — the top bar shows `acting as <sub>` for JWT
+  tokens, `loopback` for opaque ones (replaces the hardcoded `remote-user`
+  placeholder in Connect). The Intent-Based-Auditing identity pillar.
+- **Refresh-on-401 (M3) + pre-emptive refresh (M5.1)** — a `request_with_refresh`
+  wrapper silently refreshes once on 401 and retries the original request;
+  `needs_refresh()` refreshes proactively when the access token's `exp` is
+  within 60s. One retry only — no infinite loop.
+- **Connect screen JWT mode (M4)** — a token / JWT-pair radio toggle (access +
+  refresh pasted from `brain key mint` or an IdP).
+- **Revocation-aware errors (M6)** — `error_message()` maps `refresh_reuse_
+  detected` → "session revoked", 401 → "session may have expired" with a
+  reconnect path.
+
+### Fixed
+
+- **`request()` no longer holds the `RwLock` guard across an await**
+  (clippy `await_holding_lock`) — the access token is cloned out before the
+  send.
+
+### Security
+
+- No crypto client-side — the client never verifies a JWT signature (forged
+  JWTs are rejected by brain-server on the next API call). Bearer-header auth
+  keeps CSRF structurally impossible (no cookies). BFF/HttpOnly-cookie mode is
+  the documented v2.x ceiling.
+
+### Honest ceilings (carried into v1.16.6)
+
+- Token lives in WASM memory for the session lifetime; JS on the same origin
+  can read it. Secure storage (Keychain/Keystore) is v1.16.6.
+- No PKCE flow (interactive login needs a brain-server `/auth/authorize` or
+  IdP proxy — v2.x).
+- Concurrent refreshes from two panels are server-safe but the loser logs out;
+  a client-side single-refresh mutex is the v1.16.6 polish.
+
+---
+
 ## [1.16.6] — 2026-08-08
 
 ### "Mobile" (client-only — secure token storage + responsive UX)
