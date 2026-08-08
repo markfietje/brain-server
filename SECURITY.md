@@ -16,7 +16,7 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 | 0.9.x   | :white_check_mark: | Maintained for back-compat |
 | < 0.9   | :x:                | Unsupported |
 
-**Support window.** The current minor (`1.14.x`) and the previous minor receive
+**Support window.** The current minor (`1.15.x`) and the previous minor receive
 fixes; the `0.9.x`/`1.0.x` lines receive back-compat/security fixes only. There
 is no fixed end-of-life date; any line's deprecation is announced at least one
 minor release in advance. A machine-readable disclosure endpoint is published at

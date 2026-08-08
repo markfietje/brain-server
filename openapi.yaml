@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.14.0
-  x-api-version: "1.14.0"
+  version: 1.15.0
+  x-api-version: "1.15.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -869,6 +869,15 @@ paths:
                     description: "Domains of the returned hits. Always present (empty array when no hits); v1.13.3."
                   telemetry:
                     $ref: "#/components/schemas/SearchTelemetry"
+                  trace_id:
+                    type: integer
+                    nullable: true
+                    description: >
+                      v1.15.0 "Observe" — id of the recorded read-event audit
+                      row when read-event auditing is on and the trace was
+                      captured (see `trace` param). Replayable via
+                      `GET /recall/{trace_id}/trace`. Null when auditing is
+                      off/sampled-out or `trace` was not requested.
         "422":
           description: Unknown `source` value (v1.13.3). Body lists valid values.
           content:
@@ -1293,6 +1302,107 @@ paths:
       responses:
         "200":
           description: Number of chunks purged
+  /recall/{trace_id}/trace:
+    get:
+      summary: Replay a recorded recall decision path (v1.15.0 M2)
+      operationId: getRecallTrace
+      description: >
+        Returns the trace JSON captured when a recall read event was recorded
+        with `trace: true`: the exact query, abstention decision, domains
+        searched, applied access-scope filter, actor, and per-hit injection
+        details. Pure read; no audit row of its own. 404 when the id has no
+        trace (event recorded without trace, or none at all).
+      parameters:
+        - in: path
+          name: trace_id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The stored trace JSON
+        "404":
+          description: No trace for this id
+  /dsar:
+    post:
+      summary: GDPR Art 15/17 DSAR workflow (v1.15.0 M3)
+      operationId: postDsar
+      description: >
+        Locate every record for a subject (content rows by `owner` plus
+        transitive `derived_from` descendants), export the bundle (portable
+        JSON), purge (hard, one transaction, reaching vec0 + graph +
+        pointers), and return a chain-verifiable deletion certificate. One
+        atomic workflow; `action` = export | purge | both. Admin-only:
+        erasure is irreversible. Nothing runs autonomously.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject:
+                  type: string
+                  description: Owner/principal being actioned (max 2000 chars).
+                action:
+                  type: string
+                  enum: [export, purge, both]
+                  default: both
+      responses:
+        "200":
+          description: Workflow row id + deletion certificate
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  subject: { type: string }
+                  status: { type: string, enum: [completed] }
+                  certificate:
+                    type: object
+                    description: >
+                      subject, action, found_count, purged_ids,
+                      tombstone_root, certified_at, chain_head.
+        "422":
+          description: Empty/overlong subject or invalid action
+  /tombstones:
+    get:
+      summary: Queryable deletion registry (v1.15.0 M3)
+      operationId: listTombstones
+      description: >
+        Hash-only, append-only tombstone rows (the EDPB Coordinated
+        Enforcement Framework ask). `?subject=` filters by the
+        `owner:<subject>` purge reason; `?since=` filters by purged_at.
+        Admin-only.
+      parameters:
+        - in: query
+          name: subject
+          schema: { type: string }
+        - in: query
+          name: since
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Tombstone rows (bounded at 1000)
+  /dsar/{id}/certificate:
+    get:
+      summary: Re-fetch a deletion certificate (v1.15.0 M3)
+      operationId: getDsarCertificate
+      description: >
+        Returns the stored certificate plus a live `chain_verifies` flag
+        computed by re-running the audit hash-chain verification, so the
+        caller sees whether the chain the certificate anchored to still
+        holds. 404 when the id has no DSAR row.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Certificate + live chain verification
+        "404":
+          description: No DSAR request with this id
   /ingest:
     post:
       summary: Structured ingest (v1.0 primary path)

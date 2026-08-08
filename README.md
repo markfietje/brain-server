@@ -6,7 +6,7 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.14.0 "Gate" (write-back proposals + review queue, per-chunk decay, GDPR export/purge, record-level access scope + PII redaction) · prev 1.13.6 "Hygiene" · 1.13.5 "MetricsRSS" |
+| **Version** | 1.15.0 "Observe" (read-event audit + recall trace + DSAR + deletion certificates) · prev 1.14.0 "Gate" · 1.13.6 "Hygiene" |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
@@ -162,6 +162,10 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
 | `PRF_ENABLED` / `PRF_DEPTH` / `PRF_TERMS` / `PRF_MAX_RANK` | `true` / `10` / `5` / `5` | PRF expansion |
 | `BRAIN_SUGGEST_ENABLED` | `true` | v1.9 kill switch: when `false`, the `/suggest/*` routes return `501` (the roadmap's "otherwise the feature is removed" guarantee). |
+| `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | v1.15 read-event audit: when `on`, `/recall`, `/search`, `/get/{id}`, `/multi-get` emit hash-chained audit rows (no content, no raw query). |
+| `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | v1.15 read-event sampling (0.0..=1.0); 1.0 = every read event. |
+| `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | v1.15 audit retention window; when set, expired rows are pruned on read-event writes and the chain re-anchored (deployers: ≥180 per AI Act Art 26(6) guidance). |
+| `BRAIN_DSAR_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_SECRET` | — | v1.15 opt-in Art 19 onward-notification: on a completed DSAR purge, POSTs `{subject, certified_at, certificate_id}` HMAC-SHA256-signed. Fail-soft (never rolls back the purge). |
 
 All tunables: [`src/config.rs`](./src/config.rs).
 

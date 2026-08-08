@@ -10,6 +10,115 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.15.0] — 2026-08-08
+
+**"Observe" — read-event audit + recall trace + DSAR + COMPLIANCE.md.** The
+observability + compliance-workflow layer on v1.14's governance primitives:
+the EU AI Act Art 12 logging control (read events enter the tamper-evident
+hash chain), the GDPR Art 15/17/19/22 workflow (DSAR locate→export→purge→
+certificate + Art 19 onward-notification), and the buyer-facing technical file
+(`COMPLIANCE.md`). **Constraint note:** this release deliberately breaks the
+long-standing "no outbound HTTP dep on the server" rule — the opt-in Art 19
+webhook needs outbound HTTP, so `reqwest` is now a required dependency (the
+`connector-github` feature now gates only its binary).
+
+### M1 — Read-event audit
+
+- `/recall`, `/search`, `/get/{id}`, `/multi-get` emit a read event into the
+  existing append-only SHA-256 hash chain (new `AuditKind::Recall/Search/Get`;
+  `record`/`record_tenant` now return the row id). Hash-only invariant kept —
+  never content, and never the raw query in the row (test-pinned).
+- **Opt-in by design:** `BRAIN_AUDIT_READ_EVENTS` — default **off** for
+  loopback/opaque mode (personal-use contract, audit shape unchanged), **on**
+  in JWT mode (enterprise posture). `BRAIN_AUDIT_READ_SAMPLE_RATE` (0.0..=1.0,
+  default 1.0) cuts noise on busy multi-tenant servers.
+- **Retention:** `BRAIN_AUDIT_RETENTION_DAYS` (default unset = keep forever).
+  When set, rows older than the window are pruned on read-event writes and the
+  chain re-anchored: the oldest surviving row becomes the new genesis and all
+  survivor links are recomputed, so the retained window stays tamper-evident.
+  Deployers subject to AI Act Art 26(6) guidance should set ≥180.
+
+### M2 — Recall trace endpoint (decision-path viewer)
+
+- `GET /recall/{trace_id}/trace` (Admin) replays a recorded recall read event:
+  the exact query, abstention decision, domains searched, the access-scope
+  filter applied, the principal, and per-hit injection details (id, fused
+  score, `assertion_kind`, source, relevance, decayed). The trace is the
+  Art 22 / ADMT "meaningful information about the logic" artifact and the
+  Intent-Based-Auditing decision-path pillar.
+- `POST /recall` accepts `trace: true` and returns the `trace_id` (the audit
+  row id; `recall_traces` side table holds the non-content metadata).
+  Pure read — no audit row of its own (no recursion).
+
+### M3 — DSAR orchestration + deletion certificate
+
+- `POST /dsar {subject, action: export|purge|both}` (Admin): locate every
+  record (`owner` rows + transitive `derived_from` descendants, bounded depth
+  8) → export bundle (portable JSON) → purge in one transaction (knowledge +
+  vec0 + relationships + evidence_links + proposals refs) → tombstone (reason
+  `owner:<subject>` / `derived`, `origin_id` for derived) → audit → deletion
+  certificate `{subject, action, found_count, purged_ids, tombstone_root,
+  certified_at, chain_head}` → ledger row in `dsar_requests`.
+- `GET /tombstones?subject=&since=` — the queryable deletion registry (EDPB
+  Coordinated Enforcement Framework ask). Hash-only, append-only, bounded.
+- `GET /dsar/{id}/certificate` — re-fetch a past certificate with a live
+  `chain_verifies` recomputation of the audit chain.
+- **Art 19 onward-notification:** `BRAIN_DSAR_WEBHOOK_URL` [+
+  `BRAIN_DSAR_WEBHOOK_SECRET`] — on a completed purge, POSTs
+  `{subject, certified_at, certificate_id}` HMAC-SHA256-signed
+  (`X-Brain-Signature-256: sha256=<hex>`, the outbound mirror of the v0.9.7
+  webhook scheme). Fail-soft: bounded retries then logged warning; a webhook
+  failure never rolls back the purge.
+- Shared purge mechanics extracted once: `gate::purge_chunk_ids` (used by
+  `/purge` and the DSAR path).
+
+### M4 — COMPLIANCE.md
+
+- New buyer-facing technical file: system description + data flows, purpose
+  limitation, logging spec, risk controls, retention classes, DPIA-style
+  questionnaire answers, ISO/IEC 42001 + NIST AI RMF + SOC 2 control map,
+  Intent-Based-Auditing 4/4 table, jurisdiction posture (PH DPA / GDPR /
+  CCPA-ADMT / residency / CRA horizon), Art 4 literacy note, and machine-
+  readable origin metadata (Art 50 transparency bridge).
+
+### Schema (additive; `schema_version` → 1.15.0)
+
+- `recall_traces(audit_id PK, trace_json)` — the replayable trace side table.
+- `dsar_requests(id, subject, action, status DEFAULT 'pending', export_bundle,
+  certificate, created_at, completed_at)` + `idx_dsar_subject`.
+- `tombstones` gains `reason TEXT` + `origin_id INTEGER` (guarded adds; the
+  old unguarded CREATE TABLE would have silently missed these on real DBs).
+
+### Back-compat
+
+- Loopback default (no `BRAIN_JWT_ISSUER`) is byte-identical: read events off,
+  no trace rows, no DSAR rows, audit shape unchanged.
+- `/purge`, `/export`, `/decayed` unchanged except tombstone rows now also
+  carry `reason='explicit'`.
+- OpenAPI: `/recall` gains `trace`/`trace_id`; four new routes documented.
+
+### Tests (→ 518 passed, 1 ignored; +6)
+
+`test_observe_read_event_recorded_and_trace_replayable`,
+`test_observe_read_events_default_on_for_jwt_off_for_loopback`,
+`test_observe_dsar_locate_and_purge_semantics`,
+`test_observe_deletion_certificate_chain_anchors_and_verifies`,
+`test_observe_art19_webhook_posts_on_purge` (real TCP listener, signed POST
+asserted), `test_observe_audit_retention_prunes_and_reanchors`.
+`test_migration_schema_contract` + `test_openapi_covers_routes` +
+`authz_gates_cover_every_non_public_route` extended.
+
+### Honest ceilings (carried into v1.16)
+
+- Read events default off in loopback mode; a loopback deployment must opt in
+  explicitly to collect read traces.
+- Audit chain is single-process (distributed audit = v2.1).
+- DSAR export is brain-server JSON, not UMP wire format.
+- No PII encryption at rest (COMPLIANCE documents the LUKS posture honestly).
+- No historical trace backfill for recalls that predate v1.15.0.
+
+---
+
 ## [1.14.0] — 2026-08-07
 
 **"Gate" — write-back gating + trust surfaces.** The Alex Xu thread's #1 ask —
