@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// v1.16.8 M1: the supported locale codes. `en` is always present (fallback).
-pub const SUPPORTED_LOCALES: [&str; 4] = ["en", "de", "fr", "es"];
+pub const SUPPORTED_LOCALES: [&str; 5] = ["en", "de", "fr", "es", "nl"];
 
 /// Accessor for a global Dioxus signal. `Signal::global` returns a fresh local
 /// handle over shared storage, so exposing a `fn` (not a `static`) lets callers
@@ -28,8 +28,8 @@ pub fn theme() -> Global<Signal<&'static str>, &'static str> {
 pub fn density() -> Global<Signal<&'static str>, &'static str> {
     Signal::global(|| "comfortable")
 }
-/// v1.16.8 M1: the active locale (`en`|`de`|`fr`|`es`). Reads during render
-/// subscribe the component, so changing it re-renders the UI in the new language.
+/// v1.16.8 M1: the active locale (one of `SUPPORTED_LOCALES`). Reads during
+/// render subscribe the component, so changing it re-renders the UI in the new language.
 pub fn locale() -> Global<Signal<&'static str>, &'static str> {
     Signal::global(|| "en")
 }
@@ -60,6 +60,7 @@ static BUNDLES: LazyLock<HashMap<&'static str, HashMap<&'static str, &'static st
         m.insert("de", parse_ftl(include_str!("../locales/de/main.ftl")));
         m.insert("fr", parse_ftl(include_str!("../locales/fr/main.ftl")));
         m.insert("es", parse_ftl(include_str!("../locales/es/main.ftl")));
+        m.insert("nl", parse_ftl(include_str!("../locales/nl/main.ftl")));
         m
     });
 
@@ -103,9 +104,9 @@ fn group_digits(s: &str, sep: char) -> String {
 }
 
 /// M5: locale-aware integer grouping. `en` → `1,234,567`; the rest of the
-/// shipped set (`de`/`fr`/`es`) group with `.` → `1.234.567` (fr ideally uses a
-/// narrow no-break space — ponytail: dot is close enough for a first cut and
-/// matches the milestone's example exactly).
+/// shipped set (`de`/`fr`/`es`/`nl`) group with `.` → `1.234.567` (fr ideally
+/// uses a narrow no-break space — ponytail: dot is close enough for a first
+/// cut and matches the milestone's example exactly).
 /// ponytail: deviates from the plan's `Intl.NumberFormat`-via-`document::eval`
 /// because eval is async (no sync path in Dioxus 0.7); this pure fn is
 /// synchronous, testable, and gives the same visible result for our locale set.
@@ -232,7 +233,11 @@ mod tests {
     fn locale_bundles_load_and_en_is_complete() {
         let en = BUNDLES.get("en").expect("en bundle");
         assert!(!en.is_empty(), "en must not be empty");
-        assert_eq!(BUNDLES.len(), 4, "en + de + fr + es");
+        assert_eq!(
+            BUNDLES.len(),
+            SUPPORTED_LOCALES.len(),
+            "one bundle per locale"
+        );
         // Every shipped locale's keys must exist in `en` so the fallback holds.
         for (loc, b) in BUNDLES.iter() {
             assert!(!b.is_empty(), "{loc} bundle must not be empty");

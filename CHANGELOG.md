@@ -45,7 +45,7 @@ connect screen. **Server + API contract unchanged** (server stays at 1.16.7).
 ### Client — Added
 
 - **M1 i18n (`src/i18n.rs` + `locales/*/main.ftl`).** Zero-dependency FTL-subset
-  translation: `en`/`de`/`fr`/`es` bundles are compiled in at build time via
+  translation: `en`/`de`/`fr`/`es`/`nl` bundles are compiled in at build time via
   `include_str!` and parsed once. `t()` resolves current-locale → `en` → the key
   itself (visible fallback, never blank), so a partial locale degrades to English.
   A `locales/<code>/main.ftl` file is added per language; RTL-ready via `is_rtl`.
@@ -61,7 +61,7 @@ connect screen. **Server + API contract unchanged** (server stays at 1.16.7).
   font, ~12.5% denser rem-based spacing) — a pure CSS knob, no JS, for high-volume
   reviewers. Comfortable is the default.
 - **M5 locale-aware numbers.** `format_number` groups per locale (`en` → `,`,
-  `de`/`fr`/`es` → `.`), wired into the shell pending/flags counts. Deviates from
+  `de`/`fr`/`es`/`nl` → `.`), wired into the shell pending/flags counts. Deviates from
   the plan's `Intl.NumberFormat`-via-`document::eval` because eval is async (no
   sync path in Dioxus 0.7); the pure fn is synchronous + testable.
 - **M6.2 privacy block.** The connect screen now has a `<details>` transparency

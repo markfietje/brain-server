@@ -30,7 +30,7 @@ shadcn-style design-system restyle · v1.16.5 JWT refresh lifecycle +
 principal · v1.16.6 mobile: secure token storage (OS keyring) + responsive
 bottom-tab layout · v1.16.7 deep links + PWA (offline shell, never the API)
 + ⌘K command palette + recall debounce · **v1.16.8 Global**: i18n (`en`/`de`/
-`fr`/`es` via zero-dep FTL-subset `t()`), light/dark theme + density toggles
+`fr`/`es`/`nl` via zero-dep FTL-subset `t()`), light/dark theme + density toggles
 (persisted, sanitized), RTL `dir` readiness, locale-aware number grouping, and
 a privacy-transparency block on the connect screen.
 
