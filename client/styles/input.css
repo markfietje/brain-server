@@ -133,6 +133,38 @@
   .nav-badge { @apply ml-auto rounded-full bg-accent/15 px-1.5 py-0.5 text-xs text-accent; font-variant-numeric: tabular-nums; }
   .nav-badge-alert { @apply bg-warn/20 text-warn; }
 
+  /* v1.16.6 M3 — mobile bottom tab bar. Hidden ≥sm (the rail wins there);
+     the rail is hidden <sm (the tab bar wins). Both drive the SAME `Routable`
+     enum — no forked routes. */
+  .tab-bar {
+    @apply fixed inset-x-0 bottom-0 z-20 flex items-stretch justify-around border-t
+      border-border bg-card/95 backdrop-blur;
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-top: env(safe-area-inset-top);
+  }
+  .tab-link {
+    @apply flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 px-1
+      text-xs text-muted-foreground transition-colors outline-none
+      focus-visible:ring-2 focus-visible:ring-ring;
+    min-height: 44px; /* iOS HIG / Material touch target floor (M3.2) */
+  }
+  .tab-link-active { @apply text-accent font-medium; }
+  .tab-badge { @apply absolute -top-0.5 -right-1 rounded-full bg-accent/15 px-1.5 text-[10px] leading-tight text-accent; font-variant-numeric: tabular-nums; }
+  .tab-badge-alert { @apply bg-warn/20 text-warn; }
+
+  /* v1.16.6 M3 — context drawer → bottom sheet on phones. */
+  .drawer {
+    @apply fixed right-0 top-0 h-screen w-80 border-l border-border bg-card p-4
+      overflow-auto shadow-sm;
+  }
+  @media (max-width: 639px) {
+    .drawer {
+      @apply left-0 right-0 top-auto bottom-0 h-[85vh] w-full rounded-t-2xl
+        border-l-0 border-t border-border;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  }
+
   /* Connection dot (state-colored). */
   .dot { @apply text-sm leading-none; }
 
@@ -150,4 +182,15 @@
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* v1.16.6 M3 — the rail/tab-bar swap at the `sm` breakpoint (pure CSS, no
+ * viewport JS). The AppShell renders BOTH; this decides which is visible. */
+@media (min-width: 640px) {
+  .tab-bar { display: none; }
+}
+@media (max-width: 639px) {
+  .nav-rail { display: none; }
+  /* ensure the bottom tab bar never overlays the last panel row */
+  main { padding-bottom: calc(env(safe-area-inset-bottom) + 4rem); }
 }

@@ -22,6 +22,11 @@ use panels::{audit, health, recall, review, security, subjects};
 #[allow(dead_code)]
 mod api;
 mod panels;
+// v1.16.6 M2: the secure-token storage seam (OS keyring on non-web, no-op on
+// web). `allow(dead_code)` covers the web no-op fns (compiled but never called
+// in the wasm build — same class as the api wire types, ponytail comment above).
+#[allow(dead_code)]
+mod storage;
 
 use api::ApiClient;
 
@@ -314,6 +319,35 @@ fn Connect() -> Element {
     let ui = use_context::<UiState>();
     let nav = navigator();
 
+    // v1.16.6 M2: silent auto-reconnect on launch — if a token was previously
+    // saved to the OS keyring, probe /health with it and jump straight to Review
+    // instead of making the operator paste the token again. Web (no-op storage)
+    // and first-run (no saved token) are unaffected. Best-effort: a stale/revoked
+    // token just falls through to the normal connect form (no error flash).
+    // `use_resource` (not `use_effect`) runs this exactly once on mount.
+    {
+        let mut api_signal = api_signal;
+        let mut ui = ui;
+        let mut busy = busy;
+        use_resource(move || async move {
+            if let Some(saved) = storage::load_token() {
+                busy.set(true);
+                let base = resolve_base("", page_origin().await);
+                let client = ApiClient::with_principal(base, Some(saved), None);
+                match client.health().await {
+                    Ok(_) => {
+                        api_signal.set(client);
+                        ui.conn.set(Conn::Connected);
+                        ui.writes_enabled.set(true);
+                        ui.pending_reverify.set(false);
+                        nav.replace(Route::Review {});
+                    }
+                    Err(_) => busy.set(false),
+                }
+            }
+        });
+    }
+
     let connect = move |_| {
         let raw_url = url().trim().trim_end_matches('/').to_string();
         let access_val = if token().trim().is_empty() {
@@ -327,6 +361,12 @@ fn Connect() -> Element {
             Some(refresh_token().trim().to_string())
         };
         let pair = jwt_pair();
+        // v1.16.6 M2: snapshot the token to persist BEFORE `access_val` moves into
+        // the ApiClient constructor. Persist only a real token (loopback never
+        // clobbers a previously-saved remote one).
+        let persist_token = access_val
+            .clone()
+            .filter(|t| storage::should_persist(Some(t)));
         let mut status = status;
         let mut busy = busy;
         let mut api_signal = api_signal;
@@ -359,6 +399,13 @@ fn Connect() -> Element {
                 Err(e) => Err(format!("could not reach {base}: {e}")),
             }));
             if matches!(status(), Some(Ok(_))) {
+                // v1.16.6 M2: persist the token to the OS keyring on a successful
+                // connect (only when a real token was provided — a loopback
+                // connect never clobbers a previously-saved remote token). Best
+                // effort: a keyring failure must not block the connect itself.
+                if let Some(tok) = persist_token {
+                    let _ = storage::save_token(&tok);
+                }
                 // Write the client in so every panel re-fetches through it.
                 // M1: a fresh connect is a clean connect — writes gate on the
                 // probe's first green, but no recovery re-verify is pending.
@@ -490,7 +537,7 @@ fn AppShell() -> Element {
         div { class: "flex min-h-screen bg-background text-foreground",
             // Fixed sidebar: brand + primary nav + identity footer.
             aside {
-                class: "sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card",
+                class: "nav-rail sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card",
                 "aria-label": "primary navigation",
                 div { class: "flex items-center gap-2 border-b border-border px-4 h-14",
                     div { class: "flex size-8 items-center justify-center rounded-md bg-accent/15 text-accent",
@@ -522,6 +569,19 @@ fn AppShell() -> Element {
                         p { class: "mt-1 text-xs text-ink-faint", "loopback" }
                     }
                 }
+            }
+            // v1.16.6 M3: mobile bottom tab bar. `position: fixed`; CSS shows it
+            // <640px and hides the rail (pure breakpoint swap, same Routable).
+            // Both surfaces use the same NavLink targets so a11y nav is identical.
+            nav {
+                class: "tab-bar",
+                "aria-label": "primary navigation (mobile)",
+                TabLink { to: Route::Review {}, "Review" }
+                TabLink { to: Route::Recall {}, "Recall" }
+                TabLink { to: Route::Subjects {}, "Subjects" }
+                TabLink { to: Route::Security {}, badge: Some(security_badge), "Security" }
+                TabLink { to: Route::Audit {}, dirty: audit_dirty, "Audit" }
+                TabLink { to: Route::Health {}, "Health" }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
                 // Slim top bar: connection + pending summary.
@@ -600,6 +660,34 @@ fn NavLink(
     }
 }
 
+/// v1.16.6 M3: the mobile bottom-tab variant of `NavLink`. Same `Routable`
+/// targets; larger touch surface (min-height 44px via `.tab-link`) + the badge
+/// floats above the label (there's no rail "row" to badge into on a phone).
+#[component]
+fn TabLink(
+    to: Route,
+    badge: Option<u64>,
+    #[props(default)] dirty: bool,
+    children: Element,
+) -> Element {
+    rsx! {
+        Link {
+            to,
+            class: "tab-link relative",
+            active_class: "tab-link-active",
+            {children}
+            if let Some(n) = badge {
+                if n > 0 {
+                    span { class: "tab-badge", "{n}" }
+                }
+            }
+            if dirty {
+                span { class: "tab-badge tab-badge-alert", "!" }
+            }
+        }
+    }
+}
+
 /// M2.2: the context drawer. Esc closes (clears the signal); full Radix
 /// Tab-cycling focus trap is the v1.18.0 pass. The content is already-fetched
 /// data pushed by a panel (no duplicate fetch).
@@ -609,7 +697,7 @@ fn Drawer() -> Element {
     let content = (ui.drawer)();
     rsx! {
         aside {
-            class: "w-80 border-l border-border bg-card p-4 overflow-auto",
+            class: "drawer",
             role: "dialog",
             "aria-modal": "true",
             "aria-label": "detail drawer",

@@ -16,6 +16,47 @@ _(nothing pending)_
 
 ---
 
+## [1.16.6] — 2026-08-08
+
+### "Mobile" (client-only — secure token storage + responsive UX)
+
+Client 1.16.5 → 1.16.6; server + API contract unchanged. This release lands the
+two testable milestones of the v1.16.6 "Mobile" plan (M2 secure token storage +
+M3 responsive UX). M1 (lib.rs mobile entry), M4 (probe pause/resume), M5 (store
+readiness), M6 (MASVS tables) are documented operator/native-toolchain steps —
+no Android SDK / cargo-ndk / `dx` is available in this environment.
+
+- **Dioxus pinned to 0.7.10** — the `dioxus = { version = "0.7", … }` spec was
+  already semver-open and the lockfile resolves to the newest stable **0.7.10**
+  (verified via lockfile + `cargo tree` + crates.io). The 0.7.2→0.7.10 patch
+  line carries the security-relevant fixes (0.7.8/0.7.10 wasm-hotpatch
+  TOCTOU/UB; 0.7.6 web panic-resilience + `inert` attribute) — already compiled
+  in. Plan/doc "Dioxus 0.7.2" references updated to 0.7.10.
+- **M2 — secure token storage (`src/storage.rs`)** — a new
+  `#[cfg(target_arch = "wasm32")]`-gated seam. On every non-web target the auth
+  token persists to the OS keyring (`keyring` 3.6.3: `apple-native` →
+  Keychain, `windows-native` → Credential Manager, `sync-secret-service` →
+  Secret Service; Android Keystore via `android-native-keyring-store` is the
+  documented `dx`-wired ceiling). Web stays in-memory only (no-op — the v1.16.1
+  posture; browser localStorage is not a secure credential store). Connect
+  saves the token on success **only when one was provided** (`should_persist` —
+  a loopback connect never clobbers a saved remote token); a `use_resource` on
+  launch silently probes `/health` with any saved token and jumps straight to
+  Review, falling through to the normal form on a stale/revoked token.
+- **M3 — responsive UX (CSS-driven, no forked routes)** — AppShell renders both
+  a desktop rail and a new mobile bottom **tab bar** (`nav.tab-bar` + `TabLink`,
+  same `Routable` targets → identical a11y nav); pure `@media (min/max-width:
+  640px)` swaps them with no viewport JS. `.tab-link` enforces ≥44px touch
+  targets (iOS HIG / Material). `.tab-bar` and the drawer consume
+  `env(safe-area-inset-bottom)` (notch / home indicator). The context drawer is
+  now `.drawer` — a right rail ≥sm, a full-width rounded bottom sheet <640px.
+- **Version**: client 1.16.5 → 1.16.6 (client-only). 37 client tests (was 36),
+  clippy `-D warnings` + `cargo fmt --check` clean, desktop + `wasm32-unknown-unknown`
+  builds clean, Tailwind v4.3.3 compiles `styles/input.css` (responsive rules
+  present in output).
+
+---
+
 ## [1.16.4] — 2026-08-08
 
 ### "Styled" (client-only shadcn/ui design-system restyle)
