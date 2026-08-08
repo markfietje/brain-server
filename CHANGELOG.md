@@ -10,6 +10,23 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [Unreleased]
+
+### Operations
+
+- **RSS warning band raised 320 → 512 MiB** (`src/capacity.rs`, both targets):
+  the 320 cap was tuned to a 4 GB Jetson; the live desktop install runs
+  ~180–320 MiB and transient spikes (large `/multi-get`, backup pass) were
+  sitting in the warning band. RSS stays a soft signal (Warning only, never
+  blocks writes).
+- **CI cargo audit job fixed:** `rustsec/audit-check@v2.0.0` creates a check
+  run and the default GITHUB_TOKEN lacked `checks: write` ("Resource not
+  accessible by integration" — an infra failure, not a code one). Added the
+  permission on the audit job + bumped `actions/checkout` v4 → v5 (Node 24,
+  clears the Node 20 deprecation).
+
+---
+
 ## [1.16.0] — 2026-08-08
 
 **"Client" — the Dioxus control surface (web + desktop + iOS + Android).** The

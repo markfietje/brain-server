@@ -209,7 +209,9 @@ All rows below are **PENDING — run on target hardware (incl. 4 GB ARM); not ye
 **Run:** `BENCH_ENVELOPE=desktop BENCH_SCALES=1000,5000 BENCH_SEARCHES=100 bench`
 **Target hardware:** mini PC — AMD Ryzen 7 2700U (8 threads, x86_64), 30 GB RAM, Ubuntu kernel 7.0
 **Commit:** `8a36b6a` (v0.9.9) · **Rust:** 1.93.1 · **Server:** v0.9.9, default features, systemd unit
-**Envelope checked:** `desktop` (50k docs / 2 GiB DB / 320 MB RSS; p95 ≤ 200 ms)
+**Envelope checked:** `desktop` (50k docs / 2 GiB DB / 512 MB RSS; p95 ≤ 200 ms)
+  — RSS ceiling raised 320 → 512 MiB in v1.16.x (soft signal: Warning only,
+  never blocks writes)
 
 | scale | process RSS (MB) | ingest docs/s | p50 /search (ms) | p95 /search (ms) | p99 /search (ms) | envelope |
 |---|---|---|---|---|---|---|
@@ -220,8 +222,8 @@ All rows below are **PENDING — run on target hardware (incl. 4 GB ARM); not ye
 
 - **RSS is flat at ~166–172 MB** across +5 000 docs (6 MB total growth).
   model2vec's `StaticModel` (~120 MB) is the fixed cost; the int8 + binary
-  vec0 indexes + mmap'd SQLite keep the variable cost near zero. The 320 MB
-  ceiling has ~150 MB of headroom at this scale on a 30 GB host.
+  vec0 indexes + mmap'd SQLite keep the variable cost near zero. The 512 MB
+  ceiling has ~340 MB of headroom at this scale on a 30 GB host.
 - **p95 /search stays under 51 ms** at 5 000 docs — 4× under the 200 ms UX
   ceiling for the OpenClaw plugin's turn loop. Latency grows with corpus size
   (vec0 KNN + FTS5 are both indexed); the Ryzen 2700U is slower per-core than

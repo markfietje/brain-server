@@ -14,7 +14,7 @@ jobs:
     name: fmt + clippy + test (default)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -37,7 +37,7 @@ jobs:
     name: release build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo build --release
@@ -46,8 +46,12 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # audit-check creates a check run; the default GITHUB_TOKEN can't without
+    # this ("Resource not accessible by integration" — infra failure, not code).
+    permissions:
+      checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

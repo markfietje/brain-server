@@ -45,8 +45,13 @@ pub struct CapacityEnvelope {
 impl CapacityEnvelope {
     pub fn for_target(target: CapacityTarget) -> Self {
         let (max_docs, max_db_mib, max_rss_mib) = match target {
-            CapacityTarget::Desktop => (50_000, 2_048, 320),
-            CapacityTarget::Jetson => (10_000, 512, 320),
+            // v1.16.x: RSS ceiling raised 320 → 512 MiB (the 320 cap was tuned
+            // to a 4 GB Jetson; the live desktop install runs ~180–320 MiB and
+            // a transient spike (large /multi-get, backup pass) must not sit
+            // in the warning band. RSS is a soft signal anyway (Warning only,
+            // never blocks writes).
+            CapacityTarget::Desktop => (50_000, 2_048, 512),
+            CapacityTarget::Jetson => (10_000, 512, 512),
         };
         Self::from_env(max_docs, max_db_mib, max_rss_mib)
     }
