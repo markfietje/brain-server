@@ -1450,8 +1450,14 @@ async fn list_audit(
     let pool = s.pool.clone();
     let rows = task::spawn_blocking(move || -> Vec<audit::AuditRow> {
         match pool.get() {
-            Ok(conn) => audit::recent_tenant(&conn, kind.as_deref(), tenant.as_deref(), limit)
-                .unwrap_or_default(),
+            Ok(conn) => audit::recent_tenant(
+                &conn,
+                kind.as_deref(),
+                tenant.as_deref(),
+                limit,
+                params.offset,
+            )
+            .unwrap_or_default(),
             Err(_) => Vec::new(),
         }
     })
@@ -1468,6 +1474,9 @@ struct AuditQuery {
     tenant: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
+    /// v1.16.7 M4: pagination cursor. `offset` past the last row returns [].
+    #[serde(default)]
+    offset: usize,
 }
 
 /// `GET /metrics` (v1.1.0 Harden M5) — Prometheus text-format exporter.
