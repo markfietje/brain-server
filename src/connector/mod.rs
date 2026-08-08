@@ -5,8 +5,11 @@
 //! model via the HTTP API. The server's job is narrow: register instances,
 //! surface status, and (in M2.x) spawn connector binaries via `supervisor`.
 //! All outbound HTTP to the external source happens in the connector binary,
-//! never in the server process — see `bin_common/http.rs` line 4 for the
-//! rationale (the server deliberately has no outbound HTTP client dep).
+//! never in the server process — historically the server had no outbound HTTP
+//! client dep (constraint #1, see `bin_common/http.rs` line 4). That constraint
+//! was deliberately broken in v1.15.0 "Observe" (the DSAR Art 19 webhook is an
+//! always-on outbound surface), so `reqwest` is now a required server dep; the
+//! connector binary reuses it.
 //!
 //! M1 scope: manifest + spawn primitive + a stub binary + migration. No real
 //! connector logic yet (that's M2.x). The contract documented below is what

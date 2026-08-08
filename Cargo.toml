@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.14.0"
+version = "1.15.0"
 edition = "2021"
 
 [features]
@@ -13,10 +13,11 @@ bench = []
 # `cargo run --release --features migrate --bin brain-migrate-rehearse`.
 migrate = []
 # GitHub App connector auth (M2.1). `jsonwebtoken` is now a required dep
-# on the server (v1.2.0 AuthN) with `use_pem` + `rust_crypto` always on, so
-# the connector feature only needs to add reqwest for the outbound GitHub API.
-# Enable when building the brain-connector-gh binary (M2.2).
-connector-github = ["dep:reqwest"]
+# on the server (v1.2.0 AuthN) with `use_pem` + `rust_crypto` always on, and
+# `reqwest` is required since v1.15.0 (the DSAR Art 19 webhook needs outbound
+# HTTP), so this feature gates only the brain-connector-gh binary (M2.2).
+# Enable when building that binary.
+connector-github = []
 # v1.4.0 "Calibrate" M4: multi-vector retrieval (embedding ensemble). RESERVED
 # but currently a no-op — deferred per the plan's lazy-dev escape hatch ("if
 # the feature isn't worth the watts, defer it"). Cannot be measured until M5's
@@ -110,13 +111,13 @@ rand = "0.8"
 # doesn't silently break if a transitive consumer swaps backends.
 base64 = "0.22"
 
-# Outbound HTTP for the brain-connector-gh binary (M2.2). Optional — only
-# pulled in when `connector-github` is enabled. The server binary never
-# enables this (constraint #1: no outbound HTTP dep on the server — see
-# `bin_common/http.rs` line 4). Uses `rustls-tls` (no system OpenSSL dep,
-# consistent with `rusqlite`'s bundled philosophy) + `blocking` (sync client
-# matches the AuthProvider trait's sync API).
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"], optional = true }
+# Outbound HTTP (v1.15.0 "Observe" M3): the DSAR Art 19 onward-notification
+# webhook + the brain-connector-gh binary (M2.2). REQUIRED since v1.15.0 — the
+# compliance webhook is an always-on server surface, so breaking the historic
+# "no outbound HTTP dep on the server" constraint (#1) is the deliberate,
+# documented trade. `rustls-tls` (no system OpenSSL dep, consistent with
+# `rusqlite`'s bundled philosophy) + `blocking` (sync client for the webhook).
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"] }
 
 [dev-dependencies]
 tempfile = "3.27"
