@@ -19,6 +19,12 @@ server's v1.14/v1.15 governance APIs. The v1.16.0 release implements the eight
 panel contract plus the DESIGN's UX + correctness hard-parts. 25 tests (was 7),
 clippy `-D warnings` + fmt clean, zero new deps.
 
+> **Version sync (this release):** the server crate was bumped 1.15.0 → 1.16.0
+> so the installed operator CLIs (`brain -V`, `mcp`, `bench`) and the server's
+> own `--version` / `/health` header report the same version as the v1.16.0
+> tag. No server code changed beyond the version bump — the v1.16.0 work is
+> the client crate.
+
 ### M1 — The connection state machine (the correctness heart)
 
 - A single `use_future` probe at the app root owns its timer (survives panel
