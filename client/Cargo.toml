@@ -1,0 +1,21 @@
+[package]
+name = "brain-client"
+version = "0.1.0"
+edition = "2021"
+description = "brain-server control surface — web + desktop + iOS + Android (Dioxus)"
+publish = false
+
+[dependencies]
+# Dioxus 0.7: one codebase → four targets. The `router` feature gives the
+# Routable enum + Link/Outlet. Web builds compile to WASM (DOM renderer, which
+# is screen-reader accessible — do NOT enable the experimental wgpu web renderer).
+dioxus = { version = "0.7", features = ["router"] }
+# reqwest works on all targets incl. WASM (Dioxus integrates the browser fetch).
+# JSON feature for typed (de)serialization of brain-server's responses.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ponytail: this scaffold targets web + desktop first (v1.16.0). The iOS/Android
+# secure-storage seam (Keychain/Keystore) lands in v1.17.0 behind a thin
+# #[cfg(target_os = ...)] module — no feature flags needed here yet.

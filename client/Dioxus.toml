@@ -1,0 +1,35 @@
+# Dioxus manifest — brain-client (web + desktop + iOS + Android, one codebase)
+# Docs: https://dioxuslabs.com  ·  CLI: `dx serve --platform <web|desktop|ios|android>`
+
+[application]
+name = "brain-client"
+# web + desktop are the zero-glue targets (ship together in v1.16.0);
+# ios + android land in v1.17.0 (Keychain/Keystore seam + store readiness).
+default_platform = "web"
+public_dir = "assets"
+
+[web.app]
+title = "brain — memory control"
+
+[web.resource.dev]
+
+[tailwind]
+# Dioxus 0.7 auto-detects tailwind.css and downloads the binary.
+# input/output are optional overrides.
+input = "styles/input.css"
+output = "assets/tailwind.css"
+
+# --- Desktop (macOS/Windows/Linux): same code, no glue ----------------------
+# dx serve --platform desktop  /  dx bundle --platform desktop
+
+# --- iOS (v1.17.0) -----------------------------------------------------------
+[ios]
+deployment_target = "15.0"
+
+# --- Android (v1.17.0) -------------------------------------------------------
+[android]
+min_sdk = 24
+target_sdk = 34
+# ponytail: no permission beyond default INTERNET. The client talks to one
+# backend, stores only a token. No location/contacts/background — the privacy
+# nutrition label is honestly "no data collected".

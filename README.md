@@ -11,7 +11,8 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
 | **Latency** | sub-50ms p99 recall on the reference device |
-| **Documentation** | [API Contract](./API_CONTRACT.md) · [`GET /openapi.yaml` live](#) · [Technical Spec](./SPECS.md) |
+| **Documentation** | [API Contract](./API_CONTRACT.md) · [`GET /openapi.yaml` live](#) · [Technical Spec](./SPECS.md) · [Compliance](./COMPLIANCE.md) |
+| **GUI (scaffold)** | [`client/`](./client/README.md) — Dioxus control surface: web + desktop + iOS + Android |
 
 ---
 
