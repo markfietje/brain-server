@@ -1,6 +1,6 @@
 # 🧠 Brain Server
 
-**A local-first semantic memory and knowledge-graph server for AI agents. Runs on a 4 GB ARM device drawing under 5 W. No GPU, no cloud, no per-query cost.**
+**A local-first semantic memory and knowledge-graph server for AI agents. No cloud, no per-query cost, no LLM in the loop.**
 
 Brain Server gives your agent a second brain that lives on your own device. It is written in Rust and wraps a deterministic retrieval engine, a static local embedding model, and a knowledge graph behind a versioned HTTP API. Recall never calls an LLM or an embedding API, so every query costs nothing and the data never leaves the machine.
 
@@ -12,7 +12,6 @@ Brain Server gives your agent a second brain that lives on your own device. It i
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
   [![CI](https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg)](https://github.com/markfietje/brain-server/actions/workflows/ci.yml)
-  [![Power](https://img.shields.io/badge/power-%3C5W-2ea44f.svg)](#)
   [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
   [![Privacy](https://img.shields.io/badge/privacy-100%25%20on-device-6f42c1.svg)](#)
 
@@ -44,7 +43,7 @@ That is the whole pitch: zero per-query cost, zero data egress, zero recall late
 - **Honest when it is unsure.** Recall abstains with `{decision: "low_confidence"}` instead of returning a confident wrong answer. `/verify` checks that a claim really appears in a chunk's text.
 - **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it.
 - **Governance and compliance.** An append-only SHA-256 audit chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
-- **One binary for the edge.** Embedded SQLite and sqlite-vec, int8-quantized vectors, about 350 MB RSS on a 4 GB ARM board.
+- **One self-contained binary.** Embedded SQLite and sqlite-vec. Runs anywhere Rust compiles.
 - **Easy to wire up.** OpenAI-compatible embeddings, an MCP server, a `brain` CLI, a Dioxus GUI, and a native OpenClaw memory plugin.
 
 ## Quick start
@@ -173,8 +172,7 @@ Rust · Axum · rusqlite (WAL) · r2d2 · tokio · model2vec (`minishlab/potion-
 
 | | |
 |---|---|
-| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, about 120 MiB RSS) |
-| **Power envelope** | under 5 W idle on Jetson Nano |
+| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static) |
 | **Latency** | sub-50ms p99 recall |
 | **License** | MIT |
 
