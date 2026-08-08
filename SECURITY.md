@@ -24,8 +24,8 @@ fixes; the `0.9.x`/`1.0.x`/`1.2.x` lines receive back-compat/security fixes only
 There is no fixed end-of-life date; any line's deprecation is announced at least
 one minor release in advance. A machine-readable disclosure endpoint is published
 at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
-(RFC 9116) — `Contact`/`Expires`/`Canonical` fields, overridable via
-`BRAIN_SECURITY_CONTACT` / `BRAIN_PUBLIC_BASE_URL`.
+(RFC 9116) — `Expires`/`Canonical` always, and `Contact` only when
+`BRAIN_SECURITY_CONTACT` is set (`BRAIN_PUBLIC_BASE_URL` adds `Canonical`).
 
 ## Reporting a Vulnerability
 
@@ -34,8 +34,6 @@ at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
 - **GitHub Security Advisories**: Use the "Report a vulnerability" tab in this repository
 - **SLA**: Acknowledgement within 48 hours; fix timeline within 5 business days;
   public disclosure coordinated with reporter (90-day default per Project Zero).
-- **PGP-encrypted reports preferred** for sensitive disclosures (key on the
-  project's `/.well-known/security.txt`).
 
 ## SBOM (Software Bill of Materials)
 
@@ -183,7 +181,7 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 | All authN/authZ events audited | auth middleware → audit row | ✅ v1.2 M6 |
 | Quota warnings audited | `quota.warning` / `quota.exceeded` | 🚧 v2.1 M5 |
 | `/health` exposes ops status | `/health` capacity + integrity | ✅ |
-| `/metrics` Prometheus exporter | `--features metrics` | 🚧 v1.1 M5 |
+| `/metrics` Prometheus exporter (hand-rolled text format) | always-on, auth-gated | ✅ v1.1 |
 | `x-request-id` on every request for tracing | `SetRequestIdLayer` | ✅ |
 
 ### A10:2025 — Mishandling of Exceptional Conditions ✅ / 🚧
@@ -209,7 +207,7 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 │  ─ Per-IP rate limit (defense against unauthenticated floods)          │
 ├────────────────────────────────────────────────────────────────────────┤
 │  Axum Middleware Stack (inner → outer)                                 │
-│  1.  RequestBodyLimitLayer      2 MB                                   │
+  │  1.  RequestBodyLimitLayer      1 MB                                   │
 │  2.  TimeoutLayer               30 s, returns 408                      │
 │  3.  CatchPanicLayer            prevents process crash                 │
 │  4.  SetSensitiveHeadersLayer   redacts Authorization/Cookie           │
@@ -219,9 +217,9 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 │  8.  TraceLayer                 structured HTTP logging                │
 │  9.  CorsLayer                  exact-origin allowlist                 │
 │  10. security_headers_middleware HSTS, CSP, X-Frame, Permissions-Policy │
-│  11. rate_limit_middleware     per-tenant + tier (v2.1)                │
-│  12. auth_middleware           JWT/JWS verify + (jti, iss) revocation  │
-│  13. authz_middleware          AuthzPolicy::authorize (v1.2)           │
+  │  11. rate_limit_middleware     per-IP sliding window (10k/min)        │
+  │  12. auth_middleware           JWT/JWS verify + (jti, iss) revocation  │
+  │  13. authz at handler entry    every non-public handler calls authorize│
 │  14. SetResponseHeaderLayer    Server: brain-server                     │
 ├────────────────────────────────────────────────────────────────────────┤
 │  Application Layer                                                     │
@@ -256,8 +254,9 @@ The two-layer middleware runs JWT verification outermost; the v1.1 opaque
 layer short-circuits when the JWT layer has already injected a `Principal`.
 
 - **Algorithm whitelist** (checked **before** key lookup — OWASP algorithm-
-  confusion defense): RS256, RS384, RS512, ES256, ES384, ES512, EdDSA.
-  **Forbidden**: `none`, all HMAC variants (HS*), all PS* variants.
+  confusion defense): RS256, RS384, RS512, ES256, ES384, EdDSA.
+  **Forbidden**: `none`, all HMAC variants (HS*), all PS* variants, ES512
+  (jsonwebtoken v10 exposes no ES512 variant).
 - **Verified claims**: `iss`, `aud`, `exp`, `nbf`, `sub`, `jti`. No "soft"
   validation; missing claim = reject. 30s leeway for clock skew.
 - **Revocation**: `(jti, iss)` table per OWASP JWT Cheat Sheet, 60s negative-
@@ -282,7 +281,7 @@ write time; OWASP cheat-sheet URLs were 404ing on the v1.2 ship date, so the
 plan's encoded checklist was the source of truth). Every item is pinned by a
 unit test in `src/auth/jwt.rs` (14 tests covering the full failure matrix).
 
-- [x] **`alg` whitelist** — RS256/384/512, ES256/384/512, EdDSA only.
+- [x] **`alg` whitelist** — RS256/384/512, ES256/384, EdDSA only.
 - [x] **Reject `none`** — unsigned tokens rejected before any signature work.
 - [x] **Reject HS\*** — algorithm-confusion CVE class (attacker HMACs the
       public key); rejected even if a matching HMAC key exists.
@@ -366,7 +365,8 @@ OWASP Multi-Tenant Cheat Sheet (Context7-verified 2026-07-26):
 
 ### v0.9.x → v1.x — per-IP in-memory (current)
 
-- 100 req/min per IP. Single-process only. Sufficient for loopback + LAN.
+- 10,000 req/min per IP (60s sliding window). Single-process only. Sufficient for
+  loopback + LAN.
 
 ### v2.1 — per-tenant + tiered (in progress)
 
