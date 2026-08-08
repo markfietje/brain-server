@@ -89,6 +89,40 @@ pub async fn ai_notice() -> Response {
         .into_response()
 }
 
+/// `GET /.well-known/ai-literacy` (EU AI Act Art 4). Public/no-auth.
+/// Machine-readable pointer to the operator's AI-literacy playbook
+/// (`docs/AI_LITERACY.md`), stating which controls make the component's
+/// decisions inspectable — the operational substance of Art 4 literacy for a
+/// memory component. The doc file stays the artifact; this route makes it
+/// discoverable next to the Art 50 notice.
+pub async fn ai_literacy() -> Response {
+    let body = build_ai_literacy();
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Pure builder for the Art 4 literacy disclosure. Returns a JSON document
+/// pointing at the playbook and enumerating the inspectable controls.
+fn build_ai_literacy() -> String {
+    serde_json::json!({
+        "schema_version": "1.0",
+        "service": "brain-server",
+        "art_4": true,
+        "disclosure": "This component is an inspectable memory store: it stores, retrieves, and proposes, but generates no content. Its decisions are inspectable via the recall trace, the write-approval queue, quarantine, the audit chain, and the DSAR console — the deployer's AI-literacy surface.",
+        "playbook": "https://github.com/markfietje/brain-server/blob/main/docs/AI_LITERACY.md",
+        "inspectable_controls": ["recall_trace", "proposal_gate", "quarantine", "audit_chain", "dsar_console"],
+        "effective_date": "2026-08-08",
+        "jurisdiction": "EU AI Act Article 4 (Regulation (EU) 2024/1689)"
+    })
+    .to_string()
+}
+
 /// Pure builder for the Art 50 transparency notice. Returns a JSON document
 /// describing how this service handles AI-generated content.
 fn build_ai_notice() -> String {
@@ -237,6 +271,20 @@ mod tests {
     fn security_txt_omits_contact_when_unconfigured() {
         let out = build_security_txt(None, "2030-01-01T00:00:00Z", None);
         assert!(!out.contains("Contact:"));
+    }
+
+    #[test]
+    fn ai_literacy_discloses_controls_and_playbook() {
+        let body = build_ai_literacy();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["art_4"], true);
+        assert_eq!(v["schema_version"], "1.0");
+        assert!(v["disclosure"].as_str().unwrap().contains("inspectable"));
+        assert!(v["inspectable_controls"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("recall_trace")));
+        assert!(v["playbook"].as_str().unwrap().contains("AI_LITERACY.md"));
     }
 
     #[test]

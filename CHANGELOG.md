@@ -22,8 +22,13 @@ been run, it is marked **pending** rather than asserted.
 - **`docs/RFP_RESPONSE_KIT.md`** (new) — map brain-server features to common
   enterprise RFP sections (security, privacy/DSAR, AI governance, ops) with
   the evidence artifact behind each claim.
+- **`GET /.well-known/ai-literacy`** (new, public) — machine-readable Art 4
+  disclosure pointing at the playbook + enumerating the inspectable controls,
+  mirroring the Art 50 ai-notice route. Registered in both auth-public path
+  lists, the router, and `openapi.yaml`; pinned by a unit test.
 - **COMPLIANCE.md** — §7 now references the live `/.well-known/ai-notice`
-  disclosure (Art 50 machine-readable origin notice). `docs/compliance.md`
+  disclosure (Art 50 machine-readable origin notice); §6.4 points at
+  `/.well-known/ai-literacy` + `docs/AI_LITERACY.md`. `docs/compliance.md`
   framework row updated to match.
 
 ## [1.16.7] — 2026-08-08

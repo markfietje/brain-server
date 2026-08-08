@@ -1857,6 +1857,29 @@ paths:
                   schema_version: "1.0"
                   service: brain-server
                   art_50: true
+  /.well-known/ai-literacy:
+    get:
+      summary: AI Act Art 4 AI-literacy disclosure
+      description: >
+        PUBLIC route. Machine-readable pointer to the operator's AI-literacy
+        playbook (docs/AI_LITERACY.md) and the inspectable controls that make
+        the component's decisions reviewable — the operational substance of
+        the deployer's Art 4 literacy obligation (EU AI Act Article 4).
+      operationId: getAiLiteracy
+      responses:
+        "200":
+          description: Art 4 AI-literacy disclosure (JSON)
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "public, max-age=3600" }
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  schema_version: "1.0"
+                  service: brain-server
+                  art_4: true
 components:
   responses:
     BadRequest:

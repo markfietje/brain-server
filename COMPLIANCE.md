@@ -166,8 +166,9 @@ The deployer's literacy evidence for the memory component: the dashboard's
 controls (`/proposals` review queue, `/quarantine`, `/audit`, `/tombstones`)
 and the trace endpoint make the component's decisions inspectable —
 "what informed this retrieval, and who approved this write" — which is the
-operational substance of Art 4 literacy for a memory component. See
-`docs/AI_LITERACY.md` for the operator-facing literacy playbook.
+operational substance of Art 4 literacy for a memory component. The playbook
+is served as `GET /.well-known/ai-literacy` (public) and mirrored in
+`docs/AI_LITERACY.md`.
 
 ## 7. Machine-Readable Origin Metadata (Art 50 transparency bridge)
 
