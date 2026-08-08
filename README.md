@@ -53,7 +53,7 @@ cargo build --release --features bench
 ./target/release/brain-server
 ```
 
-The server listens on `127.0.0.1:8765` and writes SQLite data to `brain.db` by default.
+The server listens on `127.0.0.1:8765` and writes SQLite data to `~/.openclaw/workspace/brain.db` by default.
 
 ```bash
 # Health
@@ -100,7 +100,7 @@ All settings are environment variables, resolved in `src/config.rs`.
 | Variable | Default | Description |
 |---|---|---|
 | `BIND_HOST` / `BIND_PORT` | `127.0.0.1` / `8765` | Bind address and port. `0.0.0.0` is refused unless `BIND_PUBLIC=1`. |
-| `BRAIN_DB_PATH` | `brain.db` | SQLite database path. |
+| `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path. |
 | `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | `(none)` | Opaque bearer token(s). Newline-separated enables live rotation. |
 | `BRAIN_JWT_ISSUER` | `(none)` | Enables JWT/JWS mode when set and keys are loaded. |
 | `INJECTION_POLICY` | `quarantine` | `quarantine`, `reject`, or `allow`. |
@@ -186,7 +186,7 @@ cargo clippy --all-targets --features bench -- -D warnings
 cargo test --features bench
 ```
 
-For security issues, do not open a public issue. Use the GitHub *Report a vulnerability* tab or email security@openclaw.dev.
+For security issues, do not open a public issue. Use the GitHub *Report a vulnerability* tab.
 
 ## License
 
