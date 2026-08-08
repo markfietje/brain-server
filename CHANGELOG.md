@@ -90,6 +90,60 @@ no Android SDK / cargo-ndk / `dx` is available in this environment.
 
 ---
 
+## [1.16.3] — 2026-08-08
+
+### "Serve" (client web-bundle serving + live bugfixes)
+
+Client + server, both client-only in effect (server + API contract unchanged).
+This release was originally folded into the v1.16.2 changelog, but the git
+history shows it as a distinct slice between the v1.16.2 and v1.16.4 tags —
+four commits that make the compiled Dioxus web bundle actually reachable and
+fix the two live-blocking defects serving exposes. Tagged retroactively at
+`edfb00d`. See `IMPLEMENTATION_PLAN_v1.16.3_Serve.md` (retrospective).
+
+### Fixed
+
+- **Serve the compiled web bundle under `/app`** — `Dioxus.toml` gains
+  `base_path = "app"` so asset URLs are `/app/assets/…` (not `/assets/…`,
+  which 401'd against the API CSP/auth); `client/README.md` documents the
+  dev/serve/deploy workflow; `package.json` + `tailwind.css` build tooling
+  added.
+- **Client CSP blocked WASM instantiation (`'unsafe-eval'` live fix)** — the
+  wasm-bindgen glue calls `new Function()` for module instantiation;
+  `'wasm-unsafe-eval'` alone permits WASM compile/instantiate but not JS
+  `eval()`, so the `/app` bundle threw "call to Function() blocked by CSP"
+  and the client never rendered. Added `'unsafe-eval'` to `CLIENT_CSP`
+  script-src (API CSP stays `default-src 'none'`). Live v1.16.2 fix.
+- **Same-origin connect default** — a page loaded from the server's own origin
+  now defaults to a relative/loopback connect instead of a hardcoded remote
+  that fails "cannot reach brain-server".
+- **`deploy-web.sh` stale-asset race** — the script globbed `target/` for the
+  hashed JS/WASM, which left stale hashes between rebuilds and could deploy an
+  old JS while index.html referenced the new one. Now derives the concrete
+  names from the freshly-built index.html (and the JS's own wasm reference)
+  instead of racing.
+
+### Improvements
+
+- `client/deploy-web.sh` (M3) — one-command bundle → inject the concrete
+  `/app/assets/tailwind-*.css` link → copy to `client/dist` (what the server
+  serves at `/app`). Concrete filenames instead of globs.
+
+### Security
+
+- API CSP stays strict (`default-src 'none'`); only the `/app` static bundle
+  path is relaxed for the WASM runtime (`'unsafe-eval'` + `'wasm-unsafe-eval'`
+  + `connect-src 'self'`).
+
+### Honest ceiling (retrospective)
+
+No dedicated tests of its own — it's a serving/build/config release verified
+by the live `/app` smoke + the v1.16.2 suite (CSP pinned by the v1.16.2 CSP
+test, connect default by the v1.16.0 connection tests). Retrospective plans
+can't retrofit code into an already-tagged history.
+
+---
+
 ## [1.16.2] — 2026-08-08
 
 ### "Harden" (server + client security/serving foundation)
