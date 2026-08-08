@@ -1834,6 +1834,29 @@ paths:
                 example: |
                   Expires: 2027-08-07T00:00:00+00:00
                   Preferred-Languages: en
+  /.well-known/ai-notice:
+    get:
+      summary: AI Act Art 50 transparency notice
+      description: >
+        PUBLIC route. Machine-readable disclosure that this service stores,
+        retrieves, and may return AI-generated or AI-processed content, so
+        consumers can mark output accordingly (EU AI Act Article 50, effective
+        2026-08-02).
+      operationId: getAiNotice
+      responses:
+        "200":
+          description: Art 50 transparency notice (JSON)
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "public, max-age=3600" }
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  schema_version: "1.0"
+                  service: brain-server
+                  art_50: true
 components:
   responses:
     BadRequest:

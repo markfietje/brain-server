@@ -3478,6 +3478,7 @@ async fn jwt_auth_middleware(
             | "/.well-known/openid-configuration"
             | "/.well-known/jwks.json"
             | "/.well-known/security.txt"
+            | "/.well-known/ai-notice"
             | "/auth/refresh"
             | "/auth/logout"
     ) || path.starts_with("/webhooks/")
@@ -3602,6 +3603,7 @@ async fn auth_middleware(
         // `/auth/logout` reads the principal set by the access-token request.
         | "/.well-known/openid-configuration" | "/.well-known/jwks.json"
         | "/.well-known/security.txt"
+        | "/.well-known/ai-notice"
         | "/auth/refresh" | "/auth/logout"
     ) || path.starts_with("/webhooks/")
         // v1.16.2 "Harden": the client SPA is public (static assets, no data).
@@ -4255,6 +4257,10 @@ async fn main_inner() -> Result<()> {
         .route(
             "/.well-known/security.txt",
             get(handlers::well_known::security_txt),
+        )
+        .route(
+            "/.well-known/ai-notice",
+            get(handlers::well_known::ai_notice),
         )
         .route("/auth/refresh", post(handlers::auth::refresh))
         .route("/auth/logout", post(handlers::auth::logout))
@@ -8466,6 +8472,7 @@ Final paragraph after the rule.";
             "/auth/revoke",
             "/.well-known/openid-configuration",
             "/.well-known/jwks.json",
+            "/.well-known/ai-notice",
         ];
         let missing: Vec<&str> = registered
             .iter()

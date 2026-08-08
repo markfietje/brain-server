@@ -72,6 +72,38 @@ pub async fn security_txt() -> Response {
         .into_response()
 }
 
+/// `GET /.well-known/ai-notice` (EU AI Act Art 50 transparency). Public/no-auth.
+/// Machine-readable disclosure that this service stores, retrieves, and may
+/// return AI-generated or AI-processed content, so consumers can mark it as
+/// such — the Art 50 model-origin transparency obligation. Version-tagged so
+/// the notice can evolve without breaking consumers.
+pub async fn ai_notice() -> Response {
+    let body = build_ai_notice();
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Pure builder for the Art 50 transparency notice. Returns a JSON document
+/// describing how this service handles AI-generated content.
+fn build_ai_notice() -> String {
+    serde_json::json!({
+        "schema_version": "1.0",
+        "service": "brain-server",
+        "art_50": true,
+        "disclosure": "This service stores, retrieves, and may return content that is AI-generated, AI-processed, or otherwise not of human origin. Consumers should treat retrieved content as AI-derived and mark any human-facing output accordingly.",
+        "origin_metadata": ["source", "assertion_kind", "confidence"],
+        "effective_date": "2026-08-02",
+        "jurisdiction": "EU AI Act Article 50 (Regulation (EU) 2024/1689)"
+    })
+    .to_string()
+}
+
 /// Pure builder for the RFC 9116 `security.txt` body. Split out so the field
 /// layout is unit-tested without env/time. `Contact` is emitted only when the
 /// operator configured an address.
@@ -205,5 +237,18 @@ mod tests {
     fn security_txt_omits_contact_when_unconfigured() {
         let out = build_security_txt(None, "2030-01-01T00:00:00Z", None);
         assert!(!out.contains("Contact:"));
+    }
+
+    #[test]
+    fn ai_notice_discloses_ai_origin_and_version() {
+        let notice = build_ai_notice();
+        let v: serde_json::Value = serde_json::from_str(&notice).unwrap();
+        assert_eq!(v["art_50"], true);
+        assert_eq!(v["schema_version"], "1.0");
+        assert!(v["disclosure"].as_str().unwrap().contains("AI-generated"));
+        assert!(v["origin_metadata"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("source")));
     }
 }
