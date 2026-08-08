@@ -1,6 +1,6 @@
 # COMPLIANCE.md — Compliance Posture & Technical File
 
-**Version:** 1.15.0 "Observe" · **Last updated:** 2026-08-08
+**Version:** 1.16.1 "Client" · **Last updated:** 2026-08-08
 
 This is the buyer-facing technical file: what brain-server IS, what it logs,
 how it erases, and how it maps to the frameworks procurement asks about. It is
