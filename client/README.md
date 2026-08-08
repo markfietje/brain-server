@@ -57,14 +57,23 @@ every panel re-fetches through it.
 ## Operator note: `dx serve` + CSP
 
 `dx serve` / `dx bundle` are **operator steps** — the Dioxus CLI is not part
-of this repo's CI (it must be installed via the curl one-liner above). The
-WASM build can be validated with `cargo check`/`cargo test` (both green here:
-**25 tests**, clippy-clean), but shipping the web bundle needs `dx`.
+ of this repo's CI (it must be installed via the curl one-liner above). The
+ WASM build can be validated with `cargo check`/`cargo test` (both green here:
+ **30 tests**, clippy-clean), but shipping the web bundle needs `dx`.
 
-The first `dx serve --platform web` also generates `assets/tailwind.css` from
-`styles/input.css` (via the `[tailwind]` block in `Dioxus.toml`); until then
-the `document::Stylesheet` href for `/assets/tailwind.css` 404s, so the bare
-`cargo` path renders unstyled. This is expected — the styles land with `dx`.
+Tailwind v4 (v1.16.2): `styles/input.css` is the source and
+`assets/tailwind.css` the `asset!`-ed output. `dx bundle`/`dx serve` auto-run
+the Tailwind CLI, but the v4 CLI is the `@tailwindcss/cli` npm package, so a
+one-time build is needed when `assets/tailwind.css` is absent:
+
+```sh
+npm install --save-dev tailwindcss
+npx @tailwindcss/cli -i styles/input.css -o assets/tailwind.css
+```
+
+Until `assets/tailwind.css` exists, the `document::Stylesheet` `asset!` href
+fails at build time (asset is missing) — the styles land once the file is
+present.
 
 When serving the bundled web app behind brain-server (or any host), set the
 CSP so the WASM fetch works:
@@ -87,6 +96,20 @@ dx bundle --platform desktop   # native binary
 dx bundle --platform ios       # .app + .ipa
 dx bundle --platform android   # .apk / .aab
 ```
+
+The web bundle honors `base_path = "app"` in `Dioxus.toml` so all asset URLs
+are `/app/assets/...` under the server's `/app` mount. To deploy the bundle to
+the server-served dir (`client/dist`, gitignored), copy the built output:
+
+```sh
+dx bundle --platform web --release
+SRC=target/dx/brain-client/release/web/public
+rm -rf dist && mkdir -p dist/assets
+cp "$SRC/index.html" dist/
+cp "$SRC/assets/brain-client-*.js" "$SRC/assets/brain-client_bg-*.wasm" dist/assets/
+```
+
+(wasm-opt may SIGABRT on Apple Silicon — cosmetic; dx still emits the bundle.)
 
 ## Constraints honored
 

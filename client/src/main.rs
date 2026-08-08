@@ -231,7 +231,7 @@ fn app() -> Element {
     });
 
     rsx! {
-        document::Stylesheet { href: "/assets/tailwind.css".to_string() }
+        document::Stylesheet { href: asset!("/assets/tailwind.css") }
         // v1.16.2 "Harden" M4.1: an ErrorBoundary around the router so a panic
         // in a child panel renders an operator-facing fallback instead of a
         // blank screen. Errors are Debug-formatted; no sensitive data leaks

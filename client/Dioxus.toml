@@ -10,6 +10,10 @@ public_dir = "assets"
 
 [web.app]
 title = "brain — memory control"
+# v1.16.2: the client is served by brain-server under `/app` (ServeDir). The
+# base path makes the bundled asset URLs `/app/assets/...` so the SPA resolves
+# its wasm/js/css under the mount. Keep in sync with the server's `/app`.
+base_path = "app"
 
 [web.resource.dev]
 
