@@ -3299,19 +3299,42 @@ async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
     next.run(req).await
 }
 
-/// Security headers middleware — applies standard hardening headers to every response.
+/// CSP for API routes — the strictest possible (JSON-only, no content executes).
+const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
+
+/// CSP for client routes — allows WASM compilation without eval(), same-origin
+/// API calls, self-hosted fonts/CSS. No CDN, no inline scripts.
+/// ponytail: style-src 'unsafe-inline' is needed because Dioxus may inject
+/// runtime <style> for certain operations. A nonce-based replacement is the
+/// v1.18.0 upgrade path if Dioxus adds nonce support to its style injection.
+const CLIENT_CSP: &str = concat!(
+    "default-src 'self'; ",
+    "script-src 'self' 'wasm-unsafe-eval'; ",
+    "style-src 'self' 'unsafe-inline'; ",
+    "connect-src 'self'; ",
+    "img-src 'self' data:; ",
+    "font-src 'self' data:; ",
+    "frame-ancestors 'none'; ",
+    "form-action 'self'; ",
+    "base-uri 'self'"
+);
+
+/// Security headers middleware — applies standard hardening headers to every
+/// response. v1.16.2: path-aware CSP (strict for API, WASM-friendly for client).
 async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
+    // Read the path BEFORE next.run(req) consumes the request.
+    let is_client = req.uri().path().starts_with("/app") || req.uri().path() == "/";
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
     headers.insert(
         axum::http::header::STRICT_TRANSPORT_SECURITY,
         axum::http::HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),
     );
+    // Path-aware CSP: strict for API, WASM-friendly for client.
+    let csp = if is_client { CLIENT_CSP } else { API_CSP };
     headers.insert(
         axum::http::header::CONTENT_SECURITY_POLICY,
-        axum::http::HeaderValue::from_static(
-            "default-src 'none'; frame-ancestors 'none'; form-action 'none'",
-        ),
+        axum::http::HeaderValue::from_static(csp),
     );
     headers.insert(
         axum::http::header::X_CONTENT_TYPE_OPTIONS,
@@ -3421,7 +3444,10 @@ async fn jwt_auth_middleware(
             | "/.well-known/security.txt"
             | "/auth/refresh"
             | "/auth/logout"
-    ) || path.starts_with("/webhooks/");
+    ) || path.starts_with("/webhooks/")
+        // v1.16.2 "Harden": the client SPA is public (static assets, no data).
+        || path == "/"
+        || path.starts_with("/app");
     if public || req.method() == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
@@ -3541,7 +3567,10 @@ async fn auth_middleware(
         | "/.well-known/openid-configuration" | "/.well-known/jwks.json"
         | "/.well-known/security.txt"
         | "/auth/refresh" | "/auth/logout"
-    ) || path.starts_with("/webhooks/");
+    ) || path.starts_with("/webhooks/")
+        // v1.16.2 "Harden": the client SPA is public (static assets, no data).
+        || path == "/"
+        || path.starts_with("/app");
     // Webhook endpoints are authenticated by their own HMAC signature check
     // (GitHub cannot present a brain bearer token), so they bypass the bearer
     // middleware but are verified inside the handler.
@@ -4197,6 +4226,24 @@ async fn main_inner() -> Result<()> {
         .route("/audit", get(list_audit))
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
+        // v1.16.2 "Harden" M1.1: serve the built client SPA from client/dist.
+        // nest_service strips the `/app` prefix; ServeDir serves files with MIME
+        // + path-traversal prevention, and not_found_service returns index.html
+        // for SPA deep-links (the Dioxus router handles them client-side). The
+        // CompressionLayer below brotli-compresses the WASM bundle. If the dir
+        // doesn't exist, `/app` 404s and the API is unaffected.
+        .nest_service(
+            "/app",
+            tower_http::services::ServeDir::new(config::client_dir()).not_found_service(
+                tower_http::services::ServeFile::new(config::client_dir().join("index.html")),
+            ),
+        )
+        // Root → the client shell (a 301 so browsers + the client's fetch base
+        // both see a canonical `/app/`).
+        .route(
+            "/",
+            get(|| async { axum::response::Redirect::permanent("/app/") }),
+        )
         // Inner layers (closest to handler)
         .layer(RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE))
         .layer(TimeoutLayer::with_status_code(
@@ -9266,8 +9313,74 @@ Final paragraph after the rule.";
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
-    /// v1.12.1 "Harden": in JWT mode the JWT layer 401s non-public requests
-    /// without a valid JWS, even when no opaque token file is configured.
+    /// v1.16.2 "Harden" M1.2: the security-headers middleware is path-aware —
+    /// API routes get the strict API_CSP; client `/app` routes get the
+    /// WASM-friendly CLIENT_CSP. Pins the whole point of the feature.
+    #[tokio::test]
+    async fn csp_strict_for_api_routes_relaxed_for_client_routes() {
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let app = axum::Router::new()
+            .route("/health", get(stub))
+            .route("/app/", get(stub))
+            .route("/app/pkg/app.wasm", get(stub))
+            .layer(middleware::from_fn(security_headers_middleware));
+
+        let api_csp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let hdr = api_csp
+            .headers()
+            .get(axum::http::header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(hdr, API_CSP, "API route must get the strict CSP");
+        assert!(!hdr.contains("wasm-unsafe-eval"));
+        assert!(hdr.contains("default-src 'none'"));
+
+        for client_path in ["/app/", "/app/pkg/app.wasm"] {
+            let res = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(client_path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let hdr = res
+                .headers()
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert_eq!(
+                hdr, CLIENT_CSP,
+                "client route {client_path} must get CLIENT_CSP"
+            );
+            assert!(
+                hdr.contains("'wasm-unsafe-eval'"),
+                "client CSP must allow WASM"
+            );
+            assert!(
+                hdr.contains("connect-src 'self'"),
+                "client CSP must scope connect-src"
+            );
+        }
+    }
     #[tokio::test]
     async fn jwt_middleware_requires_jws_in_jwt_mode() {
         use tower::ServiceExt;

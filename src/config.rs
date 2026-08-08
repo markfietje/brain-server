@@ -183,6 +183,16 @@ pub fn brain_db_path() -> std::path::PathBuf {
         })
 }
 
+/// v1.16.2 "Harden" M1.1: directory of the built brain-client web assets
+/// (index.html + WASM + CSS). Served at `/app` by `tower_http::services::ServeDir`.
+/// Default is `client/dist` relative to CWD; override with `BRAIN_CLIENT_DIR`.
+/// If the dir doesn't exist, `/app` routes 404 and the API is unaffected.
+pub fn client_dir() -> std::path::PathBuf {
+    std::env::var("BRAIN_CLIENT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("client/dist"))
+}
+
 // ── v1.1.0 "Harden" M1.4: token rotation constants ───────────────────
 // The token-store background task stats the file at this cadence and reloads
 // on mtime change. The auth check itself is hot-path, so it reads from the
