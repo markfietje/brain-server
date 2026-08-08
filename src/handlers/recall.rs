@@ -14,6 +14,7 @@ use axum::{
     extract::{Query, State},
     Json,
 };
+use rand::Rng;
 use serde::de::Error as _;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -142,6 +143,12 @@ pub struct RecallRequest {
     /// filter, deterministic and zero-token.
     #[serde(default)]
     pub min_relevance: Option<String>,
+    /// v1.15.0 "Observe" M1/M2: when true AND read-event audit is enabled
+    /// (JWT mode default), the response includes a `trace_id` (the audit row
+    /// id) that `/recall/{trace_id}/trace` can replay. Pure opt-in: without
+    /// it the read event (if recorded) is still hash-only and unreplayable.
+    #[serde(default)]
+    pub trace: bool,
 }
 
 fn default_limit() -> u32 {
@@ -383,6 +390,9 @@ pub async fn recall(
         base_filters.min_relevance = Some(t.clone());
     }
     base_filters.access_scopes = crate::handlers::gate::scope_filter(&principal.0);
+    // v1.15.0 "Observe" M1: capture the access-scope decision for the read-event
+    // trace before the filters are moved into the search closure.
+    let applied_scopes = base_filters.access_scopes.clone();
     let snippet_q = base_filters
         .lex
         .clone()
@@ -391,6 +401,9 @@ pub async fn recall(
     // v1.4.0 "Calibrate" M2: capture the query for the post-search packing pass
     // before `query` is moved into the spawn_blocking closure below.
     let packing_query = query.clone();
+    // v1.15.0 "Observe" M1: capture the query text for the read-event trace
+    // (same reason — the closure consumes `query`).
+    let trace_query = query.clone();
     let max_context_tokens = req.max_context_tokens;
     let gold_answer = req.gold_answer.clone();
 
@@ -502,18 +515,98 @@ pub async fn recall(
     domains_searched.sort();
     domains_searched.dedup();
 
+    // v1.15.0 "Observe" M1/M2: emit a read event into the hash-chained audit
+    // (opt-in: on in JWT mode, off in loopback, overridable via
+    // BRAIN_AUDIT_READ_EVENTS + BRAIN_AUDIT_READ_SAMPLE_RATE). The trace id is
+    // surfaced in the response only when `?trace=true`. Best-effort — a failure
+    // here must never fail the recall the caller asked for.
+    let trace_id = if crate::config::audit_read_events(principal.0.is_some()) {
+        let rate = crate::config::audit_read_sample_rate();
+        let sampled = rate >= 1.0 || rand::thread_rng().gen_range(0.0..1.0) < rate;
+        if !sampled {
+            None
+        } else {
+            let trace_detail = if req.trace {
+                Some(
+                    serde_json::json!({
+                        "query": trace_query.clone(),
+                        "decision": format!("{:?}", decision),
+                        "domains_searched": domains_searched,
+                        "scope": applied_scopes,
+                        "actor": principal_label(&principal.0),
+                        "hits": hits.iter().map(|h| serde_json::json!({
+                            "id": h.id,
+                            "score": h.score,
+                            "assertion_kind": h.assertion_kind,
+                            "source": h.source,
+                            "relevance": h.relevance,
+                            "decayed": h.decayed,
+                        })).collect::<Vec<_>>(),
+                    })
+                    .to_string(),
+                )
+            } else {
+                None
+            };
+            let pool = state.pool.clone();
+            let actor = principal_label(&principal.0);
+            let tenant = principal_tenant(&principal.0);
+            let event_query = trace_query.clone();
+            task::spawn_blocking(move || {
+                if let Ok(conn) = pool.get() {
+                    let id = crate::audit::record_read_event(
+                        &conn,
+                        crate::audit::AuditKind::Recall,
+                        &actor,
+                        &event_query,
+                        trace_detail.as_deref(),
+                        &tenant,
+                    );
+                    if let Some(days) = crate::config::audit_read_retention_days() {
+                        let _ = crate::audit::prune_audit_retention(&conn, days);
+                    }
+                    return id;
+                }
+                None
+            })
+            .await
+            .unwrap_or(None)
+        }
+    } else {
+        None
+    };
+
     Ok(Json(RecallResponse {
         hits,
         decision,
         domain: Some(primary_domain),
         domains_searched,
         telemetry: req.provenance.then_some(tel),
+        trace_id,
     }))
 }
 
 // ---------------------------------------------------------------------------
 // Pure helpers (testable without AppState / StaticModel)
 // ---------------------------------------------------------------------------
+
+/// v1.15.0 "Observe" M1: audit actor label for a recall read event — the JWT
+/// principal's `sub`, or `loopback` in opaque/no-auth mode.
+pub(crate) fn principal_label(principal: &Option<crate::auth::Principal>) -> String {
+    principal
+        .as_ref()
+        .map(|p| p.sub.clone())
+        .unwrap_or_else(|| "loopback".to_string())
+}
+
+/// v1.15.0 "Observe" M1: audit tenant for a recall read event — the JWT
+/// principal's tenant, or the default tenant in opaque/no-auth mode.
+pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> String {
+    principal
+        .as_ref()
+        .map(|p| p.tenant.clone())
+        .unwrap_or_else(|| crate::audit::DEFAULT_TENANT.to_string())
+}
 
 /// v1.15.0 M1 hotfix: resolve the shim-mode target domains given the
 /// centroid-route result. Pure + deterministic.
@@ -718,6 +811,7 @@ mod tests {
             include_decayed: false,
             memory_kind: None,
             min_relevance: None,
+            trace: false,
         }
     }
 
@@ -775,6 +869,7 @@ mod tests {
             include_decayed: false,
             memory_kind: None,
             min_relevance: None,
+            trace: false,
         };
         let err = validate_recall(&r).unwrap_err();
         assert_eq!(err.inner.code, "query_too_long");

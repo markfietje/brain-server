@@ -879,10 +879,61 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
+    // ── v1.15.0 "Observe" M1/M3: read-event trace + DSAR ledger. ────────
+    // `recall_traces` holds the replayable decision-path artifact for a recall
+    // read event, keyed by the audit row id (hash-only chain stays in
+    // `audit_events`; the trace is non-content metadata: ids, scores, ranks,
+    // decision, scope, principal). `dsar_requests` is the GDPR deletion-
+    // workflow ledger (the certificate JSON lives in `certificate`).
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS recall_traces (
+            audit_id   INTEGER PRIMARY KEY,
+            trace_json TEXT NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS dsar_requests (
+            id            INTEGER PRIMARY KEY,
+            subject       TEXT NOT NULL,
+            action        TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'pending',
+            export_bundle TEXT,
+            certificate   TEXT,
+            created_at    INTEGER NOT NULL,
+            completed_at  INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dsar_subject ON dsar_requests(subject, status)",
+        [],
+    )?;
+    // v1.15.0: the tombstone purge-audit row gains `reason` ('explicit' |
+    // 'owner:<subject>' | 'derived') + `origin_id` (the purge root for derived
+    // descendants) so `GET /tombstones?subject=` and derived-purge audit have
+    // a queryable hook. Idempotent guarded adds — same pattern as v1.14.0.
+    for (col, def) in [("reason", "TEXT"), ("origin_id", "INTEGER")] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('tombstones') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE tombstones ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.14.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.14.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.15.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.15.0';",
         [],
     )?;
 

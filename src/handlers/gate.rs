@@ -621,46 +621,7 @@ pub async fn purge(
             return Err(HandlerError::not_found("no matching chunks to purge"));
         }
 
-        for id in &ids {
-            // Capture the content_hash for the tombstone before deletion.
-            let content_hash: Option<String> = tx
-                .query_row(
-                    "SELECT content_hash FROM knowledge WHERE id = ?1",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
-                .ok()
-                .flatten();
-            // Graph nodes/edges + supersession pointers cascade via FKs or are
-            // swept explicitly; vec0 rows are deleted by knowledge_id.
-            let _ = tx.execute(
-                "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
-                rusqlite::params![id],
-            );
-            let _ = tx.execute(
-                "DELETE FROM relationships WHERE knowledge_id = ?1 OR from_entity_id IN (SELECT id FROM entities WHERE knowledge_id = ?1) OR to_entity_id IN (SELECT id FROM entities WHERE knowledge_id = ?1)",
-                rusqlite::params![id],
-            );
-            let _ = tx.execute(
-                "DELETE FROM evidence_links WHERE from_chunk = ?1 OR to_chunk = ?1",
-                rusqlite::params![id],
-            );
-            let _ = tx.execute(
-                "DELETE FROM proposals WHERE conflict_with = ?1",
-                rusqlite::params![id],
-            );
-            let n = tx
-                .execute("DELETE FROM knowledge WHERE id = ?1", rusqlite::params![id])
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            if n > 0 {
-                tx.execute(
-                    "INSERT INTO tombstones(knowledge_id, content_hash, purged_at) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![id, content_hash.unwrap_or_else(|| "unknown".into()), now],
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            }
-        }
-        let purged = ids.len() as i64;
+        let purged = purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
         crate::audit::record(
@@ -677,6 +638,71 @@ pub async fn purge(
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(serde_json::json!({ "purged": count })))
+}
+
+/// Shared hard-delete for a list of chunk ids, run inside the caller's
+/// transaction. Removes the `knowledge` row + its `vec_knowledge` embedding +
+/// graph nodes/edges + supersession/derivation pointers + `proposals`
+/// references, and appends a tombstone row (hash-only). Used by `/purge`
+/// (reason `explicit`) and the DSAR workflow (reason `owner:<subject>`, with
+/// derived descendants carrying `derived` + the purge root's origin id).
+/// Returns the number of chunks actually deleted.
+pub(crate) fn purge_chunk_ids(
+    tx: &rusqlite::Transaction,
+    ids: &[i64],
+    now: i64,
+    reason: &str,
+    origin_id: Option<i64>,
+) -> Result<i64, HandlerError> {
+    let mut purged = 0i64;
+    for id in ids {
+        // Capture the content_hash for the tombstone before deletion.
+        let content_hash: Option<String> = tx
+            .query_row(
+                "SELECT content_hash FROM knowledge WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        // Graph nodes/edges + supersession pointers cascade via FKs or are
+        // swept explicitly; vec0 rows are deleted by knowledge_id.
+        let _ = tx.execute(
+            "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
+            rusqlite::params![id],
+        );
+        let _ = tx.execute(
+            "DELETE FROM relationships WHERE knowledge_id = ?1 OR from_entity_id IN (SELECT id FROM entities WHERE knowledge_id = ?1) OR to_entity_id IN (SELECT id FROM entities WHERE knowledge_id = ?1)",
+            rusqlite::params![id],
+        );
+        let _ = tx.execute(
+            "DELETE FROM evidence_links WHERE from_chunk = ?1 OR to_chunk = ?1",
+            rusqlite::params![id],
+        );
+        let _ = tx.execute(
+            "DELETE FROM proposals WHERE conflict_with = ?1",
+            rusqlite::params![id],
+        );
+        let n = tx
+            .execute("DELETE FROM knowledge WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        if n > 0 {
+            tx.execute(
+                "INSERT INTO tombstones(knowledge_id, content_hash, purged_at, reason, origin_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    id,
+                    content_hash.unwrap_or_else(|| "unknown".into()),
+                    now,
+                    reason,
+                    origin_id
+                ],
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+            purged += 1;
+        }
+    }
+    Ok(purged)
 }
 
 /// `GET /export` — portable, machine-readable JSON export (data portability,

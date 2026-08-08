@@ -27,6 +27,7 @@ pub mod domains;
 pub mod forget;
 pub mod gate;
 pub mod ingest;
+pub mod observe;
 pub mod procedure;
 pub mod recall;
 pub mod sources;
@@ -156,6 +157,11 @@ pub struct RecallResponse {
     /// Per-stage retrieval telemetry, included when `provenance` is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<crate::search::SearchTelemetry>,
+    /// v1.15.0 "Observe" M1/M2: the audit row id for this recall's read event,
+    /// when read-event audit is enabled (JWT mode default) AND `?trace=true`
+    /// was requested. `/recall/{trace_id}/trace` replays the decision path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
