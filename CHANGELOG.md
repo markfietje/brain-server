@@ -16,6 +16,37 @@ _(nothing pending)_
 
 ---
 
+## [1.16.2] — 2026-08-08
+
+### "Harden" (server + client security/serving foundation)
+
+- **Serve the Dioxus client from the server** — `nest_service("/app", ServeDir)` at `config::client_dir()` (env `BRAIN_CLIENT_DIR`, default `client/dist`) with a `not_found_service(ServeFile(index.html))` SPA fallback so deep-links route client-side. `/` redirects to `/app/`. The `CompressionLayer` brotli-compresses the WASM bundle. API unaffected if the dir is absent.
+- **Path-aware Content-Security-Policy** — `security_headers_middleware` now reads the request path: `/app` + `/` get `CLIENT_CSP` (allows `'wasm-unsafe-eval'` for the WASM runtime + `connect-src 'self'`), every other route gets the strict `API_CSP`. Both `/app` and `/` are in the auth-public path set in **both** `jwt_auth_middleware` and `auth_middleware` (the static bundle needs no bearer).
+- **`ErrorBoundary` around the router** — a panic in any panel renders an operator-facing fallback (generic message + `{errors:?}` in a `<pre>` + Dismiss that clears) instead of a blank screen. No sensitive data leaks.
+- **Operator-facing error messages** — `api::error_message()` maps `ApiError` (401/403/404/429/503/fallback) to actionable hints; wired into the Review, Recall, and Health panels.
+- **Cancel-safety gate** — the batch review now collapses to a `BatchSummary` (`batch_outcome` pure fn) rendered as a one-line summary once a batch settles, surfacing partial failure honestly; the outcome map is the single source of truth (no partial-write window on unmount).
+- **Code-hygiene grep guards** (both run in `cargo test`):
+  - `tests::xss_escape_hatch_is_unused` — `dangerous_inner_html` (the only XSS vector) is banned in the source tree.
+  - `tests::credentials_stay_in_memory` — the bearer token must never touch `use_persistent` (localStorage is XSS-readable).
+
+### "Accessible" (client WCAG 2.2 AA pass)
+
+- **SPA focus management (M1)** — every panel's `<h1>` is a shared `PageTitle` component: `tabindex="-1"` + focus-on-mount (`onmounted` → `set_focus(true)`, cancel-safe) so screen-reader users get a signal on route change; `use_document_title()` sets a per-route reactive document title via `document::eval`.
+- **WCAG 2.4.11/2.4.12 Focus Not Obscured (M1.3)** — `*:focus-visible { scroll-margin-top: 4rem }` clears the sticky nav.
+- **Semantic audit (M2)** — `tests::interactive_elements_are_buttons` grep guard: no `<div onclick>` anywhere; all interactive elements are real `<button>`s (WCAG 2.1.1 + ARIA in HTML). Landmarks (`nav`/`main`) + single-`<h1>` per panel verified.
+- **Contrast (M4)** — `--color-ink-faint` `#6b7380` → `#7c8492` (AA 3.8:1 → 4.6:1, WCAG 1.4.3). Color never the sole signal (text labels always accompany status colors).
+- **Manual screen-reader checklist artifact (M7)** — `client/a11y-checklist.md` records the VoiceOver/NVDA/TalkBack pass matrix + per-panel checklist.
+- Keyboard shortcuts toggle (WCAG 2.1.4) already shipped in v1.16.0; verified present in the Review header.
+
+### Honest ceilings (carried into v1.17.0)
+
+- **shadcn Dialog adoption (M5) + axe-core CI (M6)** deferred — `dx` CLI not available in this environment, so `dx components add dialog` and the `dx bundle --platform web` axe gate can't run. The drawer already has `role="dialog"`/`aria-modal`/Esc-close; the full Radix Tab-cycling focus trap + return-focus is the v1.18.0 pass.
+- **axe catches 20–60%** of a11y issues — the manual screen-reader pass is irreplaceable.
+- **No aria-live regions** beyond the existing `role="status"` connection/re-verify banners.
+- **No RTL locale** (v1.16.6).
+
+---
+
 ## [1.16.1] — 2026-08-08
 
 ### Operations
