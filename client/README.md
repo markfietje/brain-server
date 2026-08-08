@@ -4,27 +4,40 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status (scaffold)
+## Status — v1.16.0 "Client" (shipped)
 
-This is the project skeleton — the router, AppShell, the typed API client, and
-two fully-wired panels (**Recall** + **Health**) that work against a live
-brain-server today. The other four panels are honest stubs that document which
-backend release gates them:
+All six panels are fully wired against the live brain-server API, behind a
+connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
+mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`.
 
-| Panel | Works now? | Needs |
+**v1.16.0 ships the DESIGN's UX + correctness hard-parts** (8 milestones,
+25 tests, clippy `-D warnings` + fmt clean):
+
+| M | Feature | Detail |
 |---|---|---|
-| Recall | ✅ | — (hits `/recall`) |
-| Health | ✅ | — (hits `/health`) |
-| Review | stub | brain-server v1.14.0 (`/ingest/proposal`, `/proposals`) |
-| Subjects (DSAR) | stub | brain-server v1.15.0 (`/dsar`, `/tombstones`) |
-| Security | stub | quarantine/audit exist; chain-verify is client recompute |
-| Audit | stub | `/audit` exists; read-events need v1.15.0 |
+| **M1** | Connection state machine | Single `use_future` probe with a false-offline guard (N failures before amber) + chain-verify-before-writes recovery. Dependency-free sleep via `document::eval`+setTimeout (no tokio dep). Read-only degrade banner + mutation freeze when disconnected. |
+| **M2** | Nav badges + principal + drawer | F-pattern `Pending: N` top-left, Security/Audit count badges, principal identity pillar, Esc-closable context drawer (ARIA dialog). |
+| **M3** | Honest-batch review | Per-row `RowOutcome` tracking (a failed call is surfaced, never silently dropped); 404-no-pending = success; `BatchGuard` DropGuard; A/S/R/J/K keyboard with a WCAG 2.1.4 toggle; reject-with-reason + suggest-re-ingest editors. |
+| **M4** | Recall decision-path viewer | Per-retriever ranks, fused score, relevance tiers, `assertion_kind`/`confidence`/`decayed` tags; `min_relevance` slider; deep-linkable `?trace=true` artifact via `/recall/:trace_id`. |
+| **M5** | DSAR certificate card | Structured card (found_count, purged_ids, tombstone_root, chain_head, certified_at) with a live green/red chain badge. |
+| **M6** | Auth-failure feed | `GET /audit?kind=auth` filtered to denied rows; count badge on Security. |
+| **M7** | Audit filters + export | Client-side principal/kind/since filters + JSON export (no new server route). |
+| **M8** | Visual-token layer | Every panel uses the dark-first semantic tokens (`text-ink-muted`/`text-ok`/…) — zero ad-hoc color classes remain. |
+
+| Panel | Backend route(s) | v1.16.0 additions |
+|---|---|---|
+| Review (approval queue) | `/ingest/proposal`, `/proposals`, `/proposals/{id}/approve\|reject` | per-row outcomes, A/S/R/J/K, reject reason, suggest re-ingest |
+| Recall (decision viewer) | `/recall`, `/recall/{id}/trace` | richer hits, min_relevance slider, trace artifact |
+| Subjects (DSAR) | `/dsar`, `/dsar/{id}/certificate` | certificate card + live chain badge |
+| Security (quarantine + chain) | `/quarantine`, `/quarantine/{id}/release\|delete`, `/audit/verify`, `/audit?kind=auth` | auth-failure feed |
+| Audit (hash-chain browser) | `/audit` | client-side filters + JSON export |
+| Health (capacity + corpus) | `/health`, `/stats` | — |
 
 ## Prerequisites
 
 - Rust (stable)
 - The Dioxus CLI: `curl -fsSL https://dioxuslabs.com/install.sh | bash`
-- A running brain-server on `127.0.0.1:8765` (loopback) with a bearer token
+- A running brain-server (loopback `127.0.0.1:8765`, or any reachable host)
 
 ## Run
 
@@ -36,9 +49,35 @@ dx serve --platform ios        # v1.17.0 (Keychain seam + App Store)
 dx serve --platform android    # v1.17.0 (Keystore seam + Play Store)
 ```
 
-The scaffold defaults the `ApiClient` to `http://127.0.0.1:8765` (see
-`src/api.rs`). The connect-first onboarding screen (DESIGN §3) replaces this
-with an interactive URL + token entry before v1.16.0 ships.
+On first load the connect screen asks for the backend URL + token (token
+optional on loopback). It probes `GET /health` live before navigating into
+the panels, and writes the connected `ApiClient` into the root context so
+every panel re-fetches through it.
+
+## Operator note: `dx serve` + CSP
+
+`dx serve` / `dx bundle` are **operator steps** — the Dioxus CLI is not part
+of this repo's CI (it must be installed via the curl one-liner above). The
+WASM build can be validated with `cargo check`/`cargo test` (both green here:
+**25 tests**, clippy-clean), but shipping the web bundle needs `dx`.
+
+The first `dx serve --platform web` also generates `assets/tailwind.css` from
+`styles/input.css` (via the `[tailwind]` block in `Dioxus.toml`); until then
+the `document::Stylesheet` href for `/assets/tailwind.css` 404s, so the bare
+`cargo` path renders unstyled. This is expected — the styles land with `dx`.
+
+When serving the bundled web app behind brain-server (or any host), set the
+CSP so the WASM fetch works:
+
+```
+default-src 'self';
+script-src 'self' 'wasm-unsafe-eval';
+connect-src 'self' <brain-server-origin>;
+object-src 'none';
+```
+
+`connect-src` must include the brain-server origin you entered on the connect
+screen (same-origin when brain-server serves `/app/*`).
 
 ## Build / bundle
 
@@ -60,7 +99,5 @@ dx bundle --platform android   # .apk / .aab
 
 ## Next
 
-Build out Review (v1.14.0), then Subjects/Security/Audit (v1.15.0), then the
-connect-first onboarding + visual system (DESIGN doc), then iOS/Android native
-(v1.17.0), then accessibility + i18n (v1.18.0), integration (v1.19.0), polish
-(v1.20.0).
+Accessibility + i18n (v1.18.0), integration (v1.19.0), polish (v1.20.0), and
+the mobile bottom-tab responsive swap (v1.17.0).

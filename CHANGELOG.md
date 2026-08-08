@@ -10,6 +10,132 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.16.0] — 2026-08-08
+
+**"Client" — the Dioxus control surface (web + desktop + iOS + Android).** The
+first externally-shippable brain-client: one Rust codebase consuming brain-
+server's v1.14/v1.15 governance APIs. The v1.16.0 release implements the eight
+`IMPLEMENTATION_PLAN_v1.16.0_Client.md` milestones — the scaffold's functional
+panel contract plus the DESIGN's UX + correctness hard-parts. 25 tests (was 7),
+clippy `-D warnings` + fmt clean, zero new deps.
+
+### M1 — The connection state machine (the correctness heart)
+
+- A single `use_future` probe at the app root owns its timer (survives panel
+  unmounts). **False-offline guard:** N consecutive failures before green→amber
+  (a single flap never flips the indicator). Pure `probe_state(failures, ok)`.
+- **Dependency-free sleep** via `document::eval`+`setTimeout` — no `tokio` dep
+  (works web + desktop; tokio's timer doesn't work in WASM anyway).
+- **Read-only degrade** + **mutation freeze:** when amber, panels keep showing
+  last-known state; write buttons render `disabled`. The shared
+  `writes_enabled` signal derives from conn state.
+- **Chain-verify-before-writes recovery:** on a recovery 200, conn goes green
+  but writes stay frozen until `GET /audit/verify` returns `{"ok":true}`. A
+  scoped non-Admin JWT (403) shows a distinct "chain unverified" state.
+- Pure `writes_allowed(conn, verify_ok, pending_reverify)` — testable.
+
+### M2 — Nav structure: badges + principal + context drawer
+
+- F-pattern `Pending: N` top-left (the one number that matters). Count badges
+  on Security (quarantine + denied-auth), Audit (`!` when last verify was
+  non-clean). Principal identity pillar (`acting as <sub>` / `loopback`).
+- Esc-closable context drawer (`role="dialog" aria-modal="true"`) rendering
+  typed content (Proposal/Hit/Certificate/AuthFailure) pushed by panels. Full
+  Radix Tab-cycling focus trap is the v1.18.0 Compliant pass.
+
+### M3 — Review: honest batch partial-failure + keyboard-first
+
+- Per-row `RowOutcome` tracking (`Pending`/`Done`/`AlreadyDone`/`Failed`): a
+  failed call in a batch is surfaced inline, **never silently dropped**.
+  `404-no-pending` → `AlreadyDone` (success — non-idempotent contract).
+- `BatchGuard` DropGuard: clears `Pending` rows from the selection on cancel
+  (DESIGN §6 cancel-safety).
+- `A`/`S`/`R`/`J`/`K` keyboard with a **WCAG 2.1.4 toggle**
+  (`shortcuts_enabled`, default on). `S` (approve & supersede) only on conflict.
+- Reject-with-reason editor (recorded in the audit log — no silent drop) +
+  suggest-re-ingest editor (posts a new proposal with edits).
+
+### M4 — Recall inspector: the decision-path viewer
+
+- Richer hit rendering: per-retriever ranks (`v`/`f`/`g`), fused score,
+  relevance tier (color-coded), `assertion_kind`/`confidence`/`decayed`/
+  `superseded` tags. Monospace + tabular-nums on ids/scores.
+- `min_relevance` slider (high/medium/low) with pure `drop_low_relevance` —
+  the live post-fusion tier filter.
+- **`?trace=true` artifact:** the recall response carries a `trace_id`;
+  `/recall/:trace_id` (deep-linkable) fetches `GET /recall/{id}/trace` and
+  renders the replayable decision path (query, decision, domains, scope,
+  actor, per-hit id/score/source/relevance).
+
+### M5 — DSAR console: the deletion-certificate card
+
+- Replaced the freeform status line with a structured card: `found_count`,
+  `purged_ids` (monospace), `tombstone_root`, `certified_at`, `chain_head` +
+  a **live green/red chain badge** (re-verified via `GET /dsar/{id}/certificate`,
+  not the cert-time head). Typed `DsarCertificate::from_value`.
+- **Deferred:** the DESIGN §4.3 expandable locate tree (subject roots →
+  `derived_from` descendants, PII masked as `[redacted:…]` without `pii:read`)
+  is NOT in this release — the current `POST /dsar` response carries no located
+  records, so it needs a server wire change. Tracked in
+  `CLIENT_ROADMAP.md` under v1.17.0.
+- **Trace toggle read-control fix:** the Recall `?trace=true` checkbox is a
+  read control but was gated on `writes_enabled` (frozen during Reconnecting).
+  Removed the gate — reads stay interactive in amber per DESIGN §6, matching
+  the query input and min-relevance select.
+
+### M6 — Security: the auth-failure feed
+
+- `GET /audit?kind=auth` filtered to `status == "denied"` rows; rendered as a
+  feed (ts/actor/target/status). Count badge on Security. Proves the backend
+  isn't the unauthenticated-memory-access class (post-CVE-2026-59726).
+
+### M7 — Audit: filters + export
+
+- Client-side `AuditFilter` (principal substring / kind exact / since date) +
+  pure `filter_audit`. JSON export of the filtered rows (client-side — no new
+  server route; "the client adds no new server routes" constraint honored).
+
+### M8 — Visual-token layer applied
+
+- Every panel's ad-hoc color classes (`text-gray-*`/`text-green-*`/
+  `text-red-*`) → semantic tokens (`text-ink-muted`/`text-ok`/`text-danger`/…).
+  Zero ad-hoc color classes remain. Dark-first, quiet chrome (hairlines),
+  Inter + JetBrains Mono stacks, tabular-nums on columnar data.
+
+### Editor support
+
+- `.zed/settings.json`: uses the Tailwind CSS language mode
+  (`tailwindcss-intellisense-css`) for `.css` files, disabling the generic
+  `vscode-css-language-server` that emits false "Unknown at rule" warnings on
+  Tailwind v4 `@theme`/`@source`/`@apply`. Verified via context7 + the Zed
+  Tailwind docs.
+
+### API additions (`client/src/api.rs`)
+
+- `ApiClient::with_principal` + `is_configured` + `principal()` (M2.1 identity).
+- `Hit` +5 fields (`assertion_kind`/`confidence`/`relevance`/`decayed` +
+  `RecallResponse.trace_id`); all `#[serde(default)]` (backward-safe).
+- `recall(query, trace, min_relevance)`, `recall_trace(id)`,
+  `reject_proposal(id, reason)`, `audit_kind(kind)`.
+- `DsarCertificate::from_value` typed card fields.
+
+### Honest ceilings (carried forward)
+
+- **Connection is web-first.** The `onfocus`/`visibilitychange` instant-wake
+  listener + the desktop window-event + mobile lifecycle variants land with
+  the v1.17.0 mobile seam. The periodic probe (5s worst-case) covers correctness.
+- **Token is in-memory only.** Secure-storage-backed token (Keychain/Keystore)
+  is the v1.17.0 seam.
+- **Audit filters are client-side.** Server-side `?principal=&kind=&since=` on
+  `GET /audit` is a v1.19.0 polish.
+- **Drawer focus trap is partial.** Esc + ARIA dialog now; full Radix Tab-
+  cycling is the v1.18.0 Compliant release.
+- **Export is client-side** (the fetched rows). No `/audit/export` server route.
+- **`dx serve` is an operator step** (CLI not installed in CI). The code-level
+  gates (`cargo test`/`clippy -D warnings`/`fmt`/`build`) are all green.
+
+---
+
 ## [1.15.0] — 2026-08-08
 
 **"Observe" — read-event audit + recall trace + DSAR + COMPLIANCE.md.** The

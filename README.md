@@ -6,13 +6,13 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 
 | | |
 |---|---|
-| **Version** | 1.15.0 "Observe" (read-event audit + recall trace + DSAR + deletion certificates) · prev 1.14.0 "Gate" · 1.13.6 "Hygiene" |
+| **Version** | 1.16.0 "Client" (Dioxus control surface: connection state machine + honest-batch review + recall decision-path viewer + DSAR certificate card + auth-failure feed + audit filters) · prev 1.15.0 "Observe" |
 | **Model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **Stack** | Rust 2021 · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Power envelope** | < 5 W idle on Jetson Nano (the selling point) |
 | **Latency** | sub-50ms p99 recall on the reference device |
 | **Documentation** | [API Contract](./API_CONTRACT.md) · [`GET /openapi.yaml` live](#) · [Technical Spec](./SPECS.md) · [Compliance](./COMPLIANCE.md) |
-| **GUI (scaffold)** | [`client/`](./client/README.md) — Dioxus control surface: web + desktop + iOS + Android |
+| **GUI** | [`client/`](./client/README.md) — Dioxus control surface (web + desktop + iOS + Android): connect-first onboarding + six wired panels, the v1.16.0 release (connection state machine with false-offline guard + chain-verify-before-writes, honest-batch review with A/S/R/J/K keyboard, recall decision-path artifact, DSAR certificate card with live chain badge, auth-failure feed, audit filters + export) |
 
 ---
 
@@ -34,6 +34,10 @@ Static (no-neural-net) embeddings via `model2vec` / `minishlab/potion-retrieval-
 - **Self-correction** (v1.6) — operator-approved `supersedes` links atomically expire the prior fact; historical recall (`?at=<past>`) still returns it. `brain resolve` + `brain check-consistency` surface action items.
 - **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
 - **Opt-in anticipation** (v1.9) — `POST /suggest` returns related-but-not-surfaced chunks (tagged `reason: "anticipated"`); `POST /suggest/feedback` records accept/dismiss; `GET /suggest/metrics` reports the false-positive rate. No push, no decay, no hidden personalization — the agent asks explicitly. `BRAIN_SUGGEST_ENABLED=false` disables the surface.
+- **Ordered procedures** (v1.10) — `POST /procedure` ingests a root + ordered steps in one transaction; `GET /procedure/{id}/steps` returns them via `next_step` edges. `POST /classify` deterministically routes text to a category by matched keywords (auditable); `POST /decision/{id}/evaluate` fires the matched branch of a stored decision rule. No LLM.
+- **Write-back gating** (v1.14) — `POST /ingest/proposal` scores a candidate (novelty via vec0 KNN, conflict via the consolidate machinery, salience via length/entity heuristic) but creates **no** `knowledge` row; it becomes memory only via human approval (`POST /proposals/{id}/approve[?supersedes=]`, one transaction). Per-chunk `expires_at` decay, `assertion_kind`/`confidence`/`min_relevance`, record-level `access_scope`+`owner` (JWT-mode deny-by-default). PII output redaction + opt-in write-time placeholder mode. GDPR `GET /export` + `POST /purge` (hard audited delete, tombstone + audit).
+- **Observe + compliance** (v1.15) — read-event audit (recall/search/get emit rows into the existing SHA-256 hash chain; opt-in), the recall trace endpoint (`POST /recall?trace=true` returns a `trace_id`; `GET /recall/{trace_id}/trace` replays the decision path), the DSAR workflow (`POST /dsar` locate→export→purge→chain-verifiable deletion certificate, `GET /tombstones` registry, `GET /dsar/{id}/certificate`), and an opt-in Art 19 HMAC-SHA256 webhook. See `COMPLIANCE.md` for the ISO 42001 / NIST AI RMF / SOC 2 map.
+- **Client control surface** (v1.16) — [`client/`](./client/) is the Dioxus app (web + desktop + iOS + Android, one Rust codebase). The v1.16.0 release ships the connection state machine (single `use_future` probe with a false-offline guard — N failures before amber — + chain-verify-before-writes recovery), honest-batch review (per-row `RowOutcome` tracking — a failed call is surfaced, never silently dropped; 404-no-pending = success; A/S/R/J/K keyboard with a WCAG 2.1.4 toggle; reject-with-reason + suggest-re-ingest), the recall decision-path viewer (per-retriever ranks, fused score, relevance tiers, `min_relevance` slider, deep-linkable `?trace=true` artifact), the DSAR certificate card with a live green/red chain badge, an auth-failure feed, audit client-side filters + export, and the full dark-first semantic-token visual layer.
 
 ---
 
@@ -88,13 +92,25 @@ curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
 | POST | `/ingest` | Structured ingest (explicit entities/relations) |
 | GET | `/search?q=&k=&source=&sources=` | Semantic search *(deprecated; use `/recall`)* |
 | POST | `/recall` | Structured recall (`QueryDoc`, primary endpoint) |
-
 **`source` filter (v1.13.3)** on `/recall` and `/search`: an ingest kind
 (`memory` · `markdown` · `structured` · `manual` · `vault`) filters in SQL; a
 retrieval leg (`vector` · `fts` · `graph`) filters post-fusion; `both` is
 unrestricted. Unknown values return **422**. `sources` (plural) is an OR filter
 over ingest kind (not source URIs).
 | POST | `/verify` | Span verification — is a claim supported by a chunk's text? (v1.5) |
+| POST | `/procedure` · GET `/procedure/{id}/steps` | Ordered-step procedure ingest + step retrieval (v1.10) |
+| POST | `/classify` | Deterministic keyword categorization — category + confidence + matched keywords (v1.10) |
+| POST | `/decision/{id}/evaluate` | Evaluate a stored decision rule, fires the matched branch (v1.10) |
+| POST | `/ingest/proposal` | Score a write-back candidate; **no** `knowledge` row until approved (v1.14) |
+| GET | `/proposals?status=` | The human approval queue (v1.14) |
+| POST | `/proposals/{id}/approve[?supersedes=N]` · `/proposals/{id}/reject` | Promote / reject a candidate (v1.14) |
+| GET | `/decayed` | Operator review of decayed chunks (v1.14) |
+| GET | `/export[?include_pii_map=true]` | Portable JSON export — data portability, GDPR (v1.14) |
+| POST | `/purge` | Hard, explicit, audited deletion by id or owner — tombstone + audit (v1.14) |
+| POST | `/dsar` | GDPR Art 15/17 locate→export→purge→chain-verifiable deletion certificate (v1.15) |
+| GET | `/tombstones?subject=&since=` | Queryable deletion registry (v1.15) |
+| GET | `/dsar/{id}/certificate` | Re-fetch a deletion certificate + live chain check (v1.15) |
+| GET | `/recall/{trace_id}/trace` | Replay a recorded recall decision path (v1.15; Admin) |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | POST | `/reindex` | Rebuild vector/FTS indexes |
 | DELETE | `/memory/{id}` | Delete a chunk (tombstone) |
@@ -113,6 +129,7 @@ over ingest kind (not source URIs).
 | POST | `/auth/refresh` · `/auth/logout` · `/auth/revoke` | Token lifecycle (JWT mode) |
 | GET | `/.well-known/openid-configuration` · `/.well-known/jwks.json` | OIDC discovery + JWKS |
 | GET | `/audit` | Append-only audit events (hash-only) |
+| GET | `/audit/verify` | Read-only check that the audit hash chain is intact |
 | GET | `/quarantine` · POST `/quarantine/{id}/release` · `/delete` | Injection review |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings |
 
@@ -143,6 +160,9 @@ Every response carries `X-Api-Version`. Full contract at [API_CONTRACT.md](./API
 | `brain audit [--kind K] [--limit N]` | Read audit log |
 | `brain key generate` [`--kind rsa`] | Generate a JWT signing keypair (JWT mode) |
 | `brain key list` / `brain key prune` | List / prune JWT signing keys |
+| `brain procedure <title>` [`--step "title: content"` …] [`--domain D`] | Ingest a root + ordered steps in one transaction (v1.10) |
+| `brain classify "<text>"` | Deterministic keyword categorization — category + confidence + matched keywords (v1.10) |
+| `brain evaluate <decision_id>` `--var name=value` … | Evaluate a stored decision rule (v1.10) |
 | `brain backup <db> <out>` / `brain restore <backup> <db>` | Encrypted backup/restore |
 
 ---
@@ -188,7 +208,7 @@ All tunables: [`src/config.rs`](./src/config.rs).
 - **Prompt-injection quarantine** — suspicious input stored but excluded from retrieval. Deterministic structural control, not a classifier.
 - **Untrusted-evidence boundary** (OWASP LLM01:2025) — every result serializes `untrusted: true`.
 - **Encrypted backup/restore** — AES-256-GCM, checksummed, excludes secrets.
-- Connector credentials at mode `0600` with atomic writes. No outbound HTTP in the server process.
+- Connector credentials at mode `0600` with atomic writes. Outbound HTTP is limited to the opt-in Art 19 DSAR webhook (v1.15); disabled unless `BRAIN_DSAR_WEBHOOK_URL` is set.
 
 See [SECURITY.md](./SECURITY.md).
 

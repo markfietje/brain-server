@@ -36,8 +36,6 @@ pub fn drop_low_relevance(hits: Vec<Hit>, min: Option<&str>) -> Vec<Hit> {
 
 pub fn panel() -> Element {
     let api = use_context::<Signal<ApiClient>>();
-    let ui = use_context::<UiState>();
-    let writes = (ui.writes_enabled)();
     let mut query = use_signal(String::new);
     let mut trace = use_signal(|| false); // M4.2: ?trace=true toggle
     let mut min_rel = use_signal(String::new); // M4.1: high|medium|low|""
@@ -70,7 +68,9 @@ pub fn panel() -> Element {
                     "type": "checkbox",
                     checked: trace(),
                     onchange: move |e| trace.set(e.value() == "true"),
-                    disabled: !writes,
+                    // M1 amber rule: trace is a READ control (re-recall only);
+                    // reads stay interactive during Reconnecting — writes freeze,
+                    // reads don't (DESIGN §6). Matches the query input + select.
                 }
                 "trace decision path"
             }
