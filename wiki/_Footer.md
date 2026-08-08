@@ -1,0 +1,2 @@
+---
+**Brain Server** — the offline, deterministic, domain-graphed second brain for AI agents on the edge. Zero embedding-API cost, zero decision tokens, one Rust binary. MIT licensed. · [Source](https://github.com/markfietje/brain-server) · [API Contract](https://github.com/markfietje/brain-server/blob/main/API_CONTRACT.md) · [Security](https://github.com/markfietje/brain-server/blob/main/SECURITY.md) · [Compliance](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md) · [Roadmap](https://github.com/markfietje/brain-server/blob/main/ROADMAP.md)

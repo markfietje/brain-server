@@ -1,0 +1,58 @@
+# Client GUI
+
+Brain Server ships with a **Dioxus control surface** (`client/`) — a single Rust codebase that runs as a **web app, desktop app, iOS app, and Android app**. It gives operators a visual, accessible surface for everything the API and CLI can do. The web build is served by the server at `/app`.
+
+## What the GUI provides
+
+The client has six wired panels, plus a connect-first onboarding flow:
+
+| Panel | What it shows |
+|---|---|
+| **Review** | The human-in-the-loop write-back queue — approve, reject, or suggest re-ingest with the A/S/R/J/K keyboard (WCAG 2.1.4 toggle for sticky keys) |
+| **Recall** | Search + the decision-path viewer: per-retriever ranks, fused score, relevance tiers, `min_relevance` slider, deep-linkable trace artifact |
+| **Subjects** | The DSAR certificate card — found/purged/tombstone-root/chain-head/certified-at + a live green/red chain badge |
+| **Security** | The audit chain card, quarantine review, and the auth-failure feed |
+| **Audit** | Audit filters + JSON export |
+| **Health** | Service + corpus status |
+
+### Honest-batch review
+
+The Review panel tracks every row's outcome individually — a failed call is **surfaced, never silently dropped**. A 404 with nothing pending is treated as success. You can reject with a reason and suggest re-ingest.
+
+### Recall decision-path viewer
+
+With `?trace=true`, `/recall` returns a `trace_id`; the GUI opens a deep-linkable artifact at `/recall/:trace_id` showing exactly which chunks were injected and why.
+
+## Connection state machine
+
+The client has a robust connection layer:
+
+- A single probe with a **false-offline guard** — N failures before the indicator turns amber.
+- **Chain-verify-before-writes** — writes stay frozen until `/audit/verify` confirms the audit chain is intact, then they re-enable.
+- Reads degrade gracefully when the connection is amber; mutations freeze.
+
+## Accessibility
+
+The client is built to **WCAG 2.2 AA**:
+
+- Focus-to-`<h1>` on navigation + per-route document titles.
+- No `<div onclick>` — every interactive element is a real `<button>` or `<link>` (grep-guarded in CI).
+- Aria-live regions, `dir="auto"` RTL, `scroll-margin-top`, and ≥44px touch targets.
+- A hand-rolled drawer focus trap with Tab/Shift+Tab cycling.
+
+See `client/a11y-checklist.md` in the repo for the manual VoiceOver/NVDA checklist.
+
+## Deployment
+
+```bash
+# In the client/ directory — build the web bundle and deploy it
+./deploy-web.sh
+```
+
+The web build ships as a PWA with an offline shell (the service worker caches only the shell + assets, never the API). The desktop / mobile builds use the same codebase.
+
+## Next steps
+
+- **[Installation](Installation)** — serving the GUI at `/app`.
+- **[API Reference](API-Reference)** — the API the GUI talks to.
+- **[Security](Security)** — how the GUI authenticates (JWT pairs, silent refresh).
