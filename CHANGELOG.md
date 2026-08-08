@@ -10,12 +10,14 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [Unreleased]
+## [1.16.7] — 2026-08-08
 
-Server-only hardening + compliance round (security + fixes + Art 50). No
+Server + client release. **Server** (Cargo.toml 1.16.6 → 1.16.7): hardening +
+compliance round (security + fixes + Art 50), landing on top of the client
+release below. **Client** (1.16.6 → 1.16.7): the "Integrated" plan. No
 client or API-contract break.
 
-### Security
+### Server — Security
 
 - **Snapshot permissions (P0).** SQLite snapshots written by the integrity
   loop (`integrity.rs`) and the restore/import safety snapshot (`backup.rs`)
@@ -27,7 +29,7 @@ client or API-contract break.
   key set carries no content/PII/text field (CVE-2026-29787 class: an
   unauthenticated health endpoint disclosing store contents).
 
-### Added
+### Server — Added
 
 - **`GET /.well-known/ai-notice`** (EU AI Act Art 50 transparency). New public
   route + handler + pure builder disclosing that the service stores and may
@@ -37,7 +39,7 @@ client or API-contract break.
   memory-poisoning attack (arXiv 2607.05189) onto brain-server's HITL /
   audit / DSAR / provenance controls. Linked from `docs/README.md`.
 
-### Fixed
+### Server — Fixed
 
 - **`GET /tombstones?limit=` was silently ignored.** The query struct had no
   `limit` field, so the param was accepted and dropped, returning all rows.
@@ -50,21 +52,11 @@ client or API-contract break.
   and failed in isolation (`no such module: vec0`). Now self-registers, matching
   every other migration test.
 
-### Changed
+### Server — Changed
 
 - COMPLIANCE.md stamp updated 1.16.2 → 1.16.7.
 
----
-
-## [1.16.7] — 2026-08-08
-
-Client-only release landing the two remaining testable milestones of the
-v1.16.7 "Integrated" plan (deep links + PWA) plus the command palette, the
-recall debounce, and the carried-over client hardening (drawer focus trap,
-aria-live regions, `dir="auto"` RTL). Server + API contract unchanged. Client
-1.16.6 → 1.16.7.
-
-### Added
+### Client — Added
 
 - **M1 — Deep links.** Two new routes (`/review/:proposal_id`,
   `/subjects/certificate/:dsar_id`) make the proposal-detail and DSAR-
@@ -88,7 +80,7 @@ aria-live regions, `dir="auto"` RTL). Server + API contract unchanged. Client
   stops (generation-guarded so a stale pending timer never overwrites a newer
   query). Pure `debounce_commit` pinned by a test.
 
-### Hardened
+### Client — Hardened
 
 - **M7.3 — Drawer focus trap.** Tab / Shift+Tab now cycle focus inside the
   dialog (hand-rolled `document::eval`; the `dx components add dialog` route
@@ -101,7 +93,7 @@ aria-live regions, `dir="auto"` RTL). Server + API contract unchanged. Client
   content in RTL scripts flows correctly while the shell stays LTR (no i18n
   extraction — that is v2.x).
 
-### Fixed / changed
+### Client — Fixed / changed
 
 - **M3 wasm-split is a documented ceiling, not code.** Dioxus 0.7.10 has no
   wasm-split feature and the official docs still list bundle splitting + lazy
