@@ -1,0 +1,20 @@
+// Project-local Zed settings — Tailwind CSS v4 support.
+// client/styles/input.css uses @theme/@source/@apply (valid Tailwind v4, verified
+// via context7). The generic vscode-css-language-server doesn't understand those
+// at-rules and emits false "Unknown at rule" warnings. The documented fix
+// (https://zed.dev/docs/languages/tailwindcss#using-tailwind-css-mode-in-css-files)
+// is to use the Tailwind CSS language mode (tailwindcss-intellisense-css), which
+// provides full CSS IntelliSense WITH Tailwind at-rule support, and disable the
+// generic server. The "..." keeps other servers (e.g. tailwindcss-language-server
+// for class completion). No input.css changes needed.
+{
+  "languages": {
+    "CSS": {
+      "language_servers": [
+        "tailwindcss-intellisense-css",
+        "!vscode-css-language-server",
+        "..."
+      ]
+    }
+  }
+}
