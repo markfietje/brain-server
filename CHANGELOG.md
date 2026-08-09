@@ -97,6 +97,74 @@ stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
 
 ---
 
+## [1.17.8] — 2026-08-09
+
+### Client — "Complete" part 3: Data & Rights + UMP panel + System & Try-it console
+
+Third and final part of the three-part "Complete" operator-console line
+(`v1.17.6` + `v1.17.7` + `v1.17.8`). **Client-only** — server + API contract
+stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
+73 client tests (+7 from 1.17.7).
+
+### Added (client)
+
+- **M5 — Data & Rights panel** (`src/panels/data.rs`): the v1.14 / v1.15
+  lifecycle surface — purge (`POST /purge` by comma/space/newline-separated
+  ids or an owner), portable export (`GET /export` as JSON / UMP / UMP-Markdown
+  via the existing `document::eval` download seam), a per-kind retention editor
+  (`GET /retention` → `retention_to_edits` sorted overrides; set a kind+days
+  override, one-click `×` clear per kind), the `/decayed` review list, and the
+  `/tombstones` deletion-registry. Status region is `role="status"
+  aria-live="polite"`.
+- **M6 — UMP panel** (`src/panels/ump.rs`): the v1.17.3 wire surface —
+  capabilities card (`UmpCapabilities` + pure `ump_integrity_badge`
+  badge/label from the `conformance` line), `POST /ump/remember` (JSON body →
+  `{ok,id}`), `POST /ump/recall` with kind filter + `max_recall` clamped to
+  1..100 (renders the `results` envelope), and `POST /ump/audit` load +
+  verify-chain (`ump_audit`/`ump_recall`/`ump_remember` + `UmpRecallResult`/
+  `UmpAudit` typed wire types).
+- **M7 — System panel** (`src/panels/system.rs`): domains list, snapshot
+  integrity, the Art 30 register (`art30()` pretty-JSON), `POST /reindex`
+  (`ReindexResult`), connectors list (`ConnectorRow`: `kind · instance / state`)
+  + `POST /sources/reconcile` (`ReconcileResult`), and a **Try-it console**
+  (`get_raw`/`post_raw`/`delete_raw` + `serialize_request` request-line builder
+  + `redact_for_history` so the persisted history never stores a token-bearing
+  body).
+- **M8 — Route + nav + i18n**: `Route::Data` (`/data`), `Route::Ump` (`/ump`),
+  `Route::System` (`/system`) under the AppShell; all three added to sidebar
+  rail + mobile tab bar + command palette (nav targets now **12**, guard test
+  updated); new `data_*`/`ump_*`/`sys_*`/`nav_*` keys in all five locales
+  (each locale now 50 keys, en-completeness test green). **api.rs**: `Clone`
+  added to the 10 typed wire structs so `Signal<T>()` call-syntax reads work
+  (root cause of the call-syntax failures; consolidate.rs's `Item` already had
+  it), `post_raw` made `pub`, pure `parse_purge_result`/`retention_to_edits`/
+  `parse_ump_record`/`parse_ump_recall`/`ump_integrity_badge`/
+  `serialize_request`/`redact_for_history` cores + wire-contract tests.
+- Version 1.17.7 → 1.17.8; CHANGELOG §[1.17.8]; CLIENT_ROADMAP v1.17.8 row →
+  Shipped.
+
+### Verification
+
+- `cargo test --manifest-path client/Cargo.toml`: **73 passed** (was 66; +7
+  api.rs wire/parse cores).
+- `cargo clippy --all-targets --manifest-path client/Cargo.toml -- -D warnings`:
+  clean. `cargo fmt --check`: clean. `cargo build` + `cargo build --target
+  wasm32-unknown-unknown`: clean.
+- Dioxus rsx hazards fixed during the build pass (same class as 1.17.7):
+  `let` statements as direct rsx children of `if let` bodies (hoisted all
+  signal reads + label computations before `rsx!`); `t()`/placeholders with
+  literal braces inside rsx format strings (hoisted to locals, simplified
+  `r#"{"query":...}"#` placeholders to plain strings); `Signal<T>()` call
+  syntax needs `T: Clone`; `onkeydown` compares `Key::Enter` not `"Enter"`;
+  named `move |_|` closures can't coerce to `ListenerCallback` (wrapped as
+  `move |_| run_x(())`).
+
+### Ship status
+
+**COMPLETED (code + tests + docs) 2026-08-09**. `./deploy-web.sh` → live
+`/app` re-deploy, tag `v1.17.8`, and the GitHub release are operator steps.
+No server restart needed (client-only static bundle).
+
 ## [1.17.7] — 2026-08-09
 
 ### Client — "Complete" part 2: Graph panel + Create workspace
