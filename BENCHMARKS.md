@@ -115,8 +115,9 @@ and query set.
 ### 0. Prerequisites
 
 ```bash
-export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH"
-cd /Users/mark/Sites/brain-server
+# Point PATH at your stable Rust toolchain, then cd into the repo checkout
+export PATH="$HOME/.rustup/toolchains/stable-$(rustc --version | grep -o 'aarch64\|x86_64')-apple-darwin/bin:$PATH"
+cd /path/to/brain-server-repo
 
 # Unit-test the metric functions themselves (fast, no model download):
 cargo test --test metrics
