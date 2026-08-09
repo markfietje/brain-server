@@ -32,7 +32,7 @@ Relevant doc indices below are into the `DOCS` array in `tests/eval.rs` (0-based
 
 ## Status / scale requirement
 
-This is a **starter set of 32 judged queries** over the 10-doc smoke-corpus in
+This is a **starter set of 37 judged queries** over the 10-doc smoke-corpus in
 `eval.rs`. It is NOT sufficient for a parity claim.
 
 > **REQUIRED before any "parity with QMD" claim:** expand to **≥ 100 judged queries**

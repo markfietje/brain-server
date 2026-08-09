@@ -18,7 +18,6 @@
 mod http;
 
 use http::{delete, get, post};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
@@ -2838,17 +2837,29 @@ fn run_eval(endpoint: &str, floors: &[(String, f32)]) -> Result<bool, String> {
     let mut sums = [0.0_f32; 5]; // r5, r10, p5, p10, mrr
     let mut ndcg_sum = 0.0_f32;
     for q in &queries {
-        // /recall reads `query`; GET /search reads `q` (the pre-v0.9.5 param).
-        let param = if endpoint == "/search" { "q" } else { "query" };
-        let resp = get(
-            &base_url(),
-            endpoint,
-            &[
-                (param.to_string(), q.query.clone()),
-                ("k".to_string(), "10".to_string()),
-            ],
-            auth_token().as_deref(),
-        )?;
+        // GET /search reads `q`+`k` (the pre-v0.9.5 params); POST /recall is a
+        // JSON body (`query`+`limit`) — it was added as POST-only, so a GET
+        // returns 405.
+        let resp = if endpoint == "/search" {
+            get(
+                &base_url(),
+                endpoint,
+                &[
+                    ("q".to_string(), q.query.clone()),
+                    ("k".to_string(), "10".to_string()),
+                ],
+                auth_token().as_deref(),
+            )?
+        } else {
+            post(
+                &base_url(),
+                endpoint,
+                &[],
+                "application/json",
+                &serde_json::json!({ "query": q.query.clone(), "limit": 10 }).to_string(),
+                auth_token().as_deref(),
+            )?
+        };
         if resp.status != 200 {
             return Err(format!(
                 "eval query failed ({}, status {}): {}",
@@ -2960,11 +2971,19 @@ fn results_to_doc_indices(body: &str) -> Vec<i64> {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    let results = v.get("results").and_then(|r| r.as_array());
+    // `/search` (GET) wraps results under `results`; `/recall` (POST) under
+    // `hits`. Both hit shapes carry `content`.
+    let results = v
+        .get("results")
+        .or_else(|| v.get("hits"))
+        .and_then(|r| r.as_array());
     let Some(results) = results else {
         return Vec::new();
     };
-    let doc_set: HashSet<String> = DOCS.iter().map(|d| d.trim().to_string()).collect();
+    // Match content against DOCS directly: the judged `Relevant:` indices are
+    // DOCS-array positions, so the position must be the slice index — a
+    // HashSet `.position()` would be arbitrary (hash order), poisoning recall.
+    let docs: Vec<&str> = DOCS.iter().map(|d| d.trim()).collect();
     results
         .iter()
         .map(|r| {
@@ -2974,9 +2993,8 @@ fn results_to_doc_indices(body: &str) -> Vec<i64> {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            doc_set
-                .iter()
-                .position(|d| d == &content)
+            docs.iter()
+                .position(|d| *d == content)
                 .map(|i| i as i64)
                 .unwrap_or(-1)
         })
@@ -2996,6 +3014,16 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn doc_indices_parse_recall_hits_and_search_results() {
+        let hit = DOCS[0].trim();
+        let recall_body = format!(r#"{{"hits":[{{"content":"{hit}"}}],"decision":"ok"}}"#);
+        let search_body = format!(r#"{{"results":[{{"content":"{hit}"}}]}}"#);
+        assert_eq!(results_to_doc_indices(&recall_body), vec![0]);
+        assert_eq!(results_to_doc_indices(&search_body), vec![0]);
+        assert_eq!(results_to_doc_indices(r#"{"hits":[]}"#), Vec::<i64>::new());
+    }
 
     #[test]
     fn glob_matches_simple_name() {
