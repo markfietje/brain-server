@@ -14,12 +14,14 @@ been run, it is marked **pending** rather than asserted.
 
 ### Server — "Transparency" (EU AI Act Art 50 origin marker + export provenance)
 
-**Server-side** release on the unified version line (client stays at 1.18.1).
-Ships the two real accuracy gaps the v1.18.1 Transparency plan found in
-COMPLIANCE.md §7 (Round 14 pass): an explicit model-vs-human `origin` marker,
-and `/export` provenance that actually carries it. The plan's M3 (ai-notice /
-ai-literacy / cop-notice routes + `docs/AI_LITERACY.md`) had already shipped in
-v1.16.7/v1.16.8 and is unchanged.
+**Unified-version release**: the server ships the Transparency work and the
+client is bumped from 1.18.1 to **1.18.2** so both binaries report the same
+version (the client carries no new code in this bump — see `[1.18.1]` below for
+its last change). Ships the two real accuracy gaps the v1.18.1 Transparency
+plan found in COMPLIANCE.md §7 (Round 14 pass): an explicit model-vs-human
+`origin` marker, and `/export` provenance that actually carries it. The plan's
+M3 (ai-notice / ai-literacy / cop-notice routes + `docs/AI_LITERACY.md`) had
+already shipped in v1.16.7/v1.16.8 and is unchanged.
 
 ### Added
 - **M2 — `knowledge.origin` column** (migration): `TEXT NOT NULL DEFAULT
@@ -51,6 +53,8 @@ regression guard), + `origin` added to `test_migration_schema_contract`.
 
 ---
 
+
+## [1.18.1] — 2026-08-09
 
 ### Client — "Harden" (console-history persistence + measured bundle ceiling)
 
