@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.16.7
-  x-api-version: "1.16.7"
+  version: 1.17.1
+  x-api-version: "1.17.1"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1267,11 +1267,72 @@ paths:
       summary: List decayed chunks for operator review (v1.14.0 M2)
       operationId: listDecayed
       description: >
-        Chunks whose `expires_at` is in the past. Nothing is deleted
-        autonomously; the operator reviews and purges explicitly.
+        Chunks whose effective expiry (own `expires_at`, else the kind-level
+        retention default derived from `created_at`) is in the past. Each row
+        carries a `reason` (`per_chunk` or `kind_policy`) so the operator sees
+        *why* a chunk is decayed. Nothing is deleted autonomously; the operator
+        reviews and purges explicitly.
       responses:
         "200":
           description: Decayed chunks
+  /retention:
+    get:
+      summary: Current per-kind retention policy (v1.17.1 M2)
+      operationId: retentionGet
+      description: >
+        The effective per-kind retention policy (code defaults merged with
+        persisted overrides), the `BRAIN_RETENTION_ENABLED` kill-switch state,
+        and the current per-kind chunk counts. Read-only.
+      responses:
+        "200":
+          description: Retention policy
+    post:
+      summary: Override the per-kind retention policy (v1.17.1 M2)
+      operationId: retentionPost
+      description: >
+        Upserts a persisted per-kind retention override (survives restart).
+        Accepts a single `{kind, days}` pair or a `{policy: {kind: days}}` map.
+        Admin + audited. Retention is applied at query time, never by a
+        background sweeper.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind: { type: string }
+                days: { type: integer, minimum: 1, maximum: 36500 }
+                policy:
+                  type: object
+                  additionalProperties: { type: integer }
+      responses:
+        "200":
+          description: Policy updated
+  /art30:
+    get:
+      summary: Art 30 records-of-processing register (v1.17.1 M5)
+      operationId: art30
+      description: >
+        A projection of existing tables into the EU GDPR Art 30 register the
+        controller must maintain: categories of data, purpose, retention,
+        recipients, transfer legal bases, DSAR exercise history, and chunk
+        lifecycle summary. Admin, read-only.
+      responses:
+        "200":
+          description: The Art 30 register
+  /snapshot/status:
+    get:
+      summary: Snapshot self-check panel (v1.17.1 M7)
+      operationId: snapshotStatus
+      description: >
+        Inspects every `VACUUM INTO` `.bak` snapshot in the DB directory:
+        exists, size, 0600 mode, `PRAGMA integrity_check`, and audit-chain
+        verification of its log. Read-only — never creates or mutates a
+        snapshot.
+      responses:
+        "200":
+          description: Per-snapshot status
   /export:
     get:
       summary: Portable JSON export for data portability (v1.14.0 M2)
@@ -1279,11 +1340,16 @@ paths:
       description: >
         Live `knowledge` rows + graph + proposals ledger. `pii_map` values are
         excluded by default; only included with `?include_pii_map=true` AND a
-        `pii:read` principal.
+        `pii:read` principal. v1.17.1 "Govern" M4: `?format=ump` re-renders the
+        payload as UMP wire records (universalmemoryprotocol.io, spec 0.1).
       parameters:
         - in: query
           name: include_pii_map
           schema: { type: boolean }
+        - in: query
+          name: format
+          description: "`ump` re-renders the payload as UMP records (one per chunk, name-based graph)"
+          schema: { type: string, enum: [ump] }
       responses:
         "200":
           description: Portable JSON export
@@ -1417,7 +1483,14 @@ paths:
         Ingest a memory with optional entities/relations into the resolved
         domain's knowledge graph. Server trusts the caller's graph data after
         validation; entities/relations are upserted idempotently. Centroid is
-        recomputed after each successful ingest.
+        recomputed after each successful ingest. v1.17.1 "Govern" M4:
+        `?format=ump` accepts a UMP envelope (`{"ump":"0.1","records":[…]}`,
+        one record per call) lowered into this same path.
+      parameters:
+        - in: query
+          name: format
+          description: "`ump` accepts a UMP envelope body (one record per call)"
+          schema: { type: string, enum: [ump] }
       requestBody:
         required: true
         content:
@@ -1880,6 +1953,30 @@ paths:
                   schema_version: "1.0"
                   service: brain-server
                   art_4: true
+  /.well-known/cop-notice:
+    get:
+      summary: EU AI Act Code of Practice conformity marker (v1.17.1 M6)
+      description: >
+        PUBLIC route. Machine-readable self-attested conformity state the
+        client's CoP icon lane renders: covered commitments, self-assessment
+        link, last-review timestamp. Declarative only — asserts posture, not
+        certification (a certification badge is the v2.x external gate).
+      operationId: getCopNotice
+      responses:
+        "200":
+          description: CoP conformity marker (JSON)
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "public, max-age=3600" }
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  schema_version: "1.0"
+                  service: brain-server
+                  cop: true
+                  status: self_attested
 components:
   responses:
     BadRequest:
