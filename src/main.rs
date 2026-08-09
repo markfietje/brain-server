@@ -4155,8 +4155,12 @@ async fn main_inner() -> Result<()> {
     // Spawn the revocation purge job. Runs every PURGE_INTERVAL_SECS, drops
     // rows past their `exp`. Cheap (one indexed DELETE). Fresh connection per
     // tick — the job is rare, pooling it adds no value.
+    // Also prunes the in-memory negative-lookup cache (purge_negatives) — that
+    // HashMap grows one entry per unique (jti, iss) checked and would otherwise
+    // grow unbounded for the process lifetime.
     {
         let purge_db_path = db_path.clone();
+        let purge_cache = revocation_cache.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(
                 auth::revocation::PURGE_INTERVAL_SECS,
@@ -4164,6 +4168,7 @@ async fn main_inner() -> Result<()> {
             interval.tick().await; // skip the immediate first tick
             loop {
                 interval.tick().await;
+                purge_cache.purge_negatives();
                 if let Ok(conn) = Connection::open(&purge_db_path) {
                     let _ = auth::revocation::purge_expired(&conn);
                 }
