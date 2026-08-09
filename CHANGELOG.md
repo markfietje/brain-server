@@ -10,7 +10,46 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [Unreleased]
+## [1.17.1] — 2026-08-09
+
+### Server — "Govern"
+
+- **M1 ingest-owner correctness fix** — `/ingest` now seeds `owner` from the
+  principal consistently (`gate::principal_to_owner` is `pub` and wired into
+  the direct-ingest sites), so JWT-mode rows carry the acting subject and the
+  record-level scope story is coherent on writes.
+- **M2 per-kind retention policy** — new `GET/POST /retention` (POST = Admin
+  + audited): kind-default expiry (`fact:365, episodic:30, procedure:730,
+  step:730, decision:730` days, overridable via `BRAIN_RETENTION_KIND_DAYS`)
+  enforced **at query time** in `push_gate_filters` (per-kind `expires_at`
+  disjunction), never by a sweeper. `/decayed` now reports
+  `effective_expiry`/`memory_kind`/`reason` (`per_chunk` vs `kind_policy`).
+  Additive `retention_policy` table; schema stamp 1.17.1.
+- **M3 recall ship-gate CLI** — `brain eval` runs the frozen 32-query
+  fixture (`tests/fixtures/eval_queries.md`) against `/recall` and asserts
+  floors (`--floor r5=0.85 …` or `BENCH_RECALL_FLOOR`); `brain bench` gains
+  the same floor gate. `brain_server::eval` metric fns shared by both.
+- **M4 UMP wire adapter** — `GET /export?format=ump` re-renders the portable
+  export as UMP (universalmemoryprotocol.io spec 0.1) records with a
+  name-based per-chunk graph; `POST /ingest?format=ump` lowers a UMP envelope
+  back into the structured-ingest path. Round-trip is identity on row fields
+  (pinned by tests); batch import is a documented v2.x ceiling.
+- **M5 Art 30 register** — new `GET /art30` (Admin): the activities register
+  every controller must maintain (categories of data, purposes incl. explicit
+  consent/controller obligation, retention, provenance), projected from the
+  existing tables. `BRAIN_CONTROLLER_NAME` names the controller.
+- **M6 CoP marker** — new `/.well-known/cop-notice` (public): machine-readable
+  EU AI Act Code of Practice conformity state (self-attested; commitments +
+  self-assessment link + `last_review`) for the client's CoP icon lane.
+- **M7 snapshot self-check** — new `GET /snapshot/status` (Admin) + `brain
+  snapshot-status`: per `VACUUM INTO` `.bak` — exists, size, `0600`, `PRAGMA
+  integrity_check`, audit-chain verify. No new backup writer.
+
+### Tests
+
+- 451 server tests (+5: UMP round-trip/kind-mapping/malformed-reject, UMP
+  export renderer, CoP marker) + 5 brain-bin tests; clippy `-D warnings` +
+  fmt clean.
 
 ### Docs
 
@@ -28,13 +67,13 @@ been run, it is marked **pending** rather than asserted.
   lists, the router, and `openapi.yaml`; pinned by a unit test.
 - **COMPLIANCE.md** — §7 now references the live `/.well-known/ai-notice`
   disclosure (Art 50 machine-readable origin notice); §6.4 points at
-  `/.well-known/ai-literacy` + `docs/AI_LITERACY.md`. `docs/compliance.md`
-  framework row updated to match.
-- **Wiki mirror** — the three new `docs/` artifacts (AI_LITERACY, RFP
-  response kit, MemGhost mitigation) are now mirrored as hand-authored wiki
-  pages (`AI-Literacy`, `RFP-Response-Kit`, `MemGhost-Mitigation`) and wired
-  into `_Sidebar` + `Home` quick links, so the procurement-facing wiki
-  surfaces the same governance story as the repo.
+  `/.well-known/ai-literacy` + `docs/AI_LITERACY.md`. §7.1 (new, this
+  release) documents the CoP marker.
+- **Wiki mirror** — the three `docs/` artifacts (AI_LITERACY, RFP response
+  kit, MemGhost mitigation) mirrored as hand-authored wiki pages
+  (`AI-Literacy`, `RFP-Response-Kit`, `MemGhost-Mitigation`) and wired into
+  `_Sidebar` + `Home` quick links, so the procurement-facing wiki surfaces
+  the same governance story as the repo.
 
 ## [1.17.0] — 2026-08-08
 

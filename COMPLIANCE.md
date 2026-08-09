@@ -188,6 +188,16 @@ and `jurisdiction: EU AI Act Article 50 (Regulation (EU) 2024/1689)`. A
 deployer can point a consumer or auditor at the URL and at an `/export` bundle
 to close the model-origin transparency loop without pasting a policy.
 
+### 7.1 EU AI Act Code of Practice marker (v1.17.1 M6)
+
+The server serves `GET /.well-known/cop-notice` (public, no auth) — a
+machine-readable, **self-attested** conformity marker the client's CoP icon
+lane renders: the covered commitments (human-in-the-loop write-back, no
+autonomous generation, inspectable decisions, full audit chain), the
+self-assessment pointer (`COMPLIANCE.md`), and a `last_review` timestamp. It
+is declarative — a posture statement, not a certification badge (external
+conformity assessment is an operator gate).
+
 ## 8. Retention Classes
 
 | Class | Contents | Default | Mechanism |
@@ -204,7 +214,11 @@ to close the model-origin transparency loop without pasting a policy.
   on. A loopback deployment must set `BRAIN_AUDIT_READ_EVENTS=on` explicitly
   to collect read traces.
 - No PII encryption at rest — full-disk encryption is the operator's layer.
-- DSAR export is brain-server JSON, not the UMP wire format.
+- DSAR export is brain-server JSON (the `?format=ump` wire form covers the
+  `/export` portability path, not the DSAR certificate envelope).
 - This file is a documented posture, not a certification.
+- The CoP marker is self-attested; certification is an external gate.
+- Retention is query-time + kind-default (`/retention`); no per-record TTL
+  roll-up worker, no autonomous archival.
 - The trace endpoint serves recorded events only; there is no historical
   backfill for recalls that predate v1.15.0.
