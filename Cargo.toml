@@ -2,6 +2,12 @@
 name = "brain-server"
 version = "1.18.2"
 edition = "2021"
+description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/markfietje/brain-server"
+keywords = ["memory", "agent", "ump", "llm", "rag", "embeddings", "local-first", "semantic-search"]
+categories = ["artificial-intelligence", "database", "command-line-utilities"]
 
 [features]
 # Benchmark harness (M0.1). Adds no dependencies — the `bench` binary reuses
