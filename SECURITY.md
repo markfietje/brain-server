@@ -41,7 +41,11 @@ A CycloneDX SBOM is generated for each release by `scripts/sbom.sh` (requires
 `cargo cyclonedx`; writes `sbom/brain-server-<version>.cdx.json`). The SBOM
 lists the full dependency tree from `Cargo.lock` so consumers can scan for
 known vulnerabilities (EU CRA Art 13/14; OWASP A03:2025 supply-chain coverage).
-Generate at release time: `scripts/sbom.sh`.
+
+Since **v1.17.5** the tag release workflow runs the same script and stages
+the SBOM into `dist/` alongside the binaries — every GitHub release ships its
+own `brain-server-<version>.cdx.json`, so consumers never need to build to
+obtain it. Local operator path unchanged: `scripts/sbom.sh`.
 
 ---
 

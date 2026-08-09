@@ -217,6 +217,32 @@ conformity assessment is an operator gate).
 | Content | knowledge chunks | until explicitly purged | `/purge` (ids/owner), DSAR, supersession (`valid_to`) |
 | Placeholder map | `pii_map` (write-time redaction mode) | until operator purges | `/purge`, excluded from `/export` by default |
 
+## 8.5 Release Evidence & Supply Chain (v1.17.5)
+
+Evidence attached to every release, so compliance claims are checkable from
+the artifact itself:
+
+- **SBOM ships with the release** (EU CRA Art 13/14; OWASP A03:2025). The tag
+  release workflow generates a CycloneDX SBOM from `Cargo.lock` via
+  `scripts/sbom.sh` (`cargo-cyclonedx`) and stages it into `dist/` alongside
+  the binaries; the same script is the local operator path. `SECURITY.md`
+  §SBOM explains scanning use.
+- **Retrieval-quality gate runs in CI.** A `recall-gate` job seeds the frozen
+  10-doc smoke corpus into a scratch instance and runs `brain eval` with
+  `--floor r5=0.85,r10=0.85,mrr=0.85` — a regression on the frozen judged set
+  fails the build. Baseline recorded in `BENCHMARKS.md` (37 queries: r@5
+  0.919, r@10 0.919, nDCG@10 0.911, MRR 0.905). This is a wiring/regression
+  gate, **not** evidence of parity: per the BENCHMARKS.md protocol, parity
+  rows stay `PENDING` until ≥100 judged queries on a representative corpus on
+  target hardware (incl. the 4 GB ARM edge).
+- **`brain eval` itself is now live.** The v1.17.5 CLI fix restored the
+  endpoint that the v1.17.1 M3 ship gate was built on (`brain eval` had been
+  sending GET to the POST-only `/recall`, so every run returned 405 and the
+  gate never scored); the frozen-fixture runs above are real.
+- **UMP conformance gate runs in CI** (see §9): the reference suite's
+  `UMP 1.0 / L3` badge line is asserted on every push, keeping the README
+  badge honest.
+
 ## Honest Ceilings
 
 - Single-process audit chain (distributed audit = v2.1 multi-instance work).
@@ -234,6 +260,15 @@ conformity assessment is an operator gate).
   backfill for recalls that predate v1.15.0.
 
 ## 9. UMP 1.0 Integrity + Consent Controls (v1.17.3)
+
+> **v1.17.5 (2026-08-09):** UMP conformance is now **externally verified, not
+> self-attested**. The reference conformance suite
+> (`@universalmemoryprotocol/core` 1.0.0) scores **13/13 checks, UMP 1.0 / L3**
+> against a fresh keyed instance, and a CI job re-runs the suite on every push
+> and asserts the badge line — the README's `UMP 1.0 / L3 verified` badge
+> cannot go stale. The suite's L1.remember dedup (`merged` on rerun against a
+> persistent store) is content-dedup by design; the correct runner target is a
+> throwaway keyed instance with a fresh DB, same as the reference `ump-serve`.
 
 The UMP binding's §5 obligations mapped onto the existing controls:
 
