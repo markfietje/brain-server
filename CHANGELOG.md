@@ -1610,6 +1610,18 @@ migration. This hotfix makes routing automatic on retrieval in shim mode too:
 
 ## [Unreleased]
 
+### Deployment — Docker image + compose (enterprise plan A1) and proxy-SSO guide (B1)
+
+First container story for brain-server (Round 26 enterprise plan, §33):
+
+- **`Dockerfile`** — multi-arch (linux/amd64 + linux/arm64), `debian:bookworm-slim` runtime, non-root `brain` user, `read_only` rootfs + tmpfs, `cap_drop: ALL`, `no-new-privileges`, `/health` healthcheck. The embedding model (`minishlab/potion-retrieval-32M`) is **baked into the image at build time** in the exact hf-hub cache layout (`HF_HOME=/opt/brain-model`), so the container boots offline — no HuggingFace call at first start; pinned revision via `HF_COMMIT` build arg for reproducibility. Loopback-safe default preserved (`BIND_HOST=127.0.0.1`; `BIND_PUBLIC=1` required for public binding).
+- **`docker-compose.yml`** — `brain-server` service (loopback-published `127.0.0.1:8765`, `./data` volume for DB/keys/token, healthcheck, read-only + hardened) and an `oauth2-proxy` service behind the `sso` profile (OIDC, Entra/Okta/Keycloak/Auth0-ready). `docker compose up -d` = pilot online in minutes; `docker compose --profile sso up -d` adds the SSO edge.
+- **`docs/docker.md`** — image facts, build, run, compose, web-client mount, container backup/restore via the in-image `brain` CLI.
+- **`docs/proxy-sso.md`** — reverse-proxy SSO guide: why proxy SSO (server is a token validator, not an OIDC RP), OAuth2-Proxy / Caddy forward-auth / Authentik options, JWT passthrough, IdP matrix, principal handoff, honest limits (native OIDC RP = v1.20 B2).
+- **Docs index + README quick start** updated with the Docker path.
+
+No version bump — lands under [Unreleased] until the v1.19.0 release ceremony.
+
 ## [1.13.0] — 2026-08-06
 
 **"Route" — real domain auto-routing (root-cause fix + relabel migration).**

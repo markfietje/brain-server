@@ -1,0 +1,19 @@
+# Build context hygiene — keep the image build small and deterministic.
+.git
+.github
+target
+client/target
+client/dist
+data
+*.db
+*.db-*
+.DS_Store
+node_modules
+dist
+bench_results
+*.log
+memory
+research
+docs
+*.md
+!README.md

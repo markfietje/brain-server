@@ -17,6 +17,8 @@ root.
 | [Quickstart](./quickstart.md) | Build, run, and make your first recall in minutes |
 | [Architecture](./architecture.md) | How recall, ingest, the knowledge graph, and governance fit together |
 | [Deployment](./deployment.md) | Service install, configuration, backup/restore, operational health |
+| [Docker](./docker.md) | Container image, compose, offline model bake, container ops |
+| [Proxy SSO](./proxy-sso.md) | Reverse-proxy SSO (OAuth2-Proxy / Caddy / Authentik) in front of the server |
 | [Security](./security.md) | Threat model, authentication modes, and the controls that protect data |
 | [MemGhost mitigation](./MEMGHOST_MITIGATION.md) | How brain-server neutralizes the memory-poisoning attack (arXiv 2607.05189) |
 | [AI literacy (Art 4)](./AI_LITERACY.md) | Operator playbook for the EU AI Act Art 4 literacy obligation |

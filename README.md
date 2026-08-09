@@ -67,6 +67,19 @@ cargo build --release --features bench
 
 The server listens on `127.0.0.1:8765` and writes SQLite data to `~/.openclaw/workspace/brain.db` by default.
 
+### Docker (pilot in under five minutes)
+
+```bash
+docker compose up -d
+curl http://127.0.0.1:8765/health
+```
+
+The image bakes the embedding model at build time (offline boot), runs as a
+non-root user with `read_only` rootfs, and defaults to loopback-only binding.
+For SSO in front of the server: `docker compose --profile sso up -d` (see
+[docs/proxy-sso.md](docs/proxy-sso.md)). Full container reference:
+[docs/docker.md](docs/docker.md).
+
 ```bash
 # Health
 curl http://localhost:8765/health

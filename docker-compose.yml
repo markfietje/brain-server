@@ -1,0 +1,88 @@
+# Brain Server — compose reference (A1 + B1 of the enterprise plan, §33).
+#
+#   docker compose up -d                          # API-first pilot, loopback only
+#   docker compose --profile sso up -d            # + OAuth2-Proxy SSO edge
+#
+# The server is loopback-safe by default (BIND_HOST=127.0.0.1, refused 0.0.0.0
+# unless BIND_PUBLIC=1). Inside the container we MUST bind 0.0.0.0 to be
+# reachable via the published port — so BIND_PUBLIC=1 is set explicitly, and
+# the host-side port is published on 127.0.0.1 only. Public exposure should
+# happen at the SSO proxy, not here. See docs/proxy-sso.md.
+
+name: brain-server
+
+services:
+  brain-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: brain-server:local
+    # API-only pilot: publish on the host loopback. In the sso profile the
+    # proxy is the only exposed service; the server stays on the internal net.
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      BIND_HOST: "0.0.0.0"
+      BIND_PUBLIC: "1"
+      BIND_PORT: "8765"
+      BRAIN_DB_PATH: /data/brain.db
+      BRAIN_UMP_KEY_DIR: /data/keys
+      HF_HOME: /opt/brain-model
+      RUST_LOG: info
+      # Auth — create ./data/auth-token (0600) for opaque bearer mode, or set
+      # BRAIN_JWT_ISSUER + mount PEM keys into ./data/keys for JWT mode.
+      # Without AUTH_TOKEN the server is unauthenticated (loopback-only safe).
+      # AUTH_TOKEN_FILE: /data/auth-token
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # ── SSO edge (profile: sso) — reverse-proxy SSO, B1 ───────────────────────
+  # Authenticates users against an OIDC IdP (Entra ID / Okta / Keycloak /
+  # Auth0) and hands the session to brain-server. See docs/proxy-sso.md for
+  # the full guide incl. Caddy forward-auth and Authentik alternatives.
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    profiles: ["sso"]
+    ports:
+      - "127.0.0.1:4180:4180"
+    environment:
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?set OIDC_ISSUER_URL}
+      OAUTH2_PROXY_CLIENT_ID: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set OIDC_CLIENT_SECRET}
+      OAUTH2_PROXY_COOKIE_SECRET: ${OAUTH2_PROXY_COOKIE_SECRET:?set OAUTH2_PROXY_COOKIE_SECRET}
+      OAUTH2_PROXY_HTTP_ADDRESS: 0.0.0.0:4180
+      # brain-server sits on the internal compose network (no host port here).
+      OAUTH2_PROXY_UPSTREAMS: http://brain-server:8765
+      OAUTH2_PROXY_EMAIL_DOMAINS: ${OAUTH2_EMAIL_DOMAINS:-*}
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: "true"
+      # Hand the IdP session to the upstream. For JWT mode, brain-server
+      # validates the forwarded token against BRAIN_JWT_ISSUER + keys in
+      # ./data/keys (import the IdP's public signing key as a PEM — see
+      # docs/proxy-sso.md §JWT-passthrough).
+      OAUTH2_PROXY_SET_AUTHORIZATION_HEADER: "true"
+      OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: "true"
+    depends_on:
+      - brain-server
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
