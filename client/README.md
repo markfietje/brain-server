@@ -4,16 +4,19 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.18.1 "Harden" (shipped)
+## Status — v1.18.2 (aligned with brain-server 1.18.2)
 
-v1.18.0's WCAG/i18n/privacy pass, then v1.18.1 closes the v1.17.8/v1.18.0
-honest ceilings where a real, low-risk improvement exists: the try-it console's
-history now **survives reload** while keeping secrets out of any durable store
-(non-JSON/opaque lines are flagged `secret` and stay in-memory; only
-`redact_for_history`-clean lines persist, capped at 100), and the client wasm
-bundle is **measured** (3.7 MB wasm / 60 KB JS / 40 KB CSS) rather than guessed
-— wasm-split stays deferred until Dioxus 0.8-stable. Native gesture + focus-return
-and a live SSE stream remain honest ceilings (untestable here / v2.x A2A).
+The client version now matches the server: **1.18.2** on both. This is a
+**version-alignment** bump — the client code is unchanged from v1.18.1 (the
+"Transparency" work lives server-side in brain-server 1.18.2). The v1.18.1
+"Harden" release just before it closed the v1.18.0 honest ceilings where a real,
+low-risk improvement exists: the try-it console's history now **survives reload**
+while keeping secrets out of any durable store (non-JSON/opaque lines are
+flagged `secret` and stay in-memory; only `redact_for_history`-clean lines
+persist, capped at 100), and the client wasm bundle is **measured** (3.7 MB
+wasm / 60 KB JS / 40 KB CSS) rather than guessed — wasm-split stays deferred
+until Dioxus 0.8-stable. Native gesture + focus-return and a live SSE stream
+remain honest ceilings (untestable here / v2.x A2A).
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
