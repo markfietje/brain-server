@@ -50,6 +50,10 @@ These run in `cargo test` and are the automated subset of this checklist:
 
 ## Known ceilings
 
+- **axe-core browser gate is an operator/tooling step (v1.18.0)** — needs
+  Playwright + a `dx bundle` + a live server + browser download; not runnable
+  in this repo's CI surface. When runnable: serve the bundle, run axe against
+  every route, fail on violations.
 - Full Tab-cycling focus trap + return-focus-to-trigger in the context drawer
   is the v1.18.0 pass (the drawer currently has `role="dialog"`/`aria-modal` +
   Esc-close; the Radix-style Tab cycle and focus restoration are deferred).

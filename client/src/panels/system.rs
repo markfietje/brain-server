@@ -32,7 +32,30 @@ pub fn panel() -> Element {
     let mut method = use_signal(|| "GET".to_string());
     let mut path = use_signal(String::new);
     let mut body = use_signal(String::new);
-    let mut history = use_signal(Vec::<String>::new);
+    let mut history = use_signal(Vec::<crate::api::StoredLine>::new);
+
+    // M1 (v1.18.1): the console's non-secret history survives reload. Only
+    // `redact_for_history`-clean lines persist (via the existing i18n pref
+    // seam); `secret` lines stay in-memory. Raw token-bearing input is never
+    // written — the `credentials_stay_in_memory` grep guard still holds.
+    const HISTORY_CAP: usize = 100;
+    use_effect(move || {
+        spawn(async move {
+            if let Some(saved) = crate::i18n::pref_load("console_history").await {
+                if history().is_empty() {
+                    let lines = saved
+                        .split('\n')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| crate::api::StoredLine {
+                            text: s.to_string(),
+                            secret: false,
+                        })
+                        .collect();
+                    history.set(lines);
+                }
+            }
+        });
+    });
 
     let load = move |_| {
         let api = api;
@@ -88,7 +111,14 @@ pub fn panel() -> Element {
         let b = body().trim().to_string();
         let redacted = crate::api::redact_for_history(&b);
         let line = crate::api::serialize_request(&m, &p, &redacted);
-        history.write().push(line);
+        let entry = crate::api::StoredLine {
+            text: line,
+            secret: crate::api::line_is_secret(&b),
+        };
+        history.write().push(entry);
+        // M1: persist only the clean subset; secret/empty lines never touch disk.
+        let clean = crate::api::persist_history(history().clone(), HISTORY_CAP);
+        crate::i18n::pref_save("console_history", &clean.join("\n"));
         spawn(async move {
             let resp = if m == "GET" {
                 api().get_raw(&p).await
@@ -248,7 +278,7 @@ pub fn panel() -> Element {
                     ul { class: "space-y-1",
                         for h in history().iter() {
                             li { class: "rounded border border-border p-2 text-xs font-mono",
-                                "{h}"
+                                "{h.text}"
                             }
                         }
                     }

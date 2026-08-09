@@ -1879,6 +1879,37 @@ pub fn redact_for_history(body: &str) -> String {
     serde_json::to_string(&v).unwrap_or_default()
 }
 
+/// v1.18.1 M1: a console history line + whether it is safe to persist.
+/// `secret` lines are held in-memory only — never written to localStorage.
+#[derive(Clone)]
+pub struct StoredLine {
+    pub text: String,
+    pub secret: bool,
+}
+
+/// v1.18.1 M1: a line is `secret` when its request body was non-JSON.
+/// `redact_for_history` returns "" for non-JSON (the body is dropped from the
+/// line) but an opaque body is token-like — we can't prove the request is
+/// clean, so the whole line stays in-memory. JSON bodies are redacted and safe.
+pub fn line_is_secret(body: &str) -> bool {
+    let b = body.trim();
+    !b.is_empty() && serde_json::from_str::<serde_json::Value>(b).is_err()
+}
+
+/// v1.18.1 M1: the console-history subset safe to persist. Drops `secret` and
+/// empty lines, keeps the last `cap` (newest), returns them in display order.
+/// The `redact_for_history` output was already applied before the line existed;
+/// this is the second gate (per-entry secret flag) before anything hits disk.
+pub fn persist_history(entries: Vec<StoredLine>, cap: usize) -> Vec<String> {
+    let clean: Vec<String> = entries
+        .into_iter()
+        .filter(|l| !l.secret && !l.text.trim().is_empty())
+        .map(|l| l.text)
+        .collect();
+    let n = clean.len();
+    clean.into_iter().skip(n.saturating_sub(cap)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2570,5 +2601,49 @@ mod tests {
         assert!(red.contains("\"ok\":true"));
         assert_eq!(redact_for_history("not json"), "");
         assert_eq!(redact_for_history(""), "");
+    }
+
+    /// v1.18.1 M1: an opaque (non-JSON) body marks the line secret so it never
+    /// persists; JSON bodies are redactable and persistable.
+    #[test]
+    fn line_is_secret_for_opaque_non_json_bodies() {
+        assert!(line_is_secret(" raw-token-value "));
+        assert!(line_is_secret("plain text body"));
+        assert!(!line_is_secret(r#"{"content":"x"}"#));
+        assert!(!line_is_secret(""));
+        assert!(!line_is_secret("  "));
+    }
+
+    /// v1.18.1 M1: `persist_history` drops secret + empty lines and caps to the
+    /// newest N in display order.
+    #[test]
+    fn persist_history_drops_secret_lines_and_caps() {
+        let lines = vec![
+            StoredLine {
+                text: "GET /domains".into(),
+                secret: false,
+            },
+            StoredLine {
+                text: "POST /x\nopaque".into(),
+                secret: true,
+            },
+            StoredLine {
+                text: String::new(),
+                secret: false,
+            },
+            StoredLine {
+                text: "POST /y".into(),
+                secret: false,
+            },
+            StoredLine {
+                text: "POST /z".into(),
+                secret: false,
+            },
+        ];
+        assert_eq!(
+            persist_history(lines, 2),
+            vec!["POST /y".to_string(), "POST /z".to_string()]
+        );
+        assert_eq!(persist_history(Vec::new(), 100), Vec::<String>::new());
     }
 }

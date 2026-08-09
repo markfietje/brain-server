@@ -118,6 +118,7 @@ fn key_action(key: &Key, has_conflict: bool) -> Option<ReviewKey> {
         "j" | "J" => Some(ReviewKey::Down),
         "k" | "K" => Some(ReviewKey::Up),
         "s" | "S" if has_conflict => Some(ReviewKey::ApproveSupersede),
+        "?" => Some(ReviewKey::Help),
         _ => None,
     }
 }
@@ -129,6 +130,20 @@ enum ReviewKey {
     Reject,
     Up,
     Down,
+    Help,
+}
+
+/// M1.4: the in-app help rows for the review shortcuts. Pure so the rendered
+/// list and the `?` mapping share one source of truth (WCAG 3.2.6 help).
+/// Keys resolve through i18n so the same table localizes.
+fn keyboard_help() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("review_key_approve", "a"),
+        ("review_key_supersede", "s"),
+        ("review_key_reject", "r"),
+        ("review_key_next", "j"),
+        ("review_key_prev", "k"),
+    ]
 }
 
 pub fn panel() -> Element {
@@ -141,6 +156,7 @@ pub fn panel() -> Element {
     let outcomes = use_signal(HashMap::<i64, RowOutcome>::new);
     let mut cursor = use_signal(|| None::<usize>); // M3.2: keyboard focus index
     let mut shortcuts = use_signal(|| true); // M3.2: 2.1.4 toggle, default on
+    let mut show_help = use_signal(|| false); // M1.4: `?` toggles the help table
     let mut reject_for = use_signal(|| None::<i64>); // proposal id awaiting reason
     let reingest_for = use_signal(|| None::<(i64, String)>); // M3: (id, content) → editor
 
@@ -258,6 +274,7 @@ pub fn panel() -> Element {
                     reject_for.set(Some(id));
                 }
             }
+            Some(ReviewKey::Help) => show_help.set(!show_help()),
             None => {}
         }
     };
@@ -293,8 +310,31 @@ pub fn panel() -> Element {
                     }
                     "keys (A/S/R/J/K)"
                 }
+                // M1.4: discoverable shortcut help (WCAG 3.2.6); `?` toggles it too.
+                button {
+                    class: "btn btn-ghost btn-md",
+                    "type": "button",
+                    "aria-expanded": show_help(),
+                    "aria-label": crate::i18n::t("review_help_toggle"),
+                    onclick: move |_| show_help.set(!show_help()),
+                    "?"
+                }
                 // v1.17.0 M2.4: portable refresh trigger (pull-to-refresh ceil).
                 div { class: "ml-auto", RefreshButton { refresh } }
+            }
+            // M1.4: the help table — the `?`/button toggled in-app keyboard map.
+            if show_help() {
+                dl {
+                    class: "text-xs text-muted-foreground my-2 border border-border rounded p-2",
+                    role: "note",
+                    dt { {crate::i18n::t("review_help")} }
+                    {keyboard_help().iter().map(|(key, k)| rsx! {
+                        div { class: "flex gap-2",
+                            kbd { class: "font-mono border border-border rounded px-1", {*k} }
+                            span { {crate::i18n::t(key)} }
+                        }
+                    })}
+                }
             }
             // v1.16.2 M6: one-line batch summary — surfaces partial failure
             // honestly once a batch has run (rows settle out of Pending).
@@ -727,6 +767,34 @@ mod tests {
         // Unrelated keys are unhandled.
         assert_eq!(key_action(&Key::Character("z".into()), true), None);
         assert_eq!(key_action(&Key::Enter, true), None);
+    }
+
+    /// M1.4: `?` toggles the help table; the help table lists every mapped key
+    /// (so a keyboard-only user can discover the shortcuts — WCAG 3.2.6).
+    #[test]
+    fn question_mark_opens_help_and_table_covers_all_keys() {
+        assert_eq!(
+            key_action(&Key::Character("?".into()), false),
+            Some(ReviewKey::Help)
+        );
+        let mapped: Vec<&str> = ["a", "A", "r", "R", "j", "J", "k", "K"]
+            .into_iter()
+            .filter_map(|c| key_action(&Key::Character(c.into()), true))
+            .map(|k| match k {
+                ReviewKey::Help => "?",
+                ReviewKey::Approve => "a",
+                ReviewKey::ApproveSupersede => "s",
+                ReviewKey::Reject => "r",
+                ReviewKey::Up => "k",
+                ReviewKey::Down => "j",
+            })
+            .collect();
+        let shown: Vec<&str> = keyboard_help().iter().map(|(_, k)| *k).collect();
+        for k in ["a", "s", "r", "j", "k"] {
+            assert!(shown.contains(&k), "help table missing '{k}'");
+        }
+        assert!(shown.contains(&"a"), "approve key documented");
+        assert!(!mapped.is_empty());
     }
 
     /// v1.16.2 M6: `batch_outcome` summarizes the per-row outcomes so the

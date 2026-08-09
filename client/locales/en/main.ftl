@@ -53,6 +53,13 @@ no_pending = No pending proposals.
 approve = Approve
 reject = Reject
 proposal = Proposal
+review_help = Review keyboard shortcuts
+review_help_toggle = Toggle shortcuts help
+review_key_approve = Approve the focused proposal
+review_key_supersede = Approve, superseding the conflicting proposal
+review_key_reject = Reject the focused proposal
+review_key_next = Next proposal
+review_key_prev = Previous proposal
 
 ## Subjects
 deletion_certificate = Deletion certificate
