@@ -4,12 +4,12 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest version:** 1.16.7 "Integrated" (2026-08-08) — client-only: deep links, PWA, paginated audit, command palette, recall debounce, drawer focus trap, aria-live, RTL.
-- **Server + API contract:** stable at 1.16.2–1.16.7 (the only server change since 1.16.2 is the additive `offset` param on `/audit`).
-- **Next milestone:** v1.16.8 "Global".
+- **Latest client version:** 1.17.8 "Complete" (2026-08-09) — the final part of the three-part "Complete" operator-console line: Data & Rights, UMP, and System panels + a Try-it console.
+- **Latest server version:** 1.17.5 "Eval Fix" (2026-08-09) — `brain eval` revived + Round-21 CI gaps (UMP conformance gate, recall floors, CycloneDX SBOM).
+- **Next milestone:** v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 
-## The release line (v0.9 → v1.16)
+## The release line (v0.9 → v1.17)
 
 | Release | Name | What shipped |
 |---|---|---|
@@ -38,11 +38,20 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | v1.14.0 | Gate | Human-in-the-loop write-back + trust surfaces |
 | v1.15.0 | Observe | Read-event audit + recall trace + DSAR + COMPLIANCE.md |
 | v1.16.0 | Client | The Dioxus control surface (web + desktop + mobile) |
-| v1.16.1–1.16.7 | Serve / Styled / Secure / Mobile / Integrated | Serving + CSP, design-system restyle, JWT lifecycle, responsive UX, deep links + PWA |
+| v1.16.1–1.16.8 | Serve / Styled / Secure / Mobile / Integrated / Global | Serving + CSP, design-system restyle, JWT lifecycle, responsive UX, deep links + PWA, i18n + themes |
+| v1.17.0 | Mobile | Portable refresh + deep links + offline connect + store readiness |
+| v1.17.1 | Govern | Per-kind retention + Art 30 + UMP wire adapter + eval ship-gate |
+| v1.17.3 | UMP Rollout | Full UMP 1.0 conformance through L3 (HTTP ops + MCP tools + file binding + identity/capability tokens) |
+| v1.17.4 | UMP Conformance | Reference-suite wire fixes (did:key + integrity block) → L3 |
+| v1.17.5 | Eval Fix | `brain eval` revived + Round-21 CI gates + SBOM |
+| v1.17.6 | Complete 1/3 | Command palette v2 + Overview home |
+| v1.17.7 | Complete 2/3 | Graph panel + Create workspace |
+| v1.17.8 | Complete 3/3 | Data & Rights + UMP + System panels + Try-it console |
 
 ## Milestone themes
 
 - **v1.16.x "Integrated"** — client polish: PWA, deep links, command palette, responsive mobile, paginated audit.
+- **v1.17.x "Govern" → "Complete"** — governance server releases (retention, Art 30, UMP conformance) then the full operator console that surfaces them (12 panels).
 - **v2.0.0 "Cortex"** — multi-team tenancy, ready, consuming the v1.2 AuthN/AuthZ foundation.
 - **v2.1+ "Limits" / "Regions"** — distributed revocation, scaling.
 - **v3.x "Survive" / "Sovereign"** — federated, sovereign deployments.

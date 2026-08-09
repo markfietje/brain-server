@@ -1,6 +1,6 @@
 # RFP Response Kit
 
-**Applies to:** Brain Server 1.16.7 · **Last updated:** 2026-08-08
+**Applies to:** Brain Server 1.17.5 · **Last updated:** 2026-08-09
 
 A map from common enterprise RFP sections to the concrete Brain Server features that satisfy them, so a procurement response can cite **evidence instead of promises**. Every claim below points at a real control, route, or test. It is a *pointer* document — the technical file (`COMPLIANCE.md`), threat model, security map, SBOM (`cargo audit` / `Cargo.lock`), and audit chain (`/audit/verify`) are the evidence base behind each line.
 

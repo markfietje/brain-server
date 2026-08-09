@@ -4,16 +4,26 @@ Brain Server ships with a **Dioxus control surface** (`client/`) — a single Ru
 
 ## What the GUI provides
 
-The client has six wired panels, plus a connect-first onboarding flow:
+The client has **12 wired panels**, plus a connect-first onboarding flow, grouped under a sidebar rail (desktop) / bottom tab bar (mobile):
 
-| Panel | What it shows |
-|---|---|
-| **Review** | The human-in-the-loop write-back queue — approve, reject, or suggest re-ingest with the A/S/R/J/K keyboard (WCAG 2.1.4 toggle for sticky keys) |
-| **Recall** | Search + the decision-path viewer: per-retriever ranks, fused score, relevance tiers, `min_relevance` slider, deep-linkable trace artifact |
-| **Subjects** | The DSAR certificate card — found/purged/tombstone-root/chain-head/certified-at + a live green/red chain badge |
-| **Security** | The audit chain card, quarantine review, and the auth-failure feed |
-| **Audit** | Audit filters + JSON export |
-| **Health** | Service + corpus status |
+| Panel | Route | What it shows |
+|---|---|---|
+| **Overview** | `/` | Decision-first home: a 4-card status row (Health / Snapshot / Retention / UMP), a DAR-chain alert list, and a top-5 pending-proposal queue with one-click Approve/Reject |
+| **Review** | `/review` | The human-in-the-loop write-back queue — approve, reject, or suggest re-ingest with the A/S/R/J/K keyboard (WCAG 2.1.4 toggle for sticky keys) |
+| **Recall** | `/recall` | Search + the decision-path viewer: per-retriever ranks, fused score, relevance tiers, `min_relevance` slider, deep-linkable trace artifact |
+| **Graph** | `/graph` | Browse + traverse the knowledge graph: debounced entity lookup and typed multi-hop hop-chains with a `kind` filter |
+| **Create** | `/create` | The write workspace hub — Ingest (structured / markdown / memory), Procedures step-builder + classify + decision evaluation, and Consolidate propose/apply/undo |
+| **Subjects** | `/subjects` | The DSAR certificate card — found/purged/tombstone-root/chain-head/certified-at + a live green/red chain badge |
+| **Security** | `/security` | The audit chain card, quarantine review, and the auth-failure feed |
+| **Audit** | `/audit` | Audit filters + JSON export |
+| **Data** | `/data` | Data & Rights: purge (by ids or owner), portable export (JSON / UMP / UMP-Markdown), per-kind retention editor, the `/decayed` review list, and the `/tombstones` deletion registry |
+| **UMP** | `/ump` | Universal Memory Protocol: capabilities card + integrity badge, remember, recall (kind filter + max_recall), and audit + verify chain |
+| **System** | `/system` | The operator console: domains, snapshot integrity, Art 30 register, reindex, connectors + reconcile, and a Try-it console with request-line building + secret redaction |
+| **Health** | `/health` | Service + corpus status |
+
+### Command palette
+
+The ⌘K / Ctrl+K overlay (v1.16.7) was upgraded to a fused **nav + lookup + action** palette (v1.17.6): grouped Recent/Go to/Lookup/Run rows, 5-per-group cap, persisted recents, `/` re-focus, a two-step destructive confirm, and per-row aria-labels.
 
 ### Honest-batch review
 
@@ -53,6 +63,7 @@ The web build ships as a PWA with an offline shell (the service worker caches on
 
 ## Next steps
 
+- **[Complete Operator Console](Client-Complete-Console)** — the 12-panel v1.17.6→v1.17.8 line in detail.
 - **[Installation](Installation)** — serving the GUI at `/app`.
 - **[API Reference](API-Reference)** — the API the GUI talks to.
 - **[Security](Security)** — how the GUI authenticates (JWT pairs, silent refresh).

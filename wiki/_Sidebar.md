@@ -32,6 +32,8 @@ Local-first semantic-memory & knowledge-graph server for AI agents.
 - [API Reference](API-Reference)
 - [CLI Reference](CLI-Reference)
 - [Client GUI](Client-GUI)
+- [Complete Operator Console](Client-Complete-Console)
+- [Dioxus WASM Split Research](Dioxus-WASM-Split-Research)
 
 **Ecosystem**
 

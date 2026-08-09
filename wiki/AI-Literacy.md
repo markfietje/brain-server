@@ -1,6 +1,6 @@
 # AI Literacy — Deployer Playbook (EU AI Act Art 4)
 
-**Applies to:** Brain Server 1.16.7 · **Last updated:** 2026-08-08
+**Applies to:** Brain Server 1.17.5 · **Last updated:** 2026-08-09
 
 The EU AI Act's **Art 4** (Regulation (EU) 2024/1689) requires providers and deployers to take reasonable steps to ensure a sufficient level of AI literacy among the people who operate or use a system. This page is the operational playbook for the memory component: what it is, why it is inspectable, and how a deployer demonstrates literacy against the controls the server already ships.
 

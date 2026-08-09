@@ -23,7 +23,7 @@ Brain Server inverts all three: **zero per-query cost, zero data egress, zero ne
 | **Temporal evidence** | Every ingest is time-stamped; point-in-time recall returns the fact as it was at any moment |
 | **Governance** | Append-only SHA-256 audit chain, prompt-injection quarantine, human-gated write-back, GDPR export/purge/DSAR |
 | **Deterministic honesty** | Calibrated abstention (says "I don't know"), claim span verification, reviewable proposals |
-| **Client control surface** | A Dioxus web + desktop + mobile GUI for review, recall, security, subjects, audit, and health |
+| **Client control surface** | A Dioxus web + desktop + mobile GUI — 12 panels covering review, recall, graph, create, subjects, security, audit, data, UMP, system console, and health, plus a ⌘K command palette |
 
 ## Who it is for
 
@@ -43,6 +43,7 @@ Brain Server inverts all three: **zero per-query cost, zero data egress, zero ne
 - **[RFP Response Kit](RFP-Response-Kit)** — features mapped to enterprise RFP sections
 - **[Features](Features)** — everything it can do
 - **[Client GUI](Client-GUI)** — the visual control surface
+- **[Complete Operator Console](Client-Complete-Console)** — the 12-panel v1.17.6→v1.17.8 client line
 - **[Roadmap & Release History](Roadmap-and-Release-History)** — the version line
 - **[FAQ](FAQ)** — common questions
 
@@ -65,7 +66,7 @@ Brain Server inverts all three: **zero per-query cost, zero data egress, zero ne
 | **Language / stack** | Rust · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Embedding model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **License** | MIT |
-| **Latest version** | 1.16.7 (server contract stable since 1.16.2) |
+| **Latest version** | Client 1.17.8 "Complete" · Server 1.17.5 "Eval Fix" |
 | **Source** | [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server) |
 
 ## Get started
