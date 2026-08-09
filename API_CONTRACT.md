@@ -690,7 +690,11 @@ added, not a usable id). `similarity_score: 1.0` is kept as a legacy field.
 
 ## 15. UMP binding (v1.17.3) — Universal Memory Protocol 1.0
 
-The UMP 1.0 surface is a bounded binding of the spec at
+The **Universal Memory Protocol** is the open standard for portable AI agent
+memory: records carry content hashes and signatures, access is granted by
+capability tokens, and the same memory moves across servers, agents, and tools.
+This section is the exact binding brain-server implements. The UMP 1.0 surface
+is a bounded binding of the spec at
 github.com/edihasaj/universal-memory-protocol (SPEC.md, wire shape per the
 actual 1.0 spec, corrected in v1.17.2).
 

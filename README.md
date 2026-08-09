@@ -43,6 +43,7 @@ That is the whole pitch: zero per-query cost, zero data egress, zero recall late
 - **Honest when it is unsure.** Recall abstains with `{decision: "low_confidence"}` instead of returning a confident wrong answer. `/verify` checks that a claim really appears in a chunk's text.
 - **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it.
 - **Governance and compliance.** An append-only SHA-256 audit chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
+- **Universal Memory Protocol (UMP 1.0).** A full implementation of the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) standard for portable agent memory: signed records, capability tokens, HTTP + MCP + file bindings, conformance level L3. Memory written here can be read by any other UMP agent.
 - **One self-contained binary.** Embedded SQLite and sqlite-vec. Runs anywhere Rust compiles.
 - **Easy to wire up.** OpenAI-compatible embeddings, an MCP server, a `brain` CLI, a Dioxus GUI, and a native OpenClaw memory plugin.
 
@@ -92,6 +93,30 @@ The Dioxus app in `client/` runs on web, desktop, iOS, and Android from one Rust
 ```bash
 cd client && ./deploy-web.sh
 ```
+
+## Universal Memory Protocol
+
+Brain Server implements the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) (UMP 1.0) end to end, at conformance level L3: signed records with tamper-evident integrity, capability tokens for consent-based access, batch ingest, and three bindings (HTTP, MCP tools, and a portable Markdown file format). Any UMP 1.0 agent can read memory written here, and this server can read memory exported by other UMP implementations.
+
+```bash
+# Create the operator identity and a capability token
+brain ump keygen
+brain ump token --verb read,write
+
+# Write and read portable memory over HTTP
+curl -X POST localhost:8765/ump/remember \
+  -H "Authorization: Bearer <capability>" -H "Content-Type: application/json" \
+  -d '{"kind":"fact","content":"Dave runs the alpha team.","scope":"global"}'
+curl localhost:8765/ump/recall \
+  -H "Authorization: Bearer <capability>" -H "Content-Type: application/json" \
+  -d '{"query":"alpha"}'
+
+# Export everything as UMP Markdown, import it back on another host
+brain ump export --out memory.ump.md
+brain ump import memory.ump.md
+```
+
+Details live in [API_CONTRACT.md §15](API_CONTRACT.md#15-ump-binding-v1173--universal-memory-protocol-10) and the [Universal Memory Protocol wiki article](https://github.com/markfietje/brain-server/wiki/Universal-Memory-Protocol).
 
 ## Configuration
 
