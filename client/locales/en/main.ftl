@@ -181,3 +181,50 @@ cons_near_dup = near-dup
 cons_conflict = conflict
 cons_applied = Applied {n} supersessions
 cons_undone = Undone {n}
+
+## Data (v1.17.8 M5 — Rights group)
+nav_data = Data
+data_title = Data
+data_sub = Rights and portability: purge, export, retention, registries.
+data_status = Ready
+data_purge = Purge
+data_export = Export
+data_exported = Export generated
+data_retention = Retention
+data_retention_state = Retention
+data_retention_kind = Kind
+data_retention_days = Days
+data_retention_bad_days = Days must be a whole number
+data_retention_set = Updated {n} override(s)
+data_decayed = Decayed
+data_tombstones = Tombstones
+data_empty = Nothing to show.
+data_purge_ids = Chunk ids (comma/space separated)
+data_purge_owner = Or purge all for owner
+data_purged = Purged {n} chunk(s)
+data_purge_empty = Provide chunk ids or an owner
+
+## UMP (v1.17.8 M6 — Portability group)
+nav_ump = UMP
+ump_title = UMP
+ump_sub = UMP 1.0 wire operations: capabilities, remember, recall, audit.
+ump_caps = Capabilities
+ump_remember = Remember
+ump_recall = Recall
+ump_audit = Audit
+ump_bad_json = Invalid JSON
+ump_remembered = Remembered
+ump_chain_ok = Chain verified
+ump_chain_bad = Chain tampered
+
+## System (v1.17.8 M7 — System group)
+nav_system = System
+sys_title = System
+sys_sub = Operator console: domains, snapshot, Art 30, sources, try-it.
+sys_domains = Domains
+sys_snapshot = Snapshot integrity
+sys_art30 = Art 30 register
+sys_reindex = Reindex
+sys_reindexed = Reindexed {n} chunks
+sys_sources = Sources & connectors
+sys_console = Try-it console

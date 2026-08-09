@@ -299,7 +299,7 @@ impl ApiClient {
 
     /// v1.17.7 M4: POST a raw text body (the `/ingest/memory` contract reads
     /// the body as a UTF-8 text block, not JSON).
-    async fn post_raw(&self, path: &str, body: String) -> Result<serde_json::Value, ApiError> {
+    pub async fn post_raw(&self, path: &str, body: String) -> Result<serde_json::Value, ApiError> {
         let base = self.base.clone();
         let http = self.http.clone();
         self.request(move |tok| {
@@ -317,6 +317,36 @@ impl ApiClient {
         let http = self.http.clone();
         self.request(move |tok| {
             let mut rb = http.post(format!("{base}{path}"));
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
+    }
+
+    /// v1.17.8 M7.3: the console's raw GET — returns the response body JSON
+    /// (the try-it history is rendered from this). 404s surface as errors like
+    /// every other call, so a bad path shows red, not silence.
+    pub async fn get_raw(&self, path: &str) -> Result<serde_json::Value, ApiError> {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        self.request(move |tok| {
+            let mut rb = http.get(format!("{base}{path}"));
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
+    }
+
+    /// v1.17.8 M7.3: the console's raw DELETE.
+    pub async fn delete_raw(&self, path: &str) -> Result<serde_json::Value, ApiError> {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        self.request(move |tok| {
+            let mut rb = http.delete(format!("{base}{path}"));
             if let Some(t) = tok {
                 rb = rb.bearer_auth(t);
             }
@@ -661,6 +691,172 @@ impl ApiClient {
     pub async fn consolidate_undo(&self, ids: &[i64]) -> Result<UndoResponse, ApiError> {
         let body = serde_json::json!({ "old_chunks": ids });
         self.post_json("/consolidate/undo", &body).await
+    }
+
+    // --- v1.17.8 M5 — Rights/Data methods ------------------------------------
+
+    /// POST /purge — hard erasure of chunks by id or owner (Admin). `ids XOR
+    /// owner`; the server tombstones + audits. Returns `{purged, reason}`.
+    pub async fn purge(&self, ids: &[i64], owner: Option<&str>) -> Result<PurgeResult, ApiError> {
+        let mut body = serde_json::json!({});
+        if !ids.is_empty() {
+            body["ids"] = serde_json::json!(ids);
+        }
+        if let Some(o) = owner.filter(|o| !o.trim().is_empty()) {
+            body["owner"] = serde_json::json!(o.trim());
+        }
+        self.post_json("/purge", &body).await
+    }
+
+    /// GET /export?format= — the portable GDPR/UMP export body (Admin for
+    /// `format != json`). `json` returns the full `{knowledge, entities,
+    /// relationships, proposals}` object the panel can hand to a downloader.
+    pub async fn export(&self, format: &str) -> Result<serde_json::Value, ApiError> {
+        self.get_json(&format!("/export?format={}", url_encode(format)))
+            .await
+    }
+
+    /// POST /retention — set an override (`{kind, days}`) or a full
+    /// `{policy: {kind: days}}` map (Admin). Returns `{updated, set}`.
+    pub async fn retention_set(
+        &self,
+        kind: &str,
+        days: i64,
+    ) -> Result<RetentionSetResult, ApiError> {
+        let body = serde_json::json!({ "kind": kind, "days": days });
+        self.post_json("/retention", &body).await
+    }
+
+    /// POST /retention — clear an override back to the code default.
+    pub async fn retention_clear(&self, kind: &str) -> Result<RetentionSetResult, ApiError> {
+        let body = serde_json::json!({ "kind": kind, "days": serde_json::Value::Null });
+        self.post_json("/retention", &body).await
+    }
+
+    // --- v1.17.8 M6 — UMP ops methods ----------------------------------------
+
+    /// GET /ump/memory/{id} — one UMP record by numeric id or `urn:ump:…`.
+    pub async fn ump_memory(&self, id: &str) -> Result<serde_json::Value, ApiError> {
+        self.get_json(&format!("/ump/memory/{}", url_encode(id)))
+            .await
+    }
+
+    /// POST /ump/remember — lower a partial record (created|merged|rejected).
+    pub async fn ump_remember(&self, record: &serde_json::Value) -> Result<UmpWrite, ApiError> {
+        self.post_json("/ump/remember", record).await
+    }
+
+    /// POST /ump/revise — patch an existing record → new revision + supersede.
+    pub async fn ump_revise(
+        &self,
+        id: &str,
+        patch: &serde_json::Value,
+    ) -> Result<UmpRevise, ApiError> {
+        let body = serde_json::json!({ "id": id, "patch": patch });
+        self.post_json("/ump/revise", &body).await
+    }
+
+    /// POST /ump/forget — soft (tombstoned) or hard (erased) deletion.
+    pub async fn ump_forget(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+        hard: bool,
+    ) -> Result<UmpForget, ApiError> {
+        let mut body = serde_json::json!({ "id": id, "hard": hard });
+        if let Some(r) = reason.filter(|r| !r.trim().is_empty()) {
+            body["reason"] = serde_json::json!(r.trim());
+        }
+        self.post_json("/ump/forget", &body).await
+    }
+
+    /// POST /ump/feedback — followed|overridden|ignored|contradicted.
+    pub async fn ump_feedback(
+        &self,
+        id: &str,
+        outcome: &str,
+        session: Option<&str>,
+    ) -> Result<UmpOk, ApiError> {
+        let mut body = serde_json::json!({ "id": id, "outcome": outcome });
+        if let Some(s) = session.filter(|s| !s.trim().is_empty()) {
+            body["session"] = serde_json::json!(s.trim());
+        }
+        self.post_json("/ump/feedback", &body).await
+    }
+
+    /// POST /ump/recall — UMP §3.2 recall with the five signals per result.
+    pub async fn ump_recall(
+        &self,
+        query: &str,
+        limit: u32,
+        kind: Option<&str>,
+    ) -> Result<UmpRecall, ApiError> {
+        let mut body = serde_json::json!({ "query": query, "limit": limit });
+        if let Some(k) = kind.filter(|k| !k.trim().is_empty()) {
+            body["filter"] = serde_json::json!({ "kind": vec![k.trim()] });
+        }
+        self.post_json("/ump/recall", &body).await
+    }
+
+    /// POST /ump/audit — the reference audit facility (Admin, tenant-scoped).
+    pub async fn ump_audit(&self, kind: Option<&str>, limit: usize) -> Result<UmpAudit, ApiError> {
+        let mut body = serde_json::json!({ "limit": limit });
+        if let Some(k) = kind.filter(|k| !k.trim().is_empty()) {
+            body["kind"] = serde_json::json!(k.trim());
+        }
+        self.post_json("/ump/audit", &body).await
+    }
+
+    /// GET /ump/audit/verify — authoritative full-chain verification.
+    pub async fn ump_audit_verify(&self) -> Result<UmpOk, ApiError> {
+        self.get_json("/ump/audit/verify").await
+    }
+
+    // --- v1.17.8 M7 — System methods -----------------------------------------
+
+    /// GET /art30 — the Art 30 records-of-processing register (Admin).
+    pub async fn art30(&self) -> Result<serde_json::Value, ApiError> {
+        self.get_json("/art30").await
+    }
+
+    /// GET /domains — the domain registry (name + counts).
+    pub async fn domains(&self) -> Result<DomainsResponse, ApiError> {
+        self.get_json("/domains").await
+    }
+
+    /// GET /connectors — the registered connector ledger.
+    pub async fn connectors(&self) -> Result<ConnectorsResponse, ApiError> {
+        self.get_json("/connectors").await
+    }
+
+    /// POST /reindex — re-embed every chunk (Admin). Returns `{status,
+    /// reembedded, skipped}`.
+    pub async fn reindex(&self) -> Result<ReindexResult, ApiError> {
+        self.post_empty("/reindex").await
+    }
+
+    /// POST /sources/reconcile — retire sources whose URI is no longer live.
+    pub async fn sources_reconcile(
+        &self,
+        kind: &str,
+        live_uris: &[String],
+    ) -> Result<ReconcileResult, ApiError> {
+        let body = serde_json::json!({ "kind": kind, "live_uris": live_uris });
+        self.post_json("/sources/reconcile", &body).await
+    }
+
+    /// DELETE /sources/{id} — retire one source + sweep its chunks.
+    pub async fn delete_source(&self, id: i64) -> Result<serde_json::Value, ApiError> {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        self.request(move |tok| {
+            let mut rb = http.delete(format!("{base}/sources/{id}"));
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
     }
 }
 
@@ -1079,7 +1275,7 @@ pub struct Stats {
 // --- v1.17.6 M2 — Overview wire types (mirror the confirmed handler shapes) --
 
 /// `GET /snapshot/status` (govern.rs) — every `VACUUM INTO` `.bak` in the DB dir.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SnapshotStatus {
     pub db: String,
@@ -1089,7 +1285,7 @@ pub struct SnapshotStatus {
     pub snapshots: Vec<SnapshotRow>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SnapshotRow {
     pub file: String,
@@ -1102,7 +1298,7 @@ pub struct SnapshotRow {
 }
 
 /// `GET /retention` (govern.rs) — effective policy + per-kind counts.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RetentionStatus {
     pub enabled: bool,
@@ -1115,7 +1311,7 @@ pub struct RetentionStatus {
 }
 
 /// `GET /ump/capabilities` (ump_ops.rs) — the §3.1 negotiation handshake.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct UmpCapabilities {
     pub server: UmpServer,
     pub ump: String,
@@ -1131,14 +1327,14 @@ pub struct UmpCapabilities {
     pub audit: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct UmpServer {
     pub name: String,
     pub version: String,
 }
 
 /// `GET /decayed` (gate.rs) — a bare Vec of expired chunks.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DecayedRow {
     pub id: i64,
@@ -1180,7 +1376,7 @@ pub struct TombstonesResponse {
     pub tombstones: Vec<TombstoneRow>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TombstoneRow {
     pub knowledge_id: i64,
@@ -1355,6 +1551,138 @@ pub struct UndoResponse {
     pub rejected: Vec<String>,
 }
 
+// --- v1.17.8 M5/M6/M7 — Rights, UMP, System wire types ------------------------
+
+/// `POST /purge` (gate.rs) — how many chunks were erased + the tombstone reason.
+#[derive(Debug, Deserialize)]
+pub struct PurgeResult {
+    pub purged: usize,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `POST /retention` (govern.rs) — how many overrides were written.
+#[derive(Debug, Deserialize)]
+pub struct RetentionSetResult {
+    pub updated: usize,
+    #[serde(default)]
+    pub set: Vec<serde_json::Value>,
+}
+
+/// `POST /ump/remember` (ump_ops.rs) — the content-addressed id + the §3.3
+/// result word (`created | merged | rejected`).
+#[derive(Debug, Deserialize)]
+pub struct UmpWrite {
+    pub id: String,
+    pub result: String,
+}
+
+/// `POST /ump/revise` (ump_ops.rs) — the new revision id + the old id it
+/// superseded.
+#[derive(Debug, Deserialize)]
+pub struct UmpRevise {
+    pub id: String,
+    #[serde(default)]
+    pub supersedes: Vec<String>,
+}
+
+/// `POST /ump/forget` (ump_ops.rs) — `erased` (hard) vs `tombstoned` (soft).
+#[derive(Debug, Deserialize)]
+pub struct UmpForget {
+    pub result: String,
+}
+
+/// `POST /ump/feedback` / `GET /ump/audit/verify` — the `{ok: true}` contract.
+#[derive(Debug, Deserialize)]
+pub struct UmpOk {
+    pub ok: bool,
+}
+
+/// `POST /ump/recall` (ump_ops.rs) — §3.2 results: record + five signals.
+#[derive(Debug, Deserialize)]
+pub struct UmpRecall {
+    #[serde(default)]
+    pub results: Vec<UmpRecallResult>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UmpRecallResult {
+    pub record: serde_json::Value,
+    #[serde(default)]
+    pub signals: serde_json::Value,
+    #[serde(default)]
+    pub score: f32,
+}
+
+/// `POST /ump/audit` (ump_ops.rs) — `{rows, count}` (rows stay raw Values;
+/// the exact `AuditRow` shape is already pinned by the `/audit` client type,
+/// so the UMP panel just renders `rows.len()` + the JSON).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UmpAudit {
+    #[serde(default)]
+    pub rows: Vec<serde_json::Value>,
+    pub count: usize,
+}
+
+/// `GET /domains` (domains.rs) — the registry.
+#[derive(Debug, Deserialize)]
+pub struct DomainsResponse {
+    #[serde(default)]
+    pub domains: Vec<DomainInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainInfo {
+    pub name: String,
+    pub entries: i64,
+    pub entities: i64,
+    pub relations: i64,
+    #[serde(default)]
+    pub multi_db: bool,
+}
+
+/// `GET /connectors` (connectors.rs) — the ledger rows.
+#[derive(Debug, Deserialize)]
+pub struct ConnectorsResponse {
+    #[serde(default)]
+    pub connectors: Vec<ConnectorRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ConnectorRow {
+    pub id: i64,
+    pub kind: String,
+    pub instance: String,
+    pub state: String,
+    #[serde(default)]
+    pub last_sync_at: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+/// `POST /reindex` (main.rs) — re-embed counts.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReindexResult {
+    pub status: String,
+    #[serde(default)]
+    pub reembedded: usize,
+    #[serde(default)]
+    pub skipped: usize,
+}
+
+/// `POST /sources/reconcile` (sources.rs) — retired sources/chunks + orphans.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReconcileResult {
+    pub kind: String,
+    #[serde(default)]
+    pub deleted_sources: usize,
+    #[serde(default)]
+    pub deleted_chunks: usize,
+    #[serde(default)]
+    pub orphan_uris: Vec<String>,
+}
+
 // --- v1.17.7 M3/M4 — pure cores (wire decode + display, testable) ------------
 
 /// v1.17.7 M3.4: decode the entity response. `None` for the backend's 200
@@ -1453,6 +1781,102 @@ pub fn parse_ingest_result(json: &serde_json::Value) -> IngestOutcome {
             }
         }
     }
+}
+
+// --- v1.17.8 M5/M6/M7 — pure cores (Rights, UMP, System wire decode) ----------
+
+/// v1.17.8 M5: reduce the `POST /purge` response to the tombstone count + the
+/// reason string. `None` on any shape drift (the panel then shows the error).
+pub fn parse_purge_result(json: &serde_json::Value) -> Option<PurgeResult> {
+    serde_json::from_value(json.clone()).ok()
+}
+
+/// v1.17.8 M5: render the retention policy `BTreeMap` as a sortable Vec of
+/// (kind, days) so the editor iterates deterministically (BTreeMap already
+/// sorts by key; this is the display shape). Empty map → empty Vec.
+pub fn retention_to_edits(policy: &std::collections::BTreeMap<String, i64>) -> Vec<(String, i64)> {
+    policy.iter().map(|(k, v)| (k.clone(), *v)).collect()
+}
+
+/// v1.17.8 M6: decode one UMP record — the panel reads `{record: …}` (the
+/// `/ump/memory/{id}` shape) OR a bare record (the `/ump/recall` result
+/// record). Returns the record object or `None` on a non-object shape.
+pub fn parse_ump_record(json: &serde_json::Value) -> Option<serde_json::Value> {
+    let rec = json.get("record").unwrap_or(json);
+    if rec.is_object() {
+        Some(rec.clone())
+    } else {
+        None
+    }
+}
+
+/// v1.17.8 M6: decode the `POST /ump/recall` §3.2 results envelope into the
+/// typed results. `None` on shape drift.
+pub fn parse_ump_recall(json: &serde_json::Value) -> Option<UmpRecall> {
+    serde_json::from_value(json.clone()).ok()
+}
+
+/// v1.17.8 M6: the integrity/conformance badge — L3 when a key is configured,
+/// L2 otherwise, "unknown" on any other value. Returns the badge token class +
+/// the label, both i18n-free (the panel renders them; `t()` wraps the label).
+pub fn ump_integrity_badge(conformance: &str) -> (&'static str, String) {
+    let class = match conformance {
+        "L3" => "badge-ok",
+        "L2" => "badge-warn",
+        _ => "badge-neutral",
+    };
+    (class, format!("UMP 1.0 · {conformance}"))
+}
+
+/// v1.17.8 M7.3: render a request as the wire line the console displays/sends —
+/// `METHOD /path` + the (optional) JSON body pretty-printed. The token is NEVER
+/// embedded; the caller attaches it as the bearer separately. Returns the line
+/// for the history log + the display pane.
+pub fn serialize_request(method: &str, path: &str, body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        format!("{method} {path}")
+    } else {
+        let pretty = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+            .unwrap_or_else(|| trimmed.to_string());
+        format!("{method} {path}\n{pretty}")
+    }
+}
+
+/// v1.17.8 M7.3: strip PII-shaped values from a request body before it lands in
+/// the persisted console history (localStorage is non-secret). Replaces values
+/// under obvious secret-ish keys with `"[redacted]"`; the shape survives so the
+/// operator sees what was sent without the secret. Never persisted at all if
+/// the whole body is secret (single top-level secret key).
+pub fn redact_for_history(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return String::new(); // not JSON → nothing persisted
+    };
+    const SECRET_KEYS: &[&str] = &[
+        "token",
+        "auth",
+        "refresh_token",
+        "access_token",
+        "password",
+        "secret",
+        "key",
+        "refresh_token",
+    ];
+    if let serde_json::Value::Object(map) = &mut v {
+        for (k, val) in map.iter_mut() {
+            let lk = k.to_ascii_lowercase();
+            if SECRET_KEYS.iter().any(|s| lk.contains(s)) {
+                *val = serde_json::json!("[redacted]");
+            }
+        }
+    }
+    serde_json::to_string(&v).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2068,5 +2492,83 @@ mod tests {
         assert_eq!(map.get("revenue"), Some(&1200.0));
         assert!(!map.contains_key("s"));
         assert!(crate::panels::procedures::parse_decision_vars("not json").is_empty());
+    }
+
+    // --- v1.17.8 M5/M6/M7 — Rights, UMP, System pure cores --------------------
+
+    #[test]
+    fn purge_result_parses() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"purged":3,"reason":"operator purge"}"#).unwrap();
+        let r = parse_purge_result(&v).unwrap();
+        assert_eq!(r.purged, 3);
+        assert_eq!(r.reason, "operator purge");
+    }
+
+    #[test]
+    fn retention_to_edits_sorts_by_kind() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert("fact".into(), 90);
+        m.insert("procedure".into(), 30);
+        let edits = retention_to_edits(&m);
+        assert_eq!(
+            edits,
+            vec![("fact".to_string(), 90), ("procedure".to_string(), 30)]
+        );
+        assert!(retention_to_edits(&std::collections::BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn ump_record_parses_wrapped_and_bare() {
+        let wrapped: serde_json::Value =
+            serde_json::from_str(r#"{"record":{"id":"urn:ump:1","name":"x"}}"#).unwrap();
+        assert_eq!(parse_ump_record(&wrapped).unwrap()["name"], "x");
+        let bare: serde_json::Value =
+            serde_json::from_str(r#"{"id":"urn:ump:1","name":"y"}"#).unwrap();
+        assert_eq!(parse_ump_record(&bare).unwrap()["id"], "urn:ump:1");
+        assert!(parse_ump_record(&serde_json::json!(42)).is_none());
+    }
+
+    #[test]
+    fn ump_recall_parses_results_envelope() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"results":[{"record":{"id":"urn:ump:1"},"signals":{"kind":"fact"},"score":0.9}]}"#,
+        )
+        .unwrap();
+        let r = parse_ump_recall(&v).unwrap();
+        assert_eq!(r.results.len(), 1);
+        assert_eq!(r.results[0].score, 0.9);
+        assert_eq!(r.results[0].record["id"], "urn:ump:1");
+    }
+
+    #[test]
+    fn ump_integrity_badge_maps_levels() {
+        let (c3, l3) = ump_integrity_badge("L3");
+        assert_eq!(c3, "badge-ok");
+        assert_eq!(l3, "UMP 1.0 · L3");
+        let (c2, _) = ump_integrity_badge("L2");
+        assert_eq!(c2, "badge-warn");
+        let (cn, ln) = ump_integrity_badge("X9");
+        assert_eq!(cn, "badge-neutral");
+        assert_eq!(ln, "UMP 1.0 · X9");
+    }
+
+    #[test]
+    fn serialize_request_handles_json_and_plain() {
+        let with_body = serialize_request("POST", "/ump/remember", r#"{"content":"x"}"#);
+        assert!(with_body.starts_with("POST /ump/remember\n"));
+        assert!(with_body.contains("\"content\": \"x\""));
+        let no_body = serialize_request("GET", "/ump/capabilities", "");
+        assert_eq!(no_body, "GET /ump/capabilities");
+    }
+
+    #[test]
+    fn redact_for_history_strips_secrets_preserves_shape() {
+        let red = redact_for_history(r#"{"content":"x","token":"abc","ok":true}"#);
+        assert!(!red.contains("abc"));
+        assert!(red.contains("\"[redacted]\""));
+        assert!(red.contains("\"ok\":true"));
+        assert_eq!(redact_for_history("not json"), "");
+        assert_eq!(redact_for_history(""), "");
     }
 }

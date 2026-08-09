@@ -13,7 +13,9 @@
 #![allow(unused_braces)]
 
 use dioxus::prelude::*;
-use panels::{audit, create, graph, health, overview, recall, review, security, subjects};
+use panels::{
+    audit, create, data, graph, health, overview, recall, review, security, subjects, system, ump,
+};
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
 // reader (compiler-invisible), so unrendered fields warn as "never read" —
@@ -222,6 +224,15 @@ enum Route {
     Create {},
     #[route("/health")]
     Health {},
+    /// v1.17.8 M5: Rights group — data (purge/export/retention).
+    #[route("/data")]
+    Data {},
+    /// v1.17.8 M6: Portability group — UMP wire ops.
+    #[route("/ump")]
+    Ump {},
+    /// v1.17.8 M7: System group — console (domains/snapshot/art30/reindex/sources/console).
+    #[route("/system")]
+    System {},
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -684,6 +695,9 @@ fn AppShell() -> Element {
     let nav_security = t("nav_security");
     let nav_audit = t("nav_audit");
     let nav_health = t("nav_health");
+    let nav_data = t("nav_data");
+    let nav_ump = t("nav_ump");
+    let nav_system = t("nav_system");
     let review_title = t("review_title");
     let sign_out = t("sign_out");
     let loopback = t("loopback");
@@ -732,6 +746,9 @@ fn AppShell() -> Element {
                     NavLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
                     NavLink { to: Route::Create {}, "{nav_create}" }
                     NavLink { to: Route::Health {}, "{nav_health}" }
+                    NavLink { to: Route::Data {}, "{nav_data}" }
+                    NavLink { to: Route::Ump {}, "{nav_ump}" }
+                    NavLink { to: Route::System {}, "{nav_system}" }
                 }
                 div { class: "border-t border-border p-3",
                 div { class: "flex items-center gap-2 text-sm",
@@ -774,6 +791,9 @@ fn AppShell() -> Element {
                 TabLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
                 TabLink { to: Route::Create {}, "{nav_create}" }
                 TabLink { to: Route::Health {}, "{nav_health}" }
+                TabLink { to: Route::Data {}, "{nav_data}" }
+                TabLink { to: Route::Ump {}, "{nav_ump}" }
+                TabLink { to: Route::System {}, "{nav_system}" }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
                 // Slim top bar: connection + pending summary + prefs.
@@ -950,6 +970,9 @@ fn command_keywords(c: &Command) -> &'static [&'static str] {
         Command::Navigate(Route::Security {}) => &["security", "quarantine", "flags", "auth"],
         Command::Navigate(Route::Audit {}) => &["audit", "log", "history", "chain"],
         Command::Navigate(Route::Health {}) => &["health", "status", "capacity", "service"],
+        Command::Navigate(Route::Data {}) => &["data", "purge", "export", "retention", "rights"],
+        Command::Navigate(Route::Ump {}) => &["ump", "portability", "protocol", "interop"],
+        Command::Navigate(Route::System {}) => &["system", "admin", "console", "domains", "ops"],
         Command::SignOut => &["signout", "sign out", "logout", "exit"],
         Command::Lookup(Lookup::Proposal(_)) => &["proposal", "propose", "approve"],
         Command::Lookup(Lookup::Chunk(_)) => &["chunk", "memory", "get"],
@@ -978,6 +1001,9 @@ fn palette_commands(configured: bool) -> Vec<Command> {
         Command::Navigate(Route::Audit {}),
         Command::Navigate(Route::Create {}),
         Command::Navigate(Route::Health {}),
+        Command::Navigate(Route::Data {}),
+        Command::Navigate(Route::Ump {}),
+        Command::Navigate(Route::System {}),
     ];
     if configured {
         v.push(Command::SignOut);
@@ -1062,6 +1088,9 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::Security {}) => "Security",
         Command::Navigate(Route::Audit {}) => "Audit",
         Command::Navigate(Route::Health {}) => "Health",
+        Command::Navigate(Route::Data {}) => "Data",
+        Command::Navigate(Route::Ump {}) => "UMP",
+        Command::Navigate(Route::System {}) => "System",
         Command::SignOut => "Sign out",
         Command::Lookup(Lookup::Proposal(_)) => "Open proposal",
         Command::Lookup(Lookup::Chunk(_)) => "Open chunk",
@@ -1529,6 +1558,21 @@ fn Create() -> Element {
 fn Health() -> Element {
     health::panel()
 }
+/// v1.17.8 M5: Rights group — data panel (purge/export/retention/registries).
+#[component]
+fn Data() -> Element {
+    data::panel()
+}
+/// v1.17.8 M6: Portability group — UMP wire ops panel.
+#[component]
+fn Ump() -> Element {
+    ump::panel()
+}
+/// v1.17.8 M7: System group — console panel (domains/snapshot/art30/reindex/console).
+#[component]
+fn System() -> Element {
+    system::panel()
+}
 
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
@@ -1748,7 +1792,10 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, Command::Navigate(_)))
             .count();
-        assert_eq!(count, 9, "the nine nav targets (incl. Graph + Create)");
+        assert_eq!(
+            count, 12,
+            "the twelve nav targets (Overview→Health + Data/UMP/System)"
+        );
         assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
         let anonymous = palette_commands(false);
         assert!(
@@ -1796,6 +1843,9 @@ mod tests {
             Route::Audit {},
             Route::Create {},
             Route::Health {},
+            Route::Data {},
+            Route::Ump {},
+            Route::System {},
         ] {
             assert!(nav.contains(&r), "palette missing Navigate for {r:?}");
         }

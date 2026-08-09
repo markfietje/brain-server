@@ -6,6 +6,7 @@
 pub mod audit;
 pub mod consolidate;
 pub mod create;
+pub mod data;
 pub mod graph;
 pub mod health;
 pub mod ingest;
@@ -15,6 +16,8 @@ pub mod recall;
 pub mod review;
 pub mod security;
 pub mod subjects;
+pub mod system;
+pub mod ump;
 
 use dioxus::prelude::*;
 
