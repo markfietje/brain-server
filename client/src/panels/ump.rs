@@ -39,7 +39,15 @@ pub fn panel() -> Element {
             }
         });
     };
-    load_caps(());
+
+    // Load capabilities once on mount, not on every render. An unconditional
+    // `load_caps(())` in the body re-fires per keystroke (the panel re-renders
+    // as `recall_q`/`status`/`results` change), stacking a `/ump/capabilities`
+    // request per keystroke on top of the 5s `/health` probe — enough to trip
+    // the server's per-IP 10k/60s limiter (then `/health` also 429s → the
+    // client's "rate limited" + "reconnecting"). The ⟳ button keeps a manual
+    // refresh.
+    use_effect(move || load_caps(()));
 
     let mut run_remember = move |_| {
         let api = api;
