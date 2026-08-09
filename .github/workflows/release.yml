@@ -37,6 +37,16 @@ jobs:
           done
           ls -la dist
 
+      - name: Generate CycloneDX SBOM
+        # Reuses the local operator path (scripts/sbom.sh): a CycloneDX SBOM
+        # from Cargo.lock, shipped alongside the release binaries (EU CRA /
+        # OWASP A03:2025). cargo-cyclonedx is a release-time tool, not a
+        # runtime dependency.
+        run: |
+          cargo install cargo-cyclonedx --locked
+          ./scripts/sbom.sh
+          cp sbom/*.cdx.json dist/
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:

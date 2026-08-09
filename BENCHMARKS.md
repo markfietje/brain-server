@@ -255,8 +255,17 @@ reachable. Faster per-core but a different machine; kept for the delta.
 
 ### Quality (frozen final query set)
 
+> **v1.17.4 smoke run (2026-08-09)** — the 10-doc CI smoke corpus
+> (`tests/fixtures/eval_queries.md`, 37 judged queries) on the default
+> profile, scratch instance, this dev host. **Not a parity claim** — per the
+> protocol, parity rows stay `PENDING` until ≥100 judged queries run on a
+> representative corpus on target hardware (incl. 4 GB ARM). Numbers here
+> only pin the `brain eval` gate (`brain eval --floor r5=0.85,r10=0.85,mrr=0.85`
+> exits 0; `BENCH_RECALL_FLOOR` env drives the CI job).
+
 | Config | recall@5 | recall@10 | nDCG@10 | MRR | precision@k |
 |---|---|---|---|---|---|
+| BS-3 hybrid+PRF (smoke set) | 0.919 | 0.919 | 0.911 | 0.905 | p@5 0.276 / p@10 0.138 |
 | BS-1 dense-only | PENDING | PENDING | PENDING | PENDING | PENDING |
 | BS-2 hybrid | PENDING | PENDING | PENDING | PENDING | PENDING |
 | BS-3 hybrid+PRF | PENDING | PENDING | PENDING | PENDING | PENDING |
