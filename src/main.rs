@@ -10192,6 +10192,13 @@ Final paragraph after the rule.";
         assert_eq!(rec["scope"]["owner"], owner);
         let ch = rec["integrity"]["content_hash"].as_str().unwrap();
         assert!(ch.starts_with("blake3:"), "{ch}");
+        assert!(
+            rec["integrity"]["signature"]
+                .as_str()
+                .unwrap()
+                .starts_with("ed25519:"),
+            "reference verifyHash requires the ed25519: prefix"
+        );
         assert!(rec["integrity"]["signer"]
             .as_str()
             .unwrap()

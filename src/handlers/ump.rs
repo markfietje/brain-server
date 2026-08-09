@@ -330,7 +330,10 @@ pub fn emit_record(
                 integrity["content_hash"].as_str().unwrap_or(""),
                 sk,
             );
-            integrity["signature"] = json!(base64::engine::general_purpose::STANDARD.encode(sig));
+            integrity["signature"] = json!(format!(
+                "ed25519:{}",
+                base64::engine::general_purpose::STANDARD.encode(sig)
+            ));
             integrity["signer"] = json!(did);
         }
         rec["integrity"] = integrity;
@@ -363,7 +366,10 @@ pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
         }
         return match (pk, record["integrity"]["signature"].as_str()) {
             (Some(pk), Some(sig)) => {
-                let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(sig) else {
+                // Reference §2.8 form carries an `ed25519:` prefix; bare
+                // base64 (pre-fix emit) is still accepted.
+                let b64 = sig.strip_prefix("ed25519:").unwrap_or(sig);
+                let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
                     return false;
                 };
                 brain_server::ump_integrity::verify_hash_string(content_hash, pk, &sig_bytes)
@@ -807,6 +813,12 @@ mod tests {
         );
         assert_eq!(rec["integrity"]["signer"], did);
         assert!(rec["integrity"]["signature"].is_string());
+        assert!(
+            rec["integrity"]["signature"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("ed25519:")),
+            "reference §2.8 signature carries the ed25519: prefix"
+        );
         assert!(rec["integrity"]["content_hash"].is_string());
         assert!(verify_record(&rec, Some(&pk)));
         assert!(

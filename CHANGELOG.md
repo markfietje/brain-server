@@ -35,7 +35,12 @@ still verify (dual-read), but new signatures use the reference format.
   the reference's JS-flavor canonicalization (integral floats serialize as
   `1`, not `1.0`; U+2028/U+2029 escaped) so the reference `verify()` byte-
   matches; the signature is Ed25519 over BLAKE3 of the `content_hash` STRING.
-  `verify_record` dual-reads the legacy v1.17.3 shape.
+  `verify_record` dual-reads the legacy v1.17.3 shape. **Fix found by the
+  live reference run:** the emitted signature initially carried bare base64 —
+  the reference `verifyHash` requires the `ed25519:` prefix (`/^ed25519:(.+)$/`),
+  so `L3.signed` failed until the emit gained the prefix (verify accepts both
+  forms). Pinned by assertions in `emit_record_signed_and_verified_with_
+  operator_key` + `ump_suite_parity_l1_to_l3`.
 - **`from_ump` version gate lenient** — op requests carry no `ump` field
   (the suite sends none); absent now defaults to `1.0` (only an explicit
   unknown major is rejected).
@@ -72,6 +77,16 @@ prior `time.valid_to` + `superseded_by` pointing at the new urn, forget →
 ### Verification
 - `cargo test --features bench,migrate`: 473 bin + 70 lib + 9 + 8 + 7 + 3×2
   green; `--ignored` suite-parity test green. clippy `-D warnings` + fmt clean.
+- **External reference run (live)**: `@universalmemoryprotocol/core` 1.0.0
+  `ump-conformance` against a throwaway keyed instance (fresh DB + operator
+  key + `AUTH_TOKEN`): **13/13 checks, `UMP 1.0 / L3`** — L1 capabilities
+  (ump 1.0, 5 kinds), remember `created`, get, recall (urn id + `signals`),
+  L2 revise + bi-temporal `valid_to` + superseded, forget `tombstoned`,
+  validation 400 `invalid_record`, L3 discovery, **signed (reference
+  `verify()` byte-matches + Ed25519 verifies)**, feedback `{ok:true}`,
+  capability tokens (no-token 401, token 200), subscribe SSE. Reruns against
+  a persistent DB report `merged` on L1.remember by design (content dedup) —
+  the suite assumes a fresh store, same as the reference `ump-serve`.
 
 ---
 
