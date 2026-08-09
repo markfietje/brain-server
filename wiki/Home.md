@@ -66,7 +66,7 @@ Brain Server inverts all three: **zero per-query cost, zero data egress, zero ne
 | **Language / stack** | Rust · Axum · rusqlite (WAL) · r2d2 · tokio |
 | **Embedding model** | `minishlab/potion-retrieval-32M` (512-dim, static, ~120 MiB RSS) |
 | **License** | MIT |
-| **Latest version** | Client 1.17.8 "Complete" · Server 1.17.5 "Eval Fix" |
+| **Latest version** | Server 1.18.2 "Transparency" · Client 1.18.1 "Harden" |
 | **Source** | [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server) |
 
 ## Get started

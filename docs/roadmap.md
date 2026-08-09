@@ -9,13 +9,18 @@ journey to the current version and where it is going. The authoritative plan is
 
 ## Current status
 
-**v1.16.x — the client control surface.** Brain Server now ships a Dioxus GUI
-(web + desktop + iOS + Android from one Rust codebase) on top of a mature server.
-The v1.16 line added: connection state machine with a false-offline guard,
-honest-batch review, a recall decision-path viewer, DSAR certificate cards, an
+**v1.18.x — the latest server line (1.18.2 "Transparency").** Brain Server ships a
+Dioxus GUI (web + desktop + iOS + Android from one Rust codebase) on top of a
+mature server. The v1.18 server line added the Art 50 `knowledge.origin`
+model-vs-human marker and `/export` provenance (`export_format_version: 2`) on a
+unified 1.18.2 version line; the v1.18 client line added WCAG 2.2 AA `?`
+keyboard help, a client CI gate, and secret-safe persistent console history
+(client 1.18.1). Earlier server releases added: connection state machine,
+honest-batch review, recall decision-path viewer, DSAR certificate cards,
 auth-failure feed, audit filters + export, a shadcn/ui-styled sidebar dashboard,
-JWT refresh lifecycle on the client, and mobile-responsive UX with secure keyring
-token storage.
+JWT refresh lifecycle, mobile-responsive UX with secure keyring token storage,
+and the v1.17 governance line (per-kind retention, Art 30, UMP 1.0 conformance
+through L3).
 
 The server core (retrieval, graph, governance) is stable and heavily tested
 (500+ tests).
@@ -43,14 +48,12 @@ The server core (retrieval, graph, governance) is stable and heavily tested
 
 | Milestone | Theme |
 |---|---|
-| **v1.16.7 "Integrated"** | Final client integration polish |
-| **v1.16.8 "Global"** | Client-wide global milestone |
 | **v2.0 "Cortex"** | Multi-team tenancy — the first externally-pilotable release (consumes the v1.2 AuthN/AuthZ foundation) |
 | **v2.x** | Distributed revocation, limits/regions, federation |
 | **v3.x** | Sovereign + survive (resilience), federated deployments |
 | **v4.0** | Sovereign standard |
 
-The intermediate milestones (v1.17–v1.27) cover profiles, regulated modes, roles,
+The intermediate milestones (v1.19–v1.27) cover profiles, regulated modes, roles,
 connectors, and BPO operations. The plan is evidence-gated: work is only shipped
 when it is verifiable and earned by a need, not speculation.
 

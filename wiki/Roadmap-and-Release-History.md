@@ -4,8 +4,8 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest client version:** 1.17.8 "Complete" (2026-08-09) — the final part of the three-part "Complete" operator-console line: Data & Rights, UMP, and System panels + a Try-it console.
-- **Latest server version:** 1.17.5 "Eval Fix" (2026-08-09) — `brain eval` revived + Round-21 CI gaps (UMP conformance gate, recall floors, CycloneDX SBOM).
+- **Latest server version:** 1.18.2 "Transparency" (2026-08-09) — Art 50 `knowledge.origin` marker + `/export` provenance (`export_format_version: 2`), on the unified 1.18.2 version line (client stays at 1.18.1).
+- **Latest client version:** 1.18.1 "Harden" (2026-08-09) — console history persists across reload (secret-safe), client bundle measured (wasm 3.7 MB + 60 KB JS + 40 KB CSS).
 - **Next milestone:** v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 
@@ -47,11 +47,15 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | v1.17.6 | Complete 1/3 | Command palette v2 + Overview home |
 | v1.17.7 | Complete 2/3 | Graph panel + Create workspace |
 | v1.17.8 | Complete 3/3 | Data & Rights + UMP + System panels + Try-it console |
+| v1.18.0 | Compliant | `?` keyboard help on Review (WCAG 3.2.6) + a `client-gate` CI job |
+| v1.18.1 | Harden | Console history persists (secret-safe) + measured client bundle |
+| v1.18.2 | Transparency | Art 50 `knowledge.origin` marker + `/export` provenance |
 
 ## Milestone themes
 
 - **v1.16.x "Integrated"** — client polish: PWA, deep links, command palette, responsive mobile, paginated audit.
 - **v1.17.x "Govern" → "Complete"** — governance server releases (retention, Art 30, UMP conformance) then the full operator console that surfaces them (12 panels).
+- **v1.18.x "Compliant" → "Transparency"** — WCAG 2.2 AA + i18n + privacy hardening, secret-safe console history, and the Art 50 origin marker + export provenance.
 - **v2.0.0 "Cortex"** — multi-team tenancy, ready, consuming the v1.2 AuthN/AuthZ foundation.
 - **v2.1+ "Limits" / "Regions"** — distributed revocation, scaling.
 - **v3.x "Survive" / "Sovereign"** — federated, sovereign deployments.
