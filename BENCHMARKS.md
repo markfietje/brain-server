@@ -273,6 +273,54 @@ reachable. Faster per-core but a different machine; kept for the delta.
 | QMD-1 default | PENDING | PENDING | PENDING | PENDING | PENDING |
 | QMD-2 fast/no-rerank | PENDING | PENDING | PENDING | PENDING | PENDING |
 
+### Known-item self-retrieval regression (operator vault, 2026-08-09)
+
+> **Not a QMD parity claim, not external hand-judgment.** This is an automated
+> **known-item regression** over the operator's live vault (8695 chunks, this dev
+> host, default hybrid+PRF profile): each query is a 200-char excerpt of a chunk's
+> own content, and its `relevant_ids` are that chunk plus its near-duplicate
+> content siblings (token-overlap ≥ 0.5 within the same document). It measures
+> "does `/recall` surface the source chunk (and its near-copies) for a query drawn
+> from that chunk's own text" — a weak, self-grounded floor. 120 queries, `k=5`.
+> Reproduce: `bench scaffold` → seed `relevant_ids` from chunk ids → 
+> `BRAIN_EVAL_JUDGMENTS=<file> bench eval`.
+>
+> **What this deliberately does NOT show:** external relevance against queries an
+> operator would actually ask, on target hardware (incl. 4 GB ARM). Those rows
+> remain `PENDING` below. Parity rows stay `PENDING` until ≥100 hand-judged queries
+> (external, not content-derived) run on a representative corpus on target hardware.
+>
+> **QMD status (2026-08-09):** QMD publishes no recall/precision benchmark numbers
+> and is not installed on this host, so the QMD-1/QMD-2 parity rows are not merely
+> `PENDING` — they are unattainable without the operator running `qmd bench` on a
+> comparable corpus. Nothing here is a parity claim against QMD.
+
+| metric | value |
+|---|---|
+| queries | 120 |
+| precision@5 | 0.1750 |
+| recall@5 | 0.6775 |
+| MRR | 0.6204 |
+| NDCG@5 | 0.6273 |
+| answer_in_context_rate | 0.0000 |
+
+
+### Latency — dev host (macOS Apple Silicon, operator vault 8,695 docs, 2026-08-09)
+
+> **Not an ARM/edge measurement, not a parity claim.** Self-measured `POST
+> /recall` (default hybrid+PRF, `k=5`) against the live dev-host server
+> (v1.18.2, `unsafe_blocks:1`) on the operator's real 8,695-doc vault. The
+> point is "is the small hardened binary fast," not "beats QMD on an edge
+> device." 30 sequential samples.
+
+| metric | value |
+|---|---|
+| p50 | 20 ms |
+| p95 | 25 ms |
+| p99 | 32 ms |
+| min | 20 ms |
+| max | 45 ms |
+
 ### Latency & resources (edge 4 GB ARM)
 
 | Config | p50 lat | p95 lat | cold-start | RSS idle | RSS load | DB size | model-cache | ingest throughput |

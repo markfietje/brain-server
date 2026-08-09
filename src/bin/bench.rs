@@ -76,6 +76,57 @@ fn dirs_home() -> std::path::PathBuf {
     std::path::PathBuf::from(".")
 }
 
+/// Authoring aid for the judged retrieval corpus. GETs `/export` (which lists
+/// every chunk with id/content/title over HTTP — no DB link needed) and writes
+/// a browsable inventory the operator turns into `{query, relevant_ids}`
+/// judgments for `bench eval`.
+fn run_scaffold(out: Option<&str>) -> Result<(), String> {
+    let bearer = auth_token();
+    let resp = match get(&base_url(), "/export", &[], bearer.as_deref()) {
+        Ok(r) if r.status == 200 => r,
+        Ok(r) => return Err(format!("server unhealthy (status {})", r.status)),
+        Err(e) => return Err(format!("cannot reach server: {e}")),
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("/export returned non-JSON: {e}"))?;
+    let chunks = scaffold_from_export(&value);
+    if chunks.is_empty() {
+        return Err("no chunks found — ingest a corpus first".into());
+    }
+    let path = out.unwrap_or("judgments.scaffold.json").to_string();
+    let pretty = serde_json::to_string_pretty(&chunks)
+        .map_err(|e| format!("cannot serialize scaffold: {e}"))?;
+    std::fs::write(&path, pretty).map_err(|e| format!("cannot write {path}: {e}"))?;
+    println!(
+        "scaffold: wrote {} chunks to {path} — fill in query + relevant_ids per chunk, then `bench eval`",
+        chunks.len()
+    );
+    Ok(())
+}
+
+/// Extract the chunk inventory (`{id, title, content}`) from a `/export` body.
+/// Pure so the shape contract is unit-testable without a live server.
+fn scaffold_from_export(body: &serde_json::Value) -> Vec<serde_json::Value> {
+    body.get("knowledge")
+        .and_then(|k| k.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|k| {
+                    let id = k.get("id")?.as_i64()?;
+                    let content = k.get("content")?.as_str()?;
+                    Some(serde_json::json!({
+                        "id": id,
+                        "title": k.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                        "content": content,
+                        "query": "",
+                        "relevant_ids": [],
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn scales() -> Vec<usize> {
     std::env::var("BENCH_SCALES")
         .unwrap_or_else(|_| "1000,5000,10000".to_string())
@@ -200,10 +251,14 @@ fn main() {
     // harness against a judgments file (BRAIN_EVAL_JUDGMENTS). The default
     // (no arg) runs the synthetic-scale latency/RSS benchmark as before.
     let args: Vec<String> = std::env::args().collect();
-    let res = if args.get(1).map(String::as_str) == Some("eval") {
-        run_eval()
-    } else {
-        run()
+    let res = match args.get(1).map(String::as_str) {
+        Some("eval") => run_eval(),
+        // Authoring aid for the judged retrieval corpus (the BENCHMARKS.md
+        // blocker). Dumps every chunk (id + title + content) from `/export` to
+        // a browsable file the operator fills with `{query, relevant_ids}` →
+        // `bench eval`.
+        Some("scaffold") => run_scaffold(args.get(2).map(String::as_str)),
+        _ => run(),
     };
     if let Err(e) = res {
         eprintln!("bench: {e}");
@@ -404,6 +459,8 @@ fn print_report(base: &str, searches: usize, rows: &[Row], rss_after_batches: &[
 ///
 /// The 100-query hand-judged corpus against the live DB is an operator step —
 /// this function is the reproducible engine any judgments file plugs into.
+/// Author the judgments with `bench scaffold` (dumps chunk id/content/title to
+/// a browsable file you fill in).
 /// Ship gate: set `BENCH_EVAL_REGRESSION_PCT` (default 2.0); if recall@5 drops
 /// more than that vs the `BENCH_EVAL_BASELINE` JSON, exits non-zero.
 fn run_eval() -> Result<(), String> {
@@ -529,7 +586,7 @@ fn run_eval() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::percentile;
+    use super::{percentile, scaffold_from_export};
     use std::time::Duration;
 
     fn ms(n: u64) -> Duration {
@@ -557,5 +614,34 @@ mod tests {
         assert_eq!(percentile(&s, 50.0), ms(3)); // index 2
         assert_eq!(percentile(&s, 95.0), ms(5)); // index 4
         assert_eq!(percentile(&s, 99.0), ms(5)); // index 4
+    }
+
+    // The scaffold's export→inventory shape contract: a malformed/missing
+    // `knowledge` array yields empty, real rows carry id/title/content.
+    #[test]
+    fn scaffold_extracts_chunk_inventory_from_export() {
+        let body = serde_json::json!({
+            "export_format_version": 2,
+            "knowledge": [
+                {"id": 1, "content": "Dave works at Acme.", "title": "d1"},
+                {"id": 2, "content": "Carol runs the lab.", "title": null},
+                {"id": "not-an-id", "content": "skip me", "title": "x"},
+                {"id": 4, "title": "y"},
+            ],
+        });
+        let chunks = scaffold_from_export(&body);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0]["id"], 1);
+        assert_eq!(chunks[0]["content"], "Dave works at Acme.");
+        assert_eq!(chunks[0]["title"], "d1");
+        // Missing title defaults to ""; a non-i64 id or a missing content is dropped.
+        assert_eq!(chunks[1]["title"], "");
+        assert_eq!(chunks[1]["id"], 2);
+    }
+
+    #[test]
+    fn scaffold_handles_missing_knowledge_array() {
+        let body = serde_json::json!({"export_format_version": 2});
+        assert!(scaffold_from_export(&body).is_empty());
     }
 }
