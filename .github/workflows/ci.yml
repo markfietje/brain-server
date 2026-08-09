@@ -55,3 +55,104 @@ jobs:
       - uses: rustsec/audit-check@v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  ump-conformance:
+    # External reference-suite gate behind the README "UMP 1.0 / L3 verified"
+    # badge: boot a scratch keyed instance and run the official
+    # @universalmemoryprotocol/core conformance runner. The runner exits 0 for
+    # any level >= L1, so the gate asserts the badge line itself.
+    name: UMP 1.0 conformance (reference suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build server + CLI
+        run: cargo build --release --bin brain-server --bin brain
+      - name: start scratch keyed instance
+        run: |
+          SCRATCH="$(mktemp -d)"
+          echo "$SCRATCH" > /tmp/ump-scratch
+          "$GITHUB_WORKSPACE/target/release/brain" ump keygen --dir "$SCRATCH/keys" > /tmp/ump-keygen.log
+          printf 'ump-conformance-ci-token' > "$SCRATCH/token"
+          BIND_PORT=18483 \
+            BRAIN_DB_PATH="$SCRATCH/brain.db" \
+            BRAIN_UMP_KEY_DIR="$SCRATCH/keys" \
+            AUTH_TOKEN_FILE="$SCRATCH/token" \
+            "$GITHUB_WORKSPACE/target/release/brain-server" &
+          echo $! > /tmp/ump-pid
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:18483/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18483/health
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: run reference conformance suite
+        run: |
+          npm install --no-save @universalmemoryprotocol/core@1.0.0
+          OUT="$(node node_modules/@universalmemoryprotocol/core/dist/bin/conformance.js http://127.0.0.1:18483 --token ump-conformance-ci-token)"
+          printf '%s\n' "$OUT"
+          case "$OUT" in
+            *"UMP 1.0 / L3"*) ;;
+            *) echo "::error::UMP conformance below L3 (badge would be dishonest)" && exit 1 ;;
+          esac
+      - name: stop scratch instance
+        if: always()
+        run: kill "$(cat /tmp/ump-pid)" 2>/dev/null || true
+
+  recall-gate:
+    # Evidence-gated recall ship gate (v1.17.1 M3): seed a scratch instance
+    # with the frozen 10-doc smoke corpus, run `brain eval` over the 37
+    # judged queries, and enforce BENCH_RECALL_FLOOR. Regressions on the
+    # frozen set fail CI. Smoke set only — parity claims are gated by
+    # BENCHMARKS.md protocol (>=100 queries on target hardware), not here.
+    name: recall eval gate (frozen fixture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build server + CLI
+        run: cargo build --release --bin brain-server --bin brain
+      - name: seed + start scratch instance
+        run: |
+          SCRATCH="$(mktemp -d)"
+          python3 - "$SCRATCH" <<'EOF'
+          import sys, pathlib
+          docs = [
+            "Bignay is a tropical fruit and a good alternative to blueberry, rich in antioxidants.",
+            "The Rust programming language guarantees memory safety without a garbage collector.",
+            "Vitamin D3 supplementation improves immune function and bone density in deficient adults.",
+            "The GDPR is a European regulation protecting the personal data of EU residents.",
+            "Gut microbiome diversity affects inflammation markers and immune system regulation.",
+            "SQLite is an embedded relational database with FTS5 full-text search support.",
+            "ISO 9001 is the international standard for quality management systems.",
+            "Ownership and borrowing are Rust's core concepts for compile-time memory safety.",
+            "Antioxidants in tropical fruits like bignay help reduce oxidative stress.",
+            "The GDPR covers any organization processing EU residents' data, with fines up to four percent of global revenue.",
+          ]
+          d = pathlib.Path(sys.argv[1])
+          (d / "corpus").mkdir()
+          for i, doc in enumerate(docs):
+            (d / "corpus" / f"doc{i}.md").write_text(f"---\ntitle: doc{i}\n---\n\n{doc}\n")
+          EOF
+          BIND_PORT=18484 \
+            BRAIN_DB_PATH="$SCRATCH/brain.db" \
+            "$GITHUB_WORKSPACE/target/release/brain-server" &
+          echo $! > /tmp/eval-pid
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:18484/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          "$GITHUB_WORKSPACE/target/release/brain" ingest-dir "$SCRATCH/corpus"
+      - name: run eval gate
+        run: |
+          set -o pipefail
+          export BRAIN_URL=http://127.0.0.1:18484
+          "$GITHUB_WORKSPACE/target/release/brain" eval \
+            --floor r5=0.85 --floor r10=0.85 --floor mrr=0.85 | tail -5
+      - name: stop scratch instance
+        if: always()
+        run: kill "$(cat /tmp/eval-pid)" 2>/dev/null || true
