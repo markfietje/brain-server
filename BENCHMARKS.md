@@ -305,13 +305,14 @@ reachable. Faster per-core but a different machine; kept for the delta.
 | answer_in_context_rate | 0.0000 |
 
 
-### Latency — dev host (macOS Apple Silicon, operator vault 8,695 docs, 2026-08-09)
+### Latency — dev host (Apple M1 Pro, 10-core/16 GB, operator vault 8,695 docs, 2026-08-09)
 
-> **Not an ARM/edge measurement, not a parity claim.** Self-measured `POST
-> /recall` (default hybrid+PRF, `k=5`) against the live dev-host server
+> **Not an ARM-edge / Jetson measurement, not a parity claim.** Self-measured
+> `POST /recall` (default hybrid+PRF, `k=5`) against the live dev-host server
 > (v1.18.2, `unsafe_blocks:1`) on the operator's real 8,695-doc vault. The
 > point is "is the small hardened binary fast," not "beats QMD on an edge
-> device." 30 sequential samples.
+> device." 30 sequential samples. The M1 Pro (10-core, 16 GB, arm64) is the
+> dev host — distinct from the 4 GB ARM edge target still `PENDING` below.
 
 | metric | value |
 |---|---|
