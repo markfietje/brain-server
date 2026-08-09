@@ -10,6 +10,40 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.17.5] — 2026-08-09
+
+### CLI — "Eval Fix" (`brain eval` + `bench`)
+
+- **Fixed: `brain eval` was dead on arrival — every run returned 405.**
+  `run_eval` sent `GET /recall?query=…&k=10`, but `/recall` is a POST-only
+  JSON route (`{query, limit}`); the v1.17.1 M3 ship gate and
+  `BENCH_RECALL_FLOOR` could never have computed a score. Now POSTs the
+  correct body on `/recall` and keeps `GET /search?q=…&k=10` on the search
+  leg (`src/bin/brain.rs`).
+- **Fixed: judged-index mapping was hash-order arbitrary.** 
+  `results_to_doc_indices` mapped result content → DOCS index through a
+  `HashSet`, whose `.position()` order is unspecified — recall@k was
+  computed against the wrong judged indices. Now matches the DOCS slice
+  directly, so indices are the fixture's documented array positions.
+- **Fixed: `/recall` response parsing** — the parser only read the
+  `results` wrapper (`/search` shape) while `/recall` returns `hits`; both
+  shapes now parse (pinned by a new brain-bin test).
+- **CI (round-21 gaps):** two new jobs — `ump-conformance` boots a scratch
+  keyed instance and asserts the reference suite's `UMP 1.0 / L3` badge
+  line (the runner exits 0 for any level ≥ L1, so the gate checks the text);
+  `recall-gate` seeds the frozen 10-doc corpus and enforces
+  `--floor r5=0.85 --floor r10=0.85 --floor mrr=0.85` with `pipefail`.
+- **SBOM:** the tag release workflow now generates a CycloneDX SBOM via the
+  existing `scripts/sbom.sh` (cargo-cyclonedx from Cargo.lock) and ships it
+  in `dist/` alongside the binaries (EU CRA / OWASP A03:2025).
+- **Benchmarks:** first honest row in `BENCHMARKS.md` — the frozen 37-query
+  smoke-set run on the default profile (r@5 0.919, r@10 0.919, nDCG@10
+  0.911, MRR 0.905). Smoke set only; parity rows stay `PENDING` per the
+  protocol (≥100 judged queries on target hardware incl. 4 GB ARM).
+- Fixture doc-count corrected (32 → 37 judged queries).
+
+---
+
 ## [1.17.4] — 2026-08-09
 
 ### Server — "UMP Conformance" (wire fixes)
