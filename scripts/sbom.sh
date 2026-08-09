@@ -22,9 +22,9 @@ EOF
   exit 1
 fi
 
-# Generate JSON CycloneDX for this package. cargo-cyclonedx drops a
-# brain-server.cdx.json in the repo root (output-pattern = package).
-( cd "$REPO" && cargo cyclonedx -f json --override-outputFilename brain-server >/dev/null )
+# Generate JSON CycloneDX for this package; cargo-cyclonedx drops
+# brain-server.cdx.json in the repo root (default naming).
+( cd "$REPO" && cargo cyclonedx --format json >/dev/null )
 
 SRC="$REPO/brain-server.cdx.json"
 if [[ ! -f "$SRC" ]]; then
