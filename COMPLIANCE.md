@@ -179,6 +179,16 @@ the content, so a memory export can state *how a memory entered the system and
 with what provenance* — the transparency bridge for model-vs-human origin.
 (Forward link: UMP wire-format conformance is a later release.)
 
+**Posture as of 2026-08-09.** The AI Act's GPAI chapter took effect with
+Regulation (EU) 2026/1744 (8 July 2026): GPAI model obligations apply from
+2 August 2026, and the watermarking/synthetic-content-detection obligations
+from 2 December 2026. brain-server does not train or host GPAI models — the
+GPAI obligations fall on the model providers whose outputs may be ingested —
+so the memory component's duty is provenance, not watermarking: every stored
+row keeps `source` / `assertion_kind` / `confidence` (above) so a deployer can
+attribute AI-generated content and honor the transparency expectations of
+Regulation (EU) 2026/1744 for content that passes through its systems.
+
 **Machine-readable disclosure.** The server also serves the Art 50 disclosure
 itself at `GET /.well-known/ai-notice` (public, no auth) — a JSON document
 with `art_50: true`, the human-readable disclosure that stored content may be

@@ -63,11 +63,11 @@ brain ump keygen
 This writes an Ed25519 seed to `~/.config/brain-server/ump/operator.key` (0600 permissions, the same posture as the JWT keys) and prints the public identity:
 
 ```
-wrote UMP operator key to /Users/you/.config/brain-server/ump/operator.key
-did: key:z2DWQYTf...
+wrote UMP operator key /Users/you/.config/brain-server/ump/operator.key
+did: z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN5x1fTDDgQ
 ```
 
-Set `BRAIN_UMP_KEY_DIR` to put the key somewhere else. The server picks up any seed file in that directory. Note the `did:key` string is base58btc-encoded Ed25519, so the leading characters vary by key; the prefix in your output will differ.
+Set `BRAIN_UMP_KEY_DIR` to put the key somewhere else. The server picks up any seed file in that directory. The `did:key` form is the `0xed 0x01` Ed25519 multicodec prefix + base58btc, and the leading `z6Mk…` prefix is fixed for Ed25519 keys (the remaining characters vary by key).
 
 **2. Write a memory.**
 
@@ -97,7 +97,7 @@ curl -X POST http://127.0.0.1:8765/ump/recall \
         "id": "urn:ump:3dbd637652cbe621",
         "kind": "semantic",
         "body": { "text": "The release ships on Friday." },
-        "integrity": { "algo": "blake3-256", "hash": "...", "key": "did:key:z2DWQYTf...", "sig": "..." }
+        "integrity": { "content_hash": "blake3:<base32>", "signature": "ed25519:<base64>", "signer": "did:key:z6Mk..." }
       },
       "score": 0.03,
       "signals": { "similarity": 0.03, "recency": 1.0, "salience": 1.0, "scope_match": 1.0, "provenance_depth": 0 }

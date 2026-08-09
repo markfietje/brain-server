@@ -10,6 +10,71 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.17.4] — 2026-08-09
+
+### Server — "UMP Conformance" (wire fixes)
+
+Fixes every defect a byte-level review of the reference conformance suite
+(`github.com/edihasaj/universal-memory-protocol` `conformance.ts`) surfaced
+against the v1.17.3 implementation, so the reference runner scores the full
+L1–L3 set. **Breaking change:** the emitted `integrity` block and the
+`did:key` identity changed shape (below) — records signed by a v1.17.3 peer
+still verify (dual-read), but new signatures use the reference format.
+
+- **did:key bug fixed (breaking)** — `did_key_from_ed25519` used a 33-byte
+  bare-`0xed` multicodec prefix; the reference `didKeyFromPublicKey` prefixes
+  the two-byte `0xed 0x01` varint (34 bytes), and `publicKeyFromDidKey`
+  rejects anything else. Old output `did:key:z2De…`; correct form
+  `did:key:z6Mk…`. The operator CLI + server identity now agree with the
+  reference (vector pinned: RFC 8032 vector-1 pk → `z6MktwupdmLXVVqTzCw4i46
+  r4uGyosGXRnR3XjN5x1fTDDgQ`).
+- **Integrity block → reference §2.8 format (breaking)** — `{algo, hash,
+  key, sig}` replaced by `{content_hash: "blake3:<base32>", signature:
+  "ed25519:<std-base64>", signer: <did:key>}`. The content hash covers the
+  canonical record minus `integrity` only (`id` stays inside), computed with
+  the reference's JS-flavor canonicalization (integral floats serialize as
+  `1`, not `1.0`; U+2028/U+2029 escaped) so the reference `verify()` byte-
+  matches; the signature is Ed25519 over BLAKE3 of the `content_hash` STRING.
+  `verify_record` dual-reads the legacy v1.17.3 shape.
+- **`from_ump` version gate lenient** — op requests carry no `ump` field
+  (the suite sends none); absent now defaults to `1.0` (only an explicit
+  unknown major is rejected).
+- **`provenance` + `consent` carried** — stored in `UmpMeta`, re-emitted on
+  every record (the suite's remember includes `provenance`; it previously
+  round-tripped nowhere).
+- **`superseded_by` on the prior record** — `GET /ump/memory/{id}` and
+  `/ump/recall` now resolve `supersedes` evidence links and emit the
+  successor's content-addressed urn; the revised record drops the carried
+  `origin` so its own id resolves to a fresh urn (L2 bi-temporal: prior has
+  `time.valid_to` + a non-empty `superseded_by` pointing at the revision).
+- **id resolution by urn** — `/ump/memory/{id}`, `/ump/revise`,
+  `/ump/forget`, `/ump/feedback` accept the content-addressed `urn:ump:…`
+  form (resolved via the `ump_id` column, which `KNOWLEDGE_ROW_COLS` now
+  loads; it was previously missing so ids fell back to the xxh3-shaped
+  `urn:ump:<content_hash>` form and urn lookups 404'd).
+- **`/ump/feedback` → `{ok: true}`** (the suite asserts it); `session`
+  accepted and persisted; unknown ids 404.
+- **`/ump/forget`** reports `erased` for the hard path, `tombstoned` for the
+  soft path.
+- **Ops** — the launchd plist gains `BRAIN_UMP_KEY_DIR`; wiki + keygen docs
+  use the correct `did:key` form; `COMPLIANCE.md` cites Regulation (EU)
+  2026/1744 (GPAI obligations live 2026-08-02, watermarking 2026-12-02) with
+  the provenance-not-watermarking posture.
+
+**New test:** `ump_suite_parity_l1_to_l3` (`#[ignore]`d, model2vec-weights
+precedent) — walks the reference suite's exact requests end-to-end against a
+keyed instance: capabilities envelope, remember (procedural + provenance) →
+`{id, result:"created"}`, get-by-urn with a reference-shape signed integrity
+block, recall (urn id + `signals` object), revise → `{supersedes:[urn]}`,
+prior `time.valid_to` + `superseded_by` pointing at the new urn, forget →
+`tombstoned`, validation → 400 `invalid_record`, feedback → `{ok:true}`.
+
+### Verification
+- `cargo test --features bench,migrate`: 473 bin + 70 lib + 9 + 8 + 7 + 3×2
+  green; `--ignored` suite-parity test green. clippy `-D warnings` + fmt clean.
+
+---
+
 ## [1.17.3] — 2026-08-09
 
 ### Server — "UMP Rollout"

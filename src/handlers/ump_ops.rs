@@ -11,6 +11,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
 use axum::Json;
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio_stream::StreamExt;
@@ -85,8 +86,10 @@ pub async fn remember(
         }
     }
     // §5.3 L3: a signed record must verify against the operator key before
-    // it is stored. (Hash-only records always pass — L2.)
-    if rec["integrity"]["sig"].is_string() {
+    // it is stored. (Hash-only records always pass — L2.) Both the reference
+    // (`signature`/`signer`/`content_hash`) and legacy v1.17.3 (`sig`/`key`/
+    // `hash`) integrity shapes count as signed; `verify_record` dual-reads.
+    if rec["integrity"]["signature"].is_string() || rec["integrity"]["sig"].is_string() {
         let Some((_, sk)) = ump::operator_signing_key() else {
             return Err(HandlerError::bad_request(
                 "signature_invalid",
@@ -113,9 +116,56 @@ pub async fn remember(
     Ok(Json(json!({ "id": id, "result": result })))
 }
 
+/// Resolve a UMP id to the numeric row id. Plain integers pass through;
+/// `urn:ump:` content-addressed ids resolve via the indexed `ump_id` column
+/// (ingest computes them from `domain \0 content`, so the id a peer sends
+/// round-trips exactly); the legacy `urn:ump:brain:<domain>:<id>` shape
+/// resolves by its trailing numeric id. Unknown ids are 404s.
+fn resolve_row_id(conn: &rusqlite::Connection, id: &str) -> Result<i64, HandlerError> {
+    if let Ok(n) = id.parse::<i64>() {
+        return Ok(n);
+    }
+    if let Some(rid) = conn
+        .query_row(
+            "SELECT id FROM knowledge WHERE ump_id = ?1",
+            rusqlite::params![id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| HandlerError::internal(format!("resolve ump_id failed: {e}")))?
+    {
+        return Ok(rid);
+    }
+    if let Some(tail) = id.rsplit(':').next().and_then(|t| t.parse::<i64>().ok()) {
+        return Ok(tail);
+    }
+    Err(HandlerError::not_found(format!("no chunk with id {id}")))
+}
+
+/// The UMP urns of the chunks that superseded this one (L2 bi-temporal
+/// `superseded_by`): `supersedes` evidence links pointing AT this chunk,
+/// resolved to the successor's content-addressed id. Empty when current.
+fn superseded_by_for(conn: &rusqlite::Connection, id: i64) -> Result<Vec<String>, HandlerError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT k.ump_id FROM evidence_links el
+               JOIN knowledge k ON k.id = el.from_chunk
+              WHERE el.kind = 'supersedes' AND el.to_chunk = ?1
+                AND k.ump_id IS NOT NULL AND k.ump_id != ''
+              ORDER BY el.id",
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params![id], |r| r.get::<_, String>(0))
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| HandlerError::internal(e.to_string()))
+}
+
 /// Resolve a row's stored UMP record id: the persisted `ump_meta.origin` URN
-/// (content-addressed), falling back to the row-based `urn:ump:brain:…` shape
-/// for rows written before the ump_meta overlay existed.
+/// (peer-authored ids round-trip), else the content-addressed `ump_id` column,
+/// else the legacy row-based `urn:ump:brain:…` shape for rows written before
+/// the overlay existed.
 async fn stored_ump_id(pool: &crate::Pool, id: i64) -> Result<String, HandlerError> {
     let pool = pool.clone();
     tokio::task::spawn_blocking(move || -> Result<String, HandlerError> {
@@ -126,34 +176,42 @@ async fn stored_ump_id(pool: &crate::Pool, id: i64) -> Result<String, HandlerErr
             .map_err(|e| HandlerError::internal(e.to_string()))?
             .ok_or_else(|| HandlerError::not_found(format!("no chunk with id {id}")))?;
         let meta = UmpMeta::parse(row["ump_meta"].as_str());
-        Ok(meta
-            .origin
-            .unwrap_or_else(|| ump::record_id("global", id, row["content_hash"].as_str())))
+        if let Some(origin) = &meta.origin {
+            return Ok(origin.clone());
+        }
+        if let Some(ump_id) = row["ump_id"].as_str().filter(|s| !s.is_empty()) {
+            return Ok(ump_id.to_string());
+        }
+        Ok(ump::record_id("global", id, row["content_hash"].as_str()))
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
 }
 
-/// `GET /ump/memory/{id}` — one record, integrity-verified on read (§5.3);
-/// a row whose stored integrity no longer verifies is treated as absent.
+/// `GET /ump/memory/{id}` — one record by numeric row id OR `urn:ump:…`
+/// content-addressed id (the form `/ump/remember` returns and peers send),
+/// integrity-verified on read (§5.3); a row whose stored integrity no longer
+/// verifies is treated as absent.
 pub async fn get_memory(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
     cap: OptCapability,
-    Path(id): Path<i64>,
+    Path(id): Path<String>,
 ) -> Result<Json<Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     super::cap_gate(&cap.0, "read")?;
     let owner = principal_to_owner(&principal.0);
     let signer = ump::operator_signing_key();
     let pk: Option<[u8; 32]> = signer.as_ref().map(|(_, sk)| sk.verifying_key().to_bytes());
+    let id_arg = id.clone();
     let pool = state.pool.clone();
     let record = tokio::task::spawn_blocking(move || -> Result<Option<Value>, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let rid = resolve_row_id(&conn, &id_arg)?;
         let Some(row) =
-            load_knowledge_row(&conn, id).map_err(|e| HandlerError::internal(e.to_string()))?
+            load_knowledge_row(&conn, rid).map_err(|e| HandlerError::internal(e.to_string()))?
         else {
             return Ok(None);
         };
@@ -164,13 +222,15 @@ pub async fn get_memory(
             && row_owner
                 .map(|o| Some(o) != owner.as_deref())
                 .unwrap_or(true);
+        let superseded = superseded_by_for(&conn, rid)?;
         let rec = ump::emit_record(
             &row,
             "global",
             &json!([]),
-            &serde_json::Value::Array(relations_for_chunk(&conn, id)?),
+            &serde_json::Value::Array(relations_for_chunk(&conn, rid)?),
             &meta,
             redact,
+            &superseded,
             signer.as_ref().map(|(did, sk)| (did.as_str(), sk)),
         );
         if !ump::verify_record(&rec, pk.as_ref()) {
@@ -319,6 +379,7 @@ pub async fn recall(
                 && row_owner
                     .map(|o| Some(o) != owner.as_deref())
                     .unwrap_or(true);
+            let superseded = superseded_by_for(&conn, r.id)?;
             let record = ump::emit_record(
                 &row,
                 domain,
@@ -326,6 +387,7 @@ pub async fn recall(
                 &serde_json::Value::Array(relations_for_chunk(&conn, r.id)?),
                 &meta,
                 redact,
+                &superseded,
                 signer.as_ref().map(|(did, sk)| (did.as_str(), sk)),
             );
             if !ump::verify_record(&record, pk.as_ref()) {
@@ -357,10 +419,10 @@ pub async fn recall(
 /// §3.5 `revise` — patch a record: the patched record lowers through the
 /// ingest path as a NEW chunk, then `resolve_supersession` expires the old
 /// one (default recall returns the new revision; `?at=<past>` still finds
-/// the old).
+/// the old). `id` is the numeric row id or the `urn:ump:…` content id.
 #[derive(Debug, Deserialize)]
 pub struct ReviseRequest {
-    pub id: i64,
+    pub id: String,
     #[serde(default)]
     pub patch: Value,
 }
@@ -392,23 +454,25 @@ pub async fn revise(
 ) -> Result<Json<Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     super::cap_gate(&cap.0, "write")?;
-    let old_id = req.id;
+    let id_arg = req.id.clone();
     let owner = principal_to_owner(&principal.0);
     let pool = state.pool.clone();
-    let new_req = tokio::task::spawn_blocking(
-        move || -> Result<crate::handlers::ingest::IngestRequest, HandlerError> {
+    let old_id = tokio::task::spawn_blocking(
+        move || -> Result<(i64, crate::handlers::ingest::IngestRequest), HandlerError> {
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let old_id = resolve_row_id(&conn, &id_arg)?;
             let row = load_knowledge_row(&conn, old_id)
                 .map_err(|e| HandlerError::internal(e.to_string()))?
-                .ok_or_else(|| HandlerError::not_found(format!("no chunk with id {old_id}")))?;
+                .ok_or_else(|| HandlerError::not_found(format!("no chunk with id {id_arg}")))?;
             let meta = UmpMeta::parse(row["ump_meta"].as_str());
             let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
             let redact = owner.is_some()
                 && row_owner
                     .map(|o| Some(o) != owner.as_deref())
                     .unwrap_or(true);
+            let superseded = superseded_by_for(&conn, old_id)?;
             let base = ump::emit_record(
                 &row,
                 "global",
@@ -416,16 +480,27 @@ pub async fn revise(
                 &serde_json::Value::Array(relations_for_chunk(&conn, old_id)?),
                 &meta,
                 redact,
+                &superseded,
                 None,
             );
             let merged = deep_merge(base, &req.patch);
-            let (req, _meta) =
+            let (mut req, _meta) =
                 lower_ump(&merged).map_err(|e| HandlerError::bad_request("invalid_record", e))?;
-            Ok(req)
+            // The revision is a NEW record with its own content-addressed id:
+            // drop the carried origin so the new row reports its own urn
+            // (otherwise `superseded_by` on the old row points at itself).
+            if let Some(meta_json) = &mut req.ump_meta {
+                if let Ok(mut m) = serde_json::from_str::<Value>(meta_json) {
+                    m.as_object_mut().map(|o| o.remove("origin"));
+                    *meta_json = m.to_string();
+                }
+            }
+            Ok((old_id, req))
         },
     )
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    let (old_id, new_req) = old_id;
     let resp = ingest_one(&state, &principal.0, new_req).await?;
     let new_id = resp.id;
     if new_id != old_id {
@@ -451,16 +526,18 @@ pub async fn revise(
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     }
+    let supersedes = stored_ump_id(&state.pool, old_id).await?;
     let id = stored_ump_id(&state.pool, new_id).await?;
     publish(&state, "revise", new_id);
-    Ok(Json(json!({ "id": id, "supersedes": vec![old_id] })))
+    Ok(Json(json!({ "id": id, "supersedes": vec![supersedes] })))
 }
 
 /// §3.4 `forget` — soft (quarantine-style flag + tombstone, still retrievable
 /// with `include_flagged`) or hard (`purge_chunk_ids` — the v1.14 erase path).
+/// `id` is the numeric row id or the `urn:ump:…` content id.
 #[derive(Debug, Deserialize)]
 pub struct ForgetRequest {
-    pub id: i64,
+    pub id: String,
     #[serde(default)]
     pub reason: Option<String>,
     #[serde(default)]
@@ -475,14 +552,15 @@ pub async fn forget(
 ) -> Result<Json<Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     super::cap_gate(&cap.0, "write")?;
-    let id = req.id;
+    let id_arg = req.id.clone();
     let reason = req.reason.unwrap_or_else(|| "ump_forget".to_string());
     let hard = req.hard;
     let pool = state.pool.clone();
-    tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
+    let id = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let id = resolve_row_id(&conn, &id_arg)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -532,12 +610,13 @@ pub async fn forget(
         }
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
-        Ok(())
+        Ok(id)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     publish(&state, "forget", id);
-    Ok(Json(json!({ "result": "tombstoned" })))
+    let result = if hard { "erased" } else { "tombstoned" };
+    Ok(Json(json!({ "result": result })))
 }
 
 /// §3.6 `feedback` outcomes → the suggest-feedback last-wins upsert
@@ -554,10 +633,13 @@ pub fn feedback_for_outcome(outcome: &str) -> &'static str {
 
 #[derive(Debug, Deserialize)]
 pub struct FeedbackRequest {
-    pub id: i64,
+    /// Numeric row id or `urn:ump:…` content id.
+    pub id: String,
     pub outcome: String,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 pub async fn feedback(
@@ -575,8 +657,10 @@ pub async fn feedback(
             json!({ "allowed": UMP_OUTCOMES }),
         ));
     }
+    let id_arg = req.id.clone();
     let outcome = req.outcome.clone();
     let feedback = feedback_for_outcome(&req.outcome);
+    let session = req.session.clone();
     let reason_hash = req
         .reason
         .as_deref()
@@ -595,20 +679,21 @@ pub async fn feedback(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let id = resolve_row_id(&conn, &id_arg)?;
         record_feedback(
             &conn,
-            req.id,
+            id,
             feedback,
             reason_hash,
             ts,
-            None,
+            session,
             tenant,
             Some(&outcome),
         )
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
-    Ok(Json(json!({ "result": "recorded" })))
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// §3.8 `subscribe` — SSE change signal over a tokio broadcast channel.

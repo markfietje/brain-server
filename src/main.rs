@@ -10035,4 +10035,307 @@ Final paragraph after the rule.";
         assert_eq!(results[0]["status"], "created", "{v}");
         assert_eq!(results[1]["status"], "created", "{v}");
     }
+
+    /// v1.17.4: the reference conformance suite's wire expectations, end to
+    /// end, against a keyed instance (L3): capabilities envelope, remember
+    /// (procedural + provenance) → `{id, result:"created"}`, get-by-urn with
+    /// a reference-shape signed integrity block, recall (urn id + `signals`
+    /// object), revise → `{supersedes:[urn]}` with the prior record carrying
+    /// `time.valid_to` + `superseded_by`, forget → `tombstoned`, validation →
+    /// 400 `invalid_record`, feedback → `{ok:true}`. Mirrors
+    /// `conformance.ts` L1–L3 (canonical-format signing pinned separately by
+    /// the `ump_integrity` unit tests). `#[ignore]` — same model2vec-weights
+    /// precedent as `ump_batch_ingest_round_trip`; run with `--ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn ump_suite_parity_l1_to_l3() {
+        use axum::body::to_bytes;
+        use axum::http::Request;
+        use model2vec_rs::model::StaticModel;
+        use rand::RngCore;
+        use tempfile::TempDir;
+        use tower::ServiceExt;
+
+        register_sqlite_vec();
+        // A signing key makes the instance L3: records come back signed in
+        // the reference §2.8 format and `verify_record` checks them.
+        let key_dir = TempDir::new().expect("key dir");
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        std::fs::write(key_dir.path().join("operator.key"), seed).expect("write seed");
+        std::env::set_var("BRAIN_UMP_KEY_DIR", key_dir.path());
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model = Arc::new(
+            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
+                .expect("model"),
+        );
+        let state = Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+        });
+        let app = axum::Router::new()
+            .route(
+                "/ump/capabilities",
+                axum::routing::get(handlers::ump_ops::capabilities),
+            )
+            .route(
+                "/ump/remember",
+                axum::routing::post(handlers::ump_ops::remember),
+            )
+            .route(
+                "/ump/memory/{id}",
+                axum::routing::get(handlers::ump_ops::get_memory),
+            )
+            .route(
+                "/ump/recall",
+                axum::routing::post(handlers::ump_ops::recall),
+            )
+            .route(
+                "/ump/revise",
+                axum::routing::post(handlers::ump_ops::revise),
+            )
+            .route(
+                "/ump/forget",
+                axum::routing::post(handlers::ump_ops::forget),
+            )
+            .route(
+                "/ump/feedback",
+                axum::routing::post(handlers::ump_ops::feedback),
+            )
+            .with_state(state.clone());
+
+        async fn call(
+            app: &axum::Router,
+            method: &str,
+            uri: &str,
+            body: Option<serde_json::Value>,
+        ) -> (axum::http::StatusCode, serde_json::Value) {
+            let b = Request::builder().method(method).uri(uri);
+            let resp = app
+                .clone()
+                .oneshot(
+                    b.header("content-type", "application/json")
+                        .body(match &body {
+                            Some(v) => axum::body::Body::from(v.to_string()),
+                            None => axum::body::Body::empty(),
+                        })
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, v)
+        }
+
+        let owner = "did:key:zConformanceProbe";
+
+        // L1.capabilities: `{ump:"1.0", kinds:[5]}`.
+        let (s, caps) = call(&app, "GET", "/ump/capabilities", None).await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        assert_eq!(caps["ump"], "1.0");
+        assert_eq!(caps["kinds"].as_array().map(Vec::len), Some(5));
+
+        // L1.remember: procedural + provenance, no `ump` field on the request.
+        let (s, rem) = call(
+            &app,
+            "POST",
+            "/ump/remember",
+            Some(serde_json::json!({
+                "kind": "procedural",
+                "body": { "text": "conformance: run the gate before handoff" },
+                "scope": { "owner": owner, "project": "ump/conformance", "visibility": "private" },
+                "provenance": { "actor": owner, "actor_kind": "user", "method": "user_correction" },
+            })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "remember: {rem}");
+        assert_eq!(rem["result"], "created");
+        let created_id = rem["id"].as_str().expect("urn id").to_string();
+        assert!(created_id.starts_with("urn:ump:"), "{created_id}");
+
+        // L1.get by urn: text round-trips, provenance round-trips, the
+        // integrity block is reference-shaped and verifies against the key.
+        let (s, got) = call(
+            &app,
+            "GET",
+            &format!("/ump/memory/{}", urlencoding(&created_id)),
+            None,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "get: {got}");
+        let rec = got["record"].clone();
+        assert_eq!(
+            rec["body"]["text"],
+            "conformance: run the gate before handoff"
+        );
+        assert_eq!(rec["provenance"]["actor"], owner);
+        assert_eq!(rec["scope"]["owner"], owner);
+        let ch = rec["integrity"]["content_hash"].as_str().unwrap();
+        assert!(ch.starts_with("blake3:"), "{ch}");
+        assert!(rec["integrity"]["signer"]
+            .as_str()
+            .unwrap()
+            .starts_with("did:key:z"));
+        let pk = crate::handlers::ump::operator_signing_key()
+            .map(|(_, sk)| sk.verifying_key().to_bytes());
+        assert!(
+            crate::handlers::ump::verify_record(&rec, pk.as_ref()),
+            "signed record verifies (L3)"
+        );
+
+        // L1.recall: results[] with the urn id + a `signals` object.
+        let (s, recd) = call(
+            &app,
+            "POST",
+            "/ump/recall",
+            Some(serde_json::json!({
+                "query": "gate handoff",
+                "scope": { "owner": owner, "project": "ump/conformance" },
+            })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "recall: {recd}");
+        let results = recd["results"].as_array().expect("results array");
+        assert!(
+            results
+                .iter()
+                .any(|r| r["record"]["id"].as_str() == Some(created_id.as_str())),
+            "recall finds the remembered urn: {recd}"
+        );
+        assert!(results[0]["signals"].is_object(), "signals object present");
+
+        // L2.revise: `{id, patch}` → `{supersedes:[urn]}`.
+        let (s, rev) = call(
+            &app,
+            "POST",
+            "/ump/revise",
+            Some(serde_json::json!({
+                "id": created_id,
+                "patch": { "body": { "text": "conformance: use the new gate" } },
+            })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "revise: {rev}");
+        assert!(
+            rev["supersedes"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(created_id.as_str()))),
+            "supersedes carries the old urn: {rev}"
+        );
+        // The revision is a NEW record: its own id (never the old urn), and
+        // the prior's `superseded_by` points at it.
+        let new_urn = rev["id"].as_str().expect("new urn");
+        assert!(
+            new_urn.starts_with("urn:ump:") && new_urn != created_id,
+            "{rev}"
+        );
+
+        // L2.bitemporal: the PRIOR record now carries valid_to + superseded_by.
+        let (s, prior) = call(
+            &app,
+            "GET",
+            &format!("/ump/memory/{}", urlencoding(&created_id)),
+            None,
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "prior get: {prior}");
+        assert!(
+            prior["record"]["time"]["valid_to"].is_string(),
+            "prior has valid_to: {prior}"
+        );
+        assert!(
+            prior["record"]["superseded_by"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(new_urn))),
+            "prior.superseded_by points at the new urn: {prior}"
+        );
+
+        // L2.forget: `{id}` → `result:"tombstoned"`.
+        let (s, tmp) = call(
+            &app,
+            "POST",
+            "/ump/remember",
+            Some(serde_json::json!({
+                "kind": "working",
+                "body": { "text": "conformance throwaway note" },
+                "scope": { "owner": owner, "project": "ump/conformance", "visibility": "private" },
+                "provenance": { "actor": owner, "actor_kind": "user", "method": "user_correction" },
+            })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK);
+        let tmp_id = tmp["id"].as_str().expect("urn id");
+        let (s, f) = call(
+            &app,
+            "POST",
+            "/ump/forget",
+            Some(serde_json::json!({ "id": tmp_id, "reason": "conformance" })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "forget: {f}");
+        assert!(
+            matches!(f["result"].as_str(), Some("tombstoned" | "erased")),
+            "forget result: {f}"
+        );
+
+        // L2.validation: a record without body.text is 400 invalid_record.
+        let (s, bad) = call(
+            &app,
+            "POST",
+            "/ump/remember",
+            Some(serde_json::json!({
+                "kind": "semantic",
+                "scope": { "owner": owner, "visibility": "private" },
+            })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::BAD_REQUEST, "bad: {bad}");
+        assert_eq!(bad["error"]["code"], "invalid_record", "{bad}");
+
+        // L3.feedback: `{id, outcome, session}` → `{ok:true}`.
+        let (s, fb) = call(
+            &app,
+            "POST",
+            "/ump/feedback",
+            Some(serde_json::json!({
+                "id": created_id,
+                "outcome": "followed",
+                "session": "ump-conformance",
+            })),
+        )
+        .await;
+        assert_eq!(s, axum::http::StatusCode::OK, "feedback: {fb}");
+        assert_eq!(fb["ok"], true, "{fb}");
+
+        std::env::remove_var("BRAIN_UMP_KEY_DIR");
+    }
+
+    fn urlencoding(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                ':' | '/' | '_' | 'a'..='z' | 'A'..='Z' | '0'..='9' => c.to_string(),
+                _ => format!("%{:02X}", c as u32),
+            })
+            .collect()
+    }
 }

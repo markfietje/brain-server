@@ -235,6 +235,8 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
         owner: row["owner"].as_str().map(|s| s.to_string()),
         visibility: row["access_scope"].as_str().map(|s| s.to_string()),
         origin: record["id"].as_str().map(|s| s.to_string()),
+        provenance: record.get("provenance").cloned().filter(|v| !v.is_null()),
+        consent: record.get("consent").cloned().filter(|v| !v.is_null()),
     };
     let req = IngestRequest {
         title: row["title"].as_str().unwrap_or("untitled").to_string(),

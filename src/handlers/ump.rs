@@ -20,8 +20,9 @@
 //! drop-unverifiable enforcement) and the §6.3 markdown projection
 //! ([`record_to_markdown`]/[`record_from_markdown`]).
 //!
-//! Per §8 the import path rejects any record whose `ump` major version is not
-//! `1` rather than silently reinterpreting it.
+//! Per §8 the import path rejects any record whose explicit `ump` major
+//! version is not `1` rather than silently reinterpreting it; the field is
+//! optional (absent defaults to `1.0`, per the reference suite's op requests).
 //!
 //! Round-trip guarantee: [`from_ump`]∘[`to_ump`] is the identity on the row
 //! fields (pinned by a test) except the numeric `id`, which is content-mapped
@@ -172,12 +173,14 @@ pub fn to_ump(row: &Value, domain: &str, entities: &Value, relations: &Value) ->
 /// Lower a UMP record back into the `/export` knowledge-row JSON (the inverse
 /// of [`to_ump`] on the row fields). `id` is derived from the UMP id's trailing
 /// `:<id>`; a peer that rewrote the id keeps a fresh numeric id here (mapping
-/// is by content, never by foreign ids). Per §8, an unknown `ump` major
-/// version is rejected, never reinterpreted.
+/// is by content, never by foreign ids). Per §8 an explicit unknown `ump` major
+/// version is rejected, never reinterpreted; the field is OPTIONAL in op
+/// requests (the reference suite sends none) and defaults to `1.0`, with the
+/// legacy `0.1` accepted for import.
 pub fn from_ump(record: &Value) -> Result<Value, String> {
     match record["ump"].as_str() {
-        Some("1.0") => {}
-        _ => return Err("UMP record must carry \"ump\": \"1.0\"".into()),
+        None | Some("1.0") | Some("0.1") => {}
+        _ => return Err("UMP record carries an unsupported \"ump\" version".into()),
     }
     let text = record
         .pointer("/body/text")
@@ -227,8 +230,10 @@ pub fn from_ump(record: &Value) -> Result<Value, String> {
 /// The persisted per-row UMP overlay (`knowledge.ump_meta`, JSON). Only fields
 /// UMP needs beyond the brain columns: the raw UMP kind when it has no brain
 /// equivalent (`working`/`identity`), the owner DID (authoritative over
-/// `knowledge.owner`, which is the JWT `sub` string), `visibility`, and the
-/// origin record id for `provenance`. Empty object = pure brain columns.
+/// `knowledge.owner`, which is the JWT `sub` string), `visibility`, the
+/// origin record id for `provenance`, and the record's `provenance`/`consent`
+/// blocks (§2.7) — stored verbatim so import → export round-trips them.
+/// Empty object = pure brain columns.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct UmpMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -239,6 +244,10 @@ pub struct UmpMeta {
     pub visibility: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<Value>,
 }
 
 impl UmpMeta {
@@ -252,11 +261,19 @@ impl UmpMeta {
 /// Render a knowledge row as a fully-conformant UMP 1.0 memory record:
 /// the L0 shape + a content-addressed id (§6.2 L2: `urn:ump:<base32(blake3)>`
 /// over `domain \0 text` — stable per (domain, content) and unique per row via
-/// the domain salt) + the §2.8 `integrity` field (blake3 over the canonical
-/// record minus `id`/`integrity`; Ed25519-signed by the operator key when a
-/// signer is configured). `redact=true` replaces the body text with the
-/// shape-preserving placeholder *before* the integrity is computed (§2.7
-/// consent: the integrity then authenticates the redacted view).
+/// the domain salt) + the §2.8 `integrity` field in the reference format
+/// (`content_hash: "blake3:<base32>"` over the canonical record minus
+/// `integrity`, `signature: "ed25519:<base64>"` = Ed25519 over BLAKE3 of the
+/// content-hash STRING, `signer` did:key; signed by the operator key when a
+/// signer is configured). `superseded_by` carries the content-addressed ids
+/// of the chunks that superseded this one (L2 bi-temporal; empty = current).
+/// `redact=true` replaces the body text with the shape-preserving placeholder
+/// *before* the integrity is computed (§2.7 consent: the integrity then
+/// authenticates the redacted view).
+/// `ponytail:` 8 args — bundling the render options into a struct is ceremony
+/// for the two production callers (`/ump/*` ops + export), same precedent as
+/// `write_markdown_ingest`.
+#[allow(clippy::too_many_arguments)]
 pub fn emit_record(
     row: &Value,
     domain: &str,
@@ -264,6 +281,7 @@ pub fn emit_record(
     relations: &Value,
     meta: &UmpMeta,
     redact: bool,
+    superseded_by: &[String],
     signer: Option<(&str, &SigningKey)>,
 ) -> Value {
     let mut rec = to_ump(row, domain, entities, relations);
@@ -272,6 +290,9 @@ pub fn emit_record(
         let hash =
             brain_server::ump_integrity::record_hash(format!("{domain}\0{content}").as_bytes());
         rec["id"] = json!(brain_server::ump_integrity::content_id(&hash));
+    }
+    if !superseded_by.is_empty() {
+        rec["superseded_by"] = json!(superseded_by);
     }
     if let Some(kind) = &meta.kind {
         rec["kind"] = json!(kind);
@@ -285,19 +306,32 @@ pub fn emit_record(
     if let Some(v) = &meta.visibility {
         rec["scope"]["visibility"] = json!(v);
     }
+    if let Some(p) = &meta.provenance {
+        rec["provenance"] = p.clone();
+    }
+    if let Some(c) = &meta.consent {
+        rec["consent"] = c.clone();
+    }
     if redact {
         rec["body"]["text"] = json!("[redacted]");
     }
+    // §2.8/§6.1: the content hash covers the canonical record minus the
+    // `integrity` block ONLY — `id` stays inside the hash (the reference
+    // `contentHash` omits just `integrity`). JS-flavor canonicalization is
+    // required so the reference `verify()` reproduces the same bytes
+    // (integral floats serialize as `1`, not `1.0`).
     let mut canonical = rec.clone();
-    canonical["id"] = Value::Null;
-    canonical["integrity"] = Value::Null;
-    if let Ok(bytes) = brain_server::ump_integrity::canonical_jcs(&canonical) {
-        let hash = brain_server::ump_integrity::record_hash(&bytes);
-        let mut integrity = json!({ "algo": "blake3-256", "hash": hex_encode(&hash) });
+    canonical.as_object_mut().map(|m| m.remove("integrity"));
+    if let Ok(bytes) = brain_server::ump_integrity::canonical_ump(&canonical) {
+        let content_hash = brain_server::ump_integrity::content_hash_string(&bytes);
+        let mut integrity = json!({ "content_hash": content_hash });
         if let Some((did, sk)) = signer {
-            let sig = brain_server::ump_integrity::sign_hash(&hash, sk);
-            integrity["key"] = json!(did);
-            integrity["sig"] = json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig));
+            let sig = brain_server::ump_integrity::sign_hash_string(
+                integrity["content_hash"].as_str().unwrap_or(""),
+                sk,
+            );
+            integrity["signature"] = json!(base64::engine::general_purpose::STANDARD.encode(sig));
+            integrity["signer"] = json!(did);
         }
         rec["integrity"] = integrity;
     }
@@ -305,11 +339,38 @@ pub fn emit_record(
 }
 
 /// §5.3 mandatory read-path check: recompute the blake3 over the canonical
-/// record (minus `id`/`integrity`), require it to match `integrity.hash`, and
-/// when a signature + operator key are both present, verify the EdDSA
-/// signature. Hash-only records verify without a key. Returns false on any
-/// malformed input — the read path drops unverifiable records.
+/// record (minus `integrity`), require it to match `integrity.content_hash`
+/// (reference §2.8 format), and when a signature + operator key are both
+/// present, verify the EdDSA signature over BLAKE3 of the hash string.
+/// Hash-only records verify without a key. The legacy v1.17.3 format
+/// (`algo`/`hash`(hex)/`key`/`sig`, hash over the record with `id` +
+/// `integrity` nulled, signature over the raw hash) is still accepted so
+/// records signed by a v1.17.3 peer verify — the emit side writes only the
+/// reference format. Returns false on any malformed input — the read path
+/// drops unverifiable records.
 pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
+    if let Some(content_hash) = record["integrity"]["content_hash"].as_str() {
+        if !content_hash.starts_with("blake3:") {
+            return false;
+        }
+        let mut canonical = record.clone();
+        canonical.as_object_mut().map(|m| m.remove("integrity"));
+        let Ok(bytes) = brain_server::ump_integrity::canonical_ump(&canonical) else {
+            return false;
+        };
+        if brain_server::ump_integrity::content_hash_string(&bytes) != content_hash {
+            return false;
+        }
+        return match (pk, record["integrity"]["signature"].as_str()) {
+            (Some(pk), Some(sig)) => {
+                let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(sig) else {
+                    return false;
+                };
+                brain_server::ump_integrity::verify_hash_string(content_hash, pk, &sig_bytes)
+            }
+            _ => true,
+        };
+    }
     let Some(hash_hex) = record["integrity"]["hash"].as_str() else {
         return false;
     };
@@ -461,6 +522,10 @@ pub fn record_from_markdown(text: &str) -> Result<Value, String> {
 }
 
 /// Lowercase hex, hand-rolled (the codebase carries no hex dep; 3 lines).
+/// Legacy v1.17.3 format hex encoding — the decode half stays live for the
+/// legacy-verify path; the encode half is exercised by the hex round-trip
+/// test and kept so a future `algo`/`hash` re-emission has a peer.
+#[allow(dead_code)]
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -649,6 +714,7 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             None,
         );
         let b = emit_record(
@@ -658,6 +724,7 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             None,
         );
         assert_eq!(a["id"], b["id"]);
@@ -671,6 +738,7 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             None,
         );
         assert_ne!(a["id"], c["id"], "different content → different id");
@@ -681,6 +749,7 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             None,
         );
         assert_ne!(a["id"], d["id"], "domain salt keeps per-domain ids unique");
@@ -699,9 +768,13 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             None,
         );
-        assert_eq!(rec["integrity"]["algo"], "blake3-256");
+        assert!(rec["integrity"]["content_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("blake3:"));
         assert!(verify_record(&rec, None));
         let mut tampered = rec.clone();
         tampered["body"]["text"] = json!("Dave does NOT work at Acme.");
@@ -729,10 +802,12 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             Some((&did, &sk)),
         );
-        assert_eq!(rec["integrity"]["key"], did);
-        assert!(rec["integrity"]["sig"].is_string());
+        assert_eq!(rec["integrity"]["signer"], did);
+        assert!(rec["integrity"]["signature"].is_string());
+        assert!(rec["integrity"]["content_hash"].is_string());
         assert!(verify_record(&rec, Some(&pk)));
         assert!(
             !verify_record(&rec, Some(&[0u8; 32])),
@@ -753,6 +828,7 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             true,
+            &[],
             None,
         );
         assert_eq!(rec["body"]["text"], "[redacted]");
@@ -770,6 +846,7 @@ mod tests {
                 &json!([]),
                 &UmpMeta::default(),
                 false,
+                &[],
                 None
             )["id"]
         );
@@ -785,8 +862,19 @@ mod tests {
             owner: Some("did:key:z6MkFake".into()),
             visibility: Some("shared".into()),
             origin: Some("urn:ump:peer1:42".into()),
+            provenance: None,
+            consent: None,
         };
-        let rec = emit_record(&row, "global", &json!([]), &json!([]), &meta, false, None);
+        let rec = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &meta,
+            false,
+            &[],
+            None,
+        );
         assert_eq!(rec["kind"], "working");
         assert_eq!(rec["scope"]["owner"], "did:key:z6MkFake");
         assert_eq!(rec["scope"]["visibility"], "shared");
@@ -808,6 +896,7 @@ mod tests {
             &json!([]),
             &UmpMeta::default(),
             false,
+            &[],
             None,
         );
         let md = record_to_markdown(&rec).unwrap();

@@ -762,7 +762,7 @@ pub(crate) fn purge_chunk_ids(
 pub(crate) const KNOWLEDGE_ROW_COLS: &str =
     "id, content, node_kind, source, authority, assertion_kind, confidence,
         access_scope, owner, observed_at, valid_from, valid_to,
-        content_hash, title, expires_at, created_at, ump_meta";
+        content_hash, title, expires_at, created_at, ump_meta, ump_id";
 
 /// Row → the JSON shape the record engine (`emit_record`) renders from.
 pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
@@ -786,6 +786,7 @@ pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde
             .map(|s| crate::consolidate::observed_secs(&Some(s)))
             .filter(|&ts| ts != 0),
         "ump_meta": r.get::<_, Option<String>>(16)?,
+        "ump_id": r.get::<_, Option<String>>(17)?,
     }))
 }
 
@@ -1031,6 +1032,10 @@ fn render_ump(
                 &serde_json::json!(rels),
                 &meta,
                 redact,
+                // `ponytail:` the export renderer is pure (no DB handle), so
+                // it can't resolve `supersedes` links; the `/ump/*` ops surface
+                // carries `superseded_by` on live reads.
+                &[],
                 signer,
             )
         })
@@ -1155,7 +1160,10 @@ mod tests {
         assert_eq!(recs[1]["body"]["text"], "[redacted]");
         assert_eq!(recs[2]["body"]["text"], "[redacted]");
         for r in recs {
-            assert!(r["integrity"]["hash"].is_string(), "integrity present");
+            assert!(
+                r["integrity"]["content_hash"].is_string(),
+                "integrity present"
+            );
             assert!(
                 crate::handlers::ump::verify_record(r, None),
                 "redacted record still verifies"

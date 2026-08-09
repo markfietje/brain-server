@@ -43,12 +43,17 @@ pub fn content_id(hash: &[u8; 32]) -> String {
     format!("{URN_UMP_PREFIX}{}", base32_encode(hash))
 }
 
-/// Spec §5.1: `did:key:z…` from an Ed25519 public key — multicodec `0xed`
-/// prefix + base58btc. Pinned by a known-vector test.
+/// Spec §5.1: `did:key:z…` from an Ed25519 public key — the `0xed 0x01`
+/// multicodec varint (Ed25519 pubkey) + base58btc. The varint is TWO bytes:
+/// the reference `didKeyFromPublicKey` prefixes `[0xed, 0x01]` and
+/// `publicKeyFromDidKey` rejects any other codec (a bare `0xed` 33-byte form
+/// yields a valid base58 string that is NOT a did:key). Pinned by a
+/// known-vector test computed against the reference base58btc.
 pub fn did_key_from_ed25519(pk: &[u8; 32]) -> String {
-    let mut buf = [0u8; 33];
+    let mut buf = [0u8; 34];
     buf[0] = 0xed;
-    buf[1..].copy_from_slice(pk);
+    buf[1] = 0x01;
+    buf[2..].copy_from_slice(pk);
     format!("did:key:z{}", bs58::encode(buf).into_string())
 }
 
@@ -63,9 +68,105 @@ pub fn canonical_jcs(v: &Value) -> Result<Vec<u8>, serde_json::Error> {
     serde_json::to_vec(v)
 }
 
+/// RFC 8785 canonicalization with the reference implementation's exact
+/// number/string rules (the suite's `canonicalize`, `canonical.ts`): integral
+/// floats serialize without a trailing `.0` (JS `String(n)` — `serde_json`/
+/// ryu would emit `1.0`), strings escape U+2028/U+2029, and null is kept.
+/// Keys sort by UTF-16 code unit, identical to byte order for the ASCII keys
+/// UMP records carry. This is the ONLY flavor that reproduces the reference
+/// `contentHash`, so `emit_record`/`verify_record` (and any peer-verified
+/// signing) must use it, not `canonical_jcs`.
+/// `ponytail:` number formatting follows ECMAScript `Number.toString` for the
+/// range UMP records carry (small integers + simple decimals): Rust's shortest
+/// round-trip display matches JS except at extreme magnitudes (|n| >= 1e21,
+/// or < 1e-6 where JS switches to exponent notation) and for -0.0 — none of
+/// which a stored record can produce.
+pub fn canonical_ump(v: &Value) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    write_ump_value(&mut out, v)?;
+    Ok(out)
+}
+
+fn write_ump_value(out: &mut Vec<u8>, v: &Value) -> Result<(), String> {
+    match v {
+        Value::Null => out.extend_from_slice(b"null"),
+        Value::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
+        Value::Number(n) => {
+            let f = n
+                .as_f64()
+                .ok_or_else(|| "canonical_ump: non-finite number".to_string())?;
+            if !f.is_finite() {
+                return Err("canonical_ump: non-finite number".into());
+            }
+            out.extend_from_slice(format!("{f}").as_bytes());
+        }
+        Value::String(s) => write_ump_string(out, s),
+        Value::Array(items) => {
+            out.push(b'[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(b',');
+                }
+                write_ump_value(out, item)?;
+            }
+            out.push(b']');
+        }
+        Value::Object(map) => {
+            out.push(b'{');
+            // serde_json's default Map is a BTreeMap — keys already sorted
+            // (byte order = UTF-16 order for the ASCII keys records carry).
+            for (i, (k, val)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(b',');
+                }
+                write_ump_string(out, k);
+                out.push(b':');
+                write_ump_value(out, val)?;
+            }
+            out.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+/// JS `JSON.stringify` string escaping: the JSON short forms, `\u00XX` for
+/// other control chars, and the ES2019 U+2028/U+2029 escapes (serde_json
+/// leaves those two raw — byte-exactness with the reference requires them).
+fn write_ump_string(out: &mut Vec<u8>, s: &str) {
+    out.push(b'"');
+    for c in s.chars() {
+        match c {
+            '"' => out.extend_from_slice(b"\\\""),
+            '\\' => out.extend_from_slice(b"\\\\"),
+            '\u{08}' => out.extend_from_slice(b"\\b"),
+            '\u{0c}' => out.extend_from_slice(b"\\f"),
+            '\n' => out.extend_from_slice(b"\\n"),
+            '\r' => out.extend_from_slice(b"\\r"),
+            '\t' => out.extend_from_slice(b"\\t"),
+            '\u{2028}' => out.extend_from_slice(b"\\u2028"),
+            '\u{2029}' => out.extend_from_slice(b"\\u2029"),
+            c if (c as u32) < 0x20 => {
+                out.extend_from_slice(format!("\\u{:04x}", c as u32).as_bytes());
+            }
+            c => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+    out.push(b'"');
+}
+
 /// Spec §2.8: BLAKE3 content hash (spec-mandated algorithm).
 pub fn record_hash(canonical: &[u8]) -> [u8; 32] {
     blake3::hash(canonical).into()
+}
+
+/// The reference `contentHash` string: `blake3:` + lowercase base32 (no
+/// padding) over the canonical record bytes — the exact string a record's
+/// `integrity.content_hash` must equal and what the signature signs.
+pub fn content_hash_string(canonical: &[u8]) -> String {
+    format!("blake3:{}", base32_encode(&record_hash(canonical)))
 }
 
 /// Sign the record hash with the operator's Ed25519 key (§2.8/§6.1).
@@ -83,6 +184,21 @@ pub fn verify_hash(pk_bytes: &[u8; 32], hash: &[u8; 32], sig: &[u8]) -> bool {
         return false;
     };
     pk.verify(hash, &sig).is_ok()
+}
+
+/// Reference `signHash`: Ed25519 over BLAKE3(hash-string) — the signed message
+/// is the digest of the `blake3:…` content-hash STRING, not the raw record
+/// hash. The suite's `verify()` recomputes exactly this.
+pub fn sign_hash_string(hash_string: &str, sk: &SigningKey) -> Vec<u8> {
+    sk.sign(&record_hash(hash_string.as_bytes()))
+        .to_bytes()
+        .to_vec()
+}
+
+/// Verify a `sign_hash_string` signature (reference `verifyHash`). False on
+/// any malformed input.
+pub fn verify_hash_string(hash_string: &str, pk_bytes: &[u8; 32], sig: &[u8]) -> bool {
+    verify_hash(pk_bytes, &record_hash(hash_string.as_bytes()), sig)
 }
 
 /// Capability token (§5.2): owner-signed `payload.sig`, base64url(JSON),
@@ -182,7 +298,8 @@ mod tests {
     #[test]
     fn did_key_vector_is_stable() {
         // RFC 8032 test vector 1 public key; expected value independently
-        // computed (pure-python base58btc of multicodec 0xed || pk).
+        // computed (pure-python base58btc of the 34-byte multicodec
+        // 0xed 0x01 || pk — the reference `didKeyFromPublicKey` form).
         let pk: [u8; 32] = [
             0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
             0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0xbb, 0x6d,
@@ -190,8 +307,62 @@ mod tests {
         ];
         assert_eq!(
             did_key_from_ed25519(&pk),
-            "did:key:z2DeuicgUFGK9784FgMs5DG57pbDLWGaDu6TnXE73uLgkEQ"
+            "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN5x1fTDDgQ"
         );
+    }
+
+    #[test]
+    fn canonical_ump_matches_reference_js_flavor() {
+        // JS String(2.0) = "2", not "2.0" — the byte that makes the suite's
+        // contentHash agree with ours.
+        let v: Value = serde_json::from_str(r#"{"b":2.0,"a":1,"c":0.1}"#).unwrap();
+        assert_eq!(
+            String::from_utf8(canonical_ump(&v).unwrap()).unwrap(),
+            r#"{"a":1,"b":2,"c":0.1}"#
+        );
+        // Nulls survive; keys stay sorted; strings escape like JSON.stringify
+        // (including U+2028/U+2029, which serde_json leaves raw).
+        let v: Value =
+            serde_json::from_str(r#"{"x":{"z":null,"y":[3,2.50,1]},"s":"a\u2028b\tc"}"#).unwrap();
+        assert_eq!(
+            String::from_utf8(canonical_ump(&v).unwrap()).unwrap(),
+            r#"{"s":"a\u2028b\tc","x":{"y":[3,2.5,1],"z":null}}"#
+        );
+        // Integral f64s emitted by the record engine (confidence 1.0) collide
+        // byte-identically with the JS canonicalizer.
+        let v: Value = serde_json::from_str(r#"{"confidence":1.0,"kind":"semantic"}"#).unwrap();
+        assert_eq!(
+            String::from_utf8(canonical_ump(&v).unwrap()).unwrap(),
+            r#"{"confidence":1,"kind":"semantic"}"#
+        );
+    }
+
+    #[test]
+    fn content_hash_string_is_reference_shaped() {
+        let h = content_hash_string(b"{\"a\":1}");
+        assert!(h.starts_with("blake3:"));
+        assert_eq!(
+            h,
+            format!("blake3:{}", base32_encode(&record_hash(b"{\"a\":1}")))
+        );
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ':'));
+    }
+
+    #[test]
+    fn sign_hash_string_round_trip_and_tamper_detection() {
+        let (sk, pk) = keypair();
+        let h = "blake3:abc123".to_string();
+        let sig = sign_hash_string(&h, &sk);
+        assert!(verify_hash_string(&h, &pk, &sig));
+        assert!(!verify_hash_string(&h, &pk, b"bad-sig"));
+        assert!(!verify_hash_string("blake3:different", &pk, &sig));
+        // The signed message is BLAKE3 of the hash STRING — a signature over
+        // the raw string bytes (no digest) must not verify under the scheme.
+        use ed25519_dalek::Signer;
+        let raw_bytes_sig = sk.sign(b"blake3:abc123").to_bytes().to_vec();
+        assert!(!verify_hash_string(&h, &pk, &raw_bytes_sig));
     }
 
     #[test]
