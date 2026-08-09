@@ -64,3 +64,5 @@ brain-server.pid
 CLIENT_ROADMAP.md
 DESIGN_v1.16.0_Client.md
 USE_CASES.md
+marketing/
+/sbom/
