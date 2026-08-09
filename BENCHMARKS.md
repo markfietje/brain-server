@@ -105,8 +105,11 @@ Four Brain Server profiles plus the two QMD reference profiles:
 
 ## Reproducible command protocol
 
-There is no benchmark CLI yet (planned `cargo run --bin bench`). Until
-then, run against the live HTTP API. The protocol is deterministic given a fixed corpus
+The benchmark CLI is the feature-gated `bench` binary
+(`cargo run --release --features bench --bin bench`): the default mode runs the
+synthetic-scale latency/RSS benchmark, `eval` scores a judgments file against
+the live API, and `scaffold` authors the judged corpus from `/export`. Run it
+against the live HTTP API. The protocol is deterministic given a fixed corpus
 and query set.
 
 ### 0. Prerequisites
