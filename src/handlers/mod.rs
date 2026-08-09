@@ -61,10 +61,7 @@ pub const MAX_LIMIT: u32 = 100;
 pub const MIN_LIMIT: u32 = 1;
 pub const MAX_ENTITIES: usize = 200;
 pub const MAX_RELATIONS: usize = 200;
-pub const MAX_BODY: usize = 2 * 1024 * 1024; // 2 MiB hard cap
-
 pub const DEFAULT_RECALL_LIMIT: u32 = 5;
-pub const DOMAIN_CONFIDENCE_THRESHOLD: f32 = 0.55;
 
 // ---------------------------------------------------------------------------
 // Shared serde types
@@ -185,16 +182,6 @@ pub struct ForgetResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct HealthResponse {
-    pub status: &'static str,
-    pub version: &'static str,
-}
-
-// ---------------------------------------------------------------------------
-// Uniform error envelope (API_CONTRACT.md §5)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Serialize)]
 pub struct ErrorBody {
     pub error: ApiError,
 }
@@ -265,12 +252,6 @@ impl HandlerError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             inner: ApiError::new("unauthorized", message.into()),
-        }
-    }
-    pub fn rate_limited(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            inner: ApiError::new("rate_limited", message.into()),
         }
     }
     pub fn payload_too_large(message: impl Into<String>) -> Self {
