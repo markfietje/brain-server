@@ -4,11 +4,14 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.17.0 "Mobile" (shipped)
+## Status — v1.17.7 "Complete 2/3" (shipped)
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
-mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`.
+mirrors `openapi.yaml`; the panels drive re-fetch through `use_resource`. v1.17.7
+adds the **Graph** (`/graph`) browse/traverse panel and the **Create**
+(`/create`) workspace (Ingest / Procedures / Consolidate) — both reachable from
+the sidebar rail, mobile tab bar, and command palette (9 nav targets).
 
 **v1.17.0 ships the full client line** (49 tests, clippy `-D warnings` + fmt
 clean). The M1 secure-storage + M2 responsive-UX halves of the v1.17.0 Mobile

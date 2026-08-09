@@ -108,3 +108,76 @@ palette_go_to = Go to
 palette_lookup = Lookup
 palette_run = Run
 confirm_destructive = Press Enter to confirm
+
+## Graph (v1.17.7 M3)
+nav_graph = Graph
+graph_title = Graph
+graph_entity_ph = Search an entity…
+graph_browse = Entity
+graph_type = type
+graph_relations = relations
+graph_traverse = Traverse
+graph_start = Start entity
+graph_depth = Max depth
+graph_kind = Edge kind (optional)
+graph_at = Valid at (optional)
+graph_cross_domain = Cross-domain
+graph_run = Traverse
+graph_rel = relation
+graph_out = out
+graph_in = in
+graph_no_entity = No such entity
+graph_paths = paths
+graph_rows = rows
+none = none
+
+## Create (v1.17.7 M4)
+nav_create = Create
+create_title = Create
+create_sub = Write tools: ingest memory, build procedures, consolidate.
+
+## Ingest (v1.17.7 M4.1)
+ingest_title = Ingest
+ingest_tab_structured = Structured
+ingest_tab_markdown = Markdown
+ingest_tab_memory = Memory batch
+ingest_content = Content
+ingest_kind = Memory kind
+ingest_domain = Domain
+ingest_entities = Entities (JSON)
+ingest_relations = Relations (JSON)
+ingest_source_path = Source path
+ingest_replace = Replace existing
+ingest_submit = Ingest
+ingest_bad_json = Entities/relations must be valid JSON
+ingest_mem_hint = One memory per line, optional ## Title headers
+outcome_created = Created
+outcome_duplicate = Duplicate (already present)
+
+## Procedures (v1.17.7 M4.2)
+proc_title = Procedures
+proc_step_title = Step title
+proc_step_body = Step content
+proc_add_step = Add step
+proc_create = Create procedure
+proc_steps = Steps
+proc_is_decision = Decision rule
+proc_created = Procedure created ({n} steps)
+cls_title = Classify
+cls_text = Text to classify
+cls_run = Classify
+dec_title = Evaluate decision
+dec_id = Decision id
+dec_vars = Variables (JSON)
+dec_run = Evaluate
+
+## Consolidate (v1.17.7 M4.3)
+cons_title = Consolidate
+cons_load = Load
+cons_apply = Approve supersession
+cons_undo = Undo
+cons_empty = Nothing to consolidate.
+cons_near_dup = near-dup
+cons_conflict = conflict
+cons_applied = Applied {n} supersessions
+cons_undone = Undone {n}

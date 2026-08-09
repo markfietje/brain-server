@@ -13,7 +13,7 @@
 #![allow(unused_braces)]
 
 use dioxus::prelude::*;
-use panels::{audit, health, overview, recall, review, security, subjects};
+use panels::{audit, create, graph, health, overview, recall, review, security, subjects};
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
 // reader (compiler-invisible), so unrendered fields warn as "never read" —
@@ -205,6 +205,9 @@ enum Route {
     /// M4.2: deep-linkable decision-path artifact (`?trace=true` → trace_id).
     #[route("/recall/:trace_id")]
     RecallTrace { trace_id: i64 },
+    /// v1.17.7 M3: Explore group — browse + traverse the knowledge graph.
+    #[route("/graph")]
+    Graph {},
     #[route("/subjects")]
     Subjects {},
     /// v1.16.7 M1: a deep-linkable deletion certificate (GDPR Art 17 evidence).
@@ -214,6 +217,9 @@ enum Route {
     Security {},
     #[route("/audit")]
     Audit {},
+    /// v1.17.7 M4: Write group — create workspace (ingest/procedures/consolidate).
+    #[route("/create")]
+    Create {},
     #[route("/health")]
     Health {},
     #[end_layout]
@@ -672,6 +678,8 @@ fn AppShell() -> Element {
     let nav_overview = t("nav_overview");
     let nav_review = t("nav_review");
     let nav_recall = t("nav_recall");
+    let nav_graph = t("nav_graph");
+    let nav_create = t("nav_create");
     let nav_subjects = t("nav_subjects");
     let nav_security = t("nav_security");
     let nav_audit = t("nav_audit");
@@ -718,9 +726,11 @@ fn AppShell() -> Element {
                     NavLink { to: Route::Overview {}, "{nav_overview}" }
                     NavLink { to: Route::Review {}, "{nav_review}" }
                     NavLink { to: Route::Recall {}, "{nav_recall}" }
+                    NavLink { to: Route::Graph {}, "{nav_graph}" }
                     NavLink { to: Route::Subjects {}, "{nav_subjects}" }
                     NavLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
                     NavLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
+                    NavLink { to: Route::Create {}, "{nav_create}" }
                     NavLink { to: Route::Health {}, "{nav_health}" }
                 }
                 div { class: "border-t border-border p-3",
@@ -758,9 +768,11 @@ fn AppShell() -> Element {
                 TabLink { to: Route::Overview {}, "{nav_overview}" }
                 TabLink { to: Route::Review {}, "{nav_review}" }
                 TabLink { to: Route::Recall {}, "{nav_recall}" }
+                TabLink { to: Route::Graph {}, "{nav_graph}" }
                 TabLink { to: Route::Subjects {}, "{nav_subjects}" }
                 TabLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
                 TabLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
+                TabLink { to: Route::Create {}, "{nav_create}" }
                 TabLink { to: Route::Health {}, "{nav_health}" }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
@@ -925,6 +937,8 @@ fn command_keywords(c: &Command) -> &'static [&'static str] {
         Command::Navigate(Route::Overview {}) => &["overview", "home", "dashboard"],
         Command::Navigate(Route::Review {}) => &["review", "queue", "pending", "approve"],
         Command::Navigate(Route::Recall {}) => &["recall", "search", "query"],
+        Command::Navigate(Route::Graph {}) => &["graph", "traverse", "entity", "kg"],
+        Command::Navigate(Route::Create {}) => &["create", "ingest", "write", "procedure"],
         Command::Navigate(Route::Subjects {}) => &[
             "subjects",
             "dsar",
@@ -958,9 +972,11 @@ fn palette_commands(configured: bool) -> Vec<Command> {
         Command::Navigate(Route::Overview {}),
         Command::Navigate(Route::Review {}),
         Command::Navigate(Route::Recall {}),
+        Command::Navigate(Route::Graph {}),
         Command::Navigate(Route::Subjects {}),
         Command::Navigate(Route::Security {}),
         Command::Navigate(Route::Audit {}),
+        Command::Navigate(Route::Create {}),
         Command::Navigate(Route::Health {}),
     ];
     if configured {
@@ -1040,6 +1056,8 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::Overview {}) => "Overview",
         Command::Navigate(Route::Review {}) => "Review queue",
         Command::Navigate(Route::Recall {}) => "Recall",
+        Command::Navigate(Route::Graph {}) => "Graph",
+        Command::Navigate(Route::Create {}) => "Create",
         Command::Navigate(Route::Subjects {}) => "Subjects (DSAR)",
         Command::Navigate(Route::Security {}) => "Security",
         Command::Navigate(Route::Audit {}) => "Audit",
@@ -1474,6 +1492,11 @@ fn ReviewDetail(proposal_id: i64) -> Element {
 fn Recall() -> Element {
     recall::panel()
 }
+/// v1.17.7 M3: the knowledge-graph explore panel.
+#[component]
+fn Graph() -> Element {
+    graph::panel()
+}
 /// M4.2: the deep-linkable trace artifact. `/recall/:trace_id` renders the
 /// recorded decision path for a past recall (the `?trace=true` id).
 #[component]
@@ -1496,6 +1519,11 @@ fn Security() -> Element {
 #[component]
 fn Audit() -> Element {
     audit::panel()
+}
+/// v1.17.7 M4: the create-workspace panel (ingest/procedures/consolidate).
+#[component]
+fn Create() -> Element {
+    create::panel()
 }
 #[component]
 fn Health() -> Element {
@@ -1720,7 +1748,7 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, Command::Navigate(_)))
             .count();
-        assert_eq!(count, 7, "the seven nav targets");
+        assert_eq!(count, 9, "the nine nav targets (incl. Graph + Create)");
         assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
         let anonymous = palette_commands(false);
         assert!(
@@ -1762,9 +1790,11 @@ mod tests {
             Route::Overview {},
             Route::Review {},
             Route::Recall {},
+            Route::Graph {},
             Route::Subjects {},
             Route::Security {},
             Route::Audit {},
+            Route::Create {},
             Route::Health {},
         ] {
             assert!(nav.contains(&r), "palette missing Navigate for {r:?}");

@@ -297,6 +297,21 @@ impl ApiClient {
         .await
     }
 
+    /// v1.17.7 M4: POST a raw text body (the `/ingest/memory` contract reads
+    /// the body as a UTF-8 text block, not JSON).
+    async fn post_raw(&self, path: &str, body: String) -> Result<serde_json::Value, ApiError> {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        self.request(move |tok| {
+            let mut rb = http.post(format!("{base}{path}")).body(body.clone());
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
+    }
+
     async fn post_empty<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ApiError> {
         let base = self.base.clone();
         let http = self.http.clone();
@@ -484,6 +499,168 @@ impl ApiClient {
     /// GET /tombstones?limit=N — the deletion registry page.
     pub async fn tombstones(&self, limit: u32) -> Result<TombstonesResponse, ApiError> {
         self.get_json(&format!("/tombstones?limit={limit}")).await
+    }
+
+    // --- v1.17.7 M3 — Graph methods -----------------------------------------
+
+    /// GET /graph/entity/{name} — browse one entity. Returns raw JSON so the
+    /// panel can distinguish a real entity from the backend's 200 `{error}`
+    /// not-found envelope via `parse_entity`.
+    pub async fn graph_entity(&self, name: &str) -> Result<serde_json::Value, ApiError> {
+        self.get_json(&format!("/graph/entity/{}", url_encode(name)))
+            .await
+    }
+
+    /// GET /graph/traverse — bounded walk from a seed. `explain=true` is always
+    /// set (the panel renders the `paths` chains); `kind` supports `causes:`
+    /// prefix semantics, `at` is a bi-temporal date, `cross_domain` fans out.
+    pub async fn graph_traverse(
+        &self,
+        start: &str,
+        depth: u8,
+        kind: &str,
+        at: &str,
+        cross_domain: bool,
+    ) -> Result<TraverseResponse, ApiError> {
+        let mut q = format!(
+            "/graph/traverse?start={}&max_depth={depth}&explain=true",
+            url_encode(start)
+        );
+        let kind = kind.trim();
+        if !kind.is_empty() {
+            q.push_str(&format!("&kind={}", url_encode(kind)));
+        }
+        let at = at.trim();
+        if !at.is_empty() {
+            q.push_str(&format!("&at={}", url_encode(at)));
+        }
+        if cross_domain {
+            q.push_str("&cross_domain=true");
+        }
+        self.get_json(&q).await
+    }
+
+    // --- v1.17.7 M4 — Create methods ----------------------------------------
+
+    /// POST /ingest — structured memory with entities/relations (v1.14/v1.0).
+    /// `entities`/`relations` are pre-validated JSON arrays; the backend is the
+    /// source of truth for shape (the free-text editor only guarantees JSON).
+    pub async fn ingest_structured(
+        &self,
+        title: &str,
+        content: &str,
+        kind: &str,
+        domain: &str,
+        entities: &serde_json::Value,
+        relations: &serde_json::Value,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut body = serde_json::json!({ "title": title, "content": content });
+        if !kind.trim().is_empty() {
+            body["memory_kind"] = serde_json::json!(kind.trim());
+        }
+        if !domain.trim().is_empty() {
+            body["domain"] = serde_json::json!(domain.trim());
+        }
+        if let Some(a) = entities.as_array() {
+            if !a.is_empty() {
+                body["entities"] = entities.clone();
+            }
+        }
+        if let Some(a) = relations.as_array() {
+            if !a.is_empty() {
+                body["relations"] = relations.clone();
+            }
+        }
+        self.post_json("/ingest", &body).await
+    }
+
+    /// POST /ingest/markdown — markdown paste (source-path linkage when given).
+    pub async fn ingest_markdown(
+        &self,
+        content: &str,
+        title: Option<&str>,
+        source_path: Option<&str>,
+        domain: &str,
+        replace: bool,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut body = serde_json::json!({ "content": content });
+        if let Some(t) = title.filter(|t| !t.trim().is_empty()) {
+            body["title"] = serde_json::json!(t.trim());
+        }
+        if let Some(sp) = source_path.filter(|s| !s.trim().is_empty()) {
+            body["source_path"] = serde_json::json!(sp.trim());
+        }
+        if !domain.trim().is_empty() {
+            body["domain"] = serde_json::json!(domain.trim());
+        }
+        if replace {
+            body["replace"] = serde_json::json!(true);
+        }
+        self.post_json("/ingest/markdown", &body).await
+    }
+
+    /// POST /ingest/memory — a markdown-style block of `## [Title]` entries.
+    /// The backend parses entries client-free (raw text body, not JSON).
+    pub async fn ingest_memory(&self, content: &str) -> Result<serde_json::Value, ApiError> {
+        self.post_raw("/ingest/memory", content.to_string()).await
+    }
+
+    /// POST /procedure — an ordered-step procedure in one tx.
+    pub async fn procedure_create(
+        &self,
+        title: &str,
+        content: &str,
+        steps: &serde_json::Value,
+        domain: &str,
+    ) -> Result<ProcedureResponse, ApiError> {
+        let mut body = serde_json::json!({ "title": title, "content": content });
+        if let Some(a) = steps.as_array() {
+            if !a.is_empty() {
+                body["steps"] = steps.clone();
+            }
+        }
+        if !domain.trim().is_empty() {
+            body["domain"] = serde_json::json!(domain.trim());
+        }
+        self.post_json("/procedure", &body).await
+    }
+
+    /// GET /procedure/{id}/steps — the ordered steps view.
+    pub async fn procedure_steps(&self, id: i64) -> Result<ProcedureStepsResponse, ApiError> {
+        self.get_json(&format!("/procedure/{id}/steps")).await
+    }
+
+    /// POST /classify — deterministic keyword categorization.
+    pub async fn classify(&self, text: &str) -> Result<ClassifyResponse, ApiError> {
+        let body = serde_json::json!({ "text": text });
+        self.post_json("/classify", &body).await
+    }
+
+    /// POST /decision/{id}/evaluate — the fired branch for numeric variables.
+    pub async fn decision_evaluate(
+        &self,
+        id: i64,
+        variables: &serde_json::Value,
+    ) -> Result<DecisionOutcome, ApiError> {
+        let body = serde_json::json!({ "variables": variables });
+        self.post_json(&format!("/decision/{id}/evaluate"), &body)
+            .await
+    }
+
+    /// POST /consolidate/apply — record one or more operator-chosen links
+    /// (`kind = "supersedes"` expires the older chunk at retrieval time).
+    pub async fn consolidate_apply(
+        &self,
+        links: &serde_json::Value,
+    ) -> Result<ApplyResponse, ApiError> {
+        let body = serde_json::json!({ "links": links });
+        self.post_json("/consolidate/apply", &body).await
+    }
+
+    /// POST /consolidate/undo — reverse prior supersession resolutions.
+    pub async fn consolidate_undo(&self, ids: &[i64]) -> Result<UndoResponse, ApiError> {
+        let body = serde_json::json!({ "old_chunks": ids });
+        self.post_json("/consolidate/undo", &body).await
     }
 }
 
@@ -1017,6 +1194,267 @@ pub struct TombstoneRow {
     pub origin_id: Option<i64>,
 }
 
+// --- v1.17.7 M3/M4 — Graph + Create wire types (pinned to the real server) ---
+
+/// `GET /graph/entity/{name}` — one entity + its typed relation rows. The
+/// backend lowercases the name; a missing entity is a 200 `{error}` envelope
+/// that `parse_entity` maps to `None`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EntityView {
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub entity_type: String,
+    #[serde(default)]
+    pub relations: Vec<EntityRel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct EntityRel {
+    #[serde(rename = "to_entity")]
+    pub other: String,
+    pub relation_type: String,
+    #[serde(rename = "direction")]
+    pub dir: String,
+}
+
+/// `GET /graph/traverse` — the flat `traversal` rows (back-compat) + the
+/// structured `paths` chains (v1.7.0 "Explain"). Field names pinned to the
+/// actual server output (`from_entity` is the seed name; `path` is `id->id`,
+/// `edge_path` is `rel|rel`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TraverseResponse {
+    #[serde(default)]
+    pub traversal: Vec<TraversalRow>,
+    #[serde(default)]
+    pub visited: usize,
+    #[serde(default)]
+    pub paths: Vec<PathChain>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TraversalRow {
+    pub entity: String,
+    pub depth: i64,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub edge_path: String,
+    #[serde(default)]
+    pub from_entity: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct PathChain {
+    #[serde(default)]
+    pub hops: Vec<Hop>,
+    #[serde(default)]
+    pub depth: Option<i64>,
+    #[serde(default)]
+    pub domain: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Hop {
+    pub from: HopNode,
+    pub relation: String,
+    pub to: HopNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HopNode {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `POST /procedure` — id + step ids (the steps are their own chunks).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProcedureResponse {
+    pub id: i64,
+    pub status: String,
+    #[serde(default)]
+    pub step_ids: Vec<i64>,
+}
+
+/// `GET /procedure/{id}/steps` — the ordered step view.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProcedureStepsResponse {
+    pub procedure_id: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<StepView>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StepView {
+    pub step_index: i64,
+    pub id: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub memory_kind: String,
+}
+
+/// `POST /classify` — the winning category + its matched keywords + taxonomy.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ClassifyResponse {
+    pub result: CategoryResult,
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CategoryResult {
+    pub category: String,
+    pub confidence: f32,
+    #[serde(default)]
+    pub matched_keywords: Vec<String>,
+}
+
+/// `POST /decision/{id}/evaluate` — the fired branch (or the default).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DecisionOutcome {
+    pub result: String,
+    #[serde(default)]
+    pub matched_condition: Option<String>,
+    #[serde(default)]
+    pub citation: Option<i64>,
+    pub used_default: bool,
+}
+
+/// `POST /consolidate/apply` — how many links were recorded vs rejected.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ApplyResponse {
+    pub recorded: usize,
+    #[serde(default)]
+    pub rejected: Vec<String>,
+}
+
+/// `POST /consolidate/undo` — how many prior supersessions were reversed.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UndoResponse {
+    pub undone: usize,
+    #[serde(default)]
+    pub rejected: Vec<String>,
+}
+
+// --- v1.17.7 M3/M4 — pure cores (wire decode + display, testable) ------------
+
+/// v1.17.7 M3.4: decode the entity response. `None` for the backend's 200
+/// `{error}` not-found envelope or any non-entity shape.
+pub fn parse_entity(json: &serde_json::Value) -> Option<EntityView> {
+    if json.get("error").is_some() {
+        return None;
+    }
+    serde_json::from_value(json.clone()).ok()
+}
+
+/// v1.17.7 M3.4: decode the traverse response (pins the field names the UI
+/// reads). `None` on any shape drift — the panel then shows the error.
+pub fn parse_traverse(json: serde_json::Value) -> Option<TraverseResponse> {
+    serde_json::from_value(json).ok()
+}
+
+/// v1.17.7 M3.4: render a path chain as faithful `A --rel--> B --rel--> C`
+/// text. Intermediate node names are best-effort (the server names only the
+/// seed + leaf; an unnamed node falls back to its id) — mirror the v1.7.0
+/// explanation contract.
+pub fn render_path(p: &PathChain) -> String {
+    let mut out = String::new();
+    for (i, hop) in p.hops.iter().enumerate() {
+        let from = if hop.from.name.is_empty() {
+            &hop.from.id
+        } else {
+            &hop.from.name
+        };
+        let to = if hop.to.name.is_empty() {
+            &hop.to.id
+        } else {
+            &hop.to.name
+        };
+        if i == 0 {
+            out.push_str(from);
+        }
+        out.push_str(" --");
+        out.push_str(&hop.relation);
+        out.push_str("--> ");
+        out.push_str(to);
+    }
+    if out.is_empty() {
+        return String::new();
+    }
+    out
+}
+
+/// v1.17.7 M3.3: the `kind` filter input validator. Accepts relation-type
+/// identifiers, optionally with a `causes:`-style prefix (a trailing `:`
+/// selects the whole subgraph). Rejects anything that isn't a safe token.
+pub fn kind_is_valid(kind: &str) -> bool {
+    let k = kind.trim();
+    !k.is_empty()
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        || (k.ends_with(':')
+            && k[..k.len() - 1]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+}
+
+/// v1.17.7 M4.1: reduce the three ingest response shapes to one honest outcome
+/// (created / duplicate / error — the review panel's row pattern, no silent
+/// failures). Reads the union of the contract keys each endpoint emits:
+/// `/ingest` uses `status`; markdown/memory use `success` + an optional
+/// `error`/`message` string.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IngestOutcome {
+    Created,
+    Duplicate,
+    Error(String),
+}
+
+pub fn parse_ingest_result(json: &serde_json::Value) -> IngestOutcome {
+    let status = json.get("status").and_then(|s| s.as_str()).unwrap_or("");
+    match status {
+        "created" => IngestOutcome::Created,
+        "duplicate" => IngestOutcome::Duplicate,
+        _ => {
+            let ok = json
+                .get("success")
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false);
+            let err = json
+                .get("error")
+                .or_else(|| json.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            if ok {
+                IngestOutcome::Created
+            } else if !err.is_empty() || status == "error" {
+                IngestOutcome::Error(err.to_string())
+            } else {
+                IngestOutcome::Error("ingest returned no success signal".into())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1438,5 +1876,197 @@ mod tests {
         assert_eq!(t.tombstones.len(), 1);
         assert_eq!(t.tombstones[0].reason.as_deref(), Some("owner:u"));
         assert_eq!(t.tombstones[0].origin_id, Some(8));
+    }
+
+    // --- v1.17.7 M3/M4 — Graph + Create wire pins ----------------------------
+
+    /// `GET /graph/entity` — a real entity (spaces allowed) + typed relations.
+    /// A missing entity is a 200 `{error}` → `parse_entity` → `None`.
+    #[test]
+    fn entity_parses_and_missing_entity_is_none() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{
+                "name":"acme","type":"company",
+                "relations":[
+                    {"to_entity":"dave","relation_type":"employs","direction":"out"},
+                    {"to_entity":"acme","relation_type":"ceo_of","direction":"in"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let e = parse_entity(&v).unwrap();
+        assert_eq!(e.name, "acme");
+        assert_eq!(e.entity_type, "company");
+        assert_eq!(e.relations.len(), 2);
+        assert_eq!(e.relations[0].other, "dave");
+        assert_eq!(e.relations[0].relation_type, "employs");
+        assert_eq!(e.relations[0].dir, "out");
+
+        let missing: serde_json::Value =
+            serde_json::from_str(r#"{"error":"Entity not found"}"#).unwrap();
+        assert!(parse_entity(&missing).is_none());
+    }
+
+    /// `GET /graph/traverse` — the flat rows + the structured chains, pinned to
+    /// the real server field names (`from_entity` = seed, `path` = id->id,
+    /// `edge_path` = rel|rel).
+    #[test]
+    fn traverse_parses_flat_rows_and_paths() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{
+                "traversal":[
+                    {"entity":"carol","depth":2,"path":"1->2->3","edge_path":"employs|ceo_of",
+                     "from_entity":"dave","domain":"global"}
+                ],
+                "visited":1,
+                "paths":[{
+                    "hops":[
+                        {"from":{"id":"1","name":"dave"},"relation":"employs","to":{"id":"2","name":""}},
+                        {"from":{"id":"2","name":""},"relation":"ceo_of","to":{"id":"3","name":"carol"}}
+                    ],
+                    "depth":2,"domain":"global"
+                }]
+            }"#,
+        )
+        .unwrap();
+        let t = parse_traverse(v).unwrap();
+        assert_eq!(t.visited, 1);
+        assert_eq!(t.traversal[0].entity, "carol");
+        assert_eq!(t.traversal[0].depth, 2);
+        assert_eq!(t.traversal[0].path, "1->2->3");
+        assert_eq!(t.traversal[0].edge_path, "employs|ceo_of");
+        assert_eq!(t.traversal[0].from_entity.as_deref(), Some("dave"));
+        assert_eq!(t.paths.len(), 1);
+        assert_eq!(t.paths[0].hops.len(), 2);
+        assert_eq!(t.paths[0].hops[0].from.name, "dave");
+        assert_eq!(t.paths[0].hops[0].relation, "employs");
+    }
+
+    /// v1.17.7 M3.4: the chain text renderer — empty hops → empty; multi-hop
+    /// renders `A --rel--> B --rel--> C`; unnamed intermediates fall back to id.
+    #[test]
+    fn render_path_renders_faithful_chains() {
+        let empty = PathChain {
+            hops: vec![],
+            depth: None,
+            domain: None,
+        };
+        assert_eq!(render_path(&empty), "");
+
+        let named = PathChain {
+            hops: vec![
+                Hop {
+                    from: HopNode {
+                        id: "1".into(),
+                        name: "dave".into(),
+                    },
+                    relation: "employs".into(),
+                    to: HopNode {
+                        id: "2".into(),
+                        name: String::new(),
+                    },
+                },
+                Hop {
+                    from: HopNode {
+                        id: "2".into(),
+                        name: String::new(),
+                    },
+                    relation: "ceo_of".into(),
+                    to: HopNode {
+                        id: "3".into(),
+                        name: "carol".into(),
+                    },
+                },
+            ],
+            depth: Some(2),
+            domain: Some("global".into()),
+        };
+        assert_eq!(render_path(&named), "dave --employs--> 2 --ceo_of--> carol");
+    }
+
+    /// v1.17.7 M3.3: the `kind` filter validator — exact tokens + `causes:`
+    /// prefixes pass; empty/space/invalid chars fail.
+    #[test]
+    fn kind_validator_accepts_exact_and_prefix() {
+        assert!(kind_is_valid("works_at"));
+        assert!(kind_is_valid("causes:"));
+        assert!(kind_is_valid("a_b-c"));
+        assert!(!kind_is_valid(""));
+        assert!(!kind_is_valid("  "));
+        assert!(!kind_is_valid("has space"));
+        assert!(!kind_is_valid("rel'"));
+    }
+
+    /// v1.17.7 M4.1: the ingest outcome reducer — `/ingest` status, markdown
+    /// `success`, memory `error`, and the no-signal fallback.
+    #[test]
+    fn ingest_result_reduces_all_three_shapes() {
+        let created: serde_json::Value =
+            serde_json::json!({"id":3,"status":"created","domain":"global"});
+        assert_eq!(parse_ingest_result(&created), IngestOutcome::Created);
+        let dup: serde_json::Value = serde_json::json!({"id":3,"status":"duplicate"});
+        assert_eq!(parse_ingest_result(&dup), IngestOutcome::Duplicate);
+        let md: serde_json::Value = serde_json::json!({"success":true,"chunks_inserted":2});
+        assert_eq!(parse_ingest_result(&md), IngestOutcome::Created);
+        let mem_err: serde_json::Value =
+            serde_json::json!({"success":false,"status":"error","error":"boom"});
+        assert_eq!(
+            parse_ingest_result(&mem_err),
+            IngestOutcome::Error("boom".into())
+        );
+        let none: serde_json::Value = serde_json::json!({});
+        assert_eq!(
+            parse_ingest_result(&none),
+            IngestOutcome::Error("ingest returned no success signal".into())
+        );
+    }
+
+    /// v1.17.7 M4: procedure/classify/decision/apply/undo response pins.
+    #[test]
+    fn create_wire_types_parse() {
+        let pr: ProcedureResponse =
+            serde_json::from_str(r#"{"id":5,"status":"created","step_ids":[6,7]}"#).unwrap();
+        assert_eq!(pr.id, 5);
+        assert_eq!(pr.step_ids, vec![6, 7]);
+
+        let sv: ProcedureStepsResponse = serde_json::from_str(
+            r#"{"procedure_id":5,"title":"P","content":"c",
+               "steps":[{"step_index":0,"id":6,"title":"S","content":"s","memory_kind":"step"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(sv.steps[0].step_index, 0);
+        assert_eq!(sv.steps[0].memory_kind, "step");
+
+        let cr: ClassifyResponse = serde_json::from_str(
+            r#"{"result":{"category":"compliance","confidence":0.9,"matched_keywords":["hipaa","pii"]},
+                "categories":["compliance","general"]}"#,
+        )
+        .unwrap();
+        assert_eq!(cr.result.category, "compliance");
+        assert_eq!(cr.result.matched_keywords, vec!["hipaa", "pii"]);
+
+        let d: DecisionOutcome = serde_json::from_str(
+            r#"{"result":"escalate","matched_condition":"employee_count >= 50","citation":9,"used_default":false}"#,
+        )
+        .unwrap();
+        assert_eq!(d.result, "escalate");
+        assert_eq!(d.citation, Some(9));
+        assert!(!d.used_default);
+
+        let a: ApplyResponse =
+            serde_json::from_str(r#"{"recorded":1,"rejected":["self link"]}"#).unwrap();
+        assert_eq!(a.recorded, 1);
+        assert_eq!(a.rejected, vec!["self link"]);
+
+        let u: UndoResponse = serde_json::from_str(r#"{"undone":1,"rejected":[]}"#).unwrap();
+        assert_eq!(u.undone, 1);
+    }
+
+    #[test]
+    fn decision_vars_parse_leniently() {
+        let map = crate::panels::procedures::parse_decision_vars(r#"{"revenue":1200,"s":"x"}"#);
+        assert_eq!(map.get("revenue"), Some(&1200.0));
+        assert!(!map.contains_key("s"));
+        assert!(crate::panels::procedures::parse_decision_vars("not json").is_empty());
     }
 }

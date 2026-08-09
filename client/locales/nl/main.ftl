@@ -85,3 +85,76 @@ palette_go_to = Ga naar
 palette_lookup = Zoeken
 palette_run = Uitvoeren
 confirm_destructive = Druk op Enter om te bevestigen
+
+## Graph (v1.17.7 M3)
+nav_graph = Grafiek
+graph_title = Grafiek
+graph_entity_ph = Zoek een entiteit…
+graph_browse = Entiteit
+graph_type = type
+graph_relations = relaties
+graph_traverse = Doorlopen
+graph_start = Startentiteit
+graph_depth = Max. diepte
+graph_kind = Randtype (optioneel)
+graph_at = Geldig op (optioneel)
+graph_cross_domain = Over domeinen
+graph_run = Doorlopen
+graph_rel = relatie
+graph_out = uit
+graph_in = in
+graph_no_entity = Bestaat niet
+graph_paths = paden
+graph_rows = rijen
+none = geen
+
+## Create (v1.17.7 M4)
+nav_create = Maken
+create_title = Maken
+create_sub = Schrijfhulpmiddelen: geheugen vastleggen, procedures bouwen, consolideren.
+
+## Ingest (v1.17.7 M4.1)
+ingest_title = Vastleggen
+ingest_tab_structured = Gestructureerd
+ingest_tab_markdown = Markdown
+ingest_tab_memory = Geheugenbatch
+ingest_content = Inhoud
+ingest_kind = Geheugensoort
+ingest_domain = Domein
+ingest_entities = Entiteiten (JSON)
+ingest_relations = Relaties (JSON)
+ingest_source_path = Bronpad
+ingest_replace = Bestaande vervangen
+ingest_submit = Vastleggen
+ingest_bad_json = Entiteiten/relaties moeten geldige JSON zijn
+ingest_mem_hint = Eén geheugen per regel, optionele ## titels
+outcome_created = Aangemaakt
+outcome_duplicate = Duplicaat (al aanwezig)
+
+## Procedures (v1.17.7 M4.2)
+proc_title = Procedures
+proc_step_title = Staptitel
+proc_step_body = Stapinhoud
+proc_add_step = Stap toevoegen
+proc_create = Procedure maken
+proc_steps = Stappen
+proc_is_decision = Beslisregel
+proc_created = Procedure aangemaakt ({n} stappen)
+cls_title = Classificeren
+cls_text = Te classificeren tekst
+cls_run = Classificeren
+dec_title = Beslissing evalueren
+dec_id = Beslissings-ID
+dec_vars = Variabelen (JSON)
+dec_run = Evalueren
+
+## Consolidate (v1.17.7 M4.3)
+cons_title = Consolideren
+cons_load = Laden
+cons_apply = Vervanging goedkeuren
+cons_undo = Ongedaan maken
+cons_empty = Niets te consolideren.
+cons_near_dup = bijna-duplicaat
+cons_conflict = conflict
+cons_applied = {n} vervangingen toegepast
+cons_undone = {n} ongedaan gemaakt

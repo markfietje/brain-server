@@ -85,3 +85,76 @@ palette_go_to = Aller à
 palette_lookup = Rechercher
 palette_run = Exécuter
 confirm_destructive = Appuyez sur Entrée pour confirmer
+
+## Graph (v1.17.7 M3)
+nav_graph = Graph
+graph_title = Graph
+graph_entity_ph = Rechercher une entité…
+graph_browse = Entité
+graph_type = type
+graph_relations = relations
+graph_traverse = Parcourir
+graph_start = Entité de départ
+graph_depth = Profondeur max
+graph_kind = Type d'arête (optionnel)
+graph_at = Valide le (optionnel)
+graph_cross_domain = Toutes domaines
+graph_run = Parcourir
+graph_rel = relation
+graph_out = sortant
+graph_in = entrant
+graph_no_entity = Entité introuvable
+graph_paths = chemins
+graph_rows = lignes
+none = aucun
+
+## Create (v1.17.7 M4)
+nav_create = Créer
+create_title = Créer
+create_sub = Outils d'écriture : mémoriser, créer des procédures, consolider.
+
+## Ingest (v1.17.7 M4.1)
+ingest_title = Mémoriser
+ingest_tab_structured = Structuré
+ingest_tab_markdown = Markdown
+ingest_tab_memory = Lot mémoire
+ingest_content = Contenu
+ingest_kind = Type mémoire
+ingest_domain = Domaine
+ingest_entities = Entités (JSON)
+ingest_relations = Relations (JSON)
+ingest_source_path = Chemin source
+ingest_replace = Remplacer l'existant
+ingest_submit = Mémoriser
+ingest_bad_json = Entités/relations doivent être du JSON valide
+ingest_mem_hint = Une mémoire par ligne, titres ## optionnels
+outcome_created = Créé
+outcome_duplicate = Doublon (déjà présent)
+
+## Procedures (v1.17.7 M4.2)
+proc_title = Procédures
+proc_step_title = Titre de l'étape
+proc_step_body = Contenu de l'étape
+proc_add_step = Ajouter une étape
+proc_create = Créer la procédure
+proc_steps = Étapes
+proc_is_decision = Règle de décision
+proc_created = Procédure créée ({n} étapes)
+cls_title = Classifier
+cls_text = Texte à classifier
+cls_run = Classifier
+dec_title = Évaluer la décision
+dec_id = ID de décision
+dec_vars = Variables (JSON)
+dec_run = Évaluer
+
+## Consolidate (v1.17.7 M4.3)
+cons_title = Consolider
+cons_load = Charger
+cons_apply = Approuver le remplacement
+cons_undo = Annuler
+cons_empty = Rien à consolider.
+cons_near_dup = quasi-doublon
+cons_conflict = conflit
+cons_applied = {n} remplacements appliqués
+cons_undone = {n} annulés

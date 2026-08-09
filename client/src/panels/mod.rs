@@ -4,8 +4,13 @@
 //! already exist, recall-trace → v1.15.0).
 
 pub mod audit;
+pub mod consolidate;
+pub mod create;
+pub mod graph;
 pub mod health;
+pub mod ingest;
 pub mod overview;
+pub mod procedures;
 pub mod recall;
 pub mod review;
 pub mod security;

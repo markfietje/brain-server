@@ -97,6 +97,98 @@ stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
 
 ---
 
+## [1.17.7] — 2026-08-09
+
+### Client — "Complete" part 2: Graph panel + Create workspace
+
+Second of the three-part "Complete" operator-console line (`v1.17.6` +
+`v1.17.7` + `v1.17.8`). **Client-only** — server + API contract stay at
+1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10. 66 client
+tests (+7).
+
+### Added (client)
+
+- **M3 — Graph panel** (`src/panels/graph.rs`): debounced (300 ms) entity
+  lookup via `GET /graph/entity/{name}` → typed `EntityView` (traits +
+  relations with `from`/`to`/`relation_type`); a traverse card issuing
+  `GET /graph/traverse?start=&depth=&kind=&at=&cross_domain=true` → typed
+  `TraverseResponse` with `paths` (structured hop chains rendered by the pure
+  `render_path` core, `A --relation--> B --relation--> C`) and the flat
+  `traversal` rows collapsed in a `<details>` table. `kind` filter validated
+  by the pure `kind_is_valid` (exact or `prefix:`-style, matching the v1.7
+  server contract); `parse_entity` core + tests.
+- **M4 — Create workspace** (`src/panels/create.rs` hub → `ingest.rs` +
+  `procedures.rs` + `consolidate.rs`), the v1.14/v1.10 write surface:
+  - **Ingest** (`ingest.rs`): three tabs (Structured / Markdown / Memory)
+    with real `<button>` tab toggles (aria-pressed), JSON pre-validation
+    before send, per-mode result via `parse_ingest_result` /
+    `IngestOutcome` (Created / Duplicate / Error).
+  - **Procedures** (`procedures.rs`): a step builder (title/body/optional
+    is-decision, add-step list) → `POST /procedure` → typed `ProcedureResponse`;
+    lists ordered steps via `/procedure/{id}/steps` → `Vec<StepView>`; plus
+    the two deterministic helpers: `POST /classify` (typed
+    `ClassifyResponse` → category + confidence + matched keywords) and
+    `POST /decision/{id}/evaluate` (typed `DecisionOutcome`, vars parsed by
+    the pure `parse_decision_vars` core — lenient, non-numeric dropped).
+  - **Consolidate** (`consolidate.rs`): `POST /consolidate/propose` →
+    typed `ConsolidateProposal`; unresolved contradictions + near-duplicates
+    rendered as list items; one-click `POST /consolidate/apply` (supersedes
+    link) and `POST /consolidate/undo`, both refresh the proposal list.
+- **Routes/nav/i18n**: `Route::Graph{}` at `/graph` and `Route::Create{}`
+  at `/create` (under the AppShell); both added to the sidebar rail + tab
+  bar + command palette (nav targets now **9**, guard test updated); all
+  M3/M4 i18n keys in all five locales (`en`/`de`/`fr`/`es`/`nl`).
+- **api.rs**: typed wire structs (`EntityView`/`EntityRel`,
+  `TraverseResponse`/`TraversalRow`/`PathChain`/`Hop`, `ProcedureResponse`/
+  `ProcedureStepsResponse`/`StepView`, `ClassifyResponse`/`CategoryResult`,
+  `DecisionOutcome`, `ApplyResponse`/`UndoResponse`, `ConsolidateProposal`)
+  + `impl ApiClient` methods + pure cores (`render_path`, `kind_is_valid`,
+  `parse_entity`, `parse_ingest_result`, `parse_decision_vars`) + wire-contract
+  tests.
+
+### Fixed (client)
+
+- The palette's `render_path` core emitted a doubled ` --` separator between
+  hop chains (`A --e--> B -- --c--> C`) — one `--` was pushed twice; the
+  separator is now emitted exactly once, pinning
+  `render_path_renders_faithful_chains` to `A --employs--> 2 --ceo_of--> carol`.
+- The Create hub's three panels render under ONE focusable `<h1>` (the hub
+  owns the `PageTitle`; the nested panels drop theirs) — no duplicate-h1
+  a11y regression.
+- Dioxus rsx hazards fixed during the build pass: inline `if` in rsx can't
+  hold a nested `rsx!` (switched the ingest tab body to a `match` on
+  `tab().as_str()`); `#[component]` fn can't be called positionally as a
+  plain fn in braces (the `tab_btn` helper is a plain `fn` now); an
+  unbraced raw-string placeholder containing `{...}` broke the format-string
+  parser (`placeholder: "revenue: 1200"`).
+
+### Verification
+
+- `cargo test --manifest-path client/Cargo.toml`: **66 passed** (was 59 at
+  v1.17.6; +7: render_path + wire types + parse cores).
+- `cargo clippy --all-targets --manifest-path client/Cargo.toml -- -D warnings`: clean.
+- `cargo fmt --check --manifest-path client/Cargo.toml`: clean.
+- `cargo build` + `cargo build --target wasm32-unknown-unknown`: clean.
+
+### Ship status: COMPLETED (code + tests + docs) 2026-08-09
+
+`./deploy-web.sh` → live `/app` re-deploy is an operator step. Tag `v1.17.7`
++ GitHub release are operator steps. No server restart needed (client-only
+static bundle).
+
+### Honest ceilings (carried into v1.17.8)
+
+- Graph entity relations are the server's snapshot shape; the traverse
+  `paths` intermediate hops surface by id unless a name resolves (same as
+  the server contract).
+- Ingest does client-side JSON pre-validation only; malformed entity/relation
+  arrays degrade to empty on the wire (server still validates).
+- The palette's `Lookup`/`Run` command rows remain wired-but-reserved; the
+  live id/action constructors arrive with v1.17.8's remaining panels.
+- wasm-split unchanged (Dioxus 0.7.10 ceiling); bundle size grows.
+
+---
+
 ## [1.17.5] — 2026-08-09
 
 ### CLI — "Eval Fix" (`brain eval` + `bench`)
