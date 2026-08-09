@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use brain_server::backup;
 use brain_server::migration::run_migration;
+use brain_server::register_sqlite_vec::register_sqlite_vec;
 use brain_server::storage_layout::StorageLayout;
 
 /// Tables covered by the row-count parity check. Matches the v0.9.4–v0.9.8
@@ -175,25 +176,6 @@ impl ResolvedArgs {
             force: raw.force,
             keep_snapshot: raw.keep_snapshot,
         })
-    }
-}
-
-/// Register sqlite-vec process-wide so `run_migration` can create vec0 tables
-/// on the dest connection. This binary doesn't share `main.rs`'s helper (it's
-/// a standalone binary), so the registration is duplicated here.
-///
-/// # Safety
-///
-/// See `main.rs::register_sqlite_vec` for the full safety proof. The short
-/// version: `sqlite3_vec_init` is `extern "C"` with the signature
-/// `sqlite3_auto_extension` expects; the pointer is process-lifetime static.
-fn register_sqlite_vec() {
-    #![allow(clippy::missing_transmute_annotations)]
-    // SAFETY: see the doc comment above.
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
     }
 }
 

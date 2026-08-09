@@ -46,3 +46,9 @@ pub mod eval;
 // server (`/ump/*`, sign-on-write) and the `brain` CLI (`brain ump keygen`,
 // `brain ump export`) — same cross-binary pattern as `eval`/`capacity`.
 pub mod ump_integrity;
+
+// sqlite-vec registration (v1.18.x hardening): the single audited, correctly-
+// typed FFI call that both the server binary and `brain-migrate-rehearse`
+// use to register sqlite-vec process-wide. Lives in the lib so the two
+// binaries never duplicate an `unsafe` block (the pre-hardening state).
+pub mod register_sqlite_vec;

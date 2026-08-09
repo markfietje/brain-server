@@ -14,7 +14,6 @@ use model2vec_rs::model::StaticModel;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use sqlite_vec::sqlite3_vec_init;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -52,6 +51,7 @@ use brain_server::audit;
 #[cfg(test)]
 use brain_server::migration::migrate_down_0_9_0;
 use brain_server::migration::run_migration;
+use brain_server::register_sqlite_vec::register_sqlite_vec;
 mod auth;
 mod chunker;
 mod config;
@@ -97,35 +97,6 @@ pub struct ConnectionInfo {
     id: usize,
     acquired_at: Instant,
     location: String,
-}
-
-/// Register the sqlite-vec extension process-wide. MUST be called before
-/// any r2d2 pool is built (the pool's connections inherit the registration).
-///
-/// # Safety
-///
-/// `sqlite3_auto_extension` expects a function pointer with the C ABI
-/// signature `fn(*mut sqlite3_api_routines) -> std::ffi::c_int`.
-/// `sqlite_vec::sqlite3_vec_init` has exactly that signature. The transmute
-/// from `*const ()` to `Option<extern "C" fn(...)>` is sound because:
-/// 1. `sqlite3_vec_init` is `extern "C"` — its ABI matches what
-///    `sqlite3_auto_extension` expects.
-/// 2. The function pointer is a process-lifetime static (compiled into the
-///    binary); it's never deallocated.
-/// 3. `sqlite3_auto_extension` stores the pointer for process lifetime; it
-///    never calls it after the process exits.
-///
-/// This is the canonical sqlite-vec registration pattern (per sqlite-vec
-/// docs). The function is idempotent — calling it multiple times is safe
-/// (SQLite deduplicates registered extensions).
-pub fn register_sqlite_vec() {
-    #![allow(clippy::missing_transmute_annotations)]
-    // SAFETY: see the safety proof in the doc comment above.
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite3_vec_init as *const (),
-        )));
-    }
 }
 
 pub struct ConnectionTracker {
@@ -1374,7 +1345,7 @@ fn health_body(
         // comes from CatchPanicLayer (would be >0 only if a handler
         // panicked and was caught).
         "hardening": {
-            "unsafe_blocks": 2, // register_sqlite_vec + migrate_rehearse's copy
+            "unsafe_blocks": 1, // single shared lib call (register_sqlite_vec), no transmute
             "panics_caught": 0,
             "memory_leaks_detected": 0
         }
