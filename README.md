@@ -132,8 +132,22 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 | POST | `/ingest/proposal` · `/proposals/{id}/approve` | Human-in-the-loop write-back. |
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation. |
 | POST | `/dsar` · GET `/tombstones` | DSAR and the deletion registry. |
+| GET | `/dsar/{id}/certificate` · `/recall/{trace_id}/trace` | DSAR certificates and recall decision traces. |
 | GET | `/audit` · `/audit/verify` | Audit log and chain integrity. |
 | POST | `/suggest` · `/suggest/feedback` | Opt-in anticipation. |
+| GET | `/export` · POST `/purge` | GDPR export and hard, audited delete. |
+| GET | `/decayed` · `/retention` | Expiry review and per-kind retention. |
+| GET | `/art30` · `/snapshot/status` | Art 30 register and snapshot self-check. |
+
+**Portability (UMP 1.0)**
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/ump/capabilities` · `/.well-known/ump.json` | UMP discovery. |
+| POST | `/ump/remember` · `/ump/recall` | Portable memory writes and retrieval. |
+| GET | `/ump/memory/{id}` · POST `/ump/revise` · `/ump/forget` | Record reads, updates, and consent-based deletion. |
+| POST | `/ump/feedback` · GET `/ump/audit` | UMP feedback and audit surface. |
+| GET | `/ump/subscribe` | SSE change feed. |
 
 **Auth and discovery (JWT mode)**
 
