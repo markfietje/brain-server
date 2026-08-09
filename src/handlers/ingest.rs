@@ -77,7 +77,7 @@ pub struct IngestQuery {
 }
 
 /// `POST /ingest` — v1.17.1 "Govern" M4 adds `?format=ump`: the body is a UMP
-/// envelope (`{"ump":"0.1","records":[…]}`) lowered into the same structured-
+/// envelope (`{"ump":"1.0","records":[…]}`) lowered into the same structured-
 /// ingest path. One record per call; batch UMP import is a v2.x ceiling.
 pub async fn ingest(
     State(_state): State<Arc<AppState>>,
@@ -93,7 +93,7 @@ pub async fn ingest(
             .ok_or_else(|| {
                 HandlerError::bad_request(
                     "ump_envelope",
-                    "UMP body needs {\"ump\":\"0.1\",\"records\":[…]}",
+                    "UMP body needs {\"ump\":\"1.0\",\"records\":[…]}",
                 )
             })?;
         if records.len() != 1 {

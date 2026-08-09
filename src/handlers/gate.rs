@@ -970,7 +970,7 @@ fn render_ump(body: &serde_json::Value) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({
-        "ump": "0.1",
+        "ump": "1.0",
         "exported_at": body["exported_at"],
         "records": records,
     })
@@ -1013,7 +1013,7 @@ mod tests {
             ],
         });
         let out = render_ump(&body);
-        assert_eq!(out["ump"], "0.1");
+        assert_eq!(out["ump"], "1.0");
         let recs = out["records"].as_array().unwrap();
         assert_eq!(recs.len(), 2);
         assert_eq!(

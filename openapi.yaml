@@ -8,8 +8,8 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.17.1
-  x-api-version: "1.17.1"
+  version: 1.17.2
+  x-api-version: "1.17.2"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1341,7 +1341,8 @@ paths:
         Live `knowledge` rows + graph + proposals ledger. `pii_map` values are
         excluded by default; only included with `?include_pii_map=true` AND a
         `pii:read` principal. v1.17.1 "Govern" M4: `?format=ump` re-renders the
-        payload as UMP wire records (universalmemoryprotocol.io, spec 0.1).
+        payload as UMP wire records (Universal Memory Protocol 1.0,
+        github.com/edihasaj/universal-memory-protocol).
       parameters:
         - in: query
           name: include_pii_map
@@ -1484,7 +1485,7 @@ paths:
         domain's knowledge graph. Server trusts the caller's graph data after
         validation; entities/relations are upserted idempotently. Centroid is
         recomputed after each successful ingest. v1.17.1 "Govern" M4:
-        `?format=ump` accepts a UMP envelope (`{"ump":"0.1","records":[…]}`,
+        `?format=ump` accepts a UMP envelope (`{"ump":"1.0","records":[…]}`,
         one record per call) lowered into this same path.
       parameters:
         - in: query

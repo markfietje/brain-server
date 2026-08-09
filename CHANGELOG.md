@@ -10,6 +10,25 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.17.2] — 2026-08-09
+
+### Server — "Harden"
+
+- **UMP adapter conforms to the actual UMP 1.0 spec** — the v1.17.1 adapter
+  shipped a guessed "0.1" wire shape; the real spec is **Universal Memory
+  Protocol 1.0** (github.com/edihasaj/universal-memory-protocol, SPEC.md).
+  Conformance changes: records now carry `"ump": "1.0"`; the five-kind
+  vocabulary (semantic/episodic/procedural/working/identity — the invented
+  `declarative` mapping is gone; `decision` lowers to `semantic`); ids are
+  content-addressed per §6.2 (`urn:ump:<content_hash>`, fallback
+  `urn:ump:brain:<domain>:<id>` for hashless legacy rows); `time.*` is RFC
+  3339 (§2.3 REQUIRED string form, round-tripped from brain naive-UTC);
+  top-level `relations` use the §2.5 `{type, target}` shape (`about` =
+  from-entity, typed link = to-entity) while the lossless graph stays in
+  `body.structured`; and §8 is honored — import rejects an unknown `ump`
+  major version instead of reinterpreting it. Conformance claim:
+  **UMP 1.0 / L0** (portable-record file binding).
+
 ## [1.17.1] — 2026-08-09
 
 ### Server — "Govern"
@@ -30,10 +49,10 @@ been run, it is marked **pending** rather than asserted.
   floors (`--floor r5=0.85 …` or `BENCH_RECALL_FLOOR`); `brain bench` gains
   the same floor gate. `brain_server::eval` metric fns shared by both.
 - **M4 UMP wire adapter** — `GET /export?format=ump` re-renders the portable
-  export as UMP (universalmemoryprotocol.io spec 0.1) records with a
-  name-based per-chunk graph; `POST /ingest?format=ump` lowers a UMP envelope
-  back into the structured-ingest path. Round-trip is identity on row fields
-  (pinned by tests); batch import is a documented v2.x ceiling.
+  export as UMP records with a name-based per-chunk graph; `POST /ingest?format=ump`
+  lowers a UMP envelope back into the structured-ingest path. Round-trip is
+  identity on row fields (pinned by tests); batch import is a documented v2.x
+  ceiling. *(Wire shape was corrected to the actual UMP 1.0 spec in [1.17.2].)*
 - **M5 Art 30 register** — new `GET /art30` (Admin): the activities register
   every controller must maintain (categories of data, purposes incl. explicit
   consent/controller obligation, retention, provenance), projected from the
