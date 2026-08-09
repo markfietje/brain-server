@@ -155,6 +155,18 @@ fn default_limit() -> u32 {
     DEFAULT_RECALL_LIMIT
 }
 
+/// v1.17.3 "UMP": the shared recall core's return — the tagged (result, domain)
+/// pairs plus the decision/telemetry/trace envelope. Each binding (`/recall`,
+/// `/ump/recall`) renders its own hit shape from `tagged`.
+pub(crate) struct RecallOutcome {
+    pub tagged: Vec<(crate::SearchResult, String)>,
+    pub tel: crate::search::SearchTelemetry,
+    pub decision: crate::handlers::RecallDecision,
+    pub trace_id: Option<i64>,
+    pub domains_searched: Vec<String>,
+    pub primary_domain: String,
+}
+
 /// v1.13.4: optional query-string `?source=` on `POST /recall`. The JSON body
 /// `source` is primary; this fills the gap when the body omits it and is always
 /// validated (422 on unknown), so a query-string value is never silently
@@ -182,6 +194,33 @@ pub async fn recall(
     source_query: Query<RecallSourceQuery>,
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<RecallResponse>, HandlerError> {
+    // v1.17.3 "UMP": the deterministic pipeline lives in `run_recall` so the
+    // HTTP and UMP bindings share one core; only the renderer differs.
+    let provenance = req.provenance;
+    let include_decayed = req.include_decayed;
+    let outcome = run_recall(&state, &principal.0, req, source_query.0).await?;
+    let hits = results_to_hits(outcome.tagged, provenance, include_decayed, &principal.0);
+    Ok(Json(RecallResponse {
+        hits,
+        decision: outcome.decision,
+        domain: Some(outcome.primary_domain),
+        domains_searched: outcome.domains_searched,
+        telemetry: provenance.then_some(outcome.tel),
+        trace_id: outcome.trace_id,
+    }))
+}
+
+/// v1.17.3 "UMP": the deterministic recall core shared by `/recall` and
+/// `/ump/recall`. Runs embed → centroid routing → hybrid search → cross-domain
+/// merge → packing → tier filter → calibrated abstention, and records the
+/// optional read-event audit trace. Returns the tagged (result, domain) pairs
+/// so each binding renders its own hit shape.
+pub(crate) async fn run_recall(
+    state: &Arc<AppState>,
+    principal: &Option<crate::auth::Principal>,
+    req: RecallRequest,
+    source_query: RecallSourceQuery,
+) -> Result<RecallOutcome, HandlerError> {
     // ---- validation (fail fast; never embed on bad input) ----
     // Delegates to the pure, unit-tested validator so the contract bounds and
     // the handler can never drift apart.
@@ -195,7 +234,7 @@ pub async fn recall(
     // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
     // `None` (no JWT) = superuser.
     super::authorize(
-        &principal.0,
+        principal,
         crate::auth::Action::Read,
         "",
         forced_domain.as_deref().unwrap_or("global"),
@@ -389,7 +428,7 @@ pub async fn recall(
         }
         base_filters.min_relevance = Some(t.clone());
     }
-    base_filters.access_scopes = crate::handlers::gate::scope_filter(&principal.0);
+    base_filters.access_scopes = crate::handlers::gate::scope_filter(principal);
     // v1.17.1 "Govern" M2: when per-kind retention is enabled, carry the policy
     // into the retriever so chunks whose kind-default expiry has elapsed are
     // excluded from default recall exactly like an explicit `expires_at`.
@@ -399,6 +438,7 @@ pub async fn recall(
     // v1.15.0 "Observe" M1: capture the access-scope decision for the read-event
     // trace before the filters are moved into the search closure.
     let applied_scopes = base_filters.access_scopes.clone();
+    let trace_now = base_filters.now_unix;
     let snippet_q = base_filters
         .lex
         .clone()
@@ -512,12 +552,11 @@ pub async fn recall(
     // `Recommendation`, which is what the evidence-gated roadmap requires
     // ("no fixed universal confidence threshold until held-out benefit is
     // demonstrated").
-    let hits = results_to_hits(tagged, req.provenance, include_decayed, &principal.0);
-    let decision = abstention_decision(tel.recommendation, hits.is_empty());
+    let decision = abstention_decision(tel.recommendation, tagged.is_empty());
 
     // v1.13.3 "SourceFix" M4: domains of the returned hits, always present
     // (empty array when no hits). Only telemetry stays provenance-gated.
-    let mut domains_searched: Vec<String> = hits.iter().filter_map(|h| h.domain.clone()).collect();
+    let mut domains_searched: Vec<String> = tagged.iter().map(|(_, d)| d.clone()).collect();
     domains_searched.sort();
     domains_searched.dedup();
 
@@ -526,7 +565,7 @@ pub async fn recall(
     // BRAIN_AUDIT_READ_EVENTS + BRAIN_AUDIT_READ_SAMPLE_RATE). The trace id is
     // surfaced in the response only when `?trace=true`. Best-effort — a failure
     // here must never fail the recall the caller asked for.
-    let trace_id = if crate::config::audit_read_events(principal.0.is_some()) {
+    let trace_id = if crate::config::audit_read_events(principal.is_some()) {
         let rate = crate::config::audit_read_sample_rate();
         let sampled = rate >= 1.0 || rand::thread_rng().gen_range(0.0..1.0) < rate;
         if !sampled {
@@ -539,14 +578,14 @@ pub async fn recall(
                         "decision": format!("{:?}", decision),
                         "domains_searched": domains_searched,
                         "scope": applied_scopes,
-                        "actor": principal_label(&principal.0),
-                        "hits": hits.iter().map(|h| serde_json::json!({
-                            "id": h.id,
-                            "score": h.score,
-                            "assertion_kind": h.assertion_kind,
-                            "source": h.source,
-                            "relevance": h.relevance,
-                            "decayed": h.decayed,
+                        "actor": principal_label(principal),
+                        "hits": tagged.iter().map(|(r, _)| serde_json::json!({
+                            "id": r.id,
+                            "score": r.score,
+                            "assertion_kind": r.assertion_kind,
+                            "source": map_source(r.source),
+                            "relevance": crate::gate::relevance_tier(r.score),
+                            "decayed": include_decayed.then(|| crate::gate::is_decayed(r.expires_at, trace_now)),
                         })).collect::<Vec<_>>(),
                     })
                     .to_string(),
@@ -555,8 +594,8 @@ pub async fn recall(
                 None
             };
             let pool = state.pool.clone();
-            let actor = principal_label(&principal.0);
-            let tenant = principal_tenant(&principal.0);
+            let actor = principal_label(principal);
+            let tenant = principal_tenant(principal);
             let event_query = trace_query.clone();
             task::spawn_blocking(move || {
                 if let Ok(conn) = pool.get() {
@@ -582,14 +621,14 @@ pub async fn recall(
         None
     };
 
-    Ok(Json(RecallResponse {
-        hits,
+    Ok(RecallOutcome {
+        tagged,
+        tel,
         decision,
-        domain: Some(primary_domain),
-        domains_searched,
-        telemetry: req.provenance.then_some(tel),
         trace_id,
-    }))
+        domains_searched,
+        primary_domain,
+    })
 }
 
 // ---------------------------------------------------------------------------

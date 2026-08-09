@@ -93,9 +93,10 @@ pub struct HttpResponse {
 /// server has auth enabled. Passing `None` is fine for public routes
 /// (`/health`, `/health/db`, `/ready`, `/version`).
 ///
-/// The `mcp` binary and `client_example` include this file via `#[path]` but
-/// don't issue GETs against authed routes — `allow(dead_code)` keeps the public
-/// API symmetrical without forcing every consumer to call it.
+/// The `mcp` binary uses `get` for the v1.17.3 `ump.*` GET tools; `bench` and
+/// `client_example` include this file via `#[path]` but issue no GETs —
+/// `allow(dead_code)` keeps the public API symmetrical without forcing every
+/// consumer to call it.
 #[allow(dead_code)]
 pub fn get(
     base: &str,

@@ -687,3 +687,65 @@ chunk ids: `chunk_id` (first inserted rowid, `null` when nothing added),
 `status` (`success`|`unchanged`|`error`). `entry_id` is retained as a
 **deprecated** alias of `chunk_id` (it previously held the *count* of entries
 added, not a usable id). `similarity_score: 1.0` is kept as a legacy field.
+
+## 15. UMP binding (v1.17.3) — Universal Memory Protocol 1.0
+
+The UMP 1.0 surface is a bounded binding of the spec at
+github.com/edihasaj/universal-memory-protocol (SPEC.md, wire shape per the
+actual 1.0 spec, corrected in v1.17.2).
+
+### Levels (self-attested against spec §7)
+
+- **L0 — portable-record file binding**: `GET /export?format=ump|ump-md`
+  renders the existing export as UMP records; `POST /ingest?format=ump|ump-md`
+  lowers them back (single record or a batch envelope `{ump:"1.0",
+  records:[…]}`, per-record status, one failure does not abort).
+- **L3 — local integrity layer**: with an operator key configured
+  (`BRAIN_UMP_KEY_DIR`, `brain ump keygen`), records carry §2.8
+  `integrity = {hash, alg, key: did:key…, sig}`; verify-on-read; capability
+  tokens (§5.2) gate `/ump/*` + `/export`. Without a key the server
+  degrades to L2 and `GET /ump/capabilities` reports `conformance: "L2"`.
+
+`GET /ump/capabilities` (also mounted as `/.well-known/ump.json`) is the
+§3.1 handshake: `{server{name,version}, ump:"1.0", conformance, kinds,
+bindings:["http","mcp","file"], retrieval_signals, max_recall:50,
+writable:true, audit:true}`.
+
+### Routes (non-public except `capabilities`/`/.well-known/ump.json`)
+
+| Route | Action | Capability verb | Notes |
+|---|---|---|---|
+| `POST /ump/remember` | Write | `write` (`derive` ok) | §3.3 partial record → structured ingest; `scope.owner` must match principal or be absent |
+| `GET /ump/memory/{id}` | Read | `read` | integrity-verified on read; tampered → dropped |
+| `POST /ump/recall` | Read | `read` | §3.2 `{results:[{record, score, signals{…}}]}`; same retrieval core as `/recall` |
+| `POST /ump/revise` | Write | `write` (`derive` ok) | patch → new chunk + supersession; `{id, supersedes:[OLD]}` |
+| `POST /ump/forget` | Write | `write` (`derive` ok) | `hard:false` soft / `hard:true` purge; both tombstoned + audited |
+| `POST /ump/feedback` | Write | `write` (`derive` ok) | outcome `followed\|overridden\|ignored\|contradicted` → suggest-feedback upsert |
+| `GET /ump/subscribe` | Read | `read` | SSE change feed; `{kind,id}` events only, never bodies |
+| `POST /ump/audit` | Admin | — (denied to tokens) | §9 alias of `/audit` |
+| `GET /ump/audit/verify` | Admin | — (denied to tokens) | §9 alias of chain verify |
+
+### Capability tokens (§5.2)
+
+Compact `alg.payload.sig` (EdDSA) tokens `{iss: did, verbs:
+[read|write|derive|export], scope:{project}, exp}` signed by the operator
+key; accepted as `Authorization: Bearer` on `/ump/*` + `/export`. Verbs:
+reads need `read`, writes `write` or `derive`, export paths `export`.
+Scope must be absent/empty or `"global"`. Expiry enforced at parse
+(middleware); verbs × scope at handler entry (`cap_gate` after `authorize`).
+Unknown/malformed/expired → `unauthorized` (401).
+
+### Redact semantics
+
+`exportable:false` records are never emitted on non-owner/file paths; PII
+redaction (`[redacted:…]`) applies per the v1.14 principal rules on
+`/ump/recall` and `/ump/memory/{id}` reads.
+
+### §5.3 injection-resistant rehydration (documented obligations)
+
+- **Server**: verify-before-emit (integrity check before a record is
+  returned) and scope/consent filter before ranking — both are already the
+  recall pipeline order (verify on read; owner scope filter in the SQL).
+- **Client** (documented, not enforced): treat record bodies as untrusted
+  data — structural framing only, never execute the body, never render
+  markdown as a command channel. See `SECURITY.md` §UMP.

@@ -36,6 +36,10 @@ pub const SCHEMA_VERSION_V1_15_0: &str = "1.15.0";
 /// v1.17.1 "Govern" schema: new retention_policy table (persisted per-kind
 /// retention overrides). Additive, defaults preserved; empty = code defaults.
 pub const SCHEMA_VERSION_V1_17_1: &str = "1.17.1";
+/// v1.17.3 "UMP" schema: `knowledge.ump_id` (unique content-addressed UMP
+/// record id) + `knowledge.ump_meta` (UMP provenance/consent/lifecycle
+/// overlay) + `suggest_feedback.ump_outcome`. Additive, defaults preserved.
+pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
 pub const SCHEMA_VERSION_V1_2_0: &str = "1.2.0";

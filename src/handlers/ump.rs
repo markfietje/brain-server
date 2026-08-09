@@ -4,22 +4,24 @@
 //! portable JSON as UMP records; `POST /ingest?format=ump` lowers UMP records
 //! back into the existing structured-ingest path. No schema change.
 //!
-//! Conformance claim: **UMP 1.0 / L0** (portable-record file binding — parse +
-//! emit records; no `capabilities`/`recall`/`remember`/`get` server, no
-//! consent/`redact` enforcement). Spec: the Universal Memory Protocol v1.0
-//! (github.com/edihasaj/universal-memory-protocol, `SPEC.md`), §2 record shape:
-//! `{"ump":"1.0","id":"urn:ump:…","kind":"semantic","body":{"text":…,
-//! "structured":{}},"scope":{"owner":…,"visibility":…},"time":{"created":…,
-//! "observed":…,"valid_from":…,"valid_to":…},"lifecycle":{"confidence":…,
-//! "salience":…,"decay":…},"relations":[…]}`.
+//! Conformance claim: **UMP 1.0 / L3** (self-attested; L2 when no operator
+//! signing key is configured) — the full record engine: `capabilities`,
+//! `remember`/`get`/`recall`/`revise`/`forget` ops (§3), consent + redact
+//! enforcement (§2.7), blake3 + Ed25519 integrity (§2.8), did:key identity +
+//! capability tokens (§5), content-addressed ids (§6.2), the `*.ump.md`
+//! projection (§6.3). Spec: the Universal Memory Protocol v1.0
+//! (github.com/edihasaj/universal-memory-protocol, `SPEC.md`).
+//!
+//! The L0 record codec below (`to_ump`/`from_ump`/`um_kind`/`brain_kind`) is
+//! unchanged from v1.17.1 — it stays the canonical shape mapping. v1.17.3 M1
+//! layers the engine on top: [`emit_record`] (L3 render: content-addressed id
+//! + integrity + consent/redact + meta overlay) and [`verify_record`] (§5.3
+//!
+//! drop-unverifiable enforcement) and the §6.3 markdown projection
+//! ([`record_to_markdown`]/[`record_from_markdown`]).
 //!
 //! Per §8 the import path rejects any record whose `ump` major version is not
-//! `1` rather than silently reinterpreting it. `id` is content-addressed
-//! (`urn:ump:<content_hash>`, §6.2 L2+ form) when the row has a hash — stable
-//! across exports and dedup-friendly — and falls back to a stable
-//! `urn:ump:brain:<domain>:<id>` for legacy hashless rows (`ponytail:` a
-//! brain-scoped id is unique but not base32/content-hash shaped; backfilling
-//! hashes is a v2.x operator step).
+//! `1` rather than silently reinterpreting it.
 //!
 //! Round-trip guarantee: [`from_ump`]∘[`to_ump`] is the identity on the row
 //! fields (pinned by a test) except the numeric `id`, which is content-mapped
@@ -28,6 +30,8 @@
 //! `memory_kind` survives in `body.structured.raw_kind` so the mapped UMP
 //! `kind` never loses it.
 
+use base64::Engine;
+use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
 /// brain `memory_kind` → UMP `kind` (v1.0 §2.1 has exactly five kinds:
@@ -216,9 +220,300 @@ pub fn from_ump(record: &Value) -> Result<Value, String> {
     }))
 }
 
+// ---------------------------------------------------------------------------
+// v1.17.3 "UMP" M1 — the record engine (L3)
+// ---------------------------------------------------------------------------
+
+/// The persisted per-row UMP overlay (`knowledge.ump_meta`, JSON). Only fields
+/// UMP needs beyond the brain columns: the raw UMP kind when it has no brain
+/// equivalent (`working`/`identity`), the owner DID (authoritative over
+/// `knowledge.owner`, which is the JWT `sub` string), `visibility`, and the
+/// origin record id for `provenance`. Empty object = pure brain columns.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct UmpMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+impl UmpMeta {
+    /// Parse the stored JSON overlay; corrupt/absent → default (never fails).
+    pub fn parse(raw: Option<&str>) -> Self {
+        raw.and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+}
+
+/// Render a knowledge row as a fully-conformant UMP 1.0 memory record:
+/// the L0 shape + a content-addressed id (§6.2 L2: `urn:ump:<base32(blake3)>`
+/// over `domain \0 text` — stable per (domain, content) and unique per row via
+/// the domain salt) + the §2.8 `integrity` field (blake3 over the canonical
+/// record minus `id`/`integrity`; Ed25519-signed by the operator key when a
+/// signer is configured). `redact=true` replaces the body text with the
+/// shape-preserving placeholder *before* the integrity is computed (§2.7
+/// consent: the integrity then authenticates the redacted view).
+pub fn emit_record(
+    row: &Value,
+    domain: &str,
+    entities: &Value,
+    relations: &Value,
+    meta: &UmpMeta,
+    redact: bool,
+    signer: Option<(&str, &SigningKey)>,
+) -> Value {
+    let mut rec = to_ump(row, domain, entities, relations);
+    if row["content_hash"].as_str().is_some_and(|h| !h.is_empty()) {
+        let content = rec["body"]["text"].as_str().unwrap_or("");
+        let hash =
+            brain_server::ump_integrity::record_hash(format!("{domain}\0{content}").as_bytes());
+        rec["id"] = json!(brain_server::ump_integrity::content_id(&hash));
+    }
+    if let Some(kind) = &meta.kind {
+        rec["kind"] = json!(kind);
+        // the emitted kind IS the raw kind of this row — keep raw_kind in sync
+        // so `from_ump` round-trips the exact stored memory_kind.
+        rec["body"]["structured"]["raw_kind"] = json!(kind);
+    }
+    if let Some(owner) = &meta.owner {
+        rec["scope"]["owner"] = json!(owner);
+    }
+    if let Some(v) = &meta.visibility {
+        rec["scope"]["visibility"] = json!(v);
+    }
+    if redact {
+        rec["body"]["text"] = json!("[redacted]");
+    }
+    let mut canonical = rec.clone();
+    canonical["id"] = Value::Null;
+    canonical["integrity"] = Value::Null;
+    if let Ok(bytes) = brain_server::ump_integrity::canonical_jcs(&canonical) {
+        let hash = brain_server::ump_integrity::record_hash(&bytes);
+        let mut integrity = json!({ "algo": "blake3-256", "hash": hex_encode(&hash) });
+        if let Some((did, sk)) = signer {
+            let sig = brain_server::ump_integrity::sign_hash(&hash, sk);
+            integrity["key"] = json!(did);
+            integrity["sig"] = json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig));
+        }
+        rec["integrity"] = integrity;
+    }
+    rec
+}
+
+/// §5.3 mandatory read-path check: recompute the blake3 over the canonical
+/// record (minus `id`/`integrity`), require it to match `integrity.hash`, and
+/// when a signature + operator key are both present, verify the EdDSA
+/// signature. Hash-only records verify without a key. Returns false on any
+/// malformed input — the read path drops unverifiable records.
+pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
+    let Some(hash_hex) = record["integrity"]["hash"].as_str() else {
+        return false;
+    };
+    let mut canonical = record.clone();
+    canonical["id"] = Value::Null;
+    canonical["integrity"] = Value::Null;
+    let Ok(bytes) = brain_server::ump_integrity::canonical_jcs(&canonical) else {
+        return false;
+    };
+    let hash = brain_server::ump_integrity::record_hash(&bytes);
+    let mut want = [0u8; 32];
+    if hex_decode(hash_hex, &mut want).is_err() || hash != want {
+        return false;
+    }
+    match (pk, record["integrity"]["sig"].as_str()) {
+        (Some(pk), Some(sig)) => {
+            let Ok(sig_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(sig) else {
+                return false;
+            };
+            brain_server::ump_integrity::verify_hash(pk, &hash, &sig_bytes)
+        }
+        _ => true,
+    }
+}
+
+/// §6.3 file binding: multi-record `*.ump.md` separator. The two-line form
+/// (`---\n---\n`) is the record boundary: a projection's own frontmatter
+/// closer is a single `---` line (`\n---\n\n`), never `\n---\n---\n`, so the
+/// join and the split share one unambiguous pattern.
+/// `ponytail:` a body containing two adjacent bare `---` lines splits early
+/// (same ceiling as the single-`---` split, narrowed by one line).
+pub const MD_RECORD_SEP: &str = "\n---\n---\n";
+
+/// §6.3 markdown projection: YAML frontmatter carrying the L2 fields + the
+/// body text. Lossless for the fields it carries (pinned by a round-trip
+/// test). `ponytail:` YAML is a hand-rolled subset (like `vault.rs`) — no
+/// serde_yaml dep; the subset covers exactly the fields the projection emits.
+pub fn record_to_markdown(record: &Value) -> Result<String, String> {
+    let mut out = String::from("---\nump: \"1.0\"\n");
+    let push = |out: &mut String, key: &str, v: &Value| {
+        let s = match v {
+            Value::Null => String::new(),
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => return,
+        };
+        if !s.is_empty() {
+            out.push_str(&format!("{key}: {s}\n"));
+        }
+    };
+    push(&mut out, "id", &record["id"]);
+    push(&mut out, "kind", &record["kind"]);
+    push(&mut out, "title", &record["body"]["structured"]["title"]);
+    let scope_owner = record["scope"]["owner"].as_str().unwrap_or("");
+    let scope_vis = record["scope"]["visibility"].as_str().unwrap_or("");
+    if !scope_owner.is_empty() || !scope_vis.is_empty() {
+        out.push_str(&format!(
+            "scope: {{ owner: {scope_owner}, visibility: {scope_vis} }}\n"
+        ));
+    }
+    let mut time_parts: Vec<String> = Vec::new();
+    for k in ["observed", "valid_from", "valid_to"] {
+        if let Some(v) = record["time"][k].as_str() {
+            time_parts.push(format!("{k}: {v}"));
+        }
+    }
+    if !time_parts.is_empty() {
+        out.push_str(&format!("time: {{ {} }}\n", time_parts.join(", ")));
+    }
+    let mut lc_parts: Vec<String> = Vec::new();
+    for (k, v) in [
+        ("confidence", &record["lifecycle"]["confidence"]),
+        ("salience", &record["lifecycle"]["salience"]),
+        ("decay", &record["lifecycle"]["decay"]),
+    ] {
+        if !v.is_null() {
+            lc_parts.push(format!("{k}: {v}"));
+        }
+    }
+    if !lc_parts.is_empty() {
+        out.push_str(&format!("lifecycle: {{ {} }}\n", lc_parts.join(", ")));
+    }
+    out.push_str("---\n\n");
+    out.push_str(record["body"]["text"].as_str().unwrap_or(""));
+    Ok(out)
+}
+
+/// §6.3: parse a `*.ump.md` projection back into a UMP record. Round-trip
+/// lossless for the L2 fields the projection carries (id/kind/scope/time/
+/// lifecycle + title); the body is the text.
+pub fn record_from_markdown(text: &str) -> Result<Value, String> {
+    let (fm, body) = crate::vault::split_frontmatter(text);
+    if fm.is_empty() {
+        return Err("UMP markdown must carry a frontmatter block".into());
+    }
+    let get = |k: &str| -> Option<String> {
+        fm.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix(k)
+                .and_then(|r| r.trim_start().strip_prefix(':'))
+                .map(|v| v.trim().trim_matches('"').to_string())
+        })
+    };
+    if get("ump").as_deref() != Some("1.0") {
+        return Err("UMP markdown must carry ump: \"1.0\"".into());
+    }
+    // `{ k: v, k: v }` inline object → Value; plain scalars stay strings.
+    let inline = |v: &str| -> Value {
+        let v = v.trim();
+        if let Ok(j) = serde_json::from_str::<Value>(v) {
+            return j;
+        }
+        if let Some(inner) = v.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            let mut map = serde_json::Map::new();
+            for pair in inner.split(',') {
+                let mut it = pair.splitn(2, ':');
+                if let (Some(k), Some(v)) = (it.next(), it.next()) {
+                    let v = v.trim();
+                    let val = if v == "null" {
+                        Value::Null
+                    } else {
+                        Value::String(v.trim_matches('"').to_string())
+                    };
+                    map.insert(k.trim().to_string(), val);
+                }
+            }
+            return Value::Object(map);
+        }
+        Value::String(v.to_string())
+    };
+    let scope = inline(&get("scope").unwrap_or_default());
+    let time = inline(&get("time").unwrap_or_default());
+    let lifecycle = inline(&get("lifecycle").unwrap_or_default());
+    Ok(json!({
+        "ump": "1.0",
+        "id": get("id").unwrap_or_default(),
+        "kind": get("kind").unwrap_or_else(|| "semantic".into()),
+        "body": {
+            "text": body,
+            "structured": {
+                "title": get("title"),
+            }
+        },
+        "scope": scope,
+        "time": time,
+        "lifecycle": lifecycle,
+    }))
+}
+
+/// Lowercase hex, hand-rolled (the codebase carries no hex dep; 3 lines).
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Inverse of [`hex_encode`]; `Err(())` on wrong length or non-hex input.
+fn hex_decode(s: &str, out: &mut [u8]) -> Result<(), ()> {
+    if s.len() != out.len() * 2 {
+        return Err(());
+    }
+    for (i, pair) in s.as_bytes().chunks(2).enumerate() {
+        let hi = (pair[0] as char).to_digit(16).ok_or(())?;
+        let lo = (pair[1] as char).to_digit(16).ok_or(())?;
+        out[i] = ((hi << 4) | lo) as u8;
+    }
+    Ok(())
+}
+
+/// `did:key` for an Ed25519 public key (multicodec 0xed01 + base58btc) — the
+/// §2.8 identity form the operator's signatures are verified against.
+pub fn did_key(pk: &[u8; 32]) -> String {
+    let mut mc = Vec::with_capacity(34);
+    mc.push(0xed);
+    mc.push(0x01);
+    mc.extend_from_slice(pk);
+    format!("did:key:z{}", bs58::encode(mc).into_string())
+}
+
+/// The operator's Ed25519 signing key, if configured: a raw 32-byte seed file
+/// in [`crate::config::ump_key_dir`] (any file — convention: `operator.key`).
+/// Returns `(did, key)`; `None` → L2 conformance (hash-only integrity).
+/// `ponytail:` raw-seed files only — no PKCS#8/PEM parsing (ed25519-dalek
+/// ships without the `pkcs8` feature here); `openssl genpkey` interop is an
+/// operator convenience, not a compat requirement. Read errors are swallowed —
+/// a missing/unreadable key degrades to L2, never a boot failure.
+pub fn operator_signing_key() -> Option<(String, SigningKey)> {
+    use ed25519_dalek::Signer;
+    let dir = crate::config::ump_key_dir();
+    let seed = std::fs::read_dir(&dir).ok()?.find_map(|e| {
+        let e = e.ok()?;
+        if !e.path().is_file() {
+            return None;
+        }
+        std::fs::read(e.path()).ok()
+    })?;
+    let bytes: [u8; 32] = seed.try_into().ok()?;
+    let key = SigningKey::from_bytes(&bytes);
+    Some((did_key(&key.verifying_key().to_bytes()), key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::RngCore;
 
     fn fixture_row() -> Value {
         json!({
@@ -336,5 +631,229 @@ mod tests {
         );
         let empty = to_ump(&fixture_row(), "global", &json!([]), &json!([]));
         assert!(empty.get("relations").is_none(), "no graph → no relations");
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.17.3 M1 — record engine
+    // -----------------------------------------------------------------------
+
+    /// M1: `emit_record` ids are content-addressed (§6.2 L2) — deterministic
+    /// per (domain, content), different for different content, base32-shaped.
+    #[test]
+    fn emit_record_ids_are_content_addressed() {
+        let row = fixture_row();
+        let a = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            None,
+        );
+        let b = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            None,
+        );
+        assert_eq!(a["id"], b["id"]);
+        assert!(a["id"].as_str().unwrap().starts_with("urn:ump:"));
+        let mut other = row.clone();
+        other["content"] = Value::String("Dave works at Acme since 2022.".into());
+        let c = emit_record(
+            &other,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            None,
+        );
+        assert_ne!(a["id"], c["id"], "different content → different id");
+        let d = emit_record(
+            &row,
+            "beta",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            None,
+        );
+        assert_ne!(a["id"], d["id"], "domain salt keeps per-domain ids unique");
+        assert_eq!(a["id"].as_str().unwrap().len(), "urn:ump:".len() + 52);
+    }
+
+    /// M1 §2.8: the integrity field authenticates the canonical record — a
+    /// hash-only emit verifies without a key, any text change breaks it.
+    #[test]
+    fn emit_record_integrity_detects_tampering() {
+        let row = fixture_row();
+        let rec = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            None,
+        );
+        assert_eq!(rec["integrity"]["algo"], "blake3-256");
+        assert!(verify_record(&rec, None));
+        let mut tampered = rec.clone();
+        tampered["body"]["text"] = json!("Dave does NOT work at Acme.");
+        assert!(!verify_record(&tampered, None));
+        assert!(
+            !verify_record(&json!({ "ump": "1.0" }), None),
+            "no integrity → unverifiable"
+        );
+    }
+
+    /// M1 §2.8: with an operator key the record is EdDSA-signed; verification
+    /// requires the right key.
+    #[test]
+    fn emit_record_signed_and_verified_with_operator_key() {
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let sk = SigningKey::from_bytes(&seed);
+        let pk = sk.verifying_key().to_bytes();
+        let did = brain_server::ump_integrity::did_key_from_ed25519(&pk);
+        let row = fixture_row();
+        let rec = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            Some((&did, &sk)),
+        );
+        assert_eq!(rec["integrity"]["key"], did);
+        assert!(rec["integrity"]["sig"].is_string());
+        assert!(verify_record(&rec, Some(&pk)));
+        assert!(
+            !verify_record(&rec, Some(&[0u8; 32])),
+            "wrong key must not verify"
+        );
+    }
+
+    /// M1 §2.7: redaction is shape-preserving and applied before the
+    /// visibility boundary — the redacted view still verifies, the id and
+    /// metadata survive.
+    #[test]
+    fn emit_record_redacts_for_non_owner() {
+        let row = fixture_row();
+        let rec = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            true,
+            None,
+        );
+        assert_eq!(rec["body"]["text"], "[redacted]");
+        assert_eq!(rec["kind"], "semantic");
+        assert_eq!(rec["scope"]["visibility"], "private");
+        assert!(rec["id"].as_str().unwrap().starts_with("urn:ump:"));
+        assert!(verify_record(&rec, None), "the redacted view authenticates");
+        // The id identifies the underlying memory; redaction is a view over it.
+        assert_eq!(
+            rec["id"],
+            emit_record(
+                &row,
+                "global",
+                &json!([]),
+                &json!([]),
+                &UmpMeta::default(),
+                false,
+                None
+            )["id"]
+        );
+    }
+
+    /// M1: the UMP-only overlay (kind with no brain equivalent, owner DID,
+    /// visibility) round-trips onto the record and back through `from_ump`.
+    #[test]
+    fn emit_record_meta_overlay_round_trips() {
+        let row = fixture_row();
+        let meta = UmpMeta {
+            kind: Some("working".into()),
+            owner: Some("did:key:z6MkFake".into()),
+            visibility: Some("shared".into()),
+            origin: Some("urn:ump:peer1:42".into()),
+        };
+        let rec = emit_record(&row, "global", &json!([]), &json!([]), &meta, false, None);
+        assert_eq!(rec["kind"], "working");
+        assert_eq!(rec["scope"]["owner"], "did:key:z6MkFake");
+        assert_eq!(rec["scope"]["visibility"], "shared");
+        let back = from_ump(&rec).unwrap();
+        assert_eq!(back["memory_kind"], "working", "raw_kind preserved");
+        assert_eq!(back["owner"], "did:key:z6MkFake");
+        assert_eq!(back["access_scope"], "shared");
+    }
+
+    /// M1 §6.3: the markdown projection round-trips losslessly for the fields
+    /// it carries (id/kind/scope/time/lifecycle/title + body).
+    #[test]
+    fn record_markdown_round_trip_is_lossless_for_carried_fields() {
+        let row = fixture_row();
+        let rec = emit_record(
+            &row,
+            "global",
+            &json!([]),
+            &json!([]),
+            &UmpMeta::default(),
+            false,
+            None,
+        );
+        let md = record_to_markdown(&rec).unwrap();
+        assert!(md.starts_with("---\nump: \"1.0\"\n"));
+        assert!(md.contains("id: urn:ump:"));
+        let back = record_from_markdown(&md).unwrap();
+        assert_eq!(back["ump"], "1.0");
+        assert_eq!(back["id"], rec["id"]);
+        assert_eq!(back["kind"], rec["kind"]);
+        assert_eq!(back["scope"]["visibility"], rec["scope"]["visibility"]);
+        assert_eq!(back["time"]["observed"], rec["time"]["observed"]);
+        assert_eq!(back["lifecycle"]["decay"], rec["lifecycle"]["decay"]);
+        assert_eq!(back["body"]["text"], rec["body"]["text"]);
+        assert_eq!(back["body"]["structured"]["title"], "dave-acme");
+    }
+
+    /// M1 §6.3/§8: the projection rejects missing or wrong-version headers.
+    #[test]
+    fn record_from_markdown_rejects_bad_headers() {
+        assert!(record_from_markdown("just body text").is_err());
+        assert!(record_from_markdown("---\nump: \"2.0\"\n---\nbody").is_err());
+    }
+
+    /// M1: hex helpers round-trip and reject malformed input.
+    #[test]
+    fn hex_helpers_round_trip() {
+        let bytes = [0u8, 1, 15, 16, 255, 170];
+        let hex = hex_encode(&bytes);
+        assert_eq!(hex, "00010f10ffaa");
+        let mut out = [0u8; 6];
+        assert!(hex_decode(&hex, &mut out).is_ok());
+        assert_eq!(out, bytes);
+        assert!(hex_decode("abc", &mut out).is_err(), "odd length");
+        assert!(hex_decode("zzzz", &mut out).is_err(), "non-hex");
+    }
+
+    /// M2: did:key derivation matches the multibase/multicodec spec form
+    /// (`did:key:z` + base58btc of 0xed01 ‖ pk).
+    #[test]
+    fn did_key_derives_multicodec_form() {
+        let pk = [7u8; 32];
+        let dk = did_key(&pk);
+        assert!(dk.starts_with("did:key:z"));
+        let decoded = bs58::decode(&dk[9..]).into_vec().expect("base58btc");
+        assert_eq!(&decoded[..2], &[0xed, 0x01], "ed25519 multicodec prefix");
+        assert_eq!(&decoded[2..], &pk);
+        assert_eq!(dk.len(), 56, "did:key:z (9) + 34 bytes base58btc (47)");
     }
 }

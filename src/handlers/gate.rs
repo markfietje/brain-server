@@ -18,9 +18,10 @@
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::sync::Arc;
 
-use crate::handlers::auth::OptPrincipal;
+use crate::handlers::auth::{OptCapability, OptPrincipal};
 use crate::handlers::{HandlerError, MAX_QUERY};
 use crate::AppState;
 
@@ -755,6 +756,52 @@ pub(crate) fn purge_chunk_ids(
     Ok(purged)
 }
 
+/// v1.17.3 "UMP" M2: the shared `knowledge` column list for row rendering
+/// (export + the `/ump/*` record paths) — one source of truth so the record
+/// engine never misses a column the export carries.
+pub(crate) const KNOWLEDGE_ROW_COLS: &str =
+    "id, content, node_kind, source, authority, assertion_kind, confidence,
+        access_scope, owner, observed_at, valid_from, valid_to,
+        content_hash, title, expires_at, created_at, ump_meta";
+
+/// Row → the JSON shape the record engine (`emit_record`) renders from.
+pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "id": r.get::<_, i64>(0)?,
+        "content": r.get::<_, String>(1)?,
+        "memory_kind": r.get::<_, String>(2)?,
+        "source": r.get::<_, String>(3)?,
+        "authority": r.get::<_, Option<f32>>(4)?,
+        "assertion_kind": r.get::<_, String>(5)?,
+        "confidence": r.get::<_, f32>(6)?,
+        "access_scope": r.get::<_, String>(7)?,
+        "owner": r.get::<_, Option<String>>(8)?,
+        "observed_at": r.get::<_, Option<String>>(9)?,
+        "valid_from": r.get::<_, Option<String>>(10)?,
+        "valid_to": r.get::<_, Option<String>>(11)?,
+        "content_hash": r.get::<_, Option<String>>(12)?,
+        "title": r.get::<_, Option<String>>(13)?,
+        "expires_at": r.get::<_, Option<i64>>(14)?,
+        "created_at": r.get::<_, Option<String>>(15)?
+            .map(|s| crate::consolidate::observed_secs(&Some(s)))
+            .filter(|&ts| ts != 0),
+        "ump_meta": r.get::<_, Option<String>>(16)?,
+    }))
+}
+
+/// One knowledge row by id (same columns as the export) — the `/ump/*`
+/// record paths resolve rows through this.
+pub(crate) fn load_knowledge_row(
+    conn: &rusqlite::Connection,
+    id: i64,
+) -> Result<Option<serde_json::Value>, rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge WHERE id = ?1"
+    ))?;
+    let mut rows = stmt.query_map(rusqlite::params![id], knowledge_row_to_json)?;
+    rows.next().transpose()
+}
+
 /// `GET /export` — portable, machine-readable JSON export (data portability,
 /// the GDPR "give me my data"). Live `knowledge` rows + graph + proposals
 /// ledger. `pii_map` values excluded by default; only included with
@@ -771,10 +818,16 @@ pub struct ExportQuery {
 pub async fn export(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
+    cap: OptCapability,
     Query(q): Query<ExportQuery>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // v1.17.3 M5: export paths require the `export` verb (§5.2).
+    super::cap_gate(&cap.0, "export")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
+    // M2: resolved before the `move` closure so the export path can redact
+    // records the principal doesn't own (§2.7).
+    let redact_owner = principal.0.as_ref().map(|p| p.sub.clone());
 
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
@@ -783,34 +836,10 @@ pub async fn export(
         let mut knowledge = Vec::new();
         {
             let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, node_kind, source, authority, assertion_kind, confidence,
-                            access_scope, owner, observed_at, valid_from, valid_to,
-                            content_hash, title, expires_at, created_at
-                     FROM knowledge ORDER BY id",
-                )
+                .prepare(&format!("SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge ORDER BY id"))
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             let rows = stmt
-                .query_map([], |r| {
-                    Ok(serde_json::json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "content": r.get::<_, String>(1)?,
-                        "memory_kind": r.get::<_, String>(2)?,
-                        "source": r.get::<_, String>(3)?,
-                        "authority": r.get::<_, Option<f32>>(4)?,
-                        "assertion_kind": r.get::<_, String>(5)?,
-                        "confidence": r.get::<_, f32>(6)?,
-                        "access_scope": r.get::<_, String>(7)?,
-                        "owner": r.get::<_, Option<String>>(8)?,
-                        "observed_at": r.get::<_, Option<String>>(9)?,
-                        "valid_from": r.get::<_, Option<String>>(10)?,
-                        "valid_to": r.get::<_, Option<String>>(11)?,
-                        "content_hash": r.get::<_, Option<String>>(12)?,
-                        "title": r.get::<_, Option<String>>(13)?,
-                        "expires_at": r.get::<_, Option<i64>>(14)?,
-                        "created_at": r.get::<_, Option<i64>>(15)?,
-                    }))
-                })
+                .query_map([], knowledge_row_to_json)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             for v in rows.flatten() {
                 knowledge.push(v);
@@ -913,18 +942,48 @@ pub async fn export(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
-    // v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP records
-    // (per-chunk graph included, name-based, so a UMP peer can restore it).
-    if q.format.as_deref() == Some("ump") {
-        return Ok(Json(render_ump(&body)));
+    // v1.17.3 "UMP" M2: `?format=ump` re-renders the payload as signed/redactable
+    // UMP records (per-chunk graph included, name-based, so a UMP peer can
+    // restore it). M5 wires the operator signer here.
+    if let Some(fmt) = q.format.as_deref() {
+        if fmt == "ump" || fmt == "ump-md" {
+            let rendered = render_ump(&body, redact_owner.as_deref(), None);
+            if fmt == "ump-md" {
+                // v1.17.3 M4 (§6.3): the markdown projection per record,
+                // records joined by the `\n---\n` separator.
+                // ponytail: a body containing a bare `---` line (setext /
+                // thematic break) is a documented split ceiling.
+                let content = render_ump_md(&body, redact_owner.as_deref())
+                    .map_err(HandlerError::internal)?;
+                let n = rendered["records"].as_array().map(|a| a.len()).unwrap_or(0);
+                return Ok(Json(json!({
+                    "ump": "1.0",
+                    "format": "ump-md",
+                    "records": n,
+                    "content": content,
+                })));
+            }
+            return Ok(Json(rendered));
+        }
+        return Err(HandlerError::bad_request(
+            "unknown_format",
+            "format must be 'ump' or 'ump-md'",
+        ));
     }
 
     Ok(Json(body))
 }
 
-/// Pure M4 renderer: `/export` body → UMP envelope. Relation names are resolved
-/// through the entity map; a relation with a dangling id drops (defensive).
-fn render_ump(body: &serde_json::Value) -> serde_json::Value {
+/// Pure M4 renderer (M2-hardened): `/export` body → UMP envelope. Relation
+/// names are resolved through the entity map; a dangling id drops (defensive).
+/// Every record goes through `emit_record` (content-addressed id + integrity +
+/// §2.7 redaction for non-owner principals: a JWT subject only ever exports
+/// their own rows unredacted; loopback/operator exports stay full).
+fn render_ump(
+    body: &serde_json::Value,
+    redact_owner: Option<&str>,
+    signer: Option<(&str, &ed25519_dalek::SigningKey)>,
+) -> serde_json::Value {
     let entities = body["entities"].as_array().cloned().unwrap_or_default();
     let edges = body["relationships"]
         .as_array()
@@ -961,11 +1020,18 @@ fn render_ump(body: &serde_json::Value) -> serde_json::Value {
         .map(|row| {
             let id = row["id"].as_i64().unwrap_or(0);
             let rels = graph_by_chunk.get(&id).cloned().unwrap_or_default();
-            crate::handlers::ump::to_ump(
+            let meta = crate::handlers::ump::UmpMeta::parse(row["ump_meta"].as_str());
+            let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
+            let redact = redact_owner.is_some()
+                && row_owner.map(|o| Some(o) != redact_owner).unwrap_or(true);
+            crate::handlers::ump::emit_record(
                 row,
                 "global",
                 &serde_json::json!([]),
                 &serde_json::json!(rels),
+                &meta,
+                redact,
+                signer,
             )
         })
         .collect();
@@ -974,6 +1040,20 @@ fn render_ump(body: &serde_json::Value) -> serde_json::Value {
         "exported_at": body["exported_at"],
         "records": records,
     })
+}
+
+/// v1.17.3 M4: `?format=ump-md` — the §6.3 markdown projection per record,
+/// joined by the `\n---\n` record separator (pure; the handler wires it).
+fn render_ump_md(body: &serde_json::Value, redact_owner: Option<&str>) -> Result<String, String> {
+    let rendered = render_ump(body, redact_owner, None);
+    let parts = rendered["records"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(crate::handlers::ump::record_to_markdown)
+        .collect::<Result<Vec<String>, String>>()?;
+    Ok(parts.join(crate::handlers::ump::MD_RECORD_SEP))
 }
 
 #[cfg(test)]
@@ -1012,7 +1092,7 @@ mod tests {
                 {"id": 101, "from_entity_id": 10, "to_entity_id": 11, "relation_type": "works_at", "knowledge_id": 2},
             ],
         });
-        let out = render_ump(&body);
+        let out = render_ump(&body, None, None);
         assert_eq!(out["ump"], "1.0");
         let recs = out["records"].as_array().unwrap();
         assert_eq!(recs.len(), 2);
@@ -1026,5 +1106,96 @@ mod tests {
         );
         assert_eq!(recs[0]["id"], "urn:ump:brain:global:1");
         assert_eq!(recs[1]["id"], "urn:ump:brain:global:2");
+    }
+
+    /// M2: the export renderer now emits integrity-protected records (§2.7) —
+    /// a JWT subject exporting sees their own rows unredacted and other rows
+    /// redacted (still shape- and integrity-valid).
+    #[test]
+    fn render_ump_md_round_trips_through_record_from_markdown() {
+        let body = serde_json::json!({
+            "exported_at": "2026-08-09T00:00:00Z",
+            "knowledge": [
+                {"id": 1, "content": "Dave works at Acme.", "title": "d1", "memory_kind": "fact", "created_at": 1},
+                {"id": 2, "content": "Carol runs the lab.", "title": "d2", "memory_kind": "fact", "created_at": 2},
+            ],
+            "entities": [],
+            "relationships": [],
+        });
+        let md = render_ump_md(&body, None).expect("md render");
+        assert!(md.contains("ump: \"1.0\""), "frontmatter present: {md}");
+        let chunks: Vec<&str> = md.split(crate::handlers::ump::MD_RECORD_SEP).collect();
+        assert_eq!(chunks.len(), 2, "one projection per record");
+        let rec0 = crate::handlers::ump::record_from_markdown(chunks[0]).expect("parse rec 0");
+        assert_eq!(rec0["body"]["text"], "Dave works at Acme.");
+        assert_eq!(rec0["kind"], "semantic");
+        assert_eq!(rec0["body"]["structured"]["title"], "d1");
+        let rec1 = crate::handlers::ump::record_from_markdown(chunks[1]).expect("parse rec 1");
+        assert_eq!(rec1["body"]["text"], "Carol runs the lab.");
+    }
+
+    /// M2: the export renderer now emits integrity-protected records (§2.7) —
+    /// a JWT subject exporting sees their own rows unredacted and other rows
+    /// redacted (still shape- and integrity-valid).
+    #[test]
+    fn render_ump_redacts_records_not_owned_by_the_principal() {
+        let body = serde_json::json!({
+            "exported_at": "2026-08-09T00:00:00Z",
+            "knowledge": [
+                {"id": 1, "content": "Mine.", "title": "d1", "memory_kind": "fact", "owner": "user-1", "created_at": 1},
+                {"id": 2, "content": "Theirs.", "title": "d2", "memory_kind": "fact", "owner": "user-2", "created_at": 2},
+                {"id": 3, "content": "No owner.", "title": "d3", "memory_kind": "fact", "created_at": 3},
+            ],
+            "entities": [],
+            "relationships": [],
+        });
+        let out = render_ump(&body, Some("user-1"), None);
+        let recs = out["records"].as_array().unwrap();
+        assert_eq!(recs[0]["body"]["text"], "Mine.");
+        assert_eq!(recs[1]["body"]["text"], "[redacted]");
+        assert_eq!(recs[2]["body"]["text"], "[redacted]");
+        for r in recs {
+            assert!(r["integrity"]["hash"].is_string(), "integrity present");
+            assert!(
+                crate::handlers::ump::verify_record(r, None),
+                "redacted record still verifies"
+            );
+        }
+    }
+
+    /// Regression: v1.17.1 M4 added `created_at` to the export SELECT, but the
+    /// column is TEXT (`CURRENT_TIMESTAMP` default) while the mapper read it
+    /// as `Option<i64>` — every row errored and `flatten()` silently dropped
+    /// them all, so `/export` (and the UMP re-render) returned an empty
+    /// `knowledge` list on any real DB. The mapper now parses the DB
+    /// timestamp; this test pins the real migration + INSERT + export mapping.
+    #[test]
+    fn export_mapping_survives_real_timestamp_rows() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash) \
+             VALUES ('d1', 'Dave works at Acme.', 'structured', 'abc123')",
+            [],
+        )
+        .expect("insert");
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge ORDER BY id"
+            ))
+            .expect("prepare");
+        let rows: Vec<serde_json::Value> = stmt
+            .query_map([], knowledge_row_to_json)
+            .expect("query")
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 1, "the row must survive the mapping");
+        assert_eq!(rows[0]["content"], "Dave works at Acme.");
+        assert!(
+            rows[0]["created_at"].is_i64(),
+            "created_at is a unix epoch: {}",
+            rows[0]["created_at"]
+        );
     }
 }

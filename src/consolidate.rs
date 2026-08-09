@@ -491,8 +491,9 @@ pub fn find_subject_conflicts(conn: &Connection) -> Result<Vec<ConflictPair>> {
 }
 
 /// Parse an RFC3339/DB-timestamp into seconds since epoch for gap math; unknown
-/// timestamps compare as 0 (stable, never panics).
-fn observed_secs(s: &Option<String>) -> i64 {
+/// timestamps compare as 0 (stable, never panics). Shared with the export row
+/// mapper (`knowledge_row_to_json`), which maps the TEXT `created_at` column.
+pub(crate) fn observed_secs(s: &Option<String>) -> i64 {
     let Some(s) = s else { return 0 };
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
         return dt.timestamp();

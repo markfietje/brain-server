@@ -193,6 +193,24 @@ pub fn client_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("client/dist"))
 }
 
+/// v1.17.3 "UMP" M2: `GET /ump/subscribe` SSE broadcast buffer. Bounded —
+/// a slow consumer drops missed events (broadcast lag semantics), never
+/// blocks the publish path.
+pub const UMP_EVENT_BUFFER: usize = 128;
+
+/// v1.17.3 "UMP" M2/M4: directory holding the operator Ed25519 signing key
+/// (raw 32-byte seed file, e.g. `operator.key`). `None` → L2 conformance
+/// (hash-only integrity); a key present → L3 (records signed + verified).
+pub fn ump_key_dir() -> std::path::PathBuf {
+    std::env::var("BRAIN_UMP_KEY_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".config/brain-server/ump")
+        })
+}
+
 // ── v1.1.0 "Harden" M1.4: token rotation constants ───────────────────
 // The token-store background task stats the file at this cadence and reloads
 // on mtime change. The auth check itself is hot-path, so it reads from the

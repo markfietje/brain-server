@@ -40,3 +40,9 @@ pub mod migration;
 // include. The 100-query hand-judged corpus is an operator step; these
 // functions are the reproducible engine any judgments file plugs into.
 pub mod eval;
+
+// UMP 1.0 integrity + identity (v1.17.3 "UMP Rollout"): base32/did:key/JCS/
+// BLAKE3/Ed25519/capability-token primitives. Pure functions, shared by the
+// server (`/ump/*`, sign-on-write) and the `brain` CLI (`brain ump keygen`,
+// `brain ump export`) — same cross-binary pattern as `eval`/`capacity`.
+pub mod ump_integrity;

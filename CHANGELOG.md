@@ -10,6 +10,106 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.17.3] — 2026-08-09
+
+### Server — "UMP Rollout"
+
+The UMP 1.0 rollout on the v1.17.2 wire-conformance base: the spec's §4.2
+HTTP ops, §4.1 MCP tools, §4.3 file binding, and §5 identity + capability
+tokens. Conformance claim: **UMP 1.0 / L3** (self-attested; §8-compliant
+unknown-major rejection + 0.1-import normalization already shipped in
+v1.17.1/1.17.2). `GET /ump/capabilities` (and the `/.well-known/ump.json`
+discovery doc) report `conformance: "L3"` when an operator key is configured,
+`"L2"` otherwise.
+
+- **M2 — HTTP ops (`/ump/*`, spec §4.2)** — new `src/handlers/ump_ops.rs`
+  (the codec stays in `ump.rs`): `GET /ump/capabilities` (§3.1 handshake:
+  `server`, `ump: "1.0"`, `conformance`, `kinds`, `bindings:
+  ["http","mcp","file"]`, `retrieval_signals`, `max_recall: 50`,
+  `writable`, `audit`); `POST /ump/remember` (partial record → lowered
+  through the structured-ingest path; §3.7 gates — declared
+  `scope.owner` must match the principal, consent violations →
+  `forbidden_scope`/`consent_violation`; `{id, result: created|merged|
+  rejected}`); `GET /ump/memory/{id}` (integrity-verified on read, §2.8 —
+  tampered records dropped); `POST /ump/recall` (§3.2 `{results:[{record,
+  score, signals{similarity,recency,salience,scope_match,provenance_depth}}]}`
+  over the shared `run_recall` core — the existing gates/injection guard/
+  embedding/routing/hybrid+graph RRF/packing are byte-identical, two
+  consumers); `POST /ump/revise` (patch → new chunk + `resolve_supersession`
+  → `{id: urn:ump:NEW, supersedes:[OLD]}`); `POST /ump/forget` (`{reason,
+  hard}` — `hard:false` soft-flags, `hard:true` takes the v1.14
+  `purge_chunk_ids` erase path, both tombstoned + audited); `POST
+  /ump/feedback` (outcome `followed|overridden|ignored|contradicted` → the
+  suggest-feedback last-wins upsert with the granular `ump_outcome`
+  persisted); `GET /ump/subscribe` (SSE change feed over a tokio broadcast
+  channel — `{kind, id}` events only, never record bodies; kill-switch-safe,
+  bounded); `POST /ump/audit` + `GET /ump/audit/verify` (§9 reference
+  facility: thin aliases over `list_audit` + `verify_chain`,
+  `capabilities.audit: true`). **Batch ingest** — `POST /ingest?format=ump`
+  accepts a UMP 1.0 batch envelope `{ump:"1.0", records:[…]}` (single record
+  still accepted, back-compat); per-record status, one failure does not
+  abort the batch.
+- **M3 — MCP tools (`ump.*`, spec §4.1 PRIMARY)** — `src/bin/mcp.rs`
+  mirrors the full ops surface: `ump.capabilities`, `ump.remember`,
+  `ump.get`, `ump.recall`, `ump.revise`, `ump.forget`, `ump.feedback`,
+  `ump.audit`, `ump.audit.verify` (same thin HTTP-proxy shape as the
+  existing tools; token passthrough via `BRAIN_TOKEN_FILE`/`BRAIN_TOKEN`).
+- **M4 — File binding (`*.ump.md` / `*.ump.json`, spec §4.3)** — `GET
+  /export?format=ump-md` renders the portable export as the §6.3 markdown
+  projection (front-matter `ump`/`id`/`kind`/`scope`/`time`/`provenance` +
+  body; parse via the `vault.rs` parsers, round-trip lossless); `POST
+  /ingest?format=ump-md` parses the same projection back through the
+  shared lowering. `brain ump export|import` CLI carries both wire forms
+  with `--output`/`--input` file paths. Fix: the v1.17.1 `/export` drop on
+  DBs with empty `knowledge` (a fatal row-mapping bug) — `observed_secs`
+  is now `pub(crate)` and `knowledge_row_to_json` reads `Option<String>`
+  timestamps; pinned by `export_mapping_survives_real_timestamp_rows`.
+- **M5 — Identity + capability tokens (spec §5)** — new pure lib module
+  `src/ump_integrity.rs` (`#![deny(unsafe_code)]`, the `brain_server::eval`
+  precedent): `did_key_from_ed25519` (multicodec `0xed` + base58btc →
+  `did:key:z6Mk…`), RFC 8785 JCS canonicalization (BTreeMap), blake3 →
+  base32 content hashes, ed25519-dalek sign/verify (§2.8 `integrity`
+  signatures), and §5.2 compact capability tokens (`alg.payload.sig`,
+  `{iss, verbs:[read|write|derive|export], scope:{project}, exp}`).
+  `brain ump keygen [--dir]` CLI writes an Ed25519 seed to
+  `BRAIN_UMP_KEY_DIR` (default `~/.config/brain-server/ump/operator.key`,
+  0600, refuses overwrite) and prints the DID. **Enforcement:** a
+  capability token presented as `Authorization: Bearer` on `/ump/*` +
+  `/export` is verified (key, signature, expiry) at the auth middleware,
+  then verbs × scope are enforced per handler (`cap_gate` after
+  `authorize` — reads need `read`, writes `write` or `derive`, export
+  paths `export`; scope must be absent/empty or `global`; `audit`/
+  `audit/verify` deny capability bearers — no admin verb exists).
+  Unknown/malformed/expired → `unauthorized`. The §5.3 injection-resistant
+  rehydration obligations (server: verify-before-emit + scope/consent
+  filter before ranking — already the recall pipeline order; client:
+  structural framing, never-execute-body) are documented in
+  `API_CONTRACT.md` + `SECURITY.md`.
+- **Docs** — `API_CONTRACT.md` gains a §UMP binding (levels, routes,
+  tokens, redact semantics, §5.3 note); `COMPLIANCE.md` maps the UMP
+  integrity + consent controls; `SECURITY.md` covers UMP key storage
+  (same 0600/0700 posture as `BRAIN_JWT_KEY_DIR`) + injection-resistant
+  rehydration; `openapi.yaml` → 1.17.3 (10 `/ump/*` routes + 2 well-known
+  docs + batch/ump-md `format` values + `UmpRecord`/`UmpCapabilities`/
+  `UmpRecallResponse`/`UmpFeedbackRequest`/`UmpBatchRequest`/`Integrity`
+  schemas). Version 1.17.2 → 1.17.3.
+
+### Honest ceilings
+
+- Conformance is **self-attested** — the §7 level definitions are mapped
+  onto the shipped surface, not certified by a third party.
+- L3 in §7 means the local integrity layer (sign/verify with the operator
+  key); A2A federation, remote agent identity, and per-tenant key
+  hierarchies remain v2.x.
+- `GET /ump/subscribe` is a change signal, not a data channel — event
+  bodies are intentionally absent (documented §3.8 posture).
+- Batch import lowers records one-by-one through the existing ingest path;
+  no parallel ingestion, no partial-transaction rollback (per-record
+  status is the contract).
+- The `did:key` emission is Ed25519 only (same documented posture as the
+  v1.2 JWKS EC/Ed gap); RSA capability keys are out of scope.
+- Client-side §5.3 obligations are documented, not enforced by the server.
+
 ## [1.17.2] — 2026-08-09
 
 ### Server — "Harden"

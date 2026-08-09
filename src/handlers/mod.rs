@@ -34,6 +34,7 @@ pub mod recall;
 pub mod sources;
 pub mod suggest;
 pub mod ump;
+pub mod ump_ops;
 pub mod verify;
 pub mod webhooks;
 pub mod well_known;
@@ -400,6 +401,41 @@ pub fn authorize(
     }
 }
 
+/// v1.17.3 M5 (§5.2): enforce a capability token's verbs × scope at handler
+/// entry. `None` (no capability presented — the request authenticated via the
+/// middleware's JWT/opaque path) is a no-op. Read ops require `read`, writes
+/// `write` (`derive` also grants writes — deriving IS creating new memory),
+/// export paths `export`; every other verb (incl. `admin`) is denied. Scope
+/// must be `None`/empty (all projects) or `"global"` — the brain's UMP
+/// surface is the global project. Call AFTER `authorize` (the capability
+/// bearer has no JWT principal, so `authorize` alone would pass as superuser).
+pub fn cap_gate(
+    cap: &Option<brain_server::ump_integrity::CapabilityToken>,
+    verb: &str,
+) -> Result<(), HandlerError> {
+    let Some(cap) = cap else { return Ok(()) };
+    let has = |v: &str| cap.verbs.iter().any(|c| c == v);
+    let ok = match verb {
+        "read" => has("read"),
+        "write" => has("write") || has("derive"),
+        "export" => has("export"),
+        _ => false,
+    };
+    if !ok {
+        return Err(HandlerError::unauthorized(format!(
+            "capability token lacks the '{verb}' verb"
+        )));
+    }
+    if let Some(scope) = cap.scope.as_deref().filter(|s| !s.is_empty()) {
+        if scope != "global" {
+            return Err(HandlerError::unauthorized(format!(
+                "capability token scope '{scope}' is not the global project"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// v1.12.1 "Harden": tenant scope for the audit surface. The v1.2 matrix
 /// forbids cross-tenant audit reads: a non-superuser principal may only ever
 /// see their own tenant's rows. Returns the effective tenant filter to apply
@@ -651,6 +687,55 @@ mod tests {
         assert!(!is_match(RELTYPE_RE, "Has Caps"));
         assert!(!is_match(RELTYPE_RE, "has-hyphen"));
         assert!(!is_match(RELTYPE_RE, "has space"));
+    }
+
+    // v1.17.3 M5 (§5.2): the capability-token gate. Verbs: read ops need
+    // `read`, writes `write` (or `derive`), export paths `export`; admin is
+    // never grantable. Scope must be None/empty or "global". No capability
+    // (None — JWT/opaque-authenticated request) is always a pass.
+    #[test]
+    fn cap_gate_enforces_verbs_scope_and_never_admin() {
+        use brain_server::ump_integrity::CapabilityToken;
+        let cap = |verbs: &[&str], scope: Option<&str>| CapabilityToken {
+            alg: "EdDSA".into(),
+            iss: "did:key:z6MkTest".into(),
+            verbs: verbs.iter().map(|s| s.to_string()).collect(),
+            scope: scope.map(|s| s.to_string()),
+            exp: u64::MAX,
+        };
+        // None = no capability presented: no-op.
+        assert!(cap_gate(&None, "read").is_ok());
+
+        let read = Some(cap(&["read"], None));
+        assert!(cap_gate(&read, "read").is_ok());
+        assert!(cap_gate(&read, "write").is_err());
+        assert!(cap_gate(&read, "export").is_err());
+        assert!(cap_gate(&read, "admin").is_err());
+
+        let write = Some(cap(&["write"], None));
+        assert!(cap_gate(&write, "write").is_ok());
+        assert!(cap_gate(&write, "read").is_err());
+
+        // derive grants writes (deriving IS creating new memory).
+        let derive = Some(cap(&["derive"], None));
+        assert!(cap_gate(&derive, "write").is_ok());
+        assert!(cap_gate(&derive, "read").is_err());
+
+        let export = Some(cap(&["export"], None));
+        assert!(cap_gate(&export, "export").is_ok());
+        assert!(cap_gate(&export, "read").is_err());
+
+        // Scope: "global" passes, any other project is denied on this surface.
+        let scoped_global = Some(cap(&["read"], Some("global")));
+        assert!(cap_gate(&scoped_global, "read").is_ok());
+        let scoped_other = Some(cap(&["read"], Some("acme")));
+        assert!(cap_gate(&scoped_other, "read").is_err());
+        let scoped_empty = Some(cap(&["read"], Some("")));
+        assert!(cap_gate(&scoped_empty, "read").is_ok());
+
+        // Admin cannot be granted by any verb set.
+        let adminish = Some(cap(&["read", "write", "derive", "export"], None));
+        assert!(cap_gate(&adminish, "admin").is_err());
     }
 
     // v1.3.0 Bedrock M6: idempotency property — normalizing a domain twice

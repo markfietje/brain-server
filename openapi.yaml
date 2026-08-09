@@ -8,8 +8,11 @@ info:
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
-  version: 1.17.2
-  x-api-version: "1.17.2"
+    UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
+    `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
+    middleware, verbs × scope per handler; `audit` surfaces deny tokens).
+  version: 1.17.3
+  x-api-version: "1.17.3"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1333,6 +1336,147 @@ paths:
       responses:
         "200":
           description: Per-snapshot status
+  /ump/capabilities:
+    get:
+      summary: UMP 1.0 negotiation handshake (v1.17.3 M2)
+      operationId: umpCapabilities
+      description: >
+        Universal Memory Protocol 1.0 handshake (public — no auth). Reports
+        conformance (L3 with an operator signing key configured, L2 otherwise),
+        kinds, bindings, retrieval signals, max_recall, writable, audit.
+      responses:
+        "200":
+          description: Capabilities document
+  /ump/remember:
+    post:
+      summary: Store a memory record (v1.17.3 M2, UMP §3.3)
+      operationId: umpRemember
+      description: >
+        Accepts a partial UMP record (`{record: …}` or a bare record). Lowered
+        through the structured-ingest path. Consent: a declared `scope.owner`
+        must match the authenticated principal. L3: signed records verify
+        against the operator key. Returns `{id, result: created|merged|rejected}`.
+      responses:
+        "200":
+          description: "{id, result}"
+        "400":
+          description: invalid_record / signature_invalid / forbidden_scope
+  /ump/memory/{id}:
+    get:
+      summary: Read one record by id (v1.17.3 M2)
+      operationId: umpGetMemory
+      description: >
+        Returns `{record}` with integrity re-verified on read (§5.3); rows
+        whose stored integrity fails verification are treated as absent. Other
+        owners' rows are §2.7-redacted for authenticated principals.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: "{record}"
+        "404":
+          description: not_found
+  /ump/recall:
+    post:
+      summary: Ranked recall with per-result signals (v1.17.3 M2, UMP §3.2)
+      operationId: umpRecall
+      description: >
+        Runs the shared deterministic recall core (`run_recall` — the same
+        pipeline as `/recall`) and renders §3.2 `{results:[{record, signals,
+        score}]}` with the five standard signals (similarity, recency,
+        salience, scope_match, provenance_depth). `filter.kind` maps UMP kinds
+        to brain memory_kinds; `filter.valid_at` maps to the bi-temporal
+        `at` filter. `ranking_hints` is accepted but ignored (no rank
+        steering). Clamped to `max_recall`.
+      responses:
+        "200":
+          description: "{results: [...]}"
+  /ump/revise:
+    post:
+      summary: Patch a record (v1.17.3 M2, UMP §3.5)
+      operationId: umpRevise
+      description: >
+        `{id, patch}` — the patch is deep-merged over the stored record
+        (`id`/`integrity` are server-authoritative and never patched), lowered
+        through the ingest path as a new chunk, and the old chunk is expired
+        via `resolve_supersession` (default recall returns the new revision;
+        `?at=<past>` still finds the old). Returns `{id, supersedes}`.
+      responses:
+        "200":
+          description: "{id, supersedes: [old_id]}"
+  /ump/forget:
+    post:
+      summary: Delete or soft-delete a record (v1.17.3 M2, UMP §3.4)
+      operationId: umpForget
+      description: >
+        `{id, reason?, hard?}` — `hard:false` (default) flags the row
+        (quarantine-style, still retrievable with `include_flagged`) + tombstone
+        + audit; `hard:true` runs the v1.14 `purge_chunk_ids` erase path.
+        Returns `{result: "tombstoned"}`.
+      responses:
+        "200":
+          description: "{result: tombstoned}"
+        "404":
+          description: not_found
+  /ump/feedback:
+    post:
+      summary: Record outcome feedback (v1.17.3 M2, UMP §3.6)
+      operationId: umpFeedback
+      description: >
+        `{id, outcome, reason?}` with outcome in followed|overridden|ignored|
+        contradicted. Mapped to the suggest-feedback last-wins upsert
+        (followed → accept, rest → dismiss) with the granular outcome
+        persisted in `ump_outcome`.
+      responses:
+        "200":
+          description: "{result: recorded}"
+        "400":
+          description: feedback_invalid
+  /ump/subscribe:
+    get:
+      summary: SSE change signal (v1.17.3 M2, UMP §3.8)
+      operationId: umpSubscribe
+      description: >
+        Server-sent events over a bounded broadcast channel: a `pending`
+        handshake event, then `{kind, id}` events on remember/revise/forget.
+        Never record bodies — the stream is a change signal, not a data
+        channel. Lagged subscribers drop missed events.
+      responses:
+        "200":
+          description: "text/event-stream"
+  /ump/audit:
+    post:
+      summary: Reference audit facility (v1.17.3 M2, UMP §9)
+      operationId: umpAudit
+      description: >
+        Recent hash-chained audit rows (`{kind?, limit?, offset?}`). Admin +
+        tenant-scoped (same semantics as `/audit`).
+      responses:
+        "200":
+          description: "{rows: [...], count: n}"
+  /ump/audit/verify:
+    get:
+      summary: Fresh full-chain verification (v1.17.3 M2, UMP §9)
+      operationId: umpAuditVerify
+      description: >
+        Authoritative full scan of the audit hash chain (unlike the TTL-cached
+        `/metrics` signal). Admin.
+      responses:
+        "200":
+          description: "{ok: bool}"
+  /.well-known/ump.json:
+    get:
+      summary: UMP discovery document (v1.17.3 M2)
+      operationId: umpDiscovery
+      description: >
+        Public discovery document — same payload as `/ump/capabilities`,
+        mounted with the other well-known public routes.
+      responses:
+        "200":
+          description: Capabilities document
   /export:
     get:
       summary: Portable JSON export for data portability (v1.14.0 M2)

@@ -327,48 +327,77 @@ pub async fn feedback(
         .unwrap_or_else(|| audit::DEFAULT_TENANT.to_string());
     let chunk_id = req.chunk_id;
     let outcome_str = outcome.as_str();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
 
     let pool = state.pool.clone();
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        // chunk_id validity: refuse feedback on a non-existent chunk so the
-        // metric isn't poisoned by typos. (A deleted chunk's id still counts —
-        // the feedback was real when given; only never-existed ids are rejected.)
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM knowledge WHERE id = ?1)",
-                rusqlite::params![chunk_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|n| n != 0)
-            .unwrap_or(false);
-        if !exists {
-            return Err(HandlerError::not_found(format!(
-                "no chunk with id {chunk_id}"
-            )));
-        }
-        conn.execute(
-            "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
-               feedback = excluded.feedback,
-               reason_hash = excluded.reason_hash,
-               ts = excluded.ts",
-            rusqlite::params![chunk_id, outcome_str, reason_hash, ts, session, tenant],
+        record_feedback(
+            &conn,
+            chunk_id,
+            outcome_str,
+            reason_hash,
+            ts,
+            session,
+            tenant,
+            None,
         )
-        .map_err(|e| HandlerError::internal(format!("feedback insert failed: {e}")))?;
-        Ok(())
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(FeedbackResponse { status: "recorded" }))
+}
+
+/// v1.17.3 "UMP" M2: the suggest-feedback last-wins upsert extracted from the
+/// `/suggest/feedback` handler so the `/ump/feedback` binding shares it. The
+/// optional `ump_outcome` carries the granular UMP outcome (`followed`/
+/// `overridden`/`ignored`/`contradicted`) in its own column; the suggest path
+/// passes `None` (column stays NULL — byte-identical to v1.17.2).
+#[allow(clippy::too_many_arguments)] // 8 positional params, 2 call sites; a struct would be ceremony for a private fn
+pub(crate) fn record_feedback(
+    conn: &rusqlite::Connection,
+    chunk_id: i64,
+    feedback: &str,
+    reason_hash: Option<String>,
+    ts: i64,
+    session: Option<String>,
+    tenant: String,
+    ump_outcome: Option<&str>,
+) -> Result<(), HandlerError> {
+    // chunk_id validity: refuse feedback on a non-existent chunk so the
+    // metric isn't poisoned by typos. (A deleted chunk's id still counts —
+    // the feedback was real when given; only never-existed ids are rejected.)
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM knowledge WHERE id = ?1)",
+            rusqlite::params![chunk_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n != 0)
+        .unwrap_or(false);
+    if !exists {
+        return Err(HandlerError::not_found(format!(
+            "no chunk with id {chunk_id}"
+        )));
+    }
+    conn.execute(
+        "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id, ump_outcome)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
+           feedback = excluded.feedback,
+           reason_hash = excluded.reason_hash,
+           ts = excluded.ts,
+           ump_outcome = excluded.ump_outcome",
+        rusqlite::params![chunk_id, feedback, reason_hash, ts, session, tenant, ump_outcome],
+    )
+    .map_err(|e| HandlerError::internal(format!("feedback insert failed: {e}")))?;
+    Ok(())
 }
 
 /// The two outcomes that matter for the false-positive metric. Mem0's

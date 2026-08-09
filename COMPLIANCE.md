@@ -222,3 +222,17 @@ conformity assessment is an operator gate).
   roll-up worker, no autonomous archival.
 - The trace endpoint serves recorded events only; there is no historical
   backfill for recalls that predate v1.15.0.
+
+## 9. UMP 1.0 Integrity + Consent Controls (v1.17.3)
+
+The UMP binding's §5 obligations mapped onto the existing controls:
+
+| UMP obligation | Mechanism |
+|---|---|
+| Record integrity (§2.8) | Ed25519 signature by the operator key (`brain ump keygen`, `BRAIN_UMP_KEY_DIR`); verify-on-read — tampered records are dropped, never served |
+| Capability-gated access (§5.2) | Bearer capability tokens on `/ump/*` + `/export`: signature/expiry at the middleware, verbs × scope at handler entry; `audit` surfaces deny token bearers |
+| Consent (declared owner) | `scope.owner` must match the authenticated principal (or be absent → principal's); mismatch → `forbidden_scope`, recorded in the audit log |
+| Erasure (Art 17 parity) | `POST /ump/forget` both arms (soft flag / hard `purge_chunk_ids`) tombstone + audit — the v1.14 erase path, not a bypass |
+| Auditability (§9) | `/ump/audit` + `/ump/audit/verify` alias the existing SHA-256 hash-chained log; `capabilities.audit: true` |
+| Change-feed privacy | `/ump/subscribe` carries `{kind,id}` only — event bodies never leave the DB (documented §3.8 posture) |
+| Injection-resistant rehydration (§5.3) | Verify-before-emit + scope-filter-before-ranking on the server; client obligations documented in `SECURITY.md` §UMP (bodies are data, never commands) |

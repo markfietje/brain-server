@@ -333,6 +333,9 @@ struct AppState {
     /// OIDC discovery metadata (built from BRAIN_PUBLIC_BASE_URL). Served at
     /// `/.well-known/openid-configuration`. Empty placeholder when JWT is off.
     oidc_config: handlers::well_known::OidcConfig,
+    /// v1.17.3 "UMP" M2: `GET /ump/subscribe` SSE change events (`{kind, id}` —
+    /// never record bodies). Published by remember/revise/forget.
+    ump_events: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -3468,7 +3471,7 @@ pub struct JwtMiddlewareState {
 /// fallback for non-JWT deployments (zero behavior change for v1.1 installs).
 async fn jwt_auth_middleware(
     State(s): State<Arc<JwtMiddlewareState>>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     if !s.auth_mode.is_jwt() {
@@ -3491,6 +3494,8 @@ async fn jwt_auth_middleware(
             | "/.well-known/ai-notice"
             | "/.well-known/ai-literacy"
             | "/.well-known/cop-notice"
+            | "/.well-known/ump.json"
+            | "/ump/capabilities"
             | "/auth/refresh"
             | "/auth/logout"
     ) || path.starts_with("/webhooks/")
@@ -3522,6 +3527,8 @@ async fn jwt_auth_middleware(
     let pool = s.pool.clone();
     let rev_cache = s.revocation_cache.clone();
     let path_owned = path.to_string();
+    // The capability fallback needs the raw bearer; clone before the move.
+    let raw_for_fallback = raw.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<auth::Principal, String> {
         let (claims, _) = auth::jwt::verify_access_token(
             &raw,
@@ -3565,15 +3572,53 @@ async fn jwt_auth_middleware(
         Ok(principal) => {
             // Inject the principal + pass through. The opaque auth_middleware
             // will see it set and short-circuit to `next.run(req)`.
-            let mut req = req;
             req.extensions_mut().insert(principal);
             next.run(req).await
         }
         Err(code) => {
+            // v1.17.3 M5: on the UMP surface the bearer may be an operator-
+            // signed capability token rather than a JWS. Try it before
+            // rejecting (the handler's cap_gate enforces verbs × scope).
+            if capability_pass_through(&mut req, &raw_for_fallback, &path_owned) {
+                return next.run(req).await;
+            }
             audit_auth_failure(&s.db_path, &path_owned, &code);
             unauthorized_response(&code)
         }
     }
+}
+
+/// v1.17.3 M5 (§5.2): try the bearer as an operator-signed capability token
+/// on the UMP surface (`/ump/*` + `/export`). A valid token is injected into
+/// request extensions and the request passes — the handler's `cap_gate` then
+/// enforces verbs × scope (expiry is enforced here at parse). Returns true
+/// only when the request may continue on the strength of the capability.
+/// `ponytail:` reads the operator key from disk per failing request on the
+/// UMP surface — a rare, failing path, so the cost is acceptable; a cache
+/// would be the upgrade if capability auth ever becomes hot.
+fn capability_pass_through(req: &mut Request<Body>, raw: &str, path: &str) -> bool {
+    let Some((_, sk)) = handlers::ump::operator_signing_key() else {
+        return false;
+    };
+    if !capability_accepted(raw, path, &sk.verifying_key().to_bytes()) {
+        return false;
+    }
+    let pk = sk.verifying_key().to_bytes();
+    if let Ok(cap) = brain_server::ump_integrity::parse_capability_token(raw, &pk) {
+        req.extensions_mut().insert(cap);
+        true
+    } else {
+        false
+    }
+}
+
+/// Pure §5.2 acceptance decision (the middleware's env/state-free core): the
+/// bearer verifies as a capability token signed by `pk` AND the path is on
+/// the UMP surface. Split out so the security decision is unit-testable
+/// without env mutation (the parallel-test lesson from Agent 24).
+fn capability_accepted(raw: &str, path: &str, pk: &[u8; 32]) -> bool {
+    (path.starts_with("/ump/") || path == "/export")
+        && brain_server::ump_integrity::parse_capability_token(raw, pk).is_ok()
 }
 
 /// Write an audit row for a failed JWT verification. Best-effort (opens a
@@ -3602,12 +3647,12 @@ fn unauthorized_response(code: &str) -> Response {
 
 async fn auth_middleware(
     State(tokens): State<TokenStore>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
     let public = matches!(
-        path,
+        path.as_str(),
         "/health" | "/health/db" | "/ready" | "/version" | "/openapi.yaml"
         // v1.2.0 AuthN: OIDC discovery + JWKS are public by design (clients
         // need them to verify tokens; can't require a token to learn how to
@@ -3618,6 +3663,8 @@ async fn auth_middleware(
         | "/.well-known/ai-notice"
         | "/.well-known/ai-literacy"
         | "/.well-known/cop-notice"
+        | "/.well-known/ump.json"
+        | "/ump/capabilities"
         | "/auth/refresh" | "/auth/logout"
     ) || path.starts_with("/webhooks/")
         // v1.16.2 "Harden": the client SPA is public (static assets, no data).
@@ -3662,7 +3709,14 @@ async fn auth_middleware(
                 .any(|t| ct_eq(p.as_bytes(), t.trim().as_bytes()))
         })
         .unwrap_or(false);
+    // Owned copy: the capability fallback needs `&mut req`, and `presented`
+    // borrows `req`'s headers — the two would conflict.
+    let presented_owned = presented.unwrap_or("").to_string();
     if ok {
+        next.run(req).await
+    } else if capability_pass_through(&mut req, &presented_owned, &path) {
+        // v1.17.3 M5: the bearer verified as an operator-signed capability
+        // token on the UMP surface; the handler's cap_gate enforces verbs.
         next.run(req).await
     } else {
         // v0.9.7 Guard: audit denied auth attempts at the trust boundary. The
@@ -4150,6 +4204,23 @@ async fn main_inner() -> Result<()> {
         // Plugin API (contract: API_CONTRACT.md). Wire is locked; bodies land with v0.9.0/v1.0.0.
         .route("/recall", post(handlers::recall::recall))
         .route("/ingest", post(handlers::ingest::ingest))
+        // v1.17.3 "UMP" M2: the UMP 1.0 HTTP ops binding. Capabilities +
+        // `/.well-known/ump.json` are PUBLIC (negotiation handshake); the
+        // rest are authz-gated per the §3.3 matrix.
+        .route("/ump/capabilities", get(handlers::ump_ops::capabilities))
+        .route("/ump/remember", post(handlers::ump_ops::remember))
+        .route("/ump/memory/{id}", get(handlers::ump_ops::get_memory))
+        .route("/ump/recall", post(handlers::ump_ops::recall))
+        .route("/ump/revise", post(handlers::ump_ops::revise))
+        .route("/ump/forget", post(handlers::ump_ops::forget))
+        .route("/ump/feedback", post(handlers::ump_ops::feedback))
+        .route("/ump/subscribe", get(handlers::ump_ops::subscribe))
+        .route("/ump/audit", post(handlers::ump_ops::audit))
+        .route("/ump/audit/verify", get(handlers::ump_ops::audit_verify))
+        .route(
+            "/.well-known/ump.json",
+            get(handlers::ump_ops::capabilities),
+        )
         .route("/memory/{id}", delete(handlers::forget::forget))
         .route(
             "/domains",
@@ -4381,6 +4452,7 @@ async fn main_inner() -> Result<()> {
             jwt_issuer,
             jwt_audience,
             oidc_config,
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
         }));
 
     // v0.9.7 "Guard": spawn the webhook drain worker. It processes verified
@@ -7614,11 +7686,12 @@ Final paragraph after the rule.";
         // migrate-down without --force. v1.9.0 bumped this from 1.4.0 (the
         // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumped
         // it for the feedback dedup index; v1.10.0 bumps it for the Procedural
-        // node_kind + step_index schema; v1.15.0 bumps it for Observe.
+        // node_kind + step_index schema; v1.15.0 bumps it for Observe;
+        // v1.17.3 bumps it for the UMP columns.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_17_1),
-            "schema_version must be recorded as 1.17.1 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_17_3),
+            "schema_version must be recorded as 1.17.3 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
@@ -8591,6 +8664,18 @@ Final paragraph after the rule.";
             "/retention",
             "/art30",
             "/snapshot/status",
+            // v1.17.3 UMP
+            "/ump/capabilities",
+            "/ump/remember",
+            "/ump/memory/{id}",
+            "/ump/recall",
+            "/ump/revise",
+            "/ump/forget",
+            "/ump/feedback",
+            "/ump/subscribe",
+            "/ump/audit",
+            "/ump/audit/verify",
+            "/.well-known/ump.json",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -9260,6 +9345,17 @@ Final paragraph after the rule.";
             ("/retention", "Admin"),
             ("/art30", "Admin"),
             ("/snapshot/status", "Admin"),
+            // v1.17.3 UMP: §3.3 matrix — Writes for remember/revise/forget/
+            // feedback, Read for recall/get/subscribe, Admin for audit.
+            ("/ump/remember", "Write"),
+            ("/ump/memory/{id}", "Read"),
+            ("/ump/recall", "Read"),
+            ("/ump/revise", "Write"),
+            ("/ump/forget", "Write"),
+            ("/ump/feedback", "Write"),
+            ("/ump/subscribe", "Read"),
+            ("/ump/audit", "Admin"),
+            ("/ump/audit/verify", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -9320,6 +9416,7 @@ Final paragraph after the rule.";
                     "gate" => include_str!("handlers/gate.rs"),
                     "observe" => include_str!("handlers/observe.rs"),
                     "govern" => include_str!("handlers/govern.rs"),
+                    "ump_ops" => include_str!("handlers/ump_ops.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
                 }
             } else {
@@ -9327,12 +9424,28 @@ Final paragraph after the rule.";
             };
             let body = handler_body(src, handler_name)
                 .unwrap_or_else(|| panic!("handler `fn {handler_name}` not found in source"));
+            // v1.17.3 "UMP": some handlers delegate their whole body to a
+            // shared `run_*`/`*_one` core (the `/recall` + `/ingest` bindings
+            // route through `run_recall`/`ingest_one`), so the scan follows
+            // the delegation when the handler itself delegates.
+            let delegated_gate = ["run_recall(", "ingest_one("]
+                .into_iter()
+                .find(|d| body.contains(d))
+                .and_then(|core| handler_body(src, &core[..core.len() - 1]))
+                .is_some_and(|b| b.contains("authorize"));
             assert!(
-                body.contains("authorize"),
+                body.contains("authorize") || delegated_gate,
                 "{method} {route} (`{handler_name}`) has no authorize() gate"
             );
+            let action_ok = body.contains(&format!("Action::{action}"))
+                || (delegated_gate
+                    && ["run_recall(", "ingest_one("]
+                        .into_iter()
+                        .find(|d| body.contains(d))
+                        .and_then(|core| handler_body(src, &core[..core.len() - 1]))
+                        .is_some_and(|b| b.contains(&format!("Action::{action}"))));
             assert!(
-                body.contains(&format!("Action::{action}")),
+                action_ok,
                 "{method} {route} (`{handler_name}`) does not enforce Action::{action}"
             );
         }
@@ -9360,11 +9473,13 @@ Final paragraph after the rule.";
                 "ingest_memory",
                 "INSERT INTO knowledge(content, title, source, content_hash, owner)",
             ),
-            // /ingest (structured)
+            // /ingest (structured) — v1.17.3 M2: the INSERT moved into the
+            // shared `ingest_one` core (the batch path reuses it), and the
+            // column list gained the UMP overlay; `owner` is still written.
             (
                 ingest_src,
-                "ingest",
-                "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner)",
+                "ingest_one",
+                "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner,",
             ),
             // write_markdown_ingest
             (
@@ -9538,6 +9653,62 @@ Final paragraph after the rule.";
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
+    /// v1.17.3 M5 (§5.2): the capability-token acceptance decision. A token
+    /// signed by the operator key passes on the UMP surface (`/ump/*`,
+    /// `/export`) and nowhere else; a wrong-key or expired token never
+    /// passes, even on the UMP surface.
+    #[test]
+    fn capability_accepted_only_on_ump_surface_with_operator_key() {
+        use brain_server::ump_integrity::{mint_capability_token, CapabilityToken};
+        use rand::RngCore;
+
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let pk = sk.verifying_key().to_bytes();
+
+        let token = |verbs: &[&str], scope: Option<&str>, exp: u64| {
+            mint_capability_token(
+                &CapabilityToken {
+                    alg: "EdDSA".into(),
+                    iss: "did:key:z6MkTest".into(),
+                    verbs: verbs.iter().map(|s| s.to_string()).collect(),
+                    scope: scope.map(|s| s.to_string()),
+                    exp,
+                },
+                &sk,
+            )
+            .unwrap()
+        };
+        let read = token(&["read"], None, u64::MAX);
+        let write = token(&["write"], None, u64::MAX);
+
+        // UMP surface accepts; everywhere else rejects.
+        assert!(capability_accepted(&read, "/ump/remember", &pk));
+        assert!(capability_accepted(&read, "/ump/recall", &pk));
+        assert!(capability_accepted(&write, "/ump/remember", &pk));
+        assert!(capability_accepted(&read, "/export", &pk));
+        assert!(!capability_accepted(&read, "/search", &pk));
+        assert!(!capability_accepted(&read, "/ingest", &pk));
+        assert!(!capability_accepted(&read, "/health", &pk));
+        // The surface check happens BEFORE signature verification on non-UMP
+        // paths — a valid token still fails off-surface.
+        assert!(!capability_accepted(&read, "/search?q=acme", &pk));
+
+        // Wrong key never passes, even on the surface.
+        assert!(!capability_accepted(&read, "/ump/remember", &[0u8; 32]));
+
+        // Expired tokens never pass.
+        assert!(!capability_accepted(
+            &token(&["read"], None, 0),
+            "/ump/remember",
+            &pk
+        ));
+
+        // Malformed bearer never passes.
+        assert!(!capability_accepted("nonsense", "/ump/remember", &pk));
+    }
+
     /// v1.16.2 "Harden" M1.2: the security-headers middleware is path-aware —
     /// API routes get the strict API_CSP; client `/app` routes get the
     /// WASM-friendly CLIENT_CSP. Pins the whole point of the feature.
@@ -9693,5 +9864,175 @@ Final paragraph after the rule.";
         assert!(obj.contains_key("version"));
         assert!(obj.contains_key("hardening"));
         assert!(obj.contains_key("capacity"));
+    }
+
+    /// v1.17.3 "UMP" M2: the batch wire path end-to-end. A multi-record
+    /// `POST /ingest?format=ump` lowers each record, persists the COMPUTED
+    /// `ump_id` + overlay, and returns the per-record envelope (one failure
+    /// never aborts the batch); a single-record batch keeps the v1.17.1
+    /// plain `IngestResponse` reply; an unknown format is rejected.
+    /// `#[ignore]` because it loads the model2vec weights (same precedent as
+    /// `eval_recall_harness`); run with `--ignored` before release.
+    #[tokio::test]
+    #[ignore]
+    async fn ump_batch_ingest_round_trip() {
+        use axum::body::to_bytes;
+        use axum::http::Request;
+        use brain_server::ump_integrity::{content_id, record_hash};
+        use model2vec_rs::model::StaticModel;
+        use tempfile::NamedTempFile;
+        use tower::ServiceExt;
+
+        register_sqlite_vec();
+        let tmp = NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model = Arc::new(
+            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
+                .expect("model"),
+        );
+        let state = Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+        });
+        let app = axum::Router::new()
+            .route("/ingest", axum::routing::post(handlers::ingest::ingest))
+            .with_state(state.clone());
+
+        async fn post(
+            app: &axum::Router,
+            uri: &str,
+            body: serde_json::Value,
+        ) -> (axum::http::StatusCode, serde_json::Value) {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, v)
+        }
+        // Multi-record batch: one valid record + one that fails lowering
+        // (no body.text). The envelope keeps both, one failure never aborts.
+        let batch = serde_json::json!({
+            "ump": "1.0",
+            "records": [
+                {"ump": "1.0", "id": "urn:ump:brain:global:1", "kind": "working",
+                 "body": {"text": "Dave runs the alpha team.",
+                          "structured": {"title": "d1"}}},
+                {"ump": "1.0", "id": "urn:ump:brain:global:2", "body": {}},
+            ]
+        });
+        let (status, v) = post(&app, "/ingest?format=ump", batch).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(v["ump"], "1.0");
+        assert_eq!(v["count"], 2);
+        let results = v["results"].as_array().expect("results array");
+        assert_eq!(
+            results[0]["status"], "created",
+            "first record should ingest: {v}"
+        );
+        assert!(
+            results[1]["error"].is_string(),
+            "bad record reports an error"
+        );
+
+        // Exactly one row persisted, with the computed ump_id + overlay.
+        let pool_conn = state.pool.get().unwrap();
+        let (ump_id, ump_meta, node_kind): (String, String, String) = pool_conn
+            .query_row(
+                "SELECT ump_id, ump_meta, node_kind FROM knowledge",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("one knowledge row");
+        assert_eq!(
+            node_kind, "fact",
+            "node_kind holds the brain-normalized kind (working has no brain column)"
+        );
+        let meta: serde_json::Value = serde_json::from_str(&ump_meta).expect("ump_meta is JSON");
+        assert_eq!(meta["kind"], "working");
+        assert_eq!(meta["origin"], "urn:ump:brain:global:1");
+        assert!(
+            ump_id.starts_with("urn:ump:"),
+            "computed content id: {ump_id}"
+        );
+        // Deterministic: re-ingesting the same content re-derives the same id.
+        let again = content_id(&record_hash("global\0Dave runs the alpha team.".as_bytes()));
+        assert_eq!(ump_id, again, "ump_id is derived, not trusted");
+
+        // Single-record batch keeps the v1.17.1 plain reply.
+        let single = serde_json::json!({
+            "ump": "1.0",
+            "records": [{"ump": "1.0", "id": "urn:ump:brain:global:9",
+                         "body": {"text": "Solo memory.", "structured": {"title": "solo"}}}]
+        });
+        let (status, v) = post(&app, "/ingest?format=ump", single.clone()).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            v["id"].is_i64(),
+            "single-record reply is a plain IngestResponse"
+        );
+        assert_eq!(v["status"], "created");
+
+        // Unknown format is rejected, not silently treated as plain JSON.
+        let (status, v) = post(&app, "/ingest?format=json", single.clone()).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(v["error"]["code"], "unknown_format");
+
+        // v1.17.3 M4: the §6.3 markdown projection round-trips — export
+        // `?format=ump-md` (rendered straight from the row) → import it back
+        // via `?format=ump-md` (raw text body) → both records ingest, the
+        // projection is L2-lossless.
+        let md = "---\nump: \"1.0\"\nkind: semantic\n---\n\nCarol ships the release.\n---\n---\n---\nump: \"1.0\"\nkind: procedural\n---\n\nStep one, then step two.".to_string();
+        let (status, v) = {
+            // The md path reads the RAW body (a markdown document), so this
+            // request bypasses the JSON-encoding `post` helper.
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/ingest?format=ump-md")
+                        .header("content-type", "text/markdown")
+                        .body(axum::body::Body::from(md.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, v)
+        };
+        assert_eq!(status, axum::http::StatusCode::OK, "md import: {v}");
+        assert_eq!(v["count"], 2, "both projections ingest: {v}");
+        let results = v["results"].as_array().expect("results");
+        assert_eq!(results[0]["status"], "created", "{v}");
+        assert_eq!(results[1]["status"], "created", "{v}");
     }
 }

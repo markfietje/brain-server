@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.17.2"
+version = "1.17.3"
 edition = "2021"
 
 [features]
@@ -42,6 +42,7 @@ r2d2 = "0.8.10"
 r2d2_sqlite = "0.35.0"
 
 # Async Stack - Axum 0.8.x Standard
+# `sse` feature: v1.17.3 "UMP" M2 `GET /ump/subscribe` (§3.8 change feed).
 axum = "0.8.9"
 hyper = "1.10.1"
 tower-http = { version = "0.6.11", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header", "fs" ] }
@@ -118,6 +119,17 @@ base64 = "0.22"
 # documented trade. `rustls-tls` (no system OpenSSL dep, consistent with
 # `rusqlite`'s bundled philosophy) + `blocking` (sync client for the webhook).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"] }
+
+# UMP 1.0 integrity + identity (v1.17.3 "UMP Rollout", spec §2.8/§6.1/§6.2):
+# blake3 is the spec-MANDATED content hash; bs58 is did:key base58btc
+# (multicodec 0xed prefix, §5.1); tokio-stream adapts the broadcast receiver
+# to the SSE stream for `subscribe` (§3.8); ed25519-dalek 2.2.0 signs/verifies
+# record integrity + capability tokens (§5.2) — already in Cargo.lock as a
+# transitive dep of jsonwebtoken, declared directly here.
+blake3 = "1"
+bs58 = "0.5"
+tokio-stream = { version = "0.1", features = ["sync"] }
+ed25519-dalek = "2.2"
 
 [dev-dependencies]
 tempfile = "3.27"

@@ -138,6 +138,8 @@ fn main() {
         // v1.17.1 "Govern": per-kind retention policy + snapshot self-check.
         "retention" => cmd_retention(rest),
         "snapshot-status" => cmd_snapshot_status(rest),
+        // v1.17.3 "UMP": the §4.3 file binding.
+        "ump" => cmd_ump(rest),
         // v1.10.0 "Procedural": procedural memory + deterministic categorization.
         "procedure" => cmd_procedure(rest),
         "classify" => cmd_classify(rest),
@@ -1421,6 +1423,151 @@ fn cmd_retention(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     Err("usage: brain retention get | set <kind> <days>".into())
+}
+
+/// `brain snapshot-status` — run the snapshot self-check panel and exit
+/// `brain ump export|import` — the v1.17.3 UMP §4.3 file binding. Export pulls
+/// the full-record projection from `GET /export` (markdown records joined by
+/// `\n---\n`, or the JSON envelope with `--format ump`); import pushes a file
+/// back through `POST /ingest` (format detected by extension: `.md` →
+/// `?format=ump-md`, else the UMP JSON envelope).
+fn cmd_ump(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()) {
+        Some("export") => cmd_ump_export(&args[1..]),
+        Some("import") => cmd_ump_import(&args[1..]),
+        Some("keygen") => cmd_ump_keygen(&args[1..]).map(|_| ()),
+        _ => Err(
+            "usage: brain ump export [--format md|ump] [--out FILE] | import <file> | keygen [--dir PATH]"
+                .into(),
+        ),
+    }
+}
+
+/// `brain ump keygen` — generate an Ed25519 operator key for the UMP
+/// identity surface (§5). Writes a raw 32-byte seed to
+/// `<dir>/operator.key` (0600) and prints the `did:key`. The server reads
+/// any seed file in `BRAIN_UMP_KEY_DIR` (default `~/.config/brain-server/ump/`).
+fn cmd_ump_keygen(args: &[String]) -> Result<String, String> {
+    let (_positionals, flags) = parse_flags(args);
+    let dir = flags
+        .get("dir")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("BRAIN_UMP_KEY_DIR")
+                .ok()
+                .filter(|d| !d.trim().is_empty())
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| dirs_home().join(".config/brain-server/ump"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create key dir {dir:?}: {e}"))?;
+    set_mode_0700(&dir)?;
+    let path = dir.join("operator.key");
+    if path.exists() {
+        return Err(format!(
+            "refusing to overwrite existing operator key {path:?}; delete it first to rotate"
+        ));
+    }
+    use rand::RngCore;
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let pk = sk.verifying_key().to_bytes();
+    let did = brain_server::ump_integrity::did_key_from_ed25519(&pk);
+    std::fs::write(&path, seed).map_err(|e| format!("write {path:?}: {e}"))?;
+    set_mode_0600(&path)?;
+    println!("wrote UMP operator key {path:?}");
+    println!("did: {did}");
+    Ok(did)
+}
+
+fn cmd_ump_export(args: &[String]) -> Result<(), String> {
+    let mut format = "md";
+    let mut out = "records.ump.md".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                format = args.get(i + 1).ok_or("--format needs a value")?;
+                i += 1;
+            }
+            "--out" => {
+                out = args.get(i + 1).ok_or("--out needs a value")?.clone();
+                i += 1;
+            }
+            other => return Err(format!("unknown flag: {other}")),
+        }
+        i += 1;
+    }
+    let q = if format == "md" {
+        vec![("format".to_string(), "ump-md".to_string())]
+    } else if format == "ump" {
+        vec![("format".to_string(), "ump".to_string())]
+    } else {
+        return Err("format must be 'md' or 'ump'".into());
+    };
+    let resp = get(&base_url(), "/export", &q, auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let n = v["records"]
+        .as_u64()
+        .or_else(|| v["records"].as_array().map(|a| a.len() as u64))
+        .unwrap_or(0);
+    let content = if format == "md" {
+        v["content"]
+            .as_str()
+            .ok_or("response missing 'content'")?
+            .to_string()
+    } else {
+        v.to_string()
+    };
+    std::fs::write(&out, content).map_err(|e| format!("write {out}: {e}"))?;
+    println!("wrote {out} ({n} records)");
+    Ok(())
+}
+
+fn cmd_ump_import(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("usage: brain ump import <file>")?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    let (q, ct, body) = if path.ends_with(".md") {
+        (
+            vec![("format".to_string(), "ump-md".to_string())],
+            "text/plain",
+            content,
+        )
+    } else {
+        let v: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("not a UMP JSON file: {e}"))?;
+        (
+            vec![("format".to_string(), "ump".to_string())],
+            "application/json",
+            v.to_string(),
+        )
+    };
+    let resp = post(
+        &base_url(),
+        "/ingest",
+        &q,
+        ct,
+        &body,
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("{}", resp.body);
+    Ok(())
 }
 
 /// `brain snapshot-status` — run the snapshot self-check panel and exit
@@ -2907,5 +3054,61 @@ mod tests {
         assert!(parse_floors("0.5").is_err(), "missing metric rejected");
         assert!(parse_floors("r5=abc").is_err(), "non-numeric rejected");
         assert_eq!(parse_floors("").unwrap(), vec![]);
+    }
+
+    /// v1.17.3 M4: `brain ump` rejects a missing subcommand and `import`
+    /// rejects a missing file — both without any network roundtrip.
+    #[test]
+    fn ump_requires_a_subcommand() {
+        assert!(cmd_ump(&[]).is_err(), "bare `brain ump` is a usage error");
+        assert!(
+            cmd_ump(&["import".to_string()]).is_err(),
+            "import needs a file"
+        );
+        assert!(
+            cmd_ump(&[
+                "export".to_string(),
+                "--format".to_string(),
+                "yaml".to_string()
+            ])
+            .is_err(),
+            "unknown format rejected before any request"
+        );
+    }
+
+    /// v1.17.3 M5: `brain ump keygen` writes a 32-byte operator seed (0600)
+    /// and prints a `did:key`, and refuses to overwrite an existing key.
+    #[test]
+    fn ump_keygen_writes_0600_seed_and_prints_did() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let did = cmd_ump_keygen(&["--dir".to_string(), dir.path().to_string_lossy().into()])
+            .expect("keygen succeeds");
+        assert!(
+            did.starts_with("did:key:"),
+            "keygen returns the did:key, got {did:?}"
+        );
+        let path = dir.path().join("operator.key");
+        let meta = std::fs::metadata(&path).expect("operator.key written");
+        assert_eq!(meta.len(), 32, "raw 32-byte Ed25519 seed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "private key is 0600");
+        }
+        // The DID is derived from the stored seed — recompute and compare
+        // (did:key base58btc is not always `z6Mk`-prefixed; the bytes matter).
+        let seed: [u8; 32] = std::fs::read(&path)
+            .expect("seed readable")
+            .try_into()
+            .unwrap();
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let recomputed =
+            brain_server::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes());
+        assert_eq!(did, recomputed, "DID matches the written key");
+        assert!(
+            cmd_ump_keygen(&["--dir".to_string(), dir.path().to_string_lossy().into()]).is_err(),
+            "refuses to overwrite an existing key"
+        );
     }
 }

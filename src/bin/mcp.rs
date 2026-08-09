@@ -8,7 +8,7 @@
 #[path = "../bin_common/http.rs"]
 mod http;
 
-use http::post;
+use http::{get, post};
 use std::io::{BufRead, Write};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -247,6 +247,113 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
                 },
                 "required": ["content"]
             }
+        },
+        {
+            "name": "ump.capabilities",
+            "description": "UMP 1.0 negotiation handshake (v1.17.3): conformance level (L3/L2), kinds, bindings, retrieval signals, max_recall, writable, audit. GET /ump/capabilities.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "ump.remember",
+            "description": "Store a memory record (UMP §3.3). Accepts a partial record `{record: {...}}`; lowered through the structured-ingest path. Consent: a declared `scope.owner` must match the authenticated principal. L3: signed records verify against the operator key. Returns `{id, result: created|merged|rejected}`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "record": {
+                        "type": "object",
+                        "description": "The UMP record (body, scope, time, lifecycle, links, integrity, ...)."
+                    }
+                },
+                "required": ["record"]
+            }
+        },
+        {
+            "name": "ump.get",
+            "description": "Read one record by id (UMP §5.3): integrity re-verified on read; other owners' rows are §2.7-redacted. GET /ump/memory/{id}.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Chunk / record id." }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "ump.recall",
+            "description": "Ranked recall with per-result signals (UMP §3.2): `{results: [{record, signals, score}]}`. Runs the shared deterministic recall core; `filter.kind` maps UMP kinds to brain memory_kinds; `filter.valid_at` maps to the bi-temporal filter. `ranking_hints` accepted but ignored.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "The recall query." },
+                    "limit": { "type": "integer", "description": "Max results (clamped to max_recall)." },
+                    "scope": { "type": "string", "description": "Project scope hint." },
+                    "filter": {
+                        "type": "object",
+                        "description": "Kind + bi-temporal filter.",
+                        "properties": {
+                            "kind": { "type": "string", "description": "UMP kind (memory|procedure|decision|goal|concept|...)." },
+                            "valid_at": { "type": "string", "description": "ISO-8601: only records valid at this time." }
+                        }
+                    },
+                    "ranking_hints": { "type": "object", "description": "Accepted but ignored (no rank steering)." }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "ump.revise",
+            "description": "Patch a record (UMP §3.5): `{id, patch}` — the patch is deep-merged over the stored record (`id`/`integrity` are server-authoritative and never patched), stored as a new revision, and the old chunk is expired via supersession (default recall returns the new revision).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Id of the record to revise." },
+                    "patch": { "type": "object", "description": "Partial record; deep-merged over the stored one." }
+                },
+                "required": ["id", "patch"]
+            }
+        },
+        {
+            "name": "ump.forget",
+            "description": "Delete or soft-delete a record (UMP §3.4): `{id, reason?, hard?}`. `hard:false` (default) flags the row + tombstone + audit; `hard:true` runs the v1.14 erase path. Returns `{result: tombstoned}`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Id of the record to forget." },
+                    "reason": { "type": "string", "description": "Optional forget reason (audited)." },
+                    "hard": { "type": "boolean", "description": "Hard erase (default false)." }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "ump.feedback",
+            "description": "Record outcome feedback (UMP §3.6): `{id, outcome, reason?}` with outcome in followed|overridden|ignored|contradicted. Mapped to the suggest-feedback last-wins upsert (followed → accept, rest → dismiss).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Record id." },
+                    "outcome": { "type": "string", "enum": ["followed", "overridden", "ignored", "contradicted"], "description": "How the record's guidance was used." },
+                    "reason": { "type": "string", "description": "Optional free-text reason (hashed at rest)." }
+                },
+                "required": ["id", "outcome"]
+            }
+        },
+        {
+            "name": "ump.audit",
+            "description": "Reference audit facility (UMP §9): recent hash-chained audit rows `{kind?, limit?, offset?}`. Admin + tenant-scoped.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "description": "Audit kind filter (e.g. auth)." },
+                    "limit": { "type": "integer", "description": "Max rows (default 100)." },
+                    "offset": { "type": "integer", "description": "Pagination offset." }
+                }
+            }
+        },
+        {
+            "name": "ump.audit.verify",
+            "description": "Fresh full audit-chain verification (UMP §9). Admin. Returns `{ok: bool}`.",
+            "inputSchema": { "type": "object", "properties": {} }
         }
     ]);
     Ok(serde_json::json!({ "tools": tools }))
@@ -264,6 +371,9 @@ fn method_tools_call(params: &serde_json::Value) -> Result<serde_json::Value, St
         .unwrap_or(serde_json::Value::Null);
 
     let payload: String = match name.as_str() {
+        // v1.17.3 "UMP" M3: the §4.1 PRIMARY binding. Dispatch is derived from
+        // the `ump_route` table below — one source of truth for method/path.
+        name if ump_route(name).is_some() => tool_ump_call(name, &args)?,
         "brain_search" => tool_brain_search(&args)?,
         "brain_recall" => tool_brain_recall(&args)?,
         "brain_ingest" => tool_brain_ingest(&args)?,
@@ -293,6 +403,60 @@ fn arg_u64(args: &serde_json::Value, key: &str) -> Option<u64> {
 
 fn arg_bool(args: &serde_json::Value, key: &str) -> Option<bool> {
     args.get(key).and_then(|v| v.as_bool())
+}
+
+/// Route table for the v1.17.3 UMP §4.1 PRIMARY binding: tool name → HTTP
+/// method + path template. `{id}` is substituted by the caller. Pure — the
+/// tool-list entries and the dispatch match both mirror this table, and the
+/// unit tests pin all three against each other.
+fn ump_route(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "ump.capabilities" => Some(("GET", "/ump/capabilities")),
+        "ump.remember" => Some(("POST", "/ump/remember")),
+        "ump.get" => Some(("GET", "/ump/memory/{id}")),
+        "ump.recall" => Some(("POST", "/ump/recall")),
+        "ump.revise" => Some(("POST", "/ump/revise")),
+        "ump.forget" => Some(("POST", "/ump/forget")),
+        "ump.feedback" => Some(("POST", "/ump/feedback")),
+        "ump.audit" => Some(("POST", "/ump/audit")),
+        "ump.audit.verify" => Some(("GET", "/ump/audit/verify")),
+        _ => None,
+    }
+}
+
+/// Resolve a tool name + args to a concrete URL path (pure; `{id}` templates
+/// are substituted from the integer `id` argument).
+fn ump_path(name: &str, args: &serde_json::Value) -> Result<String, String> {
+    let (_, template) = ump_route(name).ok_or_else(|| format!("unknown ump tool: {name}"))?;
+    if template.contains("{id}") {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_u64())
+            .ok_or("tool requires integer 'id'")?;
+        Ok(template.replace("{id}", &id.to_string()))
+    } else {
+        Ok(template.to_string())
+    }
+}
+
+/// Execute an `ump.*` tool: thin HTTP proxy mirroring the §3 wire shapes.
+/// GET tools pass args nowhere (query-less); POST tools send the args object
+/// verbatim as the JSON body — the §3 shapes are the handler's request types.
+fn tool_ump_call(name: &str, args: &serde_json::Value) -> Result<String, String> {
+    let (method, _) = ump_route(name).ok_or_else(|| format!("unknown ump tool: {name}"))?;
+    let path = ump_path(name, args)?;
+    let resp = match method {
+        "GET" => get(&base_url(), &path, &[], auth_token().as_deref())?,
+        _ => post(
+            &base_url(),
+            &path,
+            &[],
+            "application/json",
+            &args.to_string(),
+            auth_token().as_deref(),
+        )?,
+    };
+    Ok(format_response(resp.status, &resp.body))
 }
 
 fn tool_brain_search(args: &serde_json::Value) -> Result<String, String> {
@@ -448,5 +612,76 @@ fn format_response(status: u16, body: &str) -> String {
         body.to_string()
     } else {
         format!("HTTP {status}: {body}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The nine v1.17.3 `ump.*` tools (§4.1 PRIMARY binding).
+    const UMP_TOOLS: [&str; 9] = [
+        "ump.capabilities",
+        "ump.remember",
+        "ump.get",
+        "ump.recall",
+        "ump.revise",
+        "ump.forget",
+        "ump.feedback",
+        "ump.audit",
+        "ump.audit.verify",
+    ];
+
+    /// Expected method/path per tool — the pinned wire contract.
+    fn expected_routes() -> Vec<(&'static str, &'static str, &'static str)> {
+        vec![
+            ("ump.capabilities", "GET", "/ump/capabilities"),
+            ("ump.remember", "POST", "/ump/remember"),
+            ("ump.get", "GET", "/ump/memory/{id}"),
+            ("ump.recall", "POST", "/ump/recall"),
+            ("ump.revise", "POST", "/ump/revise"),
+            ("ump.forget", "POST", "/ump/forget"),
+            ("ump.feedback", "POST", "/ump/feedback"),
+            ("ump.audit", "POST", "/ump/audit"),
+            ("ump.audit.verify", "GET", "/ump/audit/verify"),
+        ]
+    }
+
+    #[test]
+    fn tool_list_contains_all_nine_ump_tools() {
+        let list = method_tools_list().expect("tools/list");
+        let tools = list["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        for tool in UMP_TOOLS {
+            assert!(
+                names.contains(&tool),
+                "missing ump tool in tools/list: {tool}"
+            );
+        }
+        assert_eq!(tools.len(), 12, "3 brain_* + 9 ump.*");
+    }
+
+    #[test]
+    fn ump_route_table_pins_methods_and_paths() {
+        for (name, method, path) in expected_routes() {
+            assert_eq!(ump_route(name), Some((method, path)), "route for {name}");
+        }
+        assert_eq!(
+            ump_route("brain_recall"),
+            None,
+            "non-ump names stay unlisted"
+        );
+    }
+
+    #[test]
+    fn ump_path_substitutes_id_from_args() {
+        let args = serde_json::json!({ "id": 42 });
+        assert_eq!(ump_path("ump.get", &args).expect("path"), "/ump/memory/42");
+        assert_eq!(
+            ump_path("ump.recall", &serde_json::json!({ "query": "x" })).expect("path"),
+            "/ump/recall"
+        );
+        let err = ump_path("ump.get", &serde_json::json!({})).expect_err("missing id");
+        assert!(err.contains("'id'"), "error: {err}");
     }
 }

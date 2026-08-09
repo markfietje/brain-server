@@ -958,10 +958,56 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
+    // v1.17.3 "UMP Rollout": UMP record identity + round-trip metadata.
+    // `ump_id` is the content-addressed `urn:ump:` id (unique, indexed) so
+    // `/ump/memory/{id}` and friends resolve without scanning; `ump_meta`
+    // carries the imported record's non-column fields (provenance, consent,
+    // lifecycle extras, raw_kind) so import→export round-trips losslessly
+    // for L2 fields (UMP spec §6.3). Legacy rows stay NULL and are lazily
+    // backfilled (deterministic) on first UMP read.
+    for (col, def) in [("ump_id", "TEXT"), ("ump_meta", "TEXT")] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE knowledge ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_ump_id ON knowledge(ump_id)",
+        [],
+    )?;
+
+    // v1.17.3: `suggest_feedback.ump_outcome` preserves the granular UMP
+    // feedback outcome (followed|overridden|ignored|contradicted) alongside
+    // the accept/dismiss metric signal (additive; no CHECK change, NULL for
+    // non-UMP calls).
+    {
+        let present: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('suggest_feedback') WHERE name='ump_outcome'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                "ALTER TABLE suggest_feedback ADD COLUMN ump_outcome TEXT",
+                [],
+            )?;
+        }
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.17.1')
-         ON CONFLICT(key) DO UPDATE SET value = '1.17.1';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.17.3')
+         ON CONFLICT(key) DO UPDATE SET value = '1.17.3';",
         [],
     )?;
 

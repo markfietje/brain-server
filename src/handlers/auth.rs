@@ -278,6 +278,30 @@ where
     }
 }
 
+/// v1.17.3 M5 (§5.2): the capability token the auth middleware injected when
+/// a bearer verified as an operator-signed UMP capability token on the UMP
+/// surface (`/ump/*` + `/export`). `None` for every other auth path — the
+/// handler's `cap_gate` is then a no-op.
+pub struct OptCapability(pub Option<brain_server::ump_integrity::CapabilityToken>);
+
+impl<S> axum::extract::FromRequestParts<S> for OptCapability
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let c = parts
+            .extensions
+            .get::<brain_server::ump_integrity::CapabilityToken>()
+            .cloned();
+        Ok(OptCapability(c))
+    }
+}
+
 /// Error envelope for auth handlers. Maps cleanly to HTTP statuses.
 #[derive(Debug)]
 pub struct AuthHandlerError {
