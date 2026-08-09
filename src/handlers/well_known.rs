@@ -107,6 +107,22 @@ pub async fn ai_literacy() -> Response {
         .into_response()
 }
 
+/// `GET /.well-known/cop-notice` (EU AI Act Code of Practice marker).
+/// Public/no-auth sibling of `ai-notice` (v1.16.7) + `ai-literacy` (v1.16.8).
+/// Machine-readable self-attested conformity state the client's CoP icon lane
+/// renders; declarative only — this asserts posture, not certification.
+pub async fn cop_notice() -> Response {
+    let body = build_cop_notice();
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Pure builder for the Art 4 literacy disclosure. Returns a JSON document
 /// pointing at the playbook and enumerating the inspectable controls.
 fn build_ai_literacy() -> String {
@@ -119,6 +135,24 @@ fn build_ai_literacy() -> String {
         "inspectable_controls": ["recall_trace", "proposal_gate", "quarantine", "audit_chain", "dsar_console"],
         "effective_date": "2026-08-08",
         "jurisdiction": "EU AI Act Article 4 (Regulation (EU) 2024/1689)"
+    })
+    .to_string()
+}
+
+/// Pure builder for the CoP conformity marker. Self-attested commitments +
+/// the self-assessment + review timestamp; the doc (`COMPLIANCE.md`) stays
+/// the artifact, this route makes it discoverable next to the Art 50 notice.
+fn build_cop_notice() -> String {
+    serde_json::json!({
+        "schema_version": "1.0",
+        "service": "brain-server",
+        "cop": true,
+        "status": "self_attested",
+        "disclosure": "brain-server follows the EU AI Act Code of Practice as a memory component: no autonomous content generation, human-in-the-loop write-back, inspectable decisions (recall trace + proposal gate), and a full audit chain. This is a self-assessment, not a certification badge.",
+        "commitments": ["human_in_the_loop_write_back", "no_autonomous_generation", "inspectable_decisions", "full_audit_chain"],
+        "self_assessment": "https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md",
+        "last_review": "2026-08-09",
+        "jurisdiction": "EU AI Act Code of Practice (Article 95)"
     })
     .to_string()
 }
@@ -298,5 +332,23 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("source")));
+    }
+
+    /// M6: the CoP marker declares self-attested posture + commitments and
+    /// names the assessment artifact.
+    #[test]
+    fn cop_notice_is_self_attested_and_lists_commitments() {
+        let v: serde_json::Value = serde_json::from_str(&build_cop_notice()).unwrap();
+        assert_eq!(v["cop"], true);
+        assert_eq!(v["status"], "self_attested");
+        assert_eq!(v["schema_version"], "1.0");
+        let c = v["commitments"].as_array().unwrap();
+        assert!(c.contains(&serde_json::json!("human_in_the_loop_write_back")));
+        assert!(c.contains(&serde_json::json!("full_audit_chain")));
+        assert!(v["self_assessment"]
+            .as_str()
+            .unwrap()
+            .contains("COMPLIANCE.md"));
+        assert!(!v["last_review"].as_str().unwrap().is_empty());
     }
 }
