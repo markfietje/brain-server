@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.17.5
-  x-api-version: "1.17.5"
+  version: 1.18.2
+  x-api-version: "1.18.2"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1486,7 +1486,11 @@ paths:
         excluded by default; only included with `?include_pii_map=true` AND a
         `pii:read` principal. v1.17.1 "Govern" M4: `?format=ump` re-renders the
         payload as UMP wire records (Universal Memory Protocol 1.0,
-        github.com/edihasaj/universal-memory-protocol).
+        github.com/edihasaj/universal-memory-protocol). v1.18.2 "Transparency"
+        M1: each `knowledge` row carries `source` (ingest kind) + `origin`
+        (human|model|imported), and the envelope adds `export_format_version: 2`
+        + a `provenance_summary` (total / by_origin / by_source) for the Art 50
+        model-vs-human transparency bridge.
       parameters:
         - in: query
           name: include_pii_map
@@ -1498,6 +1502,33 @@ paths:
       responses:
         "200":
           description: Portable JSON export
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  export_format_version: { type: integer, description: "additive; 2 since v1.18.2 adds provenance_summary + per-row origin" }
+                  exported_at: { type: string, format: date-time }
+                  knowledge:
+                    type: array
+                    items:
+                      type: object
+                      description: "A knowledge row; v1 fields unchanged. Adds `origin` (human|model|imported)."
+                  provenance_summary:
+                    type: object
+                    description: "Art 50 model-vs-human origin counts across all exported rows"
+                    properties:
+                      total: { type: integer }
+                      by_origin:
+                        type: object
+                        description: "counts keyed by human|model|imported"
+                      by_source:
+                        type: object
+                        description: "counts keyed by ingest kind"
+                  entities: { type: array }
+                  relationships: { type: array }
+                  proposals: { type: array }
+                  pii_map: { type: object }
   /purge:
     post:
       summary: Hard, explicit, audited deletion across all tables (v1.14.0 M2)

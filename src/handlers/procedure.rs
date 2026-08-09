@@ -143,8 +143,8 @@ pub async fn create(
         // Root chunk: memory_kind = 'procedure'.
         let content_hash = crate::audit::hash(&format!("{title_for_task}|{content_for_task}"));
         tx.execute(
-            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind)
-             VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure')",
+            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin)
+             VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', 'human')",
             rusqlite::params![title_for_task, content_for_task, content_hash, domain.as_deref().unwrap_or("global")],
         )
         .map_err(|e| HandlerError::internal(format!("procedure insert failed: {e}")))?;
@@ -158,8 +158,8 @@ pub async fn create(
             let hash = crate::audit::hash(&format!("{root_id}|{idx}|{step_title}|{step_content}"));
             let kind_str = step_kind.as_str();
             tx.execute(
-                "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id)
-                 VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6)",
+                "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin)
+                 VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, 'human')",
                 rusqlite::params![
                     step_title,
                     step_content,

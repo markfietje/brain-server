@@ -351,8 +351,8 @@ pub async fn approve_proposal(
 
         tx.execute(
             "INSERT INTO knowledge(content, title, source, content_hash, authority,
-                                   observed_at, node_kind, assertion_kind, confidence, owner)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                   observed_at, node_kind, assertion_kind, confidence, owner, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 content,
                 None::<String>,
@@ -363,7 +363,8 @@ pub async fn approve_proposal(
                 kind,
                 assertion,
                 confidence,
-                principal_to_owner(&principal.0)
+                principal_to_owner(&principal.0),
+                crate::gate::origin_for_source(Some(&source_kind))
             ],
         )
         .map_err(|e| HandlerError::internal(format!("insert failed: {e}")))?;
@@ -760,7 +761,7 @@ pub(crate) fn purge_chunk_ids(
 /// (export + the `/ump/*` record paths) — one source of truth so the record
 /// engine never misses a column the export carries.
 pub(crate) const KNOWLEDGE_ROW_COLS: &str =
-    "id, content, node_kind, source, authority, assertion_kind, confidence,
+    "id, content, node_kind, source, origin, authority, assertion_kind, confidence,
         access_scope, owner, observed_at, valid_from, valid_to,
         content_hash, title, expires_at, created_at, ump_meta, ump_id";
 
@@ -771,22 +772,23 @@ pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde
         "content": r.get::<_, String>(1)?,
         "memory_kind": r.get::<_, String>(2)?,
         "source": r.get::<_, String>(3)?,
-        "authority": r.get::<_, Option<f32>>(4)?,
-        "assertion_kind": r.get::<_, String>(5)?,
-        "confidence": r.get::<_, f32>(6)?,
-        "access_scope": r.get::<_, String>(7)?,
-        "owner": r.get::<_, Option<String>>(8)?,
-        "observed_at": r.get::<_, Option<String>>(9)?,
-        "valid_from": r.get::<_, Option<String>>(10)?,
-        "valid_to": r.get::<_, Option<String>>(11)?,
-        "content_hash": r.get::<_, Option<String>>(12)?,
-        "title": r.get::<_, Option<String>>(13)?,
-        "expires_at": r.get::<_, Option<i64>>(14)?,
-        "created_at": r.get::<_, Option<String>>(15)?
+        "origin": r.get::<_, String>(4)?,
+        "authority": r.get::<_, Option<f32>>(5)?,
+        "assertion_kind": r.get::<_, String>(6)?,
+        "confidence": r.get::<_, f32>(7)?,
+        "access_scope": r.get::<_, String>(8)?,
+        "owner": r.get::<_, Option<String>>(9)?,
+        "observed_at": r.get::<_, Option<String>>(10)?,
+        "valid_from": r.get::<_, Option<String>>(11)?,
+        "valid_to": r.get::<_, Option<String>>(12)?,
+        "content_hash": r.get::<_, Option<String>>(13)?,
+        "title": r.get::<_, Option<String>>(14)?,
+        "expires_at": r.get::<_, Option<i64>>(15)?,
+        "created_at": r.get::<_, Option<String>>(16)?
             .map(|s| crate::consolidate::observed_secs(&Some(s)))
             .filter(|&ts| ts != 0),
-        "ump_meta": r.get::<_, Option<String>>(16)?,
-        "ump_id": r.get::<_, Option<String>>(17)?,
+        "ump_meta": r.get::<_, Option<String>>(17)?,
+        "ump_id": r.get::<_, Option<String>>(18)?,
     }))
 }
 
@@ -931,13 +933,31 @@ pub async fn export(
         } else {
             serde_json::Value::Null
         };
+        // v1.18.2 "Transparency" M1: provenance summary counts per origin/source
+        // kind (the Art 50 model-vs-human bridge) + additive format version.
+        let mut by_origin: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+        let mut by_source: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+        for k in &knowledge {
+            if let Some(o) = k["origin"].as_str() {
+                *by_origin.entry(o).or_insert(0) += 1;
+            }
+            if let Some(s) = k["source"].as_str() {
+                *by_source.entry(s).or_insert(0) += 1;
+            }
+        }
         Ok(serde_json::json!({
+            "export_format_version": 2,
             "exported_at": chrono::Utc::now().to_rfc3339(),
             "knowledge": knowledge,
             "entities": entities,
             "relationships": edges,
             "proposals": proposals,
             "pii_map": pii_map,
+            "provenance_summary": {
+                "total": by_origin.values().sum::<u64>(),
+                "by_origin": by_origin,
+                "by_source": by_source,
+            },
         }))
     })
     .await
@@ -1204,6 +1224,130 @@ mod tests {
             rows[0]["created_at"].is_i64(),
             "created_at is a unix epoch: {}",
             rows[0]["created_at"]
+        );
+    }
+
+    /// v1.18.2 M1: export JSON carries per-row `source` + `origin` + the
+    /// provenance_summary envelope + export_format_version 2, while all v1
+    /// field names survive (regression guard for downstream importers).
+    #[test]
+    fn export_contains_source_origin_and_provenance_summary() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        // One chunk per ingest kind so the summary counts are meaningful.
+        // origin mirrors what the write-time handlers set (manual→human,
+        // memory→model, markdown/structured→imported default).
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash, origin) \
+             VALUES ('m', 'manual row', 'manual', 'h-m', 'human')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash, origin) \
+             VALUES ('m2', 'model row', 'memory', 'h-m2', 'model')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash) \
+             VALUES ('s', 'structured row', 'structured', 'h-s')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash) \
+             VALUES ('md', 'markdown row', 'markdown', 'h-md')",
+            [],
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge ORDER BY id"
+            ))
+            .unwrap();
+        let knowledge: Vec<serde_json::Value> = stmt
+            .query_map([], knowledge_row_to_json)
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(knowledge.len(), 4);
+
+        let by_origin: std::collections::HashMap<&str, usize> = knowledge
+            .iter()
+            .map(|k| (k["origin"].as_str().unwrap(), 1))
+            .fold(std::collections::HashMap::new(), |mut m, (o, n)| {
+                *m.entry(o).or_insert(0) += n;
+                m
+            });
+        assert_eq!(by_origin.get("human"), Some(&1));
+        assert_eq!(by_origin.get("model"), Some(&1));
+        assert_eq!(by_origin.get("imported"), Some(&2));
+
+        // Manual → human; memory → model; markdown/structured → imported.
+        assert_eq!(knowledge[0]["source"], "manual");
+        assert_eq!(knowledge[0]["origin"], "human");
+        assert_eq!(knowledge[1]["source"], "memory");
+        assert_eq!(knowledge[1]["origin"], "model");
+        assert_eq!(knowledge[2]["source"], "structured");
+        assert_eq!(knowledge[2]["origin"], "imported");
+        assert_eq!(knowledge[3]["source"], "markdown");
+        assert_eq!(knowledge[3]["origin"], "imported");
+
+        // Every v1 field name still present with the same name.
+        for field in [
+            "id",
+            "content",
+            "memory_kind",
+            "authority",
+            "assertion_kind",
+            "confidence",
+            "access_scope",
+            "owner",
+            "observed_at",
+            "valid_from",
+            "valid_to",
+            "content_hash",
+        ] {
+            assert!(
+                knowledge[0].get(field).is_some(),
+                "v1 field {field} must survive"
+            );
+        }
+    }
+
+    /// v1.18.2 M2: the migration backfills `origin` by source kind.
+    #[test]
+    fn migration_backfills_origin_by_source() {
+        crate::register_sqlite_vec();
+        // Build a pre-origin DB by running the migration, then dropping origin,
+        // seeding rows of each kind, and re-running the migration to backfill.
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_knowledge_origin;
+             ALTER TABLE knowledge DROP COLUMN origin;
+             INSERT INTO knowledge (content, source, content_hash) VALUES
+                ('a', 'manual', 'h1'),
+                ('b', 'memory', 'h2'),
+                ('c', 'markdown', 'h3'),
+                ('d', 'structured', 'h4'),
+                ('e', 'weird', 'h5');",
+        )
+        .unwrap();
+        brain_server::migration::run_migration(&mut conn, 1).expect("re-migration");
+        let origin: Vec<String> = conn
+            .prepare("SELECT origin FROM knowledge ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|v| v.unwrap())
+            .collect();
+        assert_eq!(
+            origin,
+            vec!["human", "model", "imported", "imported", "imported"]
         );
     }
 }

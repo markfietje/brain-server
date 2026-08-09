@@ -201,6 +201,21 @@ pub fn novelty(conn: &Connection, embedding: &[f32]) -> Option<f32> {
 }
 
 /// Deterministic confidence (M3). Base 1.0, each factor is a stored,
+/// v1.18.2 "Transparency" M2: the model-vs-human origin marker. `source` is the
+/// ingest kind; `origin` says who produced the memory. Manual/interactive →
+/// human, auto-capture/assistant (`memory`) → model, bulk import + everything
+/// else → `imported`. The safe fallback is `imported` — never claim human
+/// authorship for an unknown path. Mirrors the migration backfill exactly.
+/// (Note: vault chunks are stored with source='markdown' and map to imported —
+/// only interactive `manual` writes claim human authorship.)
+pub fn origin_for_source(source: Option<&str>) -> &'static str {
+    match source.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("manual") => "human",
+        Some("memory") => "model",
+        _ => "imported",
+    }
+}
+
 /// inspectable rule: connector-sourced ×0.9 (unverified external), live
 /// contradiction ×0.8, inferred assertion ×0.9. Every factor is auditable; the
 /// product is clamped to 0..1.
@@ -397,6 +412,17 @@ fn count_digits(s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_for_source_maps_kinds() {
+        assert_eq!(origin_for_source(Some("manual")), "human");
+        assert_eq!(origin_for_source(Some("MANUAL")), "human");
+        assert_eq!(origin_for_source(Some("memory")), "model");
+        assert_eq!(origin_for_source(Some("markdown")), "imported");
+        assert_eq!(origin_for_source(Some("structured")), "imported");
+        assert_eq!(origin_for_source(Some("weird")), "imported");
+        assert_eq!(origin_for_source(None), "imported");
+    }
 
     #[test]
     fn pii_scan_finds_email_phone_and_card() {

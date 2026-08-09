@@ -683,8 +683,16 @@ async fn add_chunk(
         };
 
         if let Err(e) = tx.execute(
-            "INSERT INTO knowledge(content, title, source, content_hash, owner) VALUES(?, ?, ?, ?, ?)",
-            params![text, title, source, content_hash, &owner],
+            "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)
+             VALUES(?, ?, ?, ?, ?, ?)",
+            params![
+                text,
+                title,
+                source,
+                content_hash,
+                &owner,
+                crate::gate::origin_for_source(Some(&source)),
+            ],
         ) {
             return AddResponse::error(format!("Insert failed: {}", e));
         }
@@ -1075,7 +1083,8 @@ async fn ingest_memory(
 
             if tx
                 .execute(
-                    "INSERT INTO knowledge(content, title, source, content_hash, owner) VALUES(?, ?, ?, ?, ?)",
+                    "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)
+                     VALUES(?, ?, ?, ?, ?, 'model')",
                     params![text, title, "memory", content_hash, &owner],
                 )
                 .is_err()
@@ -7559,6 +7568,8 @@ Final paragraph after the rule.";
             "revision_id",
             // v0.9.8 Evidence
             "authority",
+            // v1.18.2 Transparency
+            "origin",
         ];
         let actual_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(knowledge)")
@@ -7687,11 +7698,11 @@ Final paragraph after the rule.";
         // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumped
         // it for the feedback dedup index; v1.10.0 bumps it for the Procedural
         // node_kind + step_index schema; v1.15.0 bumps it for Observe;
-        // v1.17.3 bumps it for the UMP columns.
+        // v1.17.3 bumps it for the UMP columns; v1.18.2 for the origin column.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_17_3),
-            "schema_version must be recorded as 1.17.3 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_18_2),
+            "schema_version must be recorded as 1.18.2 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
@@ -9465,13 +9476,13 @@ Final paragraph after the rule.";
             (
                 main_src,
                 "add_chunk",
-                "INSERT INTO knowledge(content, title, source, content_hash, owner)",
+                "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)",
             ),
             // ingest_memory
             (
                 main_src,
                 "ingest_memory",
-                "INSERT INTO knowledge(content, title, source, content_hash, owner)",
+                "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)",
             ),
             // /ingest (structured) — v1.17.3 M2: the INSERT moved into the
             // shared `ingest_one` core (the batch path reuses it), and the

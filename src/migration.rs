@@ -1004,10 +1004,45 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         }
     }
 
+    // v1.18.2 "Transparency": explicit model-vs-human origin marker (Art 50
+    // synthetic-content line). `source` says the ingest kind; `origin` says who
+    // produced the memory. Default 'imported' is the safe fallback — never
+    // claim human authorship for an unknown path. Backfill by source kind:
+    // manual → human (interactive), memory → model (auto-capture/assistant),
+    // markdown/structured → imported (bulk import). Same guarded-add pattern
+    // as v1.14.0/v1.15.0.
+    let origin_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='origin'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !origin_present {
+        db.execute(
+            "ALTER TABLE knowledge ADD COLUMN origin TEXT NOT NULL DEFAULT 'imported'",
+            [],
+        )?;
+        db.execute(
+            "UPDATE knowledge SET origin =
+                CASE source
+                    WHEN 'manual' THEN 'human'
+                    WHEN 'memory' THEN 'model'
+                    ELSE 'imported'
+                END",
+            [],
+        )?;
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_origin ON knowledge(origin)",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.17.3')
-         ON CONFLICT(key) DO UPDATE SET value = '1.17.3';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.18.2')
+         ON CONFLICT(key) DO UPDATE SET value = '1.18.2';",
         [],
     )?;
 

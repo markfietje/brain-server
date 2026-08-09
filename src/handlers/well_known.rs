@@ -165,7 +165,7 @@ fn build_ai_notice() -> String {
         "service": "brain-server",
         "art_50": true,
         "disclosure": "This service stores, retrieves, and may return content that is AI-generated, AI-processed, or otherwise not of human origin. Consumers should treat retrieved content as AI-derived and mark any human-facing output accordingly.",
-        "origin_metadata": ["source", "assertion_kind", "confidence"],
+        "origin_metadata": ["source", "origin", "assertion_kind", "confidence"],
         "effective_date": "2026-08-02",
         "jurisdiction": "EU AI Act Article 50 (Regulation (EU) 2024/1689)"
     })
