@@ -453,6 +453,38 @@ impl ApiClient {
     pub async fn stats(&self) -> Result<Stats, ApiError> {
         self.get_json("/stats").await
     }
+
+    // --- v1.17.6 M2 — Overview status + alert resources ----------------------
+
+    /// GET /snapshot/status — `VACUUM INTO` `.bak` snapshot integrity (Admin).
+    pub async fn snapshot_status(&self) -> Result<SnapshotStatus, ApiError> {
+        self.get_json("/snapshot/status").await
+    }
+
+    /// GET /retention — the effective per-kind retention policy + counts.
+    pub async fn retention(&self) -> Result<RetentionStatus, ApiError> {
+        self.get_json("/retention").await
+    }
+
+    /// GET /ump/capabilities — the UMP 1.0 negotiation handshake (public).
+    pub async fn ump_capabilities(&self) -> Result<UmpCapabilities, ApiError> {
+        self.get_json("/ump/capabilities").await
+    }
+
+    /// GET /decayed — chunks whose effective expiry has passed (bare Vec).
+    pub async fn decayed(&self) -> Result<Vec<DecayedRow>, ApiError> {
+        self.get_json("/decayed").await
+    }
+
+    /// POST /consolidate/propose — pure detection, zero mutation (no body).
+    pub async fn consolidate_propose(&self) -> Result<ConsolidateProposal, ApiError> {
+        self.post_empty("/consolidate/propose").await
+    }
+
+    /// GET /tombstones?limit=N — the deletion registry page.
+    pub async fn tombstones(&self, limit: u32) -> Result<TombstonesResponse, ApiError> {
+        self.get_json(&format!("/tombstones?limit={limit}")).await
+    }
 }
 
 // --- v1.16.5 "Secure" helpers ------------------------------------------------
@@ -867,6 +899,124 @@ pub struct Stats {
     pub version: String,
 }
 
+// --- v1.17.6 M2 — Overview wire types (mirror the confirmed handler shapes) --
+
+/// `GET /snapshot/status` (govern.rs) — every `VACUUM INTO` `.bak` in the DB dir.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SnapshotStatus {
+    pub db: String,
+    pub snapshot_count: u64,
+    pub all_ok: bool,
+    #[serde(default)]
+    pub snapshots: Vec<SnapshotRow>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SnapshotRow {
+    pub file: String,
+    pub exists: bool,
+    pub size_bytes: u64,
+    pub mode_0600: bool,
+    pub integrity_check: bool,
+    pub audit_chain_ok: bool,
+    pub ok: bool,
+}
+
+/// `GET /retention` (govern.rs) — effective policy + per-kind counts.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RetentionStatus {
+    pub enabled: bool,
+    #[serde(default)]
+    pub policy: std::collections::BTreeMap<String, i64>,
+    #[serde(default)]
+    pub counts: std::collections::BTreeMap<String, i64>,
+    #[serde(default)]
+    pub projection: String,
+}
+
+/// `GET /ump/capabilities` (ump_ops.rs) — the §3.1 negotiation handshake.
+#[derive(Debug, Deserialize)]
+pub struct UmpCapabilities {
+    pub server: UmpServer,
+    pub ump: String,
+    pub conformance: String,
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    #[serde(default)]
+    pub bindings: Vec<String>,
+    #[serde(default)]
+    pub retrieval_signals: Vec<String>,
+    pub max_recall: i64,
+    pub writable: bool,
+    pub audit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UmpServer {
+    pub name: String,
+    pub version: String,
+}
+
+/// `GET /decayed` (gate.rs) — a bare Vec of expired chunks.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DecayedRow {
+    pub id: i64,
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub effective_expiry: Option<i64>,
+    #[serde(default)]
+    pub memory_kind: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `POST /consolidate/propose` (consolidate.rs) — detection counts for the
+/// alert list. Nested views (`conflicts`/`stale_sources`/`near_duplicates`)
+/// are only counted here, so they stay raw `Value`s; the typed pair/id shapes
+/// the Overview reads are fully typed.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ConsolidateProposal {
+    #[serde(default)]
+    pub exact_duplicates: Vec<Vec<i64>>,
+    #[serde(default)]
+    pub conflicts: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub unresolved_contradictions: Vec<(i64, i64)>,
+    #[serde(default)]
+    pub stale_sources: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub near_duplicates: Vec<serde_json::Value>,
+}
+
+/// `GET /tombstones?limit=` (observe.rs) — the deletion-registry page.
+#[derive(Debug, Deserialize)]
+pub struct TombstonesResponse {
+    #[serde(default)]
+    pub tombstones: Vec<TombstoneRow>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TombstoneRow {
+    pub knowledge_id: i64,
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub purged_at: Option<i64>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub origin_id: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,5 +1338,105 @@ mod tests {
         // Opaque (non-JWT) access token → principal None (loopback).
         let c3 = ApiClient::with_refresh_pair("http://h", Some("opaque-token".into()), None);
         assert!(c3.principal().is_none());
+    }
+
+    // --- v1.17.6 M2 — Overview wire-contract pins ----------------------------
+
+    /// `GET /snapshot/status` — the `.bak` integrity envelope.
+    #[test]
+    fn snapshot_status_parses() {
+        let s: SnapshotStatus = serde_json::from_str(
+            r#"{
+                "db":"/tmp/brain.db","snapshot_count":1,"all_ok":true,
+                "snapshots":[{
+                    "file":"brain.db.snapshot-1.bak","exists":true,"size_bytes":4096,
+                    "mode_0600":true,"integrity_check":true,"audit_chain_ok":true,"ok":true
+                }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(s.snapshot_count, 1);
+        assert!(s.all_ok);
+        assert!(s.snapshots[0].mode_0600 && s.snapshots[0].ok);
+    }
+
+    /// `GET /retention` — enabled + policy/counts maps.
+    #[test]
+    fn retention_status_parses() {
+        let r: RetentionStatus = serde_json::from_str(
+            r#"{"enabled":true,"policy":{"fact":365},"counts":{"fact":10},"projection":"x"}"#,
+        )
+        .unwrap();
+        assert!(r.enabled);
+        assert_eq!(r.policy.get("fact"), Some(&365));
+        assert_eq!(r.counts.get("fact"), Some(&10));
+    }
+
+    /// `GET /ump/capabilities` — the §3.1 handshake.
+    #[test]
+    fn ump_capabilities_parses() {
+        let u: UmpCapabilities = serde_json::from_str(
+            r#"{
+                "server":{"name":"brain-server","version":"1.17.5"},
+                "ump":"1.0","conformance":"L3",
+                "kinds":["semantic","episodic"],"bindings":["http","mcp","file"],
+                "retrieval_signals":["similarity","recency"],
+                "max_recall":50,"writable":true,"audit":true
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(u.server.name, "brain-server");
+        assert_eq!(u.conformance, "L3");
+        assert!(u.writable && u.audit);
+    }
+
+    /// `GET /decayed` — a bare Vec of expired rows.
+    #[test]
+    fn decayed_parses_bare_vec() {
+        let v: Vec<DecayedRow> = serde_json::from_str(
+            r#"[{
+                "id":1,"content_hash":"h1","expires_at":1000,"effective_expiry":900,
+                "memory_kind":"fact","reason":"per-kind default"
+            }]"#,
+        )
+        .unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].memory_kind, "fact");
+        assert_eq!(v[0].effective_expiry, Some(900));
+    }
+
+    /// `POST /consolidate/propose` — detection counts.
+    #[test]
+    fn consolidate_propose_parses_counts() {
+        let p: ConsolidateProposal = serde_json::from_str(
+            r#"{
+                "exact_duplicates":[[1,2]],
+                "conflicts":[{"from_chunk":1}],
+                "unresolved_contradictions":[[3,4]],
+                "stale_sources":[{"source_id":5}],
+                "near_duplicates":[{"chunk_a":6,"chunk_b":7}]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(p.exact_duplicates, vec![vec![1, 2]]);
+        assert_eq!(p.unresolved_contradictions, vec![(3, 4)]);
+        assert_eq!(p.conflicts.len(), 1);
+        assert_eq!(p.stale_sources.len(), 1);
+        assert_eq!(p.near_duplicates.len(), 1);
+    }
+
+    /// `GET /tombstones` — the deletion-registry page envelope.
+    #[test]
+    fn tombstones_parse() {
+        let t: TombstonesResponse = serde_json::from_str(
+            r#"{"tombstones":[{
+                "knowledge_id":9,"content_hash":"h","purged_at":1000,
+                "reason":"owner:u","origin_id":8
+            }]}"#,
+        )
+        .unwrap();
+        assert_eq!(t.tombstones.len(), 1);
+        assert_eq!(t.tombstones[0].reason.as_deref(), Some("owner:u"));
+        assert_eq!(t.tombstones[0].origin_id, Some(8));
     }
 }

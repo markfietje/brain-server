@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod health;
+pub mod overview;
 pub mod recall;
 pub mod review;
 pub mod security;

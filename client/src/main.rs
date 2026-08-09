@@ -13,7 +13,7 @@
 #![allow(unused_braces)]
 
 use dioxus::prelude::*;
-use panels::{audit, health, recall, review, security, subjects};
+use panels::{audit, health, overview, recall, review, security, subjects};
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
 // reader (compiler-invisible), so unrendered fields warn as "never read" —
@@ -187,9 +187,14 @@ fn writes_allowed(conn: Conn, verify_ok: Option<bool>, pending_reverify: bool) -
 /// all URL-addressable.
 #[derive(Clone, Debug, PartialEq, Routable)]
 enum Route {
-    #[route("/")]
+    /// v1.17.6 M2.6: Connect moved to `/connect` (outside the AppShell layout)
+    /// so the landing `/` becomes the authenticated Overview home.
+    #[route("/connect")]
     Connect {},
     #[layout(AppShell)]
+    /// v1.17.6 M2.6: the decision-first landing page.
+    #[route("/")]
+    Overview {},
     #[route("/review")]
     Review {},
     /// v1.16.7 M1: a deep-linkable specific proposal (share a review card).
@@ -633,6 +638,18 @@ fn AppShell() -> Element {
     let security_badge = quarantine as u64 + auth_fail as u64;
     let palette_open = (ui.palette_open)();
 
+    // v1.17.6 M2.6: connect-first guard. The shell pages need a configured
+    // client; if it's unconfigured (first-run or after sign-out) on a shell
+    // route, redirect to Connect. Connect lives OUTSIDE this layout, so this
+    // effect only runs for the authenticated pages — no loop. Reading `api()`
+    // subscribes AppShell to the client signal, so a connect/sign-out re-runs it.
+    let client_configured = api().is_configured();
+    use_effect(move || {
+        if !client_configured {
+            navigator().replace(Route::Connect {});
+        }
+    });
+
     // v1.16.8 M1: localize the shell chrome. Precomputed so the rsx can use
     // `"{var}"` / bare-expression interpolation — a literal `t("key")` call
     // inside a formatted string (nested quotes) breaks the rsx parser. Reading
@@ -652,6 +669,7 @@ fn AppShell() -> Element {
     let theme_label = t("theme_label");
     let density_label = t("density_label");
     let locale_label = t("locale_label");
+    let nav_overview = t("nav_overview");
     let nav_review = t("nav_review");
     let nav_recall = t("nav_recall");
     let nav_subjects = t("nav_subjects");
@@ -697,6 +715,7 @@ fn AppShell() -> Element {
                         span { "{review_title}" }
                         span { class: "tabular", "{pending_label}" }
                     }
+                    NavLink { to: Route::Overview {}, "{nav_overview}" }
                     NavLink { to: Route::Review {}, "{nav_review}" }
                     NavLink { to: Route::Recall {}, "{nav_recall}" }
                     NavLink { to: Route::Subjects {}, "{nav_subjects}" }
@@ -736,6 +755,7 @@ fn AppShell() -> Element {
             nav {
                 class: "tab-bar",
                 "aria-label": "primary navigation (mobile)",
+                TabLink { to: Route::Overview {}, "{nav_overview}" }
                 TabLink { to: Route::Review {}, "{nav_review}" }
                 TabLink { to: Route::Recall {}, "{nav_recall}" }
                 TabLink { to: Route::Subjects {}, "{nav_subjects}" }
@@ -838,20 +858,104 @@ fn AppShell() -> Element {
     }
 }
 
-/// v1.16.7 M5: the command palette. A cmd/ctrl+K overlay listing navigation
-/// targets + actions, filterable by typing, keyboard-navigable (↑/↓/Enter/Esc).
-/// `Command` is a plain enum so the list + filtering are pure (testable); the
-/// component just maps a selection to a navigation or a sign-out.
+/// v1.17.6 M1: command palette v2. A fused nav + lookup + action surface
+/// (the otf-kit / Commander contract) so every panel and action is one
+/// keystroke away BEFORE its panel exists. `Command` is a flat tagged enum;
+/// the pure cores (`palette_group` / `command_keywords` / `palette_lookup` /
+/// `remember_recent` / `destructive_action`) are testable without a Dioxus
+/// runtime. New panels (v1.17.7/v1.17.8) register into `palette_commands` +
+/// `command_label`/`command_keywords` — this enum IS the single source of truth
+/// (M1.5).
+/// `#[allow(dead_code)]` on the reserved `Lookup`/`Run` variants below (nothing
+/// constructs them until v1.17.7/v1.17.8) — the label/keyword/group/destructive
+/// arms are already live, so the surface is reserved, not unfinished.
+#[allow(dead_code)]
 #[derive(Clone, PartialEq)]
 enum Command {
+    /// "Go to" — every route with a non-detail page (rail + new panels).
     Navigate(Route),
+    /// "Lookup" — client-held ids, resolvable instantly.
+    Lookup(Lookup),
+    /// "Run" — actions (export / reindex / refresh / trace).
+    Run(RunAction),
+    /// Stays a Run-group member.
     SignOut,
 }
 
-/// M5 pure: the static command list. Navigation targets mirror the nav rail;
-/// SignOut is the one action (needs a configured client to be useful).
+/// v1.17.6 M1.1: lookup rows are client-held ids. The type + group ship now;
+/// live ids arrive when a panel feeds them in (the honest ceiling in the plan).
+/// `#[allow(dead_code)]`: nothing constructs Lookup/Run rows until v1.17.7/
+/// v1.17.8 panels feed them — the match arms (label/keywords/group/destructive)
+/// are already live, so the surface is reserved, not unfinished.
+#[allow(dead_code)]
+#[derive(Clone, PartialEq)]
+enum Lookup {
+    Proposal(i64),
+    Chunk(i64),
+    Entity(String),
+}
+
+/// v1.17.6 M1.1: Run-group actions. Reindex is destructive (two-step confirm).
+/// `#[allow(dead_code)]`: same reservation as `Lookup` — arms are wired, the
+/// constructors come with the v1.17.7/v1.17.8 action rows.
+#[allow(dead_code)]
+#[derive(Clone, PartialEq)]
+enum RunAction {
+    ExportAudit,
+    ExportUmp,
+    Reindex,
+    Refresh(String),
+    OpenTrace(i64),
+}
+
+/// v1.17.6 M1.2: the group label as an i18n key (render via `t()`), so the
+/// pure core stays locale-agnostic. SignOut is a Run-group member.
+fn palette_group(c: &Command) -> &'static str {
+    match c {
+        Command::Navigate(_) => "palette_go_to",
+        Command::Lookup(_) => "palette_lookup",
+        Command::Run(_) | Command::SignOut => "palette_run",
+    }
+}
+
+/// v1.17.6 M1.2: the fuzzy-search index — label words + aliases. Substring
+/// match over these drives `palette_lookup`.
+fn command_keywords(c: &Command) -> &'static [&'static str] {
+    match c {
+        Command::Navigate(Route::Overview {}) => &["overview", "home", "dashboard"],
+        Command::Navigate(Route::Review {}) => &["review", "queue", "pending", "approve"],
+        Command::Navigate(Route::Recall {}) => &["recall", "search", "query"],
+        Command::Navigate(Route::Subjects {}) => &[
+            "subjects",
+            "dsar",
+            "erasure",
+            "delete",
+            "privacy",
+            "certificate",
+        ],
+        Command::Navigate(Route::Security {}) => &["security", "quarantine", "flags", "auth"],
+        Command::Navigate(Route::Audit {}) => &["audit", "log", "history", "chain"],
+        Command::Navigate(Route::Health {}) => &["health", "status", "capacity", "service"],
+        Command::SignOut => &["signout", "sign out", "logout", "exit"],
+        Command::Lookup(Lookup::Proposal(_)) => &["proposal", "propose", "approve"],
+        Command::Lookup(Lookup::Chunk(_)) => &["chunk", "memory", "get"],
+        Command::Lookup(Lookup::Entity(_)) => &["entity", "graph", "traverse"],
+        Command::Run(RunAction::ExportAudit) => &["export", "audit", "download"],
+        Command::Run(RunAction::ExportUmp) => &["export", "ump", "portability"],
+        Command::Run(RunAction::Reindex) => &["reindex", "rebuild", "refresh"],
+        Command::Run(RunAction::Refresh(_)) => &["refresh", "reload"],
+        Command::Run(RunAction::OpenTrace(_)) => &["trace", "recall", "explain"],
+        Command::Navigate(_) => &["open"],
+    }
+}
+
+/// v1.17.6 M1.5 pure: the static command registration — the single source of
+/// truth the palette + the M1.5 guard test both read. Every non-detail route +
+/// (only when a client is configured) Sign out. Lookup/Run rows are added by
+/// the panels that own them (v1.17.7/v1.17.8).
 fn palette_commands(configured: bool) -> Vec<Command> {
     let mut v = vec![
+        Command::Navigate(Route::Overview {}),
         Command::Navigate(Route::Review {}),
         Command::Navigate(Route::Recall {}),
         Command::Navigate(Route::Subjects {}),
@@ -865,22 +969,75 @@ fn palette_commands(configured: bool) -> Vec<Command> {
     v
 }
 
-/// M5 pure: case-insensitive substring filter over a command's label.
-fn filter_commands(commands: &[Command], needle: &str) -> Vec<Command> {
+/// v1.17.6 M1.2 pure: grouped keyword search with the Recent group prepended.
+/// Regular groups cap at 5 per group (the Linear/Raycast convention); the
+/// Recent group shows the persisted recents (resolved back to live commands so
+/// a re-run always acts on the current set). Empty needle returns every group
+/// (capped); a typed needle filters, and the Recent group hides while filtering
+/// (you're searching the full set, not recents).
+fn palette_lookup(
+    commands: &[Command],
+    needle: &str,
+    recents: &[String],
+) -> Vec<(&'static str, Vec<Command>)> {
+    let mut out: Vec<(&'static str, Vec<Command>)> = Vec::new();
     let n = needle.trim().to_lowercase();
     if n.is_empty() {
-        return commands.to_vec();
+        let recent_cmds: Vec<Command> = recents
+            .iter()
+            .filter_map(|label| {
+                commands
+                    .iter()
+                    .find(|c| command_label(c) == label.as_str())
+                    .cloned()
+            })
+            .collect();
+        if !recent_cmds.is_empty() {
+            out.push(("palette_recent", recent_cmds));
+        }
     }
-    commands
-        .iter()
-        .filter(|c| command_label(c).to_lowercase().contains(&n))
-        .cloned()
-        .collect()
+    let mut groups: Vec<(&'static str, Vec<Command>)> = Vec::new();
+    for c in commands {
+        let hit = n.is_empty()
+            || command_keywords(c)
+                .iter()
+                .any(|k| k.to_lowercase().contains(&n))
+            || command_label(c).to_lowercase().contains(&n);
+        if !hit {
+            continue;
+        }
+        let group = palette_group(c);
+        match groups.iter_mut().find(|(g, _)| *g == group) {
+            Some((_, list)) if list.len() < 5 => list.push(c.clone()),
+            Some(_) => {} // per-group cap reached
+            None => groups.push((group, vec![c.clone()])),
+        }
+    }
+    out.extend(groups);
+    out
 }
 
-/// M5 pure: a command's search label.
+/// v1.17.6 M1.3 pure: recents append + cap. Re-running a label moves it to the
+/// front (dedup by label); capped at 8. The caller persists the comma-joined
+/// Vec via `i18n::pref_save("palette_recent", …)`.
+fn remember_recent(recent: &[String], id: &str) -> Vec<String> {
+    let mut out: Vec<String> = recent.to_vec();
+    out.retain(|s| s != id);
+    out.insert(0, id.to_string());
+    out.truncate(8);
+    out
+}
+
+/// v1.17.6 M1.2 pure: is this Run action destructive (danger token + a second
+/// Enter to confirm)?
+fn destructive_action(a: &RunAction) -> bool {
+    matches!(a, RunAction::Reindex)
+}
+
+/// M5 pure: a command's search/display label.
 fn command_label(c: &Command) -> &'static str {
     match c {
+        Command::Navigate(Route::Overview {}) => "Overview",
         Command::Navigate(Route::Review {}) => "Review queue",
         Command::Navigate(Route::Recall {}) => "Recall",
         Command::Navigate(Route::Subjects {}) => "Subjects (DSAR)",
@@ -888,33 +1045,83 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::Audit {}) => "Audit",
         Command::Navigate(Route::Health {}) => "Health",
         Command::SignOut => "Sign out",
+        Command::Lookup(Lookup::Proposal(_)) => "Open proposal",
+        Command::Lookup(Lookup::Chunk(_)) => "Open chunk",
+        Command::Lookup(Lookup::Entity(_)) => "Open entity",
+        Command::Run(RunAction::ExportAudit) => "Export audit",
+        Command::Run(RunAction::ExportUmp) => "Export UMP",
+        Command::Run(RunAction::Reindex) => "Reindex",
+        Command::Run(RunAction::Refresh(_)) => "Refresh",
+        Command::Run(RunAction::OpenTrace(_)) => "Open trace",
         // The deep-link / Connect variants never appear in the palette list.
         Command::Navigate(_) => "Open",
     }
 }
 
+/// v1.17.6 M1.4: the command palette v2. cmd/ctrl+K overlay; grouped sections
+/// (Recent / Go to / Lookup / Run), keyword filter, keyboard-navigable
+/// (↑/↓/Enter/Esc/Tab, `/` re-focus), and a two-step confirm for destructive
+/// actions. Recents persist through the existing `i18n::pref_save` seam.
 #[component]
 fn CommandPalette() -> Element {
-    let mut ui = use_context::<UiState>();
+    let ui = use_context::<UiState>();
     let mut api = use_context::<Signal<ApiClient>>();
     let configured = api().is_configured();
     let nav = navigator();
     let mut needle = use_signal(String::new);
     let mut cursor = use_signal(|| 0usize);
+    // v1.17.6 M1.3: recents load once per open (the palette mounts fresh each
+    // time `palette_open` flips true). Stored comma-joined, never a secret.
+    let mut recents = use_signal(Vec::<String>::new);
+    use_future(move || async move {
+        if let Some(raw) = i18n::pref_load("palette_recent").await {
+            recents.set(raw.split(',').map(str::to_string).collect());
+        }
+    });
+    // v1.17.6 M1.4: the destructive-confirm step (Some = awaiting 2nd Enter).
+    let confirm = use_signal(|| None::<Command>);
 
-    let commands = filter_commands(&palette_commands(configured), &needle());
-    if cursor() >= commands.len().max(1) {
+    let confirm_destructive = t("confirm_destructive");
+    let confirm_text = confirm()
+        .as_ref()
+        .map(|c| format!("{confirm_destructive}: {}", command_label(c)));
+    let commands = palette_commands(configured);
+    let groups = if confirm().is_some() {
+        Vec::new() // confirm state replaces the list
+    } else {
+        palette_lookup(&commands, &needle(), &recents())
+    };
+    // Flatten for cursor indexing; group headers render as labels, not items.
+    let flat: Vec<Command> = groups
+        .iter()
+        .flat_map(|(_, cmds)| cmds.iter().cloned())
+        .collect();
+    if cursor() >= flat.len().max(1) {
         cursor.set(0);
     }
+    // M1.2: flatten the groups into owned (index, optional-header, command)
+    // rows so the `for` body needs no `let` and the onclick/onmouseenter
+    // closures capture only Copy (index) / owned (command) values. The header
+    // is `Some(group)` for a group's first row only.
+    let rows: Vec<(usize, Option<&'static str>, Command)> = {
+        let mut rows = Vec::new();
+        let mut idx = 0usize;
+        for (group, cmds) in groups {
+            for (j, c) in cmds.into_iter().enumerate() {
+                rows.push((idx, (j == 0).then_some(group), c));
+                idx += 1;
+            }
+        }
+        rows
+    };
 
-    // `select` does its signal writes inside `spawn` (moving copies of the Copy
-    // signals in), so the closure itself only *copies* its captures → it is
-    // `Fn` + `Copy`, which every event handler below can grab without a borrow
-    // conflict. Direct `Signal::set/write` would force `FnMut` and break that.
-    let select = move |c: &Command| {
-        match c {
+    // Run a command for real (no destructive gate — the confirm path calls it).
+    // Signal writes happen on Copy handles / inside `spawn`, so `run` stays `Fn`
+    // + `Copy`, which every event handler grabs without a borrow conflict.
+    let run = move |c: Command| {
+        match &c {
             Command::Navigate(route) => {
-                nav.push(route.clone());
+                let _ = nav.push(route.clone());
             }
             Command::SignOut => {
                 spawn(async move {
@@ -922,41 +1129,93 @@ fn CommandPalette() -> Element {
                     *api.write() = ApiClient::unconfigured();
                 });
             }
+            // Lookup / non-destructive Run rows arrive with their owning panels
+            // (v1.17.7/v1.17.8); nothing to wire yet, just close.
+            _ => {}
         }
+        let recent = remember_recent(&recents(), command_label(&c));
+        let joined = recent.join(",");
+        let mut recents = recents;
+        let mut ui = ui;
         spawn(async move {
+            i18n::pref_save("palette_recent", &joined);
+            recents.set(recent);
             *ui.palette_open.write() = false;
         });
     };
+    // The selection gate: a destructive Run → confirm step, else run.
+    let select = move |c: &Command| {
+        let mut confirm = confirm;
+        let mut cursor = cursor;
+        if let Command::Run(ra) = c {
+            if destructive_action(ra) {
+                confirm.set(Some(c.clone()));
+                cursor.set(0);
+                return;
+            }
+        }
+        run(c.clone());
+    };
 
-    let close_ui = ui;
-    let cmds = commands.clone();
-    let select_copy = select;
-    let cursor_copy = cursor;
-    let items = commands.clone();
+    let mut cursor_ui = ui;
+    let confirm_ui = confirm;
+    let run_ui = run;
+    let select_ui = select;
+    let flat_ui = flat.clone();
 
     rsx! {
         div {
             class: "fixed inset-0 z-50 bg-surface-overlay/70 flex items-start justify-center pt-24 p-4",
             role: "dialog", "aria-modal": "true", "aria-label": "command palette",
             onmousedown: move |_| {
-                *ui.palette_open.write() = false;
+                *cursor_ui.palette_open.write() = false;
             },
             div {
-                class: "card w-full max-w-md bg-popover shadow-xl",
+                class: "command-palette card w-full max-w-md bg-popover shadow-xl",
                 onmousedown: move |e| e.stop_propagation(),
                 onkeydown: move |e| {
-                    let mut cursor = cursor_copy;
-                    let mut close_ui = close_ui;
-                    let cmds = cmds.clone();
+                    let mut cursor = cursor;
+                    let mut cursor_ui = cursor_ui;
+                    let mut confirm_ui = confirm_ui;
+                    let select_ui = select_ui;
+                    let run_ui = run_ui;
+                    let flat = flat_ui.clone();
                     match e.key() {
-                        Key::Escape => { *close_ui.palette_open.write() = false; }
-                        Key::ArrowDown => cursor.set((cursor() + 1).min(cmds.len().saturating_sub(1))),
+                        Key::Escape => {
+                            if confirm_ui().is_some() {
+                                confirm_ui.set(None);
+                            } else {
+                                *cursor_ui.palette_open.write() = false;
+                            }
+                        }
+                        Key::ArrowDown => {
+                            cursor.set((cursor() + 1).min(flat.len().saturating_sub(1)))
+                        }
                         Key::ArrowUp => cursor.set(cursor().saturating_sub(1)),
                         Key::Enter => {
-                            let idx = cursor();
-                            if let Some(c) = cmds.get(idx) {
-                                select_copy(c);
+                            if let Some(c) = confirm_ui().clone() {
+                                confirm_ui.set(None);
+                                run_ui(c);
+                            } else {
+                                let idx = cursor();
+                                if let Some(c) = flat.get(idx) {
+                                    select_ui(c);
+                                }
                             }
+                        }
+                        Key::Tab => {
+                            let shift = e.modifiers().contains(Modifiers::SHIFT);
+                            spawn(async move { focus_trap(".command-palette", shift).await; });
+                        }
+                        Key::Character(k) if k == "/" => {
+                            // `/` re-focuses the search input from anywhere in the
+                            // overlay (no preventDefault — a `/` typed into the
+                            // input still registers as search text).
+                            spawn(async move {
+                                let _ = document::eval(
+                                    "const i=document.querySelector('.command-palette input'); if(i) i.focus();",
+                                ).await;
+                            });
                         }
                         _ => {}
                     }
@@ -967,8 +1226,10 @@ fn CommandPalette() -> Element {
                     value: "{needle}",
                     oninput: move |e| {
                         let mut cursor = cursor;
+                        let mut confirm = confirm;
                         needle.set(e.value());
                         cursor.set(0);
+                        confirm.set(None);
                     },
                     onmounted: move |el| {
                         let el = el.data();
@@ -977,25 +1238,41 @@ fn CommandPalette() -> Element {
                     "aria-label": "command filter",
                 }
                 ul { class: "max-h-80 overflow-y-auto p-1.5",
-                    if items.is_empty() {
-                        li { class: "px-3 py-2 text-sm text-muted-foreground", "no match" }
-                    }
-                    for (i, c) in items.clone().into_iter().enumerate() {
+                    // v1.17.6 M1.4: destructive confirm replaces the list.
+                    if let Some(text) = confirm_text {
                         li {
-                            class: if cursor() == i {
-                                "cursor-pointer rounded-md px-3 py-2 text-sm bg-accent/10 text-accent"
-                            } else {
-                                "cursor-pointer rounded-md px-3 py-2 text-sm"
-                            },
-                            onmouseenter: move |_| {
-                                let mut cursor = cursor;
-                                cursor.set(i);
-                            },
-                            onclick: move |_ev| {
-                                let c = c.clone();
-                                select(&c);
-                            },
-                            "{command_label(&c)}"
+                            class: "px-3 py-2 text-sm text-danger",
+                            "role": "status",
+                            "aria-live": "polite",
+                            "{text}"
+                        }
+                    } else if flat.is_empty() {
+                        li { class: "px-3 py-2 text-sm text-muted-foreground", "no match" }
+                    } else {
+                        for (global, header, c) in rows {
+                            if let Some(g) = header {
+                                li { class: "px-3 pt-2 pb-1 text-xs uppercase tracking-wide text-ink-faint", role: "presentation", "{t(g)}" }
+                            }
+                            li {
+                                class: if cursor() == global {
+                                    "cursor-pointer rounded-md px-3 py-2 text-sm bg-accent/10 text-accent"
+                                } else {
+                                    "cursor-pointer rounded-md px-3 py-2 text-sm"
+                                },
+                                onmouseenter: move |_| {
+                                    let mut cursor = cursor;
+                                    cursor.set(global);
+                                },
+                                onclick: {
+                                    let c = c.clone();
+                                    move |_ev| {
+                                        let select_ui = select_ui;
+                                        select_ui(&c);
+                                    }
+                                },
+                                "aria-label": "{command_label(&c)}",
+                                "{command_label(&c)}"
+                            }
                         }
                     }
                 }
@@ -1176,6 +1453,12 @@ fn conn_label(conn: Conn) -> &'static str {
         Conn::Reconnecting => "reconnecting",
         Conn::Unknown => "…",
     }
+}
+
+/// v1.17.6 M2.6: the landing route component.
+#[component]
+fn Overview() -> Element {
+    overview::panel()
 }
 
 #[component]
@@ -1437,7 +1720,7 @@ mod tests {
             .iter()
             .filter(|c| matches!(c, Command::Navigate(_)))
             .count();
-        assert_eq!(count, 6, "the six nav targets");
+        assert_eq!(count, 7, "the seven nav targets");
         assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
         let anonymous = palette_commands(false);
         assert!(
@@ -1446,15 +1729,45 @@ mod tests {
         );
     }
 
-    /// v1.16.7 M5: filtering is a case-insensitive substring match; empty
-    /// needle returns everything.
+    /// v1.16.7 M5 / v1.17.6 M1.2: grouped filtering is a case-insensitive
+    /// substring match over keywords + labels; empty needle returns every
+    /// group (per-group 5 cap), a no-match needle returns nothing.
     #[test]
     fn palette_filter_is_case_insensitive_substring() {
         let commands = palette_commands(true);
-        assert_eq!(filter_commands(&commands, "").len(), commands.len());
-        let sec = filter_commands(&commands, "SECURITY");
-        assert_eq!(sec.len(), 1);
-        assert_eq!(command_label(&sec[0]), "Security");
-        assert!(filter_commands(&commands, "zzz-no-such").is_empty());
+        let sec = palette_lookup(&commands, "SECURITY", &[]);
+        let sec_flat: Vec<&Command> = sec.iter().flat_map(|(_, c)| c.iter()).collect();
+        assert_eq!(sec_flat.len(), 1);
+        assert_eq!(command_label(sec_flat[0]), "Security");
+        assert!(palette_lookup(&commands, "zzz-no-such", &[]).is_empty());
+        let all = palette_lookup(&commands, "", &[]);
+        let all_flat: Vec<&Command> = all.iter().flat_map(|(_, c)| c.iter()).collect();
+        assert!(!all_flat.is_empty());
+    }
+
+    /// v1.17.6 M1.5: the palette's `Navigate` set is the single registration
+    /// source of truth — every non-detail shell route must be reachable, or a
+    /// new page ships without a palette entry. (Detail + Connect are excluded
+    /// by design: they're deep links, not nav targets.)
+    #[test]
+    fn palette_navigate_covers_every_non_detail_route() {
+        let nav: Vec<Route> = palette_commands(false)
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Navigate(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        for r in [
+            Route::Overview {},
+            Route::Review {},
+            Route::Recall {},
+            Route::Subjects {},
+            Route::Security {},
+            Route::Audit {},
+            Route::Health {},
+        ] {
+            assert!(nav.contains(&r), "palette missing Navigate for {r:?}");
+        }
     }
 }

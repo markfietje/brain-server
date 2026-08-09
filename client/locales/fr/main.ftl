@@ -58,3 +58,30 @@ dark = sombre
 light = clair
 comfortable = confortable
 compact = compact
+
+## Overview (v1.17.6 M2)
+nav_overview = Aperçu
+overview_title = Aperçu
+overview_health = Santé
+overview_snapshot = Intégrité des snapshots
+overview_retention = Rétention
+overview_ump = Serveur + UMP
+overview_alerts = Alertes
+no_alerts = Aucune alerte — tout est calme.
+open_queue = ouvrir la file
+view = voir
+kinds = types
+alert_auth_failures = échecs d'authentification
+alert_quarantine = blocs en quarantaine
+alert_stale_sources = sources obsolètes
+alert_conflicts = conflits non résolus
+alert_decayed = blocs expirés
+alert_near_duplicates = quasi-doublons
+alert_tombstones = tombstones
+
+## Command palette (v1.17.6 M1)
+palette_recent = Récents
+palette_go_to = Aller à
+palette_lookup = Rechercher
+palette_run = Exécuter
+confirm_destructive = Appuyez sur Entrée pour confirmer

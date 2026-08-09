@@ -81,3 +81,30 @@ privacy_not_1 = Send analytics, telemetry, or crash reports
 privacy_not_2 = Contact any server other than the one you configure
 privacy_not_3 = Store memory content locally
 privacy_not_4 = Use third-party SDKs, CDNs, or external resources
+
+## Overview (v1.17.6 M2)
+nav_overview = Overview
+overview_title = Overview
+overview_health = Health
+overview_snapshot = Snapshot integrity
+overview_retention = Retention
+overview_ump = Server + UMP
+overview_alerts = Alerts
+no_alerts = No alerts — all quiet.
+open_queue = open queue
+view = view
+kinds = kinds
+alert_auth_failures = auth failures
+alert_quarantine = quarantined chunks
+alert_stale_sources = stale sources
+alert_conflicts = unresolved conflicts
+alert_decayed = decayed chunks
+alert_near_duplicates = near-duplicate chunks
+alert_tombstones = tombstones
+
+## Command palette (v1.17.6 M1)
+palette_recent = Recent
+palette_go_to = Go to
+palette_lookup = Lookup
+palette_run = Run
+confirm_destructive = Press Enter to confirm

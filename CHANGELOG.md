@@ -10,6 +10,93 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.17.6] — 2026-08-09
+
+### Client — "Complete" part 1: command palette v2 + Overview
+
+First of the three-part "Complete" (operator console) release line
+(`v1.17.6` + `v1.17.7` + `v1.17.8`). **Client-only** — server + API contract
+stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
+
+### Added (client)
+
+- **M1 — Command palette v2** (`src/main.rs`): the palette is now a fused
+  **nav + lookup + action** surface, not a settings shortcut. `Command` is a
+  flat tagged enum (`Navigate` / `Lookup` / `Run` / `SignOut`) with a group
+  label + keyword index. Pure cores (`palette_group`, `command_keywords`,
+  `palette_lookup`, `remember_recent`, `destructive_action`) are Dioxus-free
+  and test-pinned.
+  - Grouped results in order **Recent / Go to / Lookup / Run**, capped at 5
+    per group (Linear/Raycast convention). Empty needle returns every group;
+    a typed needle filters case-insensitively over keywords + labels and hides
+    the Recent group.
+  - **Recents** persist through the existing `i18n::pref_save`/`pref_load`
+    seam (non-secret label list, last 8, dedup + cap).
+  - **Keyboard**: `↑`/`↓` navigate the flattened list (group headers are
+    labels, not items), `Enter` runs, `Esc` closes, `/` re-focuses the input,
+    `Tab`/`Shift+Tab` cycle via the existing hand-rolled `focus_trap`.
+  - **Destructive confirm**: selecting a destructive `Run` action (Reindex —
+    `destructive_action`) swaps the list to a single "Press Enter to confirm"
+    `aria-live` row; `Esc` aborts.
+  - **Screen-reader labels** on every row (`aria-label` = `command_label`).
+  - M1.5 **single source of truth**: `palette_commands` + the 
+    `palette_navigate_covers_every_non_detail_route` guard ensure every
+    non-detail route is reachable. The `Lookup`/`Run` row *types* ship now
+    (arms wired); live ids/actions arrive with the v1.17.7/v1.17.8 panels.
+- **M2 — Overview** (`src/panels/overview.rs`): the decision-first landing
+  home at `/` under the AppShell layout. A control room, not a widget dump —
+  every card links to its panel, backend stays the source of truth (no client
+  cache).
+  - **Status row** (≤4 cards): Health (conn dot + status/version), Snapshot
+    integrity (`snapshot_count` + green/red dot), Retention posture
+    (`enabled` + kind count), Server + UMP (`server.version` +
+    `conformance` L2/L3 badge). Each links to its owning panel.
+  - **Alert list** (DAR chain: signal + diagnosis + action): auth failures +
+    quarantined chunks (existing UiState signals) + stale sources / unresolved
+    conflicts / near-duplicates (`/consolidate/propose` counts) + decayed
+    chunks (`/decayed`) + tombstones (`/tombstones`). Severity-sorted, empty →
+    "no alerts".
+  - **Queue preview**: top 5 pending proposals with one-click Approve/Reject
+    (mirrors the review panel's `decide`) and a deep link into `/review/:id`.
+  - Pure `overview_alerts` core + 3 tests (empty case, severity ordering,
+    only-nonzero-sources).
+- **api.rs**: 6 new `ApiClient` methods (`snapshot_status`, `retention`,
+  `ump_capabilities`, `decayed`, `consolidate_propose`, `tombstones`) + wire
+  types mirroring the confirmed handler shapes + 6 wire-contract pin tests.
+- **Route + nav**: `Route::Overview {}` at `/`; `Connect` moved to `/connect`
+  (outside the AppShell layout, so the shell's connect-first redirect has no
+  loop). Overview added as the first rail + tab-bar nav item (via `NavLink`/
+  `TabLink`) and to the palette.
+- **i18n**: new Overview + palette keys in all five locales
+  (`en`/`de`/`fr`/`es`/`nl`), locale-aware `format_number` on alert counts.
+
+### Fixed / Changed (client)
+
+- Connect now routes to `/connect`; after a successful connect it proceeds as
+  before (first-connect still lands in Review — unchanged).
+- Command palette v1's nav-only `filter_commands` replaced by the grouped
+  `palette_lookup`; the old nav-count test updated (6 → 7 targets).
+
+### Tests (client)
+
+59 passed (was 49; +3 overview alerts, +6 api wire-contract pins,
++1 palette route-coverage guard). Clippy `-D warnings` clean, `cargo fmt
+--check` clean, wasm build clean.
+
+### Honest ceilings (carried into v1.17.7 / v1.17.8)
+
+- Lookup is instant against **client-held ids only**; a server-backed fuzzy
+  lookup is v2.x. Recents are a flat non-secret label list, not deep-linkable
+  objects — re-running a recent re-resolves the route/action fresh.
+- The `Lookup`/`Run` command rows (and their confirm/destructive handling)
+  ship as reserved + wired types; the live ids/actions that construct them
+  arrive with the v1.17.7/v1.17.8 panels.
+- No RBAC-aware UI (roles land with v1.23.0); the client shows the server's
+  403 verbatim. OpenAPI is not parsed client-side (no new dep).
+- wasm-split unchanged (Dioxus 0.7.10 ceiling); bundle size grows.
+
+---
+
 ## [1.17.5] — 2026-08-09
 
 ### CLI — "Eval Fix" (`brain eval` + `bench`)

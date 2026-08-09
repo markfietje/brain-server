@@ -58,3 +58,30 @@ dark = donker
 light = licht
 comfortable = comfortabel
 compact = compact
+
+## Overview (v1.17.6 M2)
+nav_overview = Overzicht
+overview_title = Overzicht
+overview_health = Status
+overview_snapshot = Snapshot-integriteit
+overview_retention = Bewaarbeleid
+overview_ump = Server + UMP
+overview_alerts = Waarschuwingen
+no_alerts = Geen waarschuwingen — alles rustig.
+open_queue = wachtrij openen
+view = bekijken
+kinds = soorten
+alert_auth_failures = auth-fouten
+alert_quarantine = in quarantaine
+alert_stale_sources = verouderde bronnen
+alert_conflicts = onopgeloste conflicten
+alert_decayed = verlopen blokken
+alert_near_duplicates = bijna-duplicaten
+alert_tombstones = tombstones
+
+## Command palette (v1.17.6 M1)
+palette_recent = Recent
+palette_go_to = Ga naar
+palette_lookup = Zoeken
+palette_run = Uitvoeren
+confirm_destructive = Druk op Enter om te bevestigen
