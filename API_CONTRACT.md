@@ -698,17 +698,19 @@ is a bounded binding of the spec at
 github.com/edihasaj/universal-memory-protocol (SPEC.md, wire shape per the
 actual 1.0 spec, corrected in v1.17.2).
 
-### Levels (self-attested against spec §7)
+### Levels (suite-verified against the reference runner; 13/13, UMP 1.0 / L3)
 
 - **L0 — portable-record file binding**: `GET /export?format=ump|ump-md`
   renders the existing export as UMP records; `POST /ingest?format=ump|ump-md`
   lowers them back (single record or a batch envelope `{ump:"1.0",
   records:[…]}`, per-record status, one failure does not abort).
 - **L3 — local integrity layer**: with an operator key configured
-  (`BRAIN_UMP_KEY_DIR`, `brain ump keygen`), records carry §2.8
-  `integrity = {hash, alg, key: did:key…, sig}`; verify-on-read; capability
-  tokens (§5.2) gate `/ump/*` + `/export`. Without a key the server
-  degrades to L2 and `GET /ump/capabilities` reports `conformance: "L2"`.
+  (`BRAIN_UMP_KEY_DIR`, `brain ump keygen`), records carry the reference §2.8
+  `integrity = {content_hash: "blake3:<base32>", signature: "ed25519:<std-base64>",
+  signer: <did:key>}` block (v1.17.4 shape — legacy v1.17.3 blocks still
+  verify via dual-read); verify-on-read; capability tokens (§5.2) gate
+  `/ump/*` + `/export`. Without a key the server degrades to L2 and
+  `GET /ump/capabilities` reports `conformance: "L2"`.
 
 `GET /ump/capabilities` (also mounted as `/.well-known/ump.json`) is the
 §3.1 handshake: `{server{name,version}, ump:"1.0", conformance, kinds,

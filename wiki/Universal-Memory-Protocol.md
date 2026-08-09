@@ -19,7 +19,10 @@ Brain Server speaks all three bindings, so it can act as any agent's portable me
 
 ## What Brain Server implements
 
-Conformance is self-attested against the spec's level definitions:
+Conformance is verified against the reference suite (`@universalmemoryprotocol/core`
+1.0.0): **13/13 checks, UMP 1.0 / L3** on a fresh keyed instance, re-run by CI on
+every push (the `ump-conformance` job asserts the badge line). The level
+definitions map to brain-server as follows:
 
 | Level | What it means | Brain Server status |
 |---|---|---|
@@ -38,7 +41,7 @@ curl http://127.0.0.1:8765/ump/capabilities
 
 ```json
 {
-  "server": { "name": "brain-server", "version": "1.17.3" },
+  "server": { "name": "brain-server", "version": "1.17.5" },
   "ump": "1.0",
   "conformance": "L3",
   "kinds": ["semantic", "episodic", "procedural", "working", "identity"],
@@ -204,7 +207,14 @@ Tokens are self-issued: the operator signs tokens for peers. There is no third-p
 
 ## Conformance and honest limits
 
-- Conformance is self-attested against the spec. There is no third-party certification run.
+- Conformance is **suite-verified, not self-attested**: the reference
+  conformance runner scores 13/13, UMP 1.0 / L3 against a fresh keyed
+  instance, and CI re-runs it on every push (asserting the `UMP 1.0 / L3`
+  badge line so the README badge cannot go stale). The suite assumes a fresh
+  store — rerunning against a persistent DB reports `merged` on
+  `L1.remember` (content dedup by design); the runner's correct target is a
+  throwaway keyed instance with a fresh DB, same as the reference
+  `ump-serve`.
 - Level 3 covers the local integrity layer. Agent-to-agent federation, remote agent identity, and per-tenant key hierarchies are future work.
 - The subscribe stream is a change signal. Live record streaming over the wire is federation work.
 - The `did:key` emission is Ed25519 only, the same documented posture as the JWT EC/Ed gap.
@@ -214,4 +224,4 @@ Tokens are self-issued: the operator signs tokens for peers. There is no third-p
 - [API Reference](API-Reference) and the runtime `GET /openapi.yaml` for the full contract
 - [Security](Security) for key storage and token rules
 - [Governance & Compliance](Governance-and-Compliance) for the integrity and consent controls map
-- [Roadmap & Release History](Roadmap-and-Release-History) for the v1.17.3 UMP Rollout release
+- [Roadmap & Release History](Roadmap-and-Release-History) for the v1.17.3 UMP Rollout release and the v1.17.4/v1.17.5 conformance + eval-fix releases
