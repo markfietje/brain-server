@@ -637,3 +637,41 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
     );
     assert!(p2.is_empty());
 }
+
+/// v1.17.1 "Govern" M2: when a per-kind retention policy is set, the decay
+/// clause becomes a per-kind disjunction that ALSO excludes chunks with no
+/// explicit `expires_at` but an elapsed kind-default expiry. The exact v1.14
+/// clause (`expires_at IS NULL OR >= now`) must NOT appear, and each kind
+/// contributes three bound params (kind, days, now).
+#[test]
+fn push_gate_filters_emits_per_kind_retention_disjunction() {
+    use super::{push_gate_filters, SearchFilters};
+    let mut sql = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let filters = SearchFilters {
+        include_decayed: false,
+        now_unix: 1000,
+        retention_days: vec![("fact".to_string(), 365), ("episodic".to_string(), 30)],
+        ..Default::default()
+    };
+    push_gate_filters(&mut sql, &mut params, &filters);
+    assert!(
+        !sql.contains("k.expires_at IS NULL OR k.expires_at >= ?"),
+        "per-kind mode must not use the plain v1.14 clause"
+    );
+    assert!(
+        sql.contains("k.expires_at IS NOT NULL AND k.expires_at >= ?"),
+        "per-chunk expiry still governs chunks with an explicit expires_at"
+    );
+    assert!(
+        sql.contains("k.expires_at IS NULL AND NOT ("),
+        "kind-default expiry governs chunks without an explicit expires_at"
+    );
+    assert_eq!(
+        sql.matches("k.node_kind = ?").count(),
+        2,
+        "one node_kind placeholder per policy kind"
+    );
+    // 1 (now for the expires_at leg) + 2 kinds * 3 (kind, days, now).
+    assert_eq!(params.len(), 7, "now + per-kind (kind, days, now) x2");
+}

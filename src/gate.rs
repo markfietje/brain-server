@@ -242,6 +242,39 @@ pub fn is_decayed(expires_at: Option<i64>, now_unix: i64) -> bool {
     expires_at.is_some_and(|e| e < now_unix)
 }
 
+/// v1.17.1 "Govern" M2: the effective expiry (unix ts) of a chunk. A chunk's own
+/// `expires_at` always wins; when it's NULL and a per-kind retention policy
+/// applies (`retention_days: kind -> days`), the default expiry is derived from
+/// the chunk's creation unix ts (`created_unix`) — the row's age — so retention
+/// is query-time and per-row. Returns `None` when neither an explicit expiry nor
+/// a kind policy governs the chunk (no decay).
+pub fn effective_expiry(
+    expires_at: Option<i64>,
+    created_unix: Option<i64>,
+    kind: &str,
+    retention_days: &std::collections::BTreeMap<String, i64>,
+) -> Option<i64> {
+    if let Some(e) = expires_at {
+        return Some(e);
+    }
+    let days = retention_days.get(kind)?;
+    let created = created_unix?;
+    Some(created + days * 86_400)
+}
+
+/// v1.17.1 "Govern" M2: the retention reason for a decayed chunk — `per_chunk`
+/// when its own `expires_at` elapsed, `kind_policy` when the kind-level default
+/// elapsed (no explicit `expires_at`), else `None`. Distinguishes the two decay
+/// sources so `/decayed` can tell an operator *why* a chunk is being retained/
+/// reviewed, matching the plan's "surface the kind-policy expiry reason".
+pub fn retention_reason(expires_at: Option<i64>, effective: Option<i64>) -> Option<&'static str> {
+    match (expires_at, effective) {
+        (Some(_), Some(_)) => Some("per_chunk"),
+        (None, Some(_)) => Some("kind_policy"),
+        _ => None,
+    }
+}
+
 /// True when a principal may read resolved PII (M4). `None` (opaque/loopback)
 /// always may (trusts localhost, SECURITY.md posture). In JWT mode, an
 /// `admin:*/*` scope is the `pii:read` capability for v1.14 — the full
@@ -495,5 +528,51 @@ mod tests {
         conn.execute_batch("CREATE TABLE knowledge(id INTEGER PRIMARY KEY, valid_to TEXT);")
             .unwrap();
         assert!(novelty(&conn, &[0.1, 0.2]).is_none());
+    }
+
+    /// v1.17.1 M2: a chunk's own `expires_at` always wins over the kind policy.
+    #[test]
+    fn effective_expiry_own_expires_at_wins() {
+        let policy = std::collections::BTreeMap::from([("fact".to_string(), 365)]);
+        assert_eq!(
+            effective_expiry(Some(500), Some(100), "fact", &policy),
+            Some(500)
+        );
+        assert_eq!(
+            effective_expiry(Some(500), None, "fact", &policy),
+            Some(500)
+        );
+    }
+
+    /// v1.17.1 M2: no explicit expiry → the kind-default derives from created_unix.
+    #[test]
+    fn effective_expiry_kind_default_from_creation() {
+        let policy = std::collections::BTreeMap::from([("fact".to_string(), 365)]);
+        let created = 1_700_000_000;
+        assert_eq!(
+            effective_expiry(None, Some(created), "fact", &policy),
+            Some(created + 365 * 86_400)
+        );
+        // Unknown kind with no policy → no decay.
+        assert_eq!(
+            effective_expiry(None, Some(created), "episodic", &policy),
+            None
+        );
+        // Kind policy but no created_at → no decay (can't derive an age).
+        assert_eq!(effective_expiry(None, None, "fact", &policy), None);
+    }
+
+    /// v1.17.1 M2: `/decayed` distinguishes the two decay sources.
+    #[test]
+    fn retention_reason_distinguishes_per_chunk_and_kind_policy() {
+        let policy = std::collections::BTreeMap::from([("fact".to_string(), 365)]);
+        // Explicit expiry elapsed → per_chunk.
+        let e = effective_expiry(Some(500), Some(100), "fact", &policy);
+        assert_eq!(retention_reason(Some(500), e), Some("per_chunk"));
+        // Kind-default elapsed (no explicit) → kind_policy.
+        let e2 = effective_expiry(None, Some(100), "fact", &policy);
+        assert_eq!(retention_reason(None, e2), Some("kind_policy"));
+        // Not decayed → None.
+        assert_eq!(retention_reason(None, None), None);
     }
 }

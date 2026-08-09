@@ -135,6 +135,9 @@ fn main() {
         "suggest" => cmd_suggest(rest),
         "suggest-feedback" => cmd_suggest_feedback(rest),
         "suggest-metrics" => cmd_suggest_metrics(rest),
+        // v1.17.1 "Govern": per-kind retention policy + snapshot self-check.
+        "retention" => cmd_retention(rest),
+        "snapshot-status" => cmd_snapshot_status(rest),
         // v1.10.0 "Procedural": procedural memory + deterministic categorization.
         "procedure" => cmd_procedure(rest),
         "classify" => cmd_classify(rest),
@@ -149,6 +152,7 @@ fn main() {
         // KeyStore reload, currently on restart — hot-reload is a follow-up).
         "key" => cmd_key(rest),
         "bench" => cmd_bench(),
+        "eval" => cmd_eval(rest),
         "status" => cmd_status(),
         "doctor" => cmd_doctor(rest),
         "-h" | "--help" | "help" => {
@@ -197,6 +201,10 @@ usage:
   brain suggest "<context>" [--exclude id[,id...]] [--k N] [--domain D] [--session S]
   brain suggest-feedback <chunk_id> accept|dismiss [--reason "..."] [--session S]
   brain suggest-metrics [--session S] [--since DATE]
+  brain retention get
+  brain retention set <kind> <days>
+  brain snapshot-status
+  brain eval [--floor r5=0.85 r10=0.9]
   brain procedure <title> [--step "title: content" ...] [--domain D]
   brain classify "<text>"
   brain evaluate <decision_id> --var name=value [--var name=value ...]
@@ -1348,6 +1356,119 @@ fn cmd_suggest_metrics(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `brain retention get` — print the effective per-kind retention policy.
+/// `brain retention set <kind> <days>` — override one kind (Admin + audited).
+/// The override persists across restarts; retention applies at query time,
+/// never by a background sweeper.
+fn cmd_retention(args: &[String]) -> Result<(), String> {
+    if args.first().map(|s| s.as_str()) == Some("get") {
+        let resp = get(&base_url(), "/retention", &[], auth_token().as_deref())?;
+        if resp.status != 200 {
+            return Err(format!(
+                "server returned status {}: {}",
+                resp.status,
+                truncate(&resp.body, 200)
+            ));
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+        println!(
+            "per-kind retention policy (BRAIN_RETENTION_ENABLED={})",
+            v["enabled"]
+        );
+        if let Some(policy) = v["policy"].as_object() {
+            for (kind, days) in policy {
+                println!("  {kind:<12} : {days} days");
+            }
+        }
+        if let Some(counts) = v["counts"].as_object() {
+            println!("current chunks per kind:");
+            for (kind, n) in counts {
+                println!("  {kind:<12} : {n}");
+            }
+        }
+        return Ok(());
+    }
+    if args.first().map(|s| s.as_str()) == Some("set") {
+        let kind = args
+            .get(1)
+            .ok_or("usage: brain retention set <kind> <days>")?;
+        let days = args
+            .get(2)
+            .ok_or("usage: brain retention set <kind> <days>")?
+            .parse::<i64>()
+            .map_err(|e| format!("days must be an integer: {e}"))?;
+        let body = serde_json::json!({ "kind": kind, "days": days }).to_string();
+        let resp = post(
+            &base_url(),
+            "/retention",
+            &[],
+            "application/json",
+            &body,
+            auth_token().as_deref(),
+        )?;
+        if resp.status != 200 {
+            return Err(format!(
+                "server returned status {}: {}",
+                resp.status,
+                truncate(&resp.body, 200)
+            ));
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+        let updated = v["updated"].as_u64().unwrap_or(0);
+        println!("retention policy updated: {updated} row(s) for {kind} -> {days} days");
+        return Ok(());
+    }
+    Err("usage: brain retention get | set <kind> <days>".into())
+}
+
+/// `brain snapshot-status` — run the snapshot self-check panel and exit
+/// non-zero if ANY snapshot is missing, not-0600, failing integrity_check, or
+/// failing audit-chain verification. Wraps `GET /snapshot/status`.
+fn cmd_snapshot_status(_args: &[String]) -> Result<(), String> {
+    let resp = get(
+        &base_url(),
+        "/snapshot/status",
+        &[],
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    println!("snapshot self-check for {}", v["db"]);
+    let mut all_ok = true;
+    if let Some(snaps) = v["snapshots"].as_array() {
+        if snaps.is_empty() {
+            println!("  (no VACUUM INTO snapshots found)");
+        }
+        for s in snaps {
+            let name = s["file"].as_str().unwrap_or("?");
+            let ok = s["ok"].as_bool().unwrap_or(false);
+            all_ok &= ok;
+            println!(
+                "  {name}: exists={} size={} mode0600={} integrity={} chain={} {}",
+                s["exists"],
+                s["size_bytes"],
+                s["mode_0600"],
+                s["integrity_check"],
+                s["audit_chain_ok"],
+                if ok { "OK" } else { "FAIL" }
+            );
+        }
+    }
+    if !all_ok {
+        return Err("one or more snapshots failed the self-check".into());
+    }
+    Ok(())
+}
+
 // ── v1.10.0 "Procedural": procedural-memory + categorization CLI ──────────
 
 /// `brain procedure <title> [--step "title: content" ...] [--domain D]`:
@@ -2466,6 +2587,86 @@ fn cmd_doctor(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_bench() -> Result<(), String> {
+    // v1.17.1 "Govern" M3: optional recall floors as a ship gate, mirroring the
+    // `BENCH_ENVELOPE` RSS/p95 gate. Format: `r5:0.85,r10:0.9` (or `r5=0.85`).
+    let floors = match std::env::var("BENCH_RECALL_FLOOR") {
+        Ok(spec) if !spec.trim().is_empty() => parse_floors(&spec)?,
+        _ => Vec::new(),
+    };
+    let ok = run_eval("/search", &floors)?;
+    if !ok {
+        return Err("recall floor breached (see BENCH_RECALL_FLOOR)".into());
+    }
+    Ok(())
+}
+
+/// `brain eval [--floor r5=0.85 r10=0.9]` — v1.17.1 "Govern" M3: run the frozen
+/// judged corpus (`tests/fixtures/eval_queries.md`) against `/recall`, report
+/// the metrics, and exit non-zero when any `--floor` is breached. The fixture
+/// ships in the repo so the gate is reproducible on any machine with a live
+/// server; the operator's private judged corpus remains a separate step.
+fn cmd_eval(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args);
+    let mut floors: Vec<(String, f32)> = Vec::new();
+    for (k, v) in &flags {
+        if let Some(name) = k.strip_prefix("floor") {
+            if name.is_empty() {
+                let spec = v
+                    .as_deref()
+                    .ok_or("--floor requires r5=0.85-style values")?;
+                floors.extend(parse_floors(spec)?);
+            } else {
+                let metric = name.trim_start_matches('=').trim_start_matches(':');
+                let val = v
+                    .as_deref()
+                    .ok_or_else(|| format!("--floor{name} requires a value"))?
+                    .parse::<f32>()
+                    .map_err(|e| format!("floor value for {metric}: {e}"))?;
+                floors.push((metric.to_string(), val));
+            }
+        }
+    }
+    let ok = run_eval("/recall", &floors)?;
+    if !ok {
+        return Err("recall floor breached".into());
+    }
+    Ok(())
+}
+
+/// Parse `r5:0.85,r10:0.9` (or `r5=0.85`; mixed separators allowed) into
+/// (metric, floor) pairs. Unknown metric names are rejected so a typo can't
+/// silently disable the gate.
+fn parse_floors(spec: &str) -> Result<Vec<(String, f32)>, String> {
+    let mut out = Vec::new();
+    for part in spec.split([',', ';']) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (metric, val) = part
+            .split_once(['=', ':'])
+            .ok_or_else(|| format!("floor '{part}' must be metric=value"))?;
+        if !["r5", "r10", "p5", "p10", "mrr", "ndcg"].contains(&metric) {
+            return Err(format!(
+                "unknown floor metric '{metric}' (r5|r10|p5|p10|mrr|ndcg)"
+            ));
+        }
+        let v = val
+            .parse::<f32>()
+            .map_err(|e| format!("floor value for {metric}: {e}"))?;
+        if !(0.0..=1.0).contains(&v) {
+            return Err(format!("floor for {metric} must be in [0,1]"));
+        }
+        out.push((metric.to_string(), v));
+    }
+    Ok(out)
+}
+
+/// Run the frozen eval fixture against `endpoint` (`/search` or `/recall`),
+/// print per-query + mean metrics, and return whether every floor held.
+/// Floors are (metric, min) pairs over the means: r5/r10 = recall@k,
+/// p5/p10 = precision@k, mrr, ndcg.
+fn run_eval(endpoint: &str, floors: &[(String, f32)]) -> Result<bool, String> {
     let fixture = "tests/fixtures/eval_queries.md";
     let raw = std::fs::read_to_string(fixture)
         .map_err(|e| format!("cannot read {fixture}: {e} (run from the repo root)"))?;
@@ -2474,34 +2675,54 @@ fn cmd_bench() -> Result<(), String> {
         return Err("no queries parsed from eval fixture".into());
     }
 
-    // Probe reachability first.
     match get(&base_url(), "/health", &[], None) {
         Ok(r) if r.status == 200 => {}
         Ok(r) => return Err(format!("server unhealthy (status {})", r.status)),
         Err(e) => return Err(format!("cannot reach server: {e}")),
     }
 
-    println!("brain bench — frozen eval set ({} queries)", queries.len());
+    println!(
+        "brain eval — frozen set ({} queries, {endpoint})",
+        queries.len()
+    );
     println!("query                                            r@5    r@10");
     println!("{:-<52} ------ ------", "");
 
-    let mut sum5 = 0.0_f32;
-    let mut sum10 = 0.0_f32;
+    let mut sums = [0.0_f32; 5]; // r5, r10, p5, p10, mrr
+    let mut ndcg_sum = 0.0_f32;
     for q in &queries {
+        // /recall reads `query`; GET /search reads `q` (the pre-v0.9.5 param).
+        let param = if endpoint == "/search" { "q" } else { "query" };
         let resp = get(
             &base_url(),
-            "/search",
+            endpoint,
             &[
-                ("q".to_string(), q.query.clone()),
+                (param.to_string(), q.query.clone()),
                 ("k".to_string(), "10".to_string()),
             ],
             auth_token().as_deref(),
         )?;
+        if resp.status != 200 {
+            return Err(format!(
+                "eval query failed ({}, status {}): {}",
+                q.query,
+                resp.status,
+                truncate(&resp.body, 200)
+            ));
+        }
         let ids = results_to_doc_indices(&resp.body);
-        let r5 = recall_at_k(&ids, &q.relevant, 5);
-        let r10 = recall_at_k(&ids, &q.relevant, 10);
-        sum5 += r5;
-        sum10 += r10;
+        let relevant: Vec<i64> = q.relevant.iter().map(|&i| i as i64).collect();
+        let r5 = brain_server::eval::recall_at_k(&ids, &relevant, 5);
+        let r10 = brain_server::eval::recall_at_k(&ids, &relevant, 10);
+        let p5 = brain_server::eval::precision_at_k(&ids, &relevant, 5);
+        let p10 = brain_server::eval::precision_at_k(&ids, &relevant, 10);
+        let m = brain_server::eval::mrr(&ids, &relevant);
+        sums[0] += r5;
+        sums[1] += r10;
+        sums[2] += p5;
+        sums[3] += p10;
+        sums[4] += m;
+        ndcg_sum += brain_server::eval::ndcg(&ids, &relevant, 10);
         let label = if q.query.chars().count() > 48 {
             let t: String = q.query.chars().take(45).collect();
             format!("{t}...")
@@ -2512,14 +2733,32 @@ fn cmd_bench() -> Result<(), String> {
     }
 
     let n = queries.len() as f32;
+    let mean = [
+        sums[0] / n,
+        sums[1] / n,
+        sums[2] / n,
+        sums[3] / n,
+        sums[4] / n,
+        ndcg_sum / n,
+    ];
     println!("{:-<52} ------ ------", "");
     println!(
-        "mean recall@5 = {:.3}   recall@10 = {:.3}   (over {} queries)",
-        sum5 / n,
-        sum10 / n,
-        queries.len()
+        "mean  r@5={:.3} r@10={:.3} p@5={:.3} p@10={:.3} mrr={:.3} ndcg@10={:.3}  (over {} queries)",
+        mean[0], mean[1], mean[2], mean[3], mean[4], mean[5], queries.len()
     );
-    Ok(())
+    let names = ["r5", "r10", "p5", "p10", "mrr", "ndcg"];
+    let mut held = true;
+    for (metric, floor) in floors {
+        if let Some((i, _)) = names.iter().enumerate().find(|(_, m)| **m == metric) {
+            if mean[i] < *floor {
+                held = false;
+                println!("FLOOR BREACH: {metric} = {:.3} < {floor:.3}", mean[i]);
+            } else {
+                println!("floor ok    : {metric} = {:.3} >= {floor:.3}", mean[i]);
+            }
+        }
+    }
+    Ok(held)
 }
 
 struct EvalQuery {
@@ -2597,18 +2836,6 @@ fn results_to_doc_indices(body: &str) -> Vec<i64> {
         .collect()
 }
 
-/// recall@k: fraction of judged-relevant docs present in the top-k results.
-/// `results` are doc indices in rank order; `relevant` are judged doc indices.
-/// Mirrors `tests/metrics.rs::recall_at_k`.
-fn recall_at_k(results: &[i64], relevant: &[usize], k: usize) -> f32 {
-    if relevant.is_empty() {
-        return 1.0;
-    }
-    let rel: HashSet<i64> = relevant.iter().map(|&r| r as i64).collect();
-    let found = results.iter().take(k).filter(|r| rel.contains(r)).count();
-    found as f32 / relevant.len() as f32
-}
-
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -2665,5 +2892,20 @@ mod tests {
             Path::new("/vault/keep.md"),
             root
         ));
+    }
+
+    /// v1.17.1 M3: floor specs parse from either separator; unknown metrics and
+    /// out-of-range values are rejected so a typo can't silently disable the gate.
+    #[test]
+    fn floors_parse_and_reject_typos() {
+        assert_eq!(
+            parse_floors("r5:0.85,r10=0.9").unwrap(),
+            vec![("r5".to_string(), 0.85), ("r10".to_string(), 0.9)]
+        );
+        assert!(parse_floors("r5=1.5").is_err(), "floor > 1 rejected");
+        assert!(parse_floors("r99=0.5").is_err(), "unknown metric rejected");
+        assert!(parse_floors("0.5").is_err(), "missing metric rejected");
+        assert!(parse_floors("r5=abc").is_err(), "non-numeric rejected");
+        assert_eq!(parse_floors("").unwrap(), vec![]);
     }
 }

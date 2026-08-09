@@ -508,9 +508,14 @@ pub async fn reject_proposal(
 
 // ── M2: decay + GDPR lifecycle ─────────────────────────────────────────────
 
-/// `GET /decayed` — list decayed chunks (id, content_hash, expires_at) for
-/// operator review. `brain sweep --list` wraps it. Nothing is ever deleted
+/// `GET /decayed` — list decayed chunks (id, content_hash, expires_at, reason)
+/// for operator review. `brain sweep --list` wraps it. Nothing is ever deleted
 /// autonomously.
+///
+/// v1.17.1 "Govern" M2: the review list now surfaces *why* a chunk is decayed —
+/// `per_chunk` (its own `expires_at` elapsed) or `kind_policy` (no `expires_at`,
+/// but the kind-level retention default elapsed). The effective expiry is
+/// computed at query time, the same way retrieval excludes it.
 pub async fn list_decayed(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -518,6 +523,12 @@ pub async fn list_decayed(
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let now = chrono::Utc::now().timestamp();
+    // Kind policy (empty when disabled → per_chunk only, exact v1.14 behavior).
+    let retention_days = if crate::config::brain_retention_enabled() {
+        crate::config::retention_kind_days()
+    } else {
+        std::collections::BTreeMap::new()
+    };
 
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
@@ -526,23 +537,44 @@ pub async fn list_decayed(
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, content_hash, expires_at FROM knowledge
-                 WHERE expires_at IS NOT NULL AND expires_at < ?1
-                 ORDER BY expires_at",
+                    "SELECT id, content_hash, expires_at, node_kind,
+                            strftime('%s', COALESCE(created_at, '1970-01-01 00:00:00'))
+                     FROM knowledge ORDER BY id",
                 )
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             let rows = stmt
-                .query_map(rusqlite::params![now], |r| {
-                    Ok(serde_json::json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "content_hash": r.get::<_, Option<String>>(1)?,
-                        "expires_at": r.get::<_, i64>(2)?,
-                    }))
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<i64>>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
                 })
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .filter_map(|r| r.ok())
                 .collect::<Vec<_>>();
-            Ok(rows)
+            let mut out = Vec::new();
+            for (id, content_hash, expires_at, kind, created_unix) in rows {
+                let effective = crate::gate::effective_expiry(
+                    expires_at,
+                    Some(created_unix),
+                    &kind,
+                    &retention_days,
+                );
+                if effective.is_some_and(|e| e < now) {
+                    out.push(serde_json::json!({
+                        "id": id,
+                        "content_hash": content_hash,
+                        "expires_at": expires_at,
+                        "effective_expiry": effective,
+                        "memory_kind": kind,
+                        "reason": crate::gate::retention_reason(expires_at, effective),
+                    }));
+                }
+            }
+            Ok(out)
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -731,6 +763,9 @@ pub(crate) fn purge_chunk_ids(
 pub struct ExportQuery {
     #[serde(default)]
     pub include_pii_map: bool,
+    /// v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP records.
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 pub async fn export(
@@ -751,7 +786,7 @@ pub async fn export(
                 .prepare(
                     "SELECT id, content, node_kind, source, authority, assertion_kind, confidence,
                             access_scope, owner, observed_at, valid_from, valid_to,
-                            content_hash
+                            content_hash, title, expires_at, created_at
                      FROM knowledge ORDER BY id",
                 )
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -771,6 +806,9 @@ pub async fn export(
                         "valid_from": r.get::<_, Option<String>>(10)?,
                         "valid_to": r.get::<_, Option<String>>(11)?,
                         "content_hash": r.get::<_, Option<String>>(12)?,
+                        "title": r.get::<_, Option<String>>(13)?,
+                        "expires_at": r.get::<_, Option<i64>>(14)?,
+                        "created_at": r.get::<_, Option<i64>>(15)?,
                     }))
                 })
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -875,7 +913,67 @@ pub async fn export(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
+    // v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP records
+    // (per-chunk graph included, name-based, so a UMP peer can restore it).
+    if q.format.as_deref() == Some("ump") {
+        return Ok(Json(render_ump(&body)));
+    }
+
     Ok(Json(body))
+}
+
+/// Pure M4 renderer: `/export` body → UMP envelope. Relation names are resolved
+/// through the entity map; a relation with a dangling id drops (defensive).
+fn render_ump(body: &serde_json::Value) -> serde_json::Value {
+    let entities = body["entities"].as_array().cloned().unwrap_or_default();
+    let edges = body["relationships"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let name_of: std::collections::HashMap<i64, String> = entities
+        .iter()
+        .filter_map(|e| Some((e["id"].as_i64()?, e["name"].as_str()?.to_string())))
+        .collect();
+    let graph_by_chunk: std::collections::HashMap<i64, Vec<serde_json::Value>> = {
+        let mut m: std::collections::HashMap<i64, Vec<serde_json::Value>> =
+            std::collections::HashMap::new();
+        for e in edges {
+            let Some(kid) = e["knowledge_id"].as_i64() else {
+                continue;
+            };
+            if let (Some(from), Some(to)) =
+                (e["from_entity_id"].as_i64(), e["to_entity_id"].as_i64())
+            {
+                m.entry(kid).or_default().push(serde_json::json!({
+                    "from": name_of.get(&from).cloned().unwrap_or_default(),
+                    "to": name_of.get(&to).cloned().unwrap_or_default(),
+                    "type": e["relation_type"].as_str().unwrap_or("relates_to"),
+                }));
+            }
+        }
+        m
+    };
+    let records: Vec<serde_json::Value> = body["knowledge"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|row| {
+            let id = row["id"].as_i64().unwrap_or(0);
+            let rels = graph_by_chunk.get(&id).cloned().unwrap_or_default();
+            crate::handlers::ump::to_ump(
+                row,
+                "global",
+                &serde_json::json!([]),
+                &serde_json::json!(rels),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "ump": "0.1",
+        "exported_at": body["exported_at"],
+        "records": records,
+    })
 }
 
 #[cfg(test)]
@@ -892,5 +990,41 @@ mod tests {
             jti: "token-1".to_string(),
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
+    }
+
+    /// M4: `/export` body → UMP envelope resolves relation names and attaches
+    /// each chunk's graph to its own record (relations only land on the chunk
+    /// they were anchored to; the raw name survives via body.structured).
+    #[test]
+    fn render_ump_attaches_name_based_graph_per_chunk() {
+        let body = serde_json::json!({
+            "exported_at": "2026-08-09T00:00:00Z",
+            "knowledge": [
+                {"id": 1, "content": "Dave works at Acme.", "title": "d1", "memory_kind": "fact", "created_at": 1},
+                {"id": 2, "content": "Carol runs the lab.", "title": "d2", "memory_kind": "fact", "created_at": 2},
+            ],
+            "entities": [
+                {"id": 10, "name": "Dave", "entity_type": "person"},
+                {"id": 11, "name": "Acme", "entity_type": "org"},
+            ],
+            "relationships": [
+                {"id": 100, "from_entity_id": 10, "to_entity_id": 11, "relation_type": "works_at", "knowledge_id": 1},
+                {"id": 101, "from_entity_id": 10, "to_entity_id": 11, "relation_type": "works_at", "knowledge_id": 2},
+            ],
+        });
+        let out = render_ump(&body);
+        assert_eq!(out["ump"], "0.1");
+        let recs = out["records"].as_array().unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(
+            recs[0]["body"]["structured"]["relations"][0],
+            serde_json::json!({"from": "Dave", "to": "Acme", "type": "works_at"})
+        );
+        assert_eq!(
+            recs[1]["body"]["structured"]["relations"][0],
+            serde_json::json!({"from": "Dave", "to": "Acme", "type": "works_at"})
+        );
+        assert_eq!(recs[0]["id"], "urn:ump:brain:global:1");
+        assert_eq!(recs[1]["id"], "urn:ump:brain:global:2");
     }
 }

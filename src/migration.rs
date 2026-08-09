@@ -944,10 +944,24 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
+    // v1.17.1 "Govern" M2: persisted per-kind retention overrides. The default
+    // policy ships in code (`config::DEFAULT_RETENTION_KIND_DAYS`); a
+    // `POST /retention` override is upserted here so it survives restart. Empty
+    // table = defaults only. `days` is a positive integer; a future kind key is
+    // accepted so an operator can govern a kind before the binary names it.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS retention_policy (
+            kind TEXT PRIMARY KEY,
+            days INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+         );",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.15.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.15.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.17.1')
+         ON CONFLICT(key) DO UPDATE SET value = '1.17.1';",
         [],
     )?;
 

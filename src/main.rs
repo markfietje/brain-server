@@ -3490,6 +3490,7 @@ async fn jwt_auth_middleware(
             | "/.well-known/security.txt"
             | "/.well-known/ai-notice"
             | "/.well-known/ai-literacy"
+            | "/.well-known/cop-notice"
             | "/auth/refresh"
             | "/auth/logout"
     ) || path.starts_with("/webhooks/")
@@ -3616,6 +3617,7 @@ async fn auth_middleware(
         | "/.well-known/security.txt"
         | "/.well-known/ai-notice"
         | "/.well-known/ai-literacy"
+        | "/.well-known/cop-notice"
         | "/auth/refresh" | "/auth/logout"
     ) || path.starts_with("/webhooks/")
         // v1.16.2 "Harden": the client SPA is public (static assets, no data).
@@ -4238,6 +4240,14 @@ async fn main_inner() -> Result<()> {
         .route("/decayed", get(handlers::gate::list_decayed))
         .route("/export", get(handlers::gate::export))
         .route("/purge", post(handlers::gate::purge))
+        // v1.17.1 "Govern": per-kind retention policy (M2), the Art 30
+        // records-of-processing register (M5), and the snapshot self-check
+        // panel (M7). GET /retention reads; POST /retention overrides
+        // (Admin + audited); /art30 and /snapshot/status are Admin read-only.
+        .route("/retention", get(handlers::govern::retention_get))
+        .route("/retention", post(handlers::govern::retention_post))
+        .route("/art30", get(handlers::govern::art30))
+        .route("/snapshot/status", get(handlers::govern::snapshot_status))
         // v1.15.0 "Observe": read-event trace + DSAR workflow. `/recall/{id}/
         // trace` replays a recorded recall decision path; `/dsar` is the GDPR
         // Art 15/17 workflow (locate → export → purge → certificate);
@@ -4277,6 +4287,10 @@ async fn main_inner() -> Result<()> {
         .route(
             "/.well-known/ai-literacy",
             get(handlers::well_known::ai_literacy),
+        )
+        .route(
+            "/.well-known/cop-notice",
+            get(handlers::well_known::cop_notice),
         )
         .route("/auth/refresh", post(handlers::auth::refresh))
         .route("/auth/logout", post(handlers::auth::logout))
@@ -7603,8 +7617,8 @@ Final paragraph after the rule.";
         // node_kind + step_index schema; v1.15.0 bumps it for Observe.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_15_0),
-            "schema_version must be recorded as 1.15.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_17_1),
+            "schema_version must be recorded as 1.17.1 after migration"
         );
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
@@ -7800,6 +7814,22 @@ Final paragraph after the rule.";
             assert!(
                 tomb_cols.contains(col),
                 "v1.15.0: tombstones.{col} column must exist after migration"
+            );
+        }
+
+        // v1.17.1 "Govern": the persisted per-kind retention override table.
+        // Empty table = code defaults; a POST /retention override upserts here.
+        let ret_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(retention_policy)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in ["kind", "days", "updated_at"] {
+            assert!(
+                ret_cols.contains(col),
+                "v1.17.1: retention_policy.{col} column must exist after migration"
             );
         }
     }
@@ -8556,6 +8586,11 @@ Final paragraph after the rule.";
             "/.well-known/jwks.json",
             "/.well-known/ai-notice",
             "/.well-known/ai-literacy",
+            "/.well-known/cop-notice",
+            // v1.17.1 Govern
+            "/retention",
+            "/art30",
+            "/snapshot/status",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -9218,6 +9253,13 @@ Final paragraph after the rule.";
             ("/dsar", "Admin"),
             ("/tombstones", "Admin"),
             ("/dsar/{id}/certificate", "Admin"),
+            // v1.17.1 Govern: retention policy set + compliance/snapshot reads
+            // are operator surfaces (Admin). GET /retention is Read, but the
+            // route shares a path with POST (Admin); the scan maps to the last
+            // registered handler (POST), so Admin is the conservative check.
+            ("/retention", "Admin"),
+            ("/art30", "Admin"),
+            ("/snapshot/status", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -9277,6 +9319,7 @@ Final paragraph after the rule.";
                     "ingest" => include_str!("handlers/ingest.rs"),
                     "gate" => include_str!("handlers/gate.rs"),
                     "observe" => include_str!("handlers/observe.rs"),
+                    "govern" => include_str!("handlers/govern.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
                 }
             } else {

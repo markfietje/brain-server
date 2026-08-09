@@ -590,6 +590,13 @@ pub struct SearchFilters {
     /// deny-by-default `WHERE access_scope ∈ allowed`. `None` (loopback/
     /// opaque) = no scope restriction (trusts localhost).
     pub access_scopes: Option<Vec<String>>,
+    /// v1.17.1 "Govern" M2: per-kind retention policy (`kind -> days`) used to
+    /// derive a kind-default `expires_at` for chunks with none. Applied at query
+    /// time: when `include_decayed` is false, a chunk whose *effective* expiry
+    /// (own `expires_at`, else kind-default from `created_at`) is in the past is
+    /// excluded, exactly like a per-chunk `expires_at`. Empty = no kind policy
+    /// (the v1.14-only behavior).
+    pub retention_days: Vec<(String, i64)>,
 }
 
 impl Default for SearchFilters {
@@ -615,6 +622,7 @@ impl Default for SearchFilters {
             memory_kind: None,
             min_relevance: None,
             access_scopes: None,
+            retention_days: Vec::new(),
         }
     }
 }
@@ -1232,8 +1240,31 @@ fn push_gate_filters(
     filters: &SearchFilters,
 ) {
     if !filters.include_decayed {
-        sql.push_str(" AND (k.expires_at IS NULL OR k.expires_at >= ?)");
-        params_vec.push(Box::new(filters.now_unix));
+        if filters.retention_days.is_empty() {
+            sql.push_str(" AND (k.expires_at IS NULL OR k.expires_at >= ?)");
+            params_vec.push(Box::new(filters.now_unix));
+        } else {
+            // v1.17.1 M2: exclude chunks whose *effective* expiry (own
+            // `expires_at`, else the kind-default derived from created_at) is
+            // in the past. Dynamic per-kind disjunction — each kind with a
+            // policy contributes `(node_kind = ?kind AND created_unix + days*86400 < ?now)`.
+            let kinds: Vec<String> = filters
+                .retention_days
+                .iter()
+                .map(|_| "k.node_kind = ? AND strftime('%s', COALESCE(k.created_at, '1970-01-01 00:00:00')) + ? * 86400 < ?".to_string())
+                .collect();
+            sql.push_str(" AND (");
+            sql.push_str("k.expires_at IS NOT NULL AND k.expires_at >= ?");
+            sql.push_str(" OR (k.expires_at IS NULL AND NOT (");
+            sql.push_str(&kinds.join(" OR "));
+            sql.push_str(")) )");
+            params_vec.push(Box::new(filters.now_unix));
+            for (kind, days) in &filters.retention_days {
+                params_vec.push(Box::new(kind.clone()));
+                params_vec.push(Box::new(*days));
+                params_vec.push(Box::new(filters.now_unix));
+            }
+        }
     }
     if let Some(kind) = &filters.memory_kind {
         sql.push_str(" AND k.node_kind = ?");
@@ -1579,6 +1610,7 @@ pub fn perform_search_traced(
             memory_kind: filters.memory_kind.clone(),
             min_relevance: filters.min_relevance.clone(),
             access_scopes: filters.access_scopes.clone(),
+            retention_days: filters.retention_days.clone(),
         }
     } else {
         filters.clone()

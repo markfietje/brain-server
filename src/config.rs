@@ -312,6 +312,60 @@ pub fn brain_recall_routing_enabled() -> bool {
     )
 }
 
+// ── v1.17.1 "Govern" M2: per-kind retention ─────────────────────────────
+
+/// Default retention (days) per `memory_kind` for chunks with no explicit
+/// `expires_at`. v1.14 made per-chunk `expires_at` the decay primitive; M2 adds
+/// a kind-level default so a retention policy can govern whole classes of
+/// memory without per-row authoring. `ponytail:` these are defaults — a chunk
+/// with its own `expires_at` always wins, and the policy is query-time only
+/// (no sweeper; nothing is deleted autonomously).
+pub const DEFAULT_RETENTION_KIND_DAYS: &[(&str, i64)] = &[
+    ("fact", 365),
+    ("episodic", 30),
+    ("procedure", 730),
+    ("step", 730),
+    ("decision", 730),
+];
+
+/// Whether per-kind retention is live. Defaults to `true`; set
+/// `BRAIN_RETENTION_ENABLED=false` to restore exact pre-v1.17.1 behavior (only
+/// per-chunk `expires_at` governs decay). Same kill-switch pattern as
+/// [`brain_suggest_enabled`].
+pub fn brain_retention_enabled() -> bool {
+    !matches!(
+        std::env::var("BRAIN_RETENTION_ENABLED")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// Resolve the effective per-kind retention (days) from the env override
+/// `BRAIN_RETENTION_KIND_DAYS` (a JSON map like `{"fact":365,"episodic":30}`)
+/// merged over the defaults. Keys unknown to the defaults are accepted so an
+/// operator can govern a future kind. Invalid JSON or a non-integer value
+/// degrades to the default for that key (never panics at the trust boundary).
+pub fn retention_kind_days() -> std::collections::BTreeMap<String, i64> {
+    let mut map: std::collections::BTreeMap<String, i64> = DEFAULT_RETENTION_KIND_DAYS
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
+    if let Ok(raw) = std::env::var("BRAIN_RETENTION_KIND_DAYS") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(obj) = v.as_object() {
+                for (k, val) in obj {
+                    if let Some(days) = val.as_i64() {
+                        map.insert(k.to_string(), days);
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
 /// v1.13.0 M4: minimum chunk count for a domain to keep a routing centroid.
 /// Defaults to 1 (a 1-vector centroid is exact for that vector, so nothing is
 /// suppressed). A domain below this floor gets its centroid deleted so `route()`
@@ -387,6 +441,17 @@ pub fn dsar_webhook_secret() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// The controller name for the Art 30 register (`GET /art30`). Defaults to
+/// "brain-server operator". `BRAIN_CONTROLLER_NAME` is an operator-facing,
+/// non-secret label — it must not hold PII or anything sensitive.
+pub fn controller_name() -> String {
+    std::env::var("BRAIN_CONTROLLER_NAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "brain-server operator".to_string())
 }
 
 /// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to

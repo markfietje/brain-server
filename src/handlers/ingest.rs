@@ -12,7 +12,10 @@
 //!     `add_chunk` and KG code paths. v0.9.0 swaps the JSON-vector storage
 //!     for sqlite-vec; v1.0.0 adds the domain-router/centroid piece.
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -65,12 +68,82 @@ pub struct IngestRequest {
     pub relations: Vec<RelationInput>,
 }
 
-/// `POST /ingest`
+/// v1.17.1 "Govern" M4: `?format=ump` accepts a UMP envelope instead of the
+/// plain `IngestRequest` body (see `ingest`).
+#[derive(Debug, Deserialize)]
+pub struct IngestQuery {
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// `POST /ingest` — v1.17.1 "Govern" M4 adds `?format=ump`: the body is a UMP
+/// envelope (`{"ump":"0.1","records":[…]}`) lowered into the same structured-
+/// ingest path. One record per call; batch UMP import is a v2.x ceiling.
 pub async fn ingest(
     State(_state): State<Arc<AppState>>,
     principal: OptPrincipal,
-    Json(req): Json<IngestRequest>,
+    Query(q): Query<IngestQuery>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<IngestResponse>, HandlerError> {
+    let req: IngestRequest = if q.format.as_deref() == Some("ump") {
+        let records = body
+            .get("records")
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+            .ok_or_else(|| {
+                HandlerError::bad_request(
+                    "ump_envelope",
+                    "UMP body needs {\"ump\":\"0.1\",\"records\":[…]}",
+                )
+            })?;
+        if records.len() != 1 {
+            return Err(HandlerError::bad_request(
+                "ump_batch",
+                "one UMP record per ingest call (batch import is a v2.x ceiling)",
+            ));
+        }
+        let row = crate::handlers::ump::from_ump(&records[0])
+            .map_err(|e| HandlerError::bad_request("ump_invalid", e))?;
+        let entities: Vec<EntityInput> = row["entities"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| EntityInput {
+                name: e["name"].as_str().unwrap_or_default().to_string(),
+                kind: e["type"].as_str().map(|s| s.to_string()),
+            })
+            .collect();
+        let relations: Vec<RelationInput> = row["relations"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| RelationInput {
+                from: r["from"].as_str().unwrap_or_default().to_string(),
+                to: r["to"].as_str().unwrap_or_default().to_string(),
+                kind: r["type"].as_str().unwrap_or("relates_to").to_string(),
+                valid_at: None,
+                invalid_at: None,
+            })
+            .collect();
+        IngestRequest {
+            title: row["title"].as_str().unwrap_or("untitled").to_string(),
+            content: row["content"].as_str().unwrap_or_default().to_string(),
+            domain: None,
+            entities,
+            relations,
+        }
+    } else if q.format.is_some() {
+        return Err(HandlerError::bad_request(
+            "unknown_format",
+            "format must be 'ump'",
+        ));
+    } else {
+        serde_json::from_value(body)
+            .map_err(|e| HandlerError::bad_request("invalid_body", e.to_string()))?
+    };
+
     // v0.9.9: refuse new writes when over the capacity envelope (HTTP 507).
     // Read routes do not call this guard; an over-capacity brain still answers.
     super::guard_capacity(&_state)?;

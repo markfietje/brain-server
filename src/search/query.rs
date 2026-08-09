@@ -152,6 +152,7 @@ impl QueryDoc {
                 memory_kind: None,
                 min_relevance: None,
                 access_scopes: None,
+                retention_days: Vec::new(),
             },
         ))
     }

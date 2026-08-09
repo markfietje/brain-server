@@ -390,6 +390,12 @@ pub async fn recall(
         base_filters.min_relevance = Some(t.clone());
     }
     base_filters.access_scopes = crate::handlers::gate::scope_filter(&principal.0);
+    // v1.17.1 "Govern" M2: when per-kind retention is enabled, carry the policy
+    // into the retriever so chunks whose kind-default expiry has elapsed are
+    // excluded from default recall exactly like an explicit `expires_at`.
+    if crate::config::brain_retention_enabled() {
+        base_filters.retention_days = crate::config::retention_kind_days().into_iter().collect();
+    }
     // v1.15.0 "Observe" M1: capture the access-scope decision for the read-event
     // trace before the filters are moved into the search closure.
     let applied_scopes = base_filters.access_scopes.clone();
