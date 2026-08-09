@@ -35,6 +35,7 @@ Brain Server inverts all three: **zero per-query cost, zero data egress, zero ne
 
 - **[Quickstart](Quickstart)** — get running in minutes
 - **[Architecture](Architecture)** — how the pieces fit together
+- **[Universal Memory Protocol](Universal-Memory-Protocol)**: portable memory for AI agents, implemented end to end
 - **[API Reference](API-Reference)** — the full HTTP contract
 - **[Security](Security)** — authentication, access control, data protections
 - **[Governance & Compliance](Governance-and-Compliance)** — audit, DSAR, GDPR, ISO 42001 / NIST / SOC 2

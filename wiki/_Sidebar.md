@@ -17,6 +17,7 @@ Local-first semantic-memory & knowledge-graph server for AI agents.
 - [Architecture](Architecture)
 - [Retrieval & Recall](Retrieval-and-Recall)
 - [Knowledge Graph](Knowledge-Graph)
+- [Universal Memory Protocol](Universal-Memory-Protocol)
 
 **Governance**
 
