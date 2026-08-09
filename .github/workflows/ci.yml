@@ -33,6 +33,28 @@ jobs:
         # The bench feature gates the bench binary + its 4 unit tests.
         run: cargo test --all-targets --features bench
 
+  client-gate:
+    # v1.18.0 M2 — the client (Dioxus control surface) had zero CI coverage;
+    # this job gates fmt + clippy + unit tests + the wasm build (the web
+    # target, and the one the M2 automated-a11y grep gates run against).
+    name: client fmt + clippy + test + wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --manifest-path client/Cargo.toml -- --check
+      - name: clippy (all targets)
+        run: cargo clippy --manifest-path client/Cargo.toml --all-targets -- -D warnings
+      - name: test
+        run: cargo test --manifest-path client/Cargo.toml
+      - name: wasm build
+        run: cargo build --manifest-path client/Cargo.toml --target wasm32-unknown-unknown
+
   release-build:
     name: release build
     runs-on: ubuntu-latest
