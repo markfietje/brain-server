@@ -46,6 +46,10 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      # The client's non-wasm keyring feature (sync-secret-service) links
+      # libdbus on Linux; the runner image has no build headers by default.
+      - name: Install libdbus headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: fmt
         run: cargo fmt --manifest-path client/Cargo.toml -- --check
       - name: clippy (all targets)
