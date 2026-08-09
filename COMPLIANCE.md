@@ -174,10 +174,17 @@ is served as `GET /.well-known/ai-literacy` (public) and mirrored in
 
 Every `knowledge` row carries an ingest path (`source`: manual | vault |
 memory | markdown | structured) and, where present, `assertion_kind`
-(stated/observed/inferred) + `confidence`. `/export` emits these fields with
-the content, so a memory export can state *how a memory entered the system and
-with what provenance* — the transparency bridge for model-vs-human origin.
-(Forward link: UMP wire-format conformance is a later release.)
+(stated/observed/inferred) + `confidence`. Since v1.18.2, every row also
+carries an explicit model-vs-human **`origin`** marker: `human` (interactive
+`manual` writes, the only path that claims human authorship), `model`
+(`memory` auto-capture / assistant writes), or `imported` (the safe default
+for `markdown`/`structured` bulk imports and any unknown path). `/export`
+emits `source` + `origin` + `assertion_kind` + `confidence` with the content,
+adds an `export_format_version: 2` envelope, and computes a
+`provenance_summary` (`total` / `by_origin` / `by_source`) — so a memory
+export can state *how a memory entered the system and who produced it*, the
+Art 50 model-vs-human transparency bridge. (Forward link: UMP wire-format
+conformance is a later release.)
 
 **Posture as of 2026-08-09.** The AI Act's GPAI chapter took effect with
 Regulation (EU) 2026/1744 (8 July 2026): GPAI model obligations apply from
@@ -185,18 +192,28 @@ Regulation (EU) 2026/1744 (8 July 2026): GPAI model obligations apply from
 from 2 December 2026. brain-server does not train or host GPAI models — the
 GPAI obligations fall on the model providers whose outputs may be ingested —
 so the memory component's duty is provenance, not watermarking: every stored
-row keeps `source` / `assertion_kind` / `confidence` (above) so a deployer can
-attribute AI-generated content and honor the transparency expectations of
-Regulation (EU) 2026/1744 for content that passes through its systems.
+row keeps `source` / `origin` / `assertion_kind` / `confidence` (above) so a
+deployer can attribute AI-generated content and honor the transparency
+expectations of Regulation (EU) 2026/1744 for content that passes through its
+systems.
+
+**Enforcement (v1.18.2).** Art 50 transparency obligations are enforced by
+the national market surveillance authorities (not the central AI Office). The
+penalty tier for Art 50 violations is **€15M or 3% of worldwide annual
+turnover (Art 99(3))** — the **€35M / 7%** tier is Art 99(2), which applies to
+Art 5 prohibited practices and GPAI provider obligations (Art 66), not to the
+Art 50 transparency line. Do not conflate the tiers when quoting this
+posture.
 
 **Machine-readable disclosure.** The server also serves the Art 50 disclosure
 itself at `GET /.well-known/ai-notice` (public, no auth) — a JSON document
 with `art_50: true`, the human-readable disclosure that stored content may be
 AI-generated, the `origin_metadata` fields a consumer can read per row
-(`source` / `assertion_kind` / `confidence`), `effective_date: 2026-08-02`,
-and `jurisdiction: EU AI Act Article 50 (Regulation (EU) 2024/1689)`. A
-deployer can point a consumer or auditor at the URL and at an `/export` bundle
-to close the model-origin transparency loop without pasting a policy.
+(`source` / `origin` / `assertion_kind` / `confidence`),
+`effective_date: 2026-08-02`, and `jurisdiction: EU AI Act Article 50
+(Regulation (EU) 2024/1689)`. A deployer can point a consumer or auditor at
+the URL and at an `/export` bundle to close the model-origin transparency loop
+without pasting a policy.
 
 ### 7.1 EU AI Act Code of Practice marker (v1.17.1 M6)
 

@@ -10,6 +10,130 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.18.2] — 2026-08-09
+
+### Server — "Transparency" (EU AI Act Art 50 origin marker + export provenance)
+
+**Server-side** release on the unified version line (client stays at 1.18.1).
+Ships the two real accuracy gaps the v1.18.1 Transparency plan found in
+COMPLIANCE.md §7 (Round 14 pass): an explicit model-vs-human `origin` marker,
+and `/export` provenance that actually carries it. The plan's M3 (ai-notice /
+ai-literacy / cop-notice routes + `docs/AI_LITERACY.md`) had already shipped in
+v1.16.7/v1.16.8 and is unchanged.
+
+### Added
+- **M2 — `knowledge.origin` column** (migration): `TEXT NOT NULL DEFAULT
+  'imported'` + `idx_knowledge_origin` index + idempotent backfill by source
+  kind (`manual`→`human`, `memory`→`model`, else `imported`). Write-time
+  tagging wired into the interactive/assistant paths: `/add` and the propose→
+  approve promote set `origin` from the resolved source kind via the pure
+  `gate::origin_for_source` helper; `/ingest/memory` writes `model`;
+  procedures write `human`. `markdown`/`structured` bulk imports keep the safe
+  `imported` default — never claim human authorship for an unknown path.
+- **M1 — `/export` provenance block**: per-row `source` + `origin` already
+  emitted; now adds `export_format_version: 2` + a `provenance_summary`
+  (`total` / `by_origin` / `by_source`) computed across all exported rows. All
+  12 v1 field names preserved byte-identical for downstream importers.
+- **M3 polish** — `/.well-known/ai-notice` `origin_metadata` now lists
+  `origin` alongside `source`/`assertion_kind`/`confidence`.
+
+### Changed
+- **COMPLIANCE.md §7** aligned to shipped state (origin column +
+  provenance_summary + format-version envelope) and gained an **Enforcement**
+  note: Art 50 is enforced by national market surveillance authorities at the
+  **€15M / 3% (Art 99(3))** tier — the €35M / 7% figure is Art 99(2) for
+  prohibitions + GPAI provider obligations, not Art 50.
+
+### Tests
+`origin_for_source_maps_kinds`, `migration_backfills_origin_by_source`,
+`export_contains_source_origin_and_provenance_summary` (incl. v1 field-name
+regression guard), + `origin` added to `test_migration_schema_contract`.
+
+---
+
+
+### Client — "Harden" (console-history persistence + measured bundle ceiling)
+
+**Client-only** — server + API contract stay at 1.17.5 (zero server changes,
+zero schema change). Dioxus 0.7.10. Closes the honest ceilings out of the
+v1.17.8/v1.18.0 line where a *real, low-risk, measured* improvement exists.
+
+### Changed
+- **M1 — console history: in-memory → persistent + secret-safe** (`src/api.rs`,
+  `src/panels/system.rs`). The try-it console's history now survives reload:
+  only `redact_for_history`-clean lines are written to web `localStorage` via
+  the existing `i18n::pref_save`/`pref_load` seam, capped at the last 100.
+  A line whose request body was non-JSON (`line_is_secret`, i.e. an opaque
+  token-like payload `redact_for_history` cannot redact) is flagged `secret`
+  and held **in-memory only** — never persisted. Pure `persist_history`
+  drops secret/empty lines and caps. The `credentials_stay_in_memory` grep
+  guard still passes: the raw token-bearing input never touches disk.
+- **M4a — client bundle measured, not guessed** (`BENCHMARKS.md`). The Dioxus
+  0.7.10 web bundle from `dx bundle`: wasm **3,724,711 B (3.7 MB)** + 60 KB JS
+  + 40 KB CSS, recorded as measured facts. wasm-split is **not adopted**
+  (experimental in 0.7.10, shell-heavy bundle); tracked for re-measure after
+  Dioxus 0.8-stable.
+
+### Deliberate non-changes (honest ceilings, code-grounded)
+- **M2 token-minting panel UX** — the UMP panel has no "CLI docs link" to
+  replace; minting is correctly CLI-only (no mint endpoint by design). Adding
+  untestable UX churn for marginal value was skipped; the security posture is
+  unchanged and correct.
+- **M3 SSE subscribe** — **no SSE subscribe control exists in the client**; the
+  `/ump/subscribe` endpoint is server-side reachability only, so there is
+  nothing misleading to rename. A live browser change stream remains v2.x (A2A).
+- **M5 native pull-to-refresh / M6 focus-return** — native gesture needs a touch
+  platform + `dx serve`; focus-return is `document::eval`-based, both unverifiable
+  in this environment (no Android SDK / browser harness). The accessible
+  `RefreshButton` and existing focus trap remain.
+
+### Verification
+- `cargo test` (client): **76 passed** (was 74; +2 `line_is_secret_*` +
+  `persist_history_*`). Clippy `-D warnings` + fmt clean; wasm build clean.
+- Server suite untouched (473 baseline — zero server edits).
+
+---
+
+## [1.18.0] — 2026-08-09
+
+### Client — "Compliant" (WCAG 2.2 AA + i18n + privacy hardening pass)
+
+**Client-only** — server + API contract stay at 1.17.5 (zero server changes,
+zero schema change). Dioxus 0.7.10. The plan's M3 (i18n) and M4 (privacy)
+shipped in v1.16.8/v1.17.0; this release closes the two remaining testable
+gaps and formalizes the CI gate.
+
+### Added
+- **`?` in-app keyboard help on Review (M1.4).** Pressing `?` (or the new `?`
+  toolbar button, `aria-expanded` + `aria-label`) toggles an in-app table
+  documenting the A/S/R/J/K shortcuts — the WCAG 3.2.6 consistent-help gap.
+  Pure `keyboard_help()` core + i18n keys (`review_help_*`, `en` source; other
+  locales fall back via `resolve`). The `?` mapping respects the existing
+  WCAG 2.1.4 shortcuts-off toggle.
+- **Client CI gate (M2).** New `client-gate` job in `.github/workflows/ci.yml`:
+  `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` +
+  `cargo test` + the `wasm32-unknown-unknown` build. The Dioxus client had
+  **zero CI coverage** before this; the automated a11y/semantic grep gates
+  (`interactive_elements_are_buttons`, `xss_escape_hatch_is_unused`) now run on
+  every push/PR.
+
+### Not shipped (documented, not deferred — deliberate ceilings)
+- **axe-core browser gate (M2.1)** — needs Playwright + a `dx bundle` + a
+  live server + browser download; an operator/tooling step, not runnable in
+  this repo's CI surface. Documented in `client/a11y-checklist.md`.
+- **Native screen-reader pass (M1.7)** — the human gate; tracked as the
+  existing `client/a11y-checklist.md` matrix (VoiceOver/NVDA/TalkBack), an
+  operator step.
+
+### Verification
+- `cargo test` (client): **74 passed** (was 73; +1
+  `question_mark_opens_help_and_table_covers_all_keys`). Clippy `-D warnings`
+  + fmt clean; wasm build clean.
+- `ci.yml` parses (pyyaml). Server suite untouched (473 baseline — zero server
+  edits).
+
+---
+
 ## [1.17.6] — 2026-08-09
 
 ### Client — "Complete" part 1: command palette v2 + Overview

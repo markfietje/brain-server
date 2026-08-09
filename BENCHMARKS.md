@@ -284,6 +284,21 @@ reachable. Faster per-core but a different machine; kept for the delta.
 | QMD-1 default | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | QMD-2 fast/no-rerank | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 
+### Client bundle (web, v1.18.1 "Harden")
+
+> **v1.18.1 M4a measurement (2026-08-09)** — the Dioxus 0.7.10 web bundle from
+> `dx bundle` (served under `/app`, PWA-cached as a single asset). Parse /
+> instantiate time on a target device is **PENDING — an operator step** (needs a
+> browser timing harness); the sizes below are measured facts. wasm-split is
+> **not adopted** — it is experimental in 0.7.10 and the shell code is shared;
+> re-measure after Dioxus 0.8-stable (when wasm-split is non-experimental).
+
+| Asset | Size |
+|---|---|
+| `brain-client_bg-*.wasm` | 3,724,711 B (3.7 MB) |
+| `brain-client-*.js` | 59,641 B (60 KB) |
+| `tailwind-*.css` | 39,786 B (40 KB) |
+
 ## Set hygiene & anti-overfitting
 
 - **Dev set**: used to develop and ablate PRF/RRF/rerank changes.
