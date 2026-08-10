@@ -183,6 +183,36 @@ pub fn panel() -> Element {
                         }
                         span { class: "text-muted-foreground", "{s.snapshot_count} snapshots" }
                     }
+                    if !s.snapshots.is_empty() {
+                        table { class: "table mt-2",
+                            thead { tr {
+                                th { class: "text-left pr-2", "file" }
+                                th { class: "text-left pr-2", "size" }
+                                th { class: "text-left pr-2", "perms" }
+                                th { class: "text-left pr-2", "integrity" }
+                                th { class: "text-left pr-2", "audit chain" }
+                            } }
+                            tbody {
+                                for r in s.snapshots.iter() {
+                                    tr {
+                                        td { class: "pr-2 font-mono text-xs", "{r.file}" }
+                                        td { class: "pr-2 tabular text-xs", "{r.size_bytes}" }
+                                        td { class: "pr-2",
+                                            span { class: if r.mode_0600 { "badge badge-ok" } else { "badge badge-danger" },
+                                                {if r.mode_0600 {"0600"} else {"world-readable"}}
+                                            }
+                                        }
+                                        td { class: "pr-2",
+                                            span { class: if r.integrity_check { "text-ok" } else { "text-danger" }, "{r.integrity_check}" }
+                                        }
+                                        td { class: "pr-2",
+                                            span { class: if r.audit_chain_ok { "text-ok" } else { "text-danger" }, "{r.audit_chain_ok}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else {
                     p { class: "text-muted-foreground", "…" }
                 }
