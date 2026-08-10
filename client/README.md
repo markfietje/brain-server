@@ -4,19 +4,18 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.18.2 (aligned with brain-server 1.18.2)
+## Status — v1.19.0
 
-The client version now matches the server: **1.18.2** on both. This is a
-**version-alignment** bump — the client code is unchanged from v1.18.1 (the
-"Transparency" work lives server-side in brain-server 1.18.2). The v1.18.1
-"Harden" release just before it closed the v1.18.0 honest ceilings where a real,
-low-risk improvement exists: the try-it console's history now **survives reload**
-while keeping secrets out of any durable store (non-JSON/opaque lines are
-flagged `secret` and stay in-memory; only `redact_for_history`-clean lines
-persist, capped at 100), and the client wasm bundle is **measured** (3.7 MB
-wasm / 60 KB JS / 40 KB CSS) rather than guessed — wasm-split stays deferred
-until Dioxus 0.8-stable. Native gesture + focus-return and a live SSE stream
-remain honest ceilings (untestable here / v2.x A2A).
+The v1.19.0 "Integrated" release. Auditing the plan against the tree found most
+of it already shipped — deep links (review/recall/dsar cert, v1.16.7), iOS/Android
+`brain://` intent filters (v1.17.0), the PWA shell (manifest + service worker +
+offline shell, v1.16.7), recall debounce (v1.16.7), and the JWT-pair + silent
+refresh + principal half of SSO (v1.16.5). This release closes the remaining
+**testable** delta: **the audit panel's filters are now URL-addressable**
+(`/audit?since=&principal=` opens pre-filtered, shareable). The rest are honest
+ceilings — OIDC authorization-code + PKCE is a server-side `/auth/authorize`
+(v2.x) gap (brain-server is a token validator, not an IdP); virtualized lists
+need viewport JS; wasm-split stays a Dioxus 0.7.10 ceiling until 0.8-stable.
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`

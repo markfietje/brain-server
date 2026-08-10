@@ -10,6 +10,43 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.19.0] — 2026-08-10
+
+### Client — "Integrated" (the audit-verified remainder of the v1.19.0 plan)
+
+The v1.19.0 plan (SSO + deep links + PWA + scale) was audited against the tree
+at ship time: **most of it was already shipped** — deep links
+(`/review/:proposal_id`, `/recall/:trace_id`, `/subjects/certificate/:dsar_id`)
+in v1.16.7, iOS/Android `brain://` intent filters in v1.17.0, the PWA shell
+(manifest + service worker + offline shell) in v1.16.7, recall search
+debounce in v1.16.7 M6, and the JWT-pair + silent-refresh + principal half of
+SSO in v1.16.5. The remaining **testable** delta is shipped here: the audit
+panel's filters became URL-addressable. The rest of M1/M3/M4 are documented
+ceilings (below).
+
+### Added
+- **M2 — `/audit?since=&principal=` deep link**: the `Audit` route now carries
+  `since` + `principal` query params (`Route::Audit { since, principal }`),
+  threaded into `audit::panel` and seeded into the existing client-side
+  `AuditFilter` via a new pure `filter_from_query`. A reviewer can share a
+  filtered audit view (e.g. `/audit?principal=alice`) and it opens pre-filtered.
+  Pure core + test; all six `Route::Audit` construction sites updated.
+
+### Honest ceilings (carried into v1.20.0)
+- **M1 OIDC/SSO is a server-side (v2.x) ceiling, not a client gap.** brain-server
+  is a token *validator*, not an OIDC IdP: its `/.well-known/openid-configuration`
+  advertises empty `authorization_endpoint`/`token_endpoint`. A real
+  authorization-code + PKCE flow needs a new `/auth/authorize` proxy endpoint
+  on brain-server (external IdP), which is v2.x work (documented in the v1.16.5/
+  v1.16.8 plans + `docs/proxy-sso.md`). The client's JWT-pair mode + silent
+  refresh-on-401 + principal pillar (v1.16.5) already consume the JWT half.
+- **M4 virtualized lists** need viewport JS (untestable here without `dx serve`);
+  the audit panel already paginates server-side (`OFFSET`, v1.16.7).
+- **M4 wasm-split lazy panels** remain a Dioxus 0.7.10 ceiling — re-measure after
+  Dioxus 0.8-stable (unchanged from v1.18.1).
+
+---
+
 ## [1.18.2] — 2026-08-09
 
 ### Server — "Transparency" (EU AI Act Art 50 origin marker + export provenance)
