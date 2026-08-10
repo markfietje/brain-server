@@ -1,17 +1,30 @@
-# MemGhost Attack — Mitigation in brain-server
+# Memory-Poisoning Mitigation in brain-server (ASI06, MemGhost, GhostWriter)
 
-> Reference: **MemGhost** — "When Claws Remember but Do Not Tell"
-> (arXiv 2607.05189, July 2026). A crafted email plants a false *persistent*
-> memory in OpenClaw-style agents, hides the change, and sways later sessions
-> without the operator noticing. Reported at 87.5% success in background mode
-> against OpenClaw on GPT-5.4, with a 108-case WhisperBench benchmark.
+> References — the 2025/2026 memory-poisoning disclosures:
+> - **ASI06 Memory and Context Poisoning** — OWASP Top 10 for Agentic
+>   Applications (launched 2025-12-09). The canonical category for adversarial
+>   content written into an agent's persistent memory so it acts on that content
+>   in later sessions. Distinct from the OWASP GenAI LLM Top 10 2026
+>   (2026-08-04; memory-adjacent entry **LLM09 Vector and Embedding
+>   Weaknesses**).
+> - **MemGhost** — "When Claws Remember but Do Not Tell"
+>   (arXiv 2607.05189, July 2026; CSA research note 2026-07-23). A crafted
+>   email plants a false *persistent* memory in OpenClaw-style agents, hides the
+>   change, and sways later sessions without the operator noticing. Reported at
+>   87.5% success in background mode against OpenClaw on GPT-5.4 (75% foreground,
+>   100% stealth).
+> - **GhostWriter** — "When Agents Remember Too Much"
+>   (arXiv 2607.06595, July 2026). A two-phase vector (injection + activation)
+>   that poisons long-term memory via untrusted tool inputs; ~98% injection and
+>   ~60% activation across five agents. Proposes AM-Sentry (admission policy +
+>   retrieval screen).
 
-MemGhost is the canonical example of a **memory poisoning** attack. It targets
-exactly the class of plaintext, silently-mutated memory files (e.g. OpenClaw's
-`MEMORY.md`) that brain-server is designed to replace with an audited,
-human-gated store. This page maps the attack's stages to brain-server's
-existing controls — the controls are already built; this is the operator-facing
-story of *how* they stop the attack.
+MemGhost and GhostWriter are the canonical examples of a **memory poisoning**
+attack (OWASP ASI06). They target exactly the class of plaintext,
+silently-mutated memory files (e.g. OpenClaw's `MEMORY.md`) that brain-server
+is designed to replace with an audited, human-gated store. This page maps the
+attack's stages to brain-server's existing controls — the controls are already
+built; this is the operator-facing story of *how* they stop the attack.
 
 ## The attack
 
@@ -49,8 +62,10 @@ approval gate**, and **no provenance on retrieval**.
 
 ## Why this is defense, not detection
 
-MemGhost is a *content* attack against an unvetted auto-write path. brain-server
-removes the unvetted auto-write path itself (HITL) and makes every remaining
-write auditable + reversible, so there is nothing silent to detect. Retrieval
-still surfaces what it is asked for; the operator, not the attacker, owns what
-is allowed in.
+MemGhost and GhostWriter are *content* attacks against an unvetted auto-write
+path. brain-server removes the unvetted auto-write path itself (HITL) and makes
+every remaining write auditable + reversible, so there is nothing silent to
+detect. Retrieval still surfaces what it is asked for; the operator, not the
+attacker, owns what is allowed in. This aligns with the ASI06 / AM-Sentry
+mitigations: provenance at write time, gated writes, a hash-chained audit log,
+and a tombstone path to retire and trace a poisoned entry.

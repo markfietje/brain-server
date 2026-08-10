@@ -170,6 +170,52 @@ operational substance of Art 4 literacy for a memory component. The playbook
 is served as `GET /.well-known/ai-literacy` (public) and mirrored in
 `docs/AI_LITERACY.md`.
 
+### 6.5 OWASP ASI06 — Memory & Context Poisoning (Agentic Top 10 2026)
+
+OWASP's GenAI guidance splits into two documents, meant to be read together.
+The **GenAI LLM Top 10 2026** (published 2026-08-04, grounded in 7,714 real AI
+incidents, 6,639 classified) is the LLM list (LLM01–LLM10; memory-adjacent
+entry **LLM09 Vector and Embedding Weaknesses**). The memory-persistence
+attack surface itself is named **ASI06 Memory and Context Poisoning** in the
+companion **OWASP Top 10 for Agentic Applications**, which launched
+**2025-12-09** (ASI06 has been an entry since that initial release) — a
+distinct agentic list, not an entry of the LLM Top 10. This section maps
+brain-server's controls to ASI06's prescribed defenses and to the 2026
+research that motivated the category.
+
+**Why the category exists (2026 disclosure timeline).** Two independent
+disclosures showed persistent-memory poisoning succeeding against current
+agents: **MemGhost** ("When Claws Remember but Do Not Tell", arXiv 2607.05189,
+disclosed 2026-07-06; CSA research note 2026-07-23) achieved 87.5% end-to-end
+success in background-execution mode (75.0% foreground, 100% stealth) against
+OpenClaw on GPT-5.4 via a single crafted email; **GhostWriter** ("When Agents
+Remember Too Much", arXiv 2607.06595) achieved ~98% memory injection (and ~60%
+activation of the poisoned entries during later benign tasks) across five
+state-of-the-art agents. Both converge on the same root cause the mitigation
+literature names: **memory writes are a first-class, auditable action**, not a
+silent side effect of reading untrusted input.
+
+**Control mapping (brain-server → ASI06 + research mitigations):**
+
+| ASI06 / research mitigation | brain-server evidence |
+|---|---|
+| Memory sanitization with provenance | Per-row model-vs-human `origin` marker (v1.18.2) + `source` / `assertion_kind` / `confidence`; `/export` provenance_summary (below, §7) |
+| Write-time gating (not silent auto-commit) | v1.14 proposal gate (`POST /ingest/proposal` → human approval) + quarantine/flagged-row exclusion (v0.9.7); no autonomous write promotion |
+| Trust-aware retrieval | Superseded rows excluded from default recall (`valid_to IS NULL`); quarantined rows never served; `min_relevance` + scope-filter-before-ranking |
+| Behavior / write audit (MemGhost + GhostWriter's AM-Sentry audit trail) | Append-only SHA-256 hash-chained audit (§3); every ingest/approve/supersede/DSAR recorded (hash-only); read-event audit + replayable `/recall/{id}/trace` (v1.15) |
+| Erasure / forensic recovery of a poisoned entry | DSAR locate→purge→tombstone→certificate (§4); `/purge` by id/owner; supersession (`valid_to`) retires a bad entry and its traceable dependents |
+| Integrity (verify-before-emit) | UMP §2.8 content-hash + Ed25519 signature, verify-on-read — tampered records dropped, never served (§9) |
+
+**Honest posture.** This is a control map to ASI06's recommendations, not a
+claim of ASI06 conformance: the category is recent, its recommended control set
+is still consolidating, and brain-server is a single-node memory component (no
+federated store, no ingestion of email/calendar — the MemGhost/GhostWriter
+delivery vectors). What the component does provide is the memory-governance
+layer those attacks found missing: provenance at write time, a human gate, a
+hash-chained audit of every memory change, and a tombstone path for the entries
+an attacker would plant. See `docs/MEMGHOST_MITIGATION.md` for the operative
+playbook.
+
 ## 7. Machine-Readable Origin Metadata (Art 50 transparency bridge)
 
 Every `knowledge` row carries an ingest path (`source`: manual | vault |
