@@ -252,20 +252,33 @@ fn json_str(v: &serde_json::Value, key: &str) -> String {
     }
 }
 
-/// M4.2: one trace hit row. Extracted so the rsx string-interpolation of the
-/// `json_str` calls doesn't trip the macro's nested-quote parsing.
 fn trace_hit_row(h: &serde_json::Value) -> Element {
     let id = json_str(h, "id");
     let score = json_str(h, "score");
     let source = json_str(h, "source");
     let relevance = json_str(h, "relevance");
+    let assertion = json_str(h, "assertion_kind");
+    let decayed = trace_decayed_marker(h);
     rsx! {
         tr {
             td { class: "pr-2 font-mono", "{id}" }
             td { class: "pr-2 font-mono", "{score}" }
             td { class: "pr-2", "{source}" }
             td { class: "pr-2", "{relevance}" }
+            td { class: "pr-2 text-info", "{assertion}" }
+            td { class: "pr-2", "{decayed}" }
         }
+    }
+}
+
+/// The per-hit `decayed` evidence marker for the trace table: `true` → the
+/// chunk had expired at recall time (evidence-quality signal); anything else
+/// (absent/false) → "—". Pure so the trace rows are testable.
+fn trace_decayed_marker(h: &serde_json::Value) -> &'static str {
+    if json_str(h, "decayed") == "true" {
+        "decayed"
+    } else {
+        "—"
     }
 }
 
@@ -326,6 +339,8 @@ fn TraceCard(trace: serde_json::Value) -> Element {
                         th { class: "text-left pr-2", "score" }
                         th { class: "text-left pr-2", "source" }
                         th { class: "text-left pr-2", "relevance" }
+                        th { class: "text-left pr-2", "kind" }
+                        th { class: "text-left pr-2", "decayed" }
                     } }
                     tbody {
                         for h in hits {
@@ -401,5 +416,21 @@ mod tests {
         assert!(!debounce_commit(3, 4));
         // An older/lower generation can't be current → never commits.
         assert!(!debounce_commit(5, 3));
+    }
+
+    /// The trace table's per-hit evidence marker: `decayed:true` at recall
+    /// time → flagged; absent/false → "—".
+    #[test]
+    fn trace_decayed_marker_flags_only_true() {
+        let d = |decayed: Option<bool>| {
+            let mut m = serde_json::Map::new();
+            if let Some(b) = decayed {
+                m.insert("decayed".into(), serde_json::json!(b));
+            }
+            trace_decayed_marker(&serde_json::Value::Object(m))
+        };
+        assert_eq!(d(Some(true)), "decayed");
+        assert_eq!(d(Some(false)), "—");
+        assert_eq!(d(None), "—");
     }
 }
