@@ -16,5 +16,12 @@
         "..."
       ]
     }
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": ["./client/Cargo.toml"]
+      }
+    }
   }
 }
