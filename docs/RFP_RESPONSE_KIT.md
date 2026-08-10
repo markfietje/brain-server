@@ -57,6 +57,50 @@ file (`COMPLIANCE.md`), threat model (`THREAT_MODEL.md`), security map
 | Disaster recovery | Pre-migration `VACUUM INTO` snapshots (chmod 0600), import/export, migration rehearsal tool | `docs/deployment.md`, v1.16.7 |
 | Documentation | Wiki (22 pages) + `docs/` (public) + engineering docs (technical file, spec, contract) | `README.md` §Docs |
 
+## 4.5 Competitive positioning — governance over leaderboard
+
+> Use this when an RFP asks "how does your recall accuracy compare?" or a
+evaluator quotes a competitor's LongMemEval/LoCoMo percentage. Do not
+one-up the number; reframe the metric. This is the section that turns a
+benchmark question into a production-readiness answer.
+
+**The reframe (backed by a third party, not by us):** published agent-memory
+benchmark scores (LongMemEval, LoCoMo) are recall benchmarks. They are
+necessary but not sufficient for production. A 2026 independent critique of
+the published numbers (memnode.dev) states that none of the leading scores
+measure: **memory drift** when stored facts contradict later, **memory-
+poisoning resistance**, **per-tenant isolation** under a shared backend,
+**cost per recall** at production volume, or behavior at hundreds/thousands
+of sessions — and that a 95% LongMemEval score does not mean the system is
+operationally ready for multi-tenant production.
+
+**Vendor-vs-independent inflation is real and visible:** a vendor's own
+benchmark page (mem0.ai/research, 7 Aug 2026) reports 92.5 on LoCoMo / 94.4
+on LongMemEval for its **managed platform**. That same vendor's own open,
+reproducible paper lists **66.9%** on LoCoMo (arXiv:2504.19413), an
+independent third-party table agrees (66.9%), and independent re-runs land
+at 58–66% — a ~26-point gap between the marketing headline and what is
+reproducible. When a vendor's headline and its reproducible number disagree,
+only the reproducible number is trustworthy.
+
+**How brain-server answers the recall question honestly:** we target the
+production metrics the recall benchmarks leave out, and we ship the evidence
+for them in-repo rather than as a one-line percentage:
+
+| Production metric (what recall % misses) | brain-server evidence |
+|---|---|
+| Memory-poisoning resistance | Quarantine + flagged-row exclusion + HITL write gate | `docs/MEMGHOST_MITIGATION.md`, `COMPLIANCE.md` §6.1, OWASP ASI06 map |
+| Per-tenant isolation | Record-level `access_scope` deny-by-default filter in JWT mode | `COMPLIANCE.md` §6.1, v1.12.1 |
+| Memory drift / contradiction | Supersede + stale-source review, operator-driven | v1.6/v1.8, MemSecBench "selective repair" lane |
+| Cost per recall | Zero-token local embeddings (minishlab/potion-32M), no inference on hot path | `README.md` §Architecture |
+| At-scale behavior (100s–1000s sessions) | Capacity envelopes in `/health`; bench scaffold with frozen judged corpus | `BENCHMARKS.md` |
+| Verifiability of the claim | Append-only SHA-256 audit chain, `/audit/verify` | `COMPLIANCE.md` §3 |
+
+**One-liner for the written response:** "Raw recall % measures retrieval on a
+curated test set; it does not measure poisoning resistance, drift, tenant
+isolation, or cost. Those are the metrics that decide whether a memory system
+survives production, and they are the metrics we publish evidence for."
+
 ## Honest ceilings (state these in your response)
 
 - **Not a certification.** ISO/IEC 42001 / SOC 2 attestation are
