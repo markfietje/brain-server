@@ -217,8 +217,13 @@ enum Route {
     DsarDetail { dsar_id: i64 },
     #[route("/security")]
     Security {},
-    #[route("/audit")]
-    Audit {},
+    /// v1.19.0 M2: `/audit?since=&principal=` — the audit filters are URL-
+    /// addressable, so a reviewer can share a filtered audit view.
+    #[route("/audit?:since&:principal")]
+    Audit {
+        since: Option<String>,
+        principal: Option<String>,
+    },
     /// v1.17.7 M4: Write group — create workspace (ingest/procedures/consolidate).
     #[route("/create")]
     Create {},
@@ -743,7 +748,7 @@ fn AppShell() -> Element {
                     NavLink { to: Route::Graph {}, "{nav_graph}" }
                     NavLink { to: Route::Subjects {}, "{nav_subjects}" }
                     NavLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
-                    NavLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
+                    NavLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
                     NavLink { to: Route::Create {}, "{nav_create}" }
                     NavLink { to: Route::Health {}, "{nav_health}" }
                     NavLink { to: Route::Data {}, "{nav_data}" }
@@ -788,7 +793,7 @@ fn AppShell() -> Element {
                 TabLink { to: Route::Graph {}, "{nav_graph}" }
                 TabLink { to: Route::Subjects {}, "{nav_subjects}" }
                 TabLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
-                TabLink { to: Route::Audit {}, dirty: audit_dirty, "{nav_audit}" }
+                TabLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
                 TabLink { to: Route::Create {}, "{nav_create}" }
                 TabLink { to: Route::Health {}, "{nav_health}" }
                 TabLink { to: Route::Data {}, "{nav_data}" }
@@ -968,7 +973,10 @@ fn command_keywords(c: &Command) -> &'static [&'static str] {
             "certificate",
         ],
         Command::Navigate(Route::Security {}) => &["security", "quarantine", "flags", "auth"],
-        Command::Navigate(Route::Audit {}) => &["audit", "log", "history", "chain"],
+        Command::Navigate(Route::Audit {
+            since: None,
+            principal: None,
+        }) => &["audit", "log", "history", "chain"],
         Command::Navigate(Route::Health {}) => &["health", "status", "capacity", "service"],
         Command::Navigate(Route::Data {}) => &["data", "purge", "export", "retention", "rights"],
         Command::Navigate(Route::Ump {}) => &["ump", "portability", "protocol", "interop"],
@@ -998,7 +1006,10 @@ fn palette_commands(configured: bool) -> Vec<Command> {
         Command::Navigate(Route::Graph {}),
         Command::Navigate(Route::Subjects {}),
         Command::Navigate(Route::Security {}),
-        Command::Navigate(Route::Audit {}),
+        Command::Navigate(Route::Audit {
+            since: None,
+            principal: None,
+        }),
         Command::Navigate(Route::Create {}),
         Command::Navigate(Route::Health {}),
         Command::Navigate(Route::Data {}),
@@ -1086,7 +1097,10 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::Create {}) => "Create",
         Command::Navigate(Route::Subjects {}) => "Subjects (DSAR)",
         Command::Navigate(Route::Security {}) => "Security",
-        Command::Navigate(Route::Audit {}) => "Audit",
+        Command::Navigate(Route::Audit {
+            since: None,
+            principal: None,
+        }) => "Audit",
         Command::Navigate(Route::Health {}) => "Health",
         Command::Navigate(Route::Data {}) => "Data",
         Command::Navigate(Route::Ump {}) => "UMP",
@@ -1546,8 +1560,8 @@ fn Security() -> Element {
     security::panel()
 }
 #[component]
-fn Audit() -> Element {
-    audit::panel()
+fn Audit(since: Option<String>, principal: Option<String>) -> Element {
+    audit::panel(since, principal)
 }
 /// v1.17.7 M4: the create-workspace panel (ingest/procedures/consolidate).
 #[component]
@@ -1840,7 +1854,10 @@ mod tests {
             Route::Graph {},
             Route::Subjects {},
             Route::Security {},
-            Route::Audit {},
+            Route::Audit {
+                since: None,
+                principal: None,
+            },
             Route::Create {},
             Route::Health {},
             Route::Data {},

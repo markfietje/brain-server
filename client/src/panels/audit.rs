@@ -15,7 +15,7 @@ use dioxus::prelude::*;
 const PAGE: usize = 100; // page size for the server-side audit pagination (M4)
 
 /// M7: the client-side filter state. `None`/empty = unconstrained on that axis.
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AuditFilter {
     principal: String,
     kind: String,
@@ -55,12 +55,22 @@ fn ts_on_or_after(ts: &str, date: &str) -> bool {
     ts.get(..10).map(|p| p >= date).unwrap_or(false)
 }
 
-pub fn panel() -> Element {
+/// v1.19.0 M2: build an `AuditFilter` from the deep-link query params
+/// (`/audit?since=&principal=`). `None`/empty → unconstrained on that axis.
+pub fn filter_from_query(since: Option<String>, principal: Option<String>) -> AuditFilter {
+    AuditFilter {
+        principal: principal.unwrap_or_default(),
+        kind: String::new(),
+        since: since.unwrap_or_default(),
+    }
+}
+
+pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
     use_document_title(|| "Audit — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)();
-    let mut filter = use_signal(AuditFilter::default);
+    let mut filter = use_signal(move || filter_from_query(since, principal));
     // v1.16.7 M4: server-side pagination. Accumulate pages (newest-first); the
     // first page loads here, "Load more" appends the next offset until the
     // server returns a short page (no more rows).
@@ -322,6 +332,18 @@ mod tests {
             filter_audit(&rows, &AuditFilter::default()).len(),
             rows.len()
         );
+    }
+
+    #[test]
+    fn filter_from_query_seeds_deep_link_params() {
+        // Both params present → both filter axes seeded.
+        let f = filter_from_query(Some("2026-08-01".into()), Some("alice".into()));
+        assert_eq!(f.since, "2026-08-01");
+        assert_eq!(f.principal, "alice");
+        assert!(f.kind.is_empty());
+        // Absent → unconstrained (kind never comes from the query string).
+        let f = filter_from_query(None, None);
+        assert_eq!(f, AuditFilter::default());
     }
 
     #[test]
