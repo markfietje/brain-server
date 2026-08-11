@@ -1114,6 +1114,10 @@ pub struct Proposal {
     pub content: String,
     #[serde(default)]
     pub source: Option<String>,
+    /// v1.20.1 "Shield" M2: the caller-provided prompt that fed this capture,
+    /// so a reviewer can context-check it before deciding.
+    #[serde(default)]
+    pub source_prompt: Option<String>,
     #[serde(default)]
     pub authority: Option<f32>,
     pub novelty: f32,

@@ -475,6 +475,13 @@ fn card(
                             "conflicts with chunk #{c} — approve to supersede" }
                     }
                     p { class: "text-sm text-foreground mt-1", "{proposal.content}" }
+                    if let Some(sp) = &proposal.source_prompt {
+                        details { class: "mt-1 text-xs",
+                            summary { class: "cursor-pointer text-accent", "sourcing prompt" }
+                            p { class: "mt-1 text-ink-faint whitespace-pre-wrap border border-border rounded p-2",
+                                "{sp}" }
+                        }
+                    }
                     div { class: "flex gap-2 mt-1.5 items-center flex-wrap",
                         button {
                             class: "btn btn-primary btn-sm",
@@ -893,6 +900,7 @@ mod tests {
             kind: "fact".into(),
             content: "x".into(),
             source: None,
+            source_prompt: None,
             authority: None,
             novelty: 0.1,
             conflict_with: None,
