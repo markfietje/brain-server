@@ -10,6 +10,25 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [Unreleased]
+
+### Added
+- **MCP 2026-07-28 protocol compliance** (`src/bin/mcp.rs`, unversioned — rides
+  into the next release): stateless core — no `initialize` handshake; every
+  modern request validates the mandatory per-request `_meta`
+  (`io.modelcontextprotocol/protocolVersion` + `io.modelcontextprotocol/
+  clientCapabilities`); `server/discover` replaces `initialize` for modern
+  clients (`supportedVersions: ["2026-07-28", "2025-11-25"]`); every result
+  carries `resultType: "complete"` + `_meta.io.modelcontextprotocol/serverInfo`;
+  `tools/list` + `server/discover` advertise `ttlMs`/`cacheScope` caching hints
+  (SEP-2549). Error surface per the new spec: missing `_meta`/fields → -32602,
+  unsupported version → -32022 with `data.{supported,requested}`, unknown tool →
+  -32602, parse error → -32700 (null id), null id → -32600. Dual-era: a legacy
+  client's `initialize` selects 2025-11-25 semantics scoped to the stdio
+  process (bare requests dispatch without `_meta`; responses keep the legacy
+  shape). `ping` kept as a harmless no-op (removed from the new schema). 591
+  server-side tests (+8 mcp wire tests), clippy `-D warnings` + fmt green.
+
 ## [1.20.1] — 2026-08-11
 
 ### Server + Plugin — "Shield" (GhostJacking P0: injection screen on the shared write core + autoCapture through the human review gate)

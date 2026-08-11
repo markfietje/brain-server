@@ -1,9 +1,18 @@
 //! `mcp` — a minimal MCP (Model Context Protocol) server for brain-server.
 //!
-//! Speaks JSON-RPC 2.0 over newline-delimited stdio (no external MCP crate).
-//! Implements `initialize`, `tools/list`, and `tools/call`, translating tool
-//! calls into HTTP requests against a running brain-server using the shared
-//! dependency-free client in `bin_common/http.rs`.
+//! Speaks JSON-RPC 2.0 over newline-delimited stdio (no external MCP crate),
+//! translating tool calls into HTTP requests against a running brain-server
+//! using the shared dependency-free client in `bin_common/http.rs`.
+//!
+//! Protocol surface (2026-07-28 spec): stateless — no `initialize` handshake.
+//! Every modern request carries `_meta` (`io.modelcontextprotocol/
+//! protocolVersion` + `io.modelcontextprotocol/clientCapabilities`),
+//! discovery happens via `server/discover`, and every result carries
+//! `resultType` + `_meta.serverInfo`. `tools/list` and `server/discover`
+//! advertise `ttlMs`/`cacheScope` caching hints (SEP-2549). For legacy
+//! (2025-11-25) clients, an `initialize` request selects legacy semantics
+//! scoped to this stdio process: bare requests without `_meta` dispatch
+//! directly and responses keep the legacy shape (no `resultType` envelope).
 
 #[path = "../bin_common/http.rs"]
 mod http;
@@ -11,7 +20,19 @@ mod http;
 use http::{get, post};
 use std::io::{BufRead, Write};
 
-const PROTOCOL_VERSION: &str = "2024-11-05";
+/// Modern protocol version (final 2026-07-28 spec): stateless, per-request
+/// `_meta`, `server/discover` instead of `initialize`.
+const MODERN_VERSION: &str = "2026-07-28";
+/// Legacy protocol version, still served when a client selects it via the
+/// `initialize` handshake (dual-era per the 2026-07-28 versioning spec).
+const LEGACY_VERSION: &str = "2025-11-25";
+const SUPPORTED_VERSIONS: [&str; 2] = [MODERN_VERSION, LEGACY_VERSION];
+/// `server/discover` cache TTL (SEP-2549): capabilities are static — 1 hour.
+const DISCOVER_TTL_MS: u64 = 3_600_000;
+/// `tools/list` cache TTL (SEP-2549): the tool table is a compile-time constant.
+const TOOLS_TTL_MS: u64 = 300_000;
+/// Both discovery documents are identical for every caller (compile-time static).
+const CACHE_SCOPE: &str = "public";
 const SERVER_NAME: &str = "brain-server-mcp";
 /// Drive version from Cargo.toml so the MCP binary and the server never drift.
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,6 +87,9 @@ fn main() {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buf = String::new();
+    // Legacy (2025-11-25) semantics are selected by a legacy client's
+    // `initialize` request and stay active for this stdio process.
+    let mut legacy = false;
 
     loop {
         buf.clear();
@@ -81,88 +105,241 @@ fn main() {
         if line.is_empty() {
             continue;
         }
-        match handle_line(line) {
-            Ok(Some(response)) => {
-                let _ = stdout.write_all(response.as_bytes());
-                let _ = stdout.write_all(b"\n");
-                let _ = stdout.flush();
-            }
-            Ok(None) => {}
-            Err(e) => {
-                eprintln!("mcp: error handling request: {e}");
-            }
+        if let Some(response) = handle_line(line, &mut legacy) {
+            let _ = stdout.write_all(response.as_bytes());
+            let _ = stdout.write_all(b"\n");
+            let _ = stdout.flush();
         }
     }
 }
 
-fn handle_line(line: &str) -> Result<Option<String>, String> {
-    let req: serde_json::Value =
-        serde_json::from_str(line).map_err(|e| format!("invalid JSON-RPC request: {e}"))?;
-
-    // Notifications (no id) need no response per JSON-RPC 2.0 §4. A missing id
-    // on a request that would otherwise produce an error response is also
-    // treated as a notification — silently dropping is safer than panicking.
-    let id = req.get("id").cloned();
-    let method = req
-        .get("method")
-        .and_then(|m| m.as_str())
-        .ok_or("missing 'method'")?
-        .to_string();
-
-    // If there's no id, this is a notification — acknowledge and return no reply
-    // regardless of whether the method succeeded (JSON-RPC 2.0 §4.1).
-    let id = match id {
-        Some(v) => v,
-        None => return Ok(None),
+/// Handle one JSON-RPC line. Returns the response line to write, or `None`
+/// for notifications (which get no reply). `legacy` flips to `true` the first
+/// time a legacy client sends `initialize` and selects 2025-11-25 semantics
+/// for the rest of this stdio process.
+fn handle_line(line: &str, legacy: &mut bool) -> Option<String> {
+    // Parse error → -32700 with null id (JSON-RPC 2.0 §5.1).
+    let req: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => {
+            return Some(error_response(
+                &serde_json::Value::Null,
+                -32700,
+                "parse error",
+                None,
+            ));
+        }
     };
+
+    let method = match req.get("method").and_then(|m| m.as_str()) {
+        Some(m) => m,
+        None => {
+            return Some(error_response(
+                &req.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                -32600,
+                "invalid request: missing 'method'",
+                None,
+            ));
+        }
+    };
+    let id = match req.get("id") {
+        // MCP ids are string|number; an explicit null id is an invalid request.
+        Some(v) if v.is_null() => {
+            return Some(error_response(
+                &serde_json::Value::Null,
+                -32600,
+                "invalid request: null id",
+                None,
+            ));
+        }
+        Some(v) => v.clone(),
+        // No id → notification; never replied to (JSON-RPC 2.0 §4.1). The
+        // spec's `notifications/cancelled` lands here as a no-op. `ponytail:`
+        // this is a synchronous stdio server — no in-flight requests to cancel.
+        None => return None,
+    };
+
     let params = req
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    let result = match method.as_str() {
-        "initialize" => method_initialize(),
-        "tools/list" => method_tools_list(),
-        "tools/call" => method_tools_call(&params),
-        "ping" => Ok(serde_json::json!({})),
-        other => {
-            return Ok(Some(error_response(
+    let (result, modern): (Result<serde_json::Value, (i64, String)>, bool) =
+        if params.get("_meta").is_some() {
+            // Modern protocol: validate the mandatory per-request `_meta` fields,
+            // then dispatch on the 2026-07-28 surface.
+            match check_meta(&params) {
+                Ok(()) => (dispatch(method, &params), true),
+                Err(e) => return Some(error_response(&id, e.code, &e.message, e.data)),
+            }
+        } else if method == "initialize" {
+            // Legacy handshake: select 2025-11-25 semantics for this process.
+            *legacy = true;
+            (method_initialize().map_err(|e| (-32603, e)), false)
+        } else if *legacy {
+            // Legacy mode: bare requests dispatch without `_meta` or `resultType`.
+            (dispatch(method, &params), false)
+        } else {
+            return Some(error_response(
                 &id,
-                -32601,
-                &format!("method not found: {other}"),
-            )));
-        }
-    };
+                -32602,
+                "invalid params: missing required '_meta' field \
+             (io.modelcontextprotocol/protocolVersion, \
+             io.modelcontextprotocol/clientCapabilities)",
+                None,
+            ));
+        };
 
     match result {
-        Ok(r) => Ok(Some(success_response(&id, r))),
-        Err(e) => Ok(Some(error_response(&id, -32603, &e))),
+        Ok(r) => Some(success_response(&id, r, modern)),
+        Err((code, message)) => Some(error_response(&id, code, &message, None)),
     }
 }
 
-fn success_response(id: &serde_json::Value, result: serde_json::Value) -> String {
-    let resp = serde_json::json!({
+/// Success envelope. Modern responses carry `resultType: "complete"` plus
+/// `_meta.io.modelcontextprotocol/serverInfo` (2026-07-28 §result); legacy
+/// responses keep the plain JSON-RPC result shape.
+fn success_response(id: &serde_json::Value, result: serde_json::Value, modern: bool) -> String {
+    let mut resp = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": result,
     });
+    if modern {
+        if let Some(r) = resp["result"].as_object_mut() {
+            r.insert("resultType".into(), serde_json::json!("complete"));
+            r.insert(
+                "_meta".into(),
+                serde_json::json!({
+                    "io.modelcontextprotocol/serverInfo": {
+                        "name": SERVER_NAME,
+                        "version": SERVER_VERSION,
+                    },
+                }),
+            );
+        }
+    }
     resp.to_string()
 }
 
-fn error_response(id: &serde_json::Value, code: i64, message: &str) -> String {
-    let resp = serde_json::json!({
+fn error_response(
+    id: &serde_json::Value,
+    code: i64,
+    message: &str,
+    data: Option<serde_json::Value>,
+) -> String {
+    let mut error = serde_json::json!({ "code": code, "message": message });
+    if let Some(d) = data {
+        error["data"] = d;
+    }
+    serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": { "code": code, "message": message },
-    });
-    resp.to_string()
+        "error": error,
+    })
+    .to_string()
 }
 
+/// Validation error with a JSON-RPC code + optional `data` payload (used for
+/// the `-32022` UnsupportedProtocolVersion details).
+struct MetaError {
+    code: i64,
+    message: String,
+    data: Option<serde_json::Value>,
+}
+
+/// Validate the per-request `_meta` object (2026-07-28 §requests): the client
+/// MUST declare `io.modelcontextprotocol/protocolVersion` (a supported
+/// version) and `io.modelcontextprotocol/clientCapabilities` (an object);
+/// `io.modelcontextprotocol/clientInfo` is optional.
+fn check_meta(params: &serde_json::Value) -> Result<(), MetaError> {
+    let meta = match params.get("_meta").and_then(|m| m.as_object()) {
+        Some(m) => m,
+        None => {
+            return Err(MetaError {
+                code: -32602,
+                message: "invalid params: missing required '_meta' field".into(),
+                data: None,
+            });
+        }
+    };
+    let version = match meta
+        .get("io.modelcontextprotocol/protocolVersion")
+        .and_then(|v| v.as_str())
+    {
+        Some(v) => v,
+        None => {
+            return Err(MetaError {
+                code: -32602,
+                message: "invalid params: '_meta' is missing \
+                          'io.modelcontextprotocol/protocolVersion'"
+                    .into(),
+                data: None,
+            });
+        }
+    };
+    if !matches!(version, MODERN_VERSION | LEGACY_VERSION) {
+        return Err(MetaError {
+            code: -32022,
+            message: format!("unsupported protocol version: {version}"),
+            data: Some(serde_json::json!({
+                "supported": SUPPORTED_VERSIONS,
+                "requested": version,
+            })),
+        });
+    }
+    if !meta
+        .get("io.modelcontextprotocol/clientCapabilities")
+        .is_some_and(|c| c.is_object())
+    {
+        return Err(MetaError {
+            code: -32602,
+            message: "invalid params: '_meta' is missing \
+                      'io.modelcontextprotocol/clientCapabilities'"
+                .into(),
+            data: None,
+        });
+    }
+    Ok(())
+}
+
+/// Dispatch one method to its handler. Errors return a JSON-RPC error code
+/// that the caller maps onto the reply. `server/discover` + `tools/list` are
+/// static (no external calls) → -32603; `tools/call` failures are client
+/// errors → -32602 (transport failures like "cannot connect to …" land here
+/// too — `ponytail:` a distinguishable code would need a richer error type
+/// than a String).
+fn dispatch(method: &str, params: &serde_json::Value) -> Result<serde_json::Value, (i64, String)> {
+    match method {
+        "server/discover" => method_discover().map_err(|e| (-32603, e)),
+        "tools/list" => method_tools_list().map_err(|e| (-32603, e)),
+        "tools/call" => method_tools_call(params).map_err(|e| (-32602, e)),
+        // `ping` was removed from the 2026-07-28 schema; kept as a harmless
+        // no-op for legacy tooling that still probes with it.
+        "ping" => Ok(serde_json::json!({})),
+        other => Err((-32601, format!("method not found: {other}"))),
+    }
+}
+
+/// Legacy (2025-11-25) handshake, served only to legacy clients. The response
+/// deliberately keeps the legacy shape — no `resultType`/`_meta` envelope.
 fn method_initialize() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
-        "protocolVersion": PROTOCOL_VERSION,
+        "protocolVersion": LEGACY_VERSION,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
+    }))
+}
+
+/// 2026-07-28 `server/discover`: the modern, stateless replacement for
+/// `initialize` — no handshake, no negotiation, cacheable for an hour.
+fn method_discover() -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "supportedVersions": SUPPORTED_VERSIONS,
+        "capabilities": { "tools": {} },
+        "instructions": "brain-server MCP: tools map 1:1 onto the brain-server HTTP API (POST /recall, /ingest, /ump/*).",
+        "ttlMs": DISCOVER_TTL_MS,
+        "cacheScope": CACHE_SCOPE,
     }))
 }
 
@@ -356,7 +533,11 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
             "inputSchema": { "type": "object", "properties": {} }
         }
     ]);
-    Ok(serde_json::json!({ "tools": tools }))
+    Ok(serde_json::json!({
+        "tools": tools,
+        "ttlMs": TOOLS_TTL_MS,
+        "cacheScope": CACHE_SCOPE,
+    }))
 }
 
 fn method_tools_call(params: &serde_json::Value) -> Result<serde_json::Value, String> {
@@ -377,12 +558,7 @@ fn method_tools_call(params: &serde_json::Value) -> Result<serde_json::Value, St
         "brain_search" => tool_brain_search(&args)?,
         "brain_recall" => tool_brain_recall(&args)?,
         "brain_ingest" => tool_brain_ingest(&args)?,
-        other => {
-            return Ok(serde_json::json!({
-                "content": [ { "type": "text", "text": format!("unknown tool: {other}") } ],
-                "isError": true,
-            }));
-        }
+        other => return Err(format!("unknown tool: {other}")),
     };
 
     Ok(serde_json::json!({
@@ -683,5 +859,147 @@ mod tests {
         );
         let err = ump_path("ump.get", &serde_json::json!({})).expect_err("missing id");
         assert!(err.contains("'id'"), "error: {err}");
+    }
+
+    #[test]
+    fn discover_returns_modern_protocol_surface() {
+        let mut legacy = false;
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        let result = &v["result"];
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(
+            result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            SERVER_NAME
+        );
+        assert_eq!(result["supportedVersions"][0], MODERN_VERSION);
+        assert_eq!(result["supportedVersions"][1], LEGACY_VERSION);
+        assert_eq!(result["capabilities"]["tools"], serde_json::json!({}));
+        assert_eq!(result["ttlMs"], DISCOVER_TTL_MS);
+        assert_eq!(result["cacheScope"], CACHE_SCOPE);
+        assert_eq!(v["id"], 1);
+        assert!(!legacy, "discover must not flip legacy mode");
+    }
+
+    #[test]
+    fn tools_list_modern_is_complete_and_cacheable() {
+        let mut legacy = false;
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        let result = &v["result"];
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["tools"].as_array().expect("tools").len(), 12);
+        assert_eq!(result["ttlMs"], TOOLS_TTL_MS);
+        assert_eq!(result["cacheScope"], CACHE_SCOPE);
+    }
+
+    #[test]
+    fn bare_request_without_meta_is_rejected() {
+        let mut legacy = false;
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["error"]["code"], -32602);
+        assert_eq!(v["id"], 3);
+    }
+
+    #[test]
+    fn missing_meta_fields_are_rejected() {
+        let mut legacy = false;
+        // Version present, capabilities missing.
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["error"]["code"], -32602);
+
+        // Capabilities present, version missing.
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn unsupported_protocol_version_returns_32022() {
+        let mut legacy = false;
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["error"]["code"], -32022);
+        assert_eq!(v["error"]["data"]["supported"][0], MODERN_VERSION);
+        assert_eq!(v["error"]["data"]["requested"], "1900-01-01");
+    }
+
+    #[test]
+    fn initialize_selects_legacy_mode() {
+        let mut legacy = false;
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"legacy","version":"1.0"}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        assert!(legacy, "initialize must select legacy mode");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        let result = &v["result"];
+        assert!(result.get("resultType").is_none(), "legacy envelope only");
+        assert_eq!(result["protocolVersion"], LEGACY_VERSION);
+        assert_eq!(result["serverInfo"]["name"], SERVER_NAME);
+
+        // After initialize, bare legacy requests dispatch without `_meta`.
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert!(v.get("error").is_none(), "legacy tools/list succeeds");
+        assert!(v["result"].get("resultType").is_none());
+        assert_eq!(v["result"]["tools"].as_array().expect("tools").len(), 12);
+    }
+
+    #[test]
+    fn unknown_tool_is_a_protocol_error() {
+        let mut legacy = false;
+        let out = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}},"name":"nope","arguments":{}}}"#,
+            &mut legacy,
+        )
+        .expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["error"]["code"], -32602);
+        assert!(v["error"]["message"]
+            .as_str()
+            .expect("msg")
+            .contains("nope"));
+        assert!(v.get("result").is_none(), "no result for an unknown tool");
+    }
+
+    #[test]
+    fn parse_error_returns_32700_with_null_id() {
+        let mut legacy = false;
+        let out = handle_line("{not json", &mut legacy).expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(v["error"]["code"], -32700);
+        assert_eq!(v["id"], serde_json::Value::Null);
     }
 }
