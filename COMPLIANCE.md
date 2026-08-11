@@ -80,6 +80,44 @@ replays the exact injected chunks, fused scores, abstention decision, access
 scope applied, principal, and domains searched. The trace is the replayable
 artifact proving *what* informed a retrieval — the log next to the answer.
 
+## 3.5 Zero Trust for AI (ZT4AI) Posture (v1.20.5)
+
+The enterprise posture, stated against what ships. Control-by-control mapping
+to the 2026 OWASP agentic frameworks is in `docs/OWASP_AGENTIC_2026.md`; the
+operative stance:
+
+- **Workload identity** — agents are not shared service accounts: JWT
+  (`sub`/`jti`) or did:key (v1.17.4) + capability tokens, per-principal, with a
+  rotation cadence (tokens ≤90d).
+- **Least agency** — the openclaw plugin holds exactly one verb (recall) on the
+  automatic path, two (recall + proposal) after v1.20.1; write approval is
+  per-action and outside the model's prompt (the LLM03/ASI01 policy-gateway
+  pattern).
+- **Rule of Two** — the `[A untrusted input, B sensitive data, C state
+  change/external comms]` class requires per-action human approval; the v1.20.1
+  gate is that approval for the memory-write action.
+- **Egress** — exactly one outbound HTTP path (opt-in Art 19 DSAR webhook,
+  HMAC-signed); that URI is the network action-boundary allowlist.
+
+## 3.6 Audit-Ready-Replay Playbook (v1.20.5)
+
+The 2026 production-readiness bar is *"if a system can't replay the agent's
+reasoning and decision path, it is not ready for production."* brain-server has
+the raw material; the evidence bundle for an incident / SOC 2 review:
+
+1. **What happened** — `/audit` hash chain (SHA-256, tamper-evident) +
+   `/audit/verify`.
+2. **Why** — recall traces (`GET /recall/{trace_id}/trace`: query, decision,
+   domains, actor) + the proposal-gate trail (`source_prompt` +
+   proposed/approved/rejected/expired audit rows, v1.20.1).
+3. **To whom** — principal pillar on every response; DSAR certificates +
+   tombstone registry; `origin` per row (v1.18.2).
+4. **For how long** — per-kind retention (`/retention`, v1.17.1) +
+   `BRAIN_AUDIT_RETENTION_DAYS`.
+
+Export paths already exist (`/export`, `/audit`, DSAR certificate); the playbook
+is a documentation of how to assemble the bundle, no new code.
+
 ## 4. DSAR Workflow (GDPR Art 15/17/19 + CCPA/ADMT)
 
 `POST /dsar {subject, action: export|purge|both}` (Admin-only):

@@ -10,6 +10,60 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.5] — 2026-08-11
+
+v1.20.5 "Agentic" — the **enterprise capstone** of the GhostJacking-hardening
+line (G1–G6 all closed across v1.20.1–v1.20.4). **Docs only** — zero new routes,
+zero schema change, zero new deps, no server/client version bump (a docs-only
+patch tag `v1.20.5` marks the artifact). Maps the hardened stack to the two 2026
+OWASP agentic frameworks and ships the adoption artifacts an enterprise team
+needs.
+
+### Added (docs)
+
+- **`docs/OWASP_AGENTIC_2026.md`** — the control-by-control compliance matrix:
+  the **OWASP GenAI LLM Top 10:2026** (LLM01–LLM10, pub. 2026-08-04) and the
+  **OWASP Top 10 for Agentic Applications 2026** (ASI01–ASI10, pub. 2025-12-10).
+  Every row = `Shipped vX.Y` (exact feature) or `Ceiling v2.x` (owned residual
+  risk). Includes the AIUC-1 crosswalk (procurement bridge) and a residual-risk
+  section naming the owners. Standard = **100% control coverage** (LLM01 has no
+  prevention per OWASP 2026; segregation + gates + least-privilege are the
+  load-bearing defenses).
+- **ZT4AI posture** (`SECURITY.md` § + `COMPLIANCE.md` §3.5) — workload identity
+  (agents are not shared service accounts; did:key + capability tokens, ≤90d
+  rotation), least-agency (plugin = recall + proposal only, write approval
+  outside the prompt), Rule of Two, egress boundary (exactly one outbound path:
+  the Art 19 webhook).
+- **Audit-ready-replay playbook** (`COMPLIANCE.md` §3.6) — the 2026
+  production-readiness bar ("replay the agent's decision path"); how to assemble
+  the evidence bundle (what/why/to-whom/for-how-long) from `/audit` + `/recall/
+  {id}/trace` + DSAR certificates + retention — export paths already exist, no
+  new code.
+- **Enterprise ops runbook** (`docs/deployment.md` §) — token rotation
+  (v1.20.2 machine-identity pattern) + poisoning-incident-response
+  (`/decayed` + `/consolidate/propose` → purge → re-verify chain → rotate) +
+  classifier operations (FPR calibration via `BRAIN_INJECTION_THRESHOLD_HIGH/
+  LOW`, retrain trigger, `sha256sum` model-artifact hash-pin).
+
+### Fixed / Changed
+
+- `ROADMAP.md` released-version header → 1.20.5 + released row for the
+  docs capstone; `COMPLIANCE.md` + `SECURITY.md` + `docs/deployment.md`
+  cross-reference the new matrix (hand link-checked).
+
+### Honest ceilings (the "100%" answer)
+
+- LLM01 has no prevention (OWASP 2026's own position); adaptive white-box
+  classifier evasion (GCG-class) still beats a hardened encoder — the
+  `untrusted` segregation + approval gate are the surviving controls. Owners:
+  ops / platform.
+- v2.x code ceilings the matrix names: per-principal quotas (LLM06), at-rest
+  encryption (LLM02), mTLS (ASI07), full multi-team tenancy + SSO (ASI03) — all
+  owned by v2.0 "Cortex". A2A federation (ASI07) stays v2.x; the v1.20.4
+  Standard Webhooks handshake is the 2026-compliant boundary until then.
+
+---
+
 ## [1.20.4] — 2026-08-11
 
 v1.20.4 "Replay" — the G6 close from the GhostJacking audit: an **optional,

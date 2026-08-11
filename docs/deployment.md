@@ -85,6 +85,62 @@ envelope — reads are never blocked.
 
 ---
 
+## Security operations runbook (v1.20.5)
+
+### Token rotation
+
+The v1.20.2 machine-identity pattern: **agents are not shared service accounts.**
+Give each agent principal its own token and rotate on a cadence (≤90d
+recommended).
+
+```bash
+# opaque bearer: write a new token into the 0600 file; file-watch hot-reloads it
+umask 077 && head -c 32 /dev/urandom | base64 > ~/.config/brain-server/auth-token
+# JWT mode: mint a fresh key, let the old one drain, then prune
+brain key generate
+# …wait ≥ max token lifetime (24h refresh)…
+brain key prune
+scripts/install-service.sh   # reload the key set
+```
+
+### Incident response — suspected memory poisoning
+
+If a recall result, review item, or audit row looks planted:
+
+1. **Review the blast radius** — `brain check-consistency` (near-dups +
+   contradictions) + `GET /decayed` to see what is currently decayed.
+2. **Propose the cleanup** — `GET /consolidate/propose` surfaces the duplicate /
+   conflicting / stale-source candidates; approve the resolutions you trust.
+3. **Purge the planted rows** — `POST /purge` by id/owner (hard, audited,
+   tombstoned) or `POST /dsar {subject, action: purge}` for a subject-scoped
+   sweep. Every purge leaves a tombstone + audit row.
+4. **Re-verify the chain** — `GET /audit/verify` → `{"ok": true}`; the audit is
+   tamper-evident, so the purge itself is provable.
+5. **Rotate tokens** — steps above, so the planted session (if any) dies with
+   the old credential.
+
+### Classifier operations (v1.20.3, layer 2)
+
+The optional ONNX classifier is off by default; when enabled:
+
+- **FPR calibration** — watch the quarantine rate (`/audit` `quarantined` rows;
+  the client Security panel surfaces the flag count). Tune
+  `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` — policy + thresholds read per call, so a
+  flip takes effect without a restart (only the model load is cached).
+- **Retrain trigger** — re-run adaptive evals on a threat-model shift (new
+  obfuscation technique or delivery vector observed); the blocklist + quarantine
+  stay the always-on defense while a retrain is pending.
+- **Model artifact hash-pin** — pin the model file with `sha256sum` in the
+  deployment config and verify on boot; the model file is itself a supply-chain
+  artifact (LLM04/ASI04), so it is trusted like a dependency, not like a blob.
+
+```bash
+# pin the model artifact (the gate in the feature's docs)
+sha256sum /path/to/model.onnx >> models.sha256
+```
+
+---
+
 ## Backup & restore
 
 ```bash

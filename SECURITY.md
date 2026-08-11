@@ -498,6 +498,42 @@ level security (AuthN, AuthZ, audit, isolation).
 
 ---
 
+## Zero Trust for AI (ZT4AI) posture (v1.20.5)
+
+The 2026 enterprise zero-trust-for-AI posture, written against what actually
+ships. Control-by-control mapping to the two 2026 OWASP agentic frameworks is in
+[`docs/OWASP_AGENTIC_2026.md`](./docs/OWASP_AGENTIC_2026.md); this section states
+the posture itself.
+
+- **Workload identity.** brain-server principals are JWT (`sub`/`jti`) or the
+  opaque loopback token; agent identity is `did:key` (v1.17.4) + §5.2 capability
+  tokens. **Agents are not shared service accounts** — the per-deployment
+  machine-identity pattern is one identity per agent principal, with a rotation
+  cadence (tokens ≤90d; the key-rotation playbook is in `docs/deployment.md`).
+- **Least-agency statement.** The openclaw plugin holds exactly **one verb
+  (recall)** on the automatic path and **two (recall + proposal)** after v1.20.1
+  — write approval is per-action, **outside the model's prompt** (the LLM03/ASI01
+  policy-gateway pattern, NIST AI 100-2 E2025-aligned). `captureMode:
+  "proposal"` is the default; `direct` is the explicit, M1-screened opt-out.
+- **Rule of Two assessment** (Meta AI 2025, endorsed by NIST AI 100-2 E2025 +
+  CISA/FBI/NSA/ACSC). The openclaw agent sits in the `[A untrusted input, B
+  sensitive data, C state change/external comms]` class → per-action human
+  approval required. The v1.20.1 approval gate **is** that approval for the
+  memory-write action; the remaining `[A,B,C]` surfaces (exec/read) are the
+  documented G3 envelope stance (`docs/MEMGHOST_MITIGATION.md`).
+- **Egress posture.** Exactly one outbound HTTP path exists — the opt-in Art 19
+  DSAR webhook, HMAC-SHA256-signed (v1.15). Treat that one URI as the network
+  boundary allowlist (the ZT4AI "action boundary" at the network layer). No
+  other egress by default.
+
+**Continuous verification** (never-trust-always-verify): every write re-checks
+the screen (deterministic blocklist + optional classifier) and the approval
+gate; every read verifies the UMP integrity block and applies the scope filter
+before ranking; the audit chain is verified on demand (`/audit/verify`) and
+gated on `/metrics`.
+
+---
+
 ## Compliance Attestations (mapping)
 
 These frameworks are not implemented as code; this table documents which
