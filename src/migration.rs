@@ -1039,10 +1039,27 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         [],
     )?;
 
+    // ── v1.20.1 "Shield" M2: proposal provenance from the auto-capture path. ─
+    // `source_prompt` (a) tells a reviewer which autocapture the proposal came
+    // from so they can context-check it before approving, and (b) lets the
+    // proposal surface re-run the injection screen against the caller-provided
+    // text that fed the capture. Additive + idempotent.
+    let prompt_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='source_prompt'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !prompt_present {
+        db.execute("ALTER TABLE proposals ADD COLUMN source_prompt TEXT", [])?;
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.18.2')
-         ON CONFLICT(key) DO UPDATE SET value = '1.18.2';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.1')
+         ON CONFLICT(key) DO UPDATE SET value = '1.20.1';",
         [],
     )?;
 

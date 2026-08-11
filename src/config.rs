@@ -23,6 +23,20 @@ pub const SNIPPET_CONTEXT_CHARS: usize = 60;
 pub const MAX_EXPLAIN_BYTES: usize = 64 * 1024;
 pub const MAX_MULTI_GET: usize = 1000;
 
+/// v1.20.1 "Shield" M2: how long an auto-captured proposal can sit in the
+/// review queue before a human decides it. A stale prompt's context-loss makes
+/// the candidate unverifiable, so beyond this the queue refuses to act and the
+/// row is audited as expired. Default 7 days. `BRAIN_PROPOSAL_TTL_SECS` overrides.
+pub const DEFAULT_PROPOSAL_TTL_SECS: i64 = 7 * 24 * 3600;
+
+pub fn proposal_ttl_secs() -> i64 {
+    std::env::var("BRAIN_PROPOSAL_TTL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(DEFAULT_PROPOSAL_TTL_SECS)
+}
+
 pub const POOL_MAX_SIZE: u32 = 20;
 pub const POOL_MIN_IDLE: u32 = 2;
 pub const POOL_CONNECTION_TIMEOUT_SECS: u64 = 30;

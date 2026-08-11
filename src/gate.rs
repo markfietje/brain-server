@@ -337,6 +337,18 @@ pub fn redact_content(
     out
 }
 
+/// v1.20.1 "Shield" M2(b): PII-screen a reviewer-facing `source_prompt` before
+/// persist. Only the `[redacted:email]` / `[redacted:phone]` form is stored, so
+/// a capture trigger containing a forwarded address/number never lands raw in
+/// the review queue's provenance. Mirrors the read-path masking but applied
+/// at write time (unconditional, not gated by `has_pii_read`).
+pub fn screen_source_prompt(prompt: &str) -> String {
+    let mut out = prompt.to_string();
+    mask_email(&mut out);
+    mask_phone(&mut out);
+    out
+}
+
 fn mask_email(out: &mut String) {
     let mut result = String::with_capacity(out.len());
     let mut rest = out.as_str();
@@ -524,6 +536,23 @@ mod tests {
         assert_eq!(redact_content(text, true, &admin()), text);
         // Non-flagged content passes through unmasked for everyone.
         assert_eq!(redact_content("plain text", false, &none), "plain text");
+    }
+
+    /// v1.20.1 "Shield" M2(b): a reviewer-facing `source_prompt` is screened at
+    /// persist time — only the `[redacted:…]` form is stored, an email/phone
+    /// in the capture-trigger text never lands raw in the review queue.
+    #[test]
+    fn source_prompt_is_pii_screened_and_rendered() {
+        let screened =
+            screen_source_prompt("user forwarded bob@example.com and called +1 (555) 123 4567");
+        assert!(screened.contains("[redacted:email]"));
+        assert!(screened.contains("[redacted:phone]"));
+        assert!(!screened.contains("bob@example.com"));
+        // Benign prompts pass through untouched (no false redaction of plain text).
+        assert_eq!(
+            screen_source_prompt("user asked to note the deadline"),
+            "user asked to note the deadline"
+        );
     }
 
     #[test]

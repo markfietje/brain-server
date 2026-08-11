@@ -41,6 +41,8 @@ pub const SCHEMA_VERSION_V1_17_1: &str = "1.17.1";
 /// overlay) + `suggest_feedback.ump_outcome`. Additive, defaults preserved.
 /// v1.18.2 adds `knowledge.origin` (Art 50 model-vs-human marker).
 pub const SCHEMA_VERSION_V1_18_2: &str = "1.18.2";
+/// v1.20.1 "Shield" adds `proposals.source_prompt` (auto-capture provenance).
+pub const SCHEMA_VERSION_V1_20_1: &str = "1.20.1";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

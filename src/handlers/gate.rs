@@ -47,6 +47,11 @@ pub struct ProposalRequest {
     pub observed_at: Option<i64>,
     #[serde(default)]
     pub domain: Option<String>,
+    /// v1.20.1 "Shield" M2: the caller-provided prompt that fed this capture.
+    /// Lets a reviewer context-check the proposal and lets the queue surface
+    /// re-run the injection screen against the sourcing text.
+    #[serde(default)]
+    pub source_prompt: Option<String>,
 }
 
 fn default_fact() -> String {
@@ -125,8 +130,8 @@ pub async fn ingest_proposal(
         let id: i64 = conn
             .query_row(
                 "INSERT INTO proposals(kind, content, source, authority, observed_at,
-                                   novelty, conflict_with, salience, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                   novelty, conflict_with, salience, created_at, source_prompt)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              RETURNING id",
                 rusqlite::params![
                     req.kind,
@@ -137,7 +142,10 @@ pub async fn ingest_proposal(
                     novelty,
                     conflict_with,
                     salience,
-                    now
+                    now,
+                    req.source_prompt
+                        .as_deref()
+                        .map(crate::gate::screen_source_prompt)
                 ],
                 |r| r.get(0),
             )
@@ -214,6 +222,7 @@ pub struct ProposalView {
     pub kind: String,
     pub content: String,
     pub source: Option<String>,
+    pub source_prompt: Option<String>,
     pub authority: Option<f32>,
     pub novelty: f32,
     pub conflict_with: Option<i64>,
@@ -246,7 +255,7 @@ pub async fn list_proposals(
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, kind, content, source, authority, novelty, conflict_with,
+                "SELECT id, kind, content, source, source_prompt, authority, novelty, conflict_with,
                         salience, created_at
                  FROM proposals WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2",
             )
@@ -258,11 +267,12 @@ pub async fn list_proposals(
                     kind: r.get(1)?,
                     content: r.get(2)?,
                     source: r.get(3)?,
-                    authority: r.get(4)?,
-                    novelty: r.get(5)?,
-                    conflict_with: r.get(6)?,
-                    salience: r.get(7)?,
-                    created_at: r.get(8)?,
+                    source_prompt: r.get(4)?,
+                    authority: r.get(5)?,
+                    novelty: r.get(6)?,
+                    conflict_with: r.get(7)?,
+                    salience: r.get(8)?,
+                    created_at: r.get(9)?,
                 })
             })
             .map_err(|e| HandlerError::internal(e.to_string()))?
@@ -274,6 +284,37 @@ pub async fn list_proposals(
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(rows))
+}
+
+/// v1.20.1 "Shield" M2 TTL: if the proposal is older than
+/// [`crate::config::proposal_ttl_secs`], mark it rejected + audit
+/// `proposal_expired` and return `false`. A stale auto-capture prompt's
+/// context is unrecoverable, so the queue refuses to act on it (neither
+/// approve nor reject — it's already beyond verification).
+pub(crate) fn expire_if_stale(
+    conn: &rusqlite::Connection,
+    id: i64,
+    created_at: i64,
+) -> Result<bool, HandlerError> {
+    let now = chrono::Utc::now().timestamp();
+    if now - created_at <= crate::config::proposal_ttl_secs() {
+        return Ok(true);
+    }
+    conn.execute(
+        "UPDATE proposals SET status = 'rejected', decided_at = ?1
+         WHERE id = ?2 AND status = 'pending'",
+        rusqlite::params![now, id],
+    )
+    .map_err(|e| HandlerError::internal(e.to_string()))?;
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Reconcile,
+        "api",
+        &format!("proposal:{id}"),
+        crate::audit::AuditStatus::Ok,
+        "proposal_expired",
+    );
+    Ok(false)
 }
 
 /// `POST /proposals/{id}/approve` — promote a candidate into long-term memory.
@@ -308,10 +349,11 @@ pub async fn approve_proposal(
             source: Option<String>,
             authority: Option<f32>,
             observed_at: Option<i64>,
+            created_at: i64,
         }
         let p: Option<ProposalRow> = tx
             .query_row(
-                "SELECT kind, content, source, authority, observed_at
+                "SELECT kind, content, source, authority, observed_at, created_at
                  FROM proposals WHERE id = ?1 AND status = 'pending'",
                 rusqlite::params![id],
                 |r| {
@@ -321,6 +363,7 @@ pub async fn approve_proposal(
                         source: r.get(2)?,
                         authority: r.get(3)?,
                         observed_at: r.get(4)?,
+                        created_at: r.get(5)?,
                     })
                 },
             )
@@ -330,8 +373,21 @@ pub async fn approve_proposal(
                 "no pending proposal with id {id}"
             )));
         };
-        let (kind, content, source, authority, observed_at) =
-            (p.kind, p.content, p.source, p.authority, p.observed_at);
+        let (kind, content, source, authority, observed_at, created_at) = (
+            p.kind,
+            p.content,
+            p.source,
+            p.authority,
+            p.observed_at,
+            p.created_at,
+        );
+
+        if !expire_if_stale(&tx, id, created_at)? {
+            return Err(HandlerError::bad_request(
+                "proposal_expired",
+                "proposal aged out of the review window (TTL), refused",
+            ));
+        }
 
         // Embed + insert the chunk through the same knowledge + vec0 path.
         let embedding = model
@@ -476,6 +532,22 @@ pub async fn reject_proposal(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        // v1.20.1 M2: refuse to act on an expired proposal (audits + rejects it).
+        let created_at: Option<i64> = conn
+            .query_row(
+                "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(created_at) = created_at {
+            if !expire_if_stale(&conn, id, created_at)? {
+                return Err(HandlerError::bad_request(
+                    "proposal_expired",
+                    "proposal aged out of the review window (TTL), refused",
+                ));
+            }
+        }
         let n = conn
             .execute(
                 "UPDATE proposals SET status = 'rejected', decided_at = ?1
