@@ -10,6 +10,65 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.1] — 2026-08-11
+
+### Server + Plugin — "Shield" (GhostJacking P0: injection screen on the shared write core + autoCapture through the human review gate)
+
+First release of the GhostJacking-hardening line. Closes the two P0 audit
+findings on the memory write path: the `/ingest` core that bypassed the
+injection screen (G1), and the autoCapture write path that bypassed human
+approval (G2). See `IMPLEMENTATION_PLAN_v1.20.1_Shield.md`.
+
+### Added
+- **M1 — `/ingest` now screens injection like its siblings** (`src/handlers/ingest.rs`):
+  the shared `ingest_one` core (plain + single-UMP + batch-UMP + the plugin's
+  `memory_store`/`autoCapture`) mirrors `/add` and `/ingest/memory` — `Reject`
+  policy → HTTP 400 `input_rejected`; `Quarantine` (default) stores the chunk
+  flagged (`flagged=1`, excluded from recall) and skips its KG edges. One
+  guard in the shared core covers every caller.
+- **M2 — autoCapture routes through the proposal gate** (plugin default):
+  - `captureMode` on the plugin (`proposal` default | `direct`). `proposal`
+    POSTs `/ingest/proposal` via the new `BrainClient.submitProposal()` —
+    nothing from an untrusted turn becomes memory until a reviewer approves.
+    `direct` keeps the old behavior (still screened server-side).
+  - `proposals.source_prompt` column (additive migration + schema 1.20.1):
+    the capture-triggering turn is stored **PII-screened** (`screen_source_prompt`
+    — only `[redacted:…]` form persists, per LLM01:2026 control #7 "exact action,
+    not a summary") and rendered in the client Review panel.
+  - Proposal TTL (`BRAIN_PROPOSAL_TTL_SECS`, default 7 days): a pending
+    proposal that ages out is auto-rejected + audited `proposal_expired`;
+    approve/reject on a stale proposal refuse with 400.
+  - `source_prompt` round-trips through `/proposals` (`ProposalView`), the
+    client wire type, and the Review panel's "sourcing prompt" block.
+- **M3 — docs**: `SECURITY.md` names `/ingest` as screened + the
+  auto-capture gate; `docs/MEMGHOST_MITIGATION.md` documents `captureMode`.
+
+### Tests
+- Server: +3 (`ingest_screens_injection_like_its_siblings` — the audit §5
+  drill as a model-backed `#[ignore]`d test, quarantine/reject/benign arms;
+  `test_proposal_expires_after_ttl_and_audits`; the lib's
+  `source_prompt_is_pii_screened_and_rendered`). Plugin: +3 (submitProposal
+  wire; captureMode default routes to `/ingest/proposal`; config default).
+- `schema_version` contract → 1.20.1; `authz_gates_cover_every_non_public_route`
+  + `test_openapi_covers_routes` unchanged (no new routes).
+
+### Security
+- G1 closed: `/ingest` no longer bypasses the injection screen (audit §4
+  action #8's document lie fixed).
+- G2 closed: autoCapture no longer writes to memory without human approval
+  (default `captureMode: "proposal"`); `memory_store` stays direct by design
+  (explicit agent action) and remains M1-screened.
+
+### Honest ceilings (carried into v1.20.2 / v1.20.3)
+- The screen stays the deterministic blocklist; G5 classifier upgrade is
+  v1.20.3.
+- G3 (OpenClaw subagent/exec/read/pdf envelope coverage) lives in the OpenClaw
+  codebase — companion plan v1.20.2.
+- G4 (live token at rest, world-readable plist) is operator/tooling — v1.20.2.
+- G6 webhook replay window P2 — documented, v1.20.4 if prioritized.
+
+---
+
 ## [1.20.0] — 2026-08-11
 
 ### Client — "Polish" (theming, perf, offline-tolerance — the v1.20.0 done-state)

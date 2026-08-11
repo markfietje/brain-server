@@ -133,6 +133,7 @@ browser local storage, and validated for signature, issuer, and audience."
 | **Every** SQL statement parameterized (`params![]`) | all `rusqlite` calls | ✅ |
 | Zero string interpolation in SQL (audited) | grep-verified | ✅ |
 | Prompt-injection heuristic at every query/ingest boundary | `contains_suspicious_pattern` | ✅ (ceiling documented) |
+| auto-capture (G2): plugin routes captures through the human review queue by default; the `/ingest` write core screens + quarantines/rejects injectable input (v1.20.1) | `plugin captureMode` + `ingest_one` | ✅ |
 | FTS5 MATCH strings compiled with per-token quoting | `compile_lex` | ✅ |
 | Domain name → filename via strict regex `^[a-z0-9][a-z0-9_-]{0,62}$` | `is_valid_domain` | ✅ |
 | Content-Disposition header safe (no injection chars) | export handler | ✅ |

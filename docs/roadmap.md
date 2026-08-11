@@ -9,13 +9,16 @@ journey to the current version and where it is going. The authoritative plan is
 
 ## Current status
 
-**v1.18.x — the latest server line (1.18.2 "Transparency").** Brain Server ships a
+**v1.20.x — the current server line (1.20.1 "Shield").** Brain Server ships a
 Dioxus GUI (web + desktop + iOS + Android from one Rust codebase) on top of a
-mature server. The v1.18 server line added the Art 50 `knowledge.origin`
-model-vs-human marker and `/export` provenance (`export_format_version: 2`) on a
-unified 1.18.2 version line; the v1.18 client line added WCAG 2.2 AA `?`
-keyboard help, a client CI gate, and secret-safe persistent console history
-(client 1.18.1). Earlier server releases added: connection state machine,
+mature server. The v1.20 server line is the GhostJacking-hardening line: the
+shared `/ingest` write core now screens injection like its siblings
+(quarantine default / reject policy), and the OpenClaw plugin's autoCapture
+routes through the human review queue by default (`captureMode: "proposal"`)
+with PII-screened `source_prompt` provenance + a 7-day TTL + expiry audit.
+The v1.20 client line added the system-following theme, a CI bundle budget,
+and offline-tolerance (client 1.20.0 "Polish"). Earlier server releases
+added: connection state machine,
 honest-batch review, recall decision-path viewer, DSAR certificate cards,
 auth-failure feed, audit filters + export, a shadcn/ui-styled sidebar dashboard,
 JWT refresh lifecycle, mobile-responsive UX with secure keyring token storage,

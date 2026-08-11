@@ -4,8 +4,8 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.18.2 "Transparency" (2026-08-09) — Art 50 `knowledge.origin` marker + `/export` provenance (`export_format_version: 2`), on the unified 1.18.2 version line (client stays at 1.18.1).
-- **Latest client version:** 1.18.1 "Harden" (2026-08-09) — console history persists across reload (secret-safe), client bundle measured (wasm 3.7 MB + 60 KB JS + 40 KB CSS).
+- **Latest server version:** 1.20.1 "Shield" (2026-08-11) — GhostJacking P0: `/ingest` screened at the shared write core (quarantine/reject) + plugin `captureMode: "proposal"` routes autoCapture through the human review queue with `source_prompt` provenance + TTL.
+- **Latest client version:** 1.20.0 "Polish" (2026-08-11) — system-following theme, CI bundle budget (release wasm ≤ 7 MB), offline-tolerance action queue with replay.
 - **Next milestone:** v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 

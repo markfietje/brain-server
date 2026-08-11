@@ -53,6 +53,10 @@ approval gate**, and **no provenance on retrieval**.
 ## Operator checklist
 
 - Run with a write-back gate: proposals auto-pending, approval human-owned.
+- Keep the plugin's `captureMode` at `proposal` (the default) so auto-captures
+  from untrusted turns enter memory only after human approval. `direct` mode
+  is for trusted deployments and is still screened by the server-side
+  `ingest_one` injection gate (quarantine/reject).
 - Verify the audit chain periodically: `brain status` → `/audit/verify` → `ok`.
 - On a suspected poisoning: `brain check-consistency` to surface unresolved
   contradictions, then `brain resolve` / `brain undo-resolve` the affected
