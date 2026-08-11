@@ -10,6 +10,62 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.4] — 2026-08-11
+
+v1.20.4 "Replay" — the G6 close from the GhostJacking audit: an **optional,
+config-driven replay window** for webhook senders that provide a signed
+timestamp, plus a documented stance for GitHub. **Server** Cargo 1.20.3 →
+1.20.4; client stays at 1.20.0. **No schema change, no new routes** — the
+Standard Webhooks handshake rides the existing `/webhooks/{kind}` surface.
+
+### Added
+
+- **Standard Webhooks handshake for first-party senders (M1, opt-in).** When
+  `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, `POST /webhooks/{kind}` requires the
+  open spec's header set (`webhook-id`/`webhook-timestamp`/`webhook-signature`)
+  and verifies the `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}`
+  in constant time (`WebhookQueue::verify_standard_signature`,
+  `src/handlers/webhooks.rs::receive_standard`). The timestamp rides inside the
+  HMAC, so a replay cannot re-stamp it. `webhook-id` feeds the existing
+  `webhook_seen` idempotency. The spec path accepts any kind — the flag is an
+  explicit operator opt-in for their own trusted senders.
+- **`/health` webhook posture (M2).** `webhook.replay_secs` (300),
+  `webhook.timestamp_required`, and `webhook.scheme`
+  (`standard-webhooks` | `legacy`) exposed at a glance (mirrors the `hardening`
+  object pattern).
+- **Documentation stance for GitHub (M3, the real deliverable).** GitHub's
+  replay protection is `x-github-delivery` idempotency (its sender is a trusted
+  third party), not a timestamp window — documented in `SECURITY.md` §webhooks,
+  `COMPLIANCE.md` §webhooks, and `docs/deployment.md`. First-party senders can
+  opt into the hard window via the spec headers + flag (svix-style signer or a
+  hand-rolled HMAC, both documented).
+
+### Fixed
+
+- **G6 webhook replay window that depends on sender headers** — previously the
+  `WEBHOOK_REPLAY_SECS` window only applied when a caller-supplied timestamp was
+  present, and GitHub sends none, so its only replay protection was delivery-id
+  dedup (acceptable for the connector's threat model). The spec handshake closes
+  this for senders that DO provide a signed timestamp without inventing one
+  GitHub doesn't send.
+
+### Security
+
+- The hard window is **opt-in** (default unchanged — the legacy GitHub path is
+  byte-identical); an attacker who can forge the HMAC already controls the
+  secret, so replay here is a robustness concern, not an RCE vector. This closes
+  **all six audit gaps (G1–G6)** across the v1.20.x line.
+
+### Honest ceilings (carried into v1.21+)
+
+- GitHub's replay protection remains delivery-id idempotency — no timestamp is
+  invented for it.
+- The spec handshake is verification-side only; the legacy GitHub path keeps its
+  `sha256=` HMAC scheme (back-compat). The spec's `webhook-origin`/allowlist
+  features are not adopted.
+
+---
+
 ## [1.20.3] — 2026-08-11
 
 v1.20.3 "Classify" — the G5 upgrade path from the GhostJacking audit (layer 2 of

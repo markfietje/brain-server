@@ -84,6 +84,39 @@ impl WebhookQueue {
         mac.verify_slice(&expected).is_ok()
     }
 
+    /// v1.20.4 "Replay" (G6): verify a Standard Webhooks `v1,<base64>` signature
+    /// — HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}` keyed by
+    /// `secret`, compared in constant time. The timestamp rides inside the HMAC
+    /// payload, so a replay cannot re-stamp it. Header name + scheme match the
+    /// open spec (standardwebhooks.com), so any svix-style signer interoperates.
+    pub fn verify_standard_signature(
+        secret: &[u8],
+        id: &str,
+        timestamp: &str,
+        payload: &[u8],
+        header_sig: &str,
+    ) -> bool {
+        let b64 = match header_sig.strip_prefix("v1,") {
+            Some(b) => b,
+            None => return false,
+        };
+        let expected = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+        {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let mut mac = match HmacSha256::new_from_slice(secret) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        mac.update(id.as_bytes());
+        mac.update(b".");
+        mac.update(timestamp.as_bytes());
+        mac.update(b".");
+        mac.update(payload);
+        mac.verify_slice(&expected).is_ok()
+    }
+
     /// Enqueue a delivery. `delivery_id` is the idempotency key (e.g. GitHub's
     /// `x-github-delivery`); `payload` is the raw body (for hashing only).
     /// Returns `Full` if the queue has reached `WEBHOOK_QUEUE_MAX` rows.
@@ -311,6 +344,74 @@ mod tests {
             b"topsecret",
             b"body",
             "sha1=deadbeef"
+        ));
+    }
+
+    fn std_signature(secret: &[u8], id: &str, ts: &str, payload: &[u8]) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        mac.update(id.as_bytes());
+        mac.update(b".");
+        mac.update(ts.as_bytes());
+        mac.update(b".");
+        mac.update(payload);
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            mac.finalize().into_bytes(),
+        );
+        format!("v1,{b64}")
+    }
+
+    #[test]
+    fn standard_signature_covers_id_timestamp_payload() {
+        // v1.20.4 G6: the spec's canonical `v1,` scheme signs
+        // `{id}.{timestamp}.{raw body}` — a tamper to ANY of the three fails the
+        // constant-time compare (so a replay cannot re-stamp the timestamp).
+        let secret = b"topsecret";
+        let id = "msg_123";
+        let ts = "1700000000";
+        let body = b"payload";
+        let good = std_signature(secret, id, ts, body);
+        assert!(WebhookQueue::verify_standard_signature(
+            secret, id, ts, body, &good
+        ));
+        assert!(!WebhookQueue::verify_standard_signature(
+            secret,
+            id,
+            ts,
+            b"payloadx",
+            &good
+        ));
+        assert!(!WebhookQueue::verify_standard_signature(
+            secret,
+            id,
+            "1700000001",
+            body,
+            &good
+        ));
+        assert!(!WebhookQueue::verify_standard_signature(
+            secret, "msg_999", ts, body, &good
+        ));
+    }
+
+    #[test]
+    fn standard_signature_rejects_bad_header_format() {
+        assert!(!WebhookQueue::verify_standard_signature(
+            b"topsecret",
+            "msg_1",
+            "1700000000",
+            b"payload",
+            "not-a-sig"
+        ));
+        // Legacy `sha256=` scheme must NOT pass the standard check.
+        let mut mac = HmacSha256::new_from_slice(b"topsecret").unwrap();
+        mac.update(b"payload");
+        let hex_sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
+        assert!(!WebhookQueue::verify_standard_signature(
+            b"topsecret",
+            "msg_1",
+            "1700000000",
+            b"payload",
+            &hex_sig
         ));
     }
 

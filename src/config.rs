@@ -154,6 +154,19 @@ pub const BIND_PUBLIC_OPT_IN: &str = "BIND_PUBLIC";
 /// skew / forged). GitHub sends `X-GitHub-Delivery` + `X-Hub-Signature-256`.
 pub const WEBHOOK_REPLAY_SECS: u64 = 300;
 
+/// v1.20.4 "Replay" (G6): when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
+/// webhook receiver requires the Standard Webhooks header set
+/// (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies the
+/// signature over `{id}.{timestamp}.{raw body}` (spec's canonical form), so a
+/// sender cannot re-stamp a stale timestamp. Off by default — GitHub sends no
+/// such timestamp and keeps its legacy delivery-id idempotency path.
+pub fn webhook_timestamp_required() -> bool {
+    std::env::var("BRAIN_WEBHOOK_TIMESTAMP_REQUIRED")
+        .ok()
+        .map(|s| s == "1")
+        .unwrap_or(false)
+}
+
 /// Hard cap on the verified-webhook ingest queue (rows in `webhook_queue`).
 /// Backpressure: once full, new verified deliveries are rejected with 503 until
 /// the drain worker catches up. Bounds the blast radius of a webhook storm.

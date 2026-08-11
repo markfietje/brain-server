@@ -69,6 +69,16 @@ pub async fn receive(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // v1.20.4 "Replay" (G6): when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
+    // receiver demands the Standard Webhooks header set (id/timestamp/
+    // signature) and verifies the signature over `{id}.{timestamp}.{body}`, so
+    // a first-party sender cannot re-stamp a stale timestamp. Any kind is
+    // accepted here — the flag is an explicit operator opt-in for their own
+    // trusted senders. Off by default → the legacy GitHub path below.
+    if crate::config::webhook_timestamp_required() {
+        return receive_standard(&state, &kind, &headers, &body).await;
+    }
+
     // v0.9.7: only GitHub webhooks. Other kinds are unsupported.
     if kind != "github" {
         return HandlerError::bad_request(
@@ -172,6 +182,91 @@ pub async fn receive(
             .into_response(),
         Ok(EnqueueOutcome::Rejected) => {
             deny(&state, &kind, "timestamp check failed");
+            HandlerError::unauthorized("timestamp check failed").into_response()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+/// v1.20.4 "Replay" (G6): Standard Webhooks path — requires the spec header
+/// set and verifies the `v1,` signature over `{id}.{timestamp}.{body}` before
+/// enqueuing with `webhook-id` as the idempotency key.
+async fn receive_standard(
+    state: &Arc<AppState>,
+    kind: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Response {
+    let id = headers
+        .get("webhook-id")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ts = headers
+        .get("webhook-timestamp")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let sig = headers
+        .get("webhook-signature")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if id.is_empty() || ts.is_empty() || sig.is_empty() {
+        deny(state, kind, "missing standard-webhooks headers");
+        return HandlerError::unauthorized("missing webhook-id/timestamp/signature")
+            .into_response();
+    }
+
+    let secret = match load_webhook_secret() {
+        Some(s) => s,
+        None => {
+            warn!("webhook: no connector secret configured");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({ "error": "no connector secret configured" })),
+            )
+                .into_response();
+        }
+    };
+    if !WebhookQueue::verify_standard_signature(&secret, &id, &ts, body, &sig) {
+        deny(state, kind, "bad standard-webhooks signature");
+        return HandlerError::unauthorized("standard-webhooks signature verification failed")
+            .into_response();
+    }
+
+    // `webhook-timestamp` is unix seconds; it rides inside the verified HMAC, so
+    // enforcing the replay window here closes the re-stamp gap.
+    let received_at = ts
+        .parse::<u64>()
+        .ok()
+        .and_then(|s| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(s)));
+
+    let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
+    match queue.enqueue_ts(kind, "standard", &id, body, received_at) {
+        Ok(EnqueueOutcome::Enqueued) => {
+            if let Ok(conn) = state.pool.get() {
+                crate::audit::record(
+                    &conn,
+                    crate::audit::AuditKind::Webhook,
+                    kind,
+                    &id,
+                    crate::audit::AuditStatus::Ok,
+                    "standard",
+                );
+            }
+            (StatusCode::OK, axum::Json(json!({ "status": "enqueued" }))).into_response()
+        }
+        Ok(EnqueueOutcome::Duplicate) => {
+            (StatusCode::OK, axum::Json(json!({ "status": "duplicate" }))).into_response()
+        }
+        Ok(EnqueueOutcome::Full) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "queue_full" })),
+        )
+            .into_response(),
+        Ok(EnqueueOutcome::Rejected) => {
+            deny(state, kind, "timestamp check failed");
             HandlerError::unauthorized("timestamp check failed").into_response()
         }
         Err(e) => e.into_response(),

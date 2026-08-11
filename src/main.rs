@@ -1390,6 +1390,18 @@ fn health_body(
             "busy_connections": pool_connections.saturating_sub(pool_idle)
         },
         "backup": backup,
+        // v1.20.4 "Replay" (G6): effective webhook posture at a glance.
+        // `scheme` is the Standard Webhooks handshake when the timestamp-required
+        // flag is set, else the legacy GitHub delivery-id idempotency path.
+        "webhook": {
+            "replay_secs": crate::config::WEBHOOK_REPLAY_SECS,
+            "timestamp_required": crate::config::webhook_timestamp_required(),
+            "scheme": if crate::config::webhook_timestamp_required() {
+                "standard-webhooks"
+            } else {
+                "legacy"
+            }
+        },
         // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
         // memory-safety posture at a glance. `unsafe_blocks` is the
         // audited count (each has a SAFETY comment); `panics_caught`
@@ -10063,6 +10075,12 @@ Final paragraph after the rule.";
         assert!(obj.contains_key("version"));
         assert!(obj.contains_key("hardening"));
         assert!(obj.contains_key("capacity"));
+        // v1.20.4 "Replay" (G6): webhook posture is exposed for ops. The flag is
+        // read from env, so this test only pins that the object is present with
+        // the known default (legacy scheme, 300s window).
+        let webhook = obj["webhook"].as_object().expect("webhook object");
+        assert_eq!(webhook["replay_secs"], 300);
+        assert_eq!(webhook["scheme"], "legacy");
     }
 
     /// v1.17.3 "UMP" M2: the batch wire path end-to-end. A multi-record

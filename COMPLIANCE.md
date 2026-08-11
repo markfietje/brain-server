@@ -62,7 +62,7 @@ v1.1). Every row is SHA-256-chained to its predecessor (`prev_hash` over
 |---|---|---|
 | Ingest (all paths) | always | hash-only target, kind, actor |
 | AuthN/AuthZ | always | token-verified / rejected (reason) / authz-denied (principal/action/team/domain) |
-| Webhook ingress | always | HMAC-verified |
+| Webhook ingress | always | HMAC-verified (legacy GitHub `sha256=`; opt-in Standard Webhooks `v1,` when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, v1.20.4) |
 | Reconcile / supersede / undo / DSAR | always | hash-only |
 | **Read events (`recall`, `search`, `get`, `multi-get`)** | **opt-in (v1.15)** | caller principal (or `loopback`), target (query text / chunk refs), scope decision; recall also stores the replayable trace (chunk ids + scores + decision) in `recall_traces` |
 

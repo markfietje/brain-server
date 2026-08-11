@@ -116,6 +116,7 @@ ownership... log access control failures."
 | `alg` whitelist + reject `none` + reject algorithm confusion | JWT verifier | ✅ v1.2 |
 | AES-256-GCM for backups (v0.9.7) | `backup.rs` | ✅ |
 | HMAC-SHA256 for webhook verification (v0.9.7) | `webhook.rs` | ✅ |
+| Webhook replay window (opt-in, v1.20.4 G6): `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1` demands the Standard Webhooks header set (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}` in constant time — the timestamp rides inside the HMAC, so a replay cannot re-stamp it. **GitHub's replay protection is `x-github-delivery` idempotency, not a timestamp** (its sender is a trusted third party); first-party senders opt into the hard window via the spec headers + flag. Default unchanged (legacy `sha256=` path). | `verify_standard_signature` + `receive_standard` | ✅ |
 | SQLCipher at rest (AES-256 per-page) | KMS trait | 🚧 v3.7 |
 | No hardcoded secrets (env / file / KMS) | all of `config.rs` | ✅ |
 | Dependency timing sidechannels (RSA "Marvin", RUSTSEC-2023-0071) | documented accept: `.cargo/audit.toml`; EdDSA keys avoid RSA (supported since v1.2) | ✅ accepted |

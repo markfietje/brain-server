@@ -47,6 +47,7 @@ Brain Server is configured through environment variables (all resolved in
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
 | `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | Read-event audit |
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window |
+| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | `0` | `1` = require the Standard Webhooks header set on `/webhooks/*` and verify `v1,` HMAC-SHA256 over `{id}.{timestamp}.{body}` (v1.20.4) — an opt-in hard replay window for first-party senders. GitHub sends no such timestamp; its replay protection is `x-github-delivery` idempotency, so the default `0` leaves the legacy `sha256=` path unchanged |
 
 See [README.md](../README.md#configuration) and `src/config.rs` for the full list,
 including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webhook.
