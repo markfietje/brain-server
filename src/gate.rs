@@ -406,8 +406,12 @@ fn mask_phone(out: &mut String) {
                 }
                 in_run = false;
             }
-            result.push(out[i..i + 1].chars().next().unwrap());
-            i += 1;
+            // `i` is always on a char boundary here (runs are ASCII and we
+            // consume full chars below), so slice the whole char — a byte-wise
+            // `out[i..i+1]` panics on multi-byte input (e.g. '—').
+            let ch = out[i..].chars().next().unwrap();
+            result.push(ch);
+            i += ch.len_utf8();
         }
     }
     if in_run {
@@ -650,6 +654,38 @@ mod tests {
             prompt.contains("[redacted:card]"),
             "source_prompt masks card: {prompt}"
         );
+    }
+    /// Live panic fix: `mask_phone` sliced `out[i..i+1]` by byte index, which
+    /// panics on a multi-byte char (e.g. an em-dash) adjacent to a digit run.
+    /// A PII-flagged chunk containing such a char crashed the worker thread on
+    /// the read path. Redaction must survive non-ASCII input and still mask.
+    #[test]
+    fn redact_content_survives_multibyte_chars_and_still_masks() {
+        let none: Option<crate::auth::Principal> = None;
+        let p = crate::auth::Principal {
+            sub: "user".into(),
+            tenant: "alpha".into(),
+            scopes: vec![crate::auth::Scope {
+                action: crate::auth::Action::Read,
+                team: "alpha".into(),
+                domain: "alpha".into(),
+            }],
+            jti: "t".into(),
+        };
+        // em-dash (3-byte) right after a valid 10-digit run — the exact boundary
+        // that panicked (`out[i..i+1]` on the em-dash's first byte is not a char).
+        let text = "call 5551234567— then done";
+        let masked = redact_content(text, true, &Some(p.clone()));
+        assert!(!masked.contains("5551234567"));
+        assert!(masked.contains("[redacted:phone]"));
+        assert!(masked.contains("done"));
+        // Full-width digit + CJK char (multi-byte) after a run.
+        let masked2 = redact_content("v1 555 1234 5678 日本語", true, &Some(p));
+        assert!(!masked2.contains("555"));
+        assert!(masked2.contains("[redacted:phone]"));
+        assert!(masked2.contains("日本語"));
+        // Loopback still passes the same content through unmasked, no panic.
+        assert_eq!(redact_content(text, true, &none), text);
     }
 
     #[test]

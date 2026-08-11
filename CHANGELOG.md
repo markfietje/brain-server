@@ -81,6 +81,16 @@ stays at 1.20.1/1.20.2 and `test_migration_schema_contract` is untouched.
 
 - Client Cargo stays 1.20.0 (version-neutral changes, v1.20.1 precedent).
 
+### Fixed
+
+- **Live panic in `mask_phone` (`src/gate.rs`)** — the PII masker iterated the
+  input by byte index but emitted `out[i..i+1]`, which panics ("byte index is
+  not a char boundary") whenever a multi-byte char (e.g. `—`, CJK) followed a
+  digit run. A PII-flagged chunk containing such a char crashed the tokio worker
+  on the read path. The masker now advances by full char (`len_utf8`); masking
+  is unchanged and non-ASCII input round-trips untouched. Pinned by
+  `redact_content_survives_multibyte_chars_and_still_masks`.
+
 ---
 
 ## [1.20.2] — 2026-08-11
