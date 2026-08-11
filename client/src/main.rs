@@ -27,6 +27,9 @@ mod api;
 // and locale-aware number formatting. Zero-dep FTL parsing — see the module.
 mod i18n;
 mod panels;
+// v1.20.0 M3: the offline-tolerance action queue (queue + replay, not full
+// offline) — see the module for the idempotency + persistence rules.
+mod queue;
 // v1.16.6 M2: the secure-token storage seam (OS keyring on non-web, no-op on
 // web). save/load (connect + auto-reconnect) and delete (v1.16.7 M7.1 logout)
 // each have a caller in every cfg variant, so no `allow(dead_code)`.
@@ -280,6 +283,13 @@ fn app() -> Element {
         if let Some(v) = i18n::pref_load("locale").await {
             i18n::locale().set(i18n::pick_locale(&v));
         }
+        // v1.20.0 M3: restore any offline-queued actions (web localStorage).
+        if let Some(v) = i18n::pref_load(queue::QUEUE_PREF_KEY).await {
+            let items = queue::queue_from_json(&v);
+            if !items.is_empty() {
+                queue::queue().set(items);
+            }
+        }
     });
 
     // v1.16.8 M3/M4/M2: apply theme + density + RTL dir to the document root.
@@ -352,6 +362,42 @@ fn app() -> Element {
                     .set(writes_allowed(next, None, false));
             }
         }
+    });
+
+    // v1.20.0 M3 — replay the offline queue when the connection returns.
+    // The effect subscribes to conn + queue length, so it fires on the
+    // amber→green transition and on every queue change. No in-flight guard
+    // needed: `take_all` drains, so an overlapping run has nothing to take
+    // (and a settled action is never re-fired — `replay_applied`).
+    let replay_ui = ui;
+    use_effect(move || {
+        let connected = (replay_ui.conn)() == Conn::Connected;
+        let queued = !queue::queue().read().is_empty();
+        if !(connected && queued) {
+            return;
+        }
+        spawn(async move {
+            let api = api();
+            for action in queue::take_all() {
+                use queue::QueuedAction::*;
+                let res = match &action {
+                    Approve { id, supersedes } => {
+                        api.approve_proposal(*id, *supersedes).await.map(|_| ())
+                    }
+                    Reject { id, reason } => api
+                        .reject_proposal(*id, reason.as_deref())
+                        .await
+                        .map(|_| ()),
+                    Purge { chunk_ids, owner } => {
+                        api.purge(chunk_ids, owner.as_deref()).await.map(|_| ())
+                    }
+                    Dsar { subject, action: a } => api.dsar(subject, a).await.map(|_| ()),
+                };
+                if !queue::replay_applied(&res) {
+                    queue::enqueue(action); // stay queued for the next recovery
+                }
+            }
+        });
     });
 
     rsx! {
@@ -680,6 +726,10 @@ fn AppShell() -> Element {
     let conn_text = t(conn_label(conn));
     // M5: locale-aware digit grouping on the shell counts.
     let pending_label = format!("{} {pending}", i18n::format_number(pending as u64));
+    // v1.20.0 M3: the offline-queue badge (actions awaiting replay).
+    let queued = queue::queue().read().len();
+    let queued_label = (queued > 0).then(|| format!("{} {queued}", t("nav_queued")));
+    let queued_title = t("nav_queued_title");
     let flags_label = format!(
         "{} {}",
         i18n::format_number(security_badge as u64),
@@ -818,6 +868,15 @@ fn AppShell() -> Element {
                     if audit_dirty {
                         span { class: "badge badge-danger", "{audit_chain}" }
                     }
+                    // v1.20.0 M3: actions queued for replay while offline.
+                    if let Some(l) = queued_label {
+                        span {
+                            class: "badge badge-warn font-mono tabular",
+                            title: "{queued_title}",
+                            role: "status", "aria-live": "polite",
+                            "{l}"
+                        }
+                    }
                     // v1.16.8 M3/M4/M1: theme + density toggles + locale switch.
                     // Non-sensitive UI prefs, persisted to localStorage; changing
                     // them re-runs the root effects (tokens/dir swap, no reload).
@@ -827,11 +886,21 @@ fn AppShell() -> Element {
                             "aria-label": "{theme_label}",
                             title: "{theme_label}",
                             onclick: move |_| {
-                                let next = if i18n::theme()() == "dark" { "light" } else { "dark" };
+                                // v1.20.0 M1: dark → light → system → dark
+                                // cycle; "system" follows the OS via CSS
+                                // `prefers-color-scheme` (no JS).
+                                let current = i18n::theme()();
+                                let next = i18n::THEME_MODES
+                                    .iter()
+                                    .position(|m| *m == current)
+                                    .map(|i| i18n::THEME_MODES[(i + 1) % i18n::THEME_MODES.len()])
+                                    .unwrap_or("system");
                                 i18n::theme().set(next);
                                 i18n::pref_save("theme", next);
                             },
-                            if i18n::theme()() == "dark" { "☀" } else { "☾" }
+                            if i18n::theme()() == "dark" { "☾" }
+                            else if i18n::theme()() == "light" { "☀" }
+                            else { "◐" }
                         }
                         button {
                             class: "btn btn-ghost btn-sm",

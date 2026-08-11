@@ -244,6 +244,57 @@ html[data-theme="light"] {
 }
 
 /* ------------------------------------------------------------------ *
+ * v1.20.0 M1 — system-follow theme (`data-theme="system"`). The same
+ * light token set, applied only when the OS requests light — a pure
+ * `prefers-color-scheme` follow (the native platform feature, no JS),
+ * the sibling of the `prefers-reduced-motion` rule above.
+ * KEEP IN SYNC with the html[data-theme="light"] block above — the
+ * token values must stay identical.
+ * ------------------------------------------------------------------ */
+@media (prefers-color-scheme: light) {
+  html[data-theme="system"] {
+    color-scheme: light;
+    --color-background: #ffffff;
+    --color-foreground: #1a1a2e;
+    --color-card: #ffffff;
+    --color-card-foreground: #1a1a2e;
+    --color-popover: #f7f7f8;
+    --color-popover-foreground: #1a1a2e;
+    --color-muted: #f0f0f2;
+    --color-muted-foreground: #5c6573;
+    --color-accent: #2563eb;
+    --color-accent-press: #1d4ed8;
+    --color-accent-foreground: #ffffff;
+    --color-destructive: #c53030;
+    --color-destructive-foreground: #ffffff;
+    --color-border: #e2e4e8;
+    --color-input: #c9ccd1;
+    --color-ring: #2563eb;
+
+    /* Legacy app tokens (same names, light values) */
+    --color-surface: #ffffff;
+    --color-surface-raised: #f7f7f8;
+    --color-surface-overlay: #eeeeef;
+    --color-border-subtle: #e2e4e8;
+    --color-border-strong: #c9ccd1;
+    --color-ink: #1a1a2e;
+    --color-ink-muted: #5c6573;
+    --color-ink-faint: #8b94a3; /* AA 4.6:1 on #ffffff */
+
+    /* State hues — darkened for contrast on white */
+    --color-ok: #2f855a;
+    --color-warn: #b7791f;
+    --color-danger: #c53030;
+    --color-info: #2b6cb0;
+    --color-neutral: #8b94a3;
+
+    /* Shadows: lighter on white than the dark theme's near-black */
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.06);
+    --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.05), 0 1px 2px rgb(0 0 0 / 0.03);
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * v1.16.8 M4 — density toggle. `data-density="compact"` on <html>
  * shrinks the root font-size, so every rem-based spacing/type tightens
  * (more rows visible for high-volume reviewers). Comfortable is the

@@ -1,6 +1,6 @@
 [package]
 name = "brain-client"
-version = "1.19.0"
+version = "1.20.0"
 edition = "2021"
 description = "brain-server control surface — web + desktop + iOS + Android (Dioxus)"
 publish = false

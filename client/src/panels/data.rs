@@ -75,6 +75,15 @@ pub fn panel() -> Element {
                     )));
                     load(());
                 }
+                Err(e) if crate::queue::is_offline(&e) => {
+                    // v1.20.0 M3: unreachable backend → queue the purge for
+                    // replay instead of failing the operator's request.
+                    crate::queue::enqueue(crate::queue::QueuedAction::Purge {
+                        chunk_ids: ids.clone(),
+                        owner: Some(owner.clone()),
+                    });
+                    status.set(Some(Ok(crate::i18n::t("data_purged_queued"))));
+                }
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
         });

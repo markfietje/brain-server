@@ -352,6 +352,18 @@ reachable. Faster per-core but a different machine; kept for the delta.
 | `brain-client-*.js` | 59,641 B (60 KB) |
 | `tailwind-*.css` | 39,786 B (40 KB) |
 
+> **v1.20.0 M2.1 budget (2026-08-11)** — the release-wasm regression guard in
+> CI (`client/bundle-budget.sh`): **measured 4,339,760 B** (pre-wasm-opt, the
+> raw `cargo build --release --target wasm32-unknown-unknown` artifact the
+> budget gate sizes) against a **≤ 7,000,000 B budget** (+60% headroom over
+> the completed-surface measurement). The plan's final budgets — web initial
+> **≤ 50 KB** / mobile app **≤ 5 MB** (Dioxus targets) — remain
+> measured-success criteria against the `dx bundle` artifacts on target
+> devices (operator step, same as memory/FPS profiling); the dx-bundled
+> 3.7 MB row above shows the wasm-opt'd floor the 5 MB mobile budget is
+> already under, and the CI gate above is the tripwire until wasm-split
+> (Dioxus 0.8) lands.
+
 ## Set hygiene & anti-overfitting
 
 - **Dev set**: used to develop and ablate PRF/RRF/rerank changes.

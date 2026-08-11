@@ -32,13 +32,21 @@ struct DsarResult {
     cert: DsarCertificate,
 }
 
+/// v1.20.0 M3: a DSAR outcome. `Queued` is an offline window (the action is
+/// enqueued for replay) — rendered as an amber note, never a red error.
+enum DsarOutcome {
+    Done(DsarResult),
+    Queued,
+    Failed(String),
+}
+
 pub fn panel() -> Element {
     use_document_title(|| "Subjects (DSAR) — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let writes = (ui.writes_enabled)();
     let mut subject = use_signal(String::new);
-    let mut result = use_signal(|| None::<Result<DsarResult, String>>);
+    let mut result = use_signal(|| None::<DsarOutcome>);
     let mut busy = use_signal(|| false);
 
     rsx! {
@@ -61,7 +69,7 @@ pub fn panel() -> Element {
                         disabled: busy() || !writes,
                         onclick: move |_| async move {
                             let s = subject().trim().to_string();
-                            if s.is_empty() { result.set(Some(Err("enter a subject first".into()))); return; }
+                            if s.is_empty() { result.set(Some(DsarOutcome::Failed("enter a subject first".into()))); return; }
                             busy.set(true);
                             result.set(Some(run_dsar(api(), s, "export").await));
                             busy.set(false);
@@ -73,7 +81,7 @@ pub fn panel() -> Element {
                         disabled: busy() || !writes,
                         onclick: move |_| async move {
                             let s = subject().trim().to_string();
-                            if s.is_empty() { result.set(Some(Err("enter a subject first".into()))); return; }
+                            if s.is_empty() { result.set(Some(DsarOutcome::Failed("enter a subject first".into()))); return; }
                             busy.set(true);
                             result.set(Some(run_dsar(api(), s, "both").await));
                             busy.set(false);
@@ -85,8 +93,9 @@ pub fn panel() -> Element {
                     p { class: "text-muted-foreground", "running…" }
                 }
                 match &*result.read() {
-                    Some(Ok(r)) => rsx! { CertificateCard { result: r.clone() } },
-                    Some(Err(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
+                    Some(DsarOutcome::Done(r)) => rsx! { CertificateCard { result: r.clone() } },
+                    Some(DsarOutcome::Queued) => rsx! { p { class: "text-warn mt-2", "queued — will replay when the connection returns" } },
+                    Some(DsarOutcome::Failed(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
                     None => rsx! {},
                 }
             }
@@ -185,28 +194,31 @@ fn CertificateCard(result: DsarResult) -> Element {
 /// Run one DSAR action against the server, returning the typed result.
 /// Confirmation-first: every field derives from the actual server response;
 /// the chain badge is the chain STILL holding (live re-verify), not cert-time.
-async fn run_dsar(
-    api: ApiClient,
-    subject: String,
-    action: &'static str,
-) -> Result<DsarResult, String> {
-    let resp = api
-        .dsar(&subject, action)
-        .await
-        .map_err(|e| format!("dsar {action} failed: {e}"))?;
+/// v1.20.0 M3: an unreachable backend enqueues the action instead of failing.
+async fn run_dsar(api: ApiClient, subject: String, action: &'static str) -> DsarOutcome {
+    let resp = match api.dsar(&subject, action).await {
+        Err(e) if crate::queue::is_offline(&e) => {
+            crate::queue::enqueue(crate::queue::QueuedAction::Dsar {
+                subject: subject.clone(),
+                action: action.to_string(),
+            });
+            return DsarOutcome::Queued;
+        }
+        Err(e) => return DsarOutcome::Failed(format!("dsar {action} failed: {e}")),
+        Ok(resp) => resp,
+    };
     // Live chain re-verify: the cert-time head is a snapshot; the badge must
     // reflect the chain holding NOW (DESIGN §8 defining-screenshot rule).
     let cert = match action {
-        "purge" | "both" => api
-            .dsar_certificate(resp.id)
-            .await
-            .map(DsarCertificate::from_value)
-            .map_err(|e| format!("certificate fetch failed: {e}"))?,
+        "purge" | "both" => match api.dsar_certificate(resp.id).await {
+            Ok(v) => DsarCertificate::from_value(v),
+            Err(e) => return DsarOutcome::Failed(format!("certificate fetch failed: {e}")),
+        },
         _ => {
             DsarCertificate::from_value(resp.certificate.clone().unwrap_or(serde_json::Value::Null))
         }
     };
-    Ok(DsarResult {
+    DsarOutcome::Done(DsarResult {
         id: resp.id,
         subject: resp.subject,
         cert,

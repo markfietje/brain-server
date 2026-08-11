@@ -119,6 +119,10 @@ confirm_destructive = Press Enter to confirm
 ## Graph (v1.17.7 M3)
 nav_graph = Graph
 graph_title = Graph
+
+## v1.20.0 M3 (offline queue)
+nav_queued = queued
+nav_queued_title = Actions issued while offline; replay when the connection returns
 graph_entity_ph = Search an entity…
 graph_browse = Entity
 graph_type = type
@@ -209,6 +213,7 @@ data_empty = Nothing to show.
 data_purge_ids = Chunk ids (comma/space separated)
 data_purge_owner = Or purge all for owner
 data_purged = Purged {n} chunk(s)
+data_purged_queued = Queued for replay (offline) — will purge when the connection returns
 data_purge_empty = Provide chunk ids or an owner
 
 ## UMP (v1.17.8 M6 — Portability group)

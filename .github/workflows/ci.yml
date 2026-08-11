@@ -58,6 +58,11 @@ jobs:
         run: cargo test --manifest-path client/Cargo.toml
       - name: wasm build
         run: cargo build --manifest-path client/Cargo.toml --target wasm32-unknown-unknown
+      # v1.20.0 M2.1 — the bundle regression budget (client/bundle-budget.sh):
+      # release wasm must stay under the measured+headroom ceiling. `dx
+      # bundle` is an operator step; this is the CI-side growth guard.
+      - name: bundle budget
+        run: bash client/bundle-budget.sh
 
   release-build:
     name: release build

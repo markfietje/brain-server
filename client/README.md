@@ -4,18 +4,19 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.19.0
+## Status — v1.20.0
 
-The v1.19.0 "Integrated" release. Auditing the plan against the tree found most
-of it already shipped — deep links (review/recall/dsar cert, v1.16.7), iOS/Android
-`brain://` intent filters (v1.17.0), the PWA shell (manifest + service worker +
-offline shell, v1.16.7), recall debounce (v1.16.7), and the JWT-pair + silent
-refresh + principal half of SSO (v1.16.5). This release closes the remaining
-**testable** delta: **the audit panel's filters are now URL-addressable**
-(`/audit?since=&principal=` opens pre-filtered, shareable). The rest are honest
-ceilings — OIDC authorization-code + PKCE is a server-side `/auth/authorize`
-(v2.x) gap (brain-server is a token validator, not an IdP); virtualized lists
-need viewport JS; wasm-split stays a Dioxus 0.7.10 ceiling until 0.8-stable.
+The v1.20.0 "Polish" release — the client chain's done-state. **Theming:**
+dark/light/system-following (`prefers-color-scheme`, no JS), density +
+typography from v1.16.8. **Perf:** a CI bundle-regression budget
+(`client/bundle-budget.sh`, release wasm ≤ 7 MB — measured 4.34 MB; the
+plan's final <50 KB web initial / <5 MB mobile budgets stay operator
+`dx bundle` measurements, tracked in `BENCHMARKS.md`). **Offline-tolerance:**
+approve/reject/purge/DSAR issued while the backend is unreachable are queued
+locally (bounded 100, payload-keyed idempotency, token never persisted) and
+replayed on recovery with "queued (offline)" surfaced honestly in the review
+rows + batch summary. **Zero telemetry:** reaffirmed — nothing in the polish
+line collects data.
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`

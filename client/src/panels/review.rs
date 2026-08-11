@@ -16,12 +16,14 @@ use std::collections::{HashMap, HashSet};
 
 /// M3.1: per-row outcome. A failed call in a batch is surfaced here, not
 /// silently dropped. `AlreadyDone` treats a 404-no-pending as success (the
-/// approve/reject contract is non-idempotent — DESIGN §4.1).
+/// approve/reject contract is non-idempotent — DESIGN §4.1). `Queued` (v1.20.0
+/// M3) is a write that hit the offline window and awaits replay.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RowOutcome {
     Pending,
     Done(i64),
     AlreadyDone,
+    Queued,
     Failed(String),
 }
 
@@ -33,6 +35,19 @@ fn classify_outcome(result: Result<i64, ApiError>) -> RowOutcome {
         Ok(chunk_id) => RowOutcome::Done(chunk_id),
         Err(ApiError::Status(404, _)) => RowOutcome::AlreadyDone,
         Err(e) => RowOutcome::Failed(e.to_string()),
+    }
+}
+
+/// v1.20.0 M3: settle one approve/reject result. An offline call enqueues the
+/// action for replay (idempotency by key) and surfaces `Queued` instead of a
+/// false failure; everything else falls through to `classify_outcome`.
+fn settle(result: Result<i64, ApiError>, action: crate::queue::QueuedAction) -> RowOutcome {
+    match result {
+        Err(e) if crate::queue::is_offline(&e) => {
+            crate::queue::enqueue(action);
+            RowOutcome::Queued
+        }
+        other => classify_outcome(other),
     }
 }
 
@@ -57,6 +72,7 @@ fn clear_pending_selection(
 pub struct BatchSummary {
     pub done: usize,
     pub already_done: usize,
+    pub queued: usize,
     pub failed: usize,
     pub pending: usize,
 }
@@ -67,6 +83,7 @@ pub fn batch_outcome(outcomes: &HashMap<i64, RowOutcome>) -> BatchSummary {
         match o {
             RowOutcome::Done(_) => s.done += 1,
             RowOutcome::AlreadyDone => s.already_done += 1,
+            RowOutcome::Queued => s.queued += 1,
             RowOutcome::Failed(_) => s.failed += 1,
             RowOutcome::Pending => s.pending += 1,
         }
@@ -78,10 +95,10 @@ pub fn batch_outcome(outcomes: &HashMap<i64, RowOutcome>) -> BatchSummary {
 /// settled out of Pending). Surfaces partial failure honestly.
 fn batch_summary(outcomes: &HashMap<i64, RowOutcome>) -> Element {
     let s = batch_outcome(outcomes);
-    if (s.done + s.already_done + s.failed) > 0 && s.pending == 0 {
+    if (s.done + s.already_done + s.queued + s.failed) > 0 && s.pending == 0 {
         rsx! {
             p { class: "text-xs text-muted-foreground mb-1", role: "status", "aria-live": "polite",
-                "batch: {s.done} approved · {s.already_done} already decided · {s.failed} failed"
+                "batch: {s.done} approved · {s.already_done} already decided · {s.queued} queued (offline) · {s.failed} failed"
             }
         }
     } else {
@@ -206,7 +223,18 @@ pub fn panel() -> Element {
                 } else {
                     api.approve_proposal(id, None).await.map(|r| r.chunk_id)
                 };
-                outcomes.write().insert(id, classify_outcome(res));
+                let action = if reject {
+                    crate::queue::QueuedAction::Reject {
+                        id,
+                        reason: reason.clone(),
+                    }
+                } else {
+                    crate::queue::QueuedAction::Approve {
+                        id,
+                        supersedes: None,
+                    }
+                };
+                outcomes.write().insert(id, settle(res, action));
             }
             refresh += 1;
         });
@@ -226,7 +254,12 @@ pub fn panel() -> Element {
                     .await
                     .map(|r| r.chunk_id)
             };
-            outcomes.write().insert(id, classify_outcome(res));
+            let action = if reject {
+                crate::queue::QueuedAction::Reject { id, reason: None }
+            } else {
+                crate::queue::QueuedAction::Approve { id, supersedes }
+            };
+            outcomes.write().insert(id, settle(res, action));
             selected.write().remove(&id);
             refresh += 1;
         });
@@ -483,6 +516,9 @@ fn card(
                             RowOutcome::AlreadyDone => rsx! {
                                 span { class: "text-xs text-muted-foreground", "already decided" }
                             },
+                            RowOutcome::Queued => rsx! {
+                                span { class: "text-xs text-warn", "queued (offline)" }
+                            },
                             RowOutcome::Failed(e) => rsx! {
                                 span { class: "text-xs text-danger", "failed: {e}" }
                             },
@@ -536,8 +572,20 @@ fn RejectEditor(
                             let mut reject_for = reject_for;
                             spawn(async move {
                                 outcomes.write().insert(id, RowOutcome::Pending);
-                                let res = api().reject_proposal(id, if r.trim().is_empty() { None } else { Some(&r) }).await.map(|_| 0);
-                                outcomes.write().insert(id, classify_outcome(res));
+                                let reason = r.trim().to_string();
+                                let reason_opt =
+                                    if reason.is_empty() { None } else { Some(reason) };
+                                let res = api().reject_proposal(id, reason_opt.as_deref()).await.map(|_| 0);
+                                outcomes.write().insert(
+                                    id,
+                                    settle(
+                                        res,
+                                        crate::queue::QueuedAction::Reject {
+                                            id,
+                                            reason: reason_opt,
+                                        },
+                                    ),
+                                );
                                 refresh += 1;
                                 reject_for.set(None);
                             });
@@ -671,6 +719,13 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
                 Ok(_) => {
                     nav.replace(Route::Review {});
                 }
+                Err(e) if crate::queue::is_offline(&e) => {
+                    crate::queue::enqueue(crate::queue::QueuedAction::Approve {
+                        id: proposal_id,
+                        supersedes: None,
+                    });
+                    state.set("queued — will replay when the connection returns".to_string());
+                }
                 Err(e) => state.set(error_message(&e)),
             }
         });
@@ -681,6 +736,13 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
             match api().reject_proposal(proposal_id, None).await {
                 Ok(_) => {
                     nav.replace(Route::Review {});
+                }
+                Err(e) if crate::queue::is_offline(&e) => {
+                    crate::queue::enqueue(crate::queue::QueuedAction::Reject {
+                        id: proposal_id,
+                        reason: None,
+                    });
+                    state.set("queued — will replay when the connection returns".to_string());
                 }
                 Err(e) => state.set(error_message(&e)),
             }
@@ -813,6 +875,7 @@ mod tests {
                 done: 1,
                 already_done: 1,
                 failed: 1,
+                queued: 0,
                 pending: 1,
             }
         );

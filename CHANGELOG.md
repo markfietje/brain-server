@@ -10,6 +10,55 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.0] — 2026-08-11
+
+### Client — "Polish" (theming, perf, offline-tolerance — the v1.20.0 done-state)
+
+The final milestone of the v1.14→v1.20 client chain. Closed the plan's three
+testable deltas; the two measured-performance deltas that need the Dioxus CLI
+(`dx bundle` wasm sizes + FPS profiling) stay operator steps with their
+budgets documented in `BENCHMARKS.md`.
+
+### Added
+- **M1 — system-following theme**: the theme toggle now cycles
+  `dark → light → system`; `system` resolves via `prefers-color-scheme`
+  (`pick_theme` extended to a tri-state over `THEME_MODES`; the existing
+  theme effect sets `data-theme="system"` and the CSS
+  `@media (prefers-color-scheme: light)` token block does the following —
+  no JS).
+- **M2.1 — bundle regression budget**: `client/bundle-budget.sh` builds the
+  release wasm and fails if it exceeds a 7 MB budget (measured
+  4.34 MB at ship; the dx-bundled 3.7 MB from v1.18.1 is the floor reference).
+  Wired into the `client-gate` CI job as a hard gate.
+- **M3 — offline-tolerance** (`client/src/queue.rs`): a bounded (100),
+  serde-persisted (localStorage, `credentials_stay_in_memory`-safe — no
+  token ever enters a queued action) action queue. Approve/Reject/Purge/DSAR
+  actions that hit an unreachable/erroring server are queued instead of
+  dropped; a "queued (offline)" badge shows the count in the top bar.
+  On recovery the queue replays (`run_replay` — settle-by-key, each action
+  applied once, survivors re-enqueued). Pinned by a wire parse/dedup test
+  (idempotency-key dedup) + queue tests.
+- **M4 — zero-telemetry reaffirmed**: no change, and the M2/M3 additions
+  collect nothing (queue payloads are action-ids only, persisted locally).
+
+### Changed
+- Review rows, the batch summary, and DSAR outcomes now surface
+  `RowOutcome::Queued` rather than collapsing to a generic pending state.
+- `Package` idempotency keys derive from the action payload (`key()`), so a
+  queued-then-applied action is never applied twice.
+
+### Honest ceilings (carried into v2.0)
+- Measured `dx bundle` wasm/JSCSS sizes + FPS profiling are operator steps
+  (no Dioxus CLI here); the plan's <50 KB initial / <5 MB mobile budgets are
+  tracked in `BENCHMARKS.md` as measured-success criteria, the CI budget
+  guards the dominant term (release wasm).
+- `system` theme does not live-listen to OS changes mid-session (applies on
+  launch/change); desktop/mobile native theme following is a v2.x ceiling.
+- wasm-split remains a Dioxus 0.8 ceiling (the wasm grows with the console —
+  the budget gate is the tripwire until then).
+
+---
+
 ## [1.19.0] — 2026-08-10
 
 ### Client — "Integrated" (the audit-verified remainder of the v1.19.0 plan)

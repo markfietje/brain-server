@@ -125,10 +125,16 @@ pub fn pick_locale(raw: &str) -> &'static str {
         .unwrap_or("en")
 }
 
-/// Sanitize a persisted theme back to `dark`|`light`.
+/// The three theme modes: `dark`, `light`, or `system` (follow the OS via
+/// `prefers-color-scheme` — v1.20.0 M1; the CSS does the following, no JS).
+pub const THEME_MODES: [&str; 3] = ["dark", "light", "system"];
+
+/// Sanitize a persisted theme back to `dark`|`light`|`system`.
 pub fn pick_theme(raw: &str) -> &'static str {
     if raw == "light" {
         "light"
+    } else if raw == "system" {
+        "system"
     } else {
         "dark"
     }
@@ -220,6 +226,7 @@ mod tests {
         assert_eq!(pick_locale("de"), "de");
         assert_eq!(pick_locale("xx"), "en");
         assert_eq!(pick_theme("light"), "light");
+        assert_eq!(pick_theme("system"), "system");
         assert_eq!(pick_theme("blue"), "dark");
         assert_eq!(pick_density("compact"), "compact");
         assert_eq!(pick_density("huge"), "comfortable");
