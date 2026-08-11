@@ -10,36 +10,143 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [Unreleased]
+## [1.20.2] — 2026-08-11
 
-### Added
-- **MCP 2026-07-28 protocol compliance** (`src/bin/mcp.rs`, unversioned — rides
-  into the next release): stateless core — no `initialize` handshake; every
-  modern request validates the mandatory per-request `_meta`
-  (`io.modelcontextprotocol/protocolVersion` + `io.modelcontextprotocol/
-  clientCapabilities`); `server/discover` replaces `initialize` for modern
-  clients (`supportedVersions: ["2026-07-28", "2025-11-25"]`); every result
-  carries `resultType: "complete"` + `_meta.io.modelcontextprotocol/serverInfo`;
-  `tools/list` + `server/discover` advertise `ttlMs`/`cacheScope` caching hints
-  (SEP-2549). Error surface per the new spec: missing `_meta`/fields → -32602,
-  unsupported version → -32022 with `data.{supported,requested}`, unknown tool →
-  -32602, parse error → -32700 (null id), null id → -32600. Dual-era: a legacy
-  client's `initialize` selects 2025-11-25 semantics scoped to the stdio
-  process (bare requests dispatch without `_meta`; responses keep the legacy
-  shape). `ping` kept as a harmless no-op (removed from the new schema). 591
-  server-side tests (+8 mcp wire tests), clippy `-D warnings` + fmt green.
-  **Verified against OpenClaw 2026.8.1 as a real MCP client** (2026-08-11,
-  a test only — the native `brain-server` plugin remains the production
-  integration): `openclaw mcp add brain-server --command ~/.local/bin/mcp`
-  probed successfully through the `@modelcontextprotocol/sdk` 1.30.0 client
-  (`LATEST_PROTOCOL_VERSION = 2025-11-25` — the dual-era legacy path) —
-  `initialize` → 2025-11-25 response, `tools/list` → all 12 tools, and a live
-  `tools/call` on `ump.capabilities` returned the real L3 conformance payload.
-  The entry was then removed (`openclaw mcp unset brain-server`); `mcp.servers`
-  is not part of the shipped configuration. Note: a freshly-copied `~/.local/bin/mcp`
-  must be ad-hoc signed (`codesign --force --sign -`) or have the
-  `com.apple.provenance` xattr stripped, or Gatekeeper SIGKILLs it on spawn
-  from a Node child process (the AGENTS.md-documented failure class).
+### Server — "Harden" (deep + security second-pass audit fixes)
+
+The consolidated fix release for the v1.20.x deep + security second-pass
+audit. Every confirmed finding from both audit passes is closed as a code
+change; the operator-only G3/G4 work from the prior `CredentialHygiene` plan
+is Part H (operator steps, no code). No schema change (stays at 1.20.1) — this
+is a code-only release. Server 1.20.1 → 1.20.2; plugin stays 0.2.1; client
+stays 1.20.0. See `IMPLEMENTATION_PLAN_v1.20.2_Harden.md`.
+
+### Fixed — Correctness + concurrency (audit chain fork + friends)
+- **A1 [C] audit hash chain can fork under concurrent autocommit writers**
+  (`src/audit.rs`). `record_tenant` wrapped read-tip + INSERT in a `SAVEPOINT`,
+  which on an autocommit caller is `BEGIN DEFERRED` — two concurrent writers
+  both read the same tip and both INSERT the same `prev_hash` (chain forks).
+  Now branches on `conn.is_autocommit()`: autocommit → `BEGIN IMMEDIATE` so the
+  read-modify-write serializes at BEGIN; inside a caller tx (autocommit false)
+  → keep `SAVEPOINT` (outer tx already holds the write lock). Mirrors the
+  proven `record_and_rotate` pattern. Pinned by
+  `audit_chain_survives_concurrent_autocommit_writers` (two threads + Barrier +
+  `verify_chain`).
+- **A2 [M] `prune_audit_retention` re-anchor** now uses
+  `TransactionBehavior::Immediate` (was `unchecked_transaction`), same root
+  cause as A1.
+- **A3 [H] `approve_proposal` UPDATE lacked `AND status='pending'`**
+  (`src/handlers/gate.rs`). Two concurrent approves raced; the loser surfaced a
+  generic 500 via `idx_knowledge_hash` UNIQUE. Now CAS's the row, checks
+  `n > 0`, returns `409 proposal_already_decided` otherwise, and the whole
+  SELECT-INSERT-UPDATE promote runs in `BEGIN IMMEDIATE`.
+- **A4 [H] `expire_if_stale` audit visibility depended on caller tx state.**
+  `approve_proposal` ran it inside the tx, so the expiration + audit rolled
+  back if anything after failed. Now expired **before** the tx opens (a
+  distinct autocommitted event) + the status is re-checked inside the tx. The
+  reject path already used `&Connection` and was correct.
+
+### Fixed — GhostJacking-audit G1 hole on `/procedure` (first-pass M1)
+- **B1 `/procedure` write core now screens injection like its siblings**
+  (`src/handlers/procedure.rs`). The Shield release's "shared write core"
+  claim had a hole: `/procedure` INSERTed into `knowledge` directly. Now
+  mirrors `ingest_one` — screens root content+title AND every step
+  (`contains_suspicious_pattern`), honors Reject policy → 400 `input_rejected`,
+  calls `flag_if_quarantined` per-chunk under Quarantine (default), and skips
+  `next_step` KG edges for a quarantined procedure. Pinned by the model-backed
+  `#[ignore]`d `procedure_screens_injection_like_its_siblings`.
+
+### Fixed — PII redaction missed 16–19 digit Luhn cards (first-pass M2)
+- **C1 `mask_phone` upper bound was 15; cards are 13–19** (`src/gate.rs`). A
+  16-digit Visa/Mastercard was flagged `pii=1` but never masked → leaked
+  verbatim via `redact_content` and `screen_source_prompt`. New `mask_card`
+  Luhn-checks 13–19 digit runs (single source of truth reusing the `scan_pii`
+  detector), called from both `redact_content` and `screen_source_prompt`.
+  `"4111 1111 1111 1111"` → `[redacted:card]`. Pinned by
+  `redaction_masks_luhn_valid_16_digit_cards`.
+
+### Fixed — DoS surface (highest-impact audit findings)
+- **D1 [H] rate limiter evadable + unbounded memory via spoofed
+  `X-Forwarded-For`** (`src/main.rs` + `src/config.rs`). `X-Forwarded-For` is
+  now trusted only when `BRAIN_TRUST_PROXY=1` (default: socket addr — a
+  direct-connection attacker can't cycle the header). The `RateLimiter`
+  HashMap is capped at `RATE_LIMIT_MAX_KEYS = 10_000` with LRU eviction of the
+  oldest 25% when full (bounded memory, no new dep). Pinned by
+  `rate_limiter_caps_tracked_ips_and_evicts_oldest`.
+- **D2 [H] linker quadratic blowup on adversarial content** (`src/linker.rs`).
+  `extract_vocabulary` is now capped at `MAX_VOCAB_ENTITIES = 500` (one guard
+  at entity insertion; the O(mentions²) loops inherit the bound). Pinned by
+  `extract_vocabulary_caps_at_max_vocab_entities`.
+- **D3 [M] `/export` buffered the entire DB → OOM** (`src/handlers/gate.rs`).
+  Now bounded with a hard row cap + the provenance summary precomputed in one
+  COUNT-GROUP-BY. (`ponytail:` a true streaming JSON encoder is a v2.x change;
+  this guard prevents the OOM today.)
+- **D4 [M] `/v1/embeddings` unbounded batch amplification** (`src/main.rs`).
+  `inputs.len()` is now capped at `MAX_EMBEDDING_BATCH = 64` → 400.
+
+### Fixed — AuthZ completeness + tenant isolation
+- **E1 [H] `/tombstones` + `/dsar/{id}/certificate` lacked tenant scoping**
+  (`src/handlers/observe.rs`). Both are Admin-gated but didn't call
+  `audit_scope`; a team-scoped admin saw every tenant's tombstones
+  (`reason = owner:<subject>`) + certificates. Now filtered against the
+  principal's `sub` at the SQL layer (cross-tenant → empty result / 404, no
+  existence leak); superuser (`None` principal) unconstrained.
+- **E2 wiring-guard test blind to chained routes + `cap_gate`** — the
+  capability gate remains exercised by `cap_gate_enforces_verbs_scope_and_never_admin`
+  + `capability_accepted_only_on_ump_surface_with_operator_key`; the contract
+  table + comment updated.
+- **E3 [M] `/add` did not enforce `MAX_CONTENT`** (`src/main.rs`) — now checks
+  the same bound `ingest_one` uses → 400.
+
+### Fixed — Input validation + data hygiene
+- **F1 [M] `source_prompt` unbounded + not injection-screened**
+  (`src/handlers/gate.rs`). `MAX_SOURCE_PROMPT = 2048` (plugin sends ≤2000) →
+  reject longer; screened via `screen_source_prompt` so a tripped prompt
+  persists only as the `[redacted:…]` form (reviewer sees the warning).
+- **F2 [L] `/health/db` was public + leaked operational metadata**
+  (`src/main.rs`) — moved out of both public lists; now Read-gated. `/health`
+  (the load-balancer probe) stays public.
+- **F3 [L] `multi_get` N+1 queries** (`src/main.rs`) — collapsed to a single
+  `SELECT ... WHERE id IN (...)` respecting `MAX_MULTI_GET`.
+- **F4 [L] `/metrics` tenant scoping documented** — kept Admin/Read (an
+  operator surface; the body is aggregate booleans, not row data); the intent
+  is now a docstring.
+
+### Added — MCP 2026-07-28 protocol compliance (Agent 68, folded)
+- **MCP 2026-07-28 protocol compliance** (`src/bin/mcp.rs`): stateless core —
+  no `initialize` handshake; every modern request validates the mandatory
+  per-request `_meta` (`io.modelcontextprotocol/protocolVersion` +
+  `io.modelcontextprotocol/clientCapabilities`); `server/discover` replaces
+  `initialize` for modern clients (`supportedVersions: ["2026-07-28",
+  "2025-11-25"]`); every result carries `resultType: "complete"` +
+  `_meta.io.modelcontextprotocol/serverInfo`; `tools/list` + `server/discover`
+  advertise `ttlMs`/`cacheScope` caching hints (SEP-2549). Error surface per
+  the new spec: missing `_meta`/fields → -32602, unsupported version → -32022
+  with `data.{supported,requested}`, unknown tool → -32602, parse error →
+  -32700 (null id), null id → -32600. Dual-era: a legacy client's `initialize`
+  selects 2025-11-25 semantics scoped to the stdio process. `ping` kept as a
+  harmless no-op (removed from the new schema). Verified against OpenClaw
+  2026.8.1 as a real MCP client (a test only — the native plugin remains the
+  integration).
+- **G1 [L] MCP stdio `read_line` unbounded → OOM** — capped at
+  `MAX_LINE_BYTES = 1 << 20` (1 MiB), bails with -32700 on overflow.
+- **G3 [L] MCP error messages echoed user input** — the four `format!` sites
+  now use static labels + `sanitize_echo` (hex-escapes the offending value,
+  truncates to 64 chars) so client input can't carry prompt-injection text
+  into the caller LLM via `error.message`. Pinned by
+  `sanitize_echo_destroys_injection_structure` + the updated
+  `unknown_tool_is_a_protocol_error`.
+- **G4 [I] `legacy` flag process-sticky** — `ponytail:` comment names the
+  single-parent trust-model ceiling. No code change.
+
+### Honest ceilings (carried into v1.20.3+ / v2.0)
+- The injection screen stays the deterministic blocklist (G5 classifier =
+  v1.20.3). Quarantine stores flagged, never deletes.
+- `/export` streaming uses a bounded guard, not a server-sent stream (v2.x
+  nicety); `RateLimiter` LRU is in-process (multi-instance shared store is
+  v2.1); capability tokens remain operator-only (per-tenant cap scope is v2.0
+  multi-tenancy); the audit-chain C1 fix is per-process (distributed audit
+  chain is v2.1).
 
 ## [1.20.1] — 2026-08-11
 

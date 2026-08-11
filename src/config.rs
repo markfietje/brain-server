@@ -9,6 +9,12 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_REQUEST_SIZE: usize = 1024 * 1024;
 pub const MAX_QUERY_LENGTH: usize = 2000;
 
+/// v1.20.2 "Harden" D1: max distinct client-IP buckets the rate limiter tracks
+/// before evicting the oldest 25%. Bounds memory against an attacker cycling
+/// spoofed `X-Forwarded-For` values. ponytail: in-process LRU — multi-instance
+/// rate limiting needs a shared store (v2.1).
+pub const RATE_LIMIT_MAX_KEYS: usize = 10_000;
+
 /// v1.9.0 "Suggest": bounds for the opt-in `/suggest` surface. `k` is capped
 /// small because suggestions are supplementary context, not a replacement for
 /// `/recall`; `exclude` is capped so a caller can't OOM the NOT IN clause.
@@ -409,6 +415,21 @@ pub fn brain_domain_min_count() -> i64 {
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(1)
         .max(1)
+}
+
+/// v1.20.2 "Harden" D1: only trust `X-Forwarded-For` when the operator has
+/// explicitly told us we're behind a reversing proxy that sets it (and that
+/// the proxy overwrites any client-supplied value). Default `false` — direct
+/// connections use the socket address, defeating the per-request IP-spoofing
+/// attack that evades the limiter and grows its HashMap unboundedly.
+pub fn brain_trust_proxy() -> bool {
+    matches!(
+        std::env::var("BRAIN_TRUST_PROXY")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 // ── v1.15.0 "Observe": read-event audit + DSAR ─────────────────────────

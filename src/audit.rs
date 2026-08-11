@@ -141,11 +141,23 @@ pub fn record(
 /// Per-tenant variant of [`record`]. Same best-effort semantics; returns the
 /// inserted row id on success, `None` on failure.
 ///
-/// The chain-tip read + INSERT are wrapped in a `SAVEPOINT` so the
-/// read-modify-write is atomic even for autocommit callers. `SAVEPOINT`
-/// (rather than `BEGIN`) is used because it nests cleanly inside callers'
-/// existing transactions (e.g. `delete_quarantine`) — a `BEGIN` would fail
-/// with "cannot start a transaction within a transaction" in that case.
+/// The chain-tip read + INSERT must be atomic so concurrent writers can't
+/// both read the same tip and fork the chain. The right transaction kind
+/// depends on whether the caller already holds a transaction:
+///
+/// - **Autocommit caller** (the majority — e.g. `approve_proposal` commits
+///   its own tx, *then* calls `audit::record` on a fresh autocommit
+///   connection): use `BEGIN IMMEDIATE` so the read-modify-write serializes
+///   at `BEGIN`. SQLite's single-writer rule guarantees the second writer
+///   blocks until the first commits, then re-reads the fresh tip. This is
+///   the v1.20.2 fix for the chain-fork race (the v1.1.1 SAVEPOINT fix only
+///   covered the inside-caller-tx case; on an autocommit caller SAVEPOINT
+///   is equivalent to `BEGIN DEFERRED`, which does NOT serialize readers).
+/// - **Inside a caller's transaction** (`delete_quarantine` etc.): use a
+///   `SAVEPOINT` (a `BEGIN` would error "cannot start a transaction within
+///   a transaction"). The outer tx already holds the write lock, so the
+///   read-modify-write is serialized by it.
+///
 /// Errors are swallowed at every step: audit must never fail the primary
 /// action, and a broken audit row is preferable to a rolled-back write.
 pub fn record_tenant(
@@ -161,13 +173,26 @@ pub fn record_tenant(
     let detail_hash = hash(detail);
     let kind_str = kind.as_str();
     let status_str = status.as_str();
-    // SAVEPOINT nests inside a caller's existing tx (BEGIN would error);
-    // if it fails to open, fall through with autocommit semantics so the
-    // audit row still lands.
-    let sp_ok = conn.execute("SAVEPOINT audit_link", []).is_ok();
-    // Read the chain tip (the most recent row). Inside the savepoint this is
-    // stable against concurrent writers — and the INSERT below commits/rolls
-    // back atomically with it.
+    // Decide the transaction kind from the caller's state. `is_autocommit()`
+    // returns true when no transaction is active on the connection — that's
+    // the case where we need IMMEDIATE to serialize. When false, we're nested
+    // inside a caller's tx and must use SAVEPOINT.
+    let autocommit = conn.is_autocommit();
+    let (begin_stmt, end_stmt, rollback_stmt) = if autocommit {
+        ("BEGIN IMMEDIATE", "COMMIT", "ROLLBACK")
+    } else {
+        (
+            "SAVEPOINT audit_link",
+            "RELEASE SAVEPOINT audit_link",
+            "ROLLBACK TO SAVEPOINT audit_link",
+        )
+    };
+    // If the open fails, fall through with autocommit semantics so the audit
+    // row still lands (best-effort contract).
+    let sp_ok = conn.execute(begin_stmt, []).is_ok();
+    // Read the chain tip (the most recent row). Inside the tx this is stable
+    // against concurrent writers — and the INSERT below commits/rolls back
+    // atomically with it.
     let tip: Option<ChainTip> = conn
         .query_row(
             "SELECT ts, kind, actor, target_hash, prev_hash \
@@ -208,18 +233,12 @@ pub fn record_tenant(
         -1
     };
     if sp_ok {
-        // Release on success (commits the savepoint); roll back on failure so
-        // a partial write doesn't leave a dangling tip. Rolling back the
-        // savepoint does NOT touch the caller's outer transaction.
-        let _ = conn.execute(
-            if inserted {
-                "RELEASE SAVEPOINT audit_link"
-            } else {
-                "ROLLBACK TO SAVEPOINT audit_link"
-            },
-            [],
-        );
-        if !inserted {
+        // Commit/release on success; roll back on failure so a partial write
+        // doesn't leave a dangling tip. Rolling back a SAVEPOINT does NOT
+        // touch the caller's outer transaction; rolling back a top-level
+        // IMMEDIATE tx only undoes this best-effort audit row.
+        let _ = conn.execute(if inserted { end_stmt } else { rollback_stmt }, []);
+        if !inserted && !autocommit {
             // ROLLBACK TO keeps the savepoint open; release it to clean up.
             let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
         }
@@ -308,26 +327,51 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     if expired == 0 {
         return Some(0);
     }
-    let tx = conn.unchecked_transaction().ok()?;
+    // v1.20.2: IMMEDIATE (not the default DEFERRED that `unchecked_transaction`
+    // uses) so the re-anchor's read-then-rewrite of every survivor's prev_hash
+    // is serialized against concurrent `record_tenant` writers. Without this,
+    // a `record_tenant` INSERT sneaked between prune's SELECT and its first
+    // UPDATE would chain its prev_hash against a tip the prune is about to
+    // rewrite — forking the chain. Same root cause as the record_tenant fix.
+    // Raw SQL (not `transaction_with_behavior`) keeps the `&Connection` signature
+    // callers already use; we COMMIT/ROLLBACK explicitly.
+    if conn.execute("BEGIN IMMEDIATE", []).is_err() {
+        return None;
+    }
     // Remove expired rows from the head.
-    tx.execute("DELETE FROM audit_events WHERE ts < ?1", params![cutoff])
-        .ok()?;
+    if conn
+        .execute("DELETE FROM audit_events WHERE ts < ?1", params![cutoff])
+        .is_err()
+    {
+        let _ = conn.execute("ROLLBACK", []);
+        return None;
+    }
     // Re-anchor: the oldest survivor becomes the genesis (NULL prev_hash), and
     // every subsequent survivor's prev_hash is recomputed so the retained
     // window stays internally tamper-evident.
     let mut ids: Vec<i64> = Vec::new();
     {
-        let mut stmt = tx
-            .prepare("SELECT id FROM audit_events ORDER BY id ASC")
-            .ok()?;
-        let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).ok()?;
+        let mut stmt = match conn.prepare("SELECT id FROM audit_events ORDER BY id ASC") {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = conn.execute("ROLLBACK", []);
+                return None;
+            }
+        };
+        let rows = match stmt.query_map([], |r| r.get::<_, i64>(0)) {
+            Ok(r) => r,
+            Err(_) => {
+                let _ = conn.execute("ROLLBACK", []);
+                return None;
+            }
+        };
         for v in rows.flatten() {
             ids.push(v);
         }
     }
     let mut prev: Option<String> = None;
     for (i, id) in ids.iter().enumerate() {
-        let row: Option<(String, String, String, String, Option<String>)> = tx
+        let row: Option<(String, String, String, String, Option<String>)> = conn
             .query_row(
                 "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE id = ?1",
                 params![id],
@@ -342,7 +386,10 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
                 },
             )
             .ok();
-        let (ts, kind, actor, th, _old_prev) = row?;
+        let Some((ts, kind, actor, th, _old_prev)) = row else {
+            let _ = conn.execute("ROLLBACK", []);
+            return None;
+        };
         let new_prev = if i == 0 {
             None // genesis
         } else {
@@ -354,7 +401,7 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
                 prev.as_deref().unwrap_or(""),
             ))
         };
-        let _ = tx.execute(
+        let _ = conn.execute(
             "UPDATE audit_events SET prev_hash = ?1 WHERE id = ?2",
             params![new_prev, id],
         );
@@ -365,13 +412,21 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     // leave their replay traces behind forever. Delete any trace whose audit
     // row is gone. (The DSAR/purge cascade is handled in gate::purge_chunk_ids;
     // this covers the retention path.)
-    tx.execute(
-        "DELETE FROM recall_traces
+    if conn
+        .execute(
+            "DELETE FROM recall_traces
           WHERE audit_id NOT IN (SELECT id FROM audit_events)",
-        [],
-    )
-    .ok()?;
-    tx.commit().ok()?;
+            [],
+        )
+        .is_err()
+    {
+        let _ = conn.execute("ROLLBACK", []);
+        return None;
+    }
+    if conn.execute("COMMIT", []).is_err() {
+        let _ = conn.execute("ROLLBACK", []);
+        return None;
+    }
     Some(expired)
 }
 
@@ -980,5 +1035,82 @@ mod tests {
         assert!(recent_tenant(&db, None, Some("team-a"), 4, 40)
             .unwrap()
             .is_empty());
+    }
+
+    /// v1.20.2 C1 fix: concurrent autocommit `record_tenant` callers must not
+    /// fork the chain. Two pooled connections, a `Barrier` so both threads
+    /// reach the audit call simultaneously, then verify the chain holds.
+    /// Mirrors the proven `concurrent_refresh_serializes_exactly_one_winner`
+    /// shape in `auth/revocation.rs`. Before the IMMEDIATE fix, this test
+    /// failed intermittently under load (both threads read the same tip,
+    /// both INSERTed the same prev_hash).
+    #[test]
+    fn audit_chain_survives_concurrent_autocommit_writers() {
+        use r2d2::Pool;
+        use r2d2_sqlite::SqliteConnectionManager;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        // Set a busy_timeout on every connection so concurrent writers wait
+        // rather than fail. Done in `with_init` so it applies to every pooled
+        // connection, not just the schema-creating one.
+        let mgr = SqliteConnectionManager::file(db_file.path()).with_init(|c| {
+            c.execute_batch("PRAGMA busy_timeout=5000;")?;
+            Ok(())
+        });
+        let pool: Pool<SqliteConnectionManager> = Pool::builder().max_size(8).build(mgr).unwrap();
+        {
+            let c = pool.get().unwrap();
+            c.execute_batch(
+                "CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                    kind TEXT NOT NULL,
+                    actor TEXT,
+                    target_hash TEXT,
+                    status TEXT,
+                    detail_hash TEXT,
+                    tenant_id TEXT,
+                    prev_hash TEXT
+                );",
+            )
+            .unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+        for i in 0..2 {
+            let p = pool.clone();
+            let b = barrier.clone();
+            handles.push(thread::spawn(move || {
+                let conn = p.get().unwrap();
+                // Synchronize the start so both threads race the tip read.
+                b.wait();
+                for j in 0..10 {
+                    record(
+                        &conn,
+                        AuditKind::Ingest,
+                        &format!("t{i}"),
+                        &format!("c{i}-{j}"),
+                        AuditStatus::Ok,
+                        "d",
+                    );
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let c = pool.get().unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 20, "all 20 audit rows landed");
+        assert!(
+            verify_chain(&c),
+            "chain verifies after concurrent autocommit writers — no fork"
+        );
     }
 }

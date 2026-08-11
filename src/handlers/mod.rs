@@ -57,6 +57,10 @@ pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
 pub const MAX_QUERY: usize = 2_000;
 pub const MAX_TITLE: usize = 500;
 pub const MAX_CONTENT: usize = 1_000_000;
+/// v1.20.2 F1: bound on the autoCapture `source_prompt` reviewer-facing field.
+/// The plugin sends ≤ 2000 chars; the server enforces its own bound so a
+/// malicious caller can't persist a multi-MiB prompt to the proposals table.
+pub const MAX_SOURCE_PROMPT: usize = 2_048;
 pub const MAX_LIMIT: u32 = 100;
 pub const MIN_LIMIT: u32 = 1;
 pub const MAX_ENTITIES: usize = 200;
@@ -293,6 +297,16 @@ impl HandlerError {
         Self {
             status,
             inner: ApiError::new(code, message.into()),
+        }
+    }
+    /// v1.20.2 "Harden": HTTP 409 — a concurrent modification won the race
+    /// (e.g. two reviewers approved/rejected the same proposal simultaneously).
+    /// Surfaces a clear conflict code instead of a generic 500 from the
+    /// underlying UNIQUE constraint.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            inner: ApiError::new("conflict", message.into()),
         }
     }
 }

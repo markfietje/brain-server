@@ -325,6 +325,11 @@ pub async fn list_tombstones(
     let subject = q.subject.clone();
     let since = q.since;
     let limit = q.limit.map(|l| l.clamp(1, MAX_TOMBSTONES)).unwrap_or(100);
+    // v1.20.2 E1: tenant scoping. A non-superuser admin only sees tombstones
+    // whose `reason` (owner:<subject>) matches their own `sub`. Superuser
+    // (`None` principal — opaque/loopback) is unconstrained. The query
+    // caller-filter takes precedence if it's narrower than the principal scope.
+    let tenant_filter: Option<String> = principal.0.as_ref().map(|p| format!("owner:{}", p.sub));
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
             .get()
@@ -338,6 +343,19 @@ pub async fn list_tombstones(
         if let Some(s) = &subject {
             clauses.push("reason = ?".to_string());
             params.push(Box::new(format!("owner:{s}")));
+        }
+        // Tenant scoping: a non-superuser admin is restricted to their own
+        // subject's tombstones, regardless of the `subject` query param.
+        if let Some(owner_reason) = &tenant_filter {
+            // Caller-supplied `subject` (if any) must agree with the principal's
+            // own sub; a cross-tenant request is rejected here at the SQL layer.
+            if subject.is_none() {
+                clauses.push("reason = ?".to_string());
+                params.push(Box::new(owner_reason.clone()));
+            } else if subject.as_deref() != Some(owner_reason.trim_start_matches("owner:")) {
+                // Cross-tenant request → empty result (don't leak existence).
+                return Ok(serde_json::json!({ "tombstones": [] }));
+            }
         }
         if let Some(t) = since {
             clauses.push("purged_at >= ?".to_string());
@@ -386,19 +404,32 @@ pub async fn get_dsar_certificate(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
+    // v1.20.2 E1: tenant scoping. A non-superuser admin can only fetch
+    // certificates for their own subject. The stored `dsar_requests.subject`
+    // is checked against the principal's `sub`; a mismatch → 404 (don't leak
+    // existence of another tenant's certificate).
+    let tenant_sub: Option<String> = principal.0.as_ref().map(|p| p.sub.clone());
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let cert: Option<String> = conn
+        // Fetch subject + certificate in one query so the tenant check happens
+        // before the certificate body is read.
+        let row: Option<(Option<String>, Option<String>)> = conn
             .query_row(
-                "SELECT certificate FROM dsar_requests WHERE id = ?1",
+                "SELECT subject, certificate FROM dsar_requests WHERE id = ?1",
                 rusqlite::params![id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .ok();
-        match cert {
-            Some(c) => {
+        match row {
+            Some((Some(stored_subject), Some(c))) => {
+                // Tenant gate: if the principal is scoped, the row's subject must match.
+                if let Some(sub) = &tenant_sub {
+                    if stored_subject.as_str() != sub.as_str() {
+                        return Err(HandlerError::not_found("no dsar request with this id"));
+                    }
+                }
                 let v: serde_json::Value = serde_json::from_str(&c)
                     .map_err(|_| HandlerError::internal("stored certificate is not valid JSON"))?;
                 Ok(serde_json::json!({
@@ -406,7 +437,7 @@ pub async fn get_dsar_certificate(
                     "chain_verifies": crate::audit::verify_chain(&conn),
                 }))
             }
-            None => Err(HandlerError::not_found("no dsar request with this id")),
+            _ => Err(HandlerError::not_found("no dsar request with this id")),
         }
     })
     .await

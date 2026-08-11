@@ -271,11 +271,27 @@ pub fn extract_heading_relationships(
 // EntityVocabulary
 // ---------------------------------------------------------------------------
 
+/// v1.20.2 D2: cap on auto-extracted vocabulary size. Prevents the O(mentions²)
+/// blowup in `discover_verb_patterns`/`find_relationships` when an attacker
+/// submits adversarial content (e.g. 1 MiB of `**A0** **A1** **A2** …`). 500 is
+/// well above any legitimate document; the quadratic loop on 500 mentions is
+/// ~125k iterations — negligible. ponytail: corpus-calibrated; raise for
+/// legitimate dense-vocab domains if measured.
+pub const MAX_VOCAB_ENTITIES: usize = 500;
+
 impl EntityVocabulary {
     /// Insert a name.
     pub fn insert(&mut self, name: &str) {
         let name = name.trim();
         if name.len() < 3 {
+            return;
+        }
+        // v1.20.2 D2: bound the auto-extracted set so the downstream O(n²)
+        // mention-pair scan stays bounded on adversarial input. The first 500
+        // entities (in insertion order, which is document order) are kept — a
+        // legitimate doc with >500 distinct entities is exceptional; an
+        // attacker's overflow entities are dropped.
+        if self.entities.len() >= MAX_VOCAB_ENTITIES {
             return;
         }
         let lower = name.to_lowercase();
@@ -1308,5 +1324,28 @@ Ceph maps OSD failures.
         assert!(!is_likely_verb("data"));
         assert!(!is_likely_verb("example"));
         assert!(!is_likely_verb("system"));
+    }
+
+    /// v1.20.2 D2: vocabulary extraction is capped so the O(mentions²) pair
+    /// scan in `discover_verb_patterns`/`find_relationships` stays bounded on
+    /// adversarial input. Before the cap, 1 MiB of `**A0** **A1** …` (≈30k
+    /// entities) made the quadratic loop run ~4.5×10⁸ iterations per sentence.
+    #[test]
+    fn extract_vocabulary_caps_at_max_vocab_entities() {
+        // Build adversarial content: 5×MAX_VOCAB_ENTITIES bolded tokens.
+        let adversarial: String = (0..(MAX_VOCAB_ENTITIES * 5))
+            .map(|i| format!("**entity{i}** "))
+            .collect();
+        let vocab = extract_vocabulary(&adversarial, &[]);
+        assert!(
+            vocab.entities.len() <= MAX_VOCAB_ENTITIES,
+            "vocab capped at MAX_VOCAB_ENTITIES ({}), got {}",
+            MAX_VOCAB_ENTITIES,
+            vocab.entities.len()
+        );
+        // A normal document stays well under the cap.
+        let normal = "## Ceph Components\nOSDs store data. MONs maintain the map.\n";
+        let vocab = extract_vocabulary(normal, &[]);
+        assert!(vocab.entities.len() < 10);
     }
 }

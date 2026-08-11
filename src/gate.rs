@@ -328,24 +328,28 @@ pub fn redact_content(
     if !pii || has_pii_read(principal) {
         return content.to_string();
     }
-    // Deterministic pass over the flagged content: mask emails and phone/card
-    // digit-runs. Order matters (mask_email first so phone masking doesn't
-    // mangle the domain we just consumed).
+    // Deterministic pass over the flagged content: mask emails, then phones
+    // (10–15 digits), then cards (13–19 digit Luhn-valid runs). Order matters:
+    // mask_email first so phone/card masking doesn't mangle the domain we just
+    // consumed; mask_phone before mask_card because the 10–15 range never
+    // overlaps a real 16–19 card, so the two passes are independent.
     let mut out = content.to_string();
     mask_email(&mut out);
     mask_phone(&mut out);
+    mask_card(&mut out);
     out
 }
 
 /// v1.20.1 "Shield" M2(b): PII-screen a reviewer-facing `source_prompt` before
-/// persist. Only the `[redacted:email]` / `[redacted:phone]` form is stored, so
-/// a capture trigger containing a forwarded address/number never lands raw in
-/// the review queue's provenance. Mirrors the read-path masking but applied
-/// at write time (unconditional, not gated by `has_pii_read`).
+/// persist. Only the `[redacted:email]` / `[redacted:phone]` / `[redacted:card]`
+/// form is stored, so a capture trigger containing a forwarded address/number/
+/// card never lands raw in the review queue's provenance. Mirrors the read-path
+/// masking but applied at write time (unconditional, not gated by `has_pii_read`).
 pub fn screen_source_prompt(prompt: &str) -> String {
     let mut out = prompt.to_string();
     mask_email(&mut out);
     mask_phone(&mut out);
+    mask_card(&mut out);
     out
 }
 
@@ -419,6 +423,47 @@ fn mask_phone(out: &mut String) {
 
 fn count_digits(s: &str) -> usize {
     s.bytes().filter(|b| b.is_ascii_digit()).count()
+}
+
+/// v1.20.2 C1: mask Luhn-valid 13–19 digit runs (Visa/Mastercard/Amex/Discover).
+/// `scan_pii` already flags these via `has_luhn_card`, but `mask_phone` only
+/// covers 10–15 digits — so 16-digit cards (the most common length) leaked via
+/// `redact_content` and `screen_source_prompt` until this fn was added. We
+/// re-Luhn-check here (not just match digit length) so we don't redact a
+/// non-card 16-digit id by accident.
+fn mask_card(out: &mut String) {
+    let bytes = out.as_bytes();
+    let mut i = 0;
+    let mut ranges_to_mask: Vec<(usize, usize)> = Vec::new();
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            let mut digit_run: Vec<u8> = Vec::new();
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                digit_run.push(bytes[i]);
+                i += 1;
+            }
+            // Only runs in card range (13–19) that pass Luhn are cards.
+            if (13..=19).contains(&digit_run.len()) && luhn_ok(&digit_run) {
+                ranges_to_mask.push((start, i));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if ranges_to_mask.is_empty() {
+        return;
+    }
+    // Rebuild left-to-right, splicing the placeholder in for each card run.
+    let mut final_out = String::with_capacity(out.len());
+    let mut cursor = 0usize;
+    for (start, end) in &ranges_to_mask {
+        final_out.push_str(&out[cursor..*start]);
+        final_out.push_str("[redacted:card]");
+        cursor = *end;
+    }
+    final_out.push_str(&out[cursor..]);
+    *out = final_out;
 }
 
 #[cfg(test)]
@@ -552,6 +597,58 @@ mod tests {
         assert_eq!(
             screen_source_prompt("user asked to note the deadline"),
             "user asked to note the deadline"
+        );
+    }
+
+    /// v1.20.2 C1: a Luhn-valid 16-digit Visa test card must be masked. Before
+    /// this fix `mask_phone` (10–15 digits) missed it, so a card in a PII-flagged
+    /// chunk leaked via `redact_content` and `screen_source_prompt`. We verify
+    /// both the source_prompt screen AND the read-path `redact_content` (the
+    /// regression spans both surfaces).
+    #[test]
+    fn redaction_masks_luhn_valid_16_digit_cards() {
+        // Visa test card 4111 1111 1111 1111 — Luhn-valid, 16 digits.
+        // `mask_phone` (10..=15) misses it; only `mask_card` catches it.
+        let mut s = "card 4111111111111111 here".to_string();
+        mask_card(&mut s);
+        assert!(s.contains("[redacted:card]"), "16-digit card masked: {s}");
+        assert!(
+            !s.contains("4111111111111111"),
+            "raw card not in output: {s}"
+        );
+        // A 16-digit NON-Luhn run must NOT be masked (could be an id).
+        let mut clean = "id 4111111111111112 here".to_string();
+        mask_card(&mut clean);
+        assert!(
+            !clean.contains("[redacted:card]"),
+            "non-card id untouched: {clean}"
+        );
+        // Multiple cards in one string.
+        let mut multi = "4111111111111111 and 4012888888881881".to_string();
+        mask_card(&mut multi);
+        assert_eq!(multi.matches("[redacted:card]").count(), 2);
+        // `scan_pii` + `redact_content` end-to-end for a non-admin reader.
+        let pii = !scan_pii("card 4111111111111111").is_empty();
+        assert!(pii, "scan_pii flags the 16-digit card");
+        let redacted = redact_content(
+            "card 4111111111111111",
+            true,
+            &Some(crate::auth::Principal {
+                sub: "reader".into(),
+                tenant: "team-a".into(),
+                scopes: vec![],
+                jti: "test".into(),
+            }),
+        );
+        assert!(
+            redacted.contains("[redacted:card]"),
+            "redact_content masks card: {redacted}"
+        );
+        // And source_prompt screen also catches it.
+        let prompt = screen_source_prompt("forwarded card 4111111111111111");
+        assert!(
+            prompt.contains("[redacted:card]"),
+            "source_prompt masks card: {prompt}"
         );
     }
 

@@ -22,7 +22,13 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::handlers::auth::{OptCapability, OptPrincipal};
-use crate::handlers::{HandlerError, MAX_QUERY};
+use crate::handlers::{HandlerError, MAX_QUERY, MAX_SOURCE_PROMPT};
+
+/// v1.20.2 D3: cap on `/export` row count. The export buffers every row into
+/// memory then serializes; on a multi-GB DB this OOMs. We refuse above this
+/// threshold + document the per-domain snapshot path. ponytail: a true
+/// streaming encoder is a v2.x change; this guard prevents the OOM today.
+pub const MAX_EXPORT_ROWS: i64 = 200_000;
 use crate::AppState;
 
 /// Max proposals returned per review page. Bounded so a runaway queue can't
@@ -91,6 +97,20 @@ pub async fn ingest_proposal(
             "content_too_long",
             format!("content exceeds {MAX_QUERY} chars"),
         ));
+    }
+    // v1.20.2 F1: bound + injection-screen `source_prompt`. The plugin caps at
+    // 2000 client-side; the server enforces its own bound so a malicious caller
+    // can't persist a 1 MiB prompt. If the screen trips, the screened form is
+    // still stored (the reviewer needs to see WHY the capture tripped) — but a
+    // warning is attached so a reviewer doesn't blindly approve a capture whose
+    // own trigger text was instruction-bearing.
+    if let Some(p) = req.source_prompt.as_deref() {
+        if p.len() > MAX_SOURCE_PROMPT {
+            return Err(HandlerError::bad_request(
+                "source_prompt_too_long",
+                format!("source_prompt exceeds {MAX_SOURCE_PROMPT} bytes"),
+            ));
+        }
     }
     if !crate::procedural::MemoryKind::from_str(&req.kind).is_valid_for_gate() {
         return Err(HandlerError::bad_request(
@@ -337,11 +357,40 @@ pub async fn approve_proposal(
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+
+        // v1.20.2 A4: run the TTL check + expiration audit on the raw autocommit
+        // connection BEFORE opening the tx. Previously `expire_if_stale` was
+        // called inside the tx, so its `proposal_expired` audit row rolled back
+        // if anything between here and `tx.commit()` failed. Now the expiration
+        // event lands independently + the re-check inside the tx catches a
+        // concurrent state change.
+        //
+        // v1.20.2 A3: BEGIN IMMEDIATE so the SELECT-then-promote is serialized
+        // against any concurrent approve/reject — eliminates the double-promote
+        // race that was previously caught only by the content_hash UNIQUE index
+        // (which surfaced as a generic 500 to the loser).
+        let stale_created_at: Option<i64> = conn
+            .query_row(
+                "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(created_at) = stale_created_at {
+            if !expire_if_stale(&conn, id, created_at)? {
+                return Err(HandlerError::bad_request(
+                    "proposal_expired",
+                    "proposal aged out of the review window (TTL), refused",
+                ));
+            }
+        }
+
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
 
-        // Load the pending proposal.
+        // Load the pending proposal (re-checked inside the tx to catch a
+        // concurrent state change since the autocommit expire check above).
         #[derive(Default)]
         struct ProposalRow {
             kind: String,
@@ -373,7 +422,7 @@ pub async fn approve_proposal(
                 "no pending proposal with id {id}"
             )));
         };
-        let (kind, content, source, authority, observed_at, created_at) = (
+        let (kind, content, source, authority, observed_at, _created_at) = (
             p.kind,
             p.content,
             p.source,
@@ -381,13 +430,6 @@ pub async fn approve_proposal(
             p.observed_at,
             p.created_at,
         );
-
-        if !expire_if_stale(&tx, id, created_at)? {
-            return Err(HandlerError::bad_request(
-                "proposal_expired",
-                "proposal aged out of the review window (TTL), refused",
-            ));
-        }
 
         // Embed + insert the chunk through the same knowledge + vec0 path.
         let embedding = model
@@ -446,11 +488,25 @@ pub async fn approve_proposal(
                 .map_err(|e| HandlerError::internal(format!("supersession failed: {e}")))?;
         }
 
-        tx.execute(
-            "UPDATE proposals SET status = 'approved', decided_at = ?1 WHERE id = ?2",
-            rusqlite::params![chrono::Utc::now().timestamp(), id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        // v1.20.2 A3: CAS the proposals row — `AND status = 'pending'` so a
+        // concurrent approve/reject can't both succeed. Combined with the
+        // IMMEDIATE tx above, this eliminates the double-promote race; the
+        // UNIQUE content_hash index is the last-resort backstop.
+        let n = tx
+            .execute(
+                "UPDATE proposals SET status = 'approved', decided_at = ?1
+                 WHERE id = ?2 AND status = 'pending'",
+                rusqlite::params![chrono::Utc::now().timestamp(), id],
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        if n == 0 {
+            // A concurrent approve/reject won the race — abort cleanly.
+            tx.rollback()
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            return Err(HandlerError::conflict(format!(
+                "proposal {id} was already decided by a concurrent action"
+            )));
+        }
 
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
@@ -908,6 +964,21 @@ pub async fn export(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        // v1.20.2 D3: pre-flight row count to bound memory. The full export
+        // buffers every row into a Vec<Value> then serializes; on a multi-GB
+        // DB that OOMs the server. We refuse (413) above MAX_EXPORT_ROWS and
+        // document the per-domain `GET /domains/{name}/export` path (a single
+        // domain's snapshot) + the future streaming variant. ponytail: a true
+        // streaming JSON encoder is a v2.x change; this guard prevents the OOM
+        // today without rewriting the response shape callers depend on.
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        if total > MAX_EXPORT_ROWS {
+            return Err(HandlerError::payload_too_large(format!(
+                "export exceeds {MAX_EXPORT_ROWS} rows ({total} present); use GET /domains/{{name}}/export for a single domain snapshot"
+            )));
+        }
         let mut knowledge = Vec::new();
         {
             let mut stmt = conn

@@ -115,6 +115,29 @@ pub async fn create(
             Ok((t, c, kind))
         })
         .collect::<Result<_, _>>()?;
+    // v1.20.1 "Shield" M1 (extended to /procedure in v1.20.2): screen this
+    // sibling write core exactly like `ingest_one`, `/add`, `/ingest/memory`,
+    // `/ingest/markdown`. `Reject` policy → 400; `Quarantine` (default) → flag
+    // each inserted chunk + skip the `next_step` edges so a quarantined plant
+    // can't pollute the graph. The screen runs against the root content + title
+    // AND every step's content + title (a step can carry the payload just as
+    // easily as the root).
+    let root_tripped =
+        crate::contains_suspicious_pattern(&content) || crate::contains_suspicious_pattern(&title);
+    let step_tripped: bool = steps.iter().any(|(t, c, _)| {
+        crate::contains_suspicious_pattern(c) || crate::contains_suspicious_pattern(t)
+    });
+    let tripped = root_tripped || step_tripped;
+    let policy = crate::config::injection_policy();
+    if policy == crate::config::InjectionPolicy::Reject && tripped {
+        return Err(HandlerError::bad_request(
+            "input_rejected",
+            "input contains suspicious patterns",
+        ));
+    }
+    // Under Quarantine (default), `flag_if_quarantined` runs per-chunk inside
+    // the tx below and skips `next_step` edges for a tripped root.
+
     let domain = match &req.domain {
         Some(d) => Some(crate::handlers::normalize_domain(d)?),
         None => None,
@@ -149,6 +172,9 @@ pub async fn create(
         )
         .map_err(|e| HandlerError::internal(format!("procedure insert failed: {e}")))?;
         let root_id = tx.last_insert_rowid();
+        // v1.20.2 B1: flag the root if the screen tripped ( Quarantine policy).
+        // Excluded from recall via `WHERE flagged = 0`, KG edges skipped below.
+        let root_flagged = crate::flag_if_quarantined(&tx, root_id, &content_for_task);
         // Embedding for the root (so /recall finds it). Reuses the same vec0
         // path as /ingest. ponytail: the model is in AppState but spawn_blocking
         // closes over pool, not state; we encode after the tx via a second
@@ -171,16 +197,24 @@ pub async fn create(
             )
             .map_err(|e| HandlerError::internal(format!("step insert failed: {e}")))?;
             let step_id = tx.last_insert_rowid();
-            // next_step edge with explicit ordering. The edge kind is 'next_step';
-            // step_index carries the position. UNIQUE(from_chunk, to_chunk, kind)
-            // means a re-ingest of the same pair is idempotent.
-            tx.execute(
-                "INSERT INTO evidence_links (from_chunk, to_chunk, kind, step_index)
-                 VALUES (?1, ?2, 'next_step', ?3)
-                 ON CONFLICT(from_chunk, to_chunk, kind) DO UPDATE SET step_index = ?3",
-                rusqlite::params![root_id, step_id, idx as i64],
-            )
-            .map_err(|e| HandlerError::internal(format!("next_step edge failed: {e}")))?;
+            // v1.20.2 B1: flag this step if it tripped. `flag_if_quarantined`
+            // re-scans per chunk so only the steps that actually tripped are
+            // flagged (a benign step in a quarantined procedure stays clean).
+            let _ = crate::flag_if_quarantined(&tx, step_id, step_content);
+            // next_step edge with explicit ordering. Skipped for a quarantined
+            // root so a flagged plant can't reach the graph even via a step.
+            // The edge kind is 'next_step'; step_index carries the position.
+            // UNIQUE(from_chunk, to_chunk, kind) means a re-ingest of the same
+            // pair is idempotent.
+            if !root_flagged {
+                tx.execute(
+                    "INSERT INTO evidence_links (from_chunk, to_chunk, kind, step_index)
+                     VALUES (?1, ?2, 'next_step', ?3)
+                     ON CONFLICT(from_chunk, to_chunk, kind) DO UPDATE SET step_index = ?3",
+                    rusqlite::params![root_id, step_id, idx as i64],
+                )
+                .map_err(|e| HandlerError::internal(format!("next_step edge failed: {e}")))?;
+            }
             step_ids.push(step_id);
         }
         tx.commit()
