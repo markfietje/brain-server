@@ -298,6 +298,21 @@ pub(crate) async fn ingest_one(
         ));
     }
 
+    // v1.20.1 "Shield" M1: screen this shared write core exactly like its
+    // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). `Reject` keeps
+    // the HTTP-400; `Quarantine` (default) ingests then flags post-insert so a
+    // flagged plant is excluded from retrieval and its KG edges are skipped.
+    let tripped =
+        crate::contains_suspicious_pattern(&content) || crate::contains_suspicious_pattern(&title);
+    let policy = crate::config::injection_policy();
+    if policy == crate::config::InjectionPolicy::Reject && tripped {
+        return Err(HandlerError::bad_request(
+            "input_rejected",
+            "input contains suspicious patterns",
+        ));
+    }
+    let quarantine_flagged = policy == crate::config::InjectionPolicy::Quarantine && tripped;
+
     if req.entities.len() > MAX_ENTITIES {
         return Err(HandlerError::bad_request_with(
             "too_many_entities",
@@ -364,7 +379,8 @@ pub(crate) async fn ingest_one(
 
     // Auto-extract entities + relationships via the deterministic linker when
     // the caller supplies neither (OpenClaw plugin sends title + content only).
-    if entities.is_empty() && relations.is_empty() {
+    // Skipped for a quarantined plant — a flagged chunk gets no graph edges.
+    if !quarantine_flagged && entities.is_empty() && relations.is_empty() {
         let code_ranges = crate::linker::find_code_ranges(&content);
         let table_ranges = crate::linker::find_table_ranges(&content);
         let list_bold_ranges = crate::linker::find_list_item_bold_ranges(&content);
@@ -513,6 +529,12 @@ pub(crate) async fn ingest_one(
         .map_err(|e| HandlerError::internal(format!("insert knowledge failed: {e}")))?;
         let id: i64 = tx.last_insert_rowid();
 
+        // v1.20.1 "Shield" M1: under Quarantine policy, a chunk that trips the
+        // injection screen is stored but flagged (excluded from retrieval) and
+        // its KG edges are skipped so a quarantined plant can't pollute the
+        // graph. `flag_if_quarantined` returns true only when it flagged.
+        let quarantined = crate::flag_if_quarantined(&tx, id, &content);
+
         // vec0 (int8 + binary quantized). v0.9.0 DoD: vec0 is the sole vector
         // store; no raw f32 JSON is written to the legacy `embeddings` column.
         let _ = tx.execute(
@@ -521,70 +543,72 @@ pub(crate) async fn ingest_one(
             rusqlite::params![id, embedding.as_bytes()],
         );
 
-        // Entities (idempotent upsert, with optional type).
-        for (name, kind) in &entities_norm {
-            tx.execute(
-                "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, ?2)",
-                rusqlite::params![name, kind],
-            )
-            .map_err(|e| HandlerError::internal(format!("insert entity failed: {e}")))?;
-        }
-        // Relations (idempotent upsert, anchored to this knowledge row).
-        // ponytail: relations may reference entities that weren't explicitly
-        // declared in `entities` — auto-create them on miss so the canonical
-        // plan example (`vitamin d3 helps inflammation`) works even when only
-        // `vitamin d3` is declared. Idempotent: INSERT OR IGNORE on existing
-        // rows is a no-op; the SELECT then finds the row.
-        //
-        // v1.4.0 "Calibrate" M1: populate bi-temporal valid_at/invalid_at.
-        // Caller-supplied explicit values win; otherwise run the deterministic
-        // temporal extractor over the ingested content (best-effort, no LLM).
-        // The extractor is pure; we run it once per relation keyed on content.
-        let content_interval = crate::temporal::extract_interval_now(&content);
-        for (from, to, kind, explicit_va, explicit_via) in &relations_norm {
-            tx.execute(
-                "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
-                rusqlite::params![from],
-            )
-            .map_err(|e| HandlerError::internal(format!("auto-create from-entity failed: {e}")))?;
-            tx.execute(
-                "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
-                rusqlite::params![to],
-            )
-            .map_err(|e| HandlerError::internal(format!("auto-create to-entity failed: {e}")))?;
-            let from_id: i64 = tx
-                .query_row(
-                    "SELECT id FROM entities WHERE name = ?1",
+        if !quarantined {
+            // Entities (idempotent upsert, with optional type).
+            for (name, kind) in &entities_norm {
+                tx.execute(
+                    "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, ?2)",
+                    rusqlite::params![name, kind],
+                )
+                .map_err(|e| HandlerError::internal(format!("insert entity failed: {e}")))?;
+            }
+            // Relations (idempotent upsert, anchored to this knowledge row).
+            // ponytail: relations may reference entities that weren't explicitly
+            // declared in `entities` — auto-create them on miss so the canonical
+            // plan example (`vitamin d3 helps inflammation`) works even when only
+            // `vitamin d3` is declared. Idempotent: INSERT OR IGNORE on existing
+            // rows is a no-op; the SELECT then finds the row.
+            //
+            // v1.4.0 "Calibrate" M1: populate bi-temporal valid_at/invalid_at.
+            // Caller-supplied explicit values win; otherwise run the deterministic
+            // temporal extractor over the ingested content (best-effort, no LLM).
+            // The extractor is pure; we run it once per relation keyed on content.
+            let content_interval = crate::temporal::extract_interval_now(&content);
+            for (from, to, kind, explicit_va, explicit_via) in &relations_norm {
+                tx.execute(
+                    "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
                     rusqlite::params![from],
-                    |r| r.get(0),
                 )
-                .map_err(|e| HandlerError::internal(format!("resolve from-entity failed: {e}")))?;
-            let to_id: i64 = tx
-                .query_row(
-                    "SELECT id FROM entities WHERE name = ?1",
+                .map_err(|e| HandlerError::internal(format!("auto-create from-entity failed: {e}")))?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
                     rusqlite::params![to],
-                    |r| r.get(0),
                 )
-                .map_err(|e| HandlerError::internal(format!("resolve to-entity failed: {e}")))?;
-            // Resolve the valid-time interval: explicit caller value, else the
-            // extractor's result. `None` ⇒ leave the column NULL (always valid).
-            let va: Option<&str> = explicit_va
-                .as_deref()
-                .or(content_interval.valid_at.as_deref());
-            let via: Option<&str> = explicit_via
-                .as_deref()
-                .or(content_interval.invalid_at.as_deref());
-            // INSERT OR IGNORE so re-ingesting the same (from,to,kind) is a
-            // no-op; the temporal columns are set on first insert. Updating
-            // them on a later ingest would require a separate UPDATE path,
-            // intentionally not wired (re-ingest = idempotent no-op by design).
-            tx.execute(
-                "INSERT OR IGNORE INTO relationships \
-                    (from_entity_id, to_entity_id, relation_type, knowledge_id, valid_at, invalid_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![from_id, to_id, kind, id, va, via],
-            )
-            .map_err(|e| HandlerError::internal(format!("insert relation failed: {e}")))?;
+                .map_err(|e| HandlerError::internal(format!("auto-create to-entity failed: {e}")))?;
+                let from_id: i64 = tx
+                    .query_row(
+                        "SELECT id FROM entities WHERE name = ?1",
+                        rusqlite::params![from],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| HandlerError::internal(format!("resolve from-entity failed: {e}")))?;
+                let to_id: i64 = tx
+                    .query_row(
+                        "SELECT id FROM entities WHERE name = ?1",
+                        rusqlite::params![to],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| HandlerError::internal(format!("resolve to-entity failed: {e}")))?;
+                // Resolve the valid-time interval: explicit caller value, else the
+                // extractor's result. `None` ⇒ leave the column NULL (always valid).
+                let va: Option<&str> = explicit_va
+                    .as_deref()
+                    .or(content_interval.valid_at.as_deref());
+                let via: Option<&str> = explicit_via
+                    .as_deref()
+                    .or(content_interval.invalid_at.as_deref());
+                // INSERT OR IGNORE so re-ingesting the same (from,to,kind) is a
+                // no-op; the temporal columns are set on first insert. Updating
+                // them on a later ingest would require a separate UPDATE path,
+                // intentionally not wired (re-ingest = idempotent no-op by design).
+                tx.execute(
+                    "INSERT OR IGNORE INTO relationships \
+                        (from_entity_id, to_entity_id, relation_type, knowledge_id, valid_at, invalid_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![from_id, to_id, kind, id, va, via],
+                )
+                .map_err(|e| HandlerError::internal(format!("insert relation failed: {e}")))?;
+            }
         }
 
         let entities_after: i64 = tx
