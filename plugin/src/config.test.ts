@@ -13,6 +13,7 @@ describe("resolveConfig", () => {
       deniedChatIds: [],
       autoRecall: true,
       autoCapture: false,
+      captureMode: "proposal",
       strictDomain: false,
       defaultDomain: DEFAULTS.defaultDomain,
       autoRecallTopK: DEFAULTS.autoRecallTopK,

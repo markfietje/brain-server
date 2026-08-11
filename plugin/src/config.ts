@@ -32,6 +32,15 @@ export const brainConfigSchema = Type.Object({
 
   autoRecall: Type.Optional(Type.Boolean()),
   autoCapture: Type.Optional(Type.Boolean()),
+  // v1.20.1 "Shield" M2: how auto-captures enter the brain.
+  //   "proposal" (default) — go through the server's human review queue
+  //   (POST /ingest/proposal) and only become memory once a reviewer approves:
+  //   nothing is trusted directly into long-term memory from an untrusted turn.
+  //   "direct"            — store straight to memory (the v1.16.x behavior), gated
+  //   only by the server-side injection screen.
+  captureMode: Type.Optional(
+    Type.Union([Type.Literal("proposal"), Type.Literal("direct")]),
+  ),
   strictDomain: Type.Optional(Type.Boolean()),
   defaultDomain: Type.Optional(Type.String()),
 
@@ -49,6 +58,7 @@ export const DEFAULTS = {
   baseUrl: "http://127.0.0.1:8765",
   autoRecall: true,
   autoCapture: false,
+  captureMode: "proposal" as const,
   strictDomain: false,
   defaultDomain: "global",
   allowedChatTypes: ["direct", "explicit"] as const,
@@ -69,6 +79,7 @@ export type ResolvedBrainConfig = {
   deniedChatIds: string[];
   autoRecall: boolean;
   autoCapture: boolean;
+  captureMode: "proposal" | "direct";
   strictDomain: boolean;
   defaultDomain: string;
   autoRecallTopK: number;
@@ -93,6 +104,7 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
     deniedChatIds: cfg.deniedChatIds ?? [],
     autoRecall: cfg.autoRecall ?? DEFAULTS.autoRecall,
     autoCapture: cfg.autoCapture ?? DEFAULTS.autoCapture,
+    captureMode: cfg.captureMode ?? DEFAULTS.captureMode,
     strictDomain: cfg.strictDomain ?? DEFAULTS.strictDomain,
     defaultDomain: cfg.defaultDomain?.trim() || DEFAULTS.defaultDomain,
     autoRecallTopK: cfg.autoRecallTopK ?? DEFAULTS.autoRecallTopK,

@@ -167,16 +167,31 @@ export default definePluginEntry({
       }
 
       try {
+        const body = joinMessageTexts(messages).slice(0, 2000);
         for (const text of extractUserTexts(messages)) {
           if (!looksCaptureWorthy(text)) {
             continue;
           }
-          await client.store({
-            title: text.slice(0, 80),
-            content: text,
-            ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
-            timeoutMs: c.requestTimeoutMs,
-          });
+          // v1.20.1 "Shield" M2: route autoCapture through the human review
+          // queue by default. `captureMode: "proposal"` submits to
+          // POST /ingest/proposal (only becomes memory after a reviewer
+          // approves); `captureMode: "direct"` keeps the old straight-to-
+          // memory behavior (still screened by the server injection gate).
+          if (c.captureMode === "direct") {
+            await client.store({
+              title: text.slice(0, 80),
+              content: text,
+              ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
+              timeoutMs: c.requestTimeoutMs,
+            });
+          } else {
+            await client.submitProposal({
+              content: text,
+              source: "agent_end",
+              ...(body.length ? { sourcePrompt: body } : {}),
+              timeoutMs: c.requestTimeoutMs,
+            });
+          }
         }
       } catch (err) {
         api.logger.warn?.(`${PLUGIN_ID}: capture failed (${String(err)})`);
@@ -611,6 +626,30 @@ function mapCtx(ctx: HookContextLike | undefined): GateContext {
 }
 
 /** Extract user-authored text blocks from a messages array (defensive). */
+/// v1.20.1 "Shield" M2: the full-turn text that fed an auto-capture, for the
+/// proposal's `source_prompt` (the exact capture trigger, not a summary).
+/// Same shape tolerance as `extractUserTexts` — string or parts-array content.
+function joinMessageTexts(messages: ReadonlyArray<unknown>): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    const msg = m as { content?: unknown } | null;
+    if (!msg) {
+      continue;
+    }
+    const content = msg.content;
+    if (typeof content === "string") {
+      parts.push(content);
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        if (typeof block === "object" && block !== null && "text" in block) {
+          parts.push(String((block as { text: unknown }).text));
+        }
+      }
+    }
+  }
+  return parts.join("\n");
+}
+
 function extractUserTexts(messages: ReadonlyArray<unknown>): string[] {
   const out: string[] = [];
   for (const m of messages) {

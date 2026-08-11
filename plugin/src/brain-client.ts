@@ -340,6 +340,35 @@ export class BrainClient {
   }
 
   /**
+   * v1.20.1 "Shield" M2: submit a capture to the server's human review queue
+   * (`POST /ingest/proposal`) instead of writing it straight to memory. It
+   * becomes a `knowledge` row only once a reviewer approves it — nothing from
+   * an untrusted turn is trusted directly into long-term memory. Returns the
+   * proposal id (status "pending"); approvals flow through GET /proposals +
+   * POST /proposals/{id}/approve on the operator console.
+   */
+  async submitProposal(params: {
+    content: string;
+    source?: string;
+    sourcePrompt?: string;
+    timeoutMs?: number;
+  }): Promise<{ id: number; status: "pending" }> {
+    const body = {
+      content: params.content,
+      kind: "fact",
+      ...(params.source ? { source: params.source } : {}),
+      ...(params.sourcePrompt ? { source_prompt: params.sourcePrompt } : {}),
+    };
+    const res = await this.fetchJson<{ id?: number; status?: string }>(
+      "/ingest/proposal",
+      "POST",
+      body,
+      params.timeoutMs ?? this.defaultTimeoutMs,
+    );
+    return { id: res?.id ?? 0, status: "pending" };
+  }
+
+  /**
    * Returns `{ deleted: true }` on success, `null` on 404 (not found), and
    * throws BrainHttpError on any other failure. Distinguishing 404 lets the
    * tool report "not found" without masking a real server error.

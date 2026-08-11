@@ -63,6 +63,12 @@
         "default": false,
         "description": "Capture durable facts/decisions after a successful turn. Off by default; capture is a policy choice."
       },
+      "captureMode": {
+        "type": "string",
+        "enum": ["proposal", "direct"],
+        "default": "proposal",
+        "description": "v1.20.1: how autoCaptures enter the brain. 'proposal' (default) routes them through the human review queue (POST /ingest/proposal) so nothing from an untrusted turn is trusted directly into memory; 'direct' stores them immediately (server-side injection screen still applies)."
+      },
       "strictDomain": {
         "type": "boolean",
         "default": false,

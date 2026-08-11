@@ -261,11 +261,15 @@ describe("gating — per-agent + chat-type (brain-server-specific, not in lanced
 describe("agent_end — autoCapture to POST /ingest", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  test("stores capture-worthy user text on a successful turn", async () => {
+  test("stores capture-worthy user text on a successful turn (direct mode /ingest)", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(mockResponse({ id: 9, status: "created" }));
-    const { hooks } = registerPlugin({ agents: ["main"], autoCapture: true });
+    const { hooks } = registerPlugin({
+      agents: ["main"],
+      autoCapture: true,
+      captureMode: "direct",
+    });
 
     await getHook(hooks, "agent_end")(
       {
@@ -280,6 +284,35 @@ describe("agent_end — autoCapture to POST /ingest", () => {
 
     const ingestCalls = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/ingest"));
     expect(ingestCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("v1.20.1 default routes autoCapture to the proposal queue, not /ingest", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ id: 42, status: "pending" }));
+    // captureMode omitted => defaults to "proposal".
+    const { hooks } = registerPlugin({ agents: ["main"], autoCapture: true });
+
+    await getHook(hooks, "agent_end")(
+      {
+        success: true,
+        messages: [
+          { role: "user", content: "I decided to use Helix as my primary editor going forward" },
+          { role: "assistant", content: "Noted." },
+        ],
+      },
+      { agentId: "main" },
+    );
+
+    const direct = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/ingest"));
+    const proposal = fetchMock.mock.calls.filter((c) =>
+      (c[0] as string).endsWith("/ingest/proposal"),
+    );
+    expect(direct.length).toBe(0);
+    expect(proposal.length).toBeGreaterThanOrEqual(1);
+    const body = JSON.parse(String(proposal[0][1]?.body));
+    expect(body.content).toContain("Helix");
+    expect(body.source_prompt).toContain("Noted.");
   });
 
   test("skips capture on a failed turn (success:false)", async () => {

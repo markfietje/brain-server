@@ -179,6 +179,28 @@ describe("BrainClient.store", () => {
   });
 });
 
+describe("BrainClient.submitProposal — v1.20.1 M2 review-queue path", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("POSTs /ingest/proposal with content, kind=fact + source_prompt, returns pending id", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ id: 77, status: "pending" }));
+    const client = new BrainClient(cfg());
+    const res = await client.submitProposal({
+      content: "a durable fact",
+      sourcePrompt: "the turn that produced it",
+    });
+    expect(res).toEqual({ id: 77, status: "pending" });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toMatch(/\/ingest\/proposal$/);
+    const body = JSON.parse(init?.body as string);
+    expect(body.content).toBe("a durable fact");
+    expect(body.kind).toBe("fact");
+    expect(body.source_prompt).toBe("the turn that produced it");
+  });
+});
+
 describe("BrainClient.health", () => {
   afterEach(() => vi.restoreAllMocks());
 
