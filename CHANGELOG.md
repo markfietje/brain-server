@@ -28,6 +28,18 @@ been run, it is marked **pending** rather than asserted.
   process (bare requests dispatch without `_meta`; responses keep the legacy
   shape). `ping` kept as a harmless no-op (removed from the new schema). 591
   server-side tests (+8 mcp wire tests), clippy `-D warnings` + fmt green.
+  **Verified against OpenClaw 2026.8.1 as a real MCP client** (2026-08-11,
+  a test only — the native `brain-server` plugin remains the production
+  integration): `openclaw mcp add brain-server --command ~/.local/bin/mcp`
+  probed successfully through the `@modelcontextprotocol/sdk` 1.30.0 client
+  (`LATEST_PROTOCOL_VERSION = 2025-11-25` — the dual-era legacy path) —
+  `initialize` → 2025-11-25 response, `tools/list` → all 12 tools, and a live
+  `tools/call` on `ump.capabilities` returned the real L3 conformance payload.
+  The entry was then removed (`openclaw mcp unset brain-server`); `mcp.servers`
+  is not part of the shipped configuration. Note: a freshly-copied `~/.local/bin/mcp`
+  must be ad-hoc signed (`codesign --force --sign -`) or have the
+  `com.apple.provenance` xattr stripped, or Gatekeeper SIGKILLs it on spawn
+  from a Node child process (the AGENTS.md-documented failure class).
 
 ## [1.20.1] — 2026-08-11
 
