@@ -474,7 +474,7 @@ fn card(
                         p { class: "text-sm text-warn",
                             "conflicts with chunk #{c} — approve to supersede" }
                     }
-                    p { class: "text-sm text-foreground mt-1", "{proposal.content}" }
+                    p { class: "text-sm text-foreground mt-1", "{crate::strip_invisible(&proposal.content)}" }
                     if let Some(sp) = &proposal.source_prompt {
                         details { class: "mt-1 text-xs",
                             summary { class: "cursor-pointer text-accent", "sourcing prompt" }
@@ -691,7 +691,7 @@ pub fn detail(proposal_id: i64) -> Element {
                         h2 { class: "card-title", "Proposal #{proposal_id} · {p.kind}" }
                     }
                     div { class: "card-body space-y-2",
-                        p { class: "text-sm text-foreground", "{p.content}" }
+                        p { class: "text-sm text-foreground", "{crate::strip_invisible(&p.content)}" }
                         p { class: "text-xs text-muted-foreground tabular",
                             "novelty {p.novelty:.2} · salience {p.salience:.2} · created {p.created_at}" }
                         if let Some(c) = p.conflict_with {

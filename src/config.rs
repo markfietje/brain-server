@@ -185,6 +185,51 @@ pub fn injection_policy() -> InjectionPolicy {
     }
 }
 
+// ── v1.20.3 "Classify" M2 (G5): layer-2 classifier config ─────────────────────
+
+/// Default reject threshold (score ≥ this → HTTP 400). Conservative: a false
+/// positive here costs a legit memory at the boundary, so `reject` sits above
+/// `quarantine`.
+pub const INJECTION_THRESHOLD_HIGH: f32 = 0.9;
+/// Default quarantine threshold (score ≥ this → stored flagged). Deliberately
+/// below the reject band so ambiguous scores favor quarantine over a hard
+/// reject — the cost of a false quarantine (a legit memory held for review) is
+/// lower than a false negative (a plant stored unflagged).
+pub const INJECTION_THRESHOLD_LOW: f32 = 0.7;
+
+/// Path to the layer-2 ONNX classifier model. Empty → layer-2 off (the
+/// deterministic blocklist remains). Only compiled under the
+/// `injection-classifier` feature.
+#[cfg(feature = "injection-classifier")]
+pub fn injection_classifier_path() -> String {
+    std::env::var("BRAIN_INJECTION_CLASSIFIER").unwrap_or_default()
+}
+
+/// Path to the matching BERT `tokenizer.json`. Required (with the model) to
+/// enable layer-2.
+#[cfg(feature = "injection-classifier")]
+pub fn injection_tokenizer_path() -> String {
+    std::env::var("BRAIN_INJECTION_TOKENIZER").unwrap_or_default()
+}
+
+/// Resolve `BRAIN_INJECTION_THRESHOLD_HIGH` (0..1); unparsable → default.
+pub fn injection_threshold_high() -> f32 {
+    std::env::var("BRAIN_INJECTION_THRESHOLD_HIGH")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| *v >= 0.0 && *v <= 1.0)
+        .unwrap_or(INJECTION_THRESHOLD_HIGH)
+}
+
+/// Resolve `BRAIN_INJECTION_THRESHOLD_LOW` (0..1); unparsable → default.
+pub fn injection_threshold_low() -> f32 {
+    std::env::var("BRAIN_INJECTION_THRESHOLD_LOW")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| *v >= 0.0 && *v <= 1.0)
+        .unwrap_or(INJECTION_THRESHOLD_LOW)
+}
+
 /// Database file path. Reads `BRAIN_DB_PATH`; falls back to
 /// `~/.openclaw/workspace/brain.db`. v0.9.9: delegates to
 /// `StorageLayout::detect()?.legacy_db()` so this path and the layout's path

@@ -10,6 +10,79 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.3] — 2026-08-11
+
+v1.20.3 "Classify" — the G5 upgrade path from the GhostJacking audit (layer 2 of
+the injection screen) plus the client render-boundary hardening. **Server** Cargo
+1.20.2 → 1.20.3; client stays at 1.20.0 (one pure fn + three render-site call
+sites + a test, version-neutral). **No schema change** — `proposals.screen_verdict`
+is recomputed deterministically at read time rather than persisted, so the schema
+stays at 1.20.1/1.20.2 and `test_migration_schema_contract` is untouched.
+
+### Added
+
+- **Two-layer injection screen** (`src/screen.rs`, the single seam every ingest
+  write path routes through). Layer 1 = the existing deterministic blocklist
+  (always on). Layer 2 = an **optional, feature-gated local ONNX classifier**
+  (`injection-classifier` feature + `ort`/`tokenizers`) for novel/obfuscated
+  injections. Layer 2 is OFF by default — the Jetson envelope treats memory as
+  the scarcest resource and the blocklist + `flagged`/`untrusted` segregation
+  remain the always-on defense. When enabled, loads the model at
+  `BRAIN_INJECTION_CLASSIFIER` + tokenizer at `BRAIN_INJECTION_TOKENIZER`
+  (Fastly-lineage BERT-tiny INT8, ~4.3 MB) once via a `LazyLock`, off the
+  request path. Banding: score ≥ `BRAIN_INJECTION_THRESHOLD_HIGH` (0.9) → HTTP
+  400; ≥ `BRAIN_INJECTION_THRESHOLD_LOW` (0.7) → stored flagged; else clean.
+  Under `Allow` policy the whole screen is disabled (kill switch). Scoring is
+  sentence-packed + density-adjusted (StackOne calibration): one flagged
+  sentence in a ≥3-sentence chunk is damped toward 0, several confirm an attack.
+- **Screen wired into every ingest write site**: `/add`, `/ingest/memory`,
+  `/ingest/markdown`, `/ingest` (`ingest_one`), `/procedure` (root + each step),
+  and `/ingest/proposal`. `Reject` → 400 (`input_rejected`); `Quarantine` →
+  stored flagged + KG edges skipped. `flag_if_quarantined` now takes the screen's
+  bool verdict (no longer re-runs the blocklist in isolation) — a layer-2 hit
+  quarantines exactly like a layer-1 hit.
+- **Review-queue badge**: `ProposalView.screen_verdict` (`clean`/`quarantine`).
+  `reject` is never persisted (the proposal path 400s on Reject at write time);
+  the badge is recomputed deterministically at read time.
+- **`/health` hardening field**: `injection_classifier_loaded` — lets ops confirm
+  the opt-in model is actually active.
+- **Canonical invisible-char predicate** (`screen::is_invisible`, extended from
+  v0.9.7): adds the tag block (U+E0000–E007F) + variation selectors (U+FE00–FE0F)
+  to the existing zero-width set. The blocklist normalization, the classifier,
+  and the client render boundary now agree on what is invisible.
+- **Client render boundary** (`client`): `strip_invisible` strips invisible
+  smuggling chars from *displayed* recall hits + review proposals so the operator
+  sees the de-obfuscated form. Raw bytes at rest are never rewritten.
+
+### Security
+
+- Closes the GhostJacking G5 upgrade path: novel/obfuscated injections that the
+  deterministic blocklist misses can now be caught by an optional local model,
+  still paired with the `flagged`/`untrusted` segregation (never the sole line of
+  defense). Layer 2 off by default preserves the no-new-dependency default build.
+
+### Honest ceilings (carried into v1.20.4 / v2.0)
+
+- **Jetson-fit is a measured gate, not assumed.** Layer 2 is verified on desktop;
+  the operator must run `bench --envelope` before treating it as Jetson-shippable
+  (repo precedent: the rerank tier was removed for the same reason). `with_intra_threads(1)` respects the budget.
+- The classifier catches semantic patterns, not every obfuscation; Quarantine
+  stores flagged, never deletes. `source_prompt` remains PII-scanned, not
+  semantically safe.
+- `screen_verdict` is recomputed at read time, so a model swap can re-badge an
+  in-flight proposal (rare; the badge reflects the current screen, which is the
+  defensible reading). A model-drift Reject on a stored row reads as `quarantine`.
+- `strip_invisible` runs at screen/classifier/render boundaries, not by rewriting
+  stored bytes — a legitimate user's invisible Unicode is preserved verbatim at rest.
+- G3 (OpenClaw subagent/exec/read/pdf envelope) + G4 (token at rest) remain
+  operator/OpenClaw-side (companion plan).
+
+### Changed
+
+- Client Cargo stays 1.20.0 (version-neutral changes, v1.20.1 precedent).
+
+---
+
 ## [1.20.2] — 2026-08-11
 
 ### Server — "Harden" (deep + security second-pass audit fixes)

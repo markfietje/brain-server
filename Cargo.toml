@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.20.2"
+version = "1.20.3"
 edition = "2021"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
 license = "MIT"
@@ -30,6 +30,15 @@ connector-github = []
 # harness provides a baseline; lands in v1.4.1+ with measured Δ-recall vs Δ-RSS.
 # Kept as a named feature so callers/docs/CI can reference the upgrade path.
 multivec = []
+# v1.20.3 "Classify" M2 (G5): optional local ONNX prompt-injection classifier as
+# layer 2 of the injection screen. OFF by default — the repo's Jetson envelope
+# treats memory as the scarcest resource, and the deterministic blocklist +
+# `untrusted` segregation remain the always-on defense. When enabled, loads a
+# BERT-tiny INT8 (~4.3 MB) model at `BRAIN_INJECTION_CLASSIFIER` + tokenizer at
+# `BRAIN_INJECTION_TOKENIZER`; scoring stays off the request path. Desktop is
+# the verified target; Jetson-fit is a measured gate (repo precedent: the rerank
+# tier was removed for the same reason).
+injection-classifier = ["dep:ort", "dep:tokenizers"]
 
 [dependencies]
 # Core Embedding
@@ -136,6 +145,15 @@ blake3 = "1"
 bs58 = "0.5"
 tokio-stream = { version = "0.1", features = ["sync"] }
 ed25519-dalek = "2.2"
+
+# v1.20.3 "Classify" M2 (G5): ONNX inference + BERT tokenizer for the optional
+# layer-2 prompt-injection classifier. OPTIONAL — gated behind the
+# `injection-classifier` feature (off by default) so the default build is
+# unchanged. `ort` loads ONNX via `Session::builder` (Context7-verified API);
+# `tokenizers` provides the BERT tokenizer (`Tokenizer::from_file` +
+# `encode_batch`, matching the ort sentence-transformer example shape).
+ort = { version = "2.0.0-rc.12", optional = true, default-features = true }
+tokenizers = { version = "0.22", optional = true, default-features = true }
 
 [dev-dependencies]
 tempfile = "3.27"

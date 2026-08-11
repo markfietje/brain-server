@@ -38,6 +38,30 @@ mod storage;
 use api::ApiClient;
 use i18n::t;
 
+/// v1.20.3 "Classify" (G5): the operator-console render boundary. Stored
+/// content may contain invisible Unicode that a server screen let through as
+/// `clean` (the blocklist + classifier strip it for *their* decision, but the
+/// bytes stay verbatim at rest). This strips those invisible chars from
+/// *displayed* content so the operator sees the de-obfuscated form. Mirrors the
+/// server `screen::is_invisible` predicate so render and screen agree. Pure +
+/// idempotent; the raw bytes are never rewritten at rest.
+pub(crate) fn strip_invisible(input: &str) -> String {
+    input.chars().filter(|&c| !is_invisible(c)).collect()
+}
+
+/// True for a char that renders invisibly and is used to smuggle
+/// instruction/exfiltration bytes or defeat substring matching.
+fn is_invisible(c: char) -> bool {
+    let cp = c as u32;
+    // Tag block (U+E0000–E007F), variation selectors (U+FE00–FE0F), zero-width
+    // space/non-joiner/joiner + word joiner, and the legacy BOM / function +
+    // abbreviation + invisible separators / soft hyphen / grapheme joiner.
+    (0xE0000..=0xE007F).contains(&cp)
+        || (0xFE00..=0xFE0F).contains(&cp)
+        || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
+        || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
+}
+
 // ---------------------------------------------------------------------------
 // v1.16.0 M1 — the connection state machine (DESIGN §2 + §6, the correctness
 // heart). One `use_future` at the root owns its timer; a missed probe never
@@ -1935,5 +1959,31 @@ mod tests {
         ] {
             assert!(nav.contains(&r), "palette missing Navigate for {r:?}");
         }
+    }
+
+    /// v1.20.3 "Classify" (G5) render boundary: the console strips invisible
+    /// smuggling chars from displayed content but preserves visible Unicode.
+    #[test]
+    fn strip_invisible_removes_smuggling_but_keeps_visible_text() {
+        for c in [
+            '\u{200B}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{2060}',
+            '\u{FEFF}',
+            '\u{00AD}',
+            '\u{E0000}',
+            '\u{FE00}',
+        ] {
+            assert_eq!(
+                strip_invisible(&format!("ig{}nore", c)),
+                "ignore".to_string()
+            );
+        }
+        assert_eq!(
+            strip_invisible("héllo wörld 日本語"),
+            "héllo wörld 日本語".to_string()
+        );
+        assert_eq!(strip_invisible(""), "");
     }
 }

@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.20.1-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.20.3-blue.svg)](#)
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
   [![CI](https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg)](https://github.com/markfietje/brain-server/actions/workflows/ci.yml)
@@ -20,7 +20,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](wiki/Universal-Memory-Protocol.md)
-  [![Tests](https://img.shields.io/badge/tests-665%20passed-brightgreen.svg)](#)
+  [![Tests](https://img.shields.io/badge/tests-694%20passed-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
   [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)

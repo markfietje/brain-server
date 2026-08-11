@@ -98,6 +98,18 @@ pub async fn ingest_proposal(
             format!("content exceeds {MAX_QUERY} chars"),
         ));
     }
+    // v1.20.3 "Classify" M1 (G5): run the injection screen on the proposal
+    // content. `Reject` → 400, never persisted (the review queue only ever
+    // sees `clean`/`quarantine`); `Quarantine` → stored + badged so the
+    // reviewer sees the flag before approving a capture whose own text was
+    // instruction-bearing. The badge is recomputed deterministically at read
+    // time (list_proposals), so no schema change is needed.
+    if crate::screen::screen(&content, "") == crate::screen::ScreenResult::Reject {
+        return Err(HandlerError::bad_request(
+            "input_rejected",
+            "input contains suspicious patterns",
+        ));
+    }
     // v1.20.2 F1: bound + injection-screen `source_prompt`. The plugin caps at
     // 2000 client-side; the server enforces its own bound so a malicious caller
     // can't persist a 1 MiB prompt. If the screen trips, the screened form is
@@ -248,6 +260,10 @@ pub struct ProposalView {
     pub conflict_with: Option<i64>,
     pub salience: f32,
     pub created_at: i64,
+    /// v1.20.3 "Classify" M1 (G5): the injection-screen verdict for `content`,
+    /// recomputed deterministically at read time. `clean` or `quarantine` only
+    /// (`reject` is never persisted — see `ingest_proposal`).
+    pub screen_verdict: String,
 }
 
 /// `GET /proposals?status=pending&limit=` — the human review queue. Each item
@@ -282,10 +298,15 @@ pub async fn list_proposals(
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let rows = stmt
             .query_map(rusqlite::params![status, limit as i64], |r| {
+                let content: String = r.get(2)?;
                 Ok(ProposalView {
                     id: r.get(0)?,
                     kind: r.get(1)?,
-                    content: r.get(2)?,
+                    screen_verdict: crate::screen::screen_verdict_label(crate::screen::screen(
+                        &content, "",
+                    ))
+                    .to_string(),
+                    content,
                     source: r.get(3)?,
                     source_prompt: r.get(4)?,
                     authority: r.get(5)?,

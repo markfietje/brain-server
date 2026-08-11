@@ -225,7 +225,7 @@ fn HitRow(hit: Hit) -> Element {
                     span { class: "text-warn", "superseded" }
                 }
             }
-            p { class: "text-sm text-foreground mt-1", "{hit.content}" }
+            p { class: "text-sm text-foreground mt-1", "{crate::strip_invisible(&hit.content)}" }
         }
     }
 }

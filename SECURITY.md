@@ -132,7 +132,8 @@ browser local storage, and validated for signature, issuer, and audience."
 |---|---|---|
 | **Every** SQL statement parameterized (`params![]`) | all `rusqlite` calls | ✅ |
 | Zero string interpolation in SQL (audited) | grep-verified | ✅ |
-| Prompt-injection heuristic at every query/ingest boundary | `contains_suspicious_pattern` | ✅ (ceiling documented) |
+| Prompt-injection heuristic at every query/ingest boundary | `contains_suspicious_pattern` (layer 1) | ✅ (ceiling documented) |
+| Optional local ONNX classifier for novel/obfuscated injections (v1.20.3 G5, off by default) | `screen::screen` layer 2 (`injection-classifier` feature) | ✅ (feature-gated; blocklist + `flagged`/`untrusted` stay the always-on defense) |
 | auto-capture (G2): plugin routes captures through the human review queue by default; the `/ingest` write core screens + quarantines/rejects injectable input (v1.20.1) | `plugin captureMode` + `ingest_one` | ✅ |
 | FTS5 MATCH strings compiled with per-token quoting | `compile_lex` | ✅ |
 | Domain name → filename via strict regex `^[a-z0-9][a-z0-9_-]{0,62}$` | `is_valid_domain` | ✅ |
@@ -542,7 +543,8 @@ are operations work, not engineering.
 ## Version History
 
 | Version | Date | Changes |
-|---|---|---|
+|---|---|---|---|
+| 1.20.3 | 2026-08-11 | "Classify" (G5): two-layer injection screen — layer 1 deterministic blocklist (always on) + optional feature-gated local ONNX classifier (layer 2, off by default; the blocklist + `flagged`/`untrusted` stay the always-on defense). Canonical invisible-char predicate shared by screen/classifier/client-render boundary (client strips invisible smuggling chars from displayed hits; raw bytes never rewritten). `screen_verdict` review badge recomputed at read. Policy + thresholds read per call |
 | 1.16.7 | 2026-08-08 | Client "Integrated": deep links + PWA (offline shell caches app shell only — never the API, no content caching) + paginated audit + command palette + recall debounce + hardening (drawer focus trap, aria-live, `dir="auto"`). Client-only; server + API contract unchanged |
 | 1.16.6 | 2026-08-08 | Client "Mobile": secure token storage via OS keyring (`keyring`, non-web; web stays in-memory — browser localStorage is not a secure credential store per MASVS-STORAGE) + responsive tab-bar UX; Dioxus pinned to 0.7.10 (wasm-hotpatch TOCTOU/UB + panic-resilience fixes compiled in) |
 | 1.16.5 | 2026-08-08 | Client "Secure": JWT refresh lifecycle — silent refresh-on-401 (single-flight mutex), pre-emptive expiry refresh, principal identity pillar, revocation-aware error mapping |

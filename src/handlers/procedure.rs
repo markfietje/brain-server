@@ -117,26 +117,31 @@ pub async fn create(
         .collect::<Result<_, _>>()?;
     // v1.20.1 "Shield" M1 (extended to /procedure in v1.20.2): screen this
     // sibling write core exactly like `ingest_one`, `/add`, `/ingest/memory`,
-    // `/ingest/markdown`. `Reject` policy → 400; `Quarantine` (default) → flag
-    // each inserted chunk + skip the `next_step` edges so a quarantined plant
-    // can't pollute the graph. The screen runs against the root content + title
-    // AND every step's content + title (a step can carry the payload just as
-    // easily as the root).
-    let root_tripped =
-        crate::contains_suspicious_pattern(&content) || crate::contains_suspicious_pattern(&title);
-    let step_tripped: bool = steps.iter().any(|(t, c, _)| {
-        crate::contains_suspicious_pattern(c) || crate::contains_suspicious_pattern(t)
-    });
-    let tripped = root_tripped || step_tripped;
-    let policy = crate::config::injection_policy();
-    if policy == crate::config::InjectionPolicy::Reject && tripped {
+    // `/ingest/markdown`. v1.20.3 (G5): the full two-layer screen (blocklist +
+    // optional classifier). `Reject` → 400; `Quarantine` (default) → flag each
+    // inserted chunk + skip the `next_step` edges so a quarantined plant can't
+    // pollute the graph. The screen runs against the root content + title AND
+    // every step's content + title (a step can carry the payload just as easily
+    // as the root).
+    use crate::screen::ScreenResult;
+    let root_verdict = crate::screen::screen(&content, &title);
+    let step_verdicts: Vec<ScreenResult> = steps
+        .iter()
+        .map(|(t, c, _)| crate::screen::screen(c, t))
+        .collect();
+    if root_verdict == ScreenResult::Reject || step_verdicts.contains(&ScreenResult::Reject) {
         return Err(HandlerError::bad_request(
             "input_rejected",
             "input contains suspicious patterns",
         ));
     }
+    let root_quarantine = root_verdict == ScreenResult::Quarantine;
+    let step_quarantine: Vec<bool> = step_verdicts
+        .iter()
+        .map(|v| *v == ScreenResult::Quarantine)
+        .collect();
     // Under Quarantine (default), `flag_if_quarantined` runs per-chunk inside
-    // the tx below and skips `next_step` edges for a tripped root.
+    // the tx below and skips `next_step` edges for a quarantined root.
 
     let domain = match &req.domain {
         Some(d) => Some(crate::handlers::normalize_domain(d)?),
@@ -172,9 +177,9 @@ pub async fn create(
         )
         .map_err(|e| HandlerError::internal(format!("procedure insert failed: {e}")))?;
         let root_id = tx.last_insert_rowid();
-        // v1.20.2 B1: flag the root if the screen tripped ( Quarantine policy).
-        // Excluded from recall via `WHERE flagged = 0`, KG edges skipped below.
-        let root_flagged = crate::flag_if_quarantined(&tx, root_id, &content_for_task);
+        // v1.20.2 B1: flag the root if the screen quarantined. Excluded from
+        // recall via `WHERE flagged = 0`, KG edges skipped below.
+        let root_flagged = crate::flag_if_quarantined(&tx, root_id, root_quarantine);
         // Embedding for the root (so /recall finds it). Reuses the same vec0
         // path as /ingest. ponytail: the model is in AppState but spawn_blocking
         // closes over pool, not state; we encode after the tx via a second
@@ -197,10 +202,11 @@ pub async fn create(
             )
             .map_err(|e| HandlerError::internal(format!("step insert failed: {e}")))?;
             let step_id = tx.last_insert_rowid();
-            // v1.20.2 B1: flag this step if it tripped. `flag_if_quarantined`
-            // re-scans per chunk so only the steps that actually tripped are
-            // flagged (a benign step in a quarantined procedure stays clean).
-            let _ = crate::flag_if_quarantined(&tx, step_id, step_content);
+            // v1.20.2 B1: flag this step if its screen quarantined. The verdict
+            // was computed per-step before the tx, so only the steps that
+            // actually quarantined are flagged (a benign step in a quarantined
+            // procedure stays clean).
+            let _ = crate::flag_if_quarantined(&tx, step_id, step_quarantine[idx]);
             // next_step edge with explicit ordering. Skipped for a quarantined
             // root so a flagged plant can't reach the graph even via a step.
             // The edge kind is 'next_step'; step_index carries the position.
