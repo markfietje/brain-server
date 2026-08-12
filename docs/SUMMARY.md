@@ -19,6 +19,24 @@
 - [API contract](API_CONTRACT.md)
 - [API reference](api.md)
 
+# Reference
+
+- [Features](features.md)
+- [Use cases](use-cases.md)
+- [Configuration](configuration.md)
+- [Retrieval & recall](retrieval-and-recall.md)
+- [Knowledge graph](knowledge-graph.md)
+- [API reference (wiki)](api-reference.md)
+- [CLI reference](cli-reference.md)
+- [OpenClaw integration](openclaw-integration.md)
+- [Client GUI](client-gui.md)
+- [Client console](client-complete-console.md)
+- [Universal Memory Protocol](universal-memory-protocol.md)
+- [Glossary](glossary.md)
+- [FAQ](faq.md)
+- [Dioxus WASM-split research](dioxus-wasm-split-research.md)
+- [Roadmap & release history](roadmap-and-release-history.md)
+
 # Operations
 
 - [Security policy](security.md)
