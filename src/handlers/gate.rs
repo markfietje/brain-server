@@ -231,6 +231,28 @@ pub async fn ingest_proposal(
         span.record("domain", domain.clone());
     }
 
+    // v1.20.8 "Signal": alert the console a candidate is awaiting review
+    // (pending), and separately when the injection screen tripped (screen).
+    // Payloads are signals, never content/PII.
+    let now = chrono::Utc::now().timestamp();
+    crate::alert::publish(
+        &state,
+        crate::alert::ALERT_KIND_PENDING,
+        json!({
+            "proposal_id": resp.id,
+            "screen_verdict": crate::screen::screen_verdict_label(screen_res),
+            "created_at": now,
+            "expires_at": now + crate::config::proposal_ttl_secs(),
+        }),
+    );
+    if screen_res != crate::screen::ScreenResult::Clean {
+        crate::alert::publish(
+            &state,
+            crate::alert::ALERT_KIND_SCREEN,
+            json!({ "verdict": crate::screen::screen_verdict_label(screen_res) }),
+        );
+    }
+
     Ok(Json(resp))
 }
 

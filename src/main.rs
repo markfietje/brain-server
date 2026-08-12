@@ -52,6 +52,7 @@ use brain_server::audit;
 use brain_server::migration::migrate_down_0_9_0;
 use brain_server::migration::run_migration;
 use brain_server::register_sqlite_vec::register_sqlite_vec;
+mod alert;
 mod auth;
 mod chunker;
 mod config;
@@ -65,9 +66,8 @@ mod hygiene;
 mod integrity;
 mod linker;
 mod procedural;
-mod temporal;
-// v1.4.0 "Calibrate" M3: TRACE typed-edge prefixes + validity-aware traversal.
 mod search;
+mod temporal;
 // v1.20.3 "Classify" (G5): the two-layer injection screen seam.
 mod screen;
 mod sources;
@@ -332,6 +332,12 @@ struct AppState {
     /// v1.17.3 "UMP" M2: `GET /ump/subscribe` SSE change events (`{kind, id}` —
     /// never record bodies). Published by remember/revise/forget.
     ump_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// v1.20.8 "Signal": `GET /events` SSE live alert feed (`{kind, ts, seq,
+    /// payload}` — never content/PII). Published by the four decision cores.
+    alert_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// v1.20.8 "Signal": monotonic alert sequence (the webhook delivery-id
+    /// source + the receiver's idempotency key).
+    alert_seq: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Deserialize)]
@@ -1684,6 +1690,10 @@ async fn verify_audit_chain(
     })
     .await
     .unwrap_or(false);
+    // v1.20.8 "Signal": a failed chain verify is a decision-critical alert.
+    if !ok {
+        alert::publish(&s, alert::ALERT_KIND_CHAIN, serde_json::json!({}));
+    }
     Json(serde_json::json!({ "ok": ok }))
 }
 
@@ -4347,6 +4357,7 @@ async fn main_inner() -> Result<()> {
         .route("/ump/forget", post(handlers::ump_ops::forget))
         .route("/ump/feedback", post(handlers::ump_ops::feedback))
         .route("/ump/subscribe", get(handlers::ump_ops::subscribe))
+        .route("/events", get(alert::events))
         .route("/ump/audit", post(handlers::ump_ops::audit))
         .route("/ump/audit/verify", get(handlers::ump_ops::audit_verify))
         .route(
@@ -4565,27 +4576,36 @@ async fn main_inner() -> Result<()> {
             axum::http::HeaderName::from_static("x-api-version"),
             axum::http::HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
         ))
-        .with_state(Arc::new(AppState {
-            model,
-            registry: domain_registry::DomainRegistry::new(
-                pool.clone(),
-                &db_path,
-                config::multi_db(),
-            ),
-            pool,
-            db_path: db_path.clone(),
-            connection_tracker,
-            rate_limiter,
-            snapshot: snapshot_state,
-            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
-            auth_mode,
-            key_store,
-            revocation_cache,
-            jwt_issuer,
-            jwt_audience,
-            oidc_config,
-            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
-        }));
+        .with_state({
+            let app_state = Arc::new(AppState {
+                model,
+                registry: domain_registry::DomainRegistry::new(
+                    pool.clone(),
+                    &db_path,
+                    config::multi_db(),
+                ),
+                pool,
+                db_path: db_path.clone(),
+                connection_tracker,
+                rate_limiter,
+                snapshot: snapshot_state,
+                audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+                auth_mode,
+                key_store,
+                revocation_cache,
+                jwt_issuer,
+                jwt_audience,
+                oidc_config,
+                ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+                alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+                alert_seq: std::sync::atomic::AtomicU64::new(0),
+            });
+            // v1.20.8 "Signal": watch pending proposals and fire the `expiry`
+            // alert once per SLA-tier boundary crossed.
+            let watcher_state = Arc::clone(&app_state);
+            tokio::spawn(async move { alert::spawn_expiry_watcher(watcher_state).await });
+            app_state
+        });
 
     // v0.9.7 "Guard": spawn the webhook drain worker. It processes verified
     // deliveries off the bounded queue without an HTTP round-trip.
@@ -8899,6 +8919,7 @@ Final paragraph after the rule.";
             "/ump/audit",
             "/ump/audit/verify",
             "/.well-known/ump.json",
+            "/events",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -9580,6 +9601,7 @@ Final paragraph after the rule.";
             ("/ump/subscribe", "Read"),
             ("/ump/audit", "Admin"),
             ("/ump/audit/verify", "Admin"),
+            ("/events", "Read"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -9641,6 +9663,7 @@ Final paragraph after the rule.";
                     "observe" => include_str!("handlers/observe.rs"),
                     "govern" => include_str!("handlers/govern.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),
+                    "alert" => include_str!("alert.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
                 }
             } else {
@@ -10174,6 +10197,8 @@ Final paragraph after the rule.";
             jwt_audience: String::new(),
             oidc_config: handlers::well_known::OidcConfig::unconfigured(),
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -10345,6 +10370,8 @@ Final paragraph after the rule.";
             jwt_audience: String::new(),
             oidc_config: handlers::well_known::OidcConfig::unconfigured(),
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -10476,6 +10503,8 @@ Final paragraph after the rule.";
             jwt_audience: String::new(),
             oidc_config: handlers::well_known::OidcConfig::unconfigured(),
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
         });
         let app = axum::Router::new()
             .route(
@@ -10627,6 +10656,8 @@ Final paragraph after the rule.";
             jwt_audience: String::new(),
             oidc_config: handlers::well_known::OidcConfig::unconfigured(),
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
         });
         let app = axum::Router::new()
             .route(

@@ -25,6 +25,7 @@ use crate::audit::{self, AuditKind, AuditStatus};
 use crate::config::{WEBHOOK_QUEUE_MAX, WEBHOOK_REPLAY_SECS};
 use crate::handlers::HandlerError;
 use crate::Pool;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use rusqlite::params;
 use rusqlite::OptionalExtension;
@@ -115,6 +116,29 @@ impl WebhookQueue {
         mac.update(b".");
         mac.update(payload);
         mac.verify_slice(&expected).is_ok()
+    }
+
+    /// v1.20.8 "Signal": outbound mirror of [`verify_standard_signature`] —
+    /// produce the `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}`
+    /// for the alert webhook sink. Interoperates with any svix-style receiver
+    /// (the same scheme the server verifies inbound on `receive_standard`).
+    pub fn sign_standard_signature(
+        secret: &[u8],
+        id: &str,
+        timestamp: &str,
+        payload: &[u8],
+    ) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        mac.update(id.as_bytes());
+        mac.update(b".");
+        mac.update(timestamp.as_bytes());
+        mac.update(b".");
+        mac.update(payload);
+        let sig = mac.finalize().into_bytes();
+        format!(
+            "v1,{}",
+            base64::engine::general_purpose::STANDARD.encode(sig)
+        )
     }
 
     /// Enqueue a delivery. `delivery_id` is the idempotency key (e.g. GitHub's
@@ -422,6 +446,28 @@ mod tests {
         let first = q.enqueue("github", "push", "deliv-1", b"payload").unwrap();
         assert_eq!(first, EnqueueOutcome::Enqueued);
         let second = q.enqueue("github", "push", "deliv-1", b"payload").unwrap();
+        assert_eq!(second, EnqueueOutcome::Duplicate);
+    }
+
+    #[test]
+    fn alert_kind_roundtrips_through_verified_queue() {
+        // v1.20.8 M2: the outbound `sign_standard_signature` round-trips
+        // through the verify side, and a `kind='alert'` enqueue is idempotent
+        // via `webhook_seen` (the delivery-id dedup).
+        let secret = b"alertsecret";
+        let id = "alert-3";
+        let ts = "1700000000";
+        let body = br#"{"kind":"pending","seq":3}"#;
+        let sig = WebhookQueue::sign_standard_signature(secret, id, ts, body);
+        assert!(WebhookQueue::verify_standard_signature(
+            secret, id, ts, body, &sig
+        ));
+
+        let pool = db();
+        let q = WebhookQueue::new(pool.clone());
+        let first = q.enqueue("alert", "alert", id, body).unwrap();
+        assert_eq!(first, EnqueueOutcome::Enqueued);
+        let second = q.enqueue("alert", "alert", id, body).unwrap();
         assert_eq!(second, EnqueueOutcome::Duplicate);
     }
 

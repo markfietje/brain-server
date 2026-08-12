@@ -35,6 +35,50 @@ pub const MAX_MULTI_GET: usize = 1000;
 /// row is audited as expired. Default 7 days. `BRAIN_PROPOSAL_TTL_SECS` overrides.
 pub const DEFAULT_PROPOSAL_TTL_SECS: i64 = 7 * 24 * 3600;
 
+/// v1.20.8 "Signal": the four fixed alert kinds fed by the decision cores.
+/// The `/events` SSE feed + `BRAIN_ALERT_WEBHOOK_URL` sink both speak these.
+pub const ALERT_KIND_PENDING: &str = "pending";
+pub const ALERT_KIND_EXPIRY: &str = "expiry";
+pub const ALERT_KIND_SCREEN: &str = "screen";
+pub const ALERT_KIND_CHAIN: &str = "chain";
+
+/// v1.20.8 "Signal": `GET /events` SSE broadcast buffer. Bounded — a slow
+/// consumer drops missed events (broadcast lag semantics), never blocks the
+/// publish path (same posture as `UMP_EVENT_BUFFER`).
+pub const ALERT_EVENT_BUFFER: usize = 256;
+
+/// v1.20.8 "Signal": how often the expiry watcher scans pending proposals.
+/// The tier clock is a watch, not a tick-per-event — a proposal only alerts
+/// as it crosses a boundary, so a coarse interval is honest.
+pub const ALERT_WATCH_INTERVAL_SECS: u64 = 30;
+
+/// v1.20.8 "Signal": SLA tier boundaries (seconds remaining), mirroring the
+/// client ops-clock budgets (`< 5 min` critical, `< 1 hr` warn). A proposal
+/// alerts once per boundary crossed, not on every scan.
+pub const ALERT_CRITICAL_SECS: i64 = 5 * 60;
+pub const ALERT_WARN_SECS: i64 = 60 * 60;
+
+/// Optional alert webhook sink. When set, every alert is enqueued to the
+/// existing `webhook_queue` (kind='alert') AND POSTed to this URL via the
+/// Standard Webhooks handshake (v1.20.4). Fail-soft: a sink failure never
+/// blocks the SSE publish path.
+pub fn alert_webhook_url() -> Option<String> {
+    std::env::var("BRAIN_ALERT_WEBHOOK_URL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// HMAC secret for the alert webhook's `webhook-signature: v1,<base64>`.
+/// When unset, the sink sends the headers unsigned (documented — the caller
+/// should still receive the notification; signing is best practice).
+pub fn alert_webhook_secret() -> Option<String> {
+    std::env::var("BRAIN_ALERT_WEBHOOK_SECRET")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 pub fn proposal_ttl_secs() -> i64 {
     std::env::var("BRAIN_PROPOSAL_TTL_SECS")
         .ok()
