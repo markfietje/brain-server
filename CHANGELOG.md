@@ -10,6 +10,53 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.16] — 2026-08-12
+
+### Server + client — "Bidi" (close the Unicode bidi-smuggling gap)
+
+Server `Cargo.toml` 1.20.15 → 1.20.16; client 1.20.15 → 1.20.16. Closes the one
+real gap a deep audit of six proposed agentic-security hardening measures
+found against the live tree (the other five were already defended or out of
+brain-server's scope — see the audit verdict). The injection screen's
+`strip_invisible` predicate covered tag-block, variation selectors, zero-width,
+and the legacy BOM/soft-hyphen set, but **not the Unicode `Bidi_Control`
+block** — the directional-override smuggling class (U+202E RLO et al.) named by
+Trojan Source / W3C TR#20 and by the LITL/EchoLeak hardening literature.
+
+- **`is_invisible` widened** (`src/screen.rs` + `client/src/main.rs`, the two
+  mirrors of the shared predicate) to strip the canonical bidi-control ranges:
+  `U+200E–U+200F` (LRM/RLM marks), `U+202A–U+202E` (LRE/RLE/PDF/LRO/RLO — the
+  overrides), and `U+2066–U+2069` (LRI/RLI/FSI/PDI isolates). No new codepath,
+  no new dep, no abstraction — the existing predicate now covers the full
+  Unicode `Bidi_Control` set. Because `strip_invisible` is applied at the
+  classifier-scoring boundary (server) and the operator render boundary
+  (client), both surfaces see the de-obfuscated form in one move.
+- **Tests extended** (no new files): `strip_invisible_removes_smuggling_forms`
+  (server) + `strip_invisible_removes_smuggling_but_keeps_visible_text`
+  (client) now exercise U+200E / U+202E / U+2066 and the server test pins the
+  full LRE/RLE/PDF/LRO/PDI collapse.
+- **Audit verdict recorded** (this entry): of the six proposed measures, (1)
+  LITL/UI markdown hardening is already defended — the Dioxus client renders
+  escaped text nodes, no markdown parser, no `dangerous_inner_html`
+  (build-guarded); (2) IFC/taint tracking already serializes `untrusted: true`
+  on every recall hit, and the FIDES/CaMeL *enforcement* is orchestrator-side;
+  (3) Rule-of-Two is an OpenClaw/orchestrator concern (brain-server has no
+  shell/exec, one bounded outbound path); (4) MCP ETDI/signed manifests target
+  aggregating MCP clients, not this single self-hosted server with a
+  compile-time-fixed tool table; (5) SPIFFE/SPIRE + mTLS + TPM is org-level
+  infra disproportionate for a single-loopback launchd service (did:key
+  capability tokens already ship). Only (6.2) Unicode normalization had a real,
+  in-scope gap → this release.
+
+ponytail ceiling (documented, not fixed here): the server's layer-1 blocklist
+(`contains_suspicious_pattern`) runs on **raw** content, not stripped input — so
+a bidi-wrapped phrase the classifier now strips + catches can still dodge the
+blocklist leg. Widening `is_invisible` shrinks this gap (the classifier scores
+stripped text) but the blocklist-on-raw-input is a separate "where strip is
+applied" change, out of scope for this hardening recommendation.
+
+---
+
 ## [1.20.15] — 2026-08-12
 
 ### Server + client — "Clock" (deadline clocks in the review queue)

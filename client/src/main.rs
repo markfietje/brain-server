@@ -58,10 +58,15 @@ pub(crate) fn strip_invisible(input: &str) -> String {
 fn is_invisible(c: char) -> bool {
     let cp = c as u32;
     // Tag block (U+E0000–E007F), variation selectors (U+FE00–FE0F), zero-width
-    // space/non-joiner/joiner + word joiner, and the legacy BOM / function +
-    // abbreviation + invisible separators / soft hyphen / grapheme joiner.
+    // space/non-joiner/joiner + word joiner, the legacy BOM / function +
+    // abbreviation + invisible separators / soft hyphen / grapheme joiner, and
+    // the Unicode Bidi_Control set (U+200E/200F, U+202A–202E, U+2066–2069 — the
+    // Trojan Source / W3C TR#20 directional smuggling class).
     (0xE0000..=0xE007F).contains(&cp)
         || (0xFE00..=0xFE0F).contains(&cp)
+        || (0x200E..=0x200F).contains(&cp)
+        || (0x202A..=0x202E).contains(&cp)
+        || (0x2066..=0x2069).contains(&cp)
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
 }
@@ -2025,6 +2030,10 @@ mod tests {
             '\u{00AD}',
             '\u{E0000}',
             '\u{FE00}',
+            // Bidi controls: LRM, RLO (override), LRI (isolate).
+            '\u{200E}',
+            '\u{202E}',
+            '\u{2066}',
         ] {
             assert_eq!(
                 strip_invisible(&format!("ig{}nore", c)),

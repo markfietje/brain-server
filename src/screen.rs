@@ -28,11 +28,16 @@ pub enum ScreenResult {
 }
 
 /// OWASP LLM01:2026 control #5 — strip invisible Unicode that smuggles
-/// instructions or breaks substring matching. The canonical 2026-08-04 list:
-/// tag-block (U+E0000–E007F), variation-selectors (U+FE00–FE0F), and the
-/// zero-width set (U+200B/200C/200D/2060), plus the legacy BOM / soft-hyphen /
-/// grapheme-joiner members carried from v0.9.7. Idempotent + pure; applied to
-/// the same text the classifier sees, so screening and scoring agree.
+/// instructions or breaks substring matching. The canonical set: tag-block
+/// (U+E0000–E007F), variation-selectors (U+FE00–U+FE0F), the zero-width set
+/// (U+200B/200C/200D/2060), the legacy BOM / soft-hyphen / grapheme-joiner
+/// members, and the Unicode `Bidi_Control` set (U+200E/200F marks,
+/// U+202A–202E embed/override, U+2066–2069 isolates) — the Trojan Source /
+/// W3C TR#20 bidi smuggling class. Idempotent + pure; applied to the same text
+/// the classifier sees, so screening and scoring agree. ponytail: the layer-1
+/// blocklist runs on raw bytes (`screen`), not stripped input — a bidi-wrapped
+/// phrase the classifier catches can still dodge the blocklist leg; widening
+/// this set shrinks but does not close that gap.
 pub fn strip_invisible(input: &str) -> String {
     input.chars().filter(|&c| !is_invisible(c)).collect()
 }
@@ -45,6 +50,11 @@ pub(crate) fn is_invisible(c: char) -> bool {
     (0xE0000..=0xE007F).contains(&cp)
         // Variation selectors (U+FE00–FE0F) — variant smuggling.
         || (0xFE00..=0xFE0F).contains(&cp)
+        // Bidi controls (U+200E–U+200F, U+202A–U+202E, U+2066–U+2069) — the
+        // Trojan Source / W3C TR#20 directional-override + isolate class.
+        || (0x200E..=0x200F).contains(&cp)
+        || (0x202A..=0x202E).contains(&cp)
+        || (0x2066..=0x2069).contains(&cp)
         // Zero-width space / non-joiner / joiner + word joiner.
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         // Legacy members (BOM, function/abbreviation/invisible separators,
@@ -477,6 +487,8 @@ mod tests {
     fn strip_invisible_removes_smuggling_forms() {
         for c in [
             '\u{200B}', '\u{200C}', '\u{200D}', '\u{2060}', '\u{FEFF}', '\u{00AD}',
+            // Bidi controls: LRM, RLO (override), LRI (isolate).
+            '\u{200E}', '\u{202E}', '\u{2066}',
         ] {
             assert_eq!(
                 strip_invisible(&format!("ig{}nore", c)),
@@ -487,6 +499,11 @@ mod tests {
         assert_eq!(
             strip_invisible("\u{E0000}\u{E007F}x\u{FE00}"),
             "x".to_string()
+        );
+        // Full bidi-control ranges collapse to nothing visible.
+        assert_eq!(
+            strip_invisible("\u{202A}\u{202B}\u{202C}\u{202D}\u{2069}"),
+            "".to_string()
         );
     }
 
