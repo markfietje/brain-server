@@ -58,4 +58,4 @@ Adopt the thing that tells you its limits; you'll be defending *that* one to
 your own compliance team.
 
 *Every ceiling above is expanded with its mechanism + upgrade path in
-[`docs/research/`](../research/) and [`docs/trust/proof-map.md`](../trust/proof-map.md).*
+[`docs/research/`](../research/01-bi-temporal.md) and [`docs/trust/proof-map.md`](../trust/proof-map.md).*

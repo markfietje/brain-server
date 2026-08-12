@@ -20,7 +20,7 @@ Brain Server is the tamper-evident, human-gated memory store that defuses it.**
    per-query cost, no data egress. The retrieval stack implements published
    research *deterministically* (bi-temporal knowledge graphs, submodular
    evidence packing, TRACE edges, Personalized PageRank graph leg, GAAMA hub
-   dampening, calibrated abstention). See [`docs/research/`](../research/).
+    dampening, calibrated abstention). See [`docs/research/`](../research/01-bi-temporal.md).
 2. **Human-in-the-loop write gate** — nothing becomes memory autonomously. A
    candidate is *proposed*, scored deterministically, and promoted only when a
    human approves. The injection screen (blocklist + optional local classifier)
@@ -53,6 +53,6 @@ Continue to [Quickstart](./quickstart.md) or [Install](./install.md). For the
 self-serve evaluation story, see [Editions](./editions.md).
 
 For the narrative — the why / who-it's-for / market-shift stories — see the
-[blog](../blog/) (one post per hard-won mechanism, each tied to its research or
+[blog](../blog/01-compliance-time-bomb.md) (one post per hard-won mechanism, each tied to its research or
 trust source) and the [media kit](../media-kit.md) (positioning, one-liners, and
 a Brain-vs-the-field sizing table with honest ceilings).

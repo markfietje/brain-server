@@ -61,5 +61,5 @@ trusted at enterprise scale. Retrieval that generates is retrieval you pay for
 every turn and can't replay. Retrieval that computes is retrieval you can pin,
 audit, and run on a device you own.
 
-*Deep dives: [`docs/research/`](../research/). The framework-agnostic story
+*Deep dives: [`docs/research/`](../research/01-bi-temporal.md). The framework-agnostic story
 continues in the next post.*
