@@ -2,8 +2,9 @@
 
 Brain Server ships in small, verifiable, named releases. This page summarizes the
 journey to the current version and where it is going. The authoritative plan is
-[ROADMAP.md](../ROADMAP.md); the full per-version record is
-[CHANGELOG.md](../CHANGELOG.md).
+[ROADMAP.md](https://github.com/markfietje/brain-server/blob/main/ROADMAP.md);
+the full per-version record is
+[CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -80,4 +81,4 @@ when it is verifiable and earned by a need, not speculation.
 
 - [Overview](./overview.md) — what Brain Server is and who it is for.
 - [API](./api.md) — the endpoint surface available today.
-- The authoritative [ROADMAP.md](../ROADMAP.md) and [CHANGELOG.md](../CHANGELOG.md).
+- The authoritative [ROADMAP.md](https://github.com/markfietje/brain-server/blob/main/ROADMAP.md) and [CHANGELOG.md](./CHANGELOG.md).

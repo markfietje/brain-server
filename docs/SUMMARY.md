@@ -37,6 +37,7 @@
 # Project
 
 - [Roadmap](roadmap.md)
+- [Changelog](CHANGELOG.md)
 - [Benchmarks](BENCHMARKS.md)
 - [Audit register](AUDIT.md)
 - [Contributing](CONTRIBUTING.md)
