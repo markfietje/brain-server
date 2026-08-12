@@ -92,8 +92,13 @@ pub fn panel() -> Element {
         let min = min_rel();
         let api = api();
         async move {
-            api.recall(&q, trace, if min.is_empty() { None } else { Some(&min) })
-                .await
+            api.recall(
+                &q,
+                trace,
+                if min.is_empty() { None } else { Some(&min) },
+                false,
+            )
+            .await
         }
     });
 
@@ -375,6 +380,7 @@ mod tests {
             confidence: None,
             relevance: relevance.map(str::to_string),
             decayed: None,
+            flagged: None,
         }
     }
 

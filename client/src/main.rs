@@ -14,7 +14,8 @@
 
 use dioxus::prelude::*;
 use panels::{
-    audit, create, data, graph, health, overview, recall, review, security, subjects, system, ump,
+    audit, create, data, graph, health, ops, overview, recall, review, security, subjects, system,
+    ump,
 };
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
@@ -82,7 +83,7 @@ const CONN_FAILURES_BEFORE_DEGRADE: u32 = 2;
 /// a JS engine). ponytail: `tokio::time::sleep` would need a tokio dep and
 /// doesn't work in WASM without a custom time driver; the eval path is the
 /// cross-platform primitive Dioxus already ships.
-async fn probe_sleep(secs: u64) {
+pub(crate) async fn probe_sleep(secs: u64) {
     let js = format!("return await new Promise(r => setTimeout(r, {secs}*1000));");
     let _ = document::eval(&js).await;
 }
@@ -265,6 +266,10 @@ enum Route {
     /// v1.17.8 M7: System group — console (domains/snapshot/art30/reindex/sources/console).
     #[route("/system")]
     System {},
+    /// v1.20.6 M1: Memory Operations — the live pending-queue + SLA countdown
+    /// clocks + the flagged/quarantined screen output. The HITL work surface.
+    #[route("/ops")]
+    Ops {},
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -777,6 +782,7 @@ fn AppShell() -> Element {
     let nav_data = t("nav_data");
     let nav_ump = t("nav_ump");
     let nav_system = t("nav_system");
+    let nav_ops = t("nav_ops");
     let review_title = t("review_title");
     let sign_out = t("sign_out");
     let loopback = t("loopback");
@@ -828,6 +834,7 @@ fn AppShell() -> Element {
                     NavLink { to: Route::Data {}, "{nav_data}" }
                     NavLink { to: Route::Ump {}, "{nav_ump}" }
                     NavLink { to: Route::System {}, "{nav_system}" }
+                    NavLink { to: Route::Ops {}, "{nav_ops}" }
                 }
                 div { class: "border-t border-border p-3",
                 div { class: "flex items-center gap-2 text-sm",
@@ -873,6 +880,7 @@ fn AppShell() -> Element {
                 TabLink { to: Route::Data {}, "{nav_data}" }
                 TabLink { to: Route::Ump {}, "{nav_ump}" }
                 TabLink { to: Route::System {}, "{nav_system}" }
+                TabLink { to: Route::Ops {}, "{nav_ops}" }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
                 // Slim top bar: connection + pending summary + prefs.
@@ -1073,7 +1081,16 @@ fn command_keywords(c: &Command) -> &'static [&'static str] {
         Command::Navigate(Route::Health {}) => &["health", "status", "capacity", "service"],
         Command::Navigate(Route::Data {}) => &["data", "purge", "export", "retention", "rights"],
         Command::Navigate(Route::Ump {}) => &["ump", "portability", "protocol", "interop"],
-        Command::Navigate(Route::System {}) => &["system", "admin", "console", "domains", "ops"],
+        Command::Navigate(Route::System {}) => &["system", "admin", "console", "domains"],
+        Command::Navigate(Route::Ops {}) => &[
+            "ops",
+            "operations",
+            "queue",
+            "sla",
+            "clock",
+            "deadline",
+            "flagged",
+        ],
         Command::SignOut => &["signout", "sign out", "logout", "exit"],
         Command::Lookup(Lookup::Proposal(_)) => &["proposal", "propose", "approve"],
         Command::Lookup(Lookup::Chunk(_)) => &["chunk", "memory", "get"],
@@ -1108,6 +1125,7 @@ fn palette_commands(configured: bool) -> Vec<Command> {
         Command::Navigate(Route::Data {}),
         Command::Navigate(Route::Ump {}),
         Command::Navigate(Route::System {}),
+        Command::Navigate(Route::Ops {}),
     ];
     if configured {
         v.push(Command::SignOut);
@@ -1198,6 +1216,7 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::Data {}) => "Data",
         Command::Navigate(Route::Ump {}) => "UMP",
         Command::Navigate(Route::System {}) => "System",
+        Command::Navigate(Route::Ops {}) => "Operations",
         Command::SignOut => "Sign out",
         Command::Lookup(Lookup::Proposal(_)) => "Open proposal",
         Command::Lookup(Lookup::Chunk(_)) => "Open chunk",
@@ -1681,6 +1700,12 @@ fn System() -> Element {
     system::panel()
 }
 
+/// v1.20.6 M1: Memory Operations — the live HITL work surface.
+#[component]
+fn Ops() -> Element {
+    ops::panel()
+}
+
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
     rsx! { p { "not found: {segments:?}" } }
@@ -1900,8 +1925,8 @@ mod tests {
             .filter(|c| matches!(c, Command::Navigate(_)))
             .count();
         assert_eq!(
-            count, 12,
-            "the twelve nav targets (Overview→Health + Data/UMP/System)"
+            count, 13,
+            "the thirteen nav targets (Overview→Health + Ops/Data/UMP/System)"
         );
         assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
         let anonymous = palette_commands(false);
@@ -1956,6 +1981,7 @@ mod tests {
             Route::Data {},
             Route::Ump {},
             Route::System {},
+            Route::Ops {},
         ] {
             assert!(nav.contains(&r), "palette missing Navigate for {r:?}");
         }

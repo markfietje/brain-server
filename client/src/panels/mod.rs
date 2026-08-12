@@ -10,6 +10,7 @@ pub mod data;
 pub mod graph;
 pub mod health;
 pub mod ingest;
+pub mod ops;
 pub mod overview;
 pub mod procedures;
 pub mod recall;
@@ -17,6 +18,23 @@ pub mod review;
 pub mod security;
 pub mod subjects;
 pub mod system;
+
+/// v1.20.3/1.20.6: a `screen_verdict` (`clean`/`quarantine`) maps to a
+/// semantic token + a human label. Shared by the review detail card and the
+/// /ops flagged surface so one source of truth drives both.
+pub fn verdict_badge(v: &str) -> &'static str {
+    match v {
+        "quarantine" => "warn",
+        _ => "ok",
+    }
+}
+
+pub fn verdict_label(v: &str) -> &'static str {
+    match v {
+        "quarantine" => "quarantined",
+        _ => "clean",
+    }
+}
 pub mod ump;
 
 use dioxus::prelude::*;
@@ -74,5 +92,20 @@ pub fn RefreshButton(mut refresh: Signal<u32>) -> Element {
             onclick: move |_| refresh += 1,
             "⟳"
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{verdict_badge, verdict_label};
+
+    #[test]
+    fn verdict_maps_quarantine_to_warn_and_clean_to_ok() {
+        assert_eq!(verdict_badge("quarantine"), "warn");
+        assert_eq!(verdict_label("quarantine"), "quarantined");
+        assert_eq!(verdict_badge("clean"), "ok");
+        assert_eq!(verdict_label("clean"), "clean");
+        assert_eq!(verdict_badge("reject"), "ok"); // reject never persists; reads as quarantine is handled server-side
+        assert_eq!(verdict_badge(""), "ok"); // unknown/legacy -> clean posture
     }
 }

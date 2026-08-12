@@ -240,3 +240,24 @@ sys_reindex = Reindex
 sys_reindexed = Reindexed {n} chunks
 sys_sources = Sources & connectors
 sys_console = Try-it console
+
+## Operations (v1.20.6 M1–M3 — Memory Operations panel)
+nav_ops = Operations
+ops_title = Operations
+ops_sub = The live HITL work surface: pending queue, SLA clocks, and the flagged screen output.
+ops_queue = Live queue
+ops_queue_summary = pending
+ops_gate = Gate health
+ops_flagged = Flagged & quarantined
+ops_flagged_hint = Enter a probe query and Scan to surface screen-caught matches.
+ops_flagged_empty = No flagged matches.
+ops_decayed = Decayed (missed deadline)
+ops_scan = Scan
+ops_sourcing = sourcing prompt
+ops_expired = expired (auto-rejected)
+sla_critical = critical
+sla_warn = expiring soon
+sla_remaining = remaining
+gate_healthy = healthy
+gate_over_rejecting = over-rejecting
+gate_under_reviewing = under-reviewing

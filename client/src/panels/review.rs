@@ -689,6 +689,10 @@ pub fn detail(proposal_id: i64) -> Element {
                 div { class: "card",
                     div { class: "card-header",
                         h2 { class: "card-title", "Proposal #{proposal_id} · {p.kind}" }
+                        if let Some(v) = p.screen_verdict.as_deref() {
+                            span { class: "badge badge-{crate::panels::verdict_badge(v)}",
+                                "screen: {crate::panels::verdict_label(v)}" }
+                        }
                     }
                     div { class: "card-body space-y-2",
                         p { class: "text-sm text-foreground", "{crate::strip_invisible(&p.content)}" }
@@ -901,6 +905,7 @@ mod tests {
             content: "x".into(),
             source: None,
             source_prompt: None,
+            screen_verdict: None,
             authority: None,
             novelty: 0.1,
             conflict_with: None,

@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
 
-const MIN_QUERY: usize = 5; // mirrors brain-server's min_query_length
+pub(crate) const MIN_QUERY: usize = 5; // mirrors brain-server's min_query_length
 /// v1.16.5 M3: refresh within this many seconds of `exp` to avoid the
 /// 401→refresh→retry latency on every expiry boundary (M5 pre-emptive).
 const REFRESH_AHEAD_SECS: i64 = 60;
@@ -381,6 +381,7 @@ impl ApiClient {
         query: &str,
         trace: bool,
         min_relevance: Option<&str>,
+        include_flagged: bool,
     ) -> Result<RecallResponse, ApiError> {
         let q = query.trim();
         if q.len() < MIN_QUERY {
@@ -392,6 +393,9 @@ impl ApiClient {
         }
         if let Some(t) = min_relevance {
             body["min_relevance"] = serde_json::json!(t);
+        }
+        if include_flagged {
+            body["include_flagged"] = serde_json::json!(true);
         }
         self.post_json("/recall", &body).await
     }
@@ -1089,6 +1093,11 @@ pub struct Hit {
     /// when the caller opted into decayed results).
     #[serde(default)]
     pub decayed: Option<bool>,
+    /// v0.9.7 Guard: true when this chunk was quarantined by the injection
+    /// screen (`flagged=1`). Only present on `include_flagged` recalls — the
+    /// v1.20.6 `/ops` console's visible screen output.
+    #[serde(default)]
+    pub flagged: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1118,6 +1127,11 @@ pub struct Proposal {
     /// so a reviewer can context-check it before deciding.
     #[serde(default)]
     pub source_prompt: Option<String>,
+    /// v1.20.3 "Classify" G5: the injection-screen verdict for this proposal
+    /// (`clean`/`quarantine`), recomputed at read time. `None` for a legacy
+    /// row; `Reject` is never persisted (reads as `quarantine` server-side).
+    #[serde(default)]
+    pub screen_verdict: Option<String>,
     #[serde(default)]
     pub authority: Option<f32>,
     pub novelty: f32,

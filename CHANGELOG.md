@@ -10,6 +10,61 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.6] — 2026-08-12
+
+### Client — "Console" (Memory Operations panel + SLA clocks + flagged surface)
+
+The first release of the operator-console line (per
+`IMPLEMENTATION_PLAN_v1.20.6_Console.md`). Turns the HITL posture brain-server
+built across v1.14+ into a single live, at-a-glance work surface. **Client-only**
+— server + API contract stay at 1.20.0; the panel is a pure composition of the
+already-shipped `/proposals`, `/decayed`, and recall-`include_flagged`
+endpoints. No new routes, no schema change, no new dependency.
+
+### Added
+- **M1 — Memory Operations panel** (`client/src/panels/ops.rs` + `Route::Ops`
+  at `/ops`, registered in rail + tab bar + palette; nav targets 12 → 13). A
+  3-region dashboard, one decision type per region: **live pending queue**
+  (top-left primary; each row = exact content + `source_prompt` + live SLA
+  countdown + A-approve/R-reject via the existing `decide` path), **flagged &
+  quarantined** (recall `include_flagged: true` + `GET /decayed`, read-only,
+  displayed through the v1.20.3 invisible-char strip boundary), and a **gate
+  health strip** (approved/rejected/expired counts → severity hint).
+- **M2 — SLA countdown clocks** (the "queue is a clock" rule). New Dioxus-free
+  pure cores: `clock_until` (time-until-expiry from `created_at` + the mirrored
+  `DEFAULT_PROPOSAL_TTL_SECS`, `None` once past deadline), `sla_tier`
+  (`critical` < 5 min / `warn` < 1 hr / `ok`), `gate_health`, and
+  `queue_priority` (expired first, then nearest-expiry, stable tie-break by
+  id). A once-on-mount loop re-renders all countdowns from a fresh `now_unix()`
+  every ~30s (dependency-free, the health-refresh idiom). Expired rows show the
+  server-enforced auto-reject note.
+- **M3 — flagged surface** — the injection screen's output is now visible in
+  the console: screen-caught recall hits render a `flagged` badge and strip
+  invisible smuggling chars at display only (raw bytes never rewritten).
+- **M4 — wrap** — `ops_*`/`sla_*`/`gate_*` i18n keys in `en` (de/fr/es/nl
+  resolve via the en-fallback); client Cargo.toml 1.20.0 → 1.20.6; this
+  entry + AGENTS.md + CLIENT_ROADMAP.
+
+### Tests
+90 client tests (the new pure cores — `clock_until_*`, `sla_tier_*`,
+`fmt_remaining_*`, `queue_priority_expired_first_then_nearest_expiry`,
+`queue_priority_stable_tie_break_by_id`, `gate_health_*`; the palette
+nav-target guard updated to 13). Clippy
+`-D warnings` clean, `cargo fmt --check` clean, `wasm32-unknown-unknown`
+build clean.
+
+### Honest ceilings (carried into v1.20.7/8)
+- The countdown refreshes on a ~30s timer, not instant push (instant = the
+  v1.20.8 "Signal" plan). The server's 400 on a stale approve is the backstop.
+- `DEFAULT_PROPOSAL_TTL_SECS` mirrors the server default; an operator override
+  of `BRAIN_PROPOSAL_TTL_SECS` makes the displayed clock drift until the
+  server 400 (documented in the core; the server's expiry is authoritative).
+- `Proposal.screen_verdict` is not yet on the client wire type (server-side
+  in v1.20.3), so the queue rows carry `source_prompt` but not the verdict
+  badge; the flagged region surfaces screen-caught rows instead.
+- Gate-health counts are a point-in-time pass over `/proposals?status=…`, not
+  a rolling persisted window.
+
 ## [1.20.5] — 2026-08-11
 
 v1.20.5 "Agentic" — the **enterprise capstone** of the GhostJacking-hardening

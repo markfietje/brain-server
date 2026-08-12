@@ -4,19 +4,24 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.0
+## Status — v1.20.6
 
-The v1.20.0 "Polish" release — the client chain's done-state. **Theming:**
-dark/light/system-following (`prefers-color-scheme`, no JS), density +
-typography from v1.16.8. **Perf:** a CI bundle-regression budget
-(`client/bundle-budget.sh`, release wasm ≤ 7 MB — measured 4.34 MB; the
-plan's final <50 KB web initial / <5 MB mobile budgets stay operator
-`dx bundle` measurements, tracked in `BENCHMARKS.md`). **Offline-tolerance:**
-approve/reject/purge/DSAR issued while the backend is unreachable are queued
-locally (bounded 100, payload-keyed idempotency, token never persisted) and
-replayed on recovery with "queued (offline)" surfaced honestly in the review
-rows + batch summary. **Zero telemetry:** reaffirmed — nothing in the polish
-line collects data.
+The v1.20.6 "Console" release — the first release of the operator-console
+line. New **Memory Operations** panel (`/ops`): a live pending-proposal queue
+with SLA countdown clocks (the "queue is a clock"), the flagged/quarantined
+inventory from the injection screen, and a gate-health strip — one decision
+type per region. Purely client-side; server + API contract unchanged.
+
+**Core features (from v1.20.0 onward):** theming (dark/light/system),
+offline-tolerant review queue, deep links + PWA, i18n (`en/de/fr/es/nl`),
+WCAG 2.2 AA, secure keyring token storage on desktop, command palette +
+Overview, UMP/System/Data panels. **Offline-tolerance:** approve/reject/purge/
+DSAR issued while the backend is unreachable are queued locally (bounded 100,
+payload-keyed idempotency, token never persisted) and replayed on recovery
+with "queued (offline)" surfaced honestly in the review rows + batch summary.
+**Perf:** a CI bundle-regression budget (`client/bundle-budget.sh`, release
+wasm ≤ 7 MB — measured 4.34 MB). **Zero telemetry:** nothing in the line
+collects data.
 
 All panels are fully wired against the live brain-server API, behind a
 connect-first onboarding screen (DESIGN §3). A typed client in `src/api.rs`
@@ -25,7 +30,8 @@ v1.17.x line closed the three-part "Complete" console: **Data & Rights** (`/data
 purge/export/retention/decayed/tombstones), **UMP** (`/ump` — capabilities /
 remember / recall / audit), and **System** (`/system` — domains, snapshot,
 Art 30, reindex, connectors, reconcile, and a Try-it console), added to the
-sidebar rail, mobile tab bar, and command palette (12 nav targets).
+sidebar rail, mobile tab bar, and command palette (13 nav targets, incl. the
+v1.20.6 **Operations** panel).
 
 **v1.17.0 ships the full client line** (49 tests, clippy `-D warnings` + fmt
 clean). The M1 secure-storage + M2 responsive-UX halves of the v1.17.0 Mobile
