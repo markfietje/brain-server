@@ -52,6 +52,12 @@ pub const ALERT_EVENT_BUFFER: usize = 256;
 /// as it crosses a boundary, so a coarse interval is honest.
 pub const ALERT_WATCH_INTERVAL_SECS: u64 = 30;
 
+/// v1.20.10 "Proof": default cadence for the integrity watcher's full-chain
+/// check (`audit::verify_chain`). The chain is a tamper-evident log; a 60s
+/// watch makes a break a watched signal instead of a manual `/audit/verify`.
+/// Read via [`chain_check_secs`].
+pub const DEFAULT_CHAIN_CHECK_SECS: u64 = 60;
+
 /// v1.20.8 "Signal": SLA tier boundaries (seconds remaining), mirroring the
 /// client ops-clock budgets (`< 5 min` critical, `< 1 hr` warn). A proposal
 /// alerts once per boundary crossed, not on every scan.
@@ -85,6 +91,16 @@ pub fn proposal_ttl_secs() -> i64 {
         .and_then(|v| v.trim().parse::<i64>().ok())
         .filter(|s| *s > 0)
         .unwrap_or(DEFAULT_PROPOSAL_TTL_SECS)
+}
+
+/// v1.20.10 "Proof": integrity-watcher cadence (seconds). Reads
+/// `BRAIN_CHAIN_CHECK_SECS`, defaulting to [`DEFAULT_CHAIN_CHECK_SECS`].
+pub fn chain_check_secs() -> u64 {
+    std::env::var("BRAIN_CHAIN_CHECK_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(DEFAULT_CHAIN_CHECK_SECS)
 }
 
 pub const POOL_MAX_SIZE: u32 = 20;

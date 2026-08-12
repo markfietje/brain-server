@@ -18,7 +18,7 @@
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
@@ -64,6 +64,52 @@ pub fn tier_transition(before: Tier, after: Tier) -> Option<&'static str> {
         (Tier::Ok, Tier::Warn) => Some("warn"),
         (Tier::Ok, Tier::Critical) | (Tier::Warn, Tier::Critical) => Some("critical"),
         _ => None,
+    }
+}
+
+/// Last known audit-chain posture, written by [`spawn_chain_watcher`] and read
+/// by `/health`. Default is `chain_ok=false` until the first check completes on
+/// boot (the watcher runs once immediately, so a live server reports real data
+/// within the first tick).
+#[derive(Debug, Clone, Default)]
+pub struct ChainStatus {
+    /// `true` when the last full-chain verify passed.
+    pub chain_ok: bool,
+    /// Unix epoch seconds of the last check (0 = never).
+    pub checked_at: i64,
+    /// Chain head hash of the last check ("" until checked) — evidence the
+    /// posture claim describes a specific, verifiable state.
+    pub chain_head: String,
+}
+
+/// Shared handle to the watcher's latest result (cheap clone; writer is the
+/// watcher task, readers are `/health`). Mirrors `integrity::SnapshotState`.
+#[derive(Clone, Default)]
+pub struct ChainWatchState {
+    inner: Arc<RwLock<ChainStatus>>,
+}
+
+impl ChainWatchState {
+    pub fn read(&self) -> ChainStatus {
+        self.inner.read().map(|s| s.clone()).unwrap_or_default()
+    }
+    fn set(&self, status: ChainStatus) {
+        if let Ok(mut g) = self.inner.write() {
+            *g = status;
+        }
+    }
+}
+
+/// Decide whether the integrity watcher raises a signal this tick. Fires only
+/// on an `ok` ↔ `broken` transition (or a broken chain discovered on the very
+/// first check) — never on a stable tick, so a healthy chain is silent.
+/// Returns the severity label to publish: `danger` (broken), `ok` (recovered).
+pub fn chain_transition(prev_ok: Option<bool>, now_ok: bool) -> Option<&'static str> {
+    match (prev_ok, now_ok) {
+        (Some(true), false) => Some("danger"), // ok → broken
+        (Some(false), true) => Some("ok"),     // broken → recovered
+        (None, false) => Some("danger"),       // first check already broken
+        _ => None,                             // stable, or a healthy first check
     }
 }
 
@@ -238,6 +284,54 @@ pub(crate) async fn spawn_expiry_watcher(state: Arc<AppState>) {
     }
 }
 
+/// Background task: watch the audit hash chain and raise an `integrity`
+/// (kind=`chain`) alert on `ok` ↔ `broken` transitions. Runs the existing,
+/// authoritative full-chain check (`audit::verify_chain`) on a cadence and
+/// records the last posture for `/health` — it is a *watcher* over the existing
+/// tamper-evident log, not a new tamper mechanism. First tick runs immediately
+/// so a booted server reports real posture without a wait.
+pub(crate) async fn spawn_chain_watcher(state: Arc<AppState>, watch: ChainWatchState) {
+    let mut prev: Option<bool> = None;
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        crate::config::chain_check_secs(),
+    ));
+    loop {
+        interval.tick().await;
+        let pool = state.pool.clone();
+        let (ok, head) = tokio::task::spawn_blocking(move || -> (bool, String) {
+            let conn = match pool.get() {
+                Ok(c) => c,
+                Err(_) => return (false, String::new()),
+            };
+            (
+                crate::audit::verify_chain(&conn),
+                crate::audit::chain_head(&conn).unwrap_or_default(),
+            )
+        })
+        .await
+        .unwrap_or((false, String::new()));
+        let checked_at = chrono::Utc::now().timestamp();
+        watch.set(ChainStatus {
+            chain_ok: ok,
+            checked_at,
+            chain_head: head.clone(),
+        });
+        if let Some(severity) = chain_transition(prev, ok) {
+            publish(
+                &state,
+                ALERT_KIND_CHAIN,
+                json!({
+                    "ok": ok,
+                    "severity": severity,
+                    "chain_head": head,
+                    "checked_at": checked_at,
+                }),
+            );
+        }
+        prev = Some(ok);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +358,39 @@ mod tests {
         assert_eq!(Tier::from_remaining(3_000), Tier::Warn);
         assert_eq!(Tier::from_remaining(120), Tier::Critical);
         assert_eq!(Tier::from_remaining(-5), Tier::Critical);
+    }
+
+    #[test]
+    fn chain_transition_fires_only_on_ok_broken_transitions() {
+        // Healthy stable ticks never raise — no per-tick spam.
+        assert_eq!(chain_transition(Some(true), true), None);
+        // A broken chain that stays broken is silent until it recovers.
+        assert_eq!(chain_transition(Some(false), false), None);
+        // ok → broken raises danger once.
+        assert_eq!(chain_transition(Some(true), false), Some("danger"));
+        // broken → recovered raises ok once (integrity is the load-bearing
+        // guarantee — recovery is a signal, not a silence).
+        assert_eq!(chain_transition(Some(false), true), Some("ok"));
+        // First check: a healthy boot is silent; an already-broken boot raises
+        // danger immediately (the operator must know at boot).
+        assert_eq!(chain_transition(None, true), None);
+        assert_eq!(chain_transition(None, false), Some("danger"));
+    }
+
+    #[test]
+    fn chain_watch_state_default_is_not_ok_until_set() {
+        let s = ChainWatchState::default();
+        assert!(!s.read().chain_ok, "default is not-ok (never checked)");
+        assert_eq!(s.read().checked_at, 0);
+        s.set(ChainStatus {
+            chain_ok: true,
+            checked_at: 1_700_000_000,
+            chain_head: "abc".into(),
+        });
+        let r = s.read();
+        assert!(r.chain_ok);
+        assert_eq!(r.checked_at, 1_700_000_000);
+        assert_eq!(r.chain_head, "abc");
     }
 
     #[test]

@@ -10,6 +10,46 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.10] — 2026-08-12
+
+### Server + docs — "Proof" (integrity feed + CRA/ADMT evidentiary kits + SUPPORT.md)
+
+**Server release** (server 1.20.8 → 1.20.10; client stays at 1.20.9). Adds the
+audit-ready-replay evidentiary bundle the v1.20.5 "Agentic" docs line promised:
+a live integrity watcher over the tamper-evident audit chain, and two
+`scripts/` kits that assemble already-shipped evidence (SBOM + reporting +
+support docs; per-decision ADMT records) into hashed bundles. **No new routes,
+no schema change, no new deps.**
+
+### Added
+- **M1 — Integrity feed watcher** (`src/alert.rs` + `src/main.rs` +
+  `src/config.rs`). `alert::spawn_chain_watcher` re-runs the existing full
+  `/audit/verify` chain check on a cadence (`BRAIN_CHAIN_CHECK_SECS`, default
+  60s) and raises an `integrity` alert on ok↔broken transitions (pure
+  `chain_transition` core: no per-tick spam, a broken boot raises instantly, a
+  recovery raises `ok`). `/health` gains `integrity:{chain_ok, last_checked_at,
+  chain_head}` — the watcher's cached posture, content-free and PII-free.
+- **M2 — CRA evidentiary kit** (`scripts/cra-kit.sh` + `docs/cra.md`).
+  Idempotently assembles the per-release CycloneDX SBOM, `SECURITY.md`,
+  `SUPPORT.md`, `docs/deployment.md`, `COMPLIANCE.md` into `dist/cra-kit/` with
+  a `CRA_MANIFEST.json` SHA-256 index. Evidences the EU CRA "SBOM + reporting +
+  support" bar; the honest "certification is an org action, not a repo claim"
+  ceiling is explicit.
+- **M3 — ADMT kit** (`scripts/admt-kit.sh` + `docs/admt.md`). Read-only
+  assembly of the existing `GET /get/{id}` (chunk `origin`/`owner`/evidence
+  span) + `GET /audit?kind=reconcile` (proposal-gate trail) into a per-decision
+  `ADMT_RECORD.json` + hashed manifest. Answers "why did this become memory, by
+  what path, from what source" — inherits the server's integrity posture, never
+  fabricates a summary.
+- **M4 — `SUPPORT.md`** — repo-standard support statement (supported versions →
+  `SECURITY.md`, reporting path, update guidance, honest no-SLA posture).
+- **OpenAPI** — `/health` `integrity` object documented; version stamp →
+  1.20.10.
+
+### Changed
+- `health_body` now takes `integrity` and emits it; `AppState` carries the
+  watcher's `ChainWatchState`.
+
 ## [1.20.9] — 2026-08-12
 
 ### Client — "Register" (read-only Agent Memory Register + shared evidence viewer)
@@ -3110,7 +3150,7 @@ Noise-reduction release on top of v1.4.1. Eleven changes (cumulative with v1.4.1
 Research basis: Aho-Corasick (ACL/EMNLP, confirmed SOTA for deterministic
 multi-pattern matching, July 2026) + document-structure heading hierarchy
 research (2026) + dependency parsing upgrade path (nlrule) documented for
-future SVO extraction. See [`RESEARCH.md`](./RESEARCH.md) for the full
+future SVO extraction. See [`RESEARCH.md`](https://github.com/markfietje/brain-server/blob/main/RESEARCH.md) for the full
 research audit across all 17 assessed components.
 
 - **`--replace` flag** (`brain ingest-dir --replace`). Sweeps existing chunks

@@ -338,6 +338,10 @@ struct AppState {
     /// v1.20.8 "Signal": monotonic alert sequence (the webhook delivery-id
     /// source + the receiver's idempotency key).
     alert_seq: std::sync::atomic::AtomicU64,
+    /// v1.20.10 "Proof": cached audit-chain posture from the integrity watcher.
+    /// Written by `alert::spawn_chain_watcher`; read by `/health` so the
+    /// tamper-evident posture is visible without an on-demand full scan.
+    chain_watch: alert::ChainWatchState,
 }
 
 #[derive(Deserialize)]
@@ -1358,6 +1362,12 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
             // `capacity` is `Some` when the pool had a connection available,
             // `None` when the pool was momentarily exhausted — in which case
             // we omit the field rather than block /health.
+            let cw = s.chain_watch.read();
+            let integrity = serde_json::json!({
+                "chain_ok": cw.chain_ok,
+                "last_checked_at": cw.checked_at,
+                "chain_head": cw.chain_head,
+            });
             Json(health_body(
                 used_mb,
                 total_mb,
@@ -1365,6 +1375,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                 pool_state.idle_connections,
                 backup,
                 capacity,
+                integrity,
             ))
         }
         _ => Json(
@@ -1384,6 +1395,7 @@ fn health_body(
     pool_idle: u32,
     backup: serde_json::Value,
     capacity: Option<serde_json::Value>,
+    integrity: serde_json::Value,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "status": "ok",
@@ -1439,6 +1451,11 @@ fn health_body(
         if let serde_json::Value::Object(ref mut m) = body {
             m.insert("capacity".to_string(), c);
         }
+    }
+    // v1.20.10 "Proof": cached audit-chain posture from the integrity watcher —
+    // never content, never PII (a hash + two booleans/timestamps).
+    if let serde_json::Value::Object(ref mut m) = body {
+        m.insert("integrity".to_string(), integrity);
     }
     body
 }
@@ -4599,11 +4616,18 @@ async fn main_inner() -> Result<()> {
                 ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
                 alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
                 alert_seq: std::sync::atomic::AtomicU64::new(0),
+                chain_watch: alert::ChainWatchState::default(),
             });
             // v1.20.8 "Signal": watch pending proposals and fire the `expiry`
             // alert once per SLA-tier boundary crossed.
             let watcher_state = Arc::clone(&app_state);
             tokio::spawn(async move { alert::spawn_expiry_watcher(watcher_state).await });
+            // v1.20.10 "Proof": watch the audit hash chain and raise an
+            // `integrity` alert on ok↔broken transitions; /health reads the
+            // cached posture.
+            let cw_state = Arc::clone(&app_state);
+            let cw_watch = app_state.chain_watch.clone();
+            tokio::spawn(async move { alert::spawn_chain_watcher(cw_state, cw_watch).await });
             app_state
         });
 
@@ -10133,6 +10157,7 @@ Final paragraph after the rule.";
             1,
             snapshot_json,
             Some(serde_json::json!({ "max_docs": 100_000 })),
+            serde_json::json!({ "chain_ok": true, "last_checked_at": 0, "chain_head": "" }),
         );
         let obj = body.as_object().expect("health body is an object");
         for key in obj.keys() {
@@ -10152,6 +10177,12 @@ Final paragraph after the rule.";
         let webhook = obj["webhook"].as_object().expect("webhook object");
         assert_eq!(webhook["replay_secs"], 300);
         assert_eq!(webhook["scheme"], "legacy");
+        // v1.20.10 "Proof": cached audit-chain posture is exposed for ops. Only
+        // a boolean + timestamps + a chain hash — never content/PII.
+        let integrity = obj["integrity"].as_object().expect("integrity object");
+        assert_eq!(integrity["chain_ok"], true);
+        assert!(integrity.contains_key("last_checked_at"));
+        assert!(integrity.contains_key("chain_head"));
     }
 
     /// v1.17.3 "UMP" M2: the batch wire path end-to-end. A multi-record
@@ -10199,6 +10230,7 @@ Final paragraph after the rule.";
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -10372,6 +10404,7 @@ Final paragraph after the rule.";
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -10505,6 +10538,7 @@ Final paragraph after the rule.";
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
         });
         let app = axum::Router::new()
             .route(
@@ -10658,6 +10692,7 @@ Final paragraph after the rule.";
             ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
         });
         let app = axum::Router::new()
             .route(

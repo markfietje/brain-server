@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.20.8
-  x-api-version: "1.20.8"
+  version: 1.20.10
+  x-api-version: "1.20.10"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -71,6 +71,16 @@ paths:
                       unsafe_blocks: { type: integer, example: 2 }
                       panics_caught: { type: integer, example: 0 }
                       memory_leaks_detected: { type: integer, example: 0 }
+                  # v1.20.10 "Proof": cached audit-chain integrity posture from
+                  # the integrity watcher. `chain_ok` reflects the watcher's last
+                  # full `/audit/verify` scan (default 60s cadence); `chain_head`
+                  # pins the state to a verifiable hash. Never content/PII.
+                  integrity:
+                    type: object
+                    properties:
+                      chain_ok: { type: boolean, example: true }
+                      last_checked_at: { type: integer, example: 1755100000 }
+                      chain_head: { type: string, example: abc123 }
   /health/db:
     get:
       summary: Database health
