@@ -9,8 +9,9 @@ src = "docs"
 create-missing = false
 
 [output.html]
-# brain-server brand: dark-first, steel/blue accent, gold mark
-default-theme = "coal"
+# brain-server brand: steel/blue accent, gold mark. Follows the OS
+# (light default, dark preferred) and the toolbar sun/moon button flips it.
+default-theme = "light"
 preferred-dark-theme = "coal"
 git-repository-url = "https://github.com/markfietje/brain-server"
 edit-url-template = "https://github.com/markfietje/brain-server/edit/main/{path}"

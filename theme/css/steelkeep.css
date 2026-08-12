@@ -1,31 +1,47 @@
 /* brain-server brand overrides for mdBook.
    Loaded via additional-css AFTER the default theme so it wins.
-   Dark-first (coal) with a steel/blue accent and a gold mark. */
+   Brand accent is theme-agnostic (:root); the steel dark (coal) and
+   light palettes are scoped to their mdBook theme classes so the toolbar
+   light/dark toggle actually switches. */
 
 :root {
-  /* Steel blue accent ramp */
+  /* Steel blue accent ramp (used on both light + dark) */
   --accent-h: 215;
   --accent-s: 92%;
   --accent-l: 55%;
-
-  /* Foreground / background tuned for a cool "steel" feel */
-  --bg: #0d1117;          /* GitHub-dark navy */
-  --fg: #e6edf3;
-  --sidebar-bg: #11151c;
-  --content-bg: #0d1117;
 
   /* Brand blue (accent) + gold (secondary/mark) */
   --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
   --accent-strong: hsl(var(--accent-h) 92% 62%);
   --gold: #d9a93a;
+}
 
-  /* Code surfaces */
+/* ---- Dark (coal) palette ---- */
+.coal {
+  --bg: #0d1117;          /* GitHub-dark navy */
+  --fg: #e6edf3;
+  --sidebar-bg: #11151c;
+  --content-bg: #0d1117;
+
   --code-bg: #161b22;
   --inline-code-bg: rgba(110, 118, 129, 0.18);
 
-  /* Borders */
   --border: #30363d;
   --border-soft: #21262d;
+}
+
+/* ---- Light palette (steel blue on white) ---- */
+.light, html:not(.js) {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --sidebar-bg: #f6f8fa;
+  --content-bg: #ffffff;
+
+  --code-bg: #f6f8fa;
+  --inline-code-bg: rgba(175, 184, 193, 0.22);
+
+  --border: #d1d9e0;
+  --border-soft: #e1e5e9;
 }
 
 /* ---- Typography: keep system stack (self-hosted = bundle size), tuned sizes ---- */
