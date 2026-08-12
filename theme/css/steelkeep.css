@@ -36,6 +36,7 @@
   --muted: #8b96a6;        /* secondary text */
   --accent: hsl(30 88% 58%);                /* soft amber-orange on dark */
   --accent-strong: hsl(30 92% 68%);
+  --links: hsl(30 88% 58%);                 /* normal-link color (chrome.css) */
 }
 
 /* ---- Light palette: soft warm-white, slate ink ---- */
@@ -51,6 +52,7 @@
   --border: #e3e8ef;
   --border-soft: #eef1f6;
   --muted: #5c6a7a;        /* secondary text */
+  --links: hsl(var(--accent-h) var(--accent-s) var(--accent-l)); /* normal-link color */
 }
 
 /* ---- Typography: keep system stack (self-hosted = bundle size), tuned sizes ---- */
