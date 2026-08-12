@@ -14,8 +14,8 @@
 
 use dioxus::prelude::*;
 use panels::{
-    audit, create, data, graph, health, ops, overview, recall, review, security, subjects, system,
-    ump,
+    audit, create, data, graph, health, ops, overview, recall, register, review, security,
+    subjects, system, ump,
 };
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
@@ -270,6 +270,9 @@ enum Route {
     /// clocks + the flagged/quarantined screen output. The HITL work surface.
     #[route("/ops")]
     Ops {},
+    /// v1.20.9 M1–M2: Agent Memory Register — read-only provenance ledger.
+    #[route("/register")]
+    Register {},
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -783,6 +786,7 @@ fn AppShell() -> Element {
     let nav_ump = t("nav_ump");
     let nav_system = t("nav_system");
     let nav_ops = t("nav_ops");
+    let nav_register = t("nav_register");
     let review_title = t("review_title");
     let sign_out = t("sign_out");
     let loopback = t("loopback");
@@ -835,6 +839,7 @@ fn AppShell() -> Element {
                     NavLink { to: Route::Ump {}, "{nav_ump}" }
                     NavLink { to: Route::System {}, "{nav_system}" }
                     NavLink { to: Route::Ops {}, "{nav_ops}" }
+                    NavLink { to: Route::Register {}, "{nav_register}" }
                 }
                 div { class: "border-t border-border p-3",
                 div { class: "flex items-center gap-2 text-sm",
@@ -881,6 +886,7 @@ fn AppShell() -> Element {
                 TabLink { to: Route::Ump {}, "{nav_ump}" }
                 TabLink { to: Route::System {}, "{nav_system}" }
                 TabLink { to: Route::Ops {}, "{nav_ops}" }
+                TabLink { to: Route::Register {}, "{nav_register}" }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
                 // Slim top bar: connection + pending summary + prefs.
@@ -1091,6 +1097,14 @@ fn command_keywords(c: &Command) -> &'static [&'static str] {
             "deadline",
             "flagged",
         ],
+        Command::Navigate(Route::Register {}) => &[
+            "register",
+            "ledger",
+            "provenance",
+            "origin",
+            "who",
+            "ownership",
+        ],
         Command::SignOut => &["signout", "sign out", "logout", "exit"],
         Command::Lookup(Lookup::Proposal(_)) => &["proposal", "propose", "approve"],
         Command::Lookup(Lookup::Chunk(_)) => &["chunk", "memory", "get"],
@@ -1126,6 +1140,7 @@ fn palette_commands(configured: bool) -> Vec<Command> {
         Command::Navigate(Route::Ump {}),
         Command::Navigate(Route::System {}),
         Command::Navigate(Route::Ops {}),
+        Command::Navigate(Route::Register {}),
     ];
     if configured {
         v.push(Command::SignOut);
@@ -1217,6 +1232,7 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::Ump {}) => "UMP",
         Command::Navigate(Route::System {}) => "System",
         Command::Navigate(Route::Ops {}) => "Operations",
+        Command::Navigate(Route::Register {}) => "Agent Memory Register",
         Command::SignOut => "Sign out",
         Command::Lookup(Lookup::Proposal(_)) => "Open proposal",
         Command::Lookup(Lookup::Chunk(_)) => "Open chunk",
@@ -1705,6 +1721,10 @@ fn System() -> Element {
 fn Ops() -> Element {
     ops::panel()
 }
+#[component]
+fn Register() -> Element {
+    register::panel()
+}
 
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
@@ -1925,8 +1945,8 @@ mod tests {
             .filter(|c| matches!(c, Command::Navigate(_)))
             .count();
         assert_eq!(
-            count, 13,
-            "the thirteen nav targets (Overview→Health + Ops/Data/UMP/System)"
+            count, 14,
+            "the fourteen nav targets (Overview→Health + Ops/Data/UMP/System + Register)"
         );
         assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
         let anonymous = palette_commands(false);
@@ -1982,6 +2002,7 @@ mod tests {
             Route::Ump {},
             Route::System {},
             Route::Ops {},
+            Route::Register {},
         ] {
             assert!(nav.contains(&r), "palette missing Navigate for {r:?}");
         }

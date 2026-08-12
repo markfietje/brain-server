@@ -14,6 +14,7 @@ pub mod ops;
 pub mod overview;
 pub mod procedures;
 pub mod recall;
+pub mod register;
 pub mod review;
 pub mod security;
 pub mod subjects;

@@ -243,8 +243,7 @@ sys_console = Try-it console
 
 ## Operations (v1.20.6 M1–M3 — Memory Operations panel)
 nav_ops = Operations
-ops_title = Operations
-ops_sub = The live HITL work surface: pending queue, SLA clocks, and the flagged screen output.
+ops_title = Operationsops_sub = The live HITL work surface: pending queue, SLA clocks, and the flagged screen output.
 ops_queue = Live queue
 ops_queue_summary = pending
 ops_gate = Gate health
@@ -264,3 +263,6 @@ sla_remaining = remaining
 gate_healthy = healthy
 gate_over_rejecting = over-rejecting
 gate_under_reviewing = under-reviewing
+
+## Register (v1.20.9 M1–M2 — Agent Memory Register, read-only provenance ledger)
+nav_register = Register
