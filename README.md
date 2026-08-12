@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.20.12-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.20.13-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -111,6 +111,8 @@ scripts/install-service.sh
 | **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |
 | **Product site** | [`docs/product-site/`](./docs/product-site/): landing, install, quickstart, editions. |
 | **Research** | [`docs/research/`](./docs/research/): one scientific explainer per retrieval mechanism (problem → reference → deterministic implementation → ceiling). |
+| **Blog** | [`docs/blog/`](./docs/blog/): one technical-buyer post per hard-won mechanism (compliance-time-bomb framing, deterministic HITL, tamper-evident audit, reference-faithful retrieval, no-lock-in, OWASP 2026 as sales doc, the honest ceiling, Profiles preview). |
+| **Media kit** | [`docs/media-kit.md`](./docs/media-kit.md): positioning, one-liners, and a Brain-vs-Mem0/LangGraph/RAG sizing table with honest ceilings. |
 | **Trust / proof map** | [`docs/trust/proof-map.md`](./docs/trust/proof-map.md) + [`docs/trust/reproduce.md`](./docs/trust/reproduce.md): every security/compliance claim mapped to its shipped release and live `curl`/`brain` proof. |
 | **Roadmap** | [`ROADMAP.md`](./ROADMAP.md). |
 

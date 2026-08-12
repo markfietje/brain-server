@@ -4,7 +4,7 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.12
+## Status — v1.20.13
 
 The v1.20.12 "Docs" release — client version aligned to the server line
 (`1.20.9 → 1.20.12`; **no client code change** — the v1.20.12 GTM

@@ -10,6 +10,45 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.13] — 2026-08-12
+
+### Server + client + docs — "Media" (GTM content + media kit, version-aligned)
+
+Version-aligned, docs-only release (server `Cargo.toml` 1.20.12 → 1.20.13;
+client 1.20.12 → 1.20.13, version-alignment only — the v1.20.12 pattern).
+**No runtime code, no schema change, no new routes** — this is the outbound
+half of the GTM documentation line: the *narrative* that makes brain-server
+discoverable and saleable, built on the v1.20.12 *reference*. Content was
+relocated (not re-authored) from the private `marketing/` working dir into
+the public in-tree `docs/`, matching the v1.20.12 reuse precedent.
+
+- **M1 — `docs/blog/`**: 8 technical-buyer posts, one per hard-won mechanism —
+  compliance-time-bomb framing, deterministic human-in-the-loop, tamper-evident
+  audit, reference-faithful retrieval (each citing its `docs/research/`
+  explainer), no-lock-in (MCP/UMP/HTTP), OWASP 2026 as the sales doc, the honest
+  ceiling, and a clearly-labelled forward-looking Profiles preview (v1.21.0).
+  Every post's `../research/` / `../trust/` / `../OWASP_AGENTIC_2026.md` link
+  resolves; the one stale in-repo cross-link (`blog-07-honest-ceiling.md` →
+  `07-honest-ceiling.md`) fixed.
+- **M2 — `docs/media-kit.md`**: name/one-liners/positioning/elevator, a
+  "Brain vs Mem0 vs LangGraph vs plain RAG" sizing table with honest ceilings,
+  headline stats tied to the proof map, and a press contact/ask. Two trust links
+  corrected for the `docs/` location (`../trust/` → `./trust/`).
+- **M3 — cross-links**: `docs/product-site/index.md` links the blog + media kit;
+  README Documentation table + `docs/README.md` docs-map gain Blog + Media kit
+  rows; README version badge → 1.20.13.
+- **M4 — release wrap**: CHANGELOG §[1.20.13]; ROADMAP v1.20.13 row → Shipped;
+  `openapi.yaml` + `Cargo.toml`/lock + `client/Cargo.toml`/lock re-stamped to
+  1.20.13.
+
+### Honest ceilings (carried into v2.2.1 "Drift")
+- Blog posts are in-tree Markdown, **not** a published blog/CMS — the publishing
+  channel is the v2.2.1 "Drift" + operator step.
+- The Profiles preview post is explicitly forward-looking (v1.21.0), not a
+  shipped capability.
+- Media-kit positioning is author-faithful to the product, not an external
+  analyst's endorsement; every technical claim maps to a proof-map row.
+
 ## [1.20.12] — 2026-08-12
 
 ### Server + client + docs — "Docs" (GTM documentation line, version-aligned)
