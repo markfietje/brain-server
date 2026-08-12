@@ -68,6 +68,27 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// v1.20.8 M3: an alert feed signal (the `/events` SSE `data:` line). The
+/// server's envelope is exactly `{kind, ts, seq, payload}`; the client parses
+/// only `kind` + `seq` — **content/PII never leaves the wire** (the console
+/// re-fetches detail from existing endpoints on demand).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertEvent {
+    pub kind: String,
+    pub seq: u64,
+}
+
+/// Parse one SSE `data:` JSON line into an `AlertEvent`. `None` on a malformed
+/// line, a missing `kind`, or a missing `seq` — a dropped signal is safe
+/// (the monotonic `seq` guard + polling re-sync cover any loss).
+pub fn parse_alert_event(data: &str) -> Option<AlertEvent> {
+    let v: serde_json::Value = serde_json::from_str(data).ok()?;
+    Some(AlertEvent {
+        kind: v.get("kind")?.as_str()?.to_string(),
+        seq: v.get("seq")?.as_u64()?,
+    })
+}
+
 /// v1.16.2 "Harden" M4.2: operator-facing error message from an `ApiError`.
 /// Maps HTTP status codes to actionable hints. Never includes the bearer token
 /// (it's not in the error payload).
@@ -339,6 +360,40 @@ impl ApiClient {
             rb
         })
         .await
+    }
+
+    /// v1.20.8 M3: one bounded read of the `/events` SSE feed. Connects, drains
+    /// the first chunk (the server's handshake + the alerts it broadcasts from
+    /// its bounded ring to a new subscriber), then closes. The caller reconnects
+    /// on an interval and the monotonic `seq` guard dedups. Works with or
+    /// without a bearer — reqwest carries the header where a browser
+    /// `EventSource` cannot. `bytes_stream()` (not `bytes()`) because the feed
+    /// never EOFs; reading one chunk then dropping the stream closes the
+    /// connection honestly.
+    pub async fn alert_events(&self) -> Result<Vec<AlertEvent>, ApiError> {
+        use futures_util::StreamExt;
+        let mut rb = self.http.get(format!("{}/events", self.base));
+        if let Some(t) = self.access_token() {
+            rb = rb.bearer_auth(t);
+        }
+        let resp = rb.send().await.map_err(ApiError::Network)?;
+        if !resp.status().is_success() {
+            let code = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Status(code, body));
+        }
+        let mut events = Vec::new();
+        if let Some(chunk) = resp.bytes_stream().next().await {
+            let chunk = chunk.map_err(ApiError::Network)?;
+            for line in String::from_utf8_lossy(&chunk).lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    if let Some(e) = parse_alert_event(data.trim()) {
+                        events.push(e);
+                    }
+                }
+            }
+        }
+        Ok(events)
     }
 
     /// v1.17.8 M7.3: the console's raw DELETE.
@@ -1931,6 +1986,22 @@ pub fn persist_history(entries: Vec<StoredLine>, cap: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v1.20.8 M3: the alert `data:` line parses kind+seq; malformed lines and
+    /// anything missing `kind`/`seq` are dropped (content never parsed).
+    #[test]
+    fn alert_event_parses_kind_and_seq_only() {
+        let e = parse_alert_event(
+            r#"{"kind":"pending","ts":1700000000,"seq":3,"payload":{"proposal_id":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(e.kind, "pending");
+        assert_eq!(e.seq, 3);
+        assert!(parse_alert_event(r#"{"kind":"expiry","seq":4}"#).is_some());
+        assert!(parse_alert_event("not-json").is_none());
+        assert!(parse_alert_event(r#"{"kind":"pending"}"#).is_none()); // no seq
+        assert!(parse_alert_event(r#"{"seq":3}"#).is_none()); // no kind
+    }
 
     /// Wire-contract pin: representative JSON for every shape the panels read,
     /// deserialized through the same types the client uses. Mirrors openapi.yaml

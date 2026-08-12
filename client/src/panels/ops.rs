@@ -82,6 +82,41 @@ pub struct GateHealth {
     pub label: &'static str,    // i18n key
 }
 
+/// v1.20.8 M3: the /ops region an alert invalidates — `Pending` (the queue),
+/// `Flagged` (the screen output), `Clock` (the SLA countdowns / expiry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    Pending,
+    Flagged,
+    Clock,
+}
+
+/// v1.20.8 M3: map an alert kind to the region it invalidates. `pending` and
+/// `chain` (audit-chain fail) refresh the queue; `screen` re-surfaces the
+/// injection output; `expiry` restarts the countdown clock. Unknown kinds are
+/// dropped (`None`) — the fixed, hand-curated server set is the contract.
+pub fn region_for(kind: &str) -> Option<Region> {
+    match kind {
+        "pending" | "chain" => Some(Region::Pending),
+        "screen" => Some(Region::Flagged),
+        "expiry" => Some(Region::Clock),
+        _ => None,
+    }
+}
+
+/// v1.20.8 M3: the generation guard against a flood — apply an alert only when
+/// its `seq` strictly advances past the last-seen one. A replay, dup, or an
+/// out-of-order burst is dropped; the polling re-sync (and the every-mutation
+/// refresh) cover any loss. `last` is updated in place.
+pub fn should_apply(seq: u64, last: &mut u64) -> bool {
+    if seq > *last {
+        *last = seq;
+        true
+    } else {
+        false
+    }
+}
+
 pub fn gate_health(approved: u64, rejected: u64, expired: u64) -> GateHealth {
     if rejected > approved {
         GateHealth {
@@ -131,6 +166,52 @@ pub fn panel() -> Element {
             loop {
                 crate::probe_sleep(30).await;
                 tick += 1;
+            }
+        }
+    });
+
+    // v1.20.8 M3: subscribe to the alert feed. A bounded `/events` read on a
+    // ~10s interval (a real streaming EventSource needs a JS→Rust callback
+    // bridge, which the eval-only web target doesn't have — this poll drains
+    // the handshake + buffered alerts each connect and is the honest, testable
+    // equivalent). On each applied alert, bump the matching region's refresh
+    // signal once (the `should_apply` monotonic seq guard dedups a flood) and
+    // set the aria-live announcement. If the feed is unreachable the 30s tick
+    // poll above is the honest degrade — the console never goes silently stale.
+    let alert_line = use_signal(|| "".to_string());
+    let last_seq = use_signal(|| 0u64);
+    use_future(move || {
+        let api = api();
+        let mut alert_line = alert_line;
+        let mut last_seq = last_seq;
+        let mut refresh = refresh;
+        let mut tick = tick;
+        async move {
+            loop {
+                crate::probe_sleep(10).await;
+                let Ok(events) = api.alert_events().await else {
+                    continue; // feed unreachable → the tick poll stands in
+                };
+                for e in events {
+                    let mut last = last_seq();
+                    if !should_apply(e.seq, &mut last) {
+                        continue;
+                    }
+                    last_seq.set(last);
+                    let region = region_for(&e.kind);
+                    match region {
+                        Some(Region::Pending) | Some(Region::Flagged) => refresh += 1,
+                        Some(Region::Clock) => tick += 1,
+                        None => {}
+                    }
+                    let msg = match region {
+                        Some(Region::Pending) => crate::i18n::t("alert_queued"),
+                        Some(Region::Flagged) => crate::i18n::t("alert_screen"),
+                        Some(Region::Clock) => crate::i18n::t("alert_expiring"),
+                        None => continue,
+                    };
+                    alert_line.set(msg);
+                }
             }
         }
     });
@@ -254,6 +335,9 @@ pub fn panel() -> Element {
                 div { class: "flex items-center justify-between",
                     h2 { class: "card-title", {crate::i18n::t("ops_queue")} }
                     span { class: "text-xs text-muted-foreground tabular", role: "status", "aria-live": "polite",
+                        if !alert_line().is_empty() {
+                            "{alert_line} · "
+                        }
                         "{summary}"
                     }
                 }
@@ -461,5 +545,27 @@ mod tests {
         queue_priority(&mut rows, TTL, 5000);
         let ids: Vec<i64> = rows.iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![3, 7, 9]);
+    }
+
+    #[test]
+    fn region_for_maps_alert_kinds_to_regions() {
+        assert_eq!(region_for("pending"), Some(Region::Pending));
+        assert_eq!(region_for("chain"), Some(Region::Pending));
+        assert_eq!(region_for("screen"), Some(Region::Flagged));
+        assert_eq!(region_for("expiry"), Some(Region::Clock));
+        // Unknown kinds are dropped (the fixed server set is the contract).
+        assert_eq!(region_for("nonsense"), None);
+        assert_eq!(region_for(""), None);
+    }
+
+    #[test]
+    fn should_apply_dedups_a_flood_and_accepts_advances() {
+        let mut last = 0u64;
+        assert!(should_apply(1, &mut last)); // first signal applies
+        assert!(!should_apply(1, &mut last)); // replay dropped
+        assert!(!should_apply(0, &mut last)); // out-of-order dropped
+        assert!(should_apply(5, &mut last)); // next generation applies
+        assert!(!should_apply(4, &mut last)); // older still dropped
+        assert_eq!(last, 5);
     }
 }
