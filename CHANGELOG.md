@@ -10,6 +10,56 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.8] — 2026-08-12
+
+### Server — "Signal" (operator alert feed `GET /events` + optional alert webhook sink)
+
+**Server + client release** (server 1.20.7 → 1.20.8; client 1.20.6 → 1.20.8).
+The live half of the v1.20.8 Signal plan: a fixed, hand-curated operator alert
+stream and an outbound webhook sink so the decisions the memory gate makes are
+no longer silent. **No schema change, no new deps** (reuses the existing
+`webhook_queue` table + `verify_standard_signature` machinery).
+
+### Added
+- **`GET /events` SSE stream** (`src/alert.rs::events`) — emits alert events
+  `{kind, ts, seq, payload}` for exactly four fixed kinds: `pending`
+  (a proposal entered the review queue), `expiry` (a proposal/retention
+  deadline crossed), `screen` (an injection-screen hit → quarantine), `chain`
+  (the audit hash chain was re-verified / a tamper alert fired). Optional
+  `?kinds=` filter; SSE `retry` hint; Read-gated. Payloads carry ids/seq only —
+  **content and PII never leave the server** (`AlertKind` is a fixed enum, so
+  the wire type can't grow arbitrary fields).
+- **Publishing points** — `verify_audit_chain` (`chain`), `ingest_proposal`
+  (`pending` + `screen` on quarantine), the v1.20.4 proposal-TTL expiry
+  (`expiry`). Emitted via a tokio broadcast on `AppState`.
+- **Optional outbound alert webhook** (`src/alert.rs::sink` +
+  `src/webhook.rs::sign_standard_signature`) — when `BRAIN_ALERT_WEBHOOK_URL`
+  (+ optional `BRAIN_ALERT_WEBHOOK_SECRET`) is set, each alert is enqueued and
+  delivered with the Standard-Webhooks `v1,` HMAC-SHA256 signature (the same
+  scheme as v1.20.4), 3 retries, fail-soft.
+- **Client `/ops` subscribes** — `region_for(kind)` maps an alert to a console
+  region (`pending`/`screen`/`chain` → queue/flagged refresh, `expiry` → SLA
+  clock reset), a monotonic `seq` guard (`should_apply`) drops replays, and an
+  `aria-live="polite"` line announces each alert (i18n
+  `alert_queued`/`alert_screen`/`alert_expiring`). The ~30s tick poll remains
+  the honest fallback when the feed is unreachable.
+- **Tests** — server 503 passed + 5 ignored (5 new: alert-kind fixed-set,
+  seq-envelope purity, tier/region mapping, webhook signature round-trip);
+  client 93 (3 new: `region_for`, `should_apply` flood guard,
+  `parse_alert_event` kind+seq only).
+
+### Honest ceilings
+- `GET /events` is server-push over SSE; the client polls with a bounded read
+  (a browser `EventSource` can't carry the bearer token, so `fetch` +
+  `bytes_stream` is used) — the feed is an optimization over the existing
+  tick poll, not a new authority.
+- The webhook sink is fail-soft by design: an unreachable endpoint drops
+  alerts (they remain in the audit log + `/events`).
+- `seq` is per-process; a multi-instance deployment would need a shared counter
+  (v2.x).
+
+---
+
 ## [1.20.7] — 2026-08-12
 
 ### Server — "Telemetry" (instrumented decision cores behind `--features otel`)

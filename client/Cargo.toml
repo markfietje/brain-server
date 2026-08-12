@@ -1,6 +1,6 @@
 [package]
 name = "brain-client"
-version = "1.20.6"
+version = "1.20.8"
 edition = "2021"
 description = "brain-server control surface — web + desktop + iOS + Android (Dioxus)"
 publish = false
@@ -12,9 +12,13 @@ publish = false
 dioxus = { version = "0.7", features = ["router"] }
 # reqwest works on all targets incl. WASM (Dioxus integrates the browser fetch).
 # JSON feature for typed (de)serialization of brain-server's responses.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# v1.20.8 M3: the `/events` SSE feed is read as a bounded `bytes_stream` (one
+# chunk = handshake + buffered alerts, then close + reconnect). Already a
+# transitive dep of reqwest; declared directly for the `StreamExt` trait.
+futures-util = { version = "0.3", default-features = false }
 # v1.16.7 M7.2: the single-refresh mutex. `sync` only (Mutex — no runtime),
 # so it stays tiny and wasm-compatible; reqwest already pulls tokio on native.
 tokio = { version = "1", default-features = false, features = ["sync"] }

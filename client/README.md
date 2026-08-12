@@ -4,13 +4,19 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.6
+## Status — v1.20.8
 
-The v1.20.6 "Console" release — the first release of the operator-console
-line. New **Memory Operations** panel (`/ops`): a live pending-proposal queue
-with SLA countdown clocks (the "queue is a clock"), the flagged/quarantined
-inventory from the injection screen, and a gate-health strip — one decision
-type per region. Purely client-side; server + API contract unchanged.
+The v1.20.8 "Signal" release — the **live** half of the operator-console line:
+the `/ops` panel now **subscribes to the server alert feed** (`GET /events`,
+v1.20.8) instead of only polling. Each alert (`pending`/`screen`/`chain` →
+queue/flagged refresh; `expiry` → SLA-clock reset) is mapped to a console
+region by the pure `region_for` core, deduped by the monotonic `seq` guard
+(`should_apply`), and announced in an `aria-live="polite"` line (i18n
+`alert_queued`/`alert_screen`/`alert_expiring`). The ~30s tick poll remains the
+honest fallback when the feed is unreachable. Purely client-side — server + API
+contract unchanged; the feed is read with a bounded `fetch` + `bytes_stream`
+(an EventSource can't carry the bearer token), so content/PII never enter the
+client wire type (`parse_alert_event` reads `kind`+`seq` only).
 
 **Core features (from v1.20.0 onward):** theming (dark/light/system),
 offline-tolerant review queue, deep links + PWA, i18n (`en/de/fr/es/nl`),
