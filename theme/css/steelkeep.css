@@ -34,8 +34,8 @@
   --border: #2a3140;
   --border-soft: #222937;
   --muted: #8b96a6;        /* secondary text */
-  --accent: hsl(var(--accent-h) 60% 66%);      /* brighter accent on dark */
-  --accent-strong: hsl(var(--accent-h) 70% 74%);
+  --accent: hsl(30 88% 58%);                /* soft amber-orange on dark */
+  --accent-strong: hsl(30 92% 68%);
 }
 
 /* ---- Light palette: soft warm-white, slate ink ---- */
