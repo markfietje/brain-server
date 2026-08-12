@@ -150,8 +150,27 @@ fn build_classifier() -> Option<Arc<dyn InjectionScorer>> {
 static CLASSIFIER: LazyLock<Option<Arc<dyn InjectionScorer>>> = LazyLock::new(build_classifier);
 
 /// The single screen seam — every ingest write path routes through here.
+/// Under `--features otel` emits a `screen` span carrying only the verdict
+/// label (`clean`/`quarantine`/`reject`) — content/title are `skip_all` and
+/// never exported (PII rule). Which layer made the call is not derivable from
+/// `ScreenResult` alone (layer 2 can also reject/quarantine), so no `layer`
+/// field is claimed — `/health` already reports `injection_classifier_loaded`.
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(
+        name = "screen",
+        skip_all,
+        fields(verdict = tracing::field::Empty)
+    )
+)]
 pub fn screen(content: &str, title: &str) -> ScreenResult {
-    Screen::from_config().screen(content, title)
+    let r = Screen::from_config().screen(content, title);
+    #[cfg(feature = "otel")]
+    {
+        let span = tracing::Span::current();
+        span.record("verdict", crate::otel::screen_verdict_span(r));
+    }
+    r
 }
 
 /// Whether the process-wide classifier is loaded. Exposed for the `/health`
@@ -485,5 +504,110 @@ mod tests {
         assert_eq!(screen_verdict_label(ScreenResult::Quarantine), "quarantine");
         // reject is never persisted → reads as quarantine.
         assert_eq!(screen_verdict_label(ScreenResult::Reject), "quarantine");
+    }
+
+    // v1.20.7 "Telemetry" (M1): the `screen` seam emits a `screen` span whose
+    // `verdict` field holds the label. Only compiled under `--features otel`
+    // (the #[instrument] attrs are cfg-gated), so the default build carries no
+    // tracing machinery. One small capturing-layer test proves the span
+    // wiring + field recording; the `gate.*`/`recall` spans use the identical
+    // `#[cfg_attr] + Span::record` pattern.
+    #[cfg(feature = "otel")]
+    mod otel_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing::span::{Attributes, Record};
+        use tracing::{Id, Subscriber};
+        use tracing_subscriber::layer::{Context, Layer};
+        use tracing_subscriber::registry::LookupSpan;
+
+        #[derive(Default)]
+        struct Fields(Vec<(String, String)>);
+        impl Visit for Fields {
+            fn record_str(&mut self, f: &Field, v: &str) {
+                self.0.push((f.name().to_string(), v.to_string()));
+            }
+            fn record_bool(&mut self, f: &Field, v: bool) {
+                self.0.push((f.name().to_string(), v.to_string()));
+            }
+            fn record_i64(&mut self, f: &Field, v: i64) {
+                self.0.push((f.name().to_string(), v.to_string()));
+            }
+            fn record_u64(&mut self, f: &Field, v: u64) {
+                self.0.push((f.name().to_string(), v.to_string()));
+            }
+            fn record_debug(&mut self, f: &Field, v: &dyn std::fmt::Debug) {
+                self.0.push((f.name().to_string(), format!("{v:?}")));
+            }
+        }
+
+        type Captured = (u64, String, Vec<(String, String)>);
+
+        /// Captures `(id, span_name, fields)` for spans created under it.
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Vec<Captured>>>);
+
+        impl<S> Layer<S> for Capture
+        where
+            S: Subscriber + for<'a> LookupSpan<'a>,
+        {
+            fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+                if let Some(span) = ctx.span(id) {
+                    let mut f = Fields::default();
+                    attrs.record(&mut f);
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push((id.into_u64(), span.name().to_string(), f.0));
+                }
+            }
+            fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+                let _ = ctx;
+                let mut f = Fields::default();
+                values.record(&mut f);
+                let mut store = self.0.lock().unwrap();
+                if let Some(entry) = store.iter_mut().find(|e| e.0 == id.into_u64()) {
+                    entry.2.extend(f.0);
+                }
+            }
+        }
+
+        #[test]
+        fn screen_emits_verdict_span() {
+            use tracing_subscriber::layer::SubscriberExt;
+            let capture = Capture::default();
+            let guard = tracing::subscriber::set_default(
+                tracing_subscriber::registry().with(capture.clone()),
+            );
+            // Benign content → Clean; the seam must record `verdict=clean`.
+            assert_eq!(
+                crate::screen::screen("a perfectly normal note about the weather", ""),
+                ScreenResult::Clean
+            );
+            let spans = capture.0.lock().unwrap().clone();
+            let screen = spans
+                .iter()
+                .find(|(_, name, _)| name == "screen")
+                .expect("the `screen` seam emitted a span");
+            assert_eq!(screen.2, vec![("verdict".to_string(), "clean".to_string())]);
+            drop(guard);
+        }
+
+        #[test]
+        fn verdict_span_label_covers_all_verdicts() {
+            assert_eq!(
+                crate::otel::screen_verdict_span(ScreenResult::Clean),
+                "clean"
+            );
+            assert_eq!(
+                crate::otel::screen_verdict_span(ScreenResult::Quarantine),
+                "quarantine"
+            );
+            assert_eq!(
+                crate::otel::screen_verdict_span(ScreenResult::Reject),
+                "reject"
+            );
+        }
     }
 }

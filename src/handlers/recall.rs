@@ -215,6 +215,24 @@ pub async fn recall(
 /// merge → packing → tier filter → calibrated abstention, and records the
 /// optional read-event audit trace. Returns the tagged (result, domain) pairs
 /// so each binding renders its own hit shape.
+/// v1.20.7 "Telemetry" (M1): the recall core emits a `recall` span under
+/// `--features otel` carrying decision/count/domain/principal labels + a short
+/// `query_hash` — never the query body (PII rule; see `otel.rs`).
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(
+        name = "recall",
+        skip_all,
+        fields(
+            decision = tracing::field::Empty,
+            graph_rescued = tracing::field::Empty,
+            hits = tracing::field::Empty,
+            domain = tracing::field::Empty,
+            principal = tracing::field::Empty,
+            query_hash = tracing::field::Empty
+        )
+    )
+)]
 pub(crate) async fn run_recall(
     state: &Arc<AppState>,
     principal: &Option<crate::auth::Principal>,
@@ -620,6 +638,17 @@ pub(crate) async fn run_recall(
     } else {
         None
     };
+
+    #[cfg(feature = "otel")]
+    {
+        let span = tracing::Span::current();
+        span.record("decision", format!("{:?}", decision).to_lowercase());
+        span.record("graph_rescued", tel.graph_rescued);
+        span.record("hits", tagged.len() as i64);
+        span.record("domain", primary_domain.clone());
+        span.record("principal", principal_label(principal));
+        span.record("query_hash", crate::otel::query_hash(&trace_query));
+    }
 
     Ok(RecallOutcome {
         tagged,

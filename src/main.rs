@@ -74,6 +74,10 @@ mod sources;
 mod trace;
 mod vault;
 mod webhook;
+// v1.20.7 "Telemetry" (M1): OTLP trace export. Feature-gated so the default
+// build compiles none of it (see Cargo.toml `otel` feature).
+#[cfg(feature = "otel")]
+mod otel;
 
 // Re-export the retrieval engine's public surface so the HTTP handlers and the
 // (DB-backed) integration tests in this file can address it at the crate root.
@@ -1401,6 +1405,14 @@ fn health_body(
             } else {
                 "legacy"
             }
+        },
+        // v1.20.7 "Telemetry" (M1): OTLP export posture at a glance. `enabled`
+        // reflects the runtime kill switch; `endpoint` the configured OTLP/HTTP
+        // trace endpoint. Always present (defaults to disabled/loopback) so
+        // health is uniform across builds.
+        "otel": {
+            "enabled": crate::config::otel_enabled(),
+            "endpoint": crate::config::otel_endpoint(),
         },
         // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
         // memory-safety posture at a glance. `unsafe_blocks` is the
@@ -3899,6 +3911,42 @@ async fn main_inner() -> Result<()> {
     // `brain-server --version` never logs, opens sockets, or loads the model.
     handle_cli_args();
 
+    // ── v1.20.7 "Telemetry" (M1): optional OTLP trace export ──────────────
+    // Default build (no `otel` feature): plain fmt logging, byte-for-byte
+    // unchanged. With `--features otel`, when `BRAIN_OTEL_ENABLED` (default
+    // on) the four decision-critical spans are ALSO exported via OTLP/HTTP to
+    // `BRAIN_OTEL_ENDPOINT`. A failed exporter init never aborts startup —
+    // telemetry is best-effort, recall is the job.
+    #[cfg(feature = "otel")]
+    {
+        let filter = tracing_subscriber::EnvFilter::from_default_env()
+            .add_directive(tracing::Level::INFO.into());
+        if config::otel_enabled() {
+            match crate::otel::init_otel(&config::otel_endpoint()) {
+                Ok(provider) => {
+                    use opentelemetry::trace::TracerProvider;
+                    use tracing_subscriber::layer::SubscriberExt;
+                    use tracing_subscriber::util::SubscriberInitExt;
+                    tracing_subscriber::registry()
+                        .with(filter)
+                        .with(tracing_subscriber::fmt::layer())
+                        .with(
+                            tracing_opentelemetry::layer()
+                                .with_tracer(provider.tracer("brain-server")),
+                        )
+                        .init();
+                    info!("OTLP trace export enabled -> {}", config::otel_endpoint());
+                }
+                Err(e) => {
+                    tracing_subscriber::fmt().with_env_filter(filter).init();
+                    eprintln!("[otel] exporter init failed; continuing without OTLP export: {e}");
+                }
+            }
+        } else {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+    }
+    #[cfg(not(feature = "otel"))]
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()

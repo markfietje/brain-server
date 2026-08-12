@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.20.4"
+version = "1.20.7"
 edition = "2021"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
 license = "MIT"
@@ -39,6 +39,19 @@ multivec = []
 # the verified target; Jetson-fit is a measured gate (repo precedent: the rerank
 # tier was removed for the same reason).
 injection-classifier = ["dep:ort", "dep:tokenizers"]
+# v1.20.7 "Telemetry" (M1): optional OTLP/HTTP OpenTelemetry trace export. OFF by
+# default so the default build stays byte-for-byte unchanged (zero new deps, no
+# network export on the Jetson envelope). When enabled, the four decision-critical
+# spans (`screen`, `recall`, `gate.propose`, `gate.approve`, `gate.reject`) are
+# emitted as OTel spans to `BRAIN_OTEL_ENDPOINT` (default
+# `http://127.0.0.1:4318/v1/traces`). Enable with `--features otel`.
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "tracing-subscriber/registry",
+]
 
 [dependencies]
 # Core Embedding
@@ -103,6 +116,19 @@ aho-corasick = "1"
 # Observability
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# OpenTelemetry export (v1.20.7 "Telemetry" M1). ALL optional + feature-gated
+# behind the `otel` feature so the default build adds nothing. The `registry`
+# feature on tracing-subscriber is enabled only under `otel` (the OTLP layer
+# needs a `Registry` subscriber to attach spans). Versions: opentelemetry 0.32 /
+# opentelemetry_sdk 0.32.1 / opentelemetry-otlp 0.32 (the `SdkTracerProvider`
+# rename + `with_batch_exporter` builder) / tracing-opentelemetry 0.33
+# (context7-verified 2026-08-12). `reqwest-blocking-client` = the batch exporter
+# runs on its own thread, no tokio-runtime coupling (good for the Jetson core).
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace"], optional = true }
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
+tracing-opentelemetry = { version = "0.33.0", default-features = false, optional = true }
+
 
 # JWT/JWS verification + signing (v1.2.0 "AuthN"). Required on the server
 # for the `/auth/*`, `/.well-known/*` surfaces, the auth middleware's JWT

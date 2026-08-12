@@ -33,6 +33,28 @@ jobs:
         # The bench feature gates the bench binary + its 4 unit tests.
         run: cargo test --all-targets --features bench
 
+  otel-gate:
+    # v1.20.7 M1 — the `otel` feature (instrumented decision cores) must not
+    # rot: the OTLP deps, the #[cfg_attr] spans, and the cfg-gated tests are
+    # all absent from the default build, so nothing in lint-test exercises
+    # them. This job compiles the feature (a default build compiles a
+    # different surface — a broken otel build slips past lint-test), runs the
+    # cfg-gated tests, and enforces clippy on the feature.
+    name: otel feature clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy (--features otel, all targets)
+        run: cargo clippy --all-targets --features otel -- -D warnings
+      - name: test (--features otel)
+        run: cargo test --all-targets --features otel
+
   client-gate:
     # v1.18.0 M2 — the client (Dioxus control surface) had zero CI coverage;
     # this job gates fmt + clippy + unit tests + the wasm build (the web

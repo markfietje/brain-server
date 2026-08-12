@@ -12,7 +12,7 @@ info:
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
   version: 1.20.4
-  x-api-version: "1.20.4"
+  x-api-version: "1.20.7"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)

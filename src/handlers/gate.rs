@@ -75,6 +75,21 @@ pub struct ProposalResponse {
 
 /// `POST /ingest/proposal` — queue a scored candidate. No `knowledge` row is
 /// created; `/recall` cannot see it until a human approves.
+/// v1.20.7 "Telemetry" (M1): emits a `gate.propose` span under `--features otel`
+/// carrying proposal_id + screen_verdict + principal + domain (no content body).
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(
+        name = "gate.propose",
+        skip_all,
+        fields(
+            proposal_id = tracing::field::Empty,
+            screen_verdict = tracing::field::Empty,
+            principal = tracing::field::Empty,
+            domain = tracing::field::Empty
+        )
+    )
+)]
 pub async fn ingest_proposal(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -104,7 +119,8 @@ pub async fn ingest_proposal(
     // reviewer sees the flag before approving a capture whose own text was
     // instruction-bearing. The badge is recomputed deterministically at read
     // time (list_proposals), so no schema change is needed.
-    if crate::screen::screen(&content, "") == crate::screen::ScreenResult::Reject {
+    let screen_res = crate::screen::screen(&content, "");
+    if screen_res == crate::screen::ScreenResult::Reject {
         return Err(HandlerError::bad_request(
             "input_rejected",
             "input contains suspicious patterns",
@@ -202,6 +218,18 @@ pub async fn ingest_proposal(
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+
+    #[cfg(feature = "otel")]
+    {
+        let span = tracing::Span::current();
+        span.record("proposal_id", resp.id);
+        span.record(
+            "screen_verdict",
+            crate::otel::screen_verdict_span(screen_res),
+        );
+        span.record("principal", super::recall::principal_label(&principal.0));
+        span.record("domain", domain.clone());
+    }
 
     Ok(Json(resp))
 }
@@ -363,6 +391,20 @@ pub(crate) fn expire_if_stale(
 /// marks the proposal approved + decided_at. With `?supersedes=<id>`, calls
 /// [`crate::consolidate::resolve_supersession`] in the SAME transaction so
 /// approving a conflicting fact atomically supersedes the old one.
+/// v1.20.7 "Telemetry" (M1): emits a `gate.approve` span (proposal_id + outcome
+/// + principal) under `--features otel`.
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(
+        name = "gate.approve",
+        skip_all,
+        fields(
+            proposal_id = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            principal = tracing::field::Empty
+        )
+    )
+)]
 pub async fn approve_proposal(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -374,7 +416,14 @@ pub async fn approve_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
     let model = Arc::clone(&state.model);
 
-    tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+    // v1.20.7 "Telemetry" (M1): capture the actor label before `principal` is
+    // moved into the blocking closure below (the closure promotes via
+    // `principal_to_owner`), so the span can record it afterward.
+    #[cfg(feature = "otel")]
+    let principal_lbl = super::recall::principal_label(&principal.0);
+
+    let res: Result<serde_json::Value, HandlerError> =
+        tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
@@ -549,8 +598,17 @@ pub async fn approve_proposal(
         }))
     })
     .await
-    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
-    .map(Json)
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+
+    #[cfg(feature = "otel")]
+    {
+        let span = tracing::Span::current();
+        span.record("proposal_id", id);
+        span.record("outcome", crate::otel::gate_outcome("approved", &res));
+        span.record("principal", principal_lbl);
+    }
+
+    Ok(Json(res?))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -597,6 +655,20 @@ pub fn scope_filter(p: &Option<crate::auth::Principal>) -> Option<Vec<String>> {
 /// `POST /proposals/{id}/reject` — mark rejected + decided_at. Kept in the
 /// audit trail (append-only, hash-only via `/audit`); never silently dropped,
 /// never deleted.
+/// v1.20.7 "Telemetry" (M1): emits a `gate.reject` span (proposal_id + outcome
+/// + principal) under `--features otel`.
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(
+        name = "gate.reject",
+        skip_all,
+        fields(
+            proposal_id = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            principal = tracing::field::Empty
+        )
+    )
+)]
 pub async fn reject_proposal(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -648,9 +720,21 @@ pub async fn reject_proposal(
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     if updated == 0 {
+        #[cfg(feature = "otel")]
+        {
+            let span = tracing::Span::current();
+            span.record("outcome", "not_found");
+            span.record("principal", super::recall::principal_label(&principal.0));
+        }
         return Err(HandlerError::not_found(format!(
             "no pending proposal with id {id}"
         )));
+    }
+    #[cfg(feature = "otel")]
+    {
+        let span = tracing::Span::current();
+        span.record("outcome", "rejected");
+        span.record("principal", super::recall::principal_label(&principal.0));
     }
     Ok(Json(
         serde_json::json!({ "proposal_id": id, "status": "rejected" }),

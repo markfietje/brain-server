@@ -408,6 +408,32 @@ pub fn brain_recall_routing_enabled() -> bool {
     )
 }
 
+// ── v1.20.7 "Telemetry" (M1): OpenTelemetry export ─────────────────────────
+
+/// Whether OTLP trace export is live. Defaults to `false` (the exporter is
+/// feature-gated behind `--features otel`; this flag only decides whether the
+/// compiled-in exporter is *installed*). Same kill-switch pattern as
+/// [`brain_suggest_enabled`]: an operator can disable export at runtime without
+/// a rebuild via `BRAIN_OTEL_ENABLED=false`. Read at startup only.
+pub fn otel_enabled() -> bool {
+    !matches!(
+        std::env::var("BRAIN_OTEL_ENABLED")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// The OTLP/HTTP endpoint spans are exported to. Defaults to the standard
+/// collector HTTP path `http://127.0.0.1:4318/v1/traces`. Override with
+/// `BRAIN_OTEL_ENDPOINT` (e.g. a self-hosted collector or a gateway like
+/// `http://collector:4318/v1/traces`). Read at startup only.
+pub fn otel_endpoint() -> String {
+    std::env::var("BRAIN_OTEL_ENDPOINT")
+        .unwrap_or_else(|_| "http://127.0.0.1:4318/v1/traces".to_string())
+}
+
 // ── v1.17.1 "Govern" M2: per-kind retention ─────────────────────────────
 
 /// Default retention (days) per `memory_kind` for chunks with no explicit

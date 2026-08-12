@@ -10,6 +10,60 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.7] — 2026-08-12
+
+### Server — "Telemetry" (instrumented decision cores behind `--features otel`)
+
+Optional OpenTelemetry tracing of the write-gate decision path, **gated behind
+a new `otel` Cargo feature** so the default build ships with **zero tracing
+machinery and zero new runtime deps** (every `#[instrument]` and the OTLP
+exporter are `#[cfg(feature = "otel")]`). This is the observability half of the
+v1.20.x audit follow-up: the three seams that decide what becomes (or stays)
+memory — the injection screen, the human review gate, and recall — now emit
+spans an operator can ship to any OTLP collector. No schema change, no new
+routes, no API contract change. Server version stays at 1.20.4; the `otel`
+feature rides into the next tagged release.
+
+### Added
+- **`src/otel.rs`** (new, `#[cfg(feature = "otel")]`): `init_otel` builds the
+  `SdkTracerProvider` + an OTLP HTTP exporter to `BRAIN_OTEL_ENDPOINT` (default
+  `http://127.0.0.1:4318/v1/traces`), plus the pure label helpers shared by the
+  spans: `query_hash` (bounded xxh3 of the query — content never sent as a
+  field), `screen_verdict_span` (Clean/Quarantine/Reject → label),
+  `gate_outcome` (decision → `proposed`/`approved`/`rejected`).
+- **Instrumented decision seams** — all `#[cfg_attr(feature = "otel",
+  tracing::instrument(name = "…"))]` so the default build is byte-identical:
+  - `screen::screen` → `screen` span, records `verdict`.
+  - `recall::run_recall` → `recall` span (`decision`, `graph_rescued`, `hits`,
+    `domain`, `principal`, `query_hash`).
+  - `gate::ingest_proposal` / `approve_proposal` / `reject_proposal` →
+    `gate.{propose,approve,reject}` spans with `outcome`.
+- **`main.rs`**: `init_tracing` wires `EnvFilter` (its own layer — the fmt
+  layer has no `with_env_filter` method) + the otel layer behind
+  `BRAIN_OTEL_ENDPOINT`; `provider.tracer("brain-server")` via
+  `TracerProvider::tracer`.
+- **Cargo.toml**: `otel` feature (`tracing`, `tracing-subscriber/env-filter`,
+  `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`,
+  `tracing-opentelemetry`). `tracing-subscriber`'s `registry` feature is
+  enabled only under `otel` (the OTLP layer needs it).
+- **Tests** (`screen::tests::otel_tests`, cfg-gated): `screen_emits_verdict_span`
+  proves via a hand-rolled capturing `Layer<Registry>` that the seam emits a
+  `screen` span with exactly `[("verdict", "clean")]`; `verdict_span_label_covers_all_verdicts`
+  pins all three label mappings.
+
+### Honest ceilings
+- The default build has **no telemetry**; an operator must rebuild with
+  `--features otel` + run a collector (see `src/config.rs` / `BRAIN_OTEL_ENDPOINT`).
+- `query_hash` is an xxh3-64 fingerprint, not the query — recall spans never
+  carry content; a consumer wanting the exact query must re-derive it from the
+  hash + audit, by design.
+- Only the three decision seams are instrumented (screen / gate / recall). The
+  wider request path, connectors, and webhook handlers are not yet covered.
+- `gate_outcome`/`screen_verdict_span` labels are stable strings, not the raw
+  enum Debug repr — a deliberate, changelog-noted contract for dashboard joins.
+
+---
+
 ## [1.20.6] — 2026-08-12
 
 ### Client — "Console" (Memory Operations panel + SLA clocks + flagged surface)
@@ -64,6 +118,17 @@ build clean.
   badge; the flagged region surfaces screen-caught rows instead.
 - Gate-health counts are a point-in-time pass over `/proposals?status=…`, not
   a rolling persisted window.
+
+### GTM documentation line (companion to v1.20.6, no version bump)
+
+Added the go-to-market documentation tier behind the `v1.20.12 "Docs"` /
+`v1.20.13 "Media"` ROADMAP rows (plans: `IMPLEMENTATION_PLAN_v1.20.12_Docs.md`,
+`IMPLEMENTATION_PLAN_v1.20.13_Media.md`). This content is **private / pre-release**
+and lives **untracked** in the gitignored `marketing/` directory (product-site
+landing/install/quickstart/editions, research explainers, trust proof-map +
+reproduce walkthrough, blog posts, media kit) — it does **not** ship in the
+source tree. No code/schema/version change; the public README + `docs/README.md`
+are untouched by it.
 
 ## [1.20.5] — 2026-08-11
 
