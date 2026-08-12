@@ -4,19 +4,18 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.8
+## Status — v1.20.9
 
-The v1.20.8 "Signal" release — the **live** half of the operator-console line:
-the `/ops` panel now **subscribes to the server alert feed** (`GET /events`,
-v1.20.8) instead of only polling. Each alert (`pending`/`screen`/`chain` →
-queue/flagged refresh; `expiry` → SLA-clock reset) is mapped to a console
-region by the pure `region_for` core, deduped by the monotonic `seq` guard
-(`should_apply`), and announced in an `aria-live="polite"` line (i18n
-`alert_queued`/`alert_screen`/`alert_expiring`). The ~30s tick poll remains the
-honest fallback when the feed is unreachable. Purely client-side — server + API
-contract unchanged; the feed is read with a bounded `fetch` + `bytes_stream`
-(an EventSource can't carry the bearer token), so content/PII never enter the
-client wire type (`parse_alert_event` reads `kind`+`seq` only).
+The v1.20.9 "Register" release — a read-only **Agent Memory Register**
+(`/register`): an operator-facing provenance ledger over the already-shipped
+`GET /export` `knowledge` body, partitioned into the three **origin** tiers
+(`human` / `model` / `imported`) with live counts and filters by
+owner/source/memory-kind. Each row opens a shared `EvidenceModal` viewer
+(`GET /get/{id}`) showing the verbatim span + `source_uri` + revision +
+heading + line range. Purely client-side — no new routes, no new wire types,
+no new deps; the register is read-only by construction (`parse_export_rows`
+rejects any non-`/export` body). Recall hits still open the existing shared
+drawer; `EvidenceModal` is `pub` for a future recall entry.
 
 **Core features (from v1.20.0 onward):** theming (dark/light/system),
 offline-tolerant review queue, deep links + PWA, i18n (`en/de/fr/es/nl`),

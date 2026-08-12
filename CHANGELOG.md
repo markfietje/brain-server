@@ -10,6 +10,49 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.9] — 2026-08-12
+
+### Client — "Register" (read-only Agent Memory Register + shared evidence viewer)
+
+**Client release** (client 1.20.8 → 1.20.9; server + API contract stay at 1.20.8).
+A pure client composition of the already-shipped `GET /export` + `GET /get/{id}`
+endpoints — **no new routes, no new wire types, no new deps**. The v1.20.7
+telemetry `origin` marker (and the v1.18.2 provenance it derives from) is now
+visible in the console as an operator-facing provenance ledger.
+
+### Added
+- **M1 — Register panel (`/register`, `client/src/panels/register.rs`)** — reads
+  the `knowledge` body of `GET /export` and partitions rows into the three
+  **origin** tiers (`human` / `model` / `imported`) with live counts, plus an
+  All tab. Pure `register_filter` narrows by owner/source/memory-kind; each row
+  renders id · bounded excerpt · provenance badges · UTC date.
+- **M2 — shared evidence viewer (`EvidenceModal`)** — one reusable `role="dialog"`
+  opened from any register row; fetches the existing `GET /get/{id}` wire and
+  shows the verbatim span + `source_uri` + revision + heading + line range.
+  Hand-rolled Esc-close modal matching the review-panel idiom (the client has
+  no Radix `DialogRoot`).
+- **Wiring** — `Route::Register`, rail + mobile tab + command palette
+  (nav 13 → 14, guard test updated), i18n `nav_register` in `en` (other locales
+  fall back per the established convention).
+- **Tests** — client **99 passed** (6 new: `register_filter`, `origin_group`,
+  `register_excerpt` incl. the invisible-char strip boundary, `format_epoch`,
+  `evidence_modal_uses_existing_get_route`, `register_is_read_only`).
+
+### Honest ceilings
+- The register is **read-only by construction**: `parse_export_rows` yields zero
+  rows from any non-`/export` body, so the ledger can't be fed a mutation's
+  response.
+- Recall hits still open the existing shared drawer (`DrawerContent::Hit`); the
+  register's `EvidenceModal` is `pub` for a future recall entry (the plan's
+  recall wiring was deferred — rewiring would orphan a drawer variant).
+- `highlights` and `source_prompt` are server proposal-only and are **not**
+  rendered (the plan's client-side claims to them were wrong; `/get/{id}` has
+  no such fields).
+- `format_epoch` is a dependency-free UTC `YYYY-MM-DD` (Howard Hinnant civil-
+  from-days); no timezone conversion.
+
+---
+
 ## [1.20.8] — 2026-08-12
 
 ### Server — "Signal" (operator alert feed `GET /events` + optional alert webhook sink)
