@@ -5,6 +5,11 @@
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 
+**Verify, don't trust:** every security claim below is mapped to the release
+that shipped it and the exact live `curl`/`brain` command that proves it in
+[`docs/trust/proof-map.md`](./docs/trust/proof-map.md) (scripted walk-through:
+[`docs/trust/reproduce.md`](./docs/trust/reproduce.md)).
+
 ---
 
 ## Supported Versions

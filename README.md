@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.20.11-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.20.12-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -109,6 +109,9 @@ scripts/install-service.sh
 | **API contract** | [`API_CONTRACT.md`](./API_CONTRACT.md) plus `GET /openapi.yaml` at runtime. |
 | **Compliance** | [`COMPLIANCE.md`](./COMPLIANCE.md): ISO 42001, NIST AI RMF, SOC 2, GDPR · [`docs/AI_LITERACY.md`](./docs/AI_LITERACY.md): Art 4 literacy playbook · [`docs/RFP_RESPONSE_KIT.md`](./docs/RFP_RESPONSE_KIT.md): enterprise RFP mapping. |
 | **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |
+| **Product site** | [`docs/product-site/`](./docs/product-site/): landing, install, quickstart, editions. |
+| **Research** | [`docs/research/`](./docs/research/): one scientific explainer per retrieval mechanism (problem → reference → deterministic implementation → ceiling). |
+| **Trust / proof map** | [`docs/trust/proof-map.md`](./docs/trust/proof-map.md) + [`docs/trust/reproduce.md`](./docs/trust/reproduce.md): every security/compliance claim mapped to its shipped release and live `curl`/`brain` proof. |
 | **Roadmap** | [`ROADMAP.md`](./ROADMAP.md). |
 
 ## Client GUI

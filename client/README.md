@@ -4,9 +4,12 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.9
+## Status — v1.20.12
 
-The v1.20.9 "Register" release — a read-only **Agent Memory Register**
+The v1.20.12 "Docs" release — client version aligned to the server line
+(`1.20.9 → 1.20.12`; **no client code change** — the v1.20.12 GTM
+documentation line is docs-only). The last client feature release was
+v1.20.9 "Register": a read-only **Agent Memory Register**
 (`/register`): an operator-facing provenance ledger over the already-shipped
 `GET /export` `knowledge` body, partitioned into the three **origin** tiers
 (`human` / `model` / `imported`) with live counts and filters by

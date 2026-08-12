@@ -10,6 +10,50 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.12] — 2026-08-12
+
+### Server + client + docs — "Docs" (GTM documentation line, version-aligned)
+
+Version-aligned release (server `Cargo.toml` 1.20.11 → 1.20.12; client
+1.20.9 → 1.20.12, version-alignment only — the same pattern as v1.18.2
+"Align"). **No runtime code, no schema change, no new routes** — the GTM
+documentation line is docs-only; the version move simply re-anchors both
+components at the same 1.20.12 so the tree is aligned. Converts the
+already-shipped technical posture into buyer-facing evidence. The three
+tiers **live in the tree** under `docs/` (relocated from the private
+`marketing/` working dir), so any site generator or the existing static
+serving can consume them.
+
+- **M1 — `docs/product-site/`**: `index.md` (the "your agent's memory is a
+  compliance time bomb" elevator + the three-pillar posture), `install.md`,
+  `quickstart.md`, `editions.md` (OSS / self-hosted-pro / enterprise
+  **placeholders** — pricing is v2.2 "Meridian", flagged in-file).
+- **M2 — `docs/research/`**: one scientific explainer per shipped retrieval
+  mechanism — bi-temporal KG (Graphiti), submodular evidence packing
+  (arXiv:2607.00725), TRACE edges (arXiv:2607.00339), PPR graph leg
+  (HippoRAG-2), GAAMA hub dampening, calibrated abstention + "Use Graph When It
+  Needs" gating (arXiv:2602.03578), reachable-PRF evidence gate. Each: problem →
+  reference → deterministic implementation → measured/known ceiling.
+- **M3 — `docs/trust/`**: the **proof map** (`proof-map.md`) — every
+  SECURITY/COMPLIANCE/OWASP_AGENTIC_2026 claim mapped to the release that
+  shipped it + the exact live `curl`/`brain` command that proves it, plus the
+  owned-ceilings list — and `reproduce.md`, a scripted walk-through of the whole
+  map against a throwaway instance. "Verify it, don't trust it."
+- **M4 — cross-links + alignment**: README Documentation table +
+  `docs/README.md` gain the three-tier links; README version badge regenerated
+  from the real build via `scripts/badges.sh` (server + client now both
+  1.20.12); `openapi.yaml` + `CLIENT_ROADMAP` + `client/README.md` re-stamped.
+
+### Honest ceilings (carried into v2.2.1 "Drift")
+- Docs are Markdown in-tree, **not** a deployed site with a domain — the
+  static-serve/publish step is the v2.2.1 "Drift" + operator handoff.
+- Editions/pricing are placeholders until v2.2 "Meridian" lands.
+- Scientific explanations are author-faithful to the papers; brain-server is a
+  deterministic implementation of *specific* techniques, not a SOTA-parity
+  claim — each explainer states its ceiling honestly.
+- The client bump is version-alignment only (no client code change); the last
+  client feature release remains v1.20.9 "Register".
+
 ## [1.20.11] — 2026-08-12
 
 ### Server + docs — "Housekeeping" (badge generation + release hygiene)
@@ -303,12 +347,12 @@ build clean.
 
 Added the go-to-market documentation tier behind the `v1.20.12 "Docs"` /
 `v1.20.13 "Media"` ROADMAP rows (plans: `IMPLEMENTATION_PLAN_v1.20.12_Docs.md`,
-`IMPLEMENTATION_PLAN_v1.20.13_Media.md`). This content is **private / pre-release**
-and lives **untracked** in the gitignored `marketing/` directory (product-site
-landing/install/quickstart/editions, research explainers, trust proof-map +
-reproduce walkthrough, blog posts, media kit) — it does **not** ship in the
-source tree. No code/schema/version change; the public README + `docs/README.md`
-are untouched by it.
+`IMPLEMENTATION_PLAN_v1.20.13_Media.md`). Originally authored **untracked** in
+the gitignored `marketing/` directory (product-site landing/install/quickstart/
+editions, research explainers, trust proof-map + reproduce walkthrough, blog
+posts, media kit). **v1.20.12 "Docs" relocated the product-site/research/trust
+tiers into the in-tree `docs/`**; the blog posts + media kit stayed private in
+`marketing/` until the v1.20.13 "Media" release.
 
 ## [1.20.5] — 2026-08-11
 

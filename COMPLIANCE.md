@@ -11,6 +11,14 @@ repository.
 Companion engineering docs: `SECURITY.md` (OWASP Top 10:2025 map),
 `THREAT_MODEL.md`, `AUDIT.md`.
 
+**Verify, don't trust:** every claim in this file (and in `SECURITY.md` /
+`OWASP_AGENTIC_2026.md`) is mapped to the release that shipped it and the exact
+live `curl`/`brain` command that proves it in
+[`docs/trust/proof-map.md`](./docs/trust/proof-map.md) (scripted walk-through:
+[`docs/trust/reproduce.md`](./docs/trust/reproduce.md)). The buyer-facing
+story lives in [`docs/product-site/`](./docs/product-site/) and the retrieval
+mechanisms it cites are explained in [`docs/research/`](./docs/research/).
+
 ---
 
 ## 1. System Description

@@ -25,6 +25,9 @@ root.
 | [AI literacy (Art 4)](./AI_LITERACY.md) | Operator playbook for the EU AI Act Art 4 literacy obligation |
 | [RFP response kit](./RFP_RESPONSE_KIT.md) | Map brain-server features to common enterprise RFP sections |
 | [Compliance](./compliance.md) | ISO 42001 / NIST AI RMF / SOC 2 posture, DSAR, retention, jurisdiction |
+| [Product site](./product-site/index.md) | Buyer-facing landing, install, quickstart, editions |
+| [Research](./research/) | One scientific explainer per retrieval mechanism (reference → implementation → ceiling) |
+| [Trust / proof map](./trust/proof-map.md) | Every security/compliance claim → shipped release → live `curl`/`brain` proof |
 | [API](./api.md) | Endpoint reference and links to the full contract |
 | [Roadmap](./roadmap.md) | The shipped release history and the path forward |
 
