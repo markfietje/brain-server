@@ -26,8 +26,8 @@ root.
 | [RFP response kit](./RFP_RESPONSE_KIT.md) | Map brain-server features to common enterprise RFP sections |
 | [Compliance](./compliance.md) | ISO 42001 / NIST AI RMF / SOC 2 posture, DSAR, retention, jurisdiction |
 | [Product site](./product-site/index.md) | Buyer-facing landing, install, quickstart, editions |
-| [Research](./research/01-bi-temporal.md) | One scientific explainer per retrieval mechanism (reference → implementation → ceiling) |
-| [Blog](./blog/01-compliance-time-bomb.md) | One technical-buyer post per hard-won mechanism, each tied to its research/trust source |
+| [Research](./research/index.md) | One scientific explainer per retrieval mechanism (reference → implementation → ceiling) |
+| [Blog](./blog/index.md) | One technical-buyer post per hard-won mechanism, each tied to its research/trust source |
 | [Media kit](./media-kit.md) | Positioning, one-liners, and a Brain-vs-Mem0/LangGraph/RAG sizing table with honest ceilings |
 | [Trust / proof map](./trust/proof-map.md) | Every security/compliance claim → shipped release → live `curl`/`brain` proof |
 | [API](./api.md) | Endpoint reference and links to the full contract |

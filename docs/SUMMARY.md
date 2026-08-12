@@ -46,6 +46,7 @@
 
 # Research
 
+- [Research index](./research/index.md)
 - [Bi-temporal Knowledge Graph](./research/01-bi-temporal.md)
 - [Submodular Evidence Packing](./research/02-submodular-packing.md)
 - [TRACE Typed Edges + Explanation Paths](./research/03-trace-edges.md)
@@ -61,6 +62,7 @@
 
 # Blog
 
+- [Blog index](./blog/index.md)
 - [Your agent's memory is a compliance time bomb](./blog/01-compliance-time-bomb.md)
 - [Human-in-the-loop, not "ask the model nicely"](./blog/02-human-gate.md)
 - [Tamper-evident audit: why your memory store needs a hash chain](./blog/03-tamper-evident-audit.md)
