@@ -44,6 +44,32 @@
 - [Threat model](THREAT_MODEL.md)
 - [Technical specification](SPECS.md)
 
+# Research
+
+- [Bi-temporal Knowledge Graph](./research/01-bi-temporal.md)
+- [Submodular Evidence Packing](./research/02-submodular-packing.md)
+- [TRACE Typed Edges + Explanation Paths](./research/03-trace-edges.md)
+- [Personalized PageRank Graph Retrieval](./research/04-ppr-graph.md)
+- [Noise-Aware Graph + Hub Dampening](./research/05-hub-dampening.md)
+- [Calibrated Abstention + Span Verification](./research/06-abstention-verify.md)
+- [The PRF Gate + Evidence-Faithful Snippet](./research/07-prf-evidence.md)
+
+# Trust & verification
+
+- [Proof map](./trust/proof-map.md)
+- [Reproduce on a throwaway instance](./trust/reproduce.md)
+
+# Blog
+
+- [Your agent's memory is a compliance time bomb](./blog/01-compliance-time-bomb.md)
+- [Human-in-the-loop, not "ask the model nicely"](./blog/02-human-gate.md)
+- [Tamper-evident audit: why your memory store needs a hash chain](./blog/03-tamper-evident-audit.md)
+- [Reference-faithful retrieval, no LLM in the loop](./blog/04-reference-faithful.md)
+- [What Mem0's own docs say about lock-in](./blog/05-no-lock-in.md)
+- [OWASP 2026: our control matrix is the sales doc](./blog/06-owasp-matrix.md)
+- [The honest ceiling](./blog/07-honest-ceiling.md)
+- [From twelve products to one (a preview of Profiles)](./blog/08-profiles-preview.md)
+
 # Regulation & trust
 
 - [OWASP 2026 compliance matrix](OWASP_AGENTIC_2026.md)
@@ -51,6 +77,7 @@
 - [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
 - [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
 - [RFP response kit](RFP_RESPONSE_KIT.md)
+- [Media kit](media-kit.md)
 
 # Project
 
