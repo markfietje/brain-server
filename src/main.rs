@@ -4465,6 +4465,7 @@ async fn main_inner() -> Result<()> {
             "/proposals/{id}/reject",
             post(handlers::gate::reject_proposal),
         )
+        .route("/proposals/{id}/edit", post(handlers::gate::edit_proposal))
         // v1.14.0 "Gate" M2: decay + GDPR lifecycle. `/export` is portable JSON
         // (interchange); `/purge` is hard, explicit, audited deletion; `/decayed`
         // is the operator review list. Nothing is deleted autonomously.
@@ -7890,12 +7891,27 @@ Final paragraph after the rule.";
         // it for the feedback dedup index; v1.10.0 bumps it for the Procedural
         // node_kind + step_index schema; v1.15.0 bumps it for Observe;
         // v1.17.3 bumps it for the UMP columns; v1.18.2 for the origin column;
-        // v1.20.1 for the proposals.source_prompt column.
+        // v1.20.1 for the proposals.source_prompt column;
+        // v1.20.14 for the proposals.edited_at column.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_1),
-            "schema_version must be recorded as 1.20.1 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_14),
+            "schema_version must be recorded as 1.20.14 after migration"
         );
+
+        // v1.20.14 "Steer": the pending-proposal edit marker column exists.
+        // The review badge + read-time view key off it; a missing column here
+        // means the migration regressed and the client badge would silently
+        // never render.
+        let has_edited_at: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='edited_at'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        assert!(has_edited_at, "proposals.edited_at column must exist");
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
         // Append-only by construction; this is the smallest check that fails
@@ -8910,6 +8926,7 @@ Final paragraph after the rule.";
             "/proposals",
             "/proposals/{id}/approve",
             "/proposals/{id}/reject",
+            "/proposals/{id}/edit",
             "/decayed",
             "/export",
             "/purge",
@@ -9599,6 +9616,7 @@ Final paragraph after the rule.";
             ("/proposals", "Read"),
             ("/proposals/{id}/approve", "Write"),
             ("/proposals/{id}/reject", "Write"),
+            ("/proposals/{id}/edit", "Write"),
             ("/decayed", "Read"),
             ("/export", "Read"),
             ("/purge", "Admin"),

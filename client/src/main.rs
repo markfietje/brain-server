@@ -420,6 +420,7 @@ fn app() -> Element {
                         .reject_proposal(*id, reason.as_deref())
                         .await
                         .map(|_| ()),
+                    Edit { id, content } => api.edit_proposal(*id, content).await.map(|_| ()),
                     Purge { chunk_ids, owner } => {
                         api.purge(chunk_ids, owner.as_deref()).await.map(|_| ())
                     }

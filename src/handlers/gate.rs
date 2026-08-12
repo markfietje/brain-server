@@ -314,6 +314,9 @@ pub struct ProposalView {
     /// recomputed deterministically at read time. `clean` or `quarantine` only
     /// (`reject` is never persisted — see `ingest_proposal`).
     pub screen_verdict: String,
+    /// v1.20.14 "Steer" M1: unix ts of the last content rewrite, `None` if the
+    /// pending proposal was never edited. Keys the review badge + read-time view.
+    pub edited_at: Option<i64>,
 }
 
 /// `GET /proposals?status=pending&limit=` — the human review queue. Each item
@@ -342,7 +345,7 @@ pub async fn list_proposals(
         let mut stmt = conn
             .prepare(
                 "SELECT id, kind, content, source, source_prompt, authority, novelty, conflict_with,
-                        salience, created_at
+                        salience, created_at, edited_at
                  FROM proposals WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2",
             )
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -364,6 +367,7 @@ pub async fn list_proposals(
                     conflict_with: r.get(7)?,
                     salience: r.get(8)?,
                     created_at: r.get(9)?,
+                    edited_at: r.get(10)?,
                 })
             })
             .map_err(|e| HandlerError::internal(e.to_string()))?
@@ -761,6 +765,223 @@ pub async fn reject_proposal(
     Ok(Json(
         serde_json::json!({ "proposal_id": id, "status": "rejected" }),
     ))
+}
+
+/// `POST /proposals/{id}/edit` — rewrite a pending proposal's content and
+/// re-score it deterministically (novelty / conflict / salience, the same path
+/// as `ingest_proposal`). The injection screen still runs (`Reject` → 400;
+/// `Quarantine` → allowed + stored, the read-time verdict badge recomputes it).
+/// `edited_at` is stamped so the review badge survives a refresh; the audit
+/// detail carries only the SHA-256 of the before + after content (never raw
+/// text — consistent with the existing hash-only audit practice).
+/// v1.20.7 "Telemetry" (M1): emits a `gate.edit` span under `--features otel`.
+#[cfg_attr(
+    feature = "otel",
+    tracing::instrument(
+        name = "gate.edit",
+        skip_all,
+        fields(
+            proposal_id = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            principal = tracing::field::Empty
+        )
+    )
+)]
+pub async fn edit_proposal(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+    Json(req): Json<ProposalEditRequest>,
+) -> Result<Json<ProposalView>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
+    let domain = "global";
+    let content = req.content.trim().to_string();
+    if content.is_empty() {
+        return Err(HandlerError::bad_request(
+            "empty_content",
+            "content is required",
+        ));
+    }
+    if content.chars().count() > MAX_QUERY {
+        return Err(HandlerError::bad_request(
+            "content_too_long",
+            format!("content exceeds {MAX_QUERY} chars"),
+        ));
+    }
+    let screen_res = crate::screen::screen(&content, "");
+    if screen_res == crate::screen::ScreenResult::Reject {
+        return Err(HandlerError::bad_request(
+            "input_rejected",
+            "input contains suspicious patterns",
+        ));
+    }
+    let screen_label = crate::screen::screen_verdict_label(screen_res).to_string();
+
+    #[cfg(feature = "otel")]
+    let principal_lbl = super::recall::principal_label(&principal.0);
+
+    let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
+    let model = Arc::clone(&state.model);
+
+    let res: Result<ProposalView, HandlerError> =
+        tokio::task::spawn_blocking(move || -> Result<ProposalView, HandlerError> {
+            let mut conn = pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+
+            // Same stale/expiry discipline as approve/reject (v1.20.2 A4):
+            // the TTL check + expiration audit land on the raw autocommit conn
+            // BEFORE the tx, then the tx re-checks `status='pending'`.
+            let created_at: Option<i64> = conn
+                .query_row(
+                    "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(ct) = created_at {
+                if !expire_if_stale(&conn, id, ct)? {
+                    return Err(HandlerError::bad_request(
+                        "proposal_expired",
+                        "proposal aged out of the review window (TTL), refused",
+                    ));
+                }
+            }
+
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+
+            #[derive(Default)]
+            struct Row {
+                kind: String,
+                content: String,
+                source: Option<String>,
+                source_prompt: Option<String>,
+                authority: Option<f32>,
+                created_at: i64,
+            }
+            let p: Option<Row> = tx
+                .query_row(
+                    "SELECT kind, content, source, source_prompt, authority, created_at
+                     FROM proposals WHERE id = ?1 AND status = 'pending'",
+                    rusqlite::params![id],
+                    |r| {
+                        Ok(Row {
+                            kind: r.get(0)?,
+                            content: r.get(1)?,
+                            source: r.get(2)?,
+                            source_prompt: r.get(3)?,
+                            authority: r.get(4)?,
+                            created_at: r.get(5)?,
+                        })
+                    },
+                )
+                .ok();
+            let Some(p) = p else {
+                return Err(HandlerError::not_found(format!(
+                    "no pending proposal with id {id}"
+                )));
+            };
+            let Row {
+                kind,
+                content: before,
+                source,
+                source_prompt,
+                authority,
+                created_at,
+            } = p;
+
+            // Re-score the edited content deterministically (the ingest path).
+            let embedding = model
+                .encode(std::slice::from_ref(&content))
+                .into_iter()
+                .next()
+                .ok_or_else(|| HandlerError::internal("embedding generation failed"))?;
+            let new_novelty = crate::gate::novelty(&tx, &embedding).unwrap_or(1.0);
+            let new_conflict = find_conflict(&tx, &content);
+            let entity_count = crate::linker::extract_vocabulary(&content, &[])
+                .entities
+                .len();
+            let new_salience = crate::gate::salience(&content, entity_count);
+
+            let now = chrono::Utc::now().timestamp();
+            let n = tx
+                .execute(
+                    "UPDATE proposals SET content = ?1, novelty = ?2, salience = ?3,
+                            conflict_with = ?4, edited_at = ?5
+                     WHERE id = ?6 AND status = 'pending'",
+                    rusqlite::params![content, new_novelty, new_salience, new_conflict, now, id],
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if n == 0 {
+                // A concurrent approve/reject won the race — abort cleanly.
+                tx.rollback()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Err(HandlerError::conflict(format!(
+                    "proposal {id} was already decided by a concurrent action"
+                )));
+            }
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+
+            // Audit: hashes only (SHA-256 of before + after content), never raw text.
+            let detail = format!(
+                "proposal:{id} {} {}",
+                sha256_hex(&before),
+                sha256_hex(&content)
+            );
+            crate::audit::record(
+                &conn,
+                crate::audit::AuditKind::Reconcile,
+                "api",
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                &detail,
+            );
+
+            Ok(ProposalView {
+                id,
+                kind,
+                content,
+                source,
+                source_prompt,
+                authority,
+                novelty: new_novelty,
+                conflict_with: new_conflict,
+                salience: new_salience,
+                created_at,
+                screen_verdict: screen_label,
+                edited_at: Some(now),
+            })
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+
+    #[cfg(feature = "otel")]
+    {
+        let span = tracing::Span::current();
+        span.record("proposal_id", id);
+        span.record("outcome", if res.is_ok() { "edited" } else { "error" });
+        span.record("principal", principal_lbl);
+    }
+
+    Ok(Json(res?))
+}
+
+/// `POST /proposals/{id}/edit` request body.
+#[derive(Debug, Deserialize)]
+pub struct ProposalEditRequest {
+    pub content: String,
+}
+
+/// v1.20.14 "Steer": hex SHA-256 of a string, for the edit audit detail (the
+/// before/after hashes prove an edit happened without persisting the content).
+fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    format!("{:x}", h.finalize())
 }
 
 // ── M2: decay + GDPR lifecycle ─────────────────────────────────────────────
@@ -1354,6 +1575,27 @@ fn render_ump_md(body: &serde_json::Value, redact_owner: Option<&str>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v1.20.14 "Steer": the edit-audit detail is SHA-256 of before+after
+    /// content (hashes only — never raw text), and it is deterministic so a
+    /// replay of the same edit produces the same audit hash.
+    #[test]
+    fn sha256_hex_is_deterministic_hex_of_content() {
+        // Known SHA-256 vectors (`echo -n ... | shasum -a 256`):
+        assert_eq!(
+            sha256_hex("brain"),
+            "bbbf7a6412d6d3e8244ac1fda5e35a20037acee661288cb95b7b18cf469980aa"
+        );
+        assert_eq!(
+            sha256_hex(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        // Determinism: same input → same output every time.
+        assert_eq!(
+            sha256_hex("a different body"),
+            sha256_hex("a different body")
+        );
+    }
 
     #[test]
     fn principal_to_owner_maps_sub_and_none() {

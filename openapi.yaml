@@ -12,7 +12,7 @@ info:
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
   version: 1.20.13
-  x-api-version: "1.20.13"
+  x-api-version: "1.20.14"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1275,6 +1275,51 @@ paths:
       responses:
         "200":
           description: Proposal rejected
+  /proposals/{id}/edit:
+    post:
+      summary: Edit a pending proposal's content and re-score it (v1.20.14 M1)
+      operationId: editProposal
+      description: >
+        Rewrites a pending proposal's content, recomputes the deterministic
+        novelty / conflict / salience scores, and stamps `edited_at`. The
+        injection screen still runs (Reject → 400 `input_rejected`). The audit
+        detail records only the SHA-256 of the before + after content. Only
+        `pending` proposals may be edited (already-decided → 409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  description: The replacement content (non-empty, <= MAX_QUERY chars).
+      responses:
+        "200":
+          description: The re-scored proposal with `edited_at` set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  kind: { type: string }
+                  content: { type: string }
+                  source: { type: string, nullable: true }
+                  source_prompt: { type: string, nullable: true }
+                  authority: { type: number, nullable: true }
+                  novelty: { type: number }
+                  conflict_with: { type: integer, nullable: true }
+                  salience: { type: number }
+                  created_at: { type: integer }
+                  screen_verdict: { type: string, enum: [clean, quarantine] }
+                  edited_at: { type: integer, nullable: true }
+        "400":
+          description: Empty/too-long content, injection reject, or expired proposal
+        "409":
+          description: Proposal already decided by a concurrent action
   /decayed:
     get:
       summary: List decayed chunks for operator review (v1.14.0 M2)

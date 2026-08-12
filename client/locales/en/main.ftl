@@ -52,12 +52,14 @@ install_hint = One-line install:  curl -fsSL … | sh   then  brain doctor
 no_pending = No pending proposals.
 approve = Approve
 reject = Reject
+edit = Edit
 proposal = Proposal
 review_help = Review keyboard shortcuts
 review_help_toggle = Toggle shortcuts help
 review_key_approve = Approve the focused proposal
 review_key_supersede = Approve, superseding the conflicting proposal
 review_key_reject = Reject the focused proposal
+review_key_edit = Rewrite the focused proposal's content
 review_key_next = Next proposal
 review_key_prev = Previous proposal
 

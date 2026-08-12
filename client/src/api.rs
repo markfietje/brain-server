@@ -500,6 +500,15 @@ impl ApiClient {
         self.post_json("/ingest/proposal", &body).await
     }
 
+    /// POST /proposals/{id}/edit — v1.20.14 "Steer" M1: rewrite a pending
+    /// proposal's content; the server re-scores deterministically and stamps
+    /// `edited_at`. Returns the re-scored proposal.
+    pub async fn edit_proposal(&self, id: i64, content: &str) -> Result<Proposal, ApiError> {
+        let body = serde_json::json!({ "content": content });
+        self.post_json(&format!("/proposals/{id}/edit"), &body)
+            .await
+    }
+
     /// GET /audit — the hash-chain browser. v1.16.0 M6/M7: `kind` is forwarded
     /// server-side (the backend filters the `kind` column — auth/ingest/recall/
     /// …); principal/since stay client-side (the wire contract for those params
@@ -1194,6 +1203,10 @@ pub struct Proposal {
     pub conflict_with: Option<i64>,
     pub salience: f32,
     pub created_at: i64,
+    /// v1.20.14 "Steer" M1: unix ts of the last content rewrite, `None` if the
+    /// pending proposal was never edited. Keys the edited badge.
+    #[serde(default)]
+    pub edited_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

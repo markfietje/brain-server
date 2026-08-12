@@ -36,6 +36,14 @@ pub fn verdict_label(v: &str) -> &'static str {
         _ => "clean",
     }
 }
+
+/// v1.20.14 "Steer" M1: a proposal whose `edited_at` is set was rewritten in
+/// place before decision — the reviewer (and a later auditor) should see that
+/// the content shown is not the original capture. Renders a `warn` badge with a
+/// stable label; `None` (never edited) renders nothing.
+pub fn edited_label(edited_at: Option<i64>) -> Option<&'static str> {
+    edited_at.map(|_| "edited")
+}
 pub mod ump;
 
 use dioxus::prelude::*;

@@ -10,6 +10,57 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.14] — 2026-08-12
+
+### Server + client — "Steer" (edit-then-approve: evaluative substitution)
+
+Server `Cargo.toml` 1.20.13 → 1.20.14; client 1.20.13 → 1.20.14. Adds the
+fifth limb of the human-in-the-loop essay (Bainbridge's irony of automation:
+a reviewer stuck with binary buttons is a gate, not an evaluator): a human can
+now **rewrite a pending proposal and approve the corrected version** instead of
+reject + re-ingest — steering *toward* a better solution, not just away from a
+bad one. Zero tokens, no LLM, no background worker; editing is an audited
+operator mutation like every other decision, and the TTL clock is untouched so
+an edit never dodges expiry (consequentiality preserved). See
+`IMPLEMENTATION_PLAN_v1.20.14_Steer.md`.
+
+- **M1 — Server `POST /proposals/{id}/edit`** (`src/handlers/gate.rs`): body
+  `{content}` → re-scores deterministically through the exact `ingest_proposal`
+  path (`novelty` vec0 KNN, `find_conflict`, `salience`), runs the v1.20.3
+  two-layer injection screen (`Reject` → 400; `Quarantine` → allowed + stored,
+  the read-time `screen_verdict` badge recomputes it), and stamps `edited_at`.
+  Same stale/expiry + CAS discipline as approve/reject (v1.20.2 A3/A4): TTL
+  check + expiry audit before the tx, `BEGIN IMMEDIATE` tx with
+  `status='pending'` re-check, `n==0` → clean `409` rollback on a concurrent
+  decision. Audit detail is **hashes only** — SHA-256 of before + after content,
+  never raw text (pinned by a known-vector test). v1.20.7 `gate.edit` otel span
+  under `--features otel`.
+- **M1 — Migration**: additive nullable `proposals.edited_at` (unix ts); schema
+  contract + wiring guards updated.
+- **M2 — Client Review panel** (`client/src/panels/review.rs`): `edit_for`
+  signal wired through the panel + `card()` (an **Edit** button), an
+  `EditEditor` dialog (Escape-close, cancel, re-scored-on-save, inline
+  `feedback` error), `E` keyboard mapping, and the `?` help table row. A
+  `warn` **edited** badge (`edited_at` set) renders on the card + detail header
+  so a reviewer/auditor sees the content shown is not the original capture.
+  Offline: a new `QueuedAction::Edit` (payload-keyed, replay via the existing
+  offline queue). New i18n keys `edit` / `review_key_edit` in `en` (other
+  locales fall back via the established convention).
+- **M3 — wire contract**: `ProposalView.edited_at` (server) ↔ `Proposal.edited_at`
+  (`#[serde(default)]`, client); `openapi.yaml` documents `/proposals/{id}/edit`
+  + the field.
+
+### Honest ceilings (carried into v1.21 / v2.x)
+- Editing is review-queue-only; it does not rewrite an already-promoted chunk
+  (that remains consolidate + supersession).
+- The audit detail carries before/after **hashes**, not text — a full content
+  history diff of an edited proposal is not persisted (consistent with the
+  hash-only audit practice).
+- The client `edit` + `review_key_edit` strings are `en`-only first cuts; de/fr/
+  es/nl inherit via the en-fallback until a native pass.
+- No measured capacity/device run for the new panel (the `bench --envelope`
+  operator step remains open).
+
 ## [1.20.13] — 2026-08-12
 
 ### Server + client + docs — "Media" (GTM content + media kit, version-aligned)

@@ -4,21 +4,16 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.13
+## Status — v1.20.14
 
-The v1.20.12 "Docs" release — client version aligned to the server line
-(`1.20.9 → 1.20.12`; **no client code change** — the v1.20.12 GTM
-documentation line is docs-only). The last client feature release was
-v1.20.9 "Register": a read-only **Agent Memory Register**
-(`/register`): an operator-facing provenance ledger over the already-shipped
-`GET /export` `knowledge` body, partitioned into the three **origin** tiers
-(`human` / `model` / `imported`) with live counts and filters by
-owner/source/memory-kind. Each row opens a shared `EvidenceModal` viewer
-(`GET /get/{id}`) showing the verbatim span + `source_uri` + revision +
-heading + line range. Purely client-side — no new routes, no new wire types,
-no new deps; the register is read-only by construction (`parse_export_rows`
-rejects any non-`/export` body). Recall hits still open the existing shared
-drawer; `EvidenceModal` is `pub` for a future recall entry.
+The v1.20.14 "Steer" release — **edit-then-approve** (server + client). The
+Review panel gains an **Edit** button + `EditEditor` dialog (`E` key, `?`
+help row) that rewrites a pending proposal's content in place via
+`POST /proposals/{id}/edit` — the server re-scores deterministically and
+stamps `edited_at`, which renders as a **edited** warn badge on the card +
+detail so a reviewer/auditor sees the content is not the original capture.
+Offline edits enqueue as `QueuedAction::Edit` (replayed via the existing
+queue).
 
 **Core features (from v1.20.0 onward):** theming (dark/light/system),
 offline-tolerant review queue, deep links + PWA, i18n (`en/de/fr/es/nl`),

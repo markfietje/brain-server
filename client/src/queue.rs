@@ -33,6 +33,14 @@ pub enum QueuedAction {
         id: i64,
         reason: Option<String>,
     },
+    /// v1.20.14 "Steer" — an offline edit of a pending proposal's content. The
+    /// `key()` includes `content`, so two distinct edits of the same proposal
+    /// are distinct actions (last-edited-wins on replay); replaying a decided
+    /// proposal 404s and counts as applied (AlreadyDone rule).
+    Edit {
+        id: i64,
+        content: String,
+    },
     Purge {
         chunk_ids: Vec<i64>,
         owner: Option<String>,

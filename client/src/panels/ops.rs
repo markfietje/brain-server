@@ -484,6 +484,7 @@ mod tests {
             conflict_with: None,
             salience: 0.5,
             created_at,
+            edited_at: None,
         }
     }
 

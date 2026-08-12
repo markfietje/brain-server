@@ -132,6 +132,7 @@ fn key_action(key: &Key, has_conflict: bool) -> Option<ReviewKey> {
     match c {
         "a" | "A" => Some(ReviewKey::Approve),
         "r" | "R" => Some(ReviewKey::Reject),
+        "e" | "E" => Some(ReviewKey::Edit),
         "j" | "J" => Some(ReviewKey::Down),
         "k" | "K" => Some(ReviewKey::Up),
         "s" | "S" if has_conflict => Some(ReviewKey::ApproveSupersede),
@@ -145,6 +146,9 @@ enum ReviewKey {
     Approve,
     ApproveSupersede,
     Reject,
+    /// v1.20.14 "Steer" M1: rewrite the focused proposal's content before
+    /// deciding (a `reject`-without-reason alternative for a fixable draft).
+    Edit,
     Up,
     Down,
     Help,
@@ -158,6 +162,7 @@ fn keyboard_help() -> Vec<(&'static str, &'static str)> {
         ("review_key_approve", "a"),
         ("review_key_supersede", "s"),
         ("review_key_reject", "r"),
+        ("review_key_edit", "e"),
         ("review_key_next", "j"),
         ("review_key_prev", "k"),
     ]
@@ -176,6 +181,7 @@ pub fn panel() -> Element {
     let mut show_help = use_signal(|| false); // M1.4: `?` toggles the help table
     let mut reject_for = use_signal(|| None::<i64>); // proposal id awaiting reason
     let reingest_for = use_signal(|| None::<(i64, String)>); // M3: (id, content) → editor
+    let mut edit_for = use_signal(|| None::<(i64, String)>); // v1.20.14: (id, content) → editor
 
     let proposals = use_resource(move || {
         let api = api();
@@ -307,6 +313,11 @@ pub fn panel() -> Element {
                     reject_for.set(Some(id));
                 }
             }
+            Some(ReviewKey::Edit) => {
+                if let Some(p) = &focused {
+                    edit_for.set(Some((p.id, p.content.clone())));
+                }
+            }
             Some(ReviewKey::Help) => show_help.set(!show_help()),
             None => {}
         }
@@ -387,6 +398,7 @@ pub fn panel() -> Element {
                             toggle_sel,
                             reject_for,
                             reingest_for,
+                            edit_for,
                         ) }
                     }
                 }
@@ -417,6 +429,10 @@ pub fn panel() -> Element {
             if let Some((id, content)) = reingest_for() {
                 ReingestEditor { id, initial: content, api, refresh, reingest_for }
             }
+            // v1.20.14 "Steer" M1: rewrite a pending proposal before deciding.
+            if let Some((id, content)) = edit_for() {
+                EditEditor { id, initial: content, api, refresh, edit_for }
+            }
         }
     }
 }
@@ -437,6 +453,7 @@ fn card(
     mut toggle: impl FnMut(i64) + Copy + 'static,
     mut reject_for: Signal<Option<i64>>,
     mut reingest_for: Signal<Option<(i64, String)>>,
+    mut edit_for: Signal<Option<(i64, String)>>,
 ) -> Element {
     let id = proposal.id;
     let checked = selected.contains(&id);
@@ -449,6 +466,7 @@ fn card(
         ""
     };
     let content_for_reingest = proposal.content.clone();
+    let content_for_edit = proposal.content.clone();
     rsx! {
         li { class: "py-2.5{ring}",
             label { class: "flex items-start gap-3",
@@ -469,6 +487,9 @@ fn card(
                         }
                         span { class: "text-xs text-muted-foreground tabular",
                             "novelty {proposal.novelty:.2} · salience {proposal.salience:.2}" }
+                        if let Some(lbl) = crate::panels::edited_label(proposal.edited_at) {
+                            span { class: "badge badge-warn", "{lbl}" }
+                        }
                     }
                     if let Some(c) = conflict {
                         p { class: "text-sm text-warn",
@@ -508,6 +529,14 @@ fn card(
                             class: "btn btn-ghost btn-sm",
                             onclick: move |_| reingest_for.set(Some((id, content_for_reingest.clone()))),
                             "suggest re-ingest"
+                        }
+                        // v1.20.14 "Steer" M1: rewrite the content in place before
+                        // deciding (edit-then-approve), instead of reject + re-ingest.
+                        button {
+                            class: "btn btn-ghost btn-sm",
+                            disabled: !writes,
+                            onclick: move |_| edit_for.set(Some((id, content_for_edit.clone()))),
+                            {crate::i18n::t("edit")}
                         }
                     }
                     // M3.1: inline per-row outcome. Honesty: a failed call shows
@@ -658,6 +687,72 @@ fn ReingestEditor(
     }
 }
 
+/// v1.20.14 "Steer" M1: rewrite a pending proposal's content in place (edit-
+/// then-approve). The server re-scores deterministically and stamps `edited_at`
+/// (the badge keys off it). A writer that both edits AND refetches keeps the
+/// stale proposal only until the refresh re-lands; the audit records only
+/// before/after hashes. Esc cancels. Mirrors the RejectEditor/ReingestEditor
+/// modal idiom (no Radix DialogRoot in the client).
+#[component]
+fn EditEditor(
+    id: i64,
+    initial: String,
+    api: Signal<ApiClient>,
+    refresh: Signal<u32>,
+    edit_for: Signal<Option<(i64, String)>>,
+) -> Element {
+    let mut edit_for = edit_for;
+    let mut content = use_signal(|| initial);
+    let feedback = use_signal(|| None::<String>);
+    rsx! {
+        div {
+            class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4",
+            role: "dialog", "aria-modal": "true", "aria-label": "edit",
+            onkeydown: move |e| if e.key() == Key::Escape { edit_for.set(None) },
+            div { class: "card p-4 w-full max-w-md bg-popover",
+                h2 { class: "card-title", "Edit proposal #{id}" }
+                textarea {
+                    class: "input w-full mt-3 text-sm min-h-28",
+                    rows: "5",
+                    value: "{content}",
+                    oninput: move |e| content.set(e.value()),
+                }
+                if let Some(fb) = feedback() {
+                    p { class: "text-danger mt-2 text-sm", {fb} }
+                }
+                div { class: "flex gap-2 mt-3 justify-end",
+                    button {
+                        class: "btn btn-ghost btn-md",
+                        onclick: move |_| edit_for.set(None),
+                        {crate::i18n::t("cancel")}
+                    }
+                    button {
+                        class: "btn btn-primary btn-md",
+                        disabled: content().trim().is_empty(),
+                        onclick: move |_| {
+                            let api = api;
+                            let mut refresh = refresh;
+                            let c = content().clone();
+                            let mut edit_for = edit_for;
+                            let mut feedback = feedback;
+                            spawn(async move {
+                                match api().edit_proposal(id, &c).await {
+                                    Ok(_) => {
+                                        refresh += 1;
+                                        edit_for.set(None);
+                                    }
+                                    Err(e) => feedback.set(Some(error_message(&e))),
+                                }
+                            });
+                        },
+                        {crate::i18n::t("save_edit")}
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// v1.16.7 M1: locate a proposal in a pending list by id. Pure so the
 /// deep-link detail view can find its card without an extra server roundtrip
 /// (there's no `GET /proposals/{id}`; the pending queue is bounded).
@@ -692,6 +787,9 @@ pub fn detail(proposal_id: i64) -> Element {
                         if let Some(v) = p.screen_verdict.as_deref() {
                             span { class: "badge badge-{crate::panels::verdict_badge(v)}",
                                 "screen: {crate::panels::verdict_label(v)}" }
+                        }
+                        if let Some(lbl) = crate::panels::edited_label(p.edited_at) {
+                            span { class: "badge badge-warn", "{lbl}" }
                         }
                     }
                     div { class: "card-body space-y-2",
@@ -837,6 +935,11 @@ mod tests {
             Some(ReviewKey::ApproveSupersede)
         );
         assert_eq!(key_action(&Key::Character("s".into()), false), None);
+        // E opens the in-place content editor (v1.20.14 "Steer").
+        assert_eq!(
+            key_action(&Key::Character("e".into()), false),
+            Some(ReviewKey::Edit)
+        );
         // Unrelated keys are unhandled.
         assert_eq!(key_action(&Key::Character("z".into()), true), None);
         assert_eq!(key_action(&Key::Enter, true), None);
@@ -860,10 +963,11 @@ mod tests {
                 ReviewKey::Reject => "r",
                 ReviewKey::Up => "k",
                 ReviewKey::Down => "j",
+                ReviewKey::Edit => "e",
             })
             .collect();
         let shown: Vec<&str> = keyboard_help().iter().map(|(_, k)| *k).collect();
-        for k in ["a", "s", "r", "j", "k"] {
+        for k in ["a", "s", "r", "j", "k", "e"] {
             assert!(shown.contains(&k), "help table missing '{k}'");
         }
         assert!(shown.contains(&"a"), "approve key documented");
@@ -911,6 +1015,7 @@ mod tests {
             conflict_with: None,
             salience: 0.2,
             created_at: 1,
+            edited_at: None,
         }];
         assert_eq!(locate_proposal(&list, 7).map(|p| p.id), Some(7));
         assert_eq!(locate_proposal(&list, 99), None);

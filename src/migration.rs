@@ -1056,10 +1056,27 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         db.execute("ALTER TABLE proposals ADD COLUMN source_prompt TEXT", [])?;
     }
 
+    // ── v1.20.14 "Steer" M1: edit provenance on pending proposals. ──────────
+    // `edited_at` is a nullable unix timestamp set when a reviewer rewrites a
+    // pending proposal's content via POST /proposals/{id}/edit. The review
+    // badge and read-time view key off it; `None` = never edited. Additive +
+    // idempotent, same guard as `source_prompt` above.
+    let edited_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='edited_at'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !edited_present {
+        db.execute("ALTER TABLE proposals ADD COLUMN edited_at INTEGER", [])?;
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.1')
-         ON CONFLICT(key) DO UPDATE SET value = '1.20.1';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.14')
+         ON CONFLICT(key) DO UPDATE SET value = '1.20.14';",
         [],
     )?;
 
