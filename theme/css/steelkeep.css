@@ -2,50 +2,59 @@
    Loaded via additional-css AFTER the default theme so it wins.
    Brand accent is theme-agnostic (:root); the steel dark (coal) and
    light palettes are scoped to their mdBook theme classes so the toolbar
-   light/dark toggle actually switches. */
+   light/dark toggle actually switches.
+
+   Palette: soft + professional — slate-ink text, a muted indigo accent,
+   a desaturated gold mark, and gentle borders, tuned per theme. */
 
 :root {
-  /* Steel blue accent ramp (used on both light + dark) */
-  --accent-h: 215;
-  --accent-s: 92%;
-  --accent-l: 55%;
+  /* Soft indigo accent (used on both light + dark) */
+  --accent-h: 217;
+  --accent-s: 54%;
+  --accent-l: 51%;
 
-  /* Brand blue (accent) + gold (secondary/mark) */
   --accent: hsl(var(--accent-h) var(--accent-s) var(--accent-l));
-  --accent-strong: hsl(var(--accent-h) 92% 62%);
-  --gold: #d9a93a;
+  --accent-strong: hsl(var(--accent-h) 58% 43%);
+  --gold: #b58a3c;        /* desaturated gold mark */
+
+  /* Widen the reading column (mdBook default is 750px) */
+  --content-max-width: 1080px;
 }
 
-/* ---- Dark (coal) palette ---- */
+/* ---- Dark (coal) palette: soft charcoal, not pure black ---- */
 .coal {
-  --bg: #0d1117;          /* GitHub-dark navy */
-  --fg: #e6edf3;
-  --sidebar-bg: #11151c;
-  --content-bg: #0d1117;
+  --bg: #0f1218;          /* soft near-black charcoal */
+  --fg: #e4e9f0;          /* soft slate-white text */
+  --sidebar-bg: #161b24;
+  --content-bg: #0f1218;
 
-  --code-bg: #161b22;
-  --inline-code-bg: rgba(110, 118, 129, 0.18);
+  --code-bg: #171c26;
+  --inline-code-bg: rgba(148, 163, 184, 0.16);
 
-  --border: #30363d;
-  --border-soft: #21262d;
+  --border: #2a3140;
+  --border-soft: #222937;
+  --muted: #8b96a6;        /* secondary text */
+  --accent: hsl(var(--accent-h) 60% 66%);      /* brighter accent on dark */
+  --accent-strong: hsl(var(--accent-h) 70% 74%);
 }
 
-/* ---- Light palette (steel blue on white) ---- */
+/* ---- Light palette: soft warm-white, slate ink ---- */
 .light, html:not(.js) {
   --bg: #ffffff;
-  --fg: #1f2328;
-  --sidebar-bg: #f6f8fa;
+  --fg: #1b2330;          /* soft slate ink */
+  --sidebar-bg: #f7f8fa;
   --content-bg: #ffffff;
 
-  --code-bg: #f6f8fa;
-  --inline-code-bg: rgba(175, 184, 193, 0.22);
+  --code-bg: #f5f7fa;
+  --inline-code-bg: rgba(100, 116, 139, 0.12);
 
-  --border: #d1d9e0;
-  --border-soft: #e1e5e9;
+  --border: #e3e8ef;
+  --border-soft: #eef1f6;
+  --muted: #5c6a7a;        /* secondary text */
 }
 
 /* ---- Typography: keep system stack (self-hosted = bundle size), tuned sizes ---- */
-html { font-size: 16px; }
+html { font-size: 17px; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
     Arial, sans-serif;
@@ -78,12 +87,12 @@ a:hover { color: var(--accent-strong); text-decoration: underline; }
 }
 .sidebar .chapter li a.active { color: var(--accent); }
 .sidebar .chapter li a.active::before { color: var(--accent); }
-.sidebar .chapter li a { color: #8b949e; }
+.sidebar .chapter li a { color: var(--muted); }
 .sidebar .chapter li a:hover { color: var(--fg); }
 
 /* ---- Content ---- */
 main { background: var(--content-bg); }
-.content { max-width: 46rem; margin: 0 auto; padding: 2rem 1.5rem; }
+.content { max-width: var(--content-max-width); margin: 0 auto; padding: 2rem 1.5rem; }
 
 /* ---- Code ---- */
 pre {
@@ -112,7 +121,7 @@ blockquote {
 
 /* ---- Menu bar (top-right nav) ---- */
 .menu-bar { background: var(--bg); border-bottom: 1px solid var(--border); }
-.menu-bar a { color: #8b949e; }
+.menu-bar a { color: var(--muted); }
 
 /* ---- Search ---- */
 .search-wrapper .search-input {
