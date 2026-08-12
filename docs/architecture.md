@@ -123,4 +123,4 @@ This is a v1.x foundation (see [Roadmap](./roadmap.md)).
 
 - [Deployment](./deployment.md) — running, configuring, and backing up.
 - [Security](./security.md) — the threat model and controls.
-- The [API reference](./api.md) and the full [API_CONTRACT.md](../API_CONTRACT.md).
+- The [API reference](./api.md) and the full [API_CONTRACT.md](./API_CONTRACT.md).

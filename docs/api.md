@@ -3,8 +3,8 @@
 Brain Server exposes a versioned HTTP API. Every response carries an
 `X-Api-Version` header. This page is the informational overview; the complete,
 machine-readable contract is at **`GET /openapi.yaml`** at runtime and
-[openapi.yaml](../openapi.yaml) in the repo, with the full written contract in
-[API_CONTRACT.md](../API_CONTRACT.md).
+[openapi.yaml](https://github.com/markfietje/brain-server/blob/main/openapi.yaml) in the repo, with the full written contract in
+[API_CONTRACT.md](./API_CONTRACT.md).
 
 ---
 
@@ -101,7 +101,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 - Every response carries `X-Api-Version`.
 - `POST /add` and `GET /search` are deprecated (migrate to `/ingest` + `/recall`)
   and emit an RFC 8594 `Deprecation` header.
-- The written contract ([API_CONTRACT.md](../API_CONTRACT.md)) states the
+- The written contract ([API_CONTRACT.md](./API_CONTRACT.md)) states the
   stability promise and the deprecation policy.
 
 ---
@@ -109,7 +109,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 ## Clients
 
 - **`brain` CLI** — status, query, get, explain, ingest-dir, reconcile, audit,
-  backup/restore, and more (see [README.md](../README.md#cli-brain)).
+  backup/restore, and more (see [CLI reference](./cli-reference.md)).
 - **`mcp` binary** — search/recall/ingest exposed as MCP tools for agent clients.
 - **Dioxus client** — the visual control surface served at `/app`.
 

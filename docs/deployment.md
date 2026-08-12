@@ -49,7 +49,7 @@ Brain Server is configured through environment variables (all resolved in
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window |
 | `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | `0` | `1` = require the Standard Webhooks header set on `/webhooks/*` and verify `v1,` HMAC-SHA256 over `{id}.{timestamp}.{body}` (v1.20.4) — an opt-in hard replay window for first-party senders. GitHub sends no such timestamp; its replay protection is `x-github-delivery` idempotency, so the default `0` leaves the legacy `sha256=` path unchanged |
 
-See [README.md](../README.md#configuration) and `src/config.rs` for the full list,
+See [Configuration](./configuration.md) and `src/config.rs` for the full list,
 including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webhook.
 
 ---
@@ -66,7 +66,7 @@ including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webho
 - **Auth token file is 0600.** The install script relocates any plaintext token out
   of the launchd plist into the secret file.
 
-See [Security](./security.md) and [SECURITY.md](../SECURITY.md) for the full model.
+See [Security](./security.md) for the full model.
 
 ---
 
@@ -161,7 +161,7 @@ review, recall, security, subjects (DSAR), audit, and health.
 ./deploy-web.sh
 ```
 
-See [client/README.md](../client/README.md).
+See [Client GUI](./client-gui.md).
 
 ---
 

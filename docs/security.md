@@ -3,7 +3,7 @@
 Brain Server is a local-first memory component for AI agents, so its security
 model centers on three questions: **who is allowed to talk to it, what can they
 do, and can anyone tamper with its records.** The full threat model lives in
-[SECURITY.md](../SECURITY.md) and [THREAT_MODEL.md](../THREAT_MODEL.md); this page
+[Threat model](./THREAT_MODEL.md); this page
 is the informational summary.
 
 ---
