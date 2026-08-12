@@ -69,4 +69,4 @@ Brain Server is configured entirely through **environment variables**, all resol
 
 - **[Installation](./deployment.md)** — applying these in practice.
 - **[Security](./security.md)** — how the auth variables work together.
-- **[API Reference](./api-reference.md)** — the contract those configs gate.
+- **[API Reference](./api.md)** — the contract those configs gate.

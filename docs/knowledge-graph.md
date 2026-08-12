@@ -64,4 +64,4 @@ The graph isn't just queryable directly — it also powers a retrieval leg. With
 
 - **[Retrieval & Recall](./retrieval-and-recall.md)** — the graph leg in the retrieval pipeline.
 - **[Architecture](./architecture.md)** — where the graph lives in the system.
-- **[API Reference](./api-reference.md)** — the graph endpoints in detail.
+- **[API Reference](./api.md)** — the graph endpoints in detail.

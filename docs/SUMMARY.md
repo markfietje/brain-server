@@ -26,7 +26,6 @@
 - [Configuration](configuration.md)
 - [Retrieval & recall](retrieval-and-recall.md)
 - [Knowledge graph](knowledge-graph.md)
-- [API reference (wiki)](api-reference.md)
 - [CLI reference](cli-reference.md)
 - [OpenClaw integration](openclaw-integration.md)
 - [Client GUI](client-gui.md)

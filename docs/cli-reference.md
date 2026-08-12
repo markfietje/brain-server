@@ -91,6 +91,6 @@ brain backup ~/.openclaw/workspace/brain.db ~/backups/brain-$(date +%F).enc
 
 ## Next steps
 
-- **[API Reference](./api-reference.md)** — the same surface over HTTP.
+- **[API Reference](./api.md)** — the same surface over HTTP.
 - **[Client GUI](./client-gui.md)** — the same surface as a visual app.
 - **[Quickstart](./quickstart.md)** — a working end-to-end example.

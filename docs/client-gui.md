@@ -65,5 +65,5 @@ The web build ships as a PWA with an offline shell (the service worker caches on
 
 - **[Complete Operator Console](./client-complete-console.md)** — the 12-panel v1.17.6→v1.17.8 line in detail.
 - **[Installation](./deployment.md)** — serving the GUI at `/app`.
-- **[API Reference](./api-reference.md)** — the API the GUI talks to.
+- **[API Reference](./api.md)** — the API the GUI talks to.
 - **[Security](./security.md)** — how the GUI authenticates (JWT pairs, silent refresh).

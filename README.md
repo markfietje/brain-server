@@ -20,7 +20,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](wiki/Universal-Memory-Protocol.md)
+  [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](docs/universal-memory-protocol.md)
   [![Tests](https://img.shields.io/badge/tests-712%20passed-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
@@ -104,9 +104,8 @@ scripts/install-service.sh
 
 | | |
 |---|---|
-| **Wiki** | [brain-server Wiki](https://github.com/markfietje/brain-server/wiki) covers Overview, Quickstart, Architecture, Retrieval, the Knowledge Graph, Security, Compliance, API and CLI reference, FAQ, and Glossary. |
-| **Docs site** | [brain-server Docs](https://markfietje.github.io/brain-server/) — the mdBook documentation site (Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Roadmap). |
-| **Docs** | [`docs/`](./docs/): Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Roadmap. |
+| **Docs site** | [brain-server Docs](https://markfietje.github.io/brain-server/) — the mdBook documentation site (Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap). |
+| **Docs** | [`docs/`](./docs/): Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap. |
 | **API contract** | [`API_CONTRACT.md`](./API_CONTRACT.md) plus `GET /openapi.yaml` at runtime. |
 | **Compliance** | [`COMPLIANCE.md`](./COMPLIANCE.md): ISO 42001, NIST AI RMF, SOC 2, GDPR · [`docs/AI_LITERACY.md`](./docs/AI_LITERACY.md): Art 4 literacy playbook · [`docs/RFP_RESPONSE_KIT.md`](./docs/RFP_RESPONSE_KIT.md): enterprise RFP mapping. |
 | **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |
@@ -142,7 +141,7 @@ brain ump export --out memory.ump.md
 brain ump import memory.ump.md
 ```
 
-Details live in [API_CONTRACT.md §15](API_CONTRACT.md#15-ump-binding-v1173--universal-memory-protocol-10) and the [Universal Memory Protocol wiki article](https://github.com/markfietje/brain-server/wiki/Universal-Memory-Protocol).
+Details live in [API_CONTRACT.md §15](API_CONTRACT.md#15-ump-binding-v1173--universal-memory-protocol-10) and the [Universal Memory Protocol docs page](docs/universal-memory-protocol.md).
 
 ## Configuration
 
@@ -159,7 +158,7 @@ All settings are environment variables, resolved in `src/config.rs`.
 | `BRAIN_AUDIT_RETENTION_DAYS` | `(none)` | Audit retention window. Unset keeps everything. |
 | `BRAIN_SUGGEST_ENABLED` | `true` | `/suggest/*` kill switch. |
 
-The full list is on the [Configuration wiki page](https://github.com/markfietje/brain-server/wiki/Configuration).
+The full list is on the [Configuration docs page](docs/configuration.md).
 
 ## API
 
@@ -229,7 +228,7 @@ brain backup <db> <out>       # AES-256-GCM encrypted backup
 - **Untrusted-evidence boundary.** Every result serializes `untrusted: true` (OWASP LLM01:2025).
 - **Encrypted backup.** AES-256-GCM, checksummed, and excludes secrets.
 
-See [`SECURITY.md`](./SECURITY.md) and the [Security wiki page](https://github.com/markfietje/brain-server/wiki/Security).
+See [`SECURITY.md`](./SECURITY.md) and the [Security docs page](docs/security.md).
 
 ## Tech stack
 

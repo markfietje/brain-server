@@ -221,7 +221,7 @@ Tokens are self-issued: the operator signs tokens for peers. There is no third-p
 
 ## Related pages
 
-- [API Reference](./api-reference.md) and the runtime `GET /openapi.yaml` for the full contract
+- [API Reference](./api.md) and the runtime `GET /openapi.yaml` for the full contract
 - [Security](./security.md) for key storage and token rules
 - [Governance & Compliance](./compliance.md) for the integrity and consent controls map
 - [Roadmap & Release History](./roadmap-and-release-history.md) for the v1.17.3 UMP Rollout release and the v1.17.4/v1.17.5 conformance + eval-fix releases

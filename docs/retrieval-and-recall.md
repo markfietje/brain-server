@@ -92,4 +92,4 @@ Chunks can carry `expires_at` (strict decay, default-excludes) and `min_relevanc
 
 - **[Knowledge Graph](./knowledge-graph.md)** — the graph layer that powers the optional leg.
 - **[Architecture](./architecture.md)** — where retrieval sits in the whole system.
-- **[API Reference](./api-reference.md)** — the exact request/response contract.
+- **[API Reference](./api.md)** — the exact request/response contract.

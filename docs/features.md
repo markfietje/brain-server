@@ -60,4 +60,4 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 
 - See how it all works in **[Architecture](./architecture.md)**.
 - Try the **[Quickstart](./quickstart.md)**.
-- Browse the **[API Reference](./api-reference.md)**.
+- Browse the **[API Reference](./api.md)**.
