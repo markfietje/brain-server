@@ -25,6 +25,14 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
 - **Write-back gating** (v1.14) — `POST /ingest/proposal` scores a candidate (novelty via KNN, conflict via consolidation, salience via heuristics) but creates **no** `knowledge` row; it becomes memory only via human approval.
 
+## Human in the loop
+
+- **Meaningful control, not a checkpoint** — the human review is a real job with tooling, time, and consequences, built against the four failure modes of supervised automation (out-of-the-loop skill loss, automation bias, the explainability paradox, moral crumple zones). See [**Human in the loop**](./human-in-the-loop.md).
+- **A reviewable, not rubber-stamped, queue** — every proposal card carries a novelty/conflict/salience breakdown, a PII-screened sourcing prompt, and a screen verdict; raw evidence (verbatim span, `source_uri`, revision, heading, line range) opens on demand via `GET /get/{id}`.
+- **The queue is a clock** (v1.20.6) — the Memory Operations panel shows a live SLA countdown per pending proposal and a gate-health strip (over-rejecting / under-reviewing / expired) so review *load* and *drift* are visible, not hidden in a log.
+- **Provenance ledger** (v1.20.9) — the Agent Memory Register partitions the store by `origin` (`human` / `model` / `imported`) with owner/source/kind filters and drill-down evidence, so how much of the store is model-originated is auditable at a glance.
+- **Consequential and recorded** — every approve / reject (with reason) / supersede / expire is appended to the SHA-256 audit chain, making each operator decision reconstructable.
+
 ## Anticipation & suggestions
 
 - **Opt-in anticipation** (v1.9) — `POST /suggest` returns related-but-not-surfaced chunks (tagged `reason: "anticipated"`); `POST /suggest/feedback` records accept/dismiss; `GET /suggest/metrics` reports the false-positive rate. No push, no decay, no hidden personalization — the agent asks explicitly.

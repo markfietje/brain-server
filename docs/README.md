@@ -16,6 +16,7 @@ root.
 | [Overview](./overview.md) | What Brain Server is, who it is for, and the five differentiators |
 | [Quickstart](./quickstart.md) | Build, run, and make your first recall in minutes |
 | [Architecture](./architecture.md) | How recall, ingest, the knowledge graph, and governance fit together |
+| [Human in the loop](./human-in-the-loop.md) | Meaningful human control: what reaches a human, and how to evaluate it |
 | [Deployment](./deployment.md) | Service install, configuration, backup/restore, operational health |
 | [Docker](./docker.md) | Container image, compose, offline model bake, container ops |
 | [Proxy SSO](./proxy-sso.md) | Reverse-proxy SSO (OAuth2-Proxy / Caddy / Authentik) in front of the server |

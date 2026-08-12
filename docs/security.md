@@ -80,6 +80,8 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
 - No cookies (bearer headers make CSRF structurally impossible).
 - No untrusted content ever rendered as trusted HTML (the client bans
   `dangerous_inner_html`; grep-guarded in CI).
+- No autonomous write-back: captured fragments are scored, not stored, and become memory
+  only through the human gate. See [**Human in the loop**](./human-in-the-loop.md).
 
 ---
 

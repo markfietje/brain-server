@@ -62,7 +62,37 @@ For structured data, `POST /ingest` accepts explicit entities and relations.
 
 ---
 
-## 4. Recall
+## 4. Review — the human-in-the-loop gate
+
+Write-back is human-gated by default. A candidate is **scored, not stored** — it becomes
+memory only when a human approves it:
+
+```bash
+# Propose a fragment (scored; creates NO knowledge row)
+curl -X POST http://localhost:8765/ingest/proposal \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Bignay is an antioxidant-rich alternative to blueberry."}'
+
+# List the pending queue
+curl http://localhost:8765/proposals?status=pending
+
+# The human decides — approve into memory (optionally superseding a conflicting chunk)
+curl -X POST http://localhost:8765/proposals/1/approve
+
+# …or reject, audited, never deleted
+curl -X POST http://localhost:8765/proposals/1/reject?reason=duplicate
+```
+
+The web client at `/app` puts this in a control room: the **Review** panel (scoring
+breakdown + sourcing prompt + screen verdict + raw evidence), the **Memory Operations**
+panel (live SLA clocks + flagged inventory + gate health), and the **Agent Memory
+Register** (a read-only provenance ledger). See
+[**Human in the loop**](./human-in-the-loop.md) for how to evaluate a proposal well —
+not just clear the queue.
+
+---
+
+## 5. Recall
 
 Structured recall returns ranked evidence with provenance:
 
@@ -81,7 +111,7 @@ curl 'http://localhost:8765/graph/traverse?start=bignay&max_depth=2'
 
 ---
 
-## 5. Use the CLI
+## 6. Use the CLI
 
 The `brain` binary gives you the same surface from a terminal:
 
@@ -94,7 +124,7 @@ The `brain` binary gives you the same surface from a terminal:
 
 ---
 
-## 6. Run as a service (macOS)
+## 7. Run as a service (macOS)
 
 For a persistent install managed by launchd:
 
@@ -113,3 +143,4 @@ auth token to a 0600 file, restarts the service, and waits for `/health`. See
 - Configure authentication and other tunables in [Deployment](./deployment.md).
 - Understand the retrieval pipeline in [Architecture](./architecture.md).
 - Review the security posture in [Security](./security.md).
+- Learn the write-back review job in [Human in the loop](./human-in-the-loop.md).

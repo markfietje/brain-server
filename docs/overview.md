@@ -66,13 +66,22 @@ quantization (4–32× smaller), bounded connection pools, ≤350 MB RSS ceiling
 Ships as a `kind: "memory"` plugin occupying the memory slot, with per-agent opt-in
 and group/channel exclusions for data-leakage prevention.
 
+### ⑥ Human-gated write-back — meaningful control, not a rubber stamp
+Nothing becomes permanent memory by default. A captured fragment is **scored, not
+stored** (`POST /ingest/proposal`), and enters the store only after a human approves it —
+optionally superseding the chunk it contradicts. The control room (Review panel, Memory
+Operations panel with live SLA clocks + gate health, Agent Memory Register) is built to
+make the operator a *critical evaluator*: raw evidence, sourcing prompt, and screen
+verdict on every card, with every decision written to a tamper-evident audit chain. See
+[**Human in the loop**](./human-in-the-loop.md).
+
 ---
 
 ## One-line positioning
 
 > **Brain Server is the offline, deterministic, domain-graphed second brain for AI
 > agents on the edge — zero embedding-API cost, zero decision tokens, one Rust
-> binary.**
+> binary, and a human gate on every write.**
 
 ---
 

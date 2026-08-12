@@ -27,7 +27,7 @@ The ⌘K / Ctrl+K overlay (v1.16.7) was upgraded to a fused **nav + lookup + act
 
 ### Honest-batch review
 
-The Review panel tracks every row's outcome individually — a failed call is **surfaced, never silently dropped**. A 404 with nothing pending is treated as success. You can reject with a reason and suggest re-ingest.
+The Review panel tracks every row's outcome individually — a failed call is **surfaced, never silently dropped**. A 404 with nothing pending is treated as success. You can reject with a reason and suggest re-ingest. It is one surface of the human-in-the-loop control room — alongside the Memory Operations panel (live SLA clocks + gate health + flagged inventory) and the Agent Memory Register (provenance ledger). See [**Human in the loop**](./human-in-the-loop.md) for how to evaluate proposals as a critical operator, not a queue-clearer.
 
 ### Recall decision-path viewer
 

@@ -104,8 +104,8 @@ scripts/install-service.sh
 
 | | |
 |---|---|
-| **Docs site** | [brain-server Docs](https://markfietje.github.io/brain-server/) — the mdBook documentation site (Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap). |
-| **Docs** | [`docs/`](./docs/): Overview, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap. |
+| **Docs site** | [brain-server Docs](https://markfietje.github.io/brain-server/) — the mdBook documentation site (Overview, Human in the loop, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap). |
+| **Docs** | [`docs/`](./docs/): Overview, Human in the loop, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap. |
 | **API contract** | [`API_CONTRACT.md`](./API_CONTRACT.md) plus `GET /openapi.yaml` at runtime. |
 | **Compliance** | [`COMPLIANCE.md`](./COMPLIANCE.md): ISO 42001, NIST AI RMF, SOC 2, GDPR · [`docs/AI_LITERACY.md`](./docs/AI_LITERACY.md): Art 4 literacy playbook · [`docs/RFP_RESPONSE_KIT.md`](./docs/RFP_RESPONSE_KIT.md): enterprise RFP mapping. |
 | **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |

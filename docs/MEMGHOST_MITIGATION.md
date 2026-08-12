@@ -53,6 +53,10 @@ approval gate**, and **no provenance on retrieval**.
 ## Operator checklist
 
 - Run with a write-back gate: proposals auto-pending, approval human-owned.
+- Treat every pending proposal as a *judgment task*, not a queue to clear: evaluate the
+  scoring breakdown, sourcing prompt, screen verdict, and raw evidence — see
+  [**Human in the loop**](./human-in-the-loop.md) for the decision procedure and the
+  anti-rubber-stamp guidance.
 - Keep the plugin's `captureMode` at `proposal` (the default) so auto-captures
   from untrusted turns enter memory only after human approval. `direct` mode
   is for trusted deployments and is still screened by the server-side

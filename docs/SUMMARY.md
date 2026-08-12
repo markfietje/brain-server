@@ -12,6 +12,7 @@
 # Core concepts
 
 - [Overview](overview.md)
+- [Human in the loop](human-in-the-loop.md)
 - [Architecture](architecture.md)
 
 # API & developer
