@@ -10,6 +10,53 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.11] — 2026-08-12
+
+### Server + docs — "Housekeeping" (badge generation + release hygiene)
+
+**Dev-tools + docs + version release** (server 1.20.10 → 1.20.11; client stays at
+1.20.9). Closes the operator-console line. **No new runtime code, no schema
+change, no new dependency** — a badge-generation script + a release-wrap
+checklist, so the README's badges and the release notes are facts, not
+hand-typed claims.
+
+### Added
+- **M1 — `scripts/badges.sh`.** Derives the README's dynamic badges from the
+  real build: version from `Cargo.toml` (server) + `client/Cargo.toml`
+  (client), test count from an actual `cargo test --features bench,migrate`
+  run (parses the "N passed" lines), UMP level from the shipped self-attested
+  L3 (asserted every push by the `ump-conformance` CI job), and an SBOM-present
+  flag from the on-disk CycloneDX JSON. Prints the badge block for the human to
+  paste; `--selfcheck` verifies the version derivation + the release
+  checklist's six-artifact completeness and exits nonzero on any drift. It
+  never fabricates a number it did not measure.
+- **M2 — `docs/release-checklist.md`.** Codifies the six-part release wrap
+  (Cargo.toml+lock, openapi.yaml, CHANGELOG, ROADMAP, README badges via
+  `badges.sh`, AGENTS.md) with the verifying commands and the gates that must
+  stay green. Documents the docs-only exception (no `Cargo.toml`/OpenAPI
+  change). A doc, not a CI gate — wiring it into CI as a blocking check is the
+  operator's call (intentionally out of scope; CI churn risks false-reds).
+- **M3 — `/proof` integrity panel: NOT built (optional, off by default).** The
+  v1.20.10 integrity signal already lives in the queue-header `Badge`; a whole
+  panel is speculative UI until the operator asks.
+
+### Changed
+- README badges regenerated via `scripts/badges.sh` — fixing the hand-typed
+  test-count drift (README claimed 712; the measured suite differs).
+- ROADMAP released rows for v1.20.6 ("Console") and v1.20.9 ("Register") marked
+  Shipped (they had shipped but were still listed Planned); v1.20.11 row →
+  Shipped; released-version header → 1.20.11.
+
+### Ship
+- Docs + script commit. No server restart, no client bundle.
+
+### Honest ceilings (carried into v2.0)
+- Badge generation is a script, not a CI hard-gate — it produces facts for the
+  human to paste; a blocking CI check is the operator's call.
+- The `/proof` panel is optional and off by default.
+- The release checklist is a doc, not automation; a `release.sh` that does all
+  six steps is a v2.x dev-infra nicety, deliberately not built here.
+
 ## [1.20.10] — 2026-08-12
 
 ### Server + docs — "Proof" (integrity feed + CRA/ADMT evidentiary kits + SUPPORT.md)
