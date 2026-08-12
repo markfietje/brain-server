@@ -51,6 +51,15 @@ fn settle(result: Result<i64, ApiError>, action: crate::queue::QueuedAction) -> 
     }
 }
 
+/// v1.20.15 "Clock": the queue-is-a-clock sort — nearest `expires_at` first
+/// (expired dead-first), stable id tie-break. Pure so the ordering is pinned
+/// without a Dioxus runtime. The key is the server-authoritative `expires_at`
+/// (created + TTL), so an operator's `BRAIN_PROPOSAL_TTL_SECS` override is
+/// respected with no client TTL mirror.
+fn expiry_order(rows: &mut [Proposal]) {
+    rows.sort_by_key(|p| (p.expires_at, p.id));
+}
+
 /// M3 pure (DropGuard logic): clear `Pending` rows from the selection so a
 /// cancelled batch doesn't strand a half-applied selection. Pending rows
 /// become re-selectable; Done/Failed/AlreadyDone stay as-is (already settled).
@@ -182,6 +191,21 @@ pub fn panel() -> Element {
     let mut reject_for = use_signal(|| None::<i64>); // proposal id awaiting reason
     let reingest_for = use_signal(|| None::<(i64, String)>); // M3: (id, content) → editor
     let mut edit_for = use_signal(|| None::<(i64, String)>); // v1.20.14: (id, content) → editor
+                                                             // v1.20.15 "Clock": the queue is a clock — nearest `expires_at` first
+                                                             // (toggleable to creation order), and a ~30s tick re-renders the live
+                                                             // deadline badges from a fresh `now_unix()` (the same honest approximation
+                                                             // /ops uses; the server's 400 on a stale approve stays authoritative).
+    let mut sort_expiry = use_signal(|| true);
+    let tick = use_signal(|| 0u64);
+    use_future(move || {
+        let mut tick = tick;
+        async move {
+            loop {
+                crate::probe_sleep(30).await;
+                tick += 1;
+            }
+        }
+    });
 
     let proposals = use_resource(move || {
         let api = api();
@@ -189,11 +213,22 @@ pub fn panel() -> Element {
         async move { api.proposals("pending").await }
     });
 
-    // The ordered id list drives both the cursor + the batch.
-    let all_ids: Vec<i64> = match &*proposals.read() {
-        Some(Ok(list)) => list.iter().map(|p| p.id).collect(),
+    // The ordered id list drives both the cursor + the batch. With the expiry
+    // sort on, `expires_at` ascending (id tie-break) — expired first, then the
+    // most urgent deadline (the clock rule). Never touches the server data.
+    let ordered: Vec<Proposal> = match &*proposals.read() {
+        Some(Ok(list)) => {
+            let mut v = list.clone();
+            if sort_expiry() {
+                expiry_order(&mut v);
+            }
+            v
+        }
         _ => Vec::new(),
     };
+    let all_ids: Vec<i64> = ordered.iter().map(|p| p.id).collect();
+    let _ = tick(); // re-render the countdowns on each clock bump
+    let now = crate::time_budget::now_unix();
 
     // M2.1: publish the pending count so the AppShell badge reflects reality.
     // `use_effect` runs after render; writes the signal the top bar reads.
@@ -284,16 +319,15 @@ pub fn panel() -> Element {
     // M3.2: keyboard handler. Acts on the cursor card. `shortcuts_enabled`
     // must be on (WCAG 2.1.4); Esc handled by the drawer when open.
     let key_ids = all_ids.clone();
+    let ordered_keys = ordered.clone();
     let onkeydown = move |e: Event<KeyboardData>| {
         if !shortcuts() || key_ids.is_empty() {
             return;
         }
         let idx = cursor().unwrap_or(0);
         let id = key_ids.get(idx).copied();
-        let focused = match &*proposals.read() {
-            Some(Ok(list)) => list.get(idx).cloned(),
-            _ => None,
-        };
+        // The cursor maps into the *ordered* list (matches the rendered order).
+        let focused = id.and_then(|id| ordered_keys.iter().find(|p| p.id == id).cloned());
         let has_conflict = focused.as_ref().and_then(|p| p.conflict_with).is_some();
         match key_action(&e.key(), has_conflict) {
             Some(ReviewKey::Down) => cursor.set(Some((idx + 1).min(key_ids.len() - 1))),
@@ -344,6 +378,13 @@ pub fn panel() -> Element {
                     onclick: move |_| selected.set(HashSet::new()),
                     "Clear"
                 }
+                // v1.20.15 "Clock": toggle the queue ordering — nearest expiry
+                // first (the live clock rule) vs the server's creation order.
+                button {
+                    class: "btn btn-outline btn-md",
+                    onclick: move |_| sort_expiry.set(!sort_expiry()),
+                    if sort_expiry() { "expiry first" } else { "creation order" }
+                }
                 // M3.2: WCAG 2.1.4 — single-char shortcuts must be turn-offable.
                 label { class: "flex items-center gap-1.5 text-xs text-muted-foreground ml-2",
                     input {
@@ -383,45 +424,49 @@ pub fn panel() -> Element {
             // v1.16.2 M6: one-line batch summary — surfaces partial failure
             // honestly once a batch has run (rows settle out of Pending).
             { batch_summary(&outcomes()) }
-            match &*proposals.read() {
-            Some(Ok(list)) if !list.is_empty() => rsx! {
-                ul { class: "divide-y divide-border",
-                    for (i, p) in list.iter().enumerate() {
-                        { card(
-                            p.clone(),
-                            selected(),
-                            outcomes(),
-                            i,
-                            cursor(),
-                            writes,
-                            decide,
-                            toggle_sel,
-                            reject_for,
-                            reingest_for,
-                            edit_for,
-                        ) }
-                    }
-                }
-            },
-                Some(Ok(_)) => rsx! {
-                    div { class: "card mt-2",
-                        div { class: "card-body text-center",
-                            p { class: "text-muted-foreground", {crate::i18n::t("no_pending")} }
-                            button {
-                                class: "btn btn-outline btn-md mt-3",
-                                onclick: move |_| async move {
-                                    let mut refresh = refresh;
-                                    let _ = api().propose("sample proposal — approve me to try the gate").await;
-                                    refresh += 1;
-                                },
-                                "Ingest a sample proposal to try the gate"
+            { if ordered.is_empty() {
+                match &*proposals.read() {
+                    Some(Ok(_)) => rsx! {
+                        div { class: "card mt-2",
+                            div { class: "card-body text-center",
+                                p { class: "text-muted-foreground", {crate::i18n::t("no_pending")} }
+                                button {
+                                    class: "btn btn-outline btn-md mt-3",
+                                    onclick: move |_| async move {
+                                        let mut refresh = refresh;
+                                        let _ = api().propose("sample proposal — approve me to try the gate").await;
+                                        refresh += 1;
+                                    },
+                                    "Ingest a sample proposal to try the gate"
+                                }
                             }
                         }
+                    },
+                    Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {error_message(&e)}" } },
+                    None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
+                }
+            } else {
+                rsx! {
+                    ul { class: "divide-y divide-border",
+                        for (i, p) in ordered.iter().enumerate() {
+                            { card(
+                                p.clone(),
+                                selected(),
+                                outcomes(),
+                                i,
+                                cursor(),
+                                writes,
+                                now,
+                                decide,
+                                toggle_sel,
+                                reject_for,
+                                reingest_for,
+                                edit_for,
+                            ) }
+                        }
                     }
-                },
-                Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {error_message(&e)}" } },
-                None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
-            }
+                }
+            } }
             // M3: reject-with-reason + suggest-re-ingest. Modal-ish inline editors.
             if let Some(id) = reject_for() {
                 RejectEditor { id, api, outcomes, refresh, reject_for }
@@ -449,6 +494,7 @@ fn card(
     index: usize,
     cursor: Option<usize>,
     writes: bool,
+    now: i64,
     decide: impl Fn(i64, Option<i64>, bool) + Copy + 'static,
     mut toggle: impl FnMut(i64) + Copy + 'static,
     mut reject_for: Signal<Option<i64>>,
@@ -467,6 +513,18 @@ fn card(
     };
     let content_for_reingest = proposal.content.clone();
     let content_for_edit = proposal.content.clone();
+    // v1.20.15 "Clock": the live absolute-deadline badge. `expires_at` is
+    // server-authoritative; `warn_secs`/`critical_secs` are the SLA bands.
+    let remaining = crate::time_budget::remaining(proposal.expires_at, now);
+    let tier = crate::time_budget::tier(remaining, proposal.warn_secs, proposal.critical_secs);
+    let tier_class = match tier {
+        crate::time_budget::Tier::Critical | crate::time_budget::Tier::Expired => {
+            "badge badge-danger"
+        }
+        crate::time_budget::Tier::Warn => "badge badge-warn",
+        crate::time_budget::Tier::Ok => "badge",
+    };
+    let expiry_label = crate::time_budget::format_remaining(remaining);
     rsx! {
         li { class: "py-2.5{ring}",
             label { class: "flex items-start gap-3",
@@ -487,6 +545,8 @@ fn card(
                         }
                         span { class: "text-xs text-muted-foreground tabular",
                             "novelty {proposal.novelty:.2} · salience {proposal.salience:.2}" }
+                        span { class: "{tier_class} tabular", title: "approve before the deadline",
+                            "{expiry_label}" }
                         if let Some(lbl) = crate::panels::edited_label(proposal.edited_at) {
                             span { class: "badge badge-warn", "{lbl}" }
                         }
@@ -771,10 +831,38 @@ pub fn detail(proposal_id: i64) -> Element {
         let api = api();
         async move { api.proposals("pending").await }
     });
+    // v1.20.15 "Clock": a ~30s tick keeps the deadline badge live on the detail.
+    let tick = use_signal(|| 0u64);
+    use_future(move || {
+        let mut tick = tick;
+        async move {
+            loop {
+                crate::probe_sleep(30).await;
+                tick += 1;
+            }
+        }
+    });
     let found = match &*proposals.read() {
         Some(Ok(list)) => locate_proposal(list, proposal_id),
         _ => None,
     };
+    let now = crate::time_budget::now_unix();
+    let _ = tick();
+    let deadline = found.as_ref().map(|p| {
+        let remaining = crate::time_budget::remaining(p.expires_at, now);
+        let tier = crate::time_budget::tier(remaining, p.warn_secs, p.critical_secs);
+        let class = match tier {
+            crate::time_budget::Tier::Critical | crate::time_budget::Tier::Expired => {
+                "badge badge-danger"
+            }
+            crate::time_budget::Tier::Warn => "badge badge-warn",
+            crate::time_budget::Tier::Ok => "badge",
+        };
+        (
+            class.to_string(),
+            crate::time_budget::format_remaining(remaining),
+        )
+    });
     rsx! {
         PageTitle { {format!("{} #{proposal_id}", crate::i18n::t("proposal"))} }
         p { class: "text-xs text-muted-foreground mb-3",
@@ -790,6 +878,9 @@ pub fn detail(proposal_id: i64) -> Element {
                         }
                         if let Some(lbl) = crate::panels::edited_label(p.edited_at) {
                             span { class: "badge badge-warn", "{lbl}" }
+                        }
+                        if let Some((class, lbl)) = &deadline {
+                            span { class: "{class} tabular", title: "approve before the deadline", "{lbl}" }
                         }
                     }
                     div { class: "card-body space-y-2",
@@ -1016,9 +1107,51 @@ mod tests {
             salience: 0.2,
             created_at: 1,
             edited_at: None,
+            expires_at: 1,
+            warn_secs: 3600,
+            critical_secs: 300,
         }];
         assert_eq!(locate_proposal(&list, 7).map(|p| p.id), Some(7));
         assert_eq!(locate_proposal(&list, 99), None);
         assert_eq!(locate_proposal(&[], 7), None);
+    }
+
+    /// v1.20.15 "Clock": the queue-is-a-clock sort puts the most-urgent
+    /// deadline (expired first) at the top, with a stable id tie-break.
+    #[test]
+    fn expiry_order_sorts_nearest_deadline_first() {
+        fn prop(id: i64, created_at: i64) -> Proposal {
+            Proposal {
+                id,
+                kind: "fact".into(),
+                content: "c".into(),
+                source: None,
+                source_prompt: None,
+                screen_verdict: None,
+                authority: None,
+                novelty: 0.5,
+                conflict_with: None,
+                salience: 0.5,
+                created_at,
+                edited_at: None,
+                expires_at: created_at + 604800,
+                warn_secs: 3600,
+                critical_secs: 300,
+            }
+        }
+        let mut rows = vec![
+            prop(3, 2000),              // expires 606800 → last
+            prop(1, 0),                 // expires 604800 (nearest in-window) → first
+            prop(2, 1000),              // expires 605800 → middle
+            prop(4, 5000 - 604800 - 1), // expires 4999 → past deadline → first overall
+        ];
+        expiry_order(&mut rows);
+        let ids: Vec<i64> = rows.iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![4, 1, 2, 3]);
+
+        // Identical deadlines → id ascending (stable tie-break).
+        let mut ties = vec![prop(9, 1000), prop(3, 1000), prop(7, 1000)];
+        expiry_order(&mut ties);
+        assert_eq!(ties.iter().map(|p| p.id).collect::<Vec<_>>(), vec![3, 7, 9]);
     }
 }

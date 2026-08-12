@@ -17,61 +17,8 @@
 
 use crate::api::{ApiClient, DecayedRow, Proposal};
 use crate::panels::{use_document_title, PageTitle};
+use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
 use dioxus::prelude::*;
-
-/// Mirrors the server's `BRAIN_PROPOSAL_TTL_SECS` default (7 days). The
-/// server enforces expiry (`expire_if_stale`); this is the *display* deadline.
-/// ponytail: if an operator overrides the server TTL this constant drifts —
-/// a client can't read the server's env, so it is a documented mirror of the
-/// shipped default. The server's 400 on a stale approve is the backstop.
-pub const DEFAULT_PROPOSAL_TTL_SECS: u64 = 7 * 24 * 3600;
-
-/// `Some(secs)` until the proposal expires, `None` once past its deadline.
-/// The single source of truth for every countdown (M2).
-pub fn clock_until(created_at: i64, ttl_secs: u64, now_unix: i64) -> Option<u64> {
-    let deadline = created_at.saturating_add(ttl_secs as i64);
-    if now_unix >= deadline {
-        None
-    } else {
-        Some((deadline - now_unix) as u64)
-    }
-}
-
-/// SLA tier for a remaining countdown (the 2026 SLA-per-state guidance mapped
-/// onto the 7d TTL): `critical` < 5 min, `warn` < 1 hr, else `ok`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
-    Critical,
-    Warn,
-    Ok,
-}
-
-pub fn sla_tier(remaining_secs: u64) -> Tier {
-    if remaining_secs < 5 * 60 {
-        Tier::Critical
-    } else if remaining_secs < 3600 {
-        Tier::Warn
-    } else {
-        Tier::Ok
-    }
-}
-
-/// Compact "Xd Yh / Xh Ym / Xm Ys / Xs" countdown label (never bare "pending").
-pub fn fmt_remaining(secs: u64) -> String {
-    let d = secs / 86400;
-    let h = (secs % 86400) / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    if d > 0 {
-        format!("{d}d {h}h")
-    } else if h > 0 {
-        format!("{h}h {m}m")
-    } else if m > 0 {
-        format!("{m}m {s}s")
-    } else {
-        format!("{s}s")
-    }
-}
 
 /// Gate-health severity + i18n label. Healthy when decisions are balanced;
 /// `over-rejecting` when rejections exceed approvals; `under-reviewing` when
@@ -137,17 +84,11 @@ pub fn gate_health(approved: u64, rejected: u64, expired: u64) -> GateHealth {
 }
 
 /// Sort the pending queue in place for display: expired first, then
-/// nearest-expiry, stable tie-break by id (no server ordering change).
-pub fn queue_priority(rows: &mut [Proposal], ttl: u64, now_unix: i64) {
-    rows.sort_by_key(|p| (clock_until(p.created_at, ttl, now_unix).unwrap_or(0), p.id));
-}
-
-fn now_unix() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+/// nearest-expiry, stable tie-break by id (no server ordering change). The
+/// key is the server-authoritative `expires_at` (created + TTL) — no client
+/// TTL mirror, so an operator's `BRAIN_PROPOSAL_TTL_SECS` override is respected.
+pub fn queue_priority(rows: &mut [Proposal]) {
+    rows.sort_by_key(|p| (p.expires_at, p.id));
 }
 
 pub fn panel() -> Element {
@@ -269,7 +210,7 @@ pub fn panel() -> Element {
         Some(Ok(list)) => list.clone(),
         _ => Vec::new(),
     };
-    queue_priority(&mut ordered, DEFAULT_PROPOSAL_TTL_SECS, now);
+    queue_priority(&mut ordered);
 
     // M3 decide — approve/reject reuse the same server call + offline-enqueue
     // replay as review (v1.20.0 posture), then refetch.
@@ -303,10 +244,7 @@ pub fn panel() -> Element {
             (Some(a), Some(r)) => (*a, *r),
             _ => (0, 0),
         };
-        let expired = ordered
-            .iter()
-            .filter(|p| clock_until(p.created_at, DEFAULT_PROPOSAL_TTL_SECS, now).is_none())
-            .count() as u64;
+        let expired = ordered.iter().filter(|p| p.expires_at <= now).count() as u64;
         (gate_health(a, r, expired), a, r)
     };
 
@@ -438,38 +376,31 @@ pub fn panel() -> Element {
     }
 }
 
-/// The per-row SLA countdown: a tier-colored badge, or an expired marker.
+/// The per-row SLA countdown: a tier-colored deadline label from the shared
+/// clock core (`expires_at`-derived), or an expired marker.
 /// Inlined (not `#[component]`) — the `p` borrow is a `&Proposal` reference.
 fn clock_badge(p: &Proposal, now: i64) -> Element {
-    match clock_until(p.created_at, DEFAULT_PROPOSAL_TTL_SECS, now) {
-        Some(remaining) => {
-            let (cls, key) = match sla_tier(remaining) {
-                Tier::Critical => ("badge-danger", "sla_critical"),
-                Tier::Warn => ("badge-warn", "sla_warn"),
-                Tier::Ok => ("badge-ok", "sla_remaining"),
-            };
-            let label = if key == "sla_remaining" {
-                fmt_remaining(remaining)
-            } else {
-                crate::i18n::t(key)
-            };
-            rsx! {
-                span { class: "badge {cls} tabular", title: "time until expiry", "{label}" }
-            }
-        }
-        None => rsx! {
+    let t = tier(remaining(p.expires_at, now), p.warn_secs, p.critical_secs);
+    if t == Tier::Expired {
+        return rsx! {
             span { class: "badge badge-danger tabular", title: "server auto-rejects expired proposals",
                 {crate::i18n::t("ops_expired")} }
-        },
+        };
+    }
+    let cls = match t {
+        Tier::Critical => "badge-danger",
+        Tier::Warn => "badge-warn",
+        _ => "badge-ok",
+    };
+    rsx! {
+        span { class: "badge {cls} tabular", title: "time until expiry",
+            "expires in {format_remaining(remaining(p.expires_at, now))}" }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const DAY: u64 = 86400;
-    const TTL: u64 = 7 * DAY;
 
     fn prop(id: i64, created_at: i64) -> Proposal {
         Proposal {
@@ -485,33 +416,10 @@ mod tests {
             salience: 0.5,
             created_at,
             edited_at: None,
+            expires_at: created_at + 7 * 86400,
+            warn_secs: 3600,
+            critical_secs: 300,
         }
-    }
-
-    #[test]
-    fn clock_until_returns_remaining_and_none_when_expired() {
-        assert_eq!(clock_until(1000, TTL, 1000), Some(TTL));
-        assert_eq!(clock_until(1000, TTL, 1000 + 3600), Some(TTL - 3600));
-        assert_eq!(clock_until(1000, TTL, 1000 + TTL as i64), None); // at the deadline
-        assert_eq!(clock_until(1000, TTL, 1000 + TTL as i64 + 1), None); // past it
-    }
-
-    #[test]
-    fn sla_tier_maps_budgets() {
-        assert_eq!(sla_tier(0), Tier::Critical);
-        assert_eq!(sla_tier(299), Tier::Critical);
-        assert_eq!(sla_tier(300), Tier::Warn); // 5 min boundary → warn
-        assert_eq!(sla_tier(3599), Tier::Warn);
-        assert_eq!(sla_tier(3600), Tier::Ok); // 1 hr boundary → ok
-        assert_eq!(sla_tier(7 * DAY), Tier::Ok);
-    }
-
-    #[test]
-    fn fmt_remaining_labels() {
-        assert_eq!(fmt_remaining(45), "45s");
-        assert_eq!(fmt_remaining(125), "2m 5s");
-        assert_eq!(fmt_remaining(3661), "1h 1m");
-        assert_eq!(fmt_remaining(2 * DAY + 3600), "2d 1h");
     }
 
     #[test]
@@ -525,25 +433,26 @@ mod tests {
 
     #[test]
     fn queue_priority_expired_first_then_nearest_expiry() {
-        // remaining = created_at + TTL - now, so within the window an OLDER
-        // row has an earlier deadline → nearest expiry → sorts first.
+        // expires_at = created + TTL; an OLDER row has an earlier deadline →
+        // nearest expiry → sorts first. A row past its deadline (expires_at <
+        // now) leads.
         let now = 5000;
         let mut rows = vec![
-            prop(1, 0),                    // remaining TTL-5000 (nearest in-window) → first
-            prop(2, 1000),                 // remaining TTL-4000 → next
-            prop(3, 2000),                 // remaining TTL-3000 → last in-window
-            prop(4, now - TTL as i64 - 1), // past deadline → expired → first overall
+            prop(1, 0),                   // expires 604800 (nearest in-window) → first
+            prop(2, 1000),                // expires 605800 → next
+            prop(3, 2000),                // expires 606800 → last in-window
+            prop(4, now - 7 * 86400 - 1), // expires 4999 → past deadline → first overall
         ];
-        queue_priority(&mut rows, TTL, now);
+        queue_priority(&mut rows);
         let ids: Vec<i64> = rows.iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![4, 1, 2, 3]);
     }
 
     #[test]
     fn queue_priority_stable_tie_break_by_id() {
-        // Two rows with identical created_at → equal remaining; id ascending.
+        // Two rows with identical created_at → equal expires_at; id ascending.
         let mut rows = vec![prop(9, 1000), prop(3, 1000), prop(7, 1000)];
-        queue_priority(&mut rows, TTL, 5000);
+        queue_priority(&mut rows);
         let ids: Vec<i64> = rows.iter().map(|p| p.id).collect();
         assert_eq!(ids, vec![3, 7, 9]);
     }

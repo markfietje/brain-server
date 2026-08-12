@@ -4,16 +4,18 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.14
+## Status — v1.20.15
 
-The v1.20.14 "Steer" release — **edit-then-approve** (server + client). The
-Review panel gains an **Edit** button + `EditEditor` dialog (`E` key, `?`
-help row) that rewrites a pending proposal's content in place via
-`POST /proposals/{id}/edit` — the server re-scores deterministically and
-stamps `edited_at`, which renders as a **edited** warn badge on the card +
-detail so a reviewer/auditor sees the content is not the original capture.
-Offline edits enqueue as `QueuedAction::Edit` (replayed via the existing
-queue).
+The v1.20.15 "Clock" release — **deadline clocks in the review queue**
+(server + client). The queue stops being a wall of "pending": every Review
+card and the deep-link detail page show a live, tier-colored countdown to the
+proposal deadline (`Xd Yh` / `Xh Ym` / `Xm` / `<5m` / `expired`), ticked every
+~30s; expired rows disable approve/reject/edit. A **sort-by-deadline** toggle
+("expiry first") reorders the list by nearest expiry, defaulting to the
+server's creation order. The clock core (`client/src/time_budget.rs`) is
+shared with `/ops`, and the deadline is server-authoritative
+(`Proposal.expires_at` + `warn_secs`/`critical_secs`), so a config override is
+reflected with no rebuild.
 
 **Core features (from v1.20.0 onward):** theming (dark/light/system),
 offline-tolerant review queue, deep links + PWA, i18n (`en/de/fr/es/nl`),

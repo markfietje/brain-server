@@ -12,7 +12,7 @@ info:
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
   version: 1.20.13
-  x-api-version: "1.20.14"
+  x-api-version: "1.20.15"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1316,6 +1316,15 @@ paths:
                   created_at: { type: integer }
                   screen_verdict: { type: string, enum: [clean, quarantine] }
                   edited_at: { type: integer, nullable: true }
+                  expires_at:
+                    type: integer
+                    description: Unix deadline when this proposal ages out of the review window (created_at + TTL); the client ticks its countdown against this.
+                  warn_secs:
+                    type: integer
+                    description: SLA warn band (secs of remaining life), mirroring ALERT_WARN_SECS.
+                  critical_secs:
+                    type: integer
+                    description: SLA critical band (secs of remaining life), mirroring ALERT_CRITICAL_SECS.
         "400":
           description: Empty/too-long content, injection reject, or expired proposal
         "409":

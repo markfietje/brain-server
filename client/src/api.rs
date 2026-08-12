@@ -1050,11 +1050,10 @@ fn base64url_encode(bytes: &[u8]) -> String {
 }
 
 /// v1.16.5 M5.1: current unix time in seconds (the `exp` claim's unit).
+/// v1.20.15 "Clock": delegates to the shared core (one implementation, no
+/// per-module copies).
 fn now_unix() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crate::time_budget::now_unix()
 }
 
 /// v1.16.5 M5.1: pre-emptive expiry check, extracted pure for tests.
@@ -1207,6 +1206,18 @@ pub struct Proposal {
     /// pending proposal was never edited. Keys the edited badge.
     #[serde(default)]
     pub edited_at: Option<i64>,
+    /// v1.20.15 "Clock" M1: when this proposal ages out of the review window
+    /// (unix ts, `created_at + TTL`, server-derived). The client ticks its
+    /// countdown against this absolute deadline — no client TTL mirror.
+    #[serde(default)]
+    pub expires_at: i64,
+    /// v1.20.15 "Clock" M1: the SLA band boundaries (secs of remaining life),
+    /// server-provided so the countdown color follows an operator threshold
+    /// override with no rebuild.
+    #[serde(default)]
+    pub warn_secs: i64,
+    #[serde(default)]
+    pub critical_secs: i64,
 }
 
 #[derive(Debug, Deserialize)]

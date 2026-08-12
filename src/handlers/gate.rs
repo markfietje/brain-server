@@ -317,6 +317,26 @@ pub struct ProposalView {
     /// v1.20.14 "Steer" M1: unix ts of the last content rewrite, `None` if the
     /// pending proposal was never edited. Keys the review badge + read-time view.
     pub edited_at: Option<i64>,
+    /// v1.20.15 "Clock" M1: when this proposal ages out of the review window
+    /// (unix ts), derived server-side as `created_at + TTL`. The review queue
+    /// ticks against this absolute deadline, so an operator override of
+    /// `BRAIN_PROPOSAL_TTL_SECS` is authoritative (no client TTL guess).
+    pub expires_at: i64,
+    /// v1.20.15 "Clock" M1: the SLA band boundaries (secs of remaining life), a
+    /// mirror of the alert watcher's `ALERT_WARN_SECS`/`ALERT_CRITICAL_SECS` so
+    /// the client colors its countdown from the same thresholds as the server.
+    pub warn_secs: i64,
+    pub critical_secs: i64,
+}
+
+/// v1.20.15 "Clock": the review deadline + SLA bands, shared by every
+/// `ProposalView` construction site so the countdown is one definition.
+pub fn proposal_deadline(created_at: i64) -> (i64, i64, i64) {
+    (
+        created_at + crate::config::proposal_ttl_secs(),
+        crate::config::ALERT_WARN_SECS,
+        crate::config::ALERT_CRITICAL_SECS,
+    )
 }
 
 /// `GET /proposals?status=pending&limit=` — the human review queue. Each item
@@ -352,6 +372,8 @@ pub async fn list_proposals(
         let rows = stmt
             .query_map(rusqlite::params![status, limit as i64], |r| {
                 let content: String = r.get(2)?;
+                let created_at: i64 = r.get(9)?;
+                let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
                 Ok(ProposalView {
                     id: r.get(0)?,
                     kind: r.get(1)?,
@@ -366,8 +388,11 @@ pub async fn list_proposals(
                     novelty: r.get(6)?,
                     conflict_with: r.get(7)?,
                     salience: r.get(8)?,
-                    created_at: r.get(9)?,
+                    created_at,
                     edited_at: r.get(10)?,
+                    expires_at,
+                    warn_secs,
+                    critical_secs,
                 })
             })
             .map_err(|e| HandlerError::internal(e.to_string()))?
@@ -940,6 +965,7 @@ pub async fn edit_proposal(
                 &detail,
             );
 
+            let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
             Ok(ProposalView {
                 id,
                 kind,
@@ -953,6 +979,9 @@ pub async fn edit_proposal(
                 created_at,
                 screen_verdict: screen_label,
                 edited_at: Some(now),
+                expires_at,
+                warn_secs,
+                critical_secs,
             })
         })
         .await

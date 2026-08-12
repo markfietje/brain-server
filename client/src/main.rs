@@ -35,6 +35,9 @@ mod queue;
 // web). save/load (connect + auto-reconnect) and delete (v1.16.7 M7.1 logout)
 // each have a caller in every cfg variant, so no `allow(dead_code)`.
 mod storage;
+// v1.20.15 "Clock": the shared proposal-deadline clock core (tier + format
+// math), consumed by the review cards, the detail page, and /ops.
+mod time_budget;
 
 use api::ApiClient;
 use i18n::t;

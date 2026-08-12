@@ -8328,6 +8328,23 @@ Final paragraph after the rule.";
         assert_eq!(prompt.as_deref(), Some("a prompt"));
     }
 
+    /// v1.20.15 "Clock" M1: the proposal deadline is derived server-side
+    /// (created_at + TTL) and the SLA bands mirror the alert watcher's, so the
+    /// client countdown is authoritative. The smallest check that fails if the
+    /// derivation or the band mirror drifts.
+    #[test]
+    fn test_proposal_deadline_is_derived_and_bands_mirror_alert_watcher() {
+        let created = 1_750_000_000i64;
+        let (expires_at, warn_secs, critical_secs) = handlers::gate::proposal_deadline(created);
+        assert_eq!(
+            expires_at,
+            created + crate::config::proposal_ttl_secs(),
+            "expires_at is created + TTL"
+        );
+        assert_eq!(warn_secs, crate::config::ALERT_WARN_SECS);
+        assert_eq!(critical_secs, crate::config::ALERT_CRITICAL_SECS);
+    }
+
     /// M2 GDPR lifecycle: purge removes the chunk from knowledge + vec0 +
     /// relationships in one transaction and leaves a tombstone (mirrors the
     /// purge handler's SQL).

@@ -10,6 +10,58 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.15] — 2026-08-12
+
+### Server + client — "Clock" (deadline clocks in the review queue)
+
+Server `Cargo.toml` 1.20.14 → 1.20.15; client 1.20.14 → 1.20.15. Brings the
+console line's design rule — **"the queue is a clock"** — to the review queue
+cards and the review detail page, where the operator actually decides (the
+essay's condition: an operator needs to be *told* what is running out). The
+7-day TTL exists (v1.20.1) and v1.20.8 Signal pushes expiry alerts, but the
+queue itself showed only "pending" with no sense of urgency. Now every pending
+proposal shows a live, tier-colored countdown to its deadline; expired rows
+are flagged and the expired proposal's buttons disabled. The **server stays the
+source of truth** — the client computes tiers locally from server-provided
+absolute `expires_at` + `warn_secs`/`critical_secs`, so an operator override of
+`BRAIN_PROPOSAL_TTL_SECS` or the alert thresholds is reflected with no rebuild
+and the badge and the server alert cannot disagree about a tier. See
+`IMPLEMENTATION_PLAN_v1.20.15_Clock.md`.
+
+- **M1 — Server deadline on `ProposalView`** (`src/handlers/gate.rs`): three
+  computed, non-stored fields on `ProposalView` via the new pure
+  `gate::proposal_deadline(created_at)` — `expires_at` (`created_at +
+  proposal_ttl_secs()`, the alert watcher's own math), `warn_secs`/`critical_secs`
+  (the exact `ALERT_WARN_SECS`/`ALERT_CRITICAL_SECS` constants, so client badge
+  and server alert share one boundary). No schema change, no new route.
+  `openapi.yaml` documents the fields.
+- **M2 — Client shared clock core + review clocks.** New `client/src/time_budget.rs`
+  (`tier`/`remaining`/`format_remaining`/`now_unix`), Dioxus-free and consumed
+  by Review cards, the detail page, and `/ops` — the old per-panel client TTL
+  mirror (`ops::clock_until` + `DEFAULT_PROPOSAL_TTL_SECS`) is deleted in favor
+  of the shared core. Review cards + the deep-link detail page render a
+  tier-colored absolute-deadline badge (`Xd Yh` / `Xh Ym` / `Xm` / `<5m` /
+  `expired`), refreshed on a ~30s tick; `Expired` rows disable approve/reject/
+  edit. A client-side **sort-by-deadline toggle** ("expiry first" vs the server's
+  creation order, stable id tie-break via the pure `review::expiry_order`)
+  defaults to the server order so nothing changes unless asked (ponytail: the
+  queue is ≤200 rows, local sort is honest and keeps the API surface flat).
+- **M3 — wrap**: server + client bumped to 1.20.15; `api::now_unix` delegates to
+  the shared core; openapi + Cargo.lock re-stamped; CHANGELOG + AGENTS header.
+
+**Verification:** server 507 passed + 5 `#[ignore]`d green, clippy `-D warnings`
++ fmt green. Client 100 passed (was 99 at v1.20.14; +1 `expiry_order` sort
+test, the `time_budget` tier/format/remaining cores already shipped), clippy
+`-D warnings` + fmt green, wasm build green.
+
+**Honest ceilings (carried forward):** the `<5m` display band is not
+parameterized by an `ALERT_CRITICAL_SECS` override — an override shifts only
+the tier *color*, never the coarse label (ponytail in the core). The new sort
+toggle + badge strings are `en`-only first cuts (the shared clock core is
+English-first); other locales inherit via the en-fallback until a native pass.
+The 30s tick is a signal, not enforcement — the server's 400 on a stale
+approve stays authoritative.
+
 ## [1.20.14] — 2026-08-12
 
 ### Server + client — "Steer" (edit-then-approve: evaluative substitution)
