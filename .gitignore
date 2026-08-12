@@ -67,3 +67,6 @@ USE_CASES.md
 marketing/
 /sbom/
 .research/
+
+# mdBook build output
+/book/

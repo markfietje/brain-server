@@ -1,0 +1,43 @@
+# brain-server
+
+- [About brain-server](README.md)
+
+# Getting started
+
+- [Installation & configuration](deployment.md)
+- [Quickstart](quickstart.md)
+- [Docker deployment](docker.md)
+- [Reverse-proxy SSO](proxy-sso.md)
+
+# Core concepts
+
+- [Overview](overview.md)
+- [Architecture](architecture.md)
+
+# API & developer
+
+- [API contract](API_CONTRACT.md)
+- [API reference](api.md)
+
+# Operations
+
+- [Security policy](security.md)
+- [Compliance posture](compliance.md)
+- [Threat model](THREAT_MODEL.md)
+- [Technical specification](SPECS.md)
+
+# Regulation & trust
+
+- [OWASP 2026 compliance matrix](OWASP_AGENTIC_2026.md)
+- [Memory-poisoning mitigation (MemGhost / ASI06)](MEMGHOST_MITIGATION.md)
+- [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
+- [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
+- [RFP response kit](RFP_RESPONSE_KIT.md)
+
+# Project
+
+- [Roadmap](roadmap.md)
+- [Benchmarks](BENCHMARKS.md)
+- [Audit register](AUDIT.md)
+- [Contributing](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
