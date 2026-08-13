@@ -82,6 +82,14 @@ fn default_dsar_action() -> String {
     "both".to_string()
 }
 
+/// v1.20.22 "Clocks" M1.1: the DSAR Art 17 erasure deadline — `created_at` +
+/// the operator's window, a pure mirror of `gate::proposal_deadline`. The
+/// client countdown ticks against this absolute deadline, so an operator's
+/// `BRAIN_DSAR_WINDOW_DAYS` override is authoritative (no client window guess).
+pub fn dsar_deadline(created_at: i64) -> i64 {
+    created_at + crate::config::dsar_window_secs()
+}
+
 /// `POST /dsar` response: the workflow row id + the deletion certificate. In
 /// dry-run mode the certificate is `None` and `footprint` carries the would-be
 /// deletion footprint instead.
@@ -90,6 +98,12 @@ pub struct DsarResponse {
     pub id: i64,
     pub subject: String,
     pub status: &'static str,
+    /// v1.20.22 "Clocks" M1.1: when the request was created (ledger `created_at`).
+    pub created_at: i64,
+    /// v1.20.22 "Clocks" M1.1: the computed Art 17 erasure deadline
+    /// (`created_at + window`) — the client clock's source of truth. `0` in a
+    /// dry-run preview (no ledger row, no deadline).
+    pub deadline: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -305,6 +319,7 @@ pub async fn post_dsar(
             subject,
             certificate,
             certified_at,
+            created_at: now,
         })
     })
     .await
@@ -317,6 +332,8 @@ pub async fn post_dsar(
             id: 0,
             subject: String::new(),
             status: "preview",
+            created_at: 0,
+            deadline: 0,
             certificate: None,
             footprint: Some(fp.clone()),
         }));
@@ -326,6 +343,7 @@ pub async fn post_dsar(
         subject,
         certificate,
         certified_at,
+        created_at,
     } = outcome
     else {
         unreachable!("footprint already returned above")
@@ -342,6 +360,8 @@ pub async fn post_dsar(
         id,
         subject,
         status: "completed",
+        created_at,
+        deadline: dsar_deadline(created_at),
         certificate: Some(cert),
         footprint: None,
     }))
@@ -353,8 +373,107 @@ enum DsarOutcome {
         subject: String,
         certificate: String,
         certified_at: String,
+        created_at: i64,
     },
     Footprint(Footprint),
+}
+
+// ---------------------------------------------------------------------------
+// M3.1 — DSAR ledger list
+// ---------------------------------------------------------------------------
+
+/// `GET /dsar?limit=&offset=` query.
+#[derive(Debug, Default, Deserialize)]
+pub struct DsarLedgerQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// One `dsar_requests` ledger row (v1.20.22 "Clocks" M1.2). `created_at` +
+/// `completed_at` are the clock inputs; `deadline` is the server-computed Art
+/// 17 erasure window so the client ticks against the SAME number the `POST`
+/// response carries — no client mirror of `BRAIN_DSAR_WINDOW_DAYS`. The
+/// subject is the operator's operand (Admin surface; no redaction).
+#[derive(Debug, Serialize)]
+pub struct DsarLedgerRow {
+    pub id: i64,
+    pub subject: String,
+    pub action: String,
+    pub status: String,
+    pub created_at: Option<i64>,
+    pub deadline: Option<i64>,
+    pub completed_at: Option<i64>,
+}
+
+/// `GET /dsar` response: a bounded, newest-first page + the total row count.
+#[derive(Debug, Serialize)]
+pub struct DsarLedger {
+    pub requests: Vec<DsarLedgerRow>,
+    pub total: i64,
+}
+
+/// `GET /dsar` — the v1.20.22 "Clocks" ledger list (Admin). Past DSAR requests
+/// were only visible via the `/audit` side-channel; this is the first-class
+/// registry the client countdown renders. Bounded (default 100, clamped to
+/// `MAX_MULTI_GET`), newest-first (`ORDER BY id DESC`), the audit pagination
+/// idiom.
+pub async fn list_dsar(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<DsarLedgerQuery>,
+) -> Result<Json<DsarLedger>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
+    let limit = q
+        .limit
+        .map(|l| l.clamp(1, crate::config::MAX_MULTI_GET as i64))
+        .unwrap_or(100);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let body = tokio::task::spawn_blocking(move || -> Result<DsarLedger, HandlerError> {
+        let conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        list_dsar_page(&conn, limit, offset)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    Ok(Json(body))
+}
+
+/// Pure ledger query (v1.20.22 M1.2) — extracted so the ordering, the page
+/// boundary, and the total count are unit-testable without an HTTP stack
+/// (the `page_decayed` idiom).
+pub(crate) fn list_dsar_page(
+    conn: &rusqlite::Connection,
+    limit: i64,
+    offset: i64,
+) -> Result<DsarLedger, HandlerError> {
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, subject, action, status, created_at, completed_at
+             FROM dsar_requests ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let requests = stmt
+        .query_map(rusqlite::params![limit, offset], |r| {
+            let created_at = r.get::<_, Option<i64>>(4)?;
+            Ok(DsarLedgerRow {
+                id: r.get(0)?,
+                subject: r.get(1)?,
+                action: r.get(2)?,
+                status: r.get(3)?,
+                created_at,
+                deadline: created_at.map(dsar_deadline),
+                completed_at: r.get(5)?,
+            })
+        })
+        .map_err(|e| HandlerError::internal(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(DsarLedger { requests, total })
 }
 
 /// `GET /tombstones?subject=&since=&limit=` — the queryable deletion registry

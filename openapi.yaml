@@ -1727,6 +1727,17 @@ paths:
                   id: { type: integer }
                   subject: { type: string }
                   status: { type: string, enum: [completed, preview] }
+                  created_at:
+                    type: integer
+                    description: >
+                      v1.20.22 — ledger `created_at` (unix ts). 0 on a dry-run
+                      preview (no ledger row). The client clock's origin.
+                  deadline:
+                    type: integer
+                    description: >
+                      v1.20.22 — computed Art 17 erasure deadline
+                      (`created_at + window`, unix ts); 0 on a dry-run. The
+                      subject-countdown source of truth.
                   certificate:
                     type: object
                     description: >
@@ -1740,6 +1751,29 @@ paths:
                       deletion footprint.
         "422":
           description: Empty/overlong subject or invalid action
+    get:
+      summary: DSAR ledger list (v1.20.22 M1.2)
+      operationId: listDsar
+      description: >
+        Bounded, newest-first page of `dsar_requests` rows for the operator:
+        `{requests: [{id, subject, action, status, created_at, completed_at}],
+        total}`. Admin-only — the subject is the operator's operand. The client
+        derives each open row's Art 17 deadline from `created_at`.
+      parameters:
+        - in: query
+          name: limit
+          description: Max rows (default 100, clamped 1..1000).
+          schema: { type: integer }
+        - in: query
+          name: offset
+          schema: { type: integer }
+      responses:
+        "200":
+          description: DsarLedger — the requests page + total count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DsarLedger"
   /tombstones:
     get:
       summary: Queryable deletion registry (v1.15.0 M3)
@@ -2311,6 +2345,41 @@ components:
         tombstones: { type: integer, description: prior deletions for this subject (ledger trace) }
         dsar_rows: { type: integer, description: prior DSAR ledger rows for this subject }
         dry_run: { type: boolean, default: true }
+    DsarLedger:
+      type: object
+      description: >
+        v1.20.22 — the `GET /dsar` ledger page: the bounded, newest-first
+        request rows + the total count.
+      properties:
+        requests:
+          type: array
+          items: { $ref: "#/components/schemas/DsarLedgerRow" }
+        total: { type: integer, description: total dsar_requests rows }
+    DsarLedgerRow:
+      type: object
+      description: >
+        v1.20.22 — one DSAR request. `created_at` keys the computed Art 17
+        deadline (the client countdown source of truth).
+      properties:
+        id: { type: integer }
+        subject: { type: string }
+        action: { type: string }
+        status: { type: string }
+        created_at:
+          type: integer
+          nullable: true
+          description: unix ts when the request was created.
+        deadline:
+          type: integer
+          nullable: true
+          description: >
+            server-computed Art 17 erasure deadline (created_at + window) —
+            the client countdown's source of truth; the same number the POST
+            response carries.
+        completed_at:
+          type: integer
+          nullable: true
+          description: unix ts when the workflow completed; null while open.
     ApiError:
       type: object
       properties:

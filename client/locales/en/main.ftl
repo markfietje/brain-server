@@ -80,6 +80,13 @@ dsar_preview_export_rows = export rows
 dsar_preview_tombstones = prior tombstones
 dsar_preview_ledger_rows = ledger rows
 
+## Subjects — DSAR request ledger clock (v1.20.22 M2)
+dsar_clock_title = DSAR request ledger
+dsar_clock_empty = No open requests — the window is clear.
+dsar_clock_completed = completed
+dsar_clock_retained = history retained per ledger policy
+dsar_clock_deadline = deadline
+
 ## Settings
 theme_label = Theme
 locale_label = Language
@@ -222,6 +229,7 @@ data_retention_days = Days
 data_retention_bad_days = Days must be a whole number
 data_retention_set = Updated {n} override(s)
 data_decayed = Decayed
+data_next_expiry = Next to expire
 data_tombstones = Tombstones
 data_empty = Nothing to show.
 data_purge_ids = Chunk ids (comma/space separated)

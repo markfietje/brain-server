@@ -572,6 +572,12 @@ impl ApiClient {
         self.get_json(&format!("/dsar/{id}/certificate")).await
     }
 
+    /// v1.20.22 M2.1: GET /dsar — the DSAR ledger page. The Subjects-panel
+    /// clock derives each open row's Art 17 deadline from `created_at`.
+    pub async fn dsar_ledger(&self) -> Result<DsarLedger, ApiError> {
+        self.get_json("/dsar").await
+    }
+
     /// GET /stats — corpus counts for the Health/onboarding story.
     pub async fn stats(&self) -> Result<Stats, ApiError> {
         self.get_json("/stats").await
@@ -1320,6 +1326,42 @@ pub struct DsarResponse {
     /// v1.20.21: present only on a dry-run — the would-be deletion footprint.
     #[serde(default)]
     pub footprint: Option<Footprint>,
+}
+
+/// v1.20.22 M1.2: `GET /dsar` — the bounded ledger page. The client clock
+/// derives each open row's Art 17 deadline from `created_at` (server-window
+/// stamp; there's no client mirror of `BRAIN_DSAR_WINDOW_DAYS`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DsarLedger {
+    #[serde(default)]
+    pub requests: Vec<DsarLedgerRow>,
+    #[serde(default)]
+    pub total: i64,
+}
+
+/// v1.20.22 M1.2: one DSAR request ledger row. `#[serde(default)]` timestamps
+/// make a row with a missing `completed_at` (an open request) parse cleanly —
+/// the countdown is `created_at`-keyed.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DsarLedgerRow {
+    pub id: i64,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub created_at: Option<i64>,
+    /// v1.20.22: the server-computed Art 17 deadline (`created_at + window`),
+    /// so the client countdown ticks against the same number the POST response
+    /// carries — no client mirror of `BRAIN_DSAR_WINDOW_DAYS`.
+    #[serde(default)]
+    pub deadline: Option<i64>,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
 }
 
 /// v1.20.21: the would-be DSAR deletion footprint a dry-run returns — what a
@@ -2843,5 +2885,30 @@ mod tests {
         // The live builder's body has no dry_run key.
         let live = serde_json::json!({ "subject": "a", "action": "both" });
         assert!(live.get("dry_run").is_none());
+    }
+
+    /// v1.20.22 M2.1: the `/dsar` ledger page parses with a missing
+    /// `completed_at` (an open request) — `#[serde(default)]` timestamps mean
+    /// an absent clock field never panics the wire decode.
+    #[test]
+    fn dsar_ledger_parse_defaults_absent_timestamps() {
+        let v: DsarLedger = serde_json::from_str(
+            r#"{"total":2,"requests":[
+                {"id":3,"subject":"new@x","action":"purge","status":"completed","created_at":3000,"completed_at":3001},
+                {"id":2,"subject":"open@x","action":"both","status":"pending","created_at":2000,"deadline":2000}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(v.total, 2);
+        assert_eq!(v.requests.len(), 2);
+        // The open row has no `completed_at` key — it defaults to None, no panic.
+        let open = &v.requests[1];
+        assert_eq!(open.id, 2);
+        assert_eq!(open.created_at, Some(2000));
+        assert_eq!(open.deadline, Some(2000));
+        assert_eq!(open.completed_at, None);
+        assert_eq!(open.status, "pending");
+        // A fully-populated row keeps both timestamps.
+        assert_eq!(v.requests[0].completed_at, Some(3001));
     }
 }

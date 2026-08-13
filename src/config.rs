@@ -102,6 +102,25 @@ pub fn proposal_ttl_secs() -> i64 {
         .unwrap_or(DEFAULT_PROPOSAL_TTL_SECS)
 }
 
+/// v1.20.22 "Clocks" M1.1: the GDPR Art 17/12 DSAR response window (days). How
+/// long after a request's `created_at` the erosive-erasure deadline lapses.
+/// This is a *commitment the ledger shows*, not an enforced bound — a
+/// reminder/notification channel is v2.x, and the ledger TTL (v1.20.17) is the
+/// only automatic bound.
+pub const DEFAULT_DSAR_WINDOW_DAYS: i64 = 30;
+
+/// v1.20.22 "Clocks" M1.1: the Art 17 erasure window in seconds.
+/// `BRAIN_DSAR_WINDOW_DAYS` overrides the default (same env-resolution pattern
+/// as `BRAIN_PROPOSAL_TTL_SECS`).
+pub fn dsar_window_secs() -> i64 {
+    std::env::var("BRAIN_DSAR_WINDOW_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|d| *d > 0)
+        .map(|d| d * 86400)
+        .unwrap_or(DEFAULT_DSAR_WINDOW_DAYS * 86400)
+}
+
 /// v1.20.10 "Proof": integrity-watcher cadence (seconds). Reads
 /// `BRAIN_CHAIN_CHECK_SECS`, defaulting to [`DEFAULT_CHAIN_CHECK_SECS`].
 pub fn chain_check_secs() -> u64 {

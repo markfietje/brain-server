@@ -6,12 +6,35 @@
 //! tombstone_root, chain_head, certified_at) with a live green/red chain badge,
 //! replacing the old freeform status line. Confirmation-first (DESIGN §1.7).
 
-use crate::api::{ApiClient, DsarCertificate, Footprint};
+use crate::api::{ApiClient, DsarCertificate, DsarLedgerRow, Footprint};
 use crate::panels::{use_document_title, PageTitle};
+use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
 use crate::{Route, UiState};
 use dioxus::prelude::*;
 
 const MAX_SUBJECT: usize = 2000; // mirrors the backend's bound
+
+/// v1.20.22 M2.1: the DSAR Art 17 countdown bands — day-scale SLA (<3d warn,
+/// <1d danger), unlike the review queue's hour-scale bands. `tier()` consumes
+/// them identically; only the numbers differ per surface.
+const DSAR_WARN_SECS: i64 = 3 * 86400;
+const DSAR_CRITICAL_SECS: i64 = 86400;
+
+/// v1.20.22 M2.1: render one open-ledger-row's clock as `(badge_class,
+/// label)`. The deadline is server-provided (`row.deadline` — the same number
+/// the POST response carries), so the countdown honors an operator's
+/// `BRAIN_DSAR_WINDOW_DAYS` override with no client mirror. `Some` only for an
+/// open row that carries a deadline.
+pub fn dsar_clock(row: &DsarLedgerRow, now: i64) -> Option<(&'static str, String)> {
+    let deadline = row.deadline?;
+    let t = tier(remaining(deadline, now), DSAR_WARN_SECS, DSAR_CRITICAL_SECS);
+    let cls = match t {
+        Tier::Critical | Tier::Expired => "badge badge-danger",
+        Tier::Warn => "badge badge-warn",
+        Tier::Ok => "badge badge-ok",
+    };
+    Some((cls, format_remaining(remaining(deadline, now))))
+}
 
 /// M5 pure: the chain badge state — green "chain verified" or red "CHAIN
 /// TAMPERED". Extracted so the card rendering is plumbing.
@@ -52,6 +75,40 @@ pub fn panel() -> Element {
     let mut prev_subject = use_signal(String::new);
     let mut prev = use_signal(|| None::<Result<Footprint, String>>);
     let mut prev_busy = use_signal(|| false);
+    // v1.20.22 M2.1: the DSAR request ledger + its Art 17 countdown. A single
+    // ~30s on-load ticker (the ops.rs idiom) re-renders every countdown from a
+    // fresh `now_unix()` — the honest near-real-time approximation.
+    let ledger = use_signal(Vec::<DsarLedgerRow>::new);
+    let ledger_total = use_signal(|| 0i64);
+    let ledger_loaded = use_signal(|| false);
+    let tick = use_signal(|| 0u64);
+    use_future(move || {
+        let mut tick = tick;
+        async move {
+            loop {
+                crate::probe_sleep(30).await;
+                tick += 1;
+            }
+        }
+    });
+    use_future(move || {
+        let api = api();
+        let mut ledger = ledger;
+        let mut ledger_total = ledger_total;
+        let mut ledger_loaded = ledger_loaded;
+        let tick = tick;
+        async move {
+            loop {
+                let _ = tick(); // subscribe → refetch once (and each tick)
+                if let Ok(l) = api.dsar_ledger().await {
+                    ledger.set(l.requests);
+                    ledger_total.set(l.total);
+                }
+                ledger_loaded.set(true);
+                crate::probe_sleep(30).await;
+            }
+        }
+    });
 
     rsx! {
         PageTitle { {crate::i18n::t("subjects_title")} }
@@ -101,6 +158,35 @@ pub fn panel() -> Element {
                     Some(DsarOutcome::Queued) => rsx! { p { class: "text-warn mt-2", "queued — will replay when the connection returns" } },
                     Some(DsarOutcome::Failed(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
                     None => rsx! {},
+                }
+            }
+        }
+        div { class: "card mt-2",
+            div { class: "card-header",
+                h2 { class: "card-title", {crate::i18n::t("dsar_clock_title")} }
+                span { class: "text-sm text-muted-foreground", "{ledger_total}" }
+            }
+            div { class: "card-body space-y-1",
+                if ledger_loaded() && ledger().iter().all(|r| r.status == "completed") {
+                    p { class: "text-sm text-muted-foreground", {crate::i18n::t("dsar_clock_empty")} }
+                } else {
+                    ul { class: "space-y-1",
+                        for row in ledger() {
+                            li { class: "flex items-center justify-between rounded border border-border p-2 text-sm",
+                                span { class: "font-mono text-xs", "#{row.id} {row.subject}" }
+                                span { class: "flex items-center gap-2",
+                                    if row.status == "completed" {
+                                        span { class: "text-muted-foreground text-xs",
+                                        {crate::i18n::t("dsar_clock_completed")} " · " {crate::i18n::t("dsar_clock_retained")} }
+                                    } else if let Some((cls, label)) = dsar_clock(&row, now_unix()) {
+                                        span { class: "text-muted-foreground text-xs", "{row.action}" }
+                                        span { class: "{cls} tabular",
+                                            {crate::i18n::t("dsar_clock_deadline")} ": {label}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -351,5 +437,33 @@ mod tests {
         assert_eq!(subject_of(&cert), "alice");
         let bare = DsarCertificate::from_value(serde_json::json!({ "chain_verifies": true }));
         assert_eq!(subject_of(&bare), "");
+    }
+
+    /// v1.20.22 M2.1: the Art 17 clock badge tiers the deadline by the
+    /// day-scale bands and labels the remaining window; an open row with no
+    /// server deadline yields `None` (nothing to count down).
+    #[test]
+    fn dsar_clock_tiers_and_labels_the_art17_deadline() {
+        let now = 1_750_000_000i64;
+        let row = |deadline: Option<i64>| DsarLedgerRow {
+            id: 1,
+            subject: "alice@x".into(),
+            action: "both".into(),
+            status: "pending".into(),
+            created_at: Some(now - 86400),
+            deadline,
+            completed_at: None,
+        };
+        let (cls, _) = dsar_clock(&row(Some(now + 10 * 86400)), now).unwrap();
+        assert_eq!(cls, "badge badge-ok", ">3d left is ok");
+        let (cls, _) = dsar_clock(&row(Some(now + 2 * 86400)), now).unwrap();
+        assert_eq!(cls, "badge badge-warn", "<3d left warns");
+        let (cls, _) = dsar_clock(&row(Some(now + 12 * 3600)), now).unwrap();
+        assert_eq!(cls, "badge badge-danger", "<1d left is danger");
+        let (cls, label) = dsar_clock(&row(Some(now - 100)), now).unwrap();
+        assert_eq!(cls, "badge badge-danger");
+        assert_eq!(label, "expired");
+        // No deadline → the caller shows nothing.
+        assert!(dsar_clock(&row(None), now).is_none());
     }
 }

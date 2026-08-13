@@ -4544,6 +4544,9 @@ async fn main_inner() -> Result<()> {
             get(handlers::observe::get_trace),
         )
         .route("/dsar", post(handlers::observe::post_dsar))
+        // v1.20.22 "Clocks" M1.2: the DSAR ledger list (Admin) — past requests
+        // + the Art 17 window the client countdown renders.
+        .route("/dsar", get(handlers::observe::list_dsar))
         .route("/tombstones", get(handlers::observe::list_tombstones))
         .route(
             "/dsar/{id}/certificate",
@@ -8539,6 +8542,59 @@ Final paragraph after the rule.";
         );
         assert_eq!(warn_secs, crate::config::ALERT_WARN_SECS);
         assert_eq!(critical_secs, crate::config::ALERT_CRITICAL_SECS);
+    }
+
+    /// v1.20.22 "Clocks" M1.1: the DSAR Art 17 deadline is created_at + the
+    /// operator's window (the config override is authoritative — no client
+    /// window guess). The smallest check that fails if the derivation drifts.
+    #[test]
+    fn test_dsar_deadline_is_created_at_plus_window() {
+        let created = 1_750_000_000i64;
+        let deadline = handlers::observe::dsar_deadline(created);
+        assert_eq!(
+            deadline,
+            created + crate::config::dsar_window_secs(),
+            "deadline is created + the Art 17 window"
+        );
+    }
+
+    /// v1.20.22 "Clocks" M1.2: the `/dsar` ledger page lists the request rows
+    /// newest-first with their clock inputs (`created_at`/`completed_at`), the
+    /// total counts all rows, and a page boundary honors `limit`/`offset`.
+    #[test]
+    fn test_dsar_ledger_list_returns_rows_with_deadline_fields() {
+        let db = test_db();
+        db.execute_batch(
+            "INSERT INTO dsar_requests(id, subject, action, status, created_at, completed_at)
+             VALUES
+                 (1, 'old@x', 'export', 'completed', 1000, 1005),
+                 (2, 'open@x', 'both',  'pending',  2000, NULL),
+                 (3, 'new@x', 'purge', 'completed', 3000, 3001);",
+        )
+        .unwrap();
+        // Newest-first page: ids 3, 2, 1; the open row (2) has no completed_at.
+        let page = handlers::observe::list_dsar_page(&db, 100, 0).expect("page");
+        assert_eq!(page.total, 3, "total counts every ledger row");
+        let ids: Vec<i64> = page.requests.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![3, 2, 1], "newest-first ordering");
+        let open = &page.requests[1];
+        assert_eq!(open.subject, "open@x");
+        assert_eq!(open.status, "pending");
+        assert_eq!(open.created_at, Some(2000));
+        assert_eq!(open.completed_at, None, "open row has no completed_at");
+        assert_eq!(
+            open.deadline,
+            Some(handlers::observe::dsar_deadline(2000)),
+            "open row carries the computed Art 17 deadline"
+        );
+        let done = &page.requests[0];
+        assert_eq!(done.completed_at, Some(3001));
+        // Page boundary: limit=2 offset=0 → first two; offset=2 → the tail.
+        let first = handlers::observe::list_dsar_page(&db, 2, 0).expect("page");
+        assert_eq!(first.requests.len(), 2);
+        let tail = handlers::observe::list_dsar_page(&db, 2, 2).expect("page");
+        assert_eq!(tail.requests.len(), 1);
+        assert_eq!(tail.requests[0].id, 1, "offset honors the boundary");
     }
 
     /// M2 GDPR lifecycle: purge removes the chunk from knowledge + vec0 +

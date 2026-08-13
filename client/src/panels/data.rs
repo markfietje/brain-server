@@ -9,7 +9,30 @@
 
 use crate::api::ApiClient;
 use crate::panels::{use_document_title, PageTitle};
+use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
 use dioxus::prelude::*;
+
+/// v1.20.22 M2.2: day-scale next-expiry bands, the same numbers the Subjects
+/// Art 17 clock uses (<3d warn, <1d danger).
+const EXPIRY_WARN_SECS: i64 = 3 * 86400;
+const EXPIRY_CRITICAL_SECS: i64 = 86400;
+
+/// v1.20.22 M2.2: the "what expires next" pure core — sort decayed rows by
+/// expiry ascending, keep the not-yet-expired ones, cap at 10. Returns
+/// `(id, expiry_ts)`. ponytail: the real `/decayed` endpoint already filters
+/// to expired rows (`page_decayed`, v1.20.18), so the empty-result case is the
+/// honest current reality; the client boundary still exists in case the server
+/// ever returns a near-expiry row.
+pub fn next_expiries(decayed: &[crate::api::DecayedRow], now: i64) -> Vec<(i64, i64)> {
+    let mut v: Vec<(i64, i64)> = decayed
+        .iter()
+        .filter_map(|d| d.effective_expiry.or(d.expires_at).map(|e| (d.id, e)))
+        .filter(|(_, e)| *e > now)
+        .collect();
+    v.sort_by_key(|(_, e)| *e);
+    v.truncate(10);
+    v
+}
 
 pub fn panel() -> Element {
     use_document_title(|| "Data — brain".into());
@@ -167,6 +190,26 @@ pub fn panel() -> Element {
         format!("{ret_state_lbl}: {state} · {}", r.projection)
     });
     let decayed_rows: Vec<_> = decayed();
+    let next = next_expiries(&decayed_rows, now_unix());
+    // Precompute (id, class, label) so the rsx for-loop body stays a pure list
+    // of elements (a `let` verbatim in a for-body breaks the rsx parser).
+    let next_views: Vec<(i64, &'static str, String)> = next
+        .iter()
+        .map(|(id, expires_at)| {
+            let now = now_unix();
+            let t = tier(
+                remaining(*expires_at, now),
+                EXPIRY_WARN_SECS,
+                EXPIRY_CRITICAL_SECS,
+            );
+            let cls = match t {
+                Tier::Critical | Tier::Expired => "badge badge-danger",
+                Tier::Warn => "badge badge-warn",
+                Tier::Ok => "badge badge-ok",
+            };
+            (*id, cls, format_remaining(remaining(*expires_at, now)))
+        })
+        .collect();
     let tomb_rows: Vec<(i64, String)> = tombstones()
         .iter()
         .map(|t| (t.knowledge_id, t.reason.clone().unwrap_or_default()))
@@ -279,6 +322,24 @@ pub fn panel() -> Element {
         }
 
         div { class: "card",
+            div { class: "card-header", div { class: "card-title", {crate::i18n::t("data_next_expiry")} } }
+            div { class: "card-body space-y-1",
+                if next.is_empty() {
+                    p { class: "text-sm text-muted-foreground", "{empty_lbl}" }
+                } else {
+                    ul { class: "space-y-1",
+                        for (id, cls, label) in next_views {
+                            li { class: "flex items-center justify-between rounded border border-border p-2 text-sm",
+                                span { class: "font-mono text-xs", "#{id}" }
+                                span { class: "{cls} tabular", "expires {label}" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        div { class: "card",
             div { class: "card-header",
                 div { class: "card-title", "{tombs_lbl}" }
                 span { class: "text-sm text-muted-foreground", "{tomb_rows.len()}" }
@@ -306,5 +367,49 @@ pub fn panel() -> Element {
                 None => rsx! { span { class: "text-muted-foreground", "{status_lbl}" } },
             }
         }
+    }
+}
+
+/// v1.20.22 M2.2: the "what expires next" pure core — sorts by expiry, caps at
+/// 10, and skips already-expired rows (the server excludes them anyway; the
+/// boundary lives here so a near-expiry row renders with its countdown label).
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::DecayedRow;
+
+    fn row(id: i64, effective: Option<i64>, expires: Option<i64>) -> DecayedRow {
+        DecayedRow {
+            id,
+            content_hash: None,
+            expires_at: expires,
+            effective_expiry: effective,
+            memory_kind: "fact".into(),
+            reason: "kind_policy".into(),
+        }
+    }
+
+    #[test]
+    fn next_expiries_sorts_by_expiry_caps_at_ten_and_skips_expired() {
+        let now = 1_000_000i64;
+        let rows = vec![
+            row(1, Some(now + 40), None),  // far
+            row(2, Some(now + 30), None),  // mid
+            row(3, Some(now + 10), None),  // soonest → first
+            row(4, Some(now - 5), None),   // already expired → skipped
+            row(5, Some(now - 100), None), // expired, no expiry → skipped
+        ];
+        let out = next_expiries(&rows, now);
+        let ids: Vec<i64> = out.iter().map(|(i, _)| *i).collect();
+        assert_eq!(
+            ids,
+            vec![3, 2, 1],
+            "sorted ascending by expiry, expired skipped"
+        );
+        // Cap at 10.
+        let many: Vec<DecayedRow> = (0..15)
+            .map(|i| row(i as i64, Some(now + 1), None))
+            .collect();
+        assert_eq!(next_expiries(&many, now).len(), 10);
     }
 }
