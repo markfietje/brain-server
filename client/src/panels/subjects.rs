@@ -6,7 +6,7 @@
 //! tombstone_root, chain_head, certified_at) with a live green/red chain badge,
 //! replacing the old freeform status line. Confirmation-first (DESIGN §1.7).
 
-use crate::api::{ApiClient, DsarCertificate};
+use crate::api::{ApiClient, DsarCertificate, Footprint};
 use crate::panels::{use_document_title, PageTitle};
 use crate::{Route, UiState};
 use dioxus::prelude::*;
@@ -48,6 +48,10 @@ pub fn panel() -> Element {
     let mut subject = use_signal(String::new);
     let mut result = use_signal(|| None::<DsarOutcome>);
     let mut busy = use_signal(|| false);
+    // v1.20.21 M2: the dry-run footprint preview — see-before-erase.
+    let mut prev_subject = use_signal(String::new);
+    let mut prev = use_signal(|| None::<Result<Footprint, String>>);
+    let mut prev_busy = use_signal(|| false);
 
     rsx! {
         PageTitle { {crate::i18n::t("subjects_title")} }
@@ -100,9 +104,81 @@ pub fn panel() -> Element {
                 }
             }
         }
+        div { class: "card mt-2",
+            div { class: "card-header",
+                h2 { class: "card-title", {crate::i18n::t("dsar_preview_title")} }
+                p { class: "text-xs text-muted-foreground", {crate::i18n::t("dsar_preview_sub")} }
+            }
+            div { class: "card-body space-y-2",
+                div { class: "flex gap-2",
+                    input {
+                        class: "input flex-1",
+                        maxlength: MAX_SUBJECT,
+                        placeholder: crate::i18n::t("dsar_preview_placeholder"),
+                        value: "{prev_subject}",
+                        oninput: move |e| prev_subject.set(e.value()),
+                        "aria-label": crate::i18n::t("dsar_preview_placeholder"),
+                    }
+                    button {
+                        class: "btn btn-outline btn-md",
+                        disabled: prev_busy(),
+                        onclick: move |_| async move {
+                            let s = prev_subject().trim().to_string();
+                            if s.is_empty() {
+                                prev.set(Some(Err("enter a subject first".into())));
+                                return;
+                            }
+                            prev_busy.set(true);
+                            let out = match api().dsar_preview(&s).await {
+                                Ok(fp) => Ok(fp),
+                                Err(e) => Err(format!("preview failed: {e}")),
+                            };
+                            prev.set(Some(out));
+                            prev_busy.set(false);
+                        },
+                        {crate::i18n::t("dsar_preview_button")}
+                    }
+                }
+                if prev_busy() {
+                    p { class: "text-muted-foreground", "previewing…" }
+                }
+                match &*prev.read() {
+                    Some(Ok(fp)) => rsx! { FootprintCard { fp: fp.clone() } },
+                    Some(Err(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
+                    None => rsx! {},
+                }
+            }
+        }
         p { class: "text-ink-faint mt-4 text-sm",
             "Purge is irreversible: it writes a tombstone + hash-chain entry. "
             "The deletion certificate re-verifies the chain head live."
+        }
+    }
+}
+
+/// v1.20.21 M2: the footprint preview card — the exact would-be deletion counts
+/// with an explicit "nothing deleted" note. No purge button here: seeing and
+/// erasing stay one click apart.
+#[component]
+fn FootprintCard(fp: Footprint) -> Element {
+    rsx! {
+        div { class: "card mt-2 border-dashed",
+            div { class: "card-body space-y-1",
+                p { role: "status", class: "text-sm text-muted-foreground",
+                    {crate::i18n::t("dsar_preview_note")} }
+                dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm",
+                    dt { class: "text-muted-foreground", {crate::i18n::t("dsar_preview_owners")} }
+                    dd { class: "font-mono tabular", "{fp.roots}" }
+                    dt { class: "text-muted-foreground", {crate::i18n::t("dsar_preview_derived")} }
+                    dd { class: "font-mono tabular", "{fp.derived}" }
+                    dt { class: "text-muted-foreground", {crate::i18n::t("dsar_preview_export_rows")} }
+                    dd { class: "font-mono tabular", "{fp.export_rows}" }
+                    dt { class: "text-muted-foreground", {crate::i18n::t("dsar_preview_tombstones")} }
+                    dd { class: "font-mono tabular", "{fp.tombstones}" }
+                    dt { class: "text-muted-foreground", {crate::i18n::t("dsar_preview_ledger_rows")} }
+                    dd { class: "font-mono tabular", "{fp.dsar_rows}" }
+                }
+            }
         }
     }
 }

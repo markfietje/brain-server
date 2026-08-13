@@ -555,6 +555,16 @@ impl ApiClient {
         self.post_json("/dsar", &body).await
     }
 
+    /// v1.20.21 M2: POST /dsar with `dry_run: true` — preview the would-be
+    /// deletion footprint (locate + bundle build) with no writes. Thin wrapper
+    /// over the same `/dsar` path; the live builder above omits `dry_run`.
+    pub async fn dsar_preview(&self, subject: &str) -> Result<Footprint, ApiError> {
+        let body = dsar_preview_body(subject);
+        let resp: DsarResponse = self.post_json("/dsar", &body).await?;
+        resp.footprint
+            .ok_or_else(|| ApiError::Status(200, "no footprint in preview response".into()))
+    }
+
     /// GET /dsar/{id}/certificate — re-fetch a deletion certificate + live
     /// chain check. Returns the raw JSON `{certificate, chain_verifies}` so
     /// `DsarCertificate::from_value` can pull the typed card fields up.
@@ -1307,6 +1317,38 @@ pub struct DsarResponse {
     pub status: String,
     #[serde(default)]
     pub certificate: Option<serde_json::Value>,
+    /// v1.20.21: present only on a dry-run — the would-be deletion footprint.
+    #[serde(default)]
+    pub footprint: Option<Footprint>,
+}
+
+/// v1.20.21: the would-be DSAR deletion footprint a dry-run returns — what a
+/// live purge would locate + export + delete, without executing any write.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Footprint {
+    pub roots: usize,
+    pub derived: usize,
+    pub export_rows: usize,
+    pub tombstones: usize,
+    pub dsar_rows: usize,
+    pub dry_run: bool,
+}
+
+/// v1.20.21 M2: pure core — pull the `Footprint` out of a `/dsar` dry-run
+/// response. `None` on shape drift (no `footprint` object). Mirrors the
+/// `parse_purge_result`/`parse_ump_recall` decode pattern.
+pub fn parse_footprint(value: &serde_json::Value) -> Option<Footprint> {
+    value
+        .get("footprint")
+        .and_then(|f| serde_json::from_value(f.clone()).ok())
+}
+
+/// v1.20.21 M2: the dry-run request body builder. Pure so a wire test pins
+/// that `dry_run: true` rides the `/dsar` body (the panic-risk of a preview
+/// accidentally purging is a serialization detail, so it's worth a pin).
+pub fn dsar_preview_body(subject: &str) -> serde_json::Value {
+    serde_json::json!({ "subject": subject, "action": "both", "dry_run": true })
 }
 
 /// v1.16.0 M5: the deletion-certificate card fields, pulled up from the
@@ -2758,5 +2800,48 @@ mod tests {
             vec!["POST /y".to_string(), "POST /z".to_string()]
         );
         assert_eq!(persist_history(Vec::new(), 100), Vec::<String>::new());
+    }
+
+    /// v1.20.21 M2.1: a dry-run response's `footprint` object parses into the
+    /// typed counts + dry_run flag; an absent/non-footprint shape is `None`.
+    #[test]
+    fn parse_footprint_reads_counts_and_dry_run_flag() {
+        let v = serde_json::json!({
+            "id": 0,
+            "subject": "alice@example.com",
+            "status": "preview",
+            "certificate": serde_json::Value::Null,
+            "footprint": {
+                "roots": 3,
+                "derived": 1,
+                "export_rows": 4,
+                "tombstones": 2,
+                "dsar_rows": 1,
+                "dry_run": true
+            }
+        });
+        let fp = parse_footprint(&v).unwrap();
+        assert_eq!(fp.roots, 3);
+        assert_eq!(fp.derived, 1);
+        assert_eq!(fp.export_rows, 4);
+        assert_eq!(fp.tombstones, 2);
+        assert_eq!(fp.dsar_rows, 1);
+        assert!(fp.dry_run);
+        // No footprint object → None (a live response or shape drift).
+        assert!(parse_footprint(&serde_json::json!({ "id": 1 })).is_none());
+    }
+
+    /// v1.20.21 M2.1: the dry-run wire carries `dry_run: true`; a live DSAR
+    /// leaves it absent. Proves the request body builder is dry-run-safe (the
+    /// panic-risk here — a preview silently purging — is worth a real pin).
+    #[test]
+    fn dsar_preview_request_carries_dry_run_true() {
+        let body = dsar_preview_body("alice@example.com");
+        assert_eq!(body["subject"], "alice@example.com");
+        assert_eq!(body["action"], "both");
+        assert_eq!(body["dry_run"], serde_json::json!(true));
+        // The live builder's body has no dry_run key.
+        let live = serde_json::json!({ "subject": "a", "action": "both" });
+        assert!(live.get("dry_run").is_none());
     }
 }

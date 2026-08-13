@@ -67,19 +67,24 @@ pub async fn get_trace(
 // ---------------------------------------------------------------------------
 
 /// `POST /dsar` request. `subject` is the owner/principal being actioned;
-/// `action` is `export` | `purge` | `both`.
+/// `action` is `export` | `purge` | `both`; `dry_run` (v1.20.21) previews the
+/// footprint — locate + bundle build only, nothing is purged or written.
 #[derive(Debug, Deserialize)]
 pub struct DsarRequest {
     pub subject: String,
     #[serde(default = "default_dsar_action")]
     pub action: String,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_dsar_action() -> String {
     "both".to_string()
 }
 
-/// `POST /dsar` response: the workflow row id + the deletion certificate.
+/// `POST /dsar` response: the workflow row id + the deletion certificate. In
+/// dry-run mode the certificate is `None` and `footprint` carries the would-be
+/// deletion footprint instead.
 #[derive(Debug, Serialize)]
 pub struct DsarResponse {
     pub id: i64,
@@ -87,6 +92,21 @@ pub struct DsarResponse {
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footprint: Option<Footprint>,
+}
+
+/// v1.20.21: the would-be DSAR deletion footprint — what a live purge would
+/// locate + export + delete, without executing any write. The GDPR Art 17
+/// preview a DPO reads before clicking "erase".
+#[derive(Debug, Serialize, Clone)]
+pub struct Footprint {
+    pub roots: usize,
+    pub derived: usize,
+    pub export_rows: usize,
+    pub tombstones: usize,
+    pub dsar_rows: usize,
+    pub dry_run: bool,
 }
 
 /// `POST /dsar` — the GDPR Art 15/17 workflow: locate every record for the
@@ -137,47 +157,46 @@ pub async fn post_dsar(
         let (roots, derived) = dsar_locate(&tx, &subject)?;
         let found_count = roots.len() + derived.len();
 
-        // 2. Export bundle (portable JSON; raw PII is never included).
+        // 2. Export bundle (portable JSON; raw PII is never included). Shared
+        // by the live purge path and the v1.20.21 dry-run preview — the same
+        // SELECT, no duplicated query.
         let export_bundle = if matches!(action.as_str(), "export" | "both") {
-            let mut rows: Vec<serde_json::Value> = Vec::new();
-            let mut stmt = tx
-                .prepare(
-                    "SELECT id, content, node_kind, assertion_kind, confidence,
-                            owner, observed_at, valid_from, valid_to
-                     FROM knowledge WHERE id IN (?1)",
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for id in roots.iter().chain(derived.iter().map(|(d, _)| d)) {
-                let q = stmt
-                    .query_map(rusqlite::params![id], |row| {
-                        Ok(serde_json::json!({
-                            "id": row.get::<_, i64>(0)?,
-                            "content": row.get::<_, String>(1)?,
-                            "memory_kind": row.get::<_, String>(2)?,
-                            "assertion_kind": row.get::<_, String>(3)?,
-                            "confidence": row.get::<_, f32>(4)?,
-                            "owner": row.get::<_, Option<String>>(5)?,
-                            "observed_at": row.get::<_, Option<String>>(6)?,
-                            "valid_from": row.get::<_, Option<String>>(7)?,
-                            "valid_to": row.get::<_, Option<String>>(8)?,
-                        }))
-                    })
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                for v in q.flatten() {
-                    rows.push(v);
-                }
-            }
-            Some(
-                serde_json::json!({
-                    "exported_at": chrono::Utc::now().to_rfc3339(),
-                    "subject": subject,
-                    "knowledge": rows,
-                })
-                .to_string(),
-            )
+            Some(build_export_bundle(&tx, &subject, &roots, &derived)?)
         } else {
             None
         };
+
+        // 2a. v1.20.21 dry-run: a read-only footprint preview. Locate + bundle
+        //     already ran; count what a live purge WOULD delete, then drop the
+        //     tx untouched (no purge, no sweep, no ledger row, no cert write).
+        if req.dry_run {
+            let export_rows = match &export_bundle {
+                Some(b) => {
+                    // The bundle always carries `{exported_at, subject, knowledge}`.
+                    serde_json::from_str::<serde_json::Value>(b)
+                        .ok()
+                        .and_then(|v| v.get("knowledge").and_then(|k| k.as_array()).map(|a| a.len()))
+                        .unwrap_or(0)
+                }
+                None => 0, // `action == "purge"` builds no bundle; nothing exported
+            };
+            let tombstones = count_subject_tombstones(&tx, &subject, &roots)?;
+            let dsar_rows: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
+                    rusqlite::params![&subject],
+                    |r| r.get(0),
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            return Ok(DsarOutcome::Footprint(Footprint {
+                roots: roots.len(),
+                derived: derived.len(),
+                export_rows,
+                tombstones: tombstones as usize,
+                dsar_rows: dsar_rows as usize,
+                dry_run: true,
+            }));
+        }
 
         // 3. Purge (all-or-nothing with the export, same tx): roots with the
         //    owner reason, derived descendants with `derived` + origin id.
@@ -281,7 +300,7 @@ pub async fn post_dsar(
             rusqlite::params![certificate, id],
         );
 
-        Ok(DsarOutcome {
+        Ok(DsarOutcome::Completed {
             id,
             subject,
             certificate,
@@ -291,30 +310,51 @@ pub async fn post_dsar(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
+    // A dry-run preview never purged anything: no art-19 notification, no
+    // certificate; return the footprint as the whole answer.
+    if let DsarOutcome::Footprint(fp) = &outcome {
+        return Ok(Json(DsarResponse {
+            id: 0,
+            subject: String::new(),
+            status: "preview",
+            certificate: None,
+            footprint: Some(fp.clone()),
+        }));
+    }
+    let DsarOutcome::Completed {
+        id,
+        subject,
+        certificate,
+        certified_at,
+    } = outcome
+    else {
+        unreachable!("footprint already returned above")
+    };
+
     // 6. Art 19 onward-notification: opt-in, fire-and-forget, fail-soft.
     if action_did_purge {
-        notify_art19(
-            outcome.subject.clone(),
-            outcome.id,
-            outcome.certified_at.clone(),
-        );
+        notify_art19(subject.clone(), id, certified_at.clone());
     }
 
-    let cert: serde_json::Value = serde_json::from_str(&outcome.certificate)
+    let cert: serde_json::Value = serde_json::from_str(&certificate)
         .map_err(|_| HandlerError::internal("stored certificate is not valid JSON"))?;
     Ok(Json(DsarResponse {
-        id: outcome.id,
-        subject: outcome.subject,
+        id,
+        subject,
         status: "completed",
         certificate: Some(cert),
+        footprint: None,
     }))
 }
 
-struct DsarOutcome {
-    id: i64,
-    subject: String,
-    certificate: String,
-    certified_at: String,
+enum DsarOutcome {
+    Completed {
+        id: i64,
+        subject: String,
+        certificate: String,
+        certified_at: String,
+    },
+    Footprint(Footprint),
 }
 
 /// `GET /tombstones?subject=&since=&limit=` — the queryable deletion registry
@@ -540,6 +580,90 @@ fn collect_ids(
     Ok(rows.flatten().collect())
 }
 
+/// v1.20.21: build the portable export bundle (the JSON a live purge embeds
+/// into its ledger row) for the given locate result. Extracted so the dry-run
+/// preview and the live path run the EXACT same query — behavior-preserving.
+fn build_export_bundle(
+    tx: &rusqlite::Transaction,
+    subject: &str,
+    roots: &[i64],
+    derived: &[(i64, i64)],
+) -> Result<String, HandlerError> {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    let mut stmt = tx
+        .prepare(
+            "SELECT id, content, node_kind, assertion_kind, confidence,
+                    owner, observed_at, valid_from, valid_to
+             FROM knowledge WHERE id IN (?1)",
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    for id in roots.iter().chain(derived.iter().map(|(d, _)| d)) {
+        let q = stmt
+            .query_map(rusqlite::params![id], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "content": row.get::<_, String>(1)?,
+                    "memory_kind": row.get::<_, String>(2)?,
+                    "assertion_kind": row.get::<_, String>(3)?,
+                    "confidence": row.get::<_, f32>(4)?,
+                    "owner": row.get::<_, Option<String>>(5)?,
+                    "observed_at": row.get::<_, Option<String>>(6)?,
+                    "valid_from": row.get::<_, Option<String>>(7)?,
+                    "valid_to": row.get::<_, Option<String>>(8)?,
+                }))
+            })
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        for v in q.flatten() {
+            rows.push(v);
+        }
+    }
+    Ok(serde_json::json!({
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "subject": subject,
+        "knowledge": rows,
+    })
+    .to_string())
+}
+
+/// v1.20.21: count prior deletions for a subject — the tombstone reasons a live
+/// purge writes: `owner:<subject>` for roots, and `derived` (scoped to one of
+/// this subject's roots via `origin_id`) for derived descendants. The ledger
+/// trace a DPO sees in the preview.
+fn count_subject_tombstones(
+    tx: &rusqlite::Transaction,
+    subject: &str,
+    roots: &[i64],
+) -> Result<i64, HandlerError> {
+    let owner_reason = format!("owner:{subject}");
+    if roots.is_empty() {
+        return tx
+            .query_row(
+                "SELECT COUNT(*) FROM tombstones WHERE reason = ?1",
+                rusqlite::params![owner_reason],
+                |r| r.get(0),
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()));
+    }
+    let placeholders = vec!["?"; roots.len()].join(",");
+    let sql = format!(
+        "SELECT COUNT(*) FROM tombstones
+          WHERE reason = ?1 OR (reason = 'derived' AND origin_id IN ({placeholders}))"
+    );
+    let mut stmt = tx
+        .prepare(&sql)
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let params: Vec<&dyn rusqlite::ToSql> =
+        roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
+    // ?1 = the owner reason, then one per root for the IN list.
+    let mut all_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(params.len() + 1);
+    all_params.push(&owner_reason);
+    all_params.extend(params.iter().copied());
+    let count: i64 = stmt
+        .query_row(all_params.as_slice(), |r| r.get(0))
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    Ok(count)
+}
+
 /// Locate every record for a DSAR subject: content rows by `owner`, plus all
 /// transitive `derived_from` descendants (bounded by `DERIVED_MAX_DEPTH`).
 /// Returns `(root_ids, derived_pairs)` where each derived pair is
@@ -711,5 +835,147 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cert, "cert");
+    }
+
+    /// A fresh connection with the tables the M1 helpers touch: `knowledge`
+    /// (owner + export columns), `evidence_links` (derived walk), `tombstones`
+    /// (deletion registry), `dsar_requests` (ledger history).
+    fn helper_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE knowledge (
+                id INTEGER PRIMARY KEY,
+                content TEXT,
+                content_hash TEXT,
+                node_kind TEXT DEFAULT 'chunk',
+                assertion_kind TEXT DEFAULT 'stated',
+                confidence REAL DEFAULT 0.5,
+                owner TEXT,
+                observed_at TEXT,
+                valid_from TEXT,
+                valid_to TEXT
+             );
+             CREATE TABLE evidence_links (
+                kind TEXT,
+                from_chunk INTEGER,
+                to_chunk INTEGER
+             );
+             CREATE TABLE tombstones (
+                id INTEGER PRIMARY KEY,
+                reason TEXT,
+                origin_id INTEGER
+             );
+             CREATE TABLE dsar_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                export_bundle TEXT,
+                certificate TEXT,
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// v1.20.21 M1.1: a dry-run footprint reports the exact would-be counts and
+    /// writes NOTHING — the knowledge rows survive, no ledger row, no new
+    /// tombstone. The preview is a pure read.
+    #[test]
+    fn dsar_dry_run_footprint_counts_and_writes_nothing() {
+        let mut conn = helper_conn();
+        conn.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
+                 (1, 'alice root', 'h1', 'alice@example.com'),
+                 (2, 'alice derived', 'h2', NULL),
+                 (3, 'bob chunk', 'h3', 'bob@example.com');
+             INSERT INTO evidence_links(kind, from_chunk, to_chunk)
+                 VALUES ('derived_from', 1, 2);
+             INSERT INTO tombstones(reason, origin_id) VALUES
+                 ('owner:alice@example.com', NULL),
+                 ('derived', 1);
+             INSERT INTO dsar_requests(subject, action, status, created_at, completed_at)
+                 VALUES ('alice@example.com', 'both', 'completed', 0, 0);",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let (roots, derived) = dsar_locate(&tx, "alice@example.com").unwrap();
+        assert_eq!(roots, vec![1]);
+        assert_eq!(derived, vec![(2, 1)]);
+        let bundle = build_export_bundle(&tx, "alice@example.com", &roots, &derived).unwrap();
+        let export_rows: usize = serde_json::from_str::<serde_json::Value>(&bundle)
+            .unwrap()
+            .get("knowledge")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(export_rows, 2, "bundle carries both root + derived");
+        let tombstones = count_subject_tombstones(&tx, "alice@example.com", &roots).unwrap();
+        let dsar_rows: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
+                rusqlite::params!["alice@example.com"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Footprint assembly mirrors the handler's dry-run branch.
+        let fp = Footprint {
+            roots: roots.len(),
+            derived: derived.len(),
+            export_rows,
+            tombstones: tombstones as usize,
+            dsar_rows: dsar_rows as usize,
+            dry_run: true,
+        };
+        assert_eq!(fp.roots, 1);
+        assert_eq!(fp.derived, 1);
+        assert_eq!(fp.export_rows, 2);
+        assert_eq!(fp.tombstones, 2, "owner reason + derived-scoped row");
+        assert_eq!(fp.dsar_rows, 1, "ledger history counted");
+        // Nothing written by the read-only helpers. Drop the tx (a read-only
+        // tx the handler would drop untouched) before reading the conn.
+        drop(tx);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 3, "no knowledge deleted");
+        let toms: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tombstones", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(toms, 2, "no new tombstone");
+        let led: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(led, 1, "no ledger row written");
+    }
+
+    /// v1.20.21 M1.1: `build_export_bundle` is behavior-preserving — the
+    /// extracted builder produces the same JSON the live purge path embeds.
+    #[test]
+    fn dsar_export_bundle_builder_matches_live_shape() {
+        let mut conn = helper_conn();
+        conn.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
+                 (1, 'alice root', 'h1', 'alice@example.com'),
+                 (2, 'alice derived', 'h2', NULL);
+             INSERT INTO evidence_links(kind, from_chunk, to_chunk)
+                 VALUES ('derived_from', 1, 2);",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let (roots, derived) = dsar_locate(&tx, "alice@example.com").unwrap();
+        let bundle = build_export_bundle(&tx, "alice@example.com", &roots, &derived).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&bundle).unwrap();
+        assert_eq!(v["subject"], "alice@example.com");
+        let k = v["knowledge"].as_array().unwrap();
+        assert_eq!(k.len(), 2);
+        let ids: Vec<i64> = k.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+        assert_eq!(ids, vec![1, 2]);
+        // Same per-row shape the live handler relies on.
+        assert!(k[0].get("content").is_some());
+        assert!(k[0].get("memory_kind").is_some());
     }
 }

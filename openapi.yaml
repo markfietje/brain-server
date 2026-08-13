@@ -1708,9 +1708,17 @@ paths:
                   type: string
                   enum: [export, purge, both]
                   default: both
+                dry_run:
+                  type: boolean
+                  default: false
+                  description: >
+                    v1.20.21 — set true to preview the would-be deletion
+                    footprint (locate + bundle build) without executing any
+                    write: no purge, no sweep, no ledger row, no certificate.
+                    The 200 carries `footprint` instead of `certificate`.
       responses:
         "200":
-          description: Workflow row id + deletion certificate
+          description: Workflow row id + deletion certificate (or footprint when dry-run)
           content:
             application/json:
               schema:
@@ -1718,12 +1726,18 @@ paths:
                 properties:
                   id: { type: integer }
                   subject: { type: string }
-                  status: { type: string, enum: [completed] }
+                  status: { type: string, enum: [completed, preview] }
                   certificate:
                     type: object
                     description: >
                       subject, action, found_count, purged_ids,
-                      tombstone_root, certified_at, chain_head.
+                      tombstone_root, certified_at, chain_head. Absent for a
+                      dry-run (nothing was deleted).
+                  footprint:
+                    $ref: "#/components/schemas/Footprint"
+                    description: >
+                      v1.20.21 — present only on a dry-run. The would-be
+                      deletion footprint.
         "422":
           description: Empty/overlong subject or invalid action
   /tombstones:
@@ -2284,6 +2298,19 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    Footprint:
+      type: object
+      description: >
+        v1.20.21 — the would-be DSAR deletion footprint. A `POST /dsar` with
+        `dry_run: true` returns this instead of a certificate: what a live
+        purge would locate + export + delete, without executing any write.
+      properties:
+        roots: { type: integer, description: owner rows located }
+        derived: { type: integer, description: transitive derived_from descendants }
+        export_rows: { type: integer, description: knowledge rows in the export bundle }
+        tombstones: { type: integer, description: prior deletions for this subject (ledger trace) }
+        dsar_rows: { type: integer, description: prior DSAR ledger rows for this subject }
+        dry_run: { type: boolean, default: true }
     ApiError:
       type: object
       properties:
@@ -2497,7 +2524,7 @@ components:
         category:
           type: string
           enum: [technology, business_process, compliance, finance, vendor, assessment, infrastructure, general]
-        confidence: { type: number, format: float, description: In [0.0, 1.0]. }
+        confidence: { type: number, format: float, description: "In [0.0, 1.0]." }
         matched_keywords: { type: array, items: { type: string } }
     DecisionOutcome:
       type: object

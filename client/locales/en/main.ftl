@@ -68,6 +68,18 @@ deletion_certificate = Deletion certificate
 chain_verified = chain verified
 chain_tampered = CHAIN TAMPERED
 
+## Subjects — DSAR footprint preview (v1.20.21 M2)
+dsar_preview_title = Preview DSAR footprint
+dsar_preview_sub = See exactly what a purge would delete — nothing is erased.
+dsar_preview_placeholder = subject to preview…
+dsar_preview_button = Preview footprint
+dsar_preview_note = Preview only — nothing deleted.
+dsar_preview_owners = owners
+dsar_preview_derived = derived
+dsar_preview_export_rows = export rows
+dsar_preview_tombstones = prior tombstones
+dsar_preview_ledger_rows = ledger rows
+
 ## Settings
 theme_label = Theme
 locale_label = Language
