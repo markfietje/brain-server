@@ -831,6 +831,55 @@
 
 ## All Agents COMPLETED ✅
 
+## Agent 88: v1.20.21 "Subject360" — DSAR footprint preview (session 2026-08-13)
+**Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
+**Date:** 2026-08-13
+
+Shipped the v1.20.21 "Subject360" **server + client** release per
+`IMPLEMENTATION_PLAN_v1.20.21_Subject360.md`: turning the execute-blind DSAR
+into an **execute-informed** one — a read-only `dry_run` previews *what would
+be deleted* before any purge (GDPR Art 17 "show the scope"). Same locate
+engine, same export-bundle builder, one boolean between preview and erasure.
+
+- **M1 — `dry_run` on `POST /dsar`** (`src/handlers/observe.rs`).
+  `DsarRequest` gains `#[serde(default)] dry_run: bool`; `DsarResponse` gains
+  `footprint` (skip-if-none); `DsarOutcome` becomes an enum
+  (`Completed`/`Footprint`). The handler locates + builds the bundle, and a
+  `dry_run` branch reports the `Footprint` then drops the read-only tx —
+  nothing purged, swept, ledger-written, or certified. `Footprint` carries
+  `roots`/`derived`/`export_rows`/`tombstones`/`dsar_rows`/`dry_run: true`.
+  The export-bundle SELECT was extracted once into `build_export_bundle` and
+  is shared by both paths (no duplicated query); `count_subject_tombstones`
+  matches the purge's exact tombstone reasons (`owner:<subject>`,
+  `derived`+`origin_id` scoped to this subject's roots).
+- **M1.1** — two server tests: `dsar_dry_run_footprint_counts_and_writes_nothing`
+  (3 roots + 1 derived + prior tombstone → exact counts; knowledge/tombstones/
+  ledger untouched) and `dsar_export_bundle_builder_matches_live_shape`
+  (behavior-preserving refactor proof).
+- **M1.2 — openapi.yaml** documents `dry_run`, the `Footprint` schema
+  (under `components`), and `DsarResponse.footprint`; `status` enum gains
+  `preview`. No new route — the route/schema contract guards are unaffected.
+- **M2 — footprint preview card** (`client/src/panels/subjects.rs` +
+  `client/src/api.rs`). `ApiClient::dsar_preview` POSTs
+  `{subject, action: both, dry_run: true}` (pure `dsar_preview_body` builder +
+  `parse_footprint` decode core); the panel renders a "Preview DSAR
+  footprint" card (subject input + button, `role="status"` preview note,
+  **no** purge button — one-click separation of see vs erase). `dsar_preview_*`
+  i18n keys in `en` only.
+- **M2.1** — two client tests: `parse_footprint_reads_counts_and_dry_run_flag`,
+  `dsar_preview_request_carries_dry_run_true`.
+
++2 server tests (main bin 521 → 523, 5 ignored) and +2 client tests (103 →
+105). All gates green: both trees clippy `-D warnings` + `fmt` clean, all 5
+server binaries + client wasm build clean, openapi/route/schema guards green.
+Version both `Cargo.toml`/locks → 1.20.21.
+
+**Honest ceilings (carried to v2.x):** the footprint is a point-in-time
+preview (locate semantics: owner + `derived_from` walk, depth 8) — not a full
+cross-domain dependency analysis (federation is v2.x). Ledger-history counts
+reflect the v1.20.17 retention window. No parallel "what is *not* deleted"
+report (backups posture in COMPLIANCE.md). No new schema.
+
 ## Agent 87: v1.20.20 "Replay" — decision-path replay surface (session 2026-08-13)
 **Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
 **Date:** 2026-08-13
