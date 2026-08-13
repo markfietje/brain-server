@@ -46,6 +46,11 @@ Brain Server is the tamper-evident, human-gated memory store that defuses it.**
   SOC 2 / GDPR / EU AI Act review.
 - Teams that refuse to pay an embedding API on every read/write and refuse to
   ship user memory to a third-party datacenter.
+- Support & contact-center operations — from in-house helpdesks to multi-client
+  **BPOs** — whose agents need to recall past resolutions and policy, keep
+  client data on-prem, and stay human-gated and auditable. The controls they
+  need are shipped today; multi-client tenancy on one shared backend is the
+  v2.0 "Cortex" roadmap. See **[Who it's for — target audiences](../audiences.md)**.
 
 ---
 

@@ -425,7 +425,9 @@ export default definePluginEntry({
     // approve, and erase" — erase is a HUMAN action). The read-only recall/
     // get/verify/graph tools + the review-queued `memory_store` are the agent's
     // only surface. Erasure remains a human action via the operator console
-    // and the `brain` CLI (server `DELETE /memory/{id}` is untouched).
+    // (DSAR subject purge, Data-panel purge, quarantine delete — all Admin).
+    // The `brain` CLI has NO erase command (its delete surface is `reconcile`
+    // / `source-delete` only); server `DELETE /memory/{id}` is untouched.
 
     api.registerTool(
       {

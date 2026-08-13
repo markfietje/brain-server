@@ -36,6 +36,12 @@ Nano, Raspberry Pi 5, a small mini PC) drawing under 5 watts.
 3. **Knowledge-workers who think in domains** — health, business, code, and more as
    separate brains that cross-reference on a miss.
 
+The full audience map — including **BPOs, in-house contact & support centers,
+regulated enterprises (finance, healthcare, legal, government), edge/field
+deployments, and delivery partners** — is in **[Who it's for — target audiences](./audiences.md)**,
+with every segment marked shipped vs. planned (multi-client tenancy is the
+v2.0 "Cortex" milestone).
+
 ---
 
 ## The five differentiators

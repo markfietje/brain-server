@@ -70,6 +70,10 @@ its predecessor; `/audit/verify` proves integrity; `/metrics` reports
   certificate** (found / purged / tombstone root / chain head / certified_at).
 - **`GET /tombstones`** — queryable deletion registry.
 - **Art 19 onward notification** — opt-in HMAC-SHA256-signed webhook on purge.
+- **Erasure is human-executed.** Every delete / purge / DSAR is an operator action via the
+  console or the HTTP API, never an agent call — the `memory_forget` agent tool was removed
+  (v1.20.25). This keeps the *irreversible* GDPR Art 17 erasure act under a person's hand and
+  audited on the chain, rather than delegable to the LLM.
 
 ---
 

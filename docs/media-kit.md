@@ -14,6 +14,10 @@
 - **One-line (buyer):** "Agent memory you can verify, budget, and delete on
   request — no LLM per query, no data egress, no vendor lock-in."
 - **Three-word elevator:** "Verifiable agent memory."
+- **One-line (contact-center / BPO support):** "Agent-assist memory that recalls
+  past resolutions and policy for every agent, stays on-prem where client data
+  must not leave, and is yours to audit and erase — no per-query LLM, no
+  vendor lock-in."
 
 ## Positioning statement
 
@@ -25,6 +29,27 @@ operator's own device with no LLM in the loop, it delivers **zero per-query
 cost, zero data egress, and an audit trail a reviewer can verify live** — and,
 unlike framework-bound memory layers, it is **standard-based** (UMP 1.0 / L3,
 open HTTP, MCP) so it never locks you in.
+
+## Who it's for
+
+The same engine serves several audiences; see **[Who it's for — target
+audiences](./audiences.md)** for the full map (each marked shipped vs. planned).
+
+- **AI-agent builders & OpenClaw users** — deterministic memory, zero token
+  cost, in the memory slot.
+- **BPOs & multi-client contact-center operators** — the v2.0 "Cortex" roadmap
+  is explicitly call-center intelligence (multi-team tenancy, ticket-pattern
+  resolution). The *controls* they need are shipped today (per-domain
+  isolation, per-tenant audit, DSAR, PII containment, human-gated writes);
+  multi-client tenancy on one shared backend is the planned v2.0 piece.
+- **In-house contact & support centers** — agent-assist memory that recalls
+  past resolutions and policy, supervised and audited, without fabricating
+  answers (calibrated abstention + span verification).
+- **Regulated enterprises** (finance, healthcare, legal, government) — memory
+  that stays on-prem, is auditable to a chain, honors DSAR, and is explainable.
+- **Edge / field / air-gapped deployments** — a single binary under 5 W.
+- **Delivery partners** (SIs, MSPs, consultants) — a deployable, auditable
+  memory layer with procurement-grade evidence (`RFP_RESPONSE_KIT.md`).
 
 ## The three pillars (press-ready)
 

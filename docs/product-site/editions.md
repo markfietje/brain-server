@@ -26,7 +26,7 @@ tokens, Standard Webhooks).
 
 Rows map to shipped releases:
 - ✓ **shipped**: v1.2 AuthN, v1.14 gate, v1.15 DSAR/audit, v1.17 UMP L3, v1.18–1.20 console/hardening line.
-- **v2.0/v2.1**: multi-team tenancy + per-tenant limits (planned, no code yet).
+- **v2.0/v2.1**: multi-team tenancy + per-tenant limits (planned, no code yet) — the enabler for **BPO / multi-client contact-center** deployments. The controls those buyers need (isolation, audit, DSAR, PII, human-gated writes) are shipped today; the shared-tenant packaging is the roadmap. See **[Who it's for — target audiences](../audiences.md)**.
 - **Profiles/OTel/SSE**: planned v1.20.7/8 + v1.21.0.
 - **SOC 2 kit**: planned v1.20.10 + v1.20.12 trust tier.
 

@@ -4,8 +4,9 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.20.1 "Shield" (2026-08-11) — GhostJacking P0: `/ingest` screened at the shared write core (quarantine/reject) + plugin `captureMode: "proposal"` routes autoCapture through the human review queue with `source_prompt` provenance + TTL.
-- **Latest client version:** 1.20.0 "Polish" (2026-08-11) — system-following theme, CI bundle budget (release wasm ≤ 7 MB), offline-tolerance action queue with replay.
+- **Latest server version:** 1.20.25 "Consolidate" (2026-08-13) — the post-Sweep tail: audit + recall-trace digests go xxh3-64 → SHA-256, a shared read seam masks every emitted text field, DSAR + purge erase the graph + review-queue residue, and the webhook signing secret fails closed on wide modes.
+- **Latest client version:** 1.20.25 "Consolidate" (2026-08-13) — ships alongside the server (read-seam rendering, DSAR/purge surfaces).
+- **Latest plugin version:** 0.2.2 "Consolidate" (2026-08-13) — Unicode-strip + redaction parity with the server read seam.
 - **Next milestone:** v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 

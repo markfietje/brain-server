@@ -82,6 +82,11 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
   `dangerous_inner_html`; grep-guarded in CI).
 - No autonomous write-back: captured fragments are scored, not stored, and become memory
   only through the human gate. See [**Human in the loop**](./human-in-the-loop.md).
+- No **agent-callable erasure**: an agent can read memory and propose writes, but cannot
+  delete it. The `memory_forget` agent tool was removed (v1.20.25); erasure is human-only via
+  the operator console and the HTTP API (`DELETE /memory/{id}`, `POST /purge`, DSAR — the
+  `brain` CLI has no erasure command). The
+  full authority split is in [**Human in the loop**](./human-in-the-loop.md).
 
 ---
 
@@ -89,7 +94,7 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
 
 | Line | Status |
 |---|---|
-| Current minor (`1.16.x`) | Supported — receives fixes |
+| Current minor (`1.20.x`) | Supported — receives fixes |
 | Previous minor | Supported |
 | `0.9.x` / `1.0.x` | Maintained for back-compat / security fixes |
 | < 0.9 | Unsupported |

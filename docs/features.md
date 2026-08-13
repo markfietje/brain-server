@@ -32,6 +32,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **The queue is a clock** (v1.20.6) — the Memory Operations panel shows a live SLA countdown per pending proposal and a gate-health strip (over-rejecting / under-reviewing / expired) so review *load* and *drift* are visible, not hidden in a log.
 - **Provenance ledger** (v1.20.9) — the Agent Memory Register partitions the store by `origin` (`human` / `model` / `imported`) with owner/source/kind filters and drill-down evidence, so how much of the store is model-originated is auditable at a glance.
 - **Consequential and recorded** — every approve / reject (with reason) / supersede / expire is appended to the SHA-256 audit chain, making each operator decision reconstructable.
+- **Human-only erasure** — agents can read and propose, but *only a human can delete* memory. The `memory_forget` agent tool was removed (v1.20.25); erasure runs through the audited console / HTTP API paths (`DELETE /memory/{id}`, `POST /purge`, DSAR).
 
 ## Anticipation & suggestions
 
@@ -61,7 +62,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 
 - **OpenAI-compatible embeddings** — `POST /v1/embeddings`.
 - **MCP server** — `mcp` binary exposes search/recall/ingest as MCP tools.
-- **`brain` CLI** — the operator surface: status, query, ingest, reconcile, audit, backup, and more.
+- **`brain` CLI** — the operator surface: status, query, explain, ingest-dir, reconcile, resolve, backup, restore, key, and more.
 - **Client control surface** (v1.16) — a Dioxus app (web + desktop + iOS + Android) with connection state machine, honest-batch review, recall decision-path viewer, DSAR certificate card, auth-failure feed, and audit filters + export.
 
 ## Next steps

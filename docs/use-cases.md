@@ -1,6 +1,6 @@
 # Use Cases
 
-Brain Server is built for the edge — private, offline, deterministic, and free to run. Here are the concrete scenarios it's designed for, with a worked example for each.
+Brain Server is built for the edge — private, offline, deterministic, and free to run. Here are the concrete scenarios it's designed for, with a worked example for each. For the **customer segments** these map to (BPOs, in-house contact & support centers, regulated enterprises, edge/field, and more — each marked shipped vs. planned), see **[Who it's for — target audiences](./audiences.md)**.
 
 ## 1. An agent with memory that costs nothing to recall
 

@@ -104,6 +104,52 @@ The same philosophy extends across the write surface:
 - **Purge / deletion** is a deliberate, audited human action (`POST /purge`, the DSAR
   workflow). Nothing is silently erased.
 
+### Erasure is a human action, not an agent capability
+
+The write-back gate governs *entering* memory. The **erase side** is governed by the same
+philosophy and an even harder rule: **memory can be erased, and only a human can erase it.**
+An agent can read, and an agent can *propose* writes — but an agent **cannot delete** memory.
+
+The reason is the product's governing control on memory — *"memory you can see, approve, and
+erase."* Each verb is a **human-owned action**, and erasure is the most consequential of the
+three because it is **unrecoverable**. A deleted memory is gone; there is no audit trail that
+brings its *content* back. Granting an LLM that lever — the ambient authority to permanently
+destroy stored knowledge mid-conversation, with no human gate — is exactly the shape of control
+the design refuses to hand to the machine.
+
+In practice this means:
+
+- The agent's surface is **read + propose**: `memory_recall` / `memory_get` / `memory_verify` /
+  `memory_graph_entity`, and `memory_store` (which, in the default `captureMode: "proposal"`,
+  submits to the review queue rather than writing).
+- The plugin's `memory_forget` tool was **removed in v1.20.25** — an agent can no longer
+  hard-delete memory autonomously. (The server `DELETE /memory/{id}` route is untouched; only
+  the *agent-facing tool* was taken away.)
+- **Erasure is performed by a human** through the operator console and the HTTP API, both of
+  which call the audited `DELETE /memory/{id}` / `POST /purge` / DSAR paths. (The `brain` CLI
+  has no erasure command — delete is a console/API action.)
+
+So the full authority model, stated plainly:
+
+| Action | Who may perform it |
+|---|---|
+| Read / recall / verify | Agent **and** human |
+| Propose a write (proposal queue) | Agent **and** human |
+| Approve a write into memory | **Human only** (or an operator who set `captureMode: "direct"`) |
+| Erase / purge / DSAR | **Human only** |
+
+This asymmetry is deliberate and load-bearing: the model can contribute knowledge and read it,
+but the two irreversible acts — **admitting** memory and **removing** memory — both require a
+person.
+
+The friction this imposes is **by procedure, not by accident.** Erasure is the one action
+that cannot be undone, so the system refuses to make it cheap. Every delete is human-initiated,
+attributed to a named principal, and recorded on the SHA-256 audit chain — the operator is
+never "the system did it," they are "I did this, here is why." That is what the full
+procedure in **[§7 The erasure procedure](#7-the-erasure-procedure)** formalizes: a repeatable,
+auditable path for *every* deletion intent, with the "see-before-erase" and confirm steps that
+force responsibility before anything is lost.
+
 ### What the machine does *without* the human
 
 Deterministic operations that a human would not add value to:
@@ -233,7 +279,7 @@ a queue-clearer.
 | `BRAIN_PROPOSAL_TTL_SECS` | 7 days | How long a proposal can sit pending. Expiry auto-rejects with an audit row. |
 | Plugin `captureMode` | `proposal` | Whether auto-capture routes through the review queue (`proposal`) or writes directly (`direct`, still screen-gated). |
 | `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` | — | Classifier banding thresholds: ≥ high → reject, ≥ low → quarantine. Flippable without restart. |
-| `BRAIN_INJECTION_POLICY` | `quarantine` | `reject` vs `quarantine` for screen hits. |
+| `INJECTION_POLICY` | `quarantine` | `reject` vs `quarantine` for screen hits. |
 | PII control | read-time | Deterministic output redaction for principals without `pii:read`; no write-time placeholder vault. |
 | Per-kind retention | — | Query-time kind-default expiry; `GET /retention` sets overrides. |
 
@@ -256,6 +302,135 @@ and on what evidence?"* has a verifiable answer.
 See [**Security**](./security.md) for the chain itself and
 [**MemGhost mitigation**](./MEMGHOST_MITIGATION.md) for how the human gate is the
 countermeasure to memory-poisoning attacks.
+
+---
+
+## 7. The erasure procedure
+
+*How a human actually removes memory.* This is the companion to §4 (which is about the
+*write* gate — deciding what gets in). Erasure is the *remove* gate, and it is deliberately
+harder: memory that is gone cannot be brought back. This section is the repeatable, auditable
+path for every deletion intent, and the justification for the friction.
+
+### Who may do what
+
+| Role | Review / reject | Approve into memory | Erase / purge / DSAR | Scriptable (CLI) |
+|---|---|---|---|---|
+| Reviewer / QA / operator | ✅ | ✅ | ❌ | — |
+| **Admin** | ✅ | ✅ | ✅ | `reconcile` / `source-delete` only |
+| Agent (LLM) | ❌ | ❌ | ❌ | ❌ |
+
+Two hard rules follow from the table:
+
+1. **An agent can never erase.** The agent's surface is read + propose. The agent-facing
+   `memory_forget` tool was removed in v1.20.25; an agent cannot hard-delete memory, period.
+   The only way an LLM "becomes" a superuser is by obtaining a credential a human owns — so
+   the human gate is only as strong as that credential never being readable by the agent (see
+   *Why the friction exists* below).
+2. **Reviewers and QA catch bad memory *before* it is admitted; only Admin can remove it
+   afterwards.** The default QA posture is therefore **reject** at the queue. If QA finds a bad
+   memory that is already approved, the correct move is to flag it for an Admin — not to hold
+   delete authority.
+
+### The decision flow
+
+```
+Operator / QA wants a memory removed
+   │
+   ▼
+WHAT is being removed, and why?
+   │
+   ├─ A proposal still waiting in the Review queue (NOT yet memory)
+   │     └─► Reviewer: REJECT (with a reason)      → audited; never persists. No Admin needed.
+   │
+   ├─ An already-admitted memory that is WRONG / stale / sensitive
+   │     └─► Reviewer has NO delete authority
+   │           ├─ record the evidence, then
+   │           └─► Admin: Data panel → purge by chunk id(s) or owner
+   │                 soft (ump/forget) OR hard (/purge) → tombstone + audit row
+   │
+   ├─ A DATA SUBJECT's data (GDPR Art 17 erasure)
+   │     └─► Admin: Subjects (DSAR) console
+   │           locate → PREVIEW footprint (dry-run, see-before-erase)
+   │           → confirm → purge → deletion certificate (chain-verifiable)
+   │
+   ├─ Content the injection screen FLAGGED (quarantined)
+   │     └─► Admin: Security panel → quarantine
+   │           → RELEASE (admit) or DELETE (purge) the quarantined chunk
+   │
+   └─ A SOURCE / import (not individual memories)
+         └─► Operator: `brain source-delete <id>`  (the CLI's only delete surface)
+```
+
+### The steps, path by path
+
+**Path A — bad proposal (QA, no Admin needed).** Reject from the Review panel with a reason.
+Rejection is audited, the reason enters the chain, and the content never becomes memory. This
+is the *primary* QA delete: it happens before admission, so nothing has to be un-done.
+
+**Path B — bad already-approved memory (Admin).** The reviewer cannot delete; they flag it.
+Admin opens the Data panel, enters the chunk id(s) or owner, and chooses **soft** (`ump/forget`,
+tombstoned) or **hard** (`/purge`, erased). Either writes a tombstone reason + audit row.
+Default to soft unless the content must be physically gone (e.g., sensitive).
+
+**Path C — data-subject erasure (Admin).** Subjects (DSAR) console: locate the subject →
+**Preview footprint** (a dry-run of exactly what the live purge would erase, touching nothing) →
+confirm → purge → receive a chain-verifiable **deletion certificate**. This is the GDPR Art 17
+path and the one to use when a customer or a client's customer asks for erasure.
+
+**Path D — quarantined content (Admin).** Security panel: the injection screen already held
+the content out of memory. The Admin either **releases** it (admit after review) or **deletes**
+it (purge). The safety decision is visible and overridable.
+
+**Path E — a source / import (operator).** `brain source-delete <id>` is the **only** CLI
+delete surface. It removes a source and its association; it is not a memory-content eraser.
+
+### Why the friction exists (the justification)
+
+- **Erasure is unrecoverable.** A deleted memory is gone; the audit trail proves *that* a
+  delete happened and *who* did it, but it cannot restore the content. The human gate is the
+  price of making the irreversible act deliberate instead of cheap.
+- **It forces responsibility and accountability.** Every delete is human-initiated, bound to a
+  named principal, and written to the SHA-256 chain that `/audit/verify` proves end-to-end. The
+  system can always answer *"who deleted what, when, and why?"* — that is the accountability a
+  SOC 2 / GDPR / EU AI Act review demands.
+- **It defends against AI impersonation.** The threat is not an LLM "pretending" to be human —
+  it is an LLM *obtaining the credential that proves humanity*. Because deletion requires a
+  credential a human owns and an agent cannot read, an injected agent cannot escalate to erase.
+  If a future power-user `brain forget` is ever added, it must keep this invariant: **no
+  deletion without a human-owned credential that is not ambiently available to the agent.**
+- **It is procedure, not a flag.** The see-before-erase preview, the confirm step, and the
+  tombstone reason turn deletion into a repeatable, auditable discipline. A prompt or a config
+  flag can be flipped by accident; a procedure cannot be.
+
+### Is this negotiable for a deployment?
+
+The gating above is the **default posture**, not a law. If a customer — a BPO, a contact
+center, an enterprise — genuinely needs a different delete surface (e.g., a reviewer-scoped
+"remove" on the review queue, or a power-user `brain forget`), we are **happy to include it**,
+but **only under certain circumstances**, and the same invariants hold:
+
+- **Human-owned credential only.** Any added surface must require a credential a human holds
+  that an agent cannot read. No deletion may run on a token ambiently available to the LLM.
+- **Still audited.** Every delete, by any surface, writes the same tombstone + SHA-256 audit
+  row. No unlogged bypass.
+- **Soft-first.** New surfaces default to tombstone (`ump/forget`); hard erase stays an
+  explicit, extra step.
+- **Role-scoped, least-privilege.** A reviewer-scoped remove flags for Admin erasure rather
+  than hard-deleting directly; it never grants the reviewer Admin's full purge authority.
+
+A customer asking for deletion flexibility is not asking us to weaken the model — they are
+asking for the *right role* to be able to act. We can tune which role, on which surface, as
+long as the four invariants above are preserved.
+
+### The honest ceiling
+
+"Audited" means *attributable and provable after the fact* — it does not mean *impossible to
+abuse*. A rogue Admin acting within their own authority is not stopped by the ledger; the
+ledger only guarantees you can find out. Prevention comes from the credential isolation above
+and from least-privilege role assignment — not from the audit chain. And the CLI delete gap
+(`source-delete` only) is deliberate: scriptable deletion is where accidents live. The trade is
+a slower path for power users in exchange for a smaller surface for the machine.
 
 ---
 

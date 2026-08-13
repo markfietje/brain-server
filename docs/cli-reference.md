@@ -1,6 +1,9 @@
 # CLI Reference
 
-The `brain` binary is the operator command-line surface. It gives you everything the HTTP API does, from a terminal. This page is the complete command reference.
+The `brain` binary is the operator command-line surface. This page is the command reference.
+The CLI covers retrieval, ingest (directories), self-correction, backup/restore, key management,
+and health — the commands it ships in `src/bin/brain.rs`. For actions the CLI does **not** expose
+(erasure, proposal approval, DSAR, reading the audit log), use the HTTP API or the client console.
 
 ## Health & operations
 
@@ -8,7 +11,6 @@ The `brain` binary is the operator command-line surface. It gives you everything
 |---|---|
 | `brain doctor` | Health + readiness |
 | `brain status` | Counts, model, version |
-| `brain audit [--kind K] [--limit N]` | Read the audit log |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
 
 ## Retrieval
@@ -77,10 +79,6 @@ brain explain "blueberry alternative"
 
 # Ingest a whole vault directory
 brain ingest-dir ~/notes/health
-
-# Approve a human-gated write-back candidate
-brain proposals                     # list the queue
-brain proposal-approve <id>          # promote it to memory
 
 # Check the memory for duplicates and conflicts
 brain check-consistency

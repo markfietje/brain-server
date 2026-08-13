@@ -19,7 +19,7 @@ scripts/install-service.sh
 This installs:
 
 - `brain-server` — the server (launchd-managed, `KeepAlive=true`, `RunAtLoad=true`).
-- `brain` — the operator CLI (status, query, ingest, reconcile, audit, …).
+- `brain` — the operator CLI (status, query, explain, ingest-dir, reconcile, resolve, backup, …).
 - `mcp` — the MCP bridge (search/recall/ingest as MCP tools).
 - `bench` — the latency/recall harness.
 - `brain-migrate-rehearse` — migration rehearsal / recovery.
@@ -75,9 +75,11 @@ See [Security](./security.md) for the full model.
 ```bash
 brain doctor          # health + readiness
 brain status          # counts, model, version
-brain audit           # read the audit log
 brain check-consistency   # duplicates, conflicts, stale sources
 ```
+
+The audit log is read via the HTTP API (`GET /audit`) or the client console, not the `brain`
+CLI (the CLI has no audit subcommand).
 
 `/health` reports liveness plus a `capacity` object (docs / DB size / RSS) and a
 `hardening` object (unsafe blocks, panics caught). Writes are guarded by a capacity

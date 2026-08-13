@@ -16,16 +16,13 @@ brain doctor     # health: config, DB, auth, schema
 ```sh
 # A memory (manual). The write gate proposes it; it becomes memory only on
 # approval — see step 4.
-brain ingest "the acme project ships on the first of every month" --kind memory
-```
-
-or over HTTP:
-
-```sh
 curl -s -X POST localhost:8765/ingest/memory \
   -H 'content-type: application/json' \
   -d '{"items":[{"content":"the acme project ships on the first of every month"}]}'
 ```
+
+(The `brain` CLI ingests whole **directories** — `brain ingest-dir ~/notes` — not single
+snippets; for one memory use the HTTP endpoint above.)
 
 ## 3. Recall it
 
@@ -39,7 +36,7 @@ score and decision path.
 ## 4. Approve the proposal (human-in-the-loop)
 
 Memory candidates are *proposed*, never auto-promoted. Approve from the
-console (`/ops` or Review), the CLI, or the API:
+console (`/ops` or Review) or the API:
 
 ```sh
 # Find the pending proposal id.

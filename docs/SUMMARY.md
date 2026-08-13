@@ -12,6 +12,7 @@
 # Core concepts
 
 - [Overview](overview.md)
+- [Who it's for — target audiences](audiences.md)
 - [Human in the loop](human-in-the-loop.md)
 - [Architecture](architecture.md)
 
@@ -71,6 +72,7 @@
 - [OWASP 2026: our control matrix is the sales doc](./blog/06-owasp-matrix.md)
 - [The honest ceiling](./blog/07-honest-ceiling.md)
 - [From twelve products to one (a preview of Profiles)](./blog/08-profiles-preview.md)
+- [Agent memory for a contact center](./blog/09-contact-center-vertex.md)
 
 # Regulation & trust
 
