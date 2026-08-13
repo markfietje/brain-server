@@ -831,6 +831,69 @@
 
 ## All Agents COMPLETED ✅
 
+## Agent 89: v1.20.22 "Clocks" — DSAR Art 17 deadline + retention expiry (session 2026-08-13)
+**Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
+**Date:** 2026-08-13
+
+Shipped the v1.20.22 "Clocks" **server + client** release per
+`IMPLEMENTATION_PLAN_v1.20.22_Clocks.md`: the v1.20.15 "queue is a clock" core
+(reused unchanged — zero new clock logic) extended to **erasure + retention**,
+so GDPR Art 17's 30-day window and Art 12's response deadline become *visible,
+not assumed*. `dsar_requests` always stamped `created_at`/`completed_at`; what
+was missing was the visibility.
+
+- **M1.1 — `DsarResponse` deadline** (`src/handlers/observe.rs` +
+  `src/config.rs`). Pure `dsar_deadline(created_at) = created_at +
+  dsar_window_secs()`; `config` gains `DEFAULT_DSAR_WINDOW_DAYS = 30` (Art 17)
+  + `BRAIN_DSAR_WINDOW_DAYS` override (the `BRAIN_PROPOSAL_TTL_SECS` env
+  pattern). `DsarResponse` gains `created_at` + `deadline` (computed, the
+  client's source of truth — the `expires_at`/`warn_secs` discipline). No
+  schema change; the certificate path is untouched.
+- **M1.2 — `GET /dsar` ledger list** (Admin). Bounded (`limit` default 100,
+  clamped `1..=MAX_MULTI_GET`), newest-first (`ORDER BY id DESC`), the audit
+  pagination idiom. `{ requests: [{id, subject, action, status, created_at,
+  deadline, completed_at}], total }`. `deadline` is **server-computed per
+  row** (via the shared `dsar_deadline`), so the client ticks against the same
+  number the POST response carries — **no client mirror of the window** (a
+  deliberate deviation from the plan's frozen row shape: without it M2.1 would
+  need a client-side window constant, the very drift this release is against).
+  Extracted `list_dsar_page` (the `page_decayed` idiom) so ordering + page
+  boundary are unit-testable without HTTP. Wired into the openapi route +
+  schema tables and the route/authz guard tables.
+- **M1.3 — two server tests:** `test_dsar_deadline_is_created_at_plus_window`
+  and `test_dsar_ledger_list_returns_rows_with_deadline_fields` (newest-first
+  ordering, open-row `completed_at` = None + `deadline` present, `limit`/
+  `offset` boundary, `total` counts all rows). Main bin 523 → **525 passed** /
+  5 ignored.
+- **M2.1 — Subjects panel: DSAR ledger + 30-day countdown** (`client`). New
+  `ApiClient::dsar_ledger` + `DsarLedger`/`DsarLedgerRow` wire types
+  (`#[serde(default)]` timestamps). The panel fetches the ledger and per open
+  row runs the countdown through the v1.20.15 `time_budget::{remaining, tier,
+  format_remaining}` core (day-scale bands `<3d` warn, `<1d` danger), re-rendered
+  by one ~30s on-load ticker (the ops.rs idiom). Pure `dsar_clock` render core
+  + `dsar_clock_*` i18n keys in `en`.
+- **M2.2 — Data panel: next expiries** (`client`). Pure `next_expiries`
+  (sort by expiry, take 10, skip already-expired) + tier-colored labels via
+  `format_remaining`. `expiry`/`data_next_expiry` i18n key in `en`.
+- **M2.3 — three client tests:** `dsar_clock_tiers_and_labels_the_art17_deadline`,
+  `next_expiries_sorts_by_expiry_caps_at_ten_and_skips_expired`,
+  `dsar_ledger_parse_defaults_absent_timestamps`. Client 105 → **108 passed**.
+
+All gates green: both trees clippy `-D warnings` + `fmt` clean, all server
+binaries + client wasm build clean, openapi/route/schema guards green. Version
+both `Cargo.toml`/locks → 1.20.22. CHANGELOG §[1.20.22], ROADMAP released-row,
+`docs/trust/proof-map.md` DSAR row, AGENTS header + this entry.
+
+**Honest ceilings (carried to v2.x):** the countdown is a **signal, not
+enforcement** — brain-server never auto-re-purges or re-reports (no background
+worker; the v1.20.17 ledger TTL is the only automatic bound). The 30-day window
+is display math on `created_at`; the DB does not enforce it (a
+reminder/notification channel is v2.x). `GET /dsar` is an Admin-only operator
+registry, not subject-facing (DSARs keep flowing through POST + the
+certificate path). `/decayed` only returns already-expired rows, so the Data
+"next to expire" card is the client boundary that would surface a near-expiry
+row if the server ever returned one.
+
 ## Agent 88: v1.20.21 "Subject360" — DSAR footprint preview (session 2026-08-13)
 **Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
 **Date:** 2026-08-13

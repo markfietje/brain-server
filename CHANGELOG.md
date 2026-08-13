@@ -10,6 +10,55 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.22] — 2026-08-13
+
+### Server + client — "Clocks" (DSAR deadline + retention expiry)
+
+Server `Cargo.toml`/lock 1.20.21 → 1.20.22; client 1.20.21 → 1.20.22 (a real
+release — the server changed). GDPR Art 17's 30-day window and Art 12's response
+deadline are **commitments, not displays** — a controller that cannot show the
+remaining window cannot show diligence. `dsar_requests` always stamped
+`created_at`/`completed_at`; what was missing was the **visibility**: the DSAR
+response carried no deadline, there was no ledger list endpoint, and the client
+never rendered either clock. This release turns the v1.20.15 "queue is a clock"
+core (reused unchanged) into the erasure + retention clocks. See
+`IMPLEMENTATION_PLAN_v1.20.22_Clocks.md`.
+
+- **M1.1 — `DsarResponse` deadline** (`src/handlers/observe.rs` +
+  `src/config.rs`). Pure `dsar_deadline(created_at)` = `created_at +
+  dsar_window_secs()`; `config` gains `DEFAULT_DSAR_WINDOW_DAYS = 30` (Art 17)
+  + `BRAIN_DSAR_WINDOW_DAYS` override (the `BRAIN_PROPOSAL_TTL_SECS`
+  resolution pattern). `DsarResponse` gains `created_at` + `deadline`
+  (computed, the client's source of truth — the `expires_at`/`warn_secs`
+  discipline). No schema change.
+- **M1.2 — `GET /dsar` ledger list** (Admin). Bounded (`limit` default 100,
+  clamped `1..=MAX_MULTI_GET`), newest-first (`ORDER BY id DESC`), the audit
+  pagination idiom. `{ requests: [{id, subject, action, status, created_at,
+  deadline, completed_at}], total }` — **`deadline` is server-computed on the
+  rows**, so the client ticks against the same number the POST response carries
+  (no client mirror of the window). Extracted `list_dsar_page` (the `page_decayed`
+  idiom) so ordering + page boundary are unit-testable. Wired into the openapi
+  route table + both route/guard guards.
+- **M2.1 — Subjects panel: DSAR ledger + 30-day countdown** (`client`). Fetches
+  `GET /dsar`; per open row the deadline clock runs through the v1.20.15
+  `time_budget::{remaining, tier, format_remaining}` core (day-scale bands:
+  `<3d` warn, `<1d` danger), re-rendered by one ~30s on-load ticker.
+- **M2.2 — Data panel: next expiries** (`client`). Pure `next_expiries` core —
+  sort by expiry, take 10, skip already-expired (the server excludes them
+  anyway; the core is the boundary) — rendered with `format_remaining` labels,
+  tier-colored.
+- **Tests:** server +2 (main bin 523 → **525 passed** / 5 ignored); client +3
+  (**105 → 108 passed**). Both trees clippy `-D warnings` + fmt clean; wasm +
+  release builds clean.
+- **Honest ceilings:** the countdown is a **signal, not enforcement** — the
+  server never re-purges or re-reports autonomously (repo rule); the ledger TTL
+  (v1.20.17) is the only automatic bound. The 30-day window is display math on
+  `created_at`; the DB does not enforce it (a reminder/notification channel is
+  v2.x). `GET /dsar` is an Admin-only operator registry (not subject-facing;
+  DSARs keep flowing through POST + certificate). The `/decayed` endpoint only
+  returns already-expired rows, so the Data "next to expire" card is the client
+  boundary that would surface a near-expiry row if the server ever returned one.
+
 ## [1.20.21] — 2026-08-13
 
 ### Server + client — "Subject360" (DSAR footprint preview)
