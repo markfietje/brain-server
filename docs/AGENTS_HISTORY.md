@@ -831,6 +831,79 @@
 
 ## All Agents COMPLETED ✅
 
+## Agent 91: v1.20.24 "Sweep" — the audit gaps, closed (session 2026-08-13)
+**Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
+**Date:** 2026-08-13
+
+Shipped the v1.20.24 "Sweep" **server + client + plugin** release per
+`IMPLEMENTATION_PLAN_v1.20.24_Sweep.md`: the post-v1.20.23 audit itemized
+seven unpaid gaps on the closed harden line. This release pays all seven —
+**no new endpoints, no new fields, no telemetry** — plus one genuine bug the
+new regression tests exposed.
+
+- **G1 — every agent-facing seam strips invisible Unicode.** The v1.20.3
+  `strip_invisible` pair becomes a shared lib module (`src/strip_invisible.rs`;
+  screen.rs re-exports, `crate::screen::*` untouched), applied at: the MCP
+  tool-result envelope (extracted pure `tool_result_payload`) + `format_response`
+  seam (`src/bin/mcp.rs`), the CLI `brain recall`/`brain get` prints
+  (`src/bin/brain.rs`), and the openclaw plugin (`format.ts::sanitizeForBlock`
+  + the `\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF` class; recall titles
+  + `memory_get` title + `memory_graph_entity` outputs through it). Ponytail:
+  strips output only; storage verbatim.
+- **G7 — client display fences.** Strips at evidence-modal content,
+  procedure-step content, graph names/relations, review + ops source prompts;
+  the submit-form content columns become a bounded scroll box
+  (`max-h-40 overflow-y-auto`) — LITL smuggling is screened server-side; this
+  is the display fence. CSS-only → client test count unchanged (111).
+- **G2 — PII read-path uniformity.** `GET /chunk/{id}` + `POST /chunk/multi-get`
+  now select + mask `pii` rows for non-admin principals (the v1.14
+  `redact_content` pattern; `pii_principal` cloned pre-move), `POST /search`
+  masks after flagged-evidence suppression, `GET /proposals` masks content via
+  the read-time `scan_pii` leg.
+- **G3 — auth fails closed.** `config::auth_token_misconfigured()` — explicit
+  `AUTH_TOKEN_FILE` that can't yield tokens AND no `AUTH_TOKEN` fallback →
+  fatal at startup; `auth::check_secret_permissions()` — `mode & 0o077 != 0`
+  → refuse. Enforced on the token file (via `config::auth_token_file()` in
+  `TokenStore::new`) and the JWT private key (`jwks.rs`); `main_inner` exits
+  before any bind. Ladder + no-file default unchanged.
+- **G4 — DSAR erases every domain DB.** `post_dsar` multi-db runs
+  `run_dsar_pool` per `registry.known_domains()` pool (shim = the single
+  global pool, byte-identical v1.20.23), non-global pools first each in its
+  own tx (erasure-safe direction), global last with `write_ledger=true` +
+  `aggregate_hash` (SHA-256 of `{"subject","domains":[…]}`); post-commit
+  audit/chain-head/certificate on the global conn; tombstone anchor prefers
+  the ledger-bearing run. New `DsarPoolRun` + extracted `run_dsar_pool`.
+- **G5 — `/decayed` narrowed + the found bug.** Extracted pure
+  `decayed_superset_sql` (branch A exact `expires_at < ?1` + branch B
+  kind-policy superset at the **min**-days cutoff; `page_decayed` stays the
+  arbiter) served by new `idx_knowledge_expires_at` + `idx_knowledge_kind_created`.
+  **The superset regression test failed first, exposing `/decayed` returning
+  `[]` since v1.14**: `strftime('%s', …)` is TEXT, `get::<i64>` dropped every
+  row in `.filter_map(|r| r.ok())`. Fixed with `unixepoch(…)` (INTEGER, same
+  parsing).
+- **G6 — deletion digests.** `purge_chunk_ids` computes `sha256_hex(content)`
+  in-tx into `tombstones.content_hash` (not the row's brute-forceable xxh3-64);
+  DSAR ledger bundle hash = `gate::sha256_hex` (pub(crate)). Knowledge-dedup
+  content_hash stays xxh3 deliberately (row still exists).
+- **Tests:** main bin 527 → **532 passed** / 5 ignored (+5: superset property
+  on a real DB, purge-digest, cross-domain purge + single ledger, auth
+  permission ladder, config fail-closed ladder), MCP bin 13 → **15** (envelope
+  + response seam); client 111 (unchanged); plugin 94 → **96** (bidi class +
+  title strip). jwks + main-auth fixtures now write key files 0o600 (the
+  fail-closed contract). Both trees + plugin clippy `-D warnings` + fmt clean;
+  server 5 binaries + client wasm clean.
+
+Version both `Cargo.toml`/locks → 1.20.24. CHANGELOG §[1.20.24],
+`IMPLEMENTATION_PLAN_v1.20.24_Sweep.md`, ROADMAP released-row + plan row,
+AGENTS header + this entry.
+
+**Honest ceilings (carried to v2.x):** G3 is reader-side enforcement at
+startup (a file chmod'd wide after boot is not re-checked mid-flight). G5's
+superset is exact for the CURRENT_TIMESTAMP format only. G4's aggregate is a
+digest of the domain *list* (per-pool bundles hash individually at write
+time); the certificate is a best-effort audit record, not a crash-recovery
+protocol. G2 masks read-time; storage stays verbatim.
+
 ## Agent 90: v1.20.23 "Calibrate" — reviewer calibration strip (session 2026-08-13)
 **Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
 **Date:** 2026-08-13
@@ -879,7 +952,7 @@ Version both `Cargo.toml`/locks → 1.20.23. CHANGELOG §[1.20.23] (+ the v1.20.
 line-closure note), ROADMAP released-row + plan row, `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`
 closure note, README badge, AGENTS header + this entry. **v1.20.23 closes the
 v1.20.x hardening line** (Scrub → Bound → Vault → Replay → Subject360 → Clocks
-→ Calibrate).
+→ Calibrate) — the v1.20.24 "Sweep" audit-followup shipped after (Agent 91).
 
 **Honest ceilings (carried to v2.x):** the window is `since`-bounded **and**
 list-capped (LIMIT 200) — a 30-day window on a busy queue samples the newest

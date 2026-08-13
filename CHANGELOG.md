@@ -10,6 +10,86 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.24] — 2026-08-13
+
+### Server + client + plugin — "Sweep" (the audit gaps, closed)
+
+Server `Cargo.toml`/lock + client 1.20.23 → 1.20.24. The v1.20.x harden line
+was declared closed at v1.20.23, but the follow-up audit of that line left
+seven unpaid gaps. This release closes all seven — **no new features, no new
+endpoints**, only the missing enforcement, plus one genuine bug found by the
+new regression tests. See `IMPLEMENTATION_PLAN_v1.20.24_Sweep.md`.
+
+- **G1 — every agent-facing seam strips invisible Unicode** (the v1.20.3
+  `strip_invisible` class: C0/C1 controls, zero-width marks, bidi overrides/
+  isolates). Now a shared lib module `src/strip_invisible.rs` (screen.rs
+  re-exports it, so `crate::screen::*` paths are untouched), applied at the
+  MCP tool-result envelope + `format_response` seam (`src/bin/mcp.rs`), the
+  CLI `brain recall`/`brain get` prints (`src/bin/brain.rs`), and the openclaw
+  plugin (`format.ts::sanitizeForBlock` now also strips `\u200B-\u200F`,
+  `\u202A-\u202E`, `\u2066-\u2069`, `\uFEFF`; recall titles + graph tool
+  outputs through the same boundary). Ponytail: strips *output* only — storage
+  stays verbatim.
+- **G7 — the client hardens the same seam** (`client/src/panels/`): strips at
+  evidence-modal content, procedure-step content, graph names/relations,
+  review + operation source prompts; the submit-form content columns get a
+  bounded scroll box (`max-h-40 overflow-y-auto`) instead of a wallpaper of
+  raw text — LITL smuggling was already screened server-side; this is the
+  display fence so a text node can't spike the approval viewport.
+- **G2 — PII read-path uniformity** (`redact_content`). Owner-only masking
+  was applied at the v1.14 surface but not on every read path: `GET
+  /chunk/{id}` and `POST /chunk/multi-get` now select + mask `pii` rows for
+  non-admin principals, `POST /search` masks after the flagged-evidence
+  suppression, and `GET /proposals` masks proposal content via the same
+  read-time `scan_pii` leg. Reveal stays a separate, audited principal leg.
+- **G3 — auth fails closed on a leaked secret file**. `AUTH_TOKEN_FILE` that
+  exists with group/world bits (`mode & 0o077 != 0`) or that can't yield
+  tokens with no `AUTH_TOKEN` env fallback now refuses to start
+  (`config::auth_token_misconfigured` + `auth::check_secret_permissions`
+  enforced on the token file and the JWT private key at startup). A valid env
+  fallback keeps the ladder; the no-file loopback default is unchanged.
+- **G4 — DSAR erases the subject from every domain DB, not just global**
+  (`observe.rs::post_dsar`). Multi-db mode now runs a `run_dsar_pool` per
+  domain (`registry.known_domains()`; shim mode = exactly the one `global`
+  pool, byte-identical to v1.20.23), each in its own transaction (erasure-safe
+  direction: a crash between pools erases-but-under-reports), the global pool
+  last so its ledger row carries the whole purge: `aggregate_hash` = SHA-256
+  of `{"subject", "domains":[...]}`. Dry-run unchanged (read-only footprint
+  per pool).
+- **G5 — `/decayed` scans narrowed, not full-table** (`gate.rs` +
+  `migration.rs`): index-served superset WHERE (exact `expires_at < ?` +
+  kind-policy branch at the *least* restrictive cutoff — min days — so no
+  Rust-expired row is excluded; `page_decayed` stays the arbiter), served by
+  new `idx_knowledge_expires_at` + `idx_knowledge_kind_created`.
+- **G6 — deletion digests are not brute-forceable.** Purge tombstones now
+  carry SHA-256 of the deleted content, not the row's 64-bit xxh3
+  `content_hash` (offline-recoverable for low-entropy values); the DSAR
+  ledger bundle hash is `sha256_hex` too. Knowledge-dedup `content_hash`
+  stays xxh3 on purpose — that row still exists, so the hash is worthless.
+- **Found bug — `/decayed` returned `[]` since v1.14.** The
+  `strftime('%s', ...)` column is **TEXT**, so `get::<_, i64>` threw on
+  every row and `.filter_map(|r| r.ok())` dropped them all — the endpoint
+  has silently served an empty list regardless of expiry. The G5 regression
+  test caught it (the fixture failed where any live-DB test would have);
+  `unixepoch(...)` returns INTEGER with identical parsing.
+- **Tests:** server **532 passed / 5 ignored** in the main bin (+5: the
+  superset property on a real DB, purge-digest SHA-256, cross-domain purge +
+  single-ledger, `check_secret_permissions` mode ladder, `auth_token_misconfigured`
+  fail-closed ladder), MCP bin 15 (+2: envelope + response-seam strips);
+  client **111 passed** (unchanged — the G7 fence is CSS-only); plugin
+  (openclaw) **96 passed** (+2: bidi class + title strip). Both trees + plugin
+  clippy `-D warnings` + fmt clean; server 5-binaries + client wasm release
+  builds clean.
+- **Honest ceilings:** the G3 checks are reader-side *enforcement* — a secret
+  written with wide modes after start is still read by `install-service.sh`'s
+  chmod contract; the G5 superset property holds for the `%Y-%m-%d
+  %H:%M:%S` CURRENT_TIMESTAMP format (its only production shape); the G4
+  aggregate is a digest of a domain *list*, not of per-domain bundle contents
+  (bundles still hash individually at write time only); the cross-pool
+  certificate is a best-effort audit record, not a crash-recovery protocol.
+
+---
+
 ## [1.20.23] — 2026-08-13
 
 ### Server + client — "Calibrate" (reviewer calibration strip)
@@ -68,14 +148,17 @@ server logic**, pure arithmetic over existing rows. See
 
 ### The v1.20.x hardening line — closure
 
-v1.20.23 closes the v1.20 harden line. Every release turned an audit/essay gap
+v1.20.23 closed the v1.20 harden line. Every release turned an audit/essay gap
 into a shipped, honest control — **Scrub** (v1.20.17, personal-data surface
 scrub + inventory), **Bound** (v1.20.18, unbounded read paths), **Vault**
 (v1.20.19, dead `pii_map` vault removed), **Replay** (v1.20.20, stored decision
 path surfaced), **Subject360** (v1.20.21, DSAR dry-run footprint), **Clocks**
 (v1.20.22, Art 17/12 deadline + retention visibility), and **Calibrate**
-(v1.20.23, reviewer feedback). Each implemented its audit gap with honest
-ceilings carried to v2.x. See `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`.
+(v1.20.23, reviewer feedback). v1.20.24 "Sweep" ships after as the
+**audit-followup on this closed line** (§[1.20.24] — the seven gaps the
+post-calibration audit itemized, plus the `/decayed`-empty bug found by its
+regression suite). Each implemented its audit gap with honest ceilings carried
+to v2.x. See `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`.
 
 ---
 
