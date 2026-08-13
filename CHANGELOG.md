@@ -10,6 +10,76 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.25] — 2026-08-13
+
+### Server + client + plugin — "Consolidate" (the post-Sweep tail, closed)
+
+Server `Cargo.toml`/lock + client 1.20.24 → 1.20.25; plugin 0.2.1 → 0.2.2 (a
+real server+client+plugin release — the server changed). The v1.20.24 "Sweep"
+declared the audit line closed, but that release itself left a coherent tail:
+the **read path** (HTTP + graph residue) and the **erasure path** (proposals +
+orphaned graph nodes) still had gaps, and the **hash upgrade** that shipped for
+tombstones (G6) was never extended to the audit/trace `query_hash` family.
+This release consolidates all of it — no new endpoints, no new fields. See
+`IMPLEMENTATION_PLAN_v1.20.25_Consolidate.md`.
+
+- **M1 — the audit/trace hash is now SHA-256, not xxh3-64** (`src/audit.rs`).
+  `hash()` upgrades from the 16-hex `xxh3_64` fingerprint to a full 64-hex
+  SHA-256. The audit + recall-trace paths were the one place G6's "deletion
+  digests must not be offline-recoverable" never reached: `detail_hash`/
+  `target_hash` and the stored `query_hash` derive from low-entropy inputs (an
+  SSN, a name, a short recall query) that a fast non-cryptographic fingerprint
+  would expose. `recall.rs`'s trace `query_hash` and `otel.rs::query_hash` now
+  delegate to the same `audit::hash`; a stored digest no longer reveals its
+  input. `+1 test` (`hash_is_sha256_not_xxh3`).
+- **M2 — the read-path seam now covers every emitted text field**
+  (`src/gate.rs` + `src/handlers/recall.rs` + `src/main.rs`). New
+  `gate::sanitize_read` / `sanitize_read_opt` = `strip_invisible(redact_content(...))`
+  — the v1.20.24 G1 Unicode strip composed with the G2 PII redaction — applied
+  to **title, content, snippet, evidence.text and evidence.heading_path** on
+  the recall/search hits (`results_to_hits`), and to **title + heading_path**
+  on `GET /chunk/{id}` and `POST /chunk/multi-get` (content already redacted).
+  Closes the gap where title/snippet/evidence rode raw past redaction and the
+  HTTP JSON boundary emitted raw invisible bytes (bidi / zero-width / tag
+  block). Idempotent — safe where clients re-strip. `+1 test`
+  (`results_to_hits_strips_invisible_and_redacts_all_fields`).
+- **M3 — DSAR erasure + chunk purge now erase the graph + review-queue residue**
+  (`src/handlers/observe.rs` + `src/handlers/gate.rs`). The v1.20.24 purge's
+  relationship-delete referenced `entities.knowledge_id` — a column that does
+  **not** exist — so the subquery raised "no such column" and silently aborted
+  the whole `DELETE`, leaving relationships (and the PII-bearing entity *names*
+  they anchor) behind on every purge. The clause is removed; `purge_chunk_ids`
+  now collects the affected entity ids from the chunk's relationships first and
+  runs a post-loop orphan sweep (an entity whose relationships are all gone is
+  erased; shared entities linked to surviving knowledge survive). The DSAR path
+  (`run_dsar_pool`) additionally sweeps `proposals` by subject verbatim — raw
+  candidate content with no owner column (possible PII about the subject) that
+  previously survived a "complete" erasure. `+1 test`
+  (`dsar_purge_erases_proposals_and_orphaned_entities`).
+- **M4 — the webhook signing secret fails closed on wide modes**
+  (`src/handlers/webhooks.rs`). A `webhook_secret_path` that isn't owner-only
+  (`mode & 0o077 != 0`) is refused (`None`), matching the v1.20.24 G3 auth-token
+  posture — a world-readable signing secret is a bearer capability any local
+  user could use to forge signatures.
+- **Tests:** server **534 passed / 5 ignored** in the main bin (+3: the audit
+  SHA-256 shape, the all-fields read seam, the DSAR proposal+orphan-entity
+  sweep — and the v1.20.24 G6 one-liner on the proposal-expired audit digest
+  moves to `audit::hash`), MCP bin **15 passed** (unchanged), client **111
+  passed** (unchanged), plugin (openclaw) **97 passed** (+1: the
+  `memory_store` default-mode + direct-mode routing test). Both trees + plugin
+  clippy `-D warnings` + fmt clean; server 5-binaries + client wasm release
+  builds clean.
+- **Honest ceilings:** M3's proposal sweep is a literal `LIKE %subject%`
+  (proposals are operator-reviewed candidates, not subject-attributed rows —
+  there is no owner join to be semantic about); the orphan-entity sweep is
+  scoped to the purge's affected set and the "no remaining relationship" guard,
+  so standalone entities unrelated to a purge are untouched by design; M1
+  stores SHA-256 of a *hash input* that may itself be a pre-computed digest,
+  and the stored form is a fingerprint, not a content *lease* — audit-chain
+  verification is unchanged.
+
+---
+
 ## [1.20.24] — 2026-08-13
 
 ### Server + client + plugin — "Sweep" (the audit gaps, closed)
