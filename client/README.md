@@ -4,18 +4,17 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.15
+## Status — v1.20.20
 
-The v1.20.15 "Clock" release — **deadline clocks in the review queue**
-(server + client). The queue stops being a wall of "pending": every Review
-card and the deep-link detail page show a live, tier-colored countdown to the
-proposal deadline (`Xd Yh` / `Xh Ym` / `Xm` / `<5m` / `expired`), ticked every
-~30s; expired rows disable approve/reject/edit. A **sort-by-deadline** toggle
-("expiry first") reorders the list by nearest expiry, defaulting to the
-server's creation order. The clock core (`client/src/time_budget.rs`) is
-shared with `/ops`, and the deadline is server-authoritative
-(`Proposal.expires_at` + `warn_secs`/`critical_secs`), so a config override is
-reflected with no rebuild.
+The v1.20.20 "Replay" release — **the decision-path replay surface**. The
+decision path the server already records (v1.15.0 "Observe" M2) becomes a
+routed, ledger-linked, exportable evidence view: `Route::RecallTrace` renders
+the structured `trace_panel` (reading the stored `query_hash`/`scope` shape and
+stripping smuggled invisible chars from every displayed string),
+`kind == "recall"` audit rows deep-link to `/recall/{id}` (the audit row id
+*is* the trace id), and the raw trace JSON is one-click exportable via the
+existing download seam. Pure client wiring — zero server code, zero new wire
+types; the Art 22 / ADMT evidence story is one click from the audit chain.
 
 **Core features (from v1.20.0 onward):** theming (dark/light/system),
 offline-tolerant review queue, deep links + PWA, i18n (`en/de/fr/es/nl`),

@@ -257,12 +257,37 @@ fn json_str(v: &serde_json::Value, key: &str) -> String {
     }
 }
 
+/// v1.20.20 M1: a scalar replay field, run through the v1.20.3 `strip_invisible`
+/// render boundary (traces can carry smuggling bytes in stored metadata — the
+/// same class the operator surfaces close). Missing → "—". Pure + used by the
+/// renderer so the replay view de-obfuscates exactly like every other surface.
+fn replay_str(v: &serde_json::Value, key: &str) -> String {
+    crate::strip_invisible(&json_str(v, key))
+}
+
+/// v1.20.20 M1: a replay list field (`domains_searched` / applied `scope`,
+/// both stored as JSON arrays) joined into a stripped display string. Missing
+/// or empty → "—". Pure so the header card is testable.
+fn replay_list(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|val| val.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str())
+                .map(crate::strip_invisible)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "—".into())
+}
+
 fn trace_hit_row(h: &serde_json::Value) -> Element {
-    let id = json_str(h, "id");
-    let score = json_str(h, "score");
-    let source = json_str(h, "source");
-    let relevance = json_str(h, "relevance");
-    let assertion = json_str(h, "assertion_kind");
+    let id = replay_str(h, "id");
+    let score = replay_str(h, "score");
+    let source = replay_str(h, "source");
+    let relevance = replay_str(h, "relevance");
+    let assertion = replay_str(h, "assertion_kind");
     let decayed = trace_decayed_marker(h);
     rsx! {
         tr {
@@ -293,14 +318,41 @@ fn trace_decayed_marker(h: &serde_json::Value) -> &'static str {
 /// Based-Auditing decision-path pillar + the Art 22 "meaningful information
 /// about the logic" evidence.
 pub fn trace_panel(trace_id: i64) -> Element {
-    use_document_title(move || format!("Recall trace #{trace_id} — brain"));
+    let title = crate::i18n::t("replay_title");
+    let export_label = crate::i18n::t("replay_export");
+    let doc_title = title.clone();
+    use_document_title(move || format!("{doc_title} #{trace_id} — brain"));
     let api = use_context::<Signal<ApiClient>>();
     let trace = use_resource(move || {
         let api = api();
         async move { api.recall_trace(trace_id).await }
     });
+    // v1.20.20 M3: the raw fetched trace JSON — held here so the export button
+    // downloads the exact evidence without a second fetch. The download JS is
+    // built once (owned String) so the 'static onclick closure can move it.
+    let export_el = match &*trace.read() {
+        Some(Ok(v)) => {
+            let body = v.to_string();
+            rsx! {
+                div { class: "mt-3 flex gap-2 items-center",
+                    button {
+                        class: "btn btn-outline btn-md",
+                        onclick: move |_| {
+                            let js = format!(
+                                "(function(){{var b=new Blob([{body:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='trace-{trace_id}.json';a.click();URL.revokeObjectURL(u);}})();"
+                            );
+                            let _ = document::eval(&js);
+                        },
+                        "{export_label}"
+                    }
+                    Link { to: Route::Recall {}, "← back to recall" }
+                }
+            }
+        }
+        _ => rsx! { p { class: "mt-3" , Link { to: Route::Recall {}, "← back to recall" } } },
+    };
     rsx! {
-        PageTitle { "Recall trace #{trace_id}" }
+        PageTitle { "{title} #{trace_id}" }
         p { class: "text-xs text-muted-foreground mb-2",
             "the recorded decision path for a past recall (replayable audit artifact)" }
         match &*trace.read() {
@@ -308,35 +360,33 @@ pub fn trace_panel(trace_id: i64) -> Element {
             Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "trace failed: {error_message(&e)}" } },
             None => rsx! { p { class: "text-muted-foreground mt-2", "loading…" } },
         }
-        p { class: "mt-3" , Link { to: Route::Recall {}, "← back to recall" } }
+        { export_el }
     }
 }
 
 /// Render the trace JSON. The server stores the full decision-path metadata
-/// (query, decision, domains, scope, actor, per-hit id/score/source/relevance);
-/// we render each known key, tolerating additions.
+/// (`query_hash` after v1.20.17 M3, decision, actor, domains_searched, applied
+/// scope, per-hit id/score/source/relevance); we render each known key,
+/// tolerating additions. Every displayed string crosses the v1.20.3
+/// `strip_invisible` boundary (`replay_str`/`replay_list`) — a trace can carry
+/// original hit metadata that was never screened.
 #[component]
 fn TraceCard(trace: serde_json::Value) -> Element {
-    let q = trace.get("query").and_then(|v| v.as_str()).unwrap_or("");
-    let decision = trace.get("decision").and_then(|v| v.as_str()).unwrap_or("");
-    let actor = trace.get("actor").and_then(|v| v.as_str()).unwrap_or("");
-    let domains = trace.get("domains_searched").and_then(|v| v.as_array());
-    let scope = trace.get("applied_scope").and_then(|v| v.as_str());
+    let q = replay_str(&trace, "query_hash");
+    let decision = replay_str(&trace, "decision");
+    let actor = replay_str(&trace, "actor");
+    let scope = replay_list(&trace, "scope");
+    let domains = replay_list(&trace, "domains_searched");
     let hits = trace.get("hits").and_then(|v| v.as_array());
     rsx! {
         div { class: "card p-3 text-sm",
             dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1",
-                dt { class: "text-muted-foreground", "query" }    dd { "{q}" }
+                dt { class: "text-muted-foreground", "query_hash" } dd { "{q}" }
                 dt { class: "text-muted-foreground", "decision" } dd { class: "font-mono", "{decision}" }
                 dt { class: "text-muted-foreground", "actor" }    dd { class: "font-mono", "{actor}" }
-                if let Some(s) = scope { dt { class: "text-muted-foreground", "scope" } dd { "{s}" } }
+                dt { class: "text-muted-foreground", "scope" }    dd { "{scope}" }
             }
-            if let Some(domains) = domains {
-                p { class: "mt-2 text-xs text-muted-foreground",
-                    "domains: "
-                    { domains.iter().filter_map(|d| d.as_str()).collect::<Vec<_>>().join(", ") }
-                }
-            }
+            p { class: "mt-2 text-xs text-muted-foreground", "domains: {domains}" }
             if let Some(hits) = hits {
                 table { class: "table mt-2",
                     thead { tr {
@@ -438,5 +488,47 @@ mod tests {
         assert_eq!(d(Some(true)), "decayed");
         assert_eq!(d(Some(false)), "—");
         assert_eq!(d(None), "—");
+    }
+
+    /// v1.20.20 M1: the replay header reads the *stored* shape — `query_hash`
+    /// (not `query`, v1.20.17 M3) and the applied `scope` array — and runs every
+    /// displayed string through the `strip_invisible` render boundary. A trace
+    /// can carry original hit/scope metadata that was never screened.
+    #[test]
+    fn replay_header_reads_stored_shape_and_strips() {
+        let trace = serde_json::json!({
+            "query_hash": "abc123",
+            "decision": "include\u{202E}gnahc",
+            "actor": "cli",
+            "domains_searched": ["global", "fin\u{200B}ance"],
+            "scope": ["alice", "e\u{202E}vil"],
+            "hits": []
+        });
+        // query_hash, not query — a stale `query` key must not leak through.
+        assert_eq!(replay_str(&trace, "query_hash"), "abc123");
+        assert_eq!(replay_str(&trace, "query"), "—");
+        // Stripped: no bidi override (U+202E) / zero-width (U+200B) survive.
+        assert!(!replay_str(&trace, "decision").contains('\u{202E}'));
+        assert!(!replay_list(&trace, "domains_searched").contains('\u{200B}'));
+        assert!(!replay_list(&trace, "scope").contains('\u{202E}'));
+        // A missing list field renders "—", never a panic.
+        assert_eq!(replay_list(&trace, "absent"), "—");
+    }
+
+    /// v1.20.20 M1: the per-hit replay cells cross the same render boundary — a
+    /// U+202E smuggled into a hit's `source` must be stripped before display.
+    #[test]
+    fn replay_hit_cells_strip_smuggled_bidi() {
+        let hit = serde_json::json!({
+            "id": 7,
+            "score": 0.42,
+            "source": "mark\u{202E}dlo",
+            "relevance": "high",
+            "assertion_kind": "fact",
+            "decayed": false
+        });
+        assert!(!replay_str(&hit, "source").contains('\u{202E}'));
+        assert_eq!(replay_str(&hit, "score"), "0.42");
+        assert_eq!(replay_str(&hit, "missing"), "—");
     }
 }

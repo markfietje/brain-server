@@ -65,6 +65,19 @@ pub fn filter_from_query(since: Option<String>, principal: Option<String>) -> Au
     }
 }
 
+/// v1.20.20 M2: the replay deep-link target for an audit row. Only `recall`
+/// rows record a decision-path trace, and the audit row id *is* the trace id
+/// (v1.15.0 M2 — `read_trace(audit_id)`), so `/recall/{id}` is the replay view.
+/// Every other kind returns `None` and stays unlinked. Pure + test-pinned so a
+/// future kind that starts recording a trace is never silently left without a link.
+pub fn replay_href(kind: &str, id: i64) -> Option<String> {
+    if kind == "recall" {
+        Some(format!("/recall/{id}"))
+    } else {
+        None
+    }
+}
+
 pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
     use_document_title(|| "Audit — brain".into());
     let api = use_context::<Signal<ApiClient>>();
@@ -134,6 +147,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
     };
 
     let rows = filter_audit(&events(), &filter());
+    let replay_link = crate::i18n::t("replay_audit_link");
 
     rsx! {
         PageTitle { {crate::i18n::t("audit_title")} }
@@ -213,6 +227,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                             th { class: "text-left pr-2", "actor" }
                             th { class: "text-left pr-2", "status" }
                             th { class: "text-left", "target_hash" }
+                            th { class: "text-left pr-2", "replay" }
                         }
                     }
                     tbody {
@@ -226,6 +241,11 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                                     span { class: status_class(&row.status), "{row.status}" }
                                 }
                                 td { class: "font-mono text-xs", "{row.target_hash}" }
+                                td { class: "pr-2",
+                                    if let Some(href) = replay_href(&row.kind, row.id) {
+                                        Link { to: href, "{replay_link} ↗" }
+                                    }
+                                }
                             }
                         }
                     }
@@ -371,5 +391,17 @@ mod tests {
         next.retain(|r| r.id < tid);
         all.extend(next);
         assert_eq!(all.iter().map(|r| r.id).collect::<Vec<_>>(), vec![4, 3, 2]);
+    }
+
+    /// v1.20.20 M2: only `recall` audit rows carry a replayable decision path,
+    /// and the target is `/recall/{id}` (the audit row id IS the trace id).
+    /// Every other kind stays unlinked so a future trace-capable kind must be
+    /// wired explicitly rather than silently linking to a missing trace.
+    #[test]
+    fn replay_href_links_only_recall_rows() {
+        assert_eq!(replay_href("recall", 7), Some("/recall/7".to_string()));
+        for kind in ["auth", "ingest", "propose", "suggest", "dsar", ""] {
+            assert_eq!(replay_href(kind, 7), None, "kind {kind} must not link");
+        }
     }
 }

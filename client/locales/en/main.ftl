@@ -268,3 +268,9 @@ gate_under_reviewing = under-reviewing
 
 ## Register (v1.20.9 M1–M2 — Agent Memory Register, read-only provenance ledger)
 nav_register = Register
+
+## Replay (v1.20.20 M1–M3 — decision-path replay surface)
+replay_title = Decision replay
+replay_audit_link = open audit row
+replay_export = export evidence
+

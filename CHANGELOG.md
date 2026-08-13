@@ -10,6 +10,47 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.20] — 2026-08-13
+
+### Client — "Replay" (decision-path replay surface)
+
+Client `Cargo.toml`/lock 1.20.16 → 1.20.20; server 1.20.19 → 1.20.20
+(version-alignment only — **zero server code**, `openapi.yaml` untouched). The
+decision path the server already stores (v1.15.0 "Observe" M2, `GET
+/recall/{trace_id}/trace`) becomes a **routed, ledger-linked, exportable
+evidence surface** — the Art 22 / ADMT "why this became memory, by what path"
+story is one click from the audit chain. See
+`IMPLEMENTATION_PLAN_v1.20.20_Replay.md`.
+
+- **M1 — routed leaf is the structured replay view** (`client/src/panels/recall.rs`).
+  `Route::RecallTrace` already delegates to `trace_panel`; the `TraceCard`
+  renderer now reads the **stored** shape — `query_hash` (not `query`, v1.20.17
+  M3), decision, actor, `domains_searched`, and the applied `scope` array — and
+  runs every displayed string through the v1.20.3 `strip_invisible` render
+  boundary (`replay_str`/`replay_list`), closing the bidi/zero-width smuggling
+  class on the replay view.
+- **M2 — audit ledger → replay deep link** (`client/src/panels/audit.rs`).
+  `kind == "recall"` audit rows link to `/recall/{id}` (the row id *is* the trace
+  id by construction), via pure `replay_href` — test-pinned so a future
+  trace-capable kind is wired explicitly, never silently left unlinked.
+- **M3 — evidence export + i18n**. The replay view downloads the raw trace JSON
+  via the existing `document::eval` blob seam (no new helper). New `replay_*`
+  keys in `en` only (de/fr/es/nl fall back per the `ops_title` convention):
+  `replay_title` "Decision replay", `replay_audit_link` "open audit row",
+  `replay_export` "export evidence". `RecallTrace` stays a detail route — the
+  palette guard is unaffected.
+
+Tests: +3 (`replay_href_links_only_recall_rows`, `replay_header_reads_stored_shape_and_strips`,
+`replay_hit_cells_strip_smuggled_bidi`) — main client bin 100 → 103 passed.
+Client clippy `-D warnings` + fmt + wasm build clean; server suite untouched
+and green. See `docs/AGENTS_HISTORY.md` Agent 87.
+
+**Honest note:** the replay view is read-only over what the trace recorded;
+traces store the query **hash** (v1.20.17 M3), so the exact query is recovered
+via audit + hash, not shown verbatim. Read-event traces remain opt-in +
+sampled (JWT mode default), so the ledger link exists only where a trace row
+exists. No screenshot/PDF export — the JSON is the honest evidence artifact.
+
 ## [1.20.19] — 2026-08-13
 
 ### Server — "Vault" (PII-vault promise made honest)
