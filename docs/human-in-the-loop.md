@@ -438,5 +438,6 @@ a slower path for power users in exchange for a smaller surface for the machine.
 
 - **Features** — the full capability tour: [Features](./features.md)
 - **Overview** — why Brain Server exists: [Overview](./overview.md)
+- **The memory lifecycle** — capture → gate → store → retain → recall → erase, end to end: [Memory lifecycle](./memory-lifecycle.md)
 - **Client GUI** — every panel of the control room: [Client GUI](./client-gui.md)
 - **MemGhost mitigation** — why the human gate is the poisoning countermeasure: [MemGhost](./MEMGHOST_MITIGATION.md)

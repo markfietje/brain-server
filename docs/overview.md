@@ -102,4 +102,8 @@ verdict on every card, with every decision written to a tamper-evident audit cha
 - **Governance** — append-only audit log, prompt-injection quarantine, write-back
   gating with human approval, GDPR export/purge/DSAR, and calibrated abstention.
 
+See **[The memory lifecycle](./memory-lifecycle.md)** for the full end-to-end path a fact
+takes from capture to storage, retention, recall, and erasure — and
+[Human in the loop](./human-in-the-loop.md) for the review gate + erasure procedure.
+
 Continue to the [Quickstart](./quickstart.md) to get running.

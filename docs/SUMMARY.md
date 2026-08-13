@@ -14,6 +14,7 @@
 - [Overview](overview.md)
 - [Who it's for — target audiences](audiences.md)
 - [Human in the loop](human-in-the-loop.md)
+- [The memory lifecycle](memory-lifecycle.md)
 - [Architecture](architecture.md)
 
 # API & developer
