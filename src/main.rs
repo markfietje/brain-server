@@ -931,6 +931,13 @@ async fn search(
                     suppress_flagged_evidence(r, filters.include_flagged);
                 }
 
+                // v1.20.24 "Sweep": PII read-projection uniformity — the same
+                // `redact_content` gate /recall applies, now on the legacy
+                // search surface (loopback/opaque principals stay unmasked).
+                for r in &mut results {
+                    r.content = crate::gate::redact_content(&r.content, r.pii, &principal.0);
+                }
+
                 // v1.15.0 "Observe" M1: read-event audit for search reads
                 // (best-effort, never fails the search the caller asked for).
                 if crate::config::audit_read_events(principal.0.is_some()) {
@@ -2703,22 +2710,28 @@ async fn get_chunk(
     // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
+    // v1.20.24 "Sweep": mask PII for non-admin principals like /recall does —
+    // the pii-flagged row's content never leaves unmasked through the legacy
+    // read path (loopback/opaque stays unmasked by design).
+    let pii_principal = principal.0.clone();
     let row = task::spawn_blocking(move || -> Result<Option<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let r = conn.query_row(
             "SELECT k.id, k.title, k.content, k.source, k.document_id, k.chunk_index,
                     k.heading_path, k.line_start, k.line_end, k.created_at,
-                    s.uri, sr.id
+                    s.uri, sr.id, k.pii
              FROM knowledge k
              LEFT JOIN sources s ON k.source_id = s.id
              LEFT JOIN source_revisions sr ON k.revision_id = sr.id
              WHERE k.id = ?1",
             params![id],
             |row| {
+                let content = row.get::<_, String>(2)?;
+                let pii: i64 = row.get(12)?;
                 Ok(serde_json::json!({
                     "id": row.get::<_, i64>(0)?,
                     "title": row.get::<_, Option<String>>(1)?,
-                    "content": row.get::<_, String>(2)?,
+                    "content": crate::gate::redact_content(&content, pii != 0, &pii_principal),
                     "source": row.get::<_, Option<String>>(3)?,
                     "document_id": row.get::<_, Option<String>>(4)?,
                     "chunk_index": row.get::<_, Option<i64>>(5)?,
@@ -2793,6 +2806,9 @@ async fn multi_get(
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let ids = req.ids;
+    // v1.20.24 "Sweep": mask PII per row for non-admin principals (loopback/
+    // opaque stays unmasked by design — has_pii_read(None)).
+    let pii_principal = principal.0.clone();
     let rows = task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         // v1.20.2 F3: single `WHERE id IN (...)` query instead of N round-trips.
@@ -2804,7 +2820,7 @@ async fn multi_get(
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "SELECT k.id, k.title, k.content, k.document_id, k.chunk_index,\
-                    k.heading_path, k.line_start, k.line_end, s.uri, sr.id \
+                    k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii \
              FROM knowledge k \
              LEFT JOIN sources s ON k.source_id = s.id \
              LEFT JOIN source_revisions sr ON k.revision_id = sr.id \
@@ -2821,10 +2837,12 @@ async fn multi_get(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let rows = stmt
             .query_map(refs.as_slice(), |row| {
+                let content = row.get::<_, String>(2)?;
+                let pii: i64 = row.get(10)?;
                 Ok(serde_json::json!({
                     "id": row.get::<_, i64>(0)?,
                     "title": row.get::<_, Option<String>>(1)?,
-                    "content": row.get::<_, String>(2)?,
+                    "content": crate::gate::redact_content(&content, pii != 0, &pii_principal),
                     "document_id": row.get::<_, Option<String>>(3)?,
                     "chunk_index": row.get::<_, Option<i64>>(4)?,
                     "heading_path": row.get::<_, Option<String>>(5)?,
@@ -3991,6 +4009,18 @@ async fn main_inner() -> Result<()> {
     // silently starting the server. MUST run before tracing init or bind() so
     // `brain-server --version` never logs, opens sockets, or loads the model.
     handle_cli_args();
+
+    // ── v1.20.24 "Sweep": fail-closed auth configuration ────────────────
+    // An explicitly-set-but-broken token file must not silently disable auth
+    // (the wrong failure direction); a secret file readable by group/world
+    // must not be accepted at all. Both refuse startup with a clear message.
+    if let Some(msg) = config::auth_token_misconfigured() {
+        return Err(anyhow::anyhow!(msg));
+    }
+    if let Some(path) = config::auth_token_file() {
+        auth::check_secret_permissions(&path)
+            .map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
+    }
 
     // ── v1.20.7 "Telemetry" (M1): optional OTLP trace export ──────────────
     // Default build (no `otel` feature): plain fmt logging, byte-for-byte
@@ -9596,7 +9626,11 @@ Final paragraph after the rule.";
         let priv_pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
         std::fs::create_dir_all(key_dir).unwrap();
         std::fs::write(key_dir.join("test-kid.pem"), pub_pem.as_bytes()).unwrap();
-        std::fs::write(key_dir.join("test-kid.key"), priv_pem.as_bytes()).unwrap();
+        let key_path = key_dir.join("test-kid.key");
+        std::fs::write(&key_path, priv_pem.as_bytes()).unwrap();
+        // v1.20.24 fail-closed auth: owner-only mode, as production enforces.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let key_store = auth::jwks::KeyStore::load(key_dir).expect("load test keys");
         // Register sqlite_vec BEFORE building the pool (migration needs vec0).
         // Same pattern as every other test that runs run_migration.

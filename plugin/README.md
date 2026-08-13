@@ -1,6 +1,6 @@
 # @markfietje/brain-server-openclaw
 
-OpenClaw **memory plugin** for the Rust [brain-server](../). Deterministic
+OpenClaw **memory plugin** for the Rust [brain-server](https://github.com/markfietje/brain-server). Deterministic
 auto-recall, per-domain knowledge graphs, local static embeddings — over
 loopback HTTP. **Zero decision/embedding tokens.**
 
@@ -68,41 +68,41 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
 ```jsonc
 {
   "baseUrl": "http://127.0.0.1:8765",
-  "authToken": "<AUTH_TOKEN>",            // must match the server's AUTH_TOKEN / AUTH_TOKEN_FILE
-  "agents": ["main"],                     // per-agent opt-in; empty = disabled
+  "authToken": "<AUTH_TOKEN>", // must match the server's AUTH_TOKEN / AUTH_TOKEN_FILE
+  "agents": ["main"], // per-agent opt-in; empty = disabled
   "allowedChatTypes": ["direct", "explicit"],
-  "autoRecall": true,                     // deterministic per-turn recall
-  "autoCapture": false,                   // store durable facts after a turn
-  "strictDomain": false,                  // false = cross-domain fallback on miss
+  "autoRecall": true, // deterministic per-turn recall
+  "autoCapture": false, // store durable facts after a turn
+  "strictDomain": false, // false = cross-domain fallback on miss
   "autoRecallTopK": 3,
-  "autoRecallTimeoutMs": 5000
+  "autoRecallTimeoutMs": 5000,
 }
 ```
 
 ## Tools
 
-| Tool | Purpose |
-| ---- | ------- |
-| `memory_recall` | Hybrid semantic + lexical recall. Optional power-tools: `domain`, `source`, `since`, `lex`, `vec`, `hyde`, `intent`. Returns numbered untrusted citations; surfaces `low_confidence` abstention. |
-| `memory_store` | Save a durable fact, optionally with `entities[]`/`relations[]` for the knowledge graph. |
-| `memory_forget` | Delete a memory by id (404 → "Not found"). |
-| `memory_verify` | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact. |
-| `memory_get` | Fetch the full stored text behind a recalled snippet by id. |
-| `memory_graph_entity` | Look up an entity and its one-hop knowledge-graph relations. |
+| Tool                  | Purpose                                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `memory_recall`       | Hybrid semantic + lexical recall. Optional power-tools: `domain`, `source`, `since`, `lex`, `vec`, `hyde`, `intent`. Returns numbered untrusted citations; surfaces `low_confidence` abstention. |
+| `memory_store`        | Save a durable fact, optionally with `entities[]`/`relations[]` for the knowledge graph.                                                                                                         |
+| `memory_forget`       | Delete a memory by id (404 → "Not found").                                                                                                                                                       |
+| `memory_verify`       | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact.                                                                |
+| `memory_get`          | Fetch the full stored text behind a recalled snippet by id.                                                                                                                                      |
+| `memory_graph_entity` | Look up an entity and its one-hop knowledge-graph relations.                                                                                                                                     |
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `index.ts` | Plugin entry: `definePluginEntry`, hooks, tools, service |
-| `src/config.ts` | Typebox schema + resolved config + defaults |
-| `src/brain-client.ts` | Thin typed HTTP client → Rust brain-server (no logic) |
-| `src/gating.ts` | OWASP/Lakera access gating (per-agent + chat-type) |
-| `src/format.ts` | Recall formatting + anti-injection banner + capture heuristics |
-| `openclaw.plugin.json` | Manifest (`kind: "memory"`, contracts, config) |
-| `package.json` | Package metadata, min host version, plugin API compat |
-| `test/plugin.test.ts` | Integration: hook/tool flow against a mocked Rust server (`fetch`) |
-| `src/*.test.ts` | Unit tests: config, gating, format, brain-client transport |
+| File                   | Purpose                                                            |
+| ---------------------- | ------------------------------------------------------------------ |
+| `index.ts`             | Plugin entry: `definePluginEntry`, hooks, tools, service           |
+| `src/config.ts`        | Typebox schema + resolved config + defaults                        |
+| `src/brain-client.ts`  | Thin typed HTTP client → Rust brain-server (no logic)              |
+| `src/gating.ts`        | OWASP/Lakera access gating (per-agent + chat-type)                 |
+| `src/format.ts`        | Recall formatting + anti-injection banner + capture heuristics     |
+| `openclaw.plugin.json` | Manifest (`kind: "memory"`, contracts, config)                     |
+| `package.json`         | Package metadata, min host version, plugin API compat              |
+| `test/plugin.test.ts`  | Integration: hook/tool flow against a mocked Rust server (`fetch`) |
+| `src/*.test.ts`        | Unit tests: config, gating, format, brain-client transport         |
 
 ## Testing
 
@@ -111,25 +111,23 @@ The plugin is a **thin HTTP shim**, not an in-process plugin like
 server's `/recall`, `/ingest`, `/memory/{id}`, `/verify`, `/get/{id}`,
 `/graph/entity/{name}`), never LanceDB or an embedding provider.
 
-Tests run inside the **OpenClaw workspace** (where `@openclaw/plugin-sdk`
-resolves as a `workspace:*` dependency). Keep this directory in sync with the
-bundled copy at openclaw's `extensions/brain-server/`, then run from the
-openclaw repo root:
+Run from the openclaw repo root:
 
 ```bash
 pnpm test extensions/brain-server
 ```
 
 What the suite covers (brain-server-specific):
+
 - **Deterministic recall** — `before_prompt_build` issues exactly ONE
   `POST /recall` and injects `prependContext`.
 - **Fail-open contract** — network/HTTP-500 failures never stall the agent;
   `low_confidence` abstention injects nothing.
 - **Per-agent + chat-type gating** — group blocked, empty-agents disabled
   (OWASP LLM06; a capability `memory-lancedb` does not have).
-- **Error surfacing** — tools report 404 vs 500 distinctly to the agent.
 - **Wire-contract alignment** — snake_case responses (`domains_searched`,
   `entities_added`) parse into the plugin's camelCase shapes.
+- **Error surfacing** — tools report 404 vs 500 distinctly to the agent.
 
 ## Why not a skill or a recall sub-agent?
 
@@ -139,4 +137,5 @@ What the suite covers (brain-server-specific):
   (tokens, non-determinism).
 - This plugin does **deterministic injection** in plugin code — strictly better.
 
-See [../PLUGIN_INTEGRATION.md](../PLUGIN_INTEGRATION.md) for the full contract.
+For the full wire contract (request/response shapes, field bounds, error
+envelope), see the brain-server repo's `API_CONTRACT.md` and `GET /openapi.yaml`.

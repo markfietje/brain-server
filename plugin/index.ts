@@ -181,7 +181,9 @@ export default definePluginEntry({
             await client.store({
               title: text.slice(0, 80),
               content: text,
-              ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
+              ...(c.defaultDomain && c.defaultDomain !== "global"
+                ? { domain: c.defaultDomain }
+                : {}),
               timeoutMs: c.requestTimeoutMs,
             });
           } else {
@@ -485,7 +487,7 @@ export default definePluginEntry({
                 details: { found: false, id: p.id },
               };
             }
-            const title = chunk.title?.trim() ? `\n${chunk.title}` : "";
+            const title = chunk.title?.trim() ? `\n${sanitizeForBlock(chunk.title)}` : "";
             return {
               content: [
                 {
@@ -535,18 +537,18 @@ export default definePluginEntry({
                 details: { found: false, name },
               };
             }
-            const etype = entity.type ? ` (${entity.type})` : "";
+            const etype = entity.type ? ` (${sanitizeForBlock(entity.type).trim()})` : "";
             const rels =
               entity.relations.length === 0
                 ? " (no relations)"
                 : entity.relations
                     .map(
                       (r) =>
-                        `\n  - ${r.direction === "out" ? "→" : "←"} ${r.relation_type} ${r.to_entity}`,
+                        `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}`,
                     )
                     .join("");
             return {
-              content: [{ type: "text" as const, text: `${entity.name}${etype}${rels}` }],
+              content: [{ type: "text" as const, text: `${sanitizeForBlock(entity.name).trim()}${etype}${rels}` }],
               details: { found: true, name: entity.name, relations: entity.relations },
             };
           } catch (err) {

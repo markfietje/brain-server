@@ -119,7 +119,7 @@ pub fn panel() -> Element {
                         Some(Ok(raw)) => match parse_entity(raw) {
                             Some(ev) => rsx! {
                                 div { class: "flex items-center gap-2",
-                                    span { class: "font-semibold", "{ev.name}" }
+                                    span { class: "font-semibold", "{crate::strip_invisible(&ev.name)}" }
                                     span { class: "badge badge-neutral", "{type_lbl}: {ev.entity_type}" }
                                 }
                                 if ev.relations.is_empty() {
@@ -133,8 +133,8 @@ pub fn panel() -> Element {
                                             tbody {
                                                 for rel in &ev.relations {
                                                     tr {
-                                                        td { class: "font-mono text-xs", "{rel.relation_type}" }
-                                                        td { "{rel.other}" }
+                                                        td { class: "font-mono text-xs", "{crate::strip_invisible(&rel.relation_type)}" }
+                                                        td { "{crate::strip_invisible(&rel.other)}" }
                                                         td {
                                                             span { class: if rel.dir == "out" { "badge badge-info" } else { "badge badge-neutral" },
                                                                 if rel.dir == "out" { "{out_lbl}" } else { "{in_lbl}" }

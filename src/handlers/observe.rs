@@ -154,168 +154,160 @@ pub async fn post_dsar(
     }
     // Erasure is irreversible: Admin.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
-    let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let action = req.action.clone();
     let action_did_purge = matches!(action.as_str(), "purge" | "both");
 
+    // v1.20.24 "Sweep" (cross-domain erasure): a DSAR must cover every
+    // registered domain, not just the global pool. In multi-db mode each
+    // `brain-<domain>.db` runs its own locate + purge tx; in shim mode the
+    // list is exactly the global pool (whose owner query already covers every
+    // row of the one shared DB — byte-identical behavior to v1.20.23).
+    // ponytail: per-domain txs, not one cross-file tx — a crash mid-run can
+    // leave some domains purged with the ledger written last (erasure-safe
+    // direction; the ledger under-reports rather than over-reports); the
+    // ledger row + certificate are the global DB's registry of record.
+    let domains: Vec<String> = if state.registry.is_multi_db() {
+        state.registry.known_domains()
+    } else {
+        vec!["global".to_string()]
+    };
+    let mut pools: Vec<(String, crate::Pool)> = Vec::with_capacity(domains.len());
+    for d in &domains {
+        pools.push((
+            d.clone(),
+            super::resolve_domain_pool(&state.registry, Some(d))?,
+        ));
+    }
+    // Global runs LAST so its ledger row can carry the cross-domain digest.
+    pools.sort_by(|a, b| match (a.0 == "global", b.0 == "global") {
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        _ => std::cmp::Ordering::Equal,
+    });
+
     let outcome = tokio::task::spawn_blocking(move || -> Result<DsarOutcome, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
         let now = chrono::Utc::now().timestamp();
+        let dry_run = req.dry_run;
+        let mut runs: Vec<DsarPoolRun> = Vec::with_capacity(pools.len());
 
-        // 1. Locate: owner rows + transitive derived_from descendants.
-        let (roots, derived) = dsar_locate(&tx, &subject)?;
-        let found_count = roots.len() + derived.len();
+        // 1+2. Non-global pools first: each locates + purges in its own tx and
+        //      returns its bundle + purged ids for the aggregate.
+        let mut cross_bundle: Vec<(String, String)> = Vec::new();
+        let mut cross_ids: Vec<i64> = Vec::new();
+        let global_idx = pools
+            .iter()
+            .position(|(name, _)| name == "global")
+            .ok_or_else(|| HandlerError::internal("global pool missing".to_string()))?;
+        for (idx, (name, pool)) in pools.iter().enumerate() {
+            if idx == global_idx {
+                continue;
+            }
+            let run = run_dsar_pool(pool, &subject, &action, dry_run, now, false, None)?;
+            if !dry_run {
+                cross_ids.extend(run.purged_ids.iter().copied());
+                if let Some(b) = &run.bundle {
+                    cross_bundle.push((name.clone(), b.clone()));
+                }
+            }
+            runs.push(run);
+        }
 
-        // 2. Export bundle (portable JSON; raw PII is never included). Shared
-        // by the live purge path and the v1.20.21 dry-run preview — the same
-        // SELECT, no duplicated query.
-        let export_bundle = if matches!(action.as_str(), "export" | "both") {
-            Some(build_export_bundle(&tx, &subject, &roots, &derived)?)
+        // 3. Aggregate digest for the global ledger row: in shim mode this is
+        //    the single local bundle (byte-identical hash to v1.20.23); in
+        //    multi-db mode it is SHA-256 over the joined per-domain bundles.
+        let aggregate_hash = if !dry_run && pools.len() > 1 && !cross_bundle.is_empty() {
+            Some(crate::handlers::gate::sha256_hex(
+                &serde_json::json!({ "subject": subject, "domains": cross_bundle }).to_string(),
+            ))
         } else {
-            None
+            None // shim mode: the global run digests its own bundle
         };
 
-        // 2a. v1.20.21 dry-run: a read-only footprint preview. Locate + bundle
-        //     already ran; count what a live purge WOULD delete, then drop the
-        //     tx untouched (no purge, no sweep, no ledger row, no cert write).
-        if req.dry_run {
-            let export_rows = match &export_bundle {
-                Some(b) => {
-                    // The bundle always carries `{exported_at, subject, knowledge}`.
-                    serde_json::from_str::<serde_json::Value>(b)
-                        .ok()
-                        .and_then(|v| v.get("knowledge").and_then(|k| k.as_array()).map(|a| a.len()))
-                        .unwrap_or(0)
-                }
-                None => 0, // `action == "purge"` builds no bundle; nothing exported
-            };
-            let tombstones = count_subject_tombstones(&tx, &subject, &roots)?;
-            let dsar_rows: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
-                    rusqlite::params![&subject],
-                    |r| r.get(0),
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            return Ok(DsarOutcome::Footprint(Footprint {
-                roots: roots.len(),
-                derived: derived.len(),
-                export_rows,
-                tombstones: tombstones as usize,
-                dsar_rows: dsar_rows as usize,
+        // 4. The global pool: locate + purge + the ledger row (atomic in its
+        //    own tx, as v1.20.17 M5 requires).
+        let global_run = run_dsar_pool(
+            &pools[global_idx].1,
+            &subject,
+            &action,
+            dry_run,
+            now,
+            true,
+            aggregate_hash.as_deref(),
+        )?;
+        runs.push(global_run);
+
+        // 5. Dry-run preview: aggregate the read-only footprint across pools.
+        if dry_run {
+            let mut fp = Footprint {
+                roots: 0,
+                derived: 0,
+                export_rows: 0,
+                tombstones: 0,
+                dsar_rows: 0,
                 dry_run: true,
-            }));
-        }
-
-        // 3. Purge (all-or-nothing with the export, same tx): roots with the
-        //    owner reason, derived descendants with `derived` + origin id.
-        let mut purged_ids: Vec<i64> = Vec::new();
-        if matches!(action.as_str(), "purge" | "both") {
-            for root in &roots {
-                let closure: Vec<i64> = derived
-                    .iter()
-                    .filter(|(_, r)| r == root)
-                    .map(|(d, _)| *d)
-                    .collect();
-                if !closure.is_empty() {
-                    purged_ids.extend(closure.iter().copied());
-                }
+            };
+            for r in &runs {
+                fp.roots += r.roots;
+                fp.derived += r.derived;
+                fp.export_rows += r.export_rows;
+                fp.tombstones += r.tombstones;
+                fp.dsar_rows += r.dsar_rows;
             }
-            let _ = crate::handlers::gate::purge_chunk_ids(
-                &tx,
-                &roots,
-                now,
-                &format!("owner:{subject}"),
-                None,
-            )?;
-            for root in &roots {
-                let closure: Vec<i64> = derived
-                    .iter()
-                    .filter(|(_, r)| r == root)
-                    .map(|(d, _)| *d)
-                    .collect();
-                if !closure.is_empty() {
-                    let _ = crate::handlers::gate::purge_chunk_ids(
-                        &tx,
-                        &closure,
-                        now,
-                        "derived",
-                        Some(*root),
-                    )?;
-                }
-            }
-            purged_ids.extend(roots.iter().copied());
+            return Ok(DsarOutcome::Footprint(fp));
         }
 
-        // v1.16.1: trace residue sweep. Since v1.20.17 M3 the trace no longer
-        // stores the raw query (only its xxh3-64 hash), so the subject can't
-        // appear in it — this sweep remains as a defensive net against any
-        // future field that does embed personal data. Best-effort (short
-        // common subjects over-match slightly; erasure-safe direction).
-        if matches!(action.as_str(), "purge" | "both") && !subject.is_empty() {
-            let _ = tx.execute(
-                "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
-                rusqlite::params![format!("%{}%", subject)],
-            );
-        }
-        // v1.20.17 M1: store the export's xxh3-64 hash, never the raw bundle —
-        // the ledger's job is to prove the purge happened, not to keep a copy
-        // of the erasure payload. Keyed off the same personal-use / op contract.
-        let bundle_hash = export_bundle.as_deref().map(crate::audit::hash);
-
-        // v1.20.17 M5: create the ledger row in the SAME tx as the purge so
-        // the erasure record is atomic with the deletion (a crash mid-purge
-        // can no longer leave a purged subject with no ledger row). Identity +
-        // times are committed now; the certificate (a view needing the
-        // post-commit chain head) is backfilled after the commit.
-        let now = chrono::Utc::now().timestamp();
-        tx.execute(
-            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
-             VALUES (?1, ?2, 'completed', ?3, NULL, ?4, ?4)",
-            rusqlite::params![subject, action, bundle_hash, now],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let id = tx.last_insert_rowid();
-        tx.commit()
-            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-
-        // 4. Audit the workflow (hash-only), then capture the chain head so the
-        //    certificate carries tamper-evidence at certification time.
+        // 6. Post-commit: audit + certificate on the global pool (the audit
+        //    chain is the registry of record), then backfill the ledger row.
+        let global_conn = pools[global_idx]
+            .1
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         crate::audit::record(
-            &conn,
+            &global_conn,
             crate::audit::AuditKind::Reconcile,
             "api",
             &format!("dsar:{subject}"),
             crate::audit::AuditStatus::Ok,
             "dsar",
         );
-        let chain_head = crate::audit::chain_head(&conn);
+        let chain_head = crate::audit::chain_head(&global_conn);
         let certified_at = chrono::Utc::now().to_rfc3339();
+        let mut purged_ids = cross_ids;
+        let mut found_count: usize = 0;
+        let mut tombstone_root: Option<i64> = None;
+        let mut ledger_id: Option<i64> = None;
+        for r in &runs {
+            found_count += r.roots + r.derived;
+            purged_ids.extend(r.purged_ids.iter().copied());
+            // Prefer the ledger-bearing (global) run's root as the certificate
+            // anchor — the registry of record — falling back to any domain.
+            if r.ledger_id.is_some() || tombstone_root.is_none() {
+                tombstone_root = r.tombstone_root;
+            }
+            ledger_id = r.ledger_id.or(ledger_id);
+        }
         let certificate = serde_json::json!({
             "subject": subject,
             "action": action,
             "found_count": found_count,
             "purged_ids": purged_ids,
-            "tombstone_root": roots.first().copied(),
+            "tombstone_root": tombstone_root,
             "certified_at": certified_at,
             "chain_head": chain_head,
         })
         .to_string();
+        let ledger_id =
+            ledger_id.ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
 
         // v1.20.17 M5: backfill the certificate onto the ledger row committed
         // with the purge (best-effort — the row + times already prove it).
-        let _ = conn.execute(
+        let _ = global_conn.execute(
             "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
-            rusqlite::params![certificate, id],
+            rusqlite::params![certificate, ledger_id],
         );
 
         Ok(DsarOutcome::Completed {
-            id,
+            id: ledger_id,
             subject,
             certificate,
             certified_at,
@@ -783,6 +775,183 @@ fn count_subject_tombstones(
     Ok(count)
 }
 
+/// v1.20.24 "Sweep": one DSAR pool's outcome — the locate + purge result for a
+/// single domain DB (global or `brain-<domain>.db`). Counts for the dry-run
+/// footprint, ids + bundle for the cross-domain aggregate, and the ledger row
+/// identity when this pool is the registry of record (global).
+struct DsarPoolRun {
+    roots: usize,
+    derived: usize,
+    export_rows: usize,
+    tombstones: usize,
+    dsar_rows: usize,
+    /// Live-purge ids from this pool (certificate payload).
+    purged_ids: Vec<i64>,
+    /// This pool's export bundle (cross-domain aggregate input).
+    bundle: Option<String>,
+    /// `Some(ledger row id)` when this pool wrote the ledger row (global).
+    ledger_id: Option<i64>,
+    tombstone_root: Option<i64>,
+}
+
+/// Run locate + [dry-run preview | purge + ledger] for ONE domain pool.
+/// `write_ledger` is true only for the global pool (the registry of record);
+/// `aggregate_bundle_hash` carries the cross-domain SHA-256 in multi-db mode
+/// (the global run's own bundle is digested in shim mode — byte-identical to
+/// v1.20.23). All-or-nothing per pool: the purge + ledger row commit in the
+/// same tx (v1.20.17 M5).
+fn run_dsar_pool(
+    pool: &crate::Pool,
+    subject: &str,
+    action: &str,
+    dry_run: bool,
+    now: i64,
+    write_ledger: bool,
+    aggregate_bundle_hash: Option<&str>,
+) -> Result<DsarPoolRun, HandlerError> {
+    let mut conn = pool
+        .get()
+        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+
+    // 1. Locate: owner rows + transitive derived_from descendants.
+    let (roots, derived) = dsar_locate(&tx, subject)?;
+
+    // 2. Export bundle (portable JSON; raw PII is never included). Shared by
+    //    the live purge path and the dry-run preview — the same SELECT.
+    let export_bundle = if matches!(action, "export" | "both") {
+        Some(build_export_bundle(&tx, subject, &roots, &derived)?)
+    } else {
+        None
+    };
+
+    // 2a. Dry-run: a read-only footprint preview. Locate + bundle already ran;
+    //     count what a live purge WOULD delete, then drop the tx untouched.
+    if dry_run {
+        let export_rows = match &export_bundle {
+            Some(b) => {
+                // The bundle always carries `{exported_at, subject, knowledge}`.
+                serde_json::from_str::<serde_json::Value>(b)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("knowledge")
+                            .and_then(|k| k.as_array())
+                            .map(|a| a.len())
+                    })
+                    .unwrap_or(0)
+            }
+            None => 0, // `action == "purge"` builds no bundle; nothing exported
+        };
+        let tombstones = count_subject_tombstones(&tx, subject, &roots)?;
+        let dsar_rows: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
+                rusqlite::params![subject],
+                |r| r.get(0),
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        return Ok(DsarPoolRun {
+            roots: roots.len(),
+            derived: derived.len(),
+            export_rows,
+            tombstones: tombstones as usize,
+            dsar_rows: dsar_rows as usize,
+            purged_ids: Vec::new(),
+            bundle: None,
+            ledger_id: None,
+            tombstone_root: None,
+        });
+    }
+
+    // 3. Purge (all-or-nothing with the export, same tx): roots with the
+    //    owner reason, derived descendants with `derived` + origin id.
+    let mut purged_ids: Vec<i64> = Vec::new();
+    if matches!(action, "purge" | "both") {
+        for root in &roots {
+            let closure: Vec<i64> = derived
+                .iter()
+                .filter(|(_, r)| r == root)
+                .map(|(d, _)| *d)
+                .collect();
+            if !closure.is_empty() {
+                purged_ids.extend(closure.iter().copied());
+            }
+        }
+        let _ = crate::handlers::gate::purge_chunk_ids(
+            &tx,
+            &roots,
+            now,
+            &format!("owner:{subject}"),
+            None,
+        )?;
+        for root in &roots {
+            let closure: Vec<i64> = derived
+                .iter()
+                .filter(|(_, r)| r == root)
+                .map(|(d, _)| *d)
+                .collect();
+            if !closure.is_empty() {
+                let _ = crate::handlers::gate::purge_chunk_ids(
+                    &tx,
+                    &closure,
+                    now,
+                    "derived",
+                    Some(*root),
+                )?;
+            }
+        }
+        purged_ids.extend(roots.iter().copied());
+    }
+
+    // v1.16.1: trace residue sweep. Since v1.20.17 M3 the trace no longer
+    // stores the raw query (only its xxh3-64 hash), so the subject can't
+    // appear in it — this sweep remains as a defensive net against any
+    // future field that does embed personal data. Best-effort (short
+    // common subjects over-match slightly; erasure-safe direction).
+    if matches!(action, "purge" | "both") && !subject.is_empty() {
+        let _ = tx.execute(
+            "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
+            rusqlite::params![format!("%{subject}%")],
+        );
+    }
+
+    // 4. v1.20.17 M1: store the export's SHA-256 (v1.20.24 "Sweep": replacing
+    //    the brute-forceable xxh3-64 digest of a DELETED-content payload),
+    //    never the raw bundle — the ledger's job is to prove the purge
+    //    happened, not to keep a copy of the erasure payload.
+    let mut ledger_id: Option<i64> = None;
+    if write_ledger {
+        let bundle_hash = aggregate_bundle_hash.map(str::to_string).or_else(|| {
+            export_bundle
+                .as_deref()
+                .map(crate::handlers::gate::sha256_hex)
+        });
+        tx.execute(
+            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
+             VALUES (?1, ?2, 'completed', ?3, NULL, ?4, ?4)",
+            rusqlite::params![subject, action, bundle_hash, now],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        ledger_id = Some(tx.last_insert_rowid());
+    }
+    tx.commit()
+        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+
+    Ok(DsarPoolRun {
+        roots: roots.len(),
+        derived: derived.len(),
+        export_rows: 0,
+        tombstones: 0,
+        dsar_rows: 0,
+        purged_ids,
+        bundle: export_bundle,
+        ledger_id,
+        tombstone_root: roots.first().copied(),
+    })
+}
+
 /// Locate every record for a DSAR subject: content rows by `owner`, plus all
 /// transitive `derived_from` descendants (bounded by `DERIVED_MAX_DEPTH`).
 /// Returns `(root_ids, derived_pairs)` where each derived pair is
@@ -857,16 +1026,19 @@ mod tests {
         conn.execute(
             "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
              VALUES ('alice', 'both', 'completed', ?1, ?2, ?2)",
-            rusqlite::params![crate::audit::hash("personal export payload"), now],
+            rusqlite::params![crate::handlers::gate::sha256_hex("personal export payload"), now],
         )
         .unwrap();
         let stored: String = conn
             .query_row("SELECT export_bundle FROM dsar_requests", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(stored, crate::audit::hash("personal export payload"));
+        assert_eq!(
+            stored,
+            crate::handlers::gate::sha256_hex("personal export payload")
+        );
         assert_ne!(stored, "personal export payload");
         // The hash is a bounded non-reversible digest, never the content.
-        assert_eq!(stored.len(), 16);
+        assert_eq!(stored.len(), 64);
     }
 
     #[test]
@@ -1096,5 +1268,102 @@ mod tests {
         // Same per-row shape the live handler relies on.
         assert!(k[0].get("content").is_some());
         assert!(k[0].get("memory_kind").is_some());
+    }
+
+    /// v1.20.24 "Sweep" (G4): a multi-domain DSAR purges the subject in EVERY
+    /// pool but writes the ledger row + aggregate hash only on the global pool
+    /// (the registry of record) — mirroring the handler's run order (non-global
+    /// first, global last). Each pool commits its own transaction, so a crash
+    /// between pools erases-but-under-reports (erasure-safe direction).
+    #[test]
+    fn cross_domain_dsar_purges_all_pools_and_ledgers_once() {
+        use r2d2_sqlite::SqliteConnectionManager;
+
+        crate::register_sqlite_vec();
+        let mk_pool = || {
+            let mgr = SqliteConnectionManager::memory();
+            let pool: crate::Pool = r2d2::Pool::builder()
+                .max_size(1)
+                .build(mgr)
+                .expect("build pool");
+            let mut conn = pool.get().unwrap();
+            brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+            drop(conn);
+            pool
+        };
+        let global = mk_pool();
+        let health = mk_pool();
+        let now = chrono::Utc::now().timestamp();
+        let subject = "alice@example.com";
+
+        for pool in [&global, &health] {
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO knowledge (content, content_hash, owner) VALUES
+                     ('alice root in this db', 'h1', ?1)",
+                rusqlite::params![subject],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO knowledge (content, content_hash) VALUES ('alice derived here', 'h2')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO evidence_links(kind, from_chunk, to_chunk) VALUES ('derived_from', 1, 2)",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Handler order: non-global pools first (local txs, no ledger)...
+        let health_run = run_dsar_pool(&health, subject, "both", false, now, false, None).unwrap();
+        assert!(!health_run.purged_ids.is_empty(), "health pool erased");
+        assert_eq!(health_run.ledger_id, None, "non-global pool never ledgers");
+        // ...then global, with the cross-domain aggregate hash.
+        let aggregate = crate::handlers::gate::sha256_hex(
+            &serde_json::json!({"subject": subject, "domains": ["health"]}).to_string(),
+        );
+        let global_run =
+            run_dsar_pool(&global, subject, "both", false, now, true, Some(&aggregate)).unwrap();
+        assert!(!global_run.purged_ids.is_empty(), "global pool erased");
+        assert!(
+            global_run.ledger_id.is_some(),
+            "global pool owns the ledger row"
+        );
+
+        for (name, pool) in [("global", &global), ("health", &health)] {
+            let conn = pool.get().unwrap();
+            let remaining: i64 = conn
+                .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+                .unwrap_or(0);
+            assert_eq!(remaining, 0, "{name} knowledge fully purged");
+            let toms: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM tombstones WHERE reason = ?1",
+                    rusqlite::params![format!("owner:{subject}")],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(toms, 1, "{name} tombstoned the root");
+        }
+        // Exactly one ledger row, on global, carrying the aggregate digest —
+        // never a pool-local bundle.
+        let conn = global.get().unwrap();
+        let (count, stored): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(export_bundle), '') FROM dsar_requests",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "one ledger row across all pools");
+        assert_eq!(stored, aggregate, "ledger stores the cross-domain digest");
+        let health_led: i64 = health
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
+            .unwrap_or(0);
+        assert_eq!(health_led, 0, "non-global pool has no ledger rows");
     }
 }

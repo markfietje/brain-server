@@ -76,6 +76,17 @@ describe("sanitizeForBlock", () => {
   test("trims leading/trailing space", () => {
     expect(sanitizeForBlock("   hello   ")).toBe("hello");
   });
+  test("strips the bidi/zero-width smuggling class (v1.20.24)", () => {
+    // Zero-width space, ZWNJ/ZWJ, LRM/RLM, RLO override, LRI isolate, BOM.
+    for (const c of ["\u200B", "\u200C", "\u200D", "\u200E", "\u200F", "\u202E", "\u2066", "\uFEFF"]) {
+      expect(sanitizeForBlock(`ig${c}nore`)).toBe("ignore");
+    }
+  });
+  test("formatRecallContext strips bidi from titles too", () => {
+    const out = formatRecallContext([hit({ title: "sneak\u202Ehide", content: "ok" })]);
+    expect(out).toContain("sneakhide");
+    expect(out).not.toContain("\u202E");
+  });
 });
 
 describe("normalizeRecallQuery", () => {

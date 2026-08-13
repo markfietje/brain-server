@@ -293,11 +293,15 @@ pub fn panel() -> Element {
                                         {clock_badge(p, now)}
                                     }
                                 }
-                                p { class: "text-sm text-foreground mt-1", {crate::strip_invisible(&p.content)} }
+                                // v1.20.24 "Sweep" (LITL fence): bounded scroll
+                                // box — same rationale as the review queue.
+                                div { class: "mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-border/50 p-2 text-sm text-foreground",
+                                    {crate::strip_invisible(&p.content)}
+                                }
                                 if let Some(sp) = &p.source_prompt {
                                     details { class: "mt-1 text-xs",
                                         summary { class: "cursor-pointer text-accent", {crate::i18n::t("ops_sourcing")} }
-                                        p { class: "mt-1 text-ink-faint whitespace-pre-wrap border border-border rounded p-2", {sp.clone()} }
+                                        p { class: "mt-1 text-ink-faint whitespace-pre-wrap border border-border rounded p-2", {crate::strip_invisible(sp)} }
                                     }
                                 }
                                 div { class: "flex gap-2 mt-1.5 items-center",

@@ -609,10 +609,22 @@ fn method_tools_call(params: &serde_json::Value) -> Result<serde_json::Value, St
         other => return Err(format!("unknown tool: {}", sanitize_echo(other))),
     };
 
-    Ok(serde_json::json!({
+    // v1.20.24 "Sweep": every tool result (recall hits, chunk reads, graph
+    // names, UMP records) crosses the shared invisible-Unicode strip before
+    // it can reach an LLM context. Idempotent — safe even when a tool already
+    // stripped. ponytail: strips output only; storage stays verbatim.
+    Ok(tool_result_payload(payload))
+}
+
+/// v1.20.24 "Sweep": the tool-result seam — strip + text envelope. Extracted
+/// so the wrapper's sanitization is unit-testable without a live server
+/// (the tool fns all hit HTTP).
+fn tool_result_payload(payload: String) -> serde_json::Value {
+    let payload = brain_server::strip_invisible::strip_invisible(&payload);
+    serde_json::json!({
         "content": [ { "type": "text", "text": payload } ],
         "isError": false,
-    }))
+    })
 }
 
 fn arg_str(args: &serde_json::Value, key: &str) -> Option<String> {
@@ -834,8 +846,12 @@ fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
 }
 
 fn format_response(status: u16, body: &str) -> String {
+    // v1.20.24 "Sweep": strip at the straight-line response seam too (tool
+    // results that bypass `method_tools_call`, e.g. `brain_ingest` echoes).
+    // Idempotent with the wrapper strip — never double-mangles.
+    let body = brain_server::strip_invisible::strip_invisible(body);
     if status == 200 {
-        body.to_string()
+        body
     } else {
         format!("HTTP {status}: {body}")
     }
@@ -1084,5 +1100,38 @@ mod tests {
         // Multibyte char: each char counted once for truncation.
         let escaped = sanitize_echo("★");
         assert_eq!(escaped, "e29885"); // UTF-8 bytes of ★
+    }
+
+    /// v1.20.24 "Sweep" (G1): the tool-result seam strips invisible Unicode
+    /// before it reaches an LLM context. Every tool returns through
+    /// `tool_result_payload`; the strip is idempotent so pre-stripped payloads
+    /// are safe.
+    #[test]
+    fn tool_result_payload_strips_invisible_unicode() {
+        let out = tool_result_payload("sneak\u{202E}hide ok".to_string());
+        let text = out["content"][0]["text"].as_str().expect("text block");
+        assert!(!text.contains('\u{202E}'));
+        assert!(text.contains("sneakhide"));
+        assert_eq!(out["isError"], false);
+        // Idempotence: a payload that already crossed a strip is unchanged.
+        let once = brain_server::strip_invisible::strip_invisible("a\u{200B}b");
+        assert_eq!(
+            tool_result_payload(once)["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+            "ab"
+        );
+    }
+
+    /// v1.20.24 "Sweep" (G1): `format_response` — the straight-line seam for
+    /// tool results that bypass the envelope wrapper — also strips.
+    #[test]
+    fn format_response_strips_invisible_unicode() {
+        let body = format_response(200, "ok \u{2066}payload");
+        assert_eq!(body, "ok payload");
+        assert!(!body.contains('\u{2066}'));
+        // Non-200 keeps the prefix and still strips.
+        let err = format_response(404, "missing\u{FEFF}");
+        assert_eq!(err, "HTTP 404: missing");
     }
 }

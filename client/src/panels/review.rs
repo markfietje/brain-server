@@ -749,12 +749,21 @@ fn card(
                         p { class: "text-sm text-warn",
                             "conflicts with chunk #{c} — approve to supersede" }
                     }
-                    p { class: "text-sm text-foreground mt-1", "{crate::strip_invisible(&proposal.content)}" }
+                    // v1.20.24 "Sweep" (LITL fence): proposal content renders in
+                    // a bounded scroll box (not a full-height <p>) so padded
+                    // memory content cannot push the approve/reject buttons
+                    // below the fold — scroll-evasion padding loses its
+                    // target while the reviewer can still read everything in
+                    // the box. ponytail: nothing is truncated or summarized —
+                    // the human's full-view decision is preserved.
+                    div { class: "mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded border border-border/50 p-2 text-sm text-foreground",
+                        {crate::strip_invisible(&proposal.content)}
+                    }
                     if let Some(sp) = &proposal.source_prompt {
                         details { class: "mt-1 text-xs",
                             summary { class: "cursor-pointer text-accent", "sourcing prompt" }
                             p { class: "mt-1 text-ink-faint whitespace-pre-wrap border border-border rounded p-2",
-                                "{sp}" }
+                                "{crate::strip_invisible(sp)}" }
                         }
                     }
                     div { class: "flex gap-2 mt-1.5 items-center flex-wrap",

@@ -26,6 +26,30 @@ pub mod jwt;
 pub mod policy;
 pub mod revocation;
 
+/// v1.20.24 "Sweep" (fail-closed auth): a secret file is only acceptable when
+/// owner-only (mode & 0o077 == 0). Returns an error message when the file
+/// exists with group/world bits (e.g. a hand-created 0644 token file). The
+/// server refuses to start rather than accept a leaked secret on disk.
+/// ponytail: `install-service.sh`'s chmod is still the writer-side contract;
+/// this is the reader-side enforcement, and non-Unix platforms are unchecked
+/// (no POSIX modes to read).
+pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path)
+        .map_err(|e| format!("cannot stat secret file {}: {e}", path.display()))?;
+    let mode = meta.permissions().mode();
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "secret file {} is group/world-accessible (mode {:o}) — expected owner-only \
+             (0600/0400). chmod 600 {} and restart.",
+            path.display(),
+            mode & 0o777,
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 // Re-export the principal types used across handler boundaries.
 #[allow(unused_imports)]
 pub use jwt::{AuthError, Claims, TokenType, VerifyingKey, ALLOWED_ALGS};
@@ -102,11 +126,7 @@ impl TokenStore {
     /// eagerly so the server can refuse to start if `AUTH_TOKEN_FILE` points at
     /// a missing file in a strict mode (today: best-effort, logs a warning).
     pub fn new() -> Self {
-        let file = std::env::var("AUTH_TOKEN_FILE")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
+        let file = config::auth_token_file();
         Self::from_file(file)
     }
 
@@ -306,5 +326,34 @@ mod tests {
             "empty load is not a rotation"
         );
         assert!(store.tokens().contains("real-token"));
+    }
+
+    /// v1.20.24 "Sweep" (G3): a secret file with group/world bits is refused —
+    /// the server fails closed rather than serve a leaked token. Owner-only
+    /// (0600/0400) passes; a missing file errors (it cannot be validated).
+    #[cfg(unix)]
+    #[test]
+    fn check_secret_permissions_enforces_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let f = write_token_file("tok\n");
+        let path = f.path();
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(check_secret_permissions(path), Ok(()));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(check_secret_permissions(path), Ok(()));
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = check_secret_permissions(path).unwrap_err();
+        assert!(err.contains("644"), "error names the offending mode: {err}");
+
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let missing = std::env::temp_dir().join("brain-test-no-such-token-file");
+        let _ = std::fs::remove_file(&missing);
+        assert!(
+            check_secret_permissions(&missing).is_err(),
+            "unstatable file cannot be validated"
+        );
     }
 }

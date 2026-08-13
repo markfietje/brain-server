@@ -214,7 +214,7 @@ pub fn panel() -> Element {
                                         span { class: "font-semibold text-sm", "{s.title.clone().unwrap_or_default()}" }
                                         span { class: "badge badge-neutral text-xs", "{s.memory_kind}" }
                                     }
-                                    if !s.content.is_empty() { p { class: "text-sm text-muted-foreground mt-1", "{s.content}" } }
+                                    if !s.content.is_empty() { p { class: "text-sm text-muted-foreground mt-1", "{crate::strip_invisible(&s.content)}" } }
                                 }
                             }
                         }

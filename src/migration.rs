@@ -1075,6 +1075,21 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         db.execute("ALTER TABLE proposals ADD COLUMN edited_at INTEGER", [])?;
     }
 
+    // ── v1.20.24 "Sweep": /decayed scan narrowing ────────────────────────
+    // `GET /decayed` now narrows its scan in SQL (the Rust-side
+    // `effective_expiry` filter stays the arbiter). These two indexes serve
+    // the per-chunk branch (`expires_at < now`) and the kind-policy branch
+    // (`node_kind IN (...) AND created_at < cutoff`). Idempotent; no column
+    // contract change (the schema-contract test pins columns, not indexes).
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_expires_at ON knowledge(expires_at)",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_kind_created ON knowledge(node_kind, created_at)",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
         "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.19')

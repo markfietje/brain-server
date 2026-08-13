@@ -191,12 +191,15 @@ pub async fn suggest(
                 results.retain(|r| !exclude.contains(&r.id));
             }
             results.truncate(k_for_task as usize);
+            // v1.20.24 "Sweep": PII read-projection uniformity — the same
+            // `redact_content` gate /recall applies, now on /suggest
+            // (loopback/opaque principals stay unmasked by design).
             Ok(results
                 .into_iter()
                 .map(|r| SuggestionHit {
                     id: r.id,
                     title: r.title,
-                    content: r.content,
+                    content: crate::gate::redact_content(&r.content, r.pii, &principal.0),
                     score: r.score,
                     domain: domain_label.clone(),
                     provenance: SuggestionProvenance {

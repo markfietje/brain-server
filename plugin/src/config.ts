@@ -38,9 +38,7 @@ export const brainConfigSchema = Type.Object({
   //   nothing is trusted directly into long-term memory from an untrusted turn.
   //   "direct"            — store straight to memory (the v1.16.x behavior), gated
   //   only by the server-side injection screen.
-  captureMode: Type.Optional(
-    Type.Union([Type.Literal("proposal"), Type.Literal("direct")]),
-  ),
+  captureMode: Type.Optional(Type.Union([Type.Literal("proposal"), Type.Literal("direct")])),
   strictDomain: Type.Optional(Type.Boolean()),
   defaultDomain: Type.Optional(Type.String()),
 

@@ -379,6 +379,17 @@ pub async fn list_proposals(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
+    // v1.20.24 "Sweep": PII read-projection uniformity — a proposal whose
+    // content scans as PII is masked for non-admin principals exactly like the
+    // knowledge read paths (the queue never promoted the row, but the review
+    // surface is a read surface). Loopback/opaque principals stay unmasked.
+    let mut rows = rows;
+    for p in &mut rows {
+        if !crate::gate::scan_pii(&p.content).is_empty() {
+            p.content = crate::gate::redact_content(&p.content, true, &principal.0);
+        }
+    }
+
     Ok(Json(rows))
 }
 
@@ -1049,7 +1060,10 @@ pub struct ProposalEditRequest {
 
 /// v1.20.14 "Steer": hex SHA-256 of a string, for the edit audit detail (the
 /// before/after hashes prove an edit happened without persisting the content).
-fn sha256_hex(s: &str) -> String {
+/// v1.20.24 "Sweep": promoted to `pub(crate)` — also the deletion-registry
+/// digest (tombstones + the DSAR ledger bundle hash), replacing the
+/// brute-forceable xxh3-64 where the digest protects DELETED content.
+pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(s.as_bytes());
@@ -1093,23 +1107,35 @@ pub async fn list_decayed(
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            // v1.20.24 "Sweep": narrow the scan in SQL instead of pulling every
+            // row. The WHERE is a *superset* of the Rust-side
+            // `effective_expiry` filter (`page_decayed` remains the arbiter, so
+            // semantics are unchanged by construction): branch A is the exact
+            // per-chunk expiry (`expires_at < now`, index-served), branch B
+            // covers the kind-policy expiry via the raw `created_at` text
+            // comparison (the DEFAULT CURRENT_TIMESTAMP format is
+            // chronologically lexicographic; served by
+            // `idx_knowledge_kind_created`). ponytail: the exact filter still
+            // lives in `page_decayed` — the SQL never decides a row's fate.
+            let (sql, params) = decayed_superset_sql(now, &retention_days);
             let mut stmt = conn
-                .prepare(
-                    "SELECT id, content_hash, expires_at, node_kind,
-                            strftime('%s', COALESCE(created_at, '1970-01-01 00:00:00'))
-                     FROM knowledge ORDER BY id",
-                )
+                .prepare(&sql)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             let rows = stmt
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, Option<String>>(1)?,
-                        r.get::<_, Option<i64>>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, i64>(4)?,
-                    ))
-                })
+                .query_map(
+                    rusqlite::params_from_iter(
+                        params.iter().map(|p| p as &dyn rusqlite::types::ToSql),
+                    ),
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, Option<i64>>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .filter_map(|r| r.ok())
                 .collect::<Vec<DecayedRow>>();
@@ -1119,6 +1145,50 @@ pub async fn list_decayed(
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(rows))
+}
+
+/// v1.20.24 "Sweep": the SQL-superset WHERE for `/decayed` — branch A (exact
+/// per-chunk expiry, `expires_at < ?1`, index-served) plus branch B (kind-
+/// policy superset via the raw `created_at` text, cut off at the LEAST
+/// restrictive threshold — min days → latest cutoff — so no Rust-expired row
+/// is ever excluded: `created < now - days_k` implies `created < now -
+/// min_days`). Extracted so the superset property is unit-testable: the
+/// Rust-side `page_decayed` filter remains the arbiter; this clause only
+/// narrows the scan. Note `unixepoch()` (INTEGER): the pre-v1.20.24
+/// `strftime('%s', ...)` returns TEXT, so `get::<i64>` silently dropped
+/// every row and `/decayed` was always empty — this release's regression
+/// test caught it. ponytail: with an empty kind policy the clause is branch
+/// A alone — byte-identical to the v1.20.23 query.
+fn decayed_superset_sql(
+    now: i64,
+    retention_days: &std::collections::BTreeMap<String, i64>,
+) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+    let mut sql = String::from(
+        "SELECT id, content_hash, expires_at, node_kind, \
+                unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')) \
+         FROM knowledge WHERE expires_at IS NOT NULL AND expires_at < ?1",
+    );
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now)];
+    if !retention_days.is_empty() {
+        let kinds: Vec<&String> = retention_days.keys().collect();
+        let placeholders: Vec<String> = (2..=(1 + kinds.len())).map(|i| format!("?{i}")).collect();
+        let cutoff_idx = 2 + kinds.len();
+        sql.push_str(&format!(
+            " OR (expires_at IS NULL AND node_kind IN ({placeholders}) \
+                AND created_at < ?{cutoff_idx})",
+            placeholders = placeholders.join(","),
+            cutoff_idx = cutoff_idx,
+        ));
+        for k in &kinds {
+            params.push(Box::new((*k).clone()));
+        }
+        let min_days = retention_days.values().copied().min().unwrap_or(0);
+        let cutoff = chrono::DateTime::from_timestamp(now - min_days * 86_400, 0)
+            .map(|t| t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
+        params.push(Box::new(cutoff));
+    }
+    (sql, params)
 }
 
 /// v1.20.18 "Bound": `?limit=`/`?offset=` on `/decayed` (clamped to
@@ -1273,15 +1343,20 @@ pub(crate) fn purge_chunk_ids(
 ) -> Result<i64, HandlerError> {
     let mut purged = 0i64;
     for id in ids {
-        // Capture the content_hash for the tombstone before deletion.
-        let content_hash: Option<String> = tx
+        // Capture a SHA-256 of the row content for the tombstone before
+        // deletion (v1.20.24 "Sweep": the deletion registry's digest of
+        // DELETED content must not be an offline-brute-forceable xxh3-64 —
+        // low-entropy personal values are recoverable from 64-bit hashes).
+        // ponytail: still a one-way digest, not a secrecy mechanism — a full
+        // at-rest compromise (key beside data) is out of scope.
+        let content_digest: Option<String> = tx
             .query_row(
-                "SELECT content_hash FROM knowledge WHERE id = ?1",
+                "SELECT content FROM knowledge WHERE id = ?1",
                 rusqlite::params![id],
-                |r| r.get(0),
+                |r| r.get::<_, String>(0),
             )
             .ok()
-            .flatten();
+            .map(|c| sha256_hex(&c));
         // Graph nodes/edges + supersession pointers cascade via FKs or are
         // swept explicitly; vec0 rows are deleted by knowledge_id.
         let _ = tx.execute(
@@ -1326,7 +1401,7 @@ pub(crate) fn purge_chunk_ids(
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![
                     id,
-                    content_hash.unwrap_or_else(|| "unknown".into()),
+                    content_digest.unwrap_or_else(|| "unknown".into()),
                     now,
                     reason,
                     origin_id
@@ -1787,6 +1862,159 @@ mod tests {
 
         // A page past the end yields nothing (stable, not an error).
         assert!(page_decayed(&rows, now, &retention, 99, 2).is_empty());
+    }
+
+    /// v1.20.24 "Sweep" (G5): the SQL WHERE is a superset of the Rust-side
+    /// filter — every row `page_decayed` would keep must be selected by the
+    /// narrowed SQL, on real CURRENT_TIMESTAMP-format dates. The SQL never
+    /// decides a row's fate; the exact filter still lives in Rust.
+    #[test]
+    fn decayed_superset_sql_covers_every_rust_expired_row() {
+        let now = chrono::Utc::now().timestamp();
+        let fmt = |t: chrono::DateTime<chrono::Utc>| {
+            t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()
+        };
+        let old = fmt(chrono::DateTime::from_timestamp(now - 400 * 86_400, 0).unwrap());
+        let fresh = fmt(chrono::DateTime::from_timestamp(now - 10 * 86_400, 0).unwrap());
+
+        let conn = rusqlite::Connection::open_in_memory().expect("db");
+        conn.execute(
+            "CREATE TABLE knowledge (
+                id INTEGER PRIMARY KEY,
+                content_hash TEXT,
+                expires_at INTEGER,
+                node_kind TEXT DEFAULT 'chunk',
+                created_at TEXT
+             )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO knowledge(id, content_hash, expires_at, node_kind, created_at) VALUES
+                 (1, 'a', 100,        'fact', ?1),  -- per-chunk expired (branch A)
+                 (2, 'b', NULL,       'note', ?2),  -- kind-policy expired (branch B, old)
+                 (3, 'c', NULL,       'note', ?1),  -- kind-policy NOT expired (fresh)
+                 (4, 'd', NULL,       'chunk', ?2); -- kind NOT in policy, never expires",
+            rusqlite::params![fresh, old],
+        )
+        .unwrap();
+
+        // Kind policy: note=90d, fact=180d — min days = 90 (latest cutoff).
+        let mut retention = std::collections::BTreeMap::new();
+        retention.insert("note".to_string(), 90);
+        retention.insert("fact".to_string(), 180);
+        let (sql, params) = decayed_superset_sql(now, &retention);
+
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let sql_ids: std::collections::BTreeSet<i64> = stmt
+            .query_map(
+                rusqlite::params_from_iter(params.iter().map(|p| p as &dyn rusqlite::types::ToSql)),
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+            .flatten()
+            .collect();
+
+        // Rust-side truth: run the exact filter over the full table.
+        let all: Vec<DecayedRow> = conn
+            .prepare(
+                "SELECT id, content_hash, expires_at, node_kind, \
+                        unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')) \
+                 FROM knowledge ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            })
+            .unwrap()
+            .flatten()
+            .collect();
+        let rust_expired: std::collections::BTreeSet<i64> =
+            page_decayed(&all, now, &retention, 0, i64::MAX)
+                .iter()
+                .filter_map(|v| v["id"].as_i64())
+                .collect();
+        let rust_visible: std::collections::BTreeSet<i64> =
+            page_decayed(&all, now, &std::collections::BTreeMap::new(), 0, i64::MAX)
+                .iter()
+                .filter_map(|v| v["id"].as_i64())
+                .collect();
+
+        assert!(
+            !rust_expired.is_empty(),
+            "fixture must contain expired rows"
+        );
+        assert_eq!(rust_expired, std::collections::BTreeSet::from([1, 2]));
+        assert!(
+            sql_ids.is_superset(&rust_expired),
+            "SQL ({sql_ids:?}) must cover every Rust-expired row ({rust_expired:?})"
+        );
+        assert_eq!(
+            sql_ids, rust_expired,
+            "superset must not widen to rows the exact filter rejects"
+        );
+
+        // Empty policy → branch A only: NULL-expiry rows are never selected.
+        let (sql_a, params_a) = decayed_superset_sql(now, &std::collections::BTreeMap::new());
+        let mut stmt_a = conn.prepare(&sql_a).unwrap();
+        let sql_a_ids: std::collections::BTreeSet<i64> = stmt_a
+            .query_map(
+                rusqlite::params_from_iter(
+                    params_a.iter().map(|p| p as &dyn rusqlite::types::ToSql),
+                ),
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            sql_a_ids, rust_visible,
+            "no-policy SQL == per-chunk-only Rust filter"
+        );
+    }
+
+    /// v1.20.24 "Sweep" (G6): the deletion registry's digest is the SHA-256 of
+    /// the deleted content — NOT the row's own content_hash (the 64-bit xxh3
+    /// that was brute-forceable offline for low-entropy values). The tombstone
+    /// must carry the new digest, and it must not be the stored hash.
+    #[test]
+    fn purge_tombstone_digest_is_sha256_of_content() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        conn.execute(
+            "INSERT INTO knowledge (content, content_hash, node_kind) \
+             VALUES ('SSN 123-45-6789', 'xxh3-of-content', 'fact')",
+            [],
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let tx = conn.transaction().unwrap();
+        purge_chunk_ids(&tx, &[id], now, "test", None).unwrap();
+        tx.commit().unwrap();
+        let digest: String = conn
+            .query_row(
+                "SELECT content_hash FROM tombstones WHERE knowledge_id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(digest, sha256_hex("SSN 123-45-6789"));
+        assert_eq!(digest.len(), 64, "SHA-256 hex is 64 chars");
+        assert_ne!(digest, "xxh3-of-content");
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     /// M4: `/export` body → UMP envelope resolves relation names and attaches

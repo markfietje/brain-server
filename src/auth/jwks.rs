@@ -164,9 +164,16 @@ impl KeyStore {
                 source: e,
             })?;
             let (alg, verifying) = parse_public_pem(&kid, &public_pem)?;
-            // Optional matching private key alongside.
+            // Optional matching private key alongside. v1.20.24 "Sweep": a
+            // signing key with group/world read bits is a leaked secret — the
+            // load fails (same shape as any other key-read failure, which the
+            // startup already reports loudly).
             let private_path = path.with_extension(PRIVATE_KEY_EXT);
             let private_pem = if private_path.exists() {
+                super::check_secret_permissions(&private_path).map_err(|e| LoadError::ReadKey {
+                    kid: kid.clone(),
+                    source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, e),
+                })?;
                 Some(
                     std::fs::read_to_string(&private_path).map_err(|e| LoadError::ReadKey {
                         kid: kid.clone(),
@@ -386,8 +393,11 @@ mod tests {
     use tempfile::tempdir;
 
     /// Write a keypair to the dir under `<kid>.pem` + `<kid>.key`. Returns
-    /// the kid used. Mirrors what `brain key generate` will do.
+    /// the kid used. Mirrors what `brain key generate` will do — and the
+    /// v1.20.24 fail-closed contract: the private key file is written
+    /// owner-only (0o600), as `install-service.sh` enforces in production.
     fn write_keypair(dir: &Path, kid: &str) -> RsaPrivateKey {
+        use std::os::unix::fs::PermissionsExt;
         let mut rng = rand::thread_rng();
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
@@ -396,7 +406,9 @@ mod tests {
             .unwrap();
         let priv_pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
         std::fs::write(dir.join(format!("{kid}.pem")), pub_pem.as_bytes()).unwrap();
-        std::fs::write(dir.join(format!("{kid}.key")), priv_pem.as_bytes()).unwrap();
+        let key_path = dir.join(format!("{kid}.key"));
+        std::fs::write(&key_path, priv_pem.as_bytes()).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         priv_key
     }
 

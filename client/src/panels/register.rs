@@ -313,7 +313,7 @@ pub fn EvidenceModal(open: Signal<Option<i64>>) -> Element {
                             if let (Some(a), Some(b)) = (e.line_start, e.line_end) { span { class: "badge", "lines {a}–{b}" } }
                             if let Some(c) = &e.created_at { span { class: "badge", "{c}" } }
                         }
-                        pre { class: "mt-3 p-3 bg-muted/50 rounded font-mono text-xs whitespace-pre-wrap", "{e.content}" }
+                        pre { class: "mt-3 p-3 bg-muted/50 rounded font-mono text-xs whitespace-pre-wrap", "{crate::strip_invisible(&e.content)}" }
                     },
                     Some(Err(err)) => rsx! {
                         p { class: "text-danger mt-3", "evidence failed: {error_message(&err)}" }

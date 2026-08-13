@@ -434,6 +434,46 @@ pub fn auth_tokens() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The explicitly-configured token file path (`AUTH_TOKEN_FILE`, if set and
+/// non-empty). `None` when auth is env-driven or file-less.
+pub fn auth_token_file() -> Option<std::path::PathBuf> {
+    std::env::var("AUTH_TOKEN_FILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// v1.20.24 "Sweep" (fail-closed auth): when `AUTH_TOKEN_FILE` is explicitly
+/// set but cannot yield tokens (missing, unreadable, or empty) AND no
+/// `AUTH_TOKEN` env fallback is configured, the server would otherwise start
+/// silently unauthenticated — the wrong failure direction. Returns the fatal
+/// message; the server refuses to start. ponytail: with an `AUTH_TOKEN`
+/// fallback present the ladder still works (auth stays ON); the no-auth
+/// loopback default is unchanged when no file is configured at all.
+pub fn auth_token_misconfigured() -> Option<String> {
+    let path = auth_token_file()?;
+    let file_ok = std::fs::read_to_string(&path)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if file_ok {
+        return None;
+    }
+    let env_fallback = std::env::var("AUTH_TOKEN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .is_some();
+    if env_fallback {
+        return None;
+    }
+    Some(format!(
+        "AUTH_TOKEN_FILE={} is set but missing, unreadable, or empty, and AUTH_TOKEN \
+         is unset — refusing to start with authentication disabled. Fix the token file \
+         (e.g. `install-service.sh`), set AUTH_TOKEN, or unset AUTH_TOKEN_FILE.",
+        path.display()
+    ))
+}
+
 /// Whether per-domain database isolation is active (P2). When false (default),
 /// every domain resolves to the shared global DB (legacy single-DB back-compat).
 /// When true, non-`global` domains get their own `brain-<domain>.db` file.
@@ -802,5 +842,46 @@ mod tests {
         assert!(is_loopback_origin("http://127.0.0.1:8765"));
         assert!(is_loopback_origin("https://localhost"));
         assert!(!is_loopback_origin("https://example.com"));
+    }
+
+    /// v1.20.24 "Sweep" (G3): an explicitly configured but broken token file
+    /// is fatal ONLY when there is no AUTH_TOKEN env fallback — the ladder
+    /// (file → env) must keep auth ON, and the no-file default stays off.
+    /// Save/restore pattern as in capacity.rs (parallel-runner safe).
+    #[test]
+    fn auth_token_misconfigured_fail_closed_ladder() {
+        let prev_file = std::env::var("AUTH_TOKEN_FILE").ok();
+        let prev_env = std::env::var("AUTH_TOKEN").ok();
+
+        let valid = std::env::temp_dir().join("brain-test-valid-token");
+        std::fs::write(&valid, "tok\n").unwrap();
+        let missing = std::env::temp_dir().join("brain-test-missing-token");
+        let _ = std::fs::remove_file(&missing);
+
+        // 1. Valid file → no error, regardless of env.
+        std::env::set_var("AUTH_TOKEN_FILE", &valid);
+        assert_eq!(auth_token_misconfigured(), None);
+        // 2. Broken file + no env fallback → fatal.
+        std::env::set_var("AUTH_TOKEN_FILE", &missing);
+        std::env::remove_var("AUTH_TOKEN");
+        let msg = auth_token_misconfigured();
+        assert!(msg.is_some(), "broken explicit file must refuse to start");
+        assert!(msg.as_ref().unwrap().contains("AUTH_TOKEN_FILE"));
+        // 3. Broken file + env fallback → ladder keeps auth ON.
+        std::env::set_var("AUTH_TOKEN", "fallback");
+        assert_eq!(auth_token_misconfigured(), None);
+        // 4. No file configured → unchanged no-auth default.
+        std::env::remove_var("AUTH_TOKEN_FILE");
+        assert_eq!(auth_token_misconfigured(), None);
+
+        let _ = std::fs::remove_file(&valid);
+        match prev_file {
+            Some(v) => std::env::set_var("AUTH_TOKEN_FILE", v),
+            None => std::env::remove_var("AUTH_TOKEN_FILE"),
+        }
+        match prev_env {
+            Some(v) => std::env::set_var("AUTH_TOKEN", v),
+            None => std::env::remove_var("AUTH_TOKEN"),
+        }
     }
 }

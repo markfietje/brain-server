@@ -21,7 +21,9 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
     return "";
   }
   const lines = hits.map((hit, i) => {
-    const title = hit.title?.trim() ? ` ${hit.title.trim()}` : "";
+    // v1.20.24 "Sweep": titles carry the same smuggling class as bodies —
+    // run them through the shared block sanitation too (they were raw).
+    const title = hit.title?.trim() ? ` ${sanitizeForBlock(hit.title).trim()}` : "";
     const domain = hit.domain ? ` [${hit.domain}]` : "";
     // A `conflict` hit is contested by another current chunk (v1.6 supersedes /
     // contradicts). Surface it so the model does not treat a contested memory
@@ -68,17 +70,22 @@ export function normalizeRecallQuery(text: string, maxChars: number): string {
 
 /**
  * Minimal sanitization for block rendering: collapse whitespace, drop control
- * chars. This is NOT a security boundary (the banner + model discipline is) —
- * it keeps injected text tidy and reduces prompt-noise.
+ * chars, and strip the invisible-Unicode smuggling class (zero-width set
+ * U+200B–200F, Unicode bidi controls U+202A–202E / U+2066–2069, BOM FEFF)
+ * that the server screen + wasm client already strip (v1.20.24 "Sweep" —
+ * the plugin closes the same class on the LLM-facing path). This is NOT a
+ * security boundary (the banner + model discipline is): it keeps injected
+ * text tidy and reduces prompt noise.
  */
 export function sanitizeForBlock(text: string): string {
-  // Intentional: strip control chars (C0/C1) so recalled text cannot smuggle
-  // terminal/control sequences into the prompt block. The banner is the real
-  // injection boundary; this keeps injected text tidy and reduces prompt noise.
+  // Intentional: strip control chars (C0/C1) + the bidi/zero-width smuggling
+  // set, so recalled text cannot smuggle terminal/control/bidi sequences into
+  // the prompt block. The banner is the real injection boundary.
   return (
     text
       // eslint-disable-next-line no-control-regex -- explicit C0/C1 class above
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
       .replace(/\s+/g, " ")
       .trim()
   );

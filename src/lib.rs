@@ -52,3 +52,9 @@ pub mod ump_integrity;
 // use to register sqlite-vec process-wide. Lives in the lib so the two
 // binaries never duplicate an `unsafe` block (the pre-hardening state).
 pub mod register_sqlite_vec;
+
+// The one invisible-Unicode strip boundary (v1.20.24 "Sweep"): shared by the
+// MCP binary + `brain` CLI so every agent-facing surface closes the same
+// bidi/zero-width smuggling class as the server screen. The server binary's
+// `screen.rs` re-exports these so `crate::screen::*` paths stay unchanged.
+pub mod strip_invisible;

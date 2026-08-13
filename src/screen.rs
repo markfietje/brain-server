@@ -18,6 +18,11 @@ use std::sync::{Arc, LazyLock};
 
 use crate::config::{self, InjectionPolicy};
 
+// v1.20.24 "Sweep": the strip pair moved to the lib module (shared with the
+// MCP binary + `brain` CLI). Re-exported here so `crate::screen::*` paths are
+// unchanged.
+pub use brain_server::strip_invisible::{is_invisible, strip_invisible};
+
 /// The verdict of the two-layer screen. `Reject` → HTTP 400; `Quarantine` →
 /// store flagged (excluded from retrieval until review); `Clean` → proceed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,30 +43,6 @@ pub enum ScreenResult {
 /// blocklist runs on raw bytes (`screen`), not stripped input — a bidi-wrapped
 /// phrase the classifier catches can still dodge the blocklist leg; widening
 /// this set shrinks but does not close that gap.
-pub fn strip_invisible(input: &str) -> String {
-    input.chars().filter(|&c| !is_invisible(c)).collect()
-}
-
-/// True for a char that is invisible in normal rendering and used to smuggle
-/// instruction/exfiltration bytes or defeat substring matching.
-pub(crate) fn is_invisible(c: char) -> bool {
-    let cp = c as u32;
-    // Tag block (U+E0000–E007F) — smuggles arbitrary bytes invisibly.
-    (0xE0000..=0xE007F).contains(&cp)
-        // Variation selectors (U+FE00–FE0F) — variant smuggling.
-        || (0xFE00..=0xFE0F).contains(&cp)
-        // Bidi controls (U+200E–U+200F, U+202A–U+202E, U+2066–U+2069) — the
-        // Trojan Source / W3C TR#20 directional-override + isolate class.
-        || (0x200E..=0x200F).contains(&cp)
-        || (0x202A..=0x202E).contains(&cp)
-        || (0x2066..=0x2069).contains(&cp)
-        // Zero-width space / non-joiner / joiner + word joiner.
-        || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
-        // Legacy members (BOM, function/abbreviation/invisible separators,
-        // soft hyphen, combining grapheme joiner).
-        || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
-}
-
 /// A layer-2 scoring classifier. The real ONNX impl lives behind the
 /// `injection-classifier` feature; tests use a fake. `Send + Sync` so a
 /// [`Screen`] can back a `LazyLock` static.
