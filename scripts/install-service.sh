@@ -74,7 +74,12 @@ install_bin() {
 	src="$1"; dest="$2"
 	cp -f "$src" "$dest"
 	chmod +x "$dest"
+	# Strip the local-build provenance xattr (Gatekeeper SIGKILLs otherwise) AND
+	# the downloaded-file quarantine xattr, so an operator who installs a
+	# downloaded release artifact isn't blocked on first exec. Same trust basis:
+	# the operator is installing brain-server on their own machine.
 	xattr -d com.apple.provenance "$dest" 2>/dev/null || true
+	xattr -d com.apple.quarantine "$dest" 2>/dev/null || true
 	ok "installed $dest"
 }
 install_bin "$SRC_BIN" "$DEST_BIN"
