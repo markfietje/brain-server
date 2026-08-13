@@ -8,8 +8,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build binaries + create GitHub release
+  build-linux:
+    name: Build Linux binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -18,7 +18,7 @@ jobs:
           targets: aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release binaries (linux x86_64)
+      - name: Build (linux x86_64)
         # Full binary set: `bench`/`brain-migrate-rehearse` need `--features
         # bench,migrate`, `brain-connector-gh` needs `--features
         # connector-github` (both empty features that gate compilation).
@@ -27,11 +27,20 @@ jobs:
           cargo build --release --features connector-github --bin brain-connector-gh
         continue-on-error: true
 
-      - name: Build release binaries (linux aarch64 via cross)
+      - name: Build (linux aarch64 via cross)
         run: |
           cargo install cross --locked
           cross build --release --features bench,migrate --target aarch64-unknown-linux-gnu
           cross build --release --features connector-github --bin brain-connector-gh --target aarch64-unknown-linux-gnu
+        continue-on-error: true
+
+      - name: Generate CycloneDX SBOM
+        # Reuses the local operator path (scripts/sbom.sh): a CycloneDX SBOM
+        # from Cargo.lock, shipped alongside the release binaries (EU CRA /
+        # OWASP A03:2025). cargo-cyclonedx is a release-time tool.
+        run: |
+          cargo install cargo-cyclonedx --locked
+          ./scripts/sbom.sh
         continue-on-error: true
 
       - name: Stage artifacts
@@ -43,21 +52,95 @@ jobs:
             cp -f "target/release/$b" "dist/${b}-linux-x86_64" 2>/dev/null || true
             cp -f "target/aarch64-unknown-linux-gnu/release/$b" "dist/${b}-linux-aarch64" 2>/dev/null || true
           done
+          cp -f sbom/*.cdx.json dist/ 2>/dev/null || true
           ls -la dist
 
-      - name: Generate CycloneDX SBOM
-        # Reuses the local operator path (scripts/sbom.sh): a CycloneDX SBOM
-        # from Cargo.lock, shipped alongside the release binaries (EU CRA /
-        # OWASP A03:2025). cargo-cyclonedx is a release-time tool, not a
-        # runtime dependency.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: dist/
+
+  build-darwin:
+    name: Build macOS binaries
+    # The operator's native build target (the dev box is macOS arm64) — ships
+    # the same full binary set, native arm64 + cross x86_64. Without this the
+    # release is Linux-only and the local build is never published.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (macOS arm64, native)
         run: |
-          cargo install cargo-cyclonedx --locked
-          ./scripts/sbom.sh
-          cp sbom/*.cdx.json dist/
+          cargo build --release --features bench,migrate
+          cargo build --release --features connector-github --bin brain-connector-gh
+        continue-on-error: true
+
+      - name: Build (macOS x86_64)
+        run: |
+          cargo build --release --features bench,migrate --target x86_64-apple-darwin
+          cargo build --release --features connector-github --bin brain-connector-gh --target x86_64-apple-darwin
+        continue-on-error: true
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          for b in brain-server brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh; do
+            cp -f "target/release/$b" "dist/${b}-darwin-arm64" 2>/dev/null || true
+            cp -f "target/x86_64-apple-darwin/release/$b" "dist/${b}-darwin-x86_64" 2>/dev/null || true
+          done
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-darwin
+          path: dist/
+
+  release:
+    name: Assemble release + notes
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-darwin]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-darwin
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release notes from CHANGELOG
+        # `generate_release_notes` produces only PR-based notes (empty here —
+        # the repo ships via direct commits). Instead the body is this tag's
+        # section of CHANGELOG.md (`## [<version>] …` up to the next heading),
+        # written to a file outside dist/ so it isn't uploaded as an asset. The
+        # previous tag is the CHANGELOG heading after the current section, so no
+        # history fetch / tag walk is needed on the runner.
+        run: |
+          set -e
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            /^## \[/ { if (have) exit; have = ($0 ~ "^## \\[" ver "\\]"); }
+            have { print }
+          ' CHANGELOG.md > RELEASE_BODY.md
+          prev=$(awk -v ver="$version" '
+            /^## \[/ { if (have) { print $0; exit } have = ($0 ~ "^## \\[" ver "\\]") }
+          ' CHANGELOG.md | sed -E 's/^## \[([0-9.]+)\].*/\1/')
+          printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...%s\n' \
+            "$GITHUB_REPOSITORY" "$prev" "$GITHUB_REF_NAME" >> RELEASE_BODY.md
+          echo "notes lines: $(wc -l <RELEASE_BODY.md)"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: RELEASE_BODY.md
           files: dist/*
           fail_on_unmatched_files: false
