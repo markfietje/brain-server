@@ -11,7 +11,6 @@
     "tools": [
       "memory_recall",
       "memory_store",
-      "memory_forget",
       "memory_verify",
       "memory_get",
       "memory_graph_entity"

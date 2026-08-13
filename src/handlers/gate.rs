@@ -1342,7 +1342,24 @@ pub(crate) fn purge_chunk_ids(
     origin_id: Option<i64>,
 ) -> Result<i64, HandlerError> {
     let mut purged = 0i64;
+    // Entity ids referenced by the purged chunks' relationships, collected so the
+    // post-loop orphan sweep can drop graph nodes that no longer link to any
+    // surviving knowledge. Scoped (never global) so standalone entities unrelated
+    // to this purge are untouched.
+    let mut affected_entities: std::collections::HashSet<i64> = std::collections::HashSet::new();
     for id in ids {
+        // Capture the entity ids this chunk's relationships reference (the only
+        // reliable link — `entities` has no `knowledge_id` column).
+        if let Ok(mut s) = tx.prepare(
+            "SELECT from_entity_id FROM relationships WHERE knowledge_id = ?1
+             UNION SELECT to_entity_id FROM relationships WHERE knowledge_id = ?1",
+        ) {
+            if let Ok(rows) = s.query_map([id], |r| r.get::<_, i64>(0)) {
+                for e in rows.flatten() {
+                    affected_entities.insert(e);
+                }
+            }
+        }
         // Capture a SHA-256 of the row content for the tombstone before
         // deletion (v1.20.24 "Sweep": the deletion registry's digest of
         // DELETED content must not be an offline-brute-forceable xxh3-64 —
@@ -1357,14 +1374,20 @@ pub(crate) fn purge_chunk_ids(
             )
             .ok()
             .map(|c| sha256_hex(&c));
-        // Graph nodes/edges + supersession pointers cascade via FKs or are
-        // swept explicitly; vec0 rows are deleted by knowledge_id.
+        // Graph edges are removed by their knowledge link (the FK on
+        // `relationships.knowledge_id` only SET NULLs, it does not delete, so
+        // the row must go explicitly). v1.20.25: the old clause also referenced
+        // `entities.knowledge_id`, a column that does NOT exist — that subquery
+        // raised "no such column" and silently aborted the whole DELETE, so
+        // relationships (and with them their PII-bearing entity names) survived
+        // every purge. Now removed; entity-level cleanup runs in the post-loop
+        // orphan sweep. vec0 rows are deleted by knowledge_id.
         let _ = tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             rusqlite::params![id],
         );
         let _ = tx.execute(
-            "DELETE FROM relationships WHERE knowledge_id = ?1 OR from_entity_id IN (SELECT id FROM entities WHERE knowledge_id = ?1) OR to_entity_id IN (SELECT id FROM entities WHERE knowledge_id = ?1)",
+            "DELETE FROM relationships WHERE knowledge_id = ?1",
             rusqlite::params![id],
         );
         let _ = tx.execute(
@@ -1411,6 +1434,33 @@ pub(crate) fn purge_chunk_ids(
             purged += 1;
         }
     }
+
+    // v1.20.25: orphan-entity sweep. An entity referenced by a purged chunk
+    // whose relationships are now all gone is erased too — an entity *name* can
+    // itself be PII (a person/email/account label), so "memory you can see,
+    // approve, and erase" must not leave a graph node behind after erasure.
+    // Scoped to the affected set + the "no remaining relationship" guard, so a
+    // shared entity still linked to surviving knowledge survives. Best-effort.
+    for e in &affected_entities {
+        let alive: i64 = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM relationships
+                                WHERE from_entity_id = ?1 OR to_entity_id = ?1)",
+                rusqlite::params![e],
+                |r| r.get(0),
+            )
+            .unwrap_or(1);
+        if alive == 0 {
+            // Clear any residual relationship rows first (FK-off safety; if FKs
+            // are on the entity DELETE cascades them anyway).
+            let _ = tx.execute(
+                "DELETE FROM relationships WHERE from_entity_id = ?1 OR to_entity_id = ?1",
+                rusqlite::params![e],
+            );
+            let _ = tx.execute("DELETE FROM entities WHERE id = ?1", rusqlite::params![e]);
+        }
+    }
+
     Ok(purged)
 }
 

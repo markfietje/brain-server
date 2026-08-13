@@ -3,8 +3,10 @@
 //! Every audit row stores **identifiers and hashes only** — never raw indexed
 //! content, token values, or secret-file contents. The `record` helper is a
 //! one-liner callers use at trust boundaries (auth, ingest, webhook verification,
-//! reconcile, backup). Hashing uses the existing `xxh3_64` dependency so there
-//! is no new crypto surface.
+//! reconcile, backup). Hashing uses SHA-256 (v1.20.25: upgraded from xxh3-64 so
+//! a stored `target_hash`/`detail_hash`/`query_hash` derived from low-entropy
+//! content is not offline-recoverable — the tail the v1.20.24 "Sweep" G6 left on
+//! the audit + trace paths).
 //!
 //! v1.1.0 "Harden":
 //! - `tenant_id` column (default 'global') enables per-tenant scoping at the
@@ -23,9 +25,9 @@
 //!   ts TEXT DEFAULT CURRENT_TIMESTAMP,
 //!   kind TEXT NOT NULL,     -- 'auth'|'ingest'|'webhook'|'reconcile'|'backup'|'connector'
 //!   actor TEXT,             -- connector kind/instance, 'api', or 'loopback'
-//!   target_hash TEXT,       -- xxh3 of the affected uri/id (NOT the content)
+//!   target_hash TEXT,       -- SHA-256 of the affected uri/id (NOT the content)
 //!   status TEXT,            -- 'ok'|'denied'|'error'
-//!   detail_hash TEXT,       -- xxh3 of a short detail string (no secrets)
+//!   detail_hash TEXT,       -- SHA-256 of a short detail string (no secrets)
 //!   tenant_id TEXT NOT NULL DEFAULT 'global',  -- v1.1.0 per-tenant scoping
 //!   prev_hash TEXT          -- v1.1.0 tamper-evidence chain link
 //! );
@@ -34,7 +36,6 @@
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use xxhash_rust::xxh3::xxh3_64;
 
 /// Audit event categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,10 +88,13 @@ impl AuditStatus {
     }
 }
 
-/// Hash an identifier/detail string with xxh3. Used so the audit log never
-/// stores the raw value (content, token, uri-with-secret, etc.).
+/// Hash an identifier/detail string with SHA-256. Used so the audit log never
+/// stores the raw value (content, token, uri-with-secret, etc.). The value fed
+/// in may itself be a pre-computed digest; the SHA-256 wrapper guarantees the
+/// stored form is not a fast non-cryptographic fingerprint of low-entropy data
+/// (v1.20.25 — see the module doc).
 pub fn hash(s: &str) -> String {
-    format!("{:016x}", xxh3_64(s.as_bytes()))
+    format!("{:x}", Sha256::digest(s.as_bytes()))
 }
 
 /// SHA-256 hex digest of the chain-link payload. The payload is the
@@ -672,6 +676,32 @@ mod tests {
         assert_eq!(auth.len(), 2, "kind filter should return only auth rows");
         let all = recent(&db, None, 1).unwrap();
         assert_eq!(all.len(), 1, "limit should cap to 1");
+    }
+
+    /// v1.20.25: the audit/trace hash must be SHA-256 (64 hex) — the xxh3-64
+    /// fingerprint of low-entropy content (an SSN, name, short query) was
+    /// offline-brute-forceable. A stored target_hash/detail_hash/query_hash
+    /// derived from such a value must not be a fast non-crypto fingerprint.
+    #[test]
+    fn hash_is_sha256_not_xxh3() {
+        let h = hash("alice@example.com");
+        assert_eq!(
+            h.len(),
+            64,
+            "SHA-256 hex is 64 chars, got {}: {}",
+            h.len(),
+            h
+        );
+        assert!(
+            h.chars().all(|c| c.is_ascii_hexdigit()),
+            "hash must be hex: {h}"
+        );
+        assert_ne!(h.len(), 16, "must not be the legacy 16-char xxh3-64 form");
+        // Determinism: same input -> same digest.
+        assert_eq!(h, hash("alice@example.com"));
+        // A stored target_hash must not reveal the input offline (spot-check
+        // the stored value is not a direct copy of the low-entropy input).
+        assert!(!h.contains("alice"));
     }
 
     #[test]

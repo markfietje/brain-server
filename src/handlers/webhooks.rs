@@ -57,7 +57,16 @@ fn load_webhook_secret() -> Option<Vec<u8>> {
         let bytes = std::fs::read(entry.path()).ok()?;
         let cfg: WhConfig = serde_json::from_slice(&bytes).ok()?;
         if let Some(secret_path) = cfg.webhook_secret_path {
-            return std::fs::read(secret_path).ok();
+            // v1.20.25: the webhook signing secret is a bearer capability —
+            // a world-readable copy lets any local user forge signatures.
+            // Fail closed like the auth token file: a group/world-accessible
+            // secret is refused (None) rather than trusted.
+            if crate::auth::check_secret_permissions(std::path::Path::new(&secret_path)).is_err() {
+                tracing::warn!(path = %secret_path,
+                    "webhook secret file is not owner-only; refusing to trust it");
+                return None;
+            }
+            return std::fs::read(&secret_path).ok();
         }
     }
     None

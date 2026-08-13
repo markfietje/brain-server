@@ -11,9 +11,8 @@
 use crate::screen::ScreenResult;
 
 /// Opaque short hash of a recall query, so an operator can correlate a span to
-/// the query it answered without exporting the query text. Reuses the
-/// codebase-wide audit hash (xxh3-64 hex — the same trade-off as `/audit`: a
-/// fingerprint, not a content leak).
+/// the query it answered without exporting the query text. Delegates to the
+/// codebase-wide audit hash (v1.20.25: SHA-256 — a fingerprint, not a leak).
 pub fn query_hash(query: &str) -> String {
     crate::audit::hash(query)
 }

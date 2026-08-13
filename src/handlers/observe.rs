@@ -915,6 +915,18 @@ fn run_dsar_pool(
             "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
             rusqlite::params![format!("%{subject}%")],
         );
+        // v1.20.25: proposals hold raw candidate content with no owner column,
+        // so a DSAR could never locate them and their plaintext (possibly PII
+        // about the subject) survived a "complete" erasure. Sweep them by the
+        // subject verbatim — the same erasure-safe over-match posture as the
+        // trace sweep above. ponytail: this is a literal `LIKE %subject%`, not a
+        // semantic owner join (proposals are operator-reviewed candidates, not
+        // subject-attributed rows); the review-queue provenance for the subject
+        // is intentionally erased with the memory per Art 17.
+        let _ = tx.execute(
+            "DELETE FROM proposals WHERE content LIKE ?1",
+            rusqlite::params![format!("%{subject}%")],
+        );
     }
 
     // 4. v1.20.17 M1: store the export's SHA-256 (v1.20.24 "Sweep": replacing
@@ -1365,5 +1377,93 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
             .unwrap_or(0);
         assert_eq!(health_led, 0, "non-global pool has no ledger rows");
+    }
+
+    /// v1.20.25: a DSAR purge must erase the review-queue residue and the graph
+    /// residue that v1.20.24 left behind — proposals have no owner column so
+    /// their raw candidate content (possible PII about the subject) survived a
+    /// "complete" erasure, and the entity-scoped relationship delete referenced
+    /// a non-existent `entities.knowledge_id` so relationships + PII-named
+    /// entity nodes survived every purge. Both must now go, while shared
+    /// entities survive.
+    #[test]
+    fn dsar_purge_erases_proposals_and_orphaned_entities() {
+        use r2d2_sqlite::SqliteConnectionManager;
+        crate::register_sqlite_vec();
+        let mgr = SqliteConnectionManager::memory();
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");
+        let mut conn = pool.get().unwrap();
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        let subject = "alice@example.com";
+        // Root knowledge owned by the subject (will be purged).
+        conn.execute(
+            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES (1, 'alice root', 'h1', ?1)",
+            rusqlite::params![subject],
+        )
+        .unwrap();
+        // A proposal whose raw content mentions the subject (PII in the queue).
+        conn.execute(
+            "INSERT INTO proposals(id, kind, content, novelty, salience, status, created_at)
+             VALUES (1, 'fact', 'contact alice@example.com re: x', 1.0, 0.5, 'pending', 1)",
+            [],
+        )
+        .unwrap();
+        // Two entities: 10 is PII-named + only in the purged relationship;
+        // 11 is shared with a surviving chunk.
+        conn.execute(
+            "INSERT INTO entities(id, name) VALUES (10, 'alice@example.com')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entities(id, name) VALUES (11, 'shared-concept')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO entities(id, name) VALUES (12, 'survivor')", [])
+            .unwrap();
+        // A surviving chunk (no owner) holding the shared entity's relationship.
+        conn.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES (2, 'survivor chunk', 'h2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO relationships(from_entity_id, to_entity_id, relation_type, knowledge_id)
+             VALUES (10, 11, 'relates_to', 1), (11, 12, 'relates_to', 2)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let now = chrono::Utc::now().timestamp();
+        let run = run_dsar_pool(&pool, subject, "both", false, now, true, None).unwrap();
+        assert!(!run.purged_ids.is_empty(), "subject root erased");
+
+        let conn = pool.get().unwrap();
+        let proposals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE content LIKE ?1",
+                rusqlite::params![format!("%{subject}%")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(proposals, 0, "proposal PII erased with the memory");
+        let e10: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities WHERE id=10", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let e11: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities WHERE id=11", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(e10, 0, "orphaned PII-named entity erased");
+        assert_eq!(e11, 1, "shared entity survives");
+        let rels: i64 = conn
+            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rels, 1, "only the surviving chunk's relationship remains");
     }
 }

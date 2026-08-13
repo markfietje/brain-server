@@ -593,7 +593,7 @@ pub(crate) async fn run_recall(
                 Some(
                     serde_json::json!({
                         // v1.20.17 M3: the trace records a bounded hash of the
-                        // query (xxh3-64), never the raw text — a recall query
+                        // query (SHA-256, v1.20.25), never the raw text — a recall query
                         // can itself be personal data of the subject (the DSAR
                         // residue-sweep in observe.rs relies on this too).
                         "query_hash": crate::audit::hash(&trace_query),
@@ -743,30 +743,41 @@ fn results_to_hits(
     let now_unix = chrono::Utc::now().timestamp();
     results
         .into_iter()
-        .map(|(r, domain)| RecallHit {
-            id: r.id,
-            title: r.title,
-            content: crate::gate::redact_content(&r.content, r.pii, principal),
-            score: r.score,
-            domain: Some(domain),
-            source: Some(map_source(r.source)),
-            provenance: if include_provenance {
-                Some(r.provenance)
-            } else {
-                None
-            },
-            evidence: r.evidence.clone(),
-            snippet: r.snippet,
-            untrusted: true,
-            conflict: r.evidence.as_ref().map(|e| {
+        .map(|(r, domain)| {
+            // v1.20.25: every text field the chunk emits goes through the read
+            // seam — PII redaction + invisible-Unicode strip — not just `content`.
+            let pii = r.pii;
+            let evidence = r.evidence.map(|mut e| {
+                e.text = crate::gate::sanitize_read(&e.text, pii, principal);
+                e.heading_path = crate::gate::sanitize_read_opt(e.heading_path, pii, principal);
+                e
+            });
+            let conflict = evidence.as_ref().map(|e| {
                 e.links
                     .iter()
                     .any(|l| l.kind == "contradicts" || l.kind == "supersedes")
-            }),
-            confidence: r.confidence,
-            assertion_kind: r.assertion_kind,
-            relevance: Some(crate::gate::relevance_tier(r.score)),
-            decayed: include_decayed.then(|| crate::gate::is_decayed(r.expires_at, now_unix)),
+            });
+            RecallHit {
+                id: r.id,
+                title: crate::gate::sanitize_read_opt(r.title, pii, principal),
+                content: crate::gate::sanitize_read(&r.content, pii, principal),
+                score: r.score,
+                domain: Some(domain),
+                source: Some(map_source(r.source)),
+                provenance: if include_provenance {
+                    Some(r.provenance)
+                } else {
+                    None
+                },
+                evidence,
+                snippet: crate::gate::sanitize_read_opt(r.snippet, pii, principal),
+                untrusted: true,
+                conflict,
+                confidence: r.confidence,
+                assertion_kind: r.assertion_kind,
+                relevance: Some(crate::gate::relevance_tier(r.score)),
+                decayed: include_decayed.then(|| crate::gate::is_decayed(r.expires_at, now_unix)),
+            }
         })
         .collect()
 }
@@ -1271,7 +1282,7 @@ mod tests {
         );
     }
 
-    /// v1.20.17 M3: the stored recall trace records `query_hash` (bounded xxh3),
+    /// v1.20.17 M3: the stored recall trace records `query_hash` (SHA-256, v1.20.25),
     /// never the raw query text — a recall query typed by a user is itself
     /// personal data of that subject, and must not linger in the replay
     /// artifact (the DSAR residue sweep relies on this invariant).
@@ -1306,5 +1317,103 @@ mod tests {
         assert_eq!(v["query_hash"], crate::audit::hash(secret_query));
         // The raw query lives only on the tamper-evident audit row's target
         // (which is what record_read_event stores), never the replay artifact.
+    }
+
+    /// v1.20.25: the recall read seam (results_to_hits) must strip invisible
+    /// Unicode (bidi / zero-width) AND PII-redact EVERY text field a hit emits —
+    /// title, content, snippet, evidence.text, evidence.heading_path — not just
+    /// `content`. This closes the gap where title/snippet/evidence rode raw past
+    /// redaction and the HTTP surface emitted raw invisible bytes.
+    #[test]
+    fn results_to_hits_strips_invisible_and_redacts_all_fields() {
+        use crate::auth::{Action, Principal, Scope};
+        let non_admin = Some(Principal {
+            sub: "reader".into(),
+            tenant: "team-a".into(),
+            scopes: vec![Scope {
+                action: Action::Read,
+                team: "team-a".into(),
+                domain: "global".into(),
+            }],
+            jti: "t".into(),
+        });
+        let mut r = crate::SearchResult::raw(
+            1,
+            0.9,
+            Some("ti\u{200B}tle".into()),
+            "contact alice@example.com\n\u{202A}hidden\u{202C}".into(),
+        );
+        r.pii = true;
+        r.snippet = Some("alice@example.com snippet".into());
+        r.evidence = Some(crate::search::Evidence {
+            text: "alice@example.com evidence".into(),
+            line_start: None,
+            line_end: None,
+            heading_path: Some("sec\u{200B}tion".into()),
+            source_uri: None,
+            revision_id: None,
+            highlights: vec![],
+            valid_from: None,
+            valid_to: None,
+            observed_at: None,
+            authority: None,
+            lifecycle: None,
+            links: vec![],
+            untrusted: true,
+        });
+
+        let hits = results_to_hits(vec![(r, "global".into())], false, false, &non_admin);
+        let h = &hits[0];
+        // PII redacted in content/snippet/evidence.
+        assert!(
+            !h.content.contains("alice@example.com"),
+            "content leaked PII"
+        );
+        assert!(h.content.contains("[redacted:email]"));
+        assert!(
+            !h.content.contains('\u{202A}') && !h.content.contains('\u{202C}'),
+            "bidi stripped from content"
+        );
+        assert!(
+            !h.snippet
+                .as_deref()
+                .unwrap_or("")
+                .contains("alice@example.com"),
+            "snippet leaked PII"
+        );
+        let ev = h.evidence.as_ref().unwrap();
+        assert!(
+            !ev.text.contains("alice@example.com"),
+            "evidence.text leaked PII"
+        );
+        // Invisible chars stripped from title + heading.
+        assert!(
+            !h.title.as_deref().unwrap_or("").contains('\u{200B}'),
+            "zero-width stripped from title"
+        );
+        assert!(
+            !ev.heading_path
+                .as_deref()
+                .unwrap_or("")
+                .contains('\u{200B}'),
+            "zero-width stripped from heading"
+        );
+        // Loopback (None) keeps full text but still strips invisible bytes.
+        let hits_loop = results_to_hits(
+            vec![(
+                crate::SearchResult::raw(
+                    2,
+                    0.8,
+                    Some("t\u{200B}it".into()),
+                    "x\u{202A} y\u{202C}".into(),
+                ),
+                "global".into(),
+            )],
+            false,
+            false,
+            &None,
+        );
+        assert!(!hits_loop[0].content.contains('\u{202A}'));
+        assert!(!hits_loop[0].title.as_deref().unwrap().contains('\u{200B}'));
     }
 }

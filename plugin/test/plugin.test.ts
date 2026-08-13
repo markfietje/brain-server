@@ -104,7 +104,8 @@ describe("plugin registration", () => {
     // kind:"memory" slot contract (matches openclaw.plugin.json contracts.tools).
     expect(tools.has("memory_recall")).toBe(true);
     expect(tools.has("memory_store")).toBe(true);
-    expect(tools.has("memory_forget")).toBe(true);
+    // v1.20.25: agent-facing hard-delete is removed — erasure is a human action.
+    expect(tools.has("memory_forget")).toBe(false);
     // brain-server differentiated surfaces (span verify, fetch, knowledge graph).
     expect(tools.has("memory_verify")).toBe(true);
     expect(tools.has("memory_get")).toBe(true);
@@ -354,24 +355,35 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
     expect(text).toContain("500");
   });
 
-  test("memory_forget reports 'Not found' on 404 (distinct from a server error)", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("nope", { status: 404 }));
+  test("memory_forget is not an agent tool (erasure is human-only)", async () => {
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_forget")!.execute("call-1", { id: "123" });
-    expect((res as { content: Array<{ text: string }> }).content[0]?.text).toContain("Not found");
-    expect((res as { details: { deleted: boolean } }).details.deleted).toBe(false);
+    expect(tools.has("memory_forget")).toBe(false);
   });
 
-  test("memory_store returns the server's id + status on success", async () => {
+  test("memory_store queues a proposal for human review by default (captureMode: proposal)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ id: 42, status: "created", entities_added: 2 }),
+      mockResponse({ id: 42, status: "pending", novelty: 1.0 }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools.get("memory_store")!.execute("call-1", { text: "a durable fact" });
-    const details = (res as { details: { id: number; status: string; stored: boolean } }).details;
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    const details = (res as { details: { pending: boolean; id: number; status: string } }).details;
+    // The agent's write is queued for HUMAN review, never written straight to memory.
+    expect(details.pending).toBe(true);
+    expect(details.status).toBe("pending");
     expect(details.id).toBe(42);
+    expect(text).toContain("Submitted for review");
+  });
+
+  test("memory_store with captureMode:direct writes straight to memory", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ id: 7, status: "created", entities_added: 2 }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
+    const res = await tools.get("memory_store")!.execute("call-1", { text: "a durable fact" });
+    const details = (res as { details: { pending: boolean; status: string } }).details;
+    expect(details.pending).toBe(false);
     expect(details.status).toBe("created");
-    expect(details.stored).toBe(true);
   });
 
   test("memory_recall surfaces calibrated abstention (low_confidence) to the agent", async () => {

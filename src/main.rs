@@ -2728,14 +2728,27 @@ async fn get_chunk(
             |row| {
                 let content = row.get::<_, String>(2)?;
                 let pii: i64 = row.get(12)?;
+                let pii_flag = pii != 0;
+                // v1.20.25: title + heading_path ride the same read seam as
+                // content (PII redaction + invisible-Unicode strip).
+                let title = crate::gate::sanitize_read_opt(
+                    row.get::<_, Option<String>>(1)?,
+                    pii_flag,
+                    &pii_principal,
+                );
+                let heading_path = crate::gate::sanitize_read_opt(
+                    row.get::<_, Option<String>>(6)?,
+                    pii_flag,
+                    &pii_principal,
+                );
                 Ok(serde_json::json!({
                     "id": row.get::<_, i64>(0)?,
-                    "title": row.get::<_, Option<String>>(1)?,
-                    "content": crate::gate::redact_content(&content, pii != 0, &pii_principal),
+                    "title": title,
+                    "content": crate::gate::sanitize_read(&content, pii_flag, &pii_principal),
                     "source": row.get::<_, Option<String>>(3)?,
                     "document_id": row.get::<_, Option<String>>(4)?,
                     "chunk_index": row.get::<_, Option<i64>>(5)?,
-                    "heading_path": row.get::<_, Option<String>>(6)?,
+                    "heading_path": heading_path,
                     "line_start": row.get::<_, Option<i64>>(7)?,
                     "line_end": row.get::<_, Option<i64>>(8)?,
                     "created_at": row.get::<_, Option<String>>(9)?,
@@ -2839,13 +2852,24 @@ async fn multi_get(
             .query_map(refs.as_slice(), |row| {
                 let content = row.get::<_, String>(2)?;
                 let pii: i64 = row.get(10)?;
+                let pii_flag = pii != 0;
+                let title = crate::gate::sanitize_read_opt(
+                    row.get::<_, Option<String>>(1)?,
+                    pii_flag,
+                    &pii_principal,
+                );
+                let heading_path = crate::gate::sanitize_read_opt(
+                    row.get::<_, Option<String>>(5)?,
+                    pii_flag,
+                    &pii_principal,
+                );
                 Ok(serde_json::json!({
                     "id": row.get::<_, i64>(0)?,
-                    "title": row.get::<_, Option<String>>(1)?,
-                    "content": crate::gate::redact_content(&content, pii != 0, &pii_principal),
+                    "title": title,
+                    "content": crate::gate::sanitize_read(&content, pii_flag, &pii_principal),
                     "document_id": row.get::<_, Option<String>>(3)?,
                     "chunk_index": row.get::<_, Option<i64>>(4)?,
-                    "heading_path": row.get::<_, Option<String>>(5)?,
+                    "heading_path": heading_path,
                     "line_start": row.get::<_, Option<i64>>(6)?,
                     "line_end": row.get::<_, Option<i64>>(7)?,
                     "source_uri": row.get::<_, Option<String>>(8)?,
@@ -8533,10 +8557,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(status, "rejected");
         // Expired proposals are audited (the detail is hashed, per audit.rs).
-        let expired_hash = format!(
-            "{:016x}",
-            xxhash_rust::xxh3::xxh3_64("proposal_expired".as_bytes())
-        );
+        let expired_hash = crate::audit::hash("proposal_expired");
         let counted: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM audit_events WHERE kind = 'reconcile' AND detail_hash = ?1",

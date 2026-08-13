@@ -303,7 +303,16 @@ export default definePluginEntry({
               count: result.hits.length,
               decision: result.decision,
               domainsSearched: result.domainsSearched,
-              memories: result.hits,
+              // v1.20.25: if the runtime serializes tool `details` into the
+              // model context, raw bidi/zero-width bytes would reach the model
+              // verbatim — run every hit field through the same block boundary
+              // the `content` path already uses (the v1.20.24 Sweep closed the
+              // content seam; this closes the `details` seam).
+              memories: result.hits.map((h) => ({
+                ...h,
+                title: h.title ? sanitizeForBlock(h.title) : h.title,
+                content: sanitizeForBlock(h.content),
+              })),
             },
           };
         },
@@ -359,14 +368,32 @@ export default definePluginEntry({
           }
           let res;
           try {
-            res = await client.store({
-              title: p.title?.trim() || text.slice(0, 80),
-              content: text,
-              ...(p.domain ? { domain: p.domain } : {}),
-              ...(Array.isArray(p.entities) ? { entities: p.entities as never[] } : {}),
-              ...(Array.isArray(p.relations) ? { relations: p.relations as never[] } : {}),
-              timeoutMs: c.requestTimeoutMs,
-            });
+            // v1.20.25: the agent's write surface must respect the same
+            // capture-mode rule as autoCapture. Default `captureMode:
+            // "proposal"` queues the fact for HUMAN review (POST
+            // /ingest/proposal) instead of writing it straight to memory — an
+            // agent driving this tool can no longer persist arbitrary
+            // instructions into long-term memory without a reviewer. Only an
+            // operator who explicitly configured `captureMode: "direct"`
+            // keeps the straight-to-memory path (still server-screened).
+            if (c.captureMode === "direct") {
+              res = await client.store({
+                title: p.title?.trim() || text.slice(0, 80),
+                content: text,
+                ...(p.domain ? { domain: p.domain } : {}),
+                ...(Array.isArray(p.entities) ? { entities: p.entities as never[] } : {}),
+                ...(Array.isArray(p.relations) ? { relations: p.relations as never[] } : {}),
+                timeoutMs: c.requestTimeoutMs,
+              });
+            } else {
+              const prop = await client.submitProposal({
+                content: text,
+                source: "memory_store",
+                ...(p.title?.trim() ? { sourcePrompt: p.title.trim() } : {}),
+                timeoutMs: c.requestTimeoutMs,
+              });
+              res = { id: prop.id, status: prop.status };
+            }
           } catch (err) {
             return {
               content: [
@@ -375,45 +402,30 @@ export default definePluginEntry({
               details: { stored: false, error: describeBrainError(err) },
             };
           }
+          const pending = res.status === "pending";
           return {
-            content: [{ type: "text" as const, text: `Memory ${res.status} (id: ${res.id}).` }],
-            details: { stored: true, id: res.id, status: res.status },
+            content: [
+              {
+                type: "text" as const,
+                text: pending
+                  ? `Submitted for review (proposal id: ${res.id}). It becomes memory only after a reviewer approves it.`
+                  : `Memory ${res.status} (id: ${res.id}).`,
+              },
+            ],
+            details: { stored: !pending, pending, id: res.id, status: res.status },
           };
         },
       },
       { name: "memory_store" },
     );
 
-    api.registerTool(
-      {
-        name: "memory_forget",
-        label: "Memory Forget",
-        description: "Delete a memory by id.",
-        parameters: Type.Object({ id: Type.String({ description: "Memory id" }) }),
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as { id?: string };
-          let res;
-          try {
-            res = await client.forget(p.id ?? "", c.requestTimeoutMs);
-          } catch (err) {
-            return {
-              content: [
-                { type: "text" as const, text: `Forget failed: ${describeBrainError(err)}` },
-              ],
-              details: { deleted: false, error: describeBrainError(err) },
-            };
-          }
-          // null = 404 not found; {deleted:false} would be an unexpected ok-without-delete.
-          const deleted = res?.deleted ?? false;
-          return {
-            content: [{ type: "text" as const, text: deleted ? "Forgotten." : "Not found." }],
-            details: { deleted },
-          };
-        },
-      },
-      { name: "memory_forget" },
-    );
+    // v1.20.25: the agent-facing `memory_forget` tool is REMOVED. An agent can
+    // autonomously hard-delete long-term memory with no human gate — ambient
+    // authority in the exact shape the mantra forbids ("memory you can see,
+    // approve, and erase" — erase is a HUMAN action). The read-only recall/
+    // get/verify/graph tools + the review-queued `memory_store` are the agent's
+    // only surface. Erasure remains a human action via the operator console
+    // and the `brain` CLI (server `DELETE /memory/{id}` is untouched).
 
     api.registerTool(
       {
@@ -495,7 +507,7 @@ export default definePluginEntry({
                   text: `Memory ${chunk.id}:${title}\n${sanitizeForBlock(chunk.content)}`,
                 },
               ],
-              details: { found: true, id: chunk.id, title: chunk.title },
+              details: { found: true, id: chunk.id, title: chunk.title ? sanitizeForBlock(chunk.title) : chunk.title },
             };
           } catch (err) {
             return {
@@ -549,7 +561,15 @@ export default definePluginEntry({
                     .join("");
             return {
               content: [{ type: "text" as const, text: `${sanitizeForBlock(entity.name).trim()}${etype}${rels}` }],
-              details: { found: true, name: entity.name, relations: entity.relations },
+              details: {
+                found: true,
+                name: sanitizeForBlock(entity.name),
+                relations: entity.relations.map((r) => ({
+                  ...r,
+                  to_entity: sanitizeForBlock(r.to_entity),
+                  relation_type: sanitizeForBlock(r.relation_type),
+                })),
+              },
             };
           } catch (err) {
             return {

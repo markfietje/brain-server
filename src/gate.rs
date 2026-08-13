@@ -343,6 +343,26 @@ pub fn redact_content(
     out
 }
 
+/// v1.20.25 "Consolidate": the read-path output seam. Applies PII redaction
+/// (when the row is PII-flagged and the principal holds no `pii:read`) AND the
+/// invisible-Unicode strip (bidi / zero-width / tag-block smuggling) to EVERY
+/// text field a chunk may emit — content, title, snippet, evidence, heading —
+/// not just `content`. The HTTP surface (recall/search, /get, /multi-get) feeds
+/// every field through this, closing the raw-invisible-Unicode gap the v1.20.24
+/// Sweep left on the HTTP JSON boundary. Idempotent; safe where clients re-strip.
+pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
+    brain_server::strip_invisible::strip_invisible(&redact_content(s, pii, principal))
+}
+
+/// [`sanitize_read`] for an optional field (title / snippet / heading_path).
+pub fn sanitize_read_opt(
+    v: Option<String>,
+    pii: bool,
+    principal: &Option<crate::auth::Principal>,
+) -> Option<String> {
+    v.map(|s| sanitize_read(&s, pii, principal))
+}
+
 /// v1.20.1 "Shield" M2(b): PII-screen a reviewer-facing `source_prompt` before
 /// persist. Only the `[redacted:email]` / `[redacted:phone]` / `[redacted:card]`
 /// form is stored, so a capture trigger containing a forwarded address/number/
