@@ -831,6 +831,66 @@
 
 ## All Agents COMPLETED ✅
 
+## Agent 90: v1.20.23 "Calibrate" — reviewer calibration strip (session 2026-08-13)
+**Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
+**Date:** 2026-08-13
+
+Shipped the v1.20.23 "Calibrate" **server + client** release per
+`IMPLEMENTATION_PLAN_v1.20.23_Calibrate.md`: the HITL essay's fourth condition —
+**evaluative feedback to the reviewer** (a rubber-stamp gate is a false
+control). The signals already shipped (`created_at`/`edited_at`/
+`screen_verdict` on every `ProposalView`, `decided_at` written on
+approve/reject/expire since v1.14.0) but `decided_at` was **never read**, so no
+consumer could compute a decision-latency. This release exposes it, adds a
+`since` window, and computes the four reviewer signals client-side — **no new
+telemetry, no new server logic**.
+
+- **M1.1 — `ProposalView.decided_at`** (`src/handlers/gate.rs`). The
+  `list_proposals` SELECT now carries `decided_at` (column 11, `Option<i64>`,
+  `#[serde(default)]`). The three write sites (approve/reject/TTL auto-expire)
+  always stamped it; the read now surfaces it. Extracted `list_proposals_page`
+  (the `page_decayed`/`list_dsar_page` idiom) so the projection is
+  unit-testable with a bare `&Connection` — no HTTP stack, no model.
+- **M1.2 — `since` window param.** `GET /proposals?status=&limit=` gains
+  `?since=<unix ts>` (`WHERE status = ?1 AND created_at >= ?3` when present;
+  byte-identical legacy query when absent). Parameterized. A `since` window
+  still stops at `LIMIT` (200), so the stats fetch passes `limit=200` or it
+  samples only the 50 default.
+- **M2 — client calibration core + strip** (`client/src/panels/review.rs`).
+  Pure `Calibration` + `calibration_stats(approved, rejected)` — approve-rate,
+  median decision latency, edit-rate, screen-override-rate, zero denominators →
+  `0.0`/`None` (no NaN). `ApiClient::proposals_since` fetches both windowed
+  pages at `limit=200`. A dismissable strip above the queue renders the four
+  figures + a rubber-stamp warn (approve-rate > 0.9 over ≥ 20 decisions →
+  `warn` tier); fetch-failed → renders nothing (offline degrade). `role="status"`
+  + `aria-live="polite"`. `cal_*` i18n keys in `en` only. A plain fn (like
+  `card`) rather than `#[component]` (the macro's Clone+PartialEq prop
+  constraint doesn't fit the closure-capturing body).
+- **Tests:** server +2 (`proposal_view_round_trips_decided_at`,
+  `proposals_since_filters_created_at_and_is_optional`), main bin 525 → **527
+  passed** / 5 ignored; client +3 (`calibration_stats_rates_and_median`,
+  `calibration_stats_handles_empty_and_zero_denominators`,
+  `rubber_stamp_warns_only_over_real_workload`), 108 → **111 passed**. Both
+  trees clippy `-D warnings` + fmt clean; server all 5 binaries + client wasm
+  build clean; `scripts/badges.sh --selfcheck` OK. `openapi.yaml` documents
+  `ProposalView.decided_at` + the `since` param.
+
+Version both `Cargo.toml`/locks → 1.20.23. CHANGELOG §[1.20.23] (+ the v1.20.x
+line-closure note), ROADMAP released-row + plan row, `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`
+closure note, README badge, AGENTS header + this entry. **v1.20.23 closes the
+v1.20.x hardening line** (Scrub → Bound → Vault → Replay → Subject360 → Clocks
+→ Calibrate).
+
+**Honest ceilings (carried to v2.x):** the window is `since`-bounded **and**
+list-capped (LIMIT 200) — a 30-day window on a busy queue samples the newest
+200, so the strip labels itself "last 200 decisions" when the cap is hit (a
+COUNT-aware window is v2.x). `override_rate` keys on the v1.20.3 read-time
+`screen_verdict` recomputation, not a stored decision-time verdict (a model
+swap re-badges in-flight rows). The strip is per-operator-global (all
+principals), not per-reviewer (RBAC breakdown is v2.3). The `warn` threshold
+(0.9 / 20) is a constant heuristic, not a reviewer baseline (v2.x cohort
+tooling).
+
 ## Agent 89: v1.20.22 "Clocks" — DSAR Art 17 deadline + retention expiry (session 2026-08-13)
 **Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
 **Date:** 2026-08-13

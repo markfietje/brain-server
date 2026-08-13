@@ -10,6 +10,75 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.23] — 2026-08-13
+
+### Server + client — "Calibrate" (reviewer calibration strip)
+
+Server `Cargo.toml`/lock 1.20.22 → 1.20.23; client 1.20.22 → 1.20.23 (a real
+release — the server changed). The human-in-the-loop essay's fourth condition
+is **evaluative feedback to the reviewer**: a rubber-stamp gate is a false
+control (Bainbridge's irony of automation). The raw signals already ship —
+`created_at`/`edited_at`/`screen_verdict` on every `ProposalView`, and
+`decided_at` written on approve/reject/expire since v1.14.0 — but `decided_at`
+was **never selected into the view**, so no consumer could compute a
+decision-latency. This release exposes it, adds a `since` window param, and
+computes the four reviewer signals client-side — **no new telemetry, no new
+server logic**, pure arithmetic over existing rows. See
+`IMPLEMENTATION_PLAN_v1.20.23_Calibrate.md`.
+
+- **M1.1 — `ProposalView.decided_at`** (`src/handlers/gate.rs`). The
+  `list_proposals` SELECT now carries `decided_at` (column 11, `Option<i64>`);
+  `#[serde(default)]` on the field so legacy consumers are unaffected. The
+  three write sites (`approve` :618 / `reject` :753 / TTL auto-expire :424)
+  always stamped it; the read now surfaces it. Extracted `list_proposals_page`
+  (the `page_decayed`/`list_dsar_page` idiom) so the projection is
+  unit-testable with a bare `&Connection` — no HTTP stack, no model.
+- **M1.2 — `since` window param.** `GET /proposals?status=&limit=` gains
+  `?since=<unix ts>` — `WHERE status = ?1 AND created_at >= ?3` when present,
+  byte-identical legacy query when absent. Parameterized (the repo's SQL
+  discipline). A `since` window still stops at `LIMIT` (200), so the stats
+  fetch passes `limit=200` explicitly or it samples only the 50 default.
+- **M2 — client calibration core + strip** (`client/src/panels/review.rs`).
+  Pure `Calibration` + `calibration_stats(approved, rejected)` — approve-rate,
+  median decision latency (`decided_at - created_at`), edit-rate, and
+  screen-override-rate (approved-with-`quarantine`-verdict), with zero
+  denominators → `0.0`/`None` (no NaN). `ApiClient::proposals_since` fetches
+  the two windowed pages at `limit=200`. A dismissable strip above the queue
+  renders the four figures + a rubber-stamp warning (approve-rate > 0.9 over
+  ≥ 20 decisions → `warn` tier + "review the last by hand"); fetch-failed →
+  renders nothing (the v1.20.0 offline posture). `role="status"` +
+  `aria-live="polite"` (WCAG). `cal_*` i18n keys in `en` only (de/fr/es/nl
+  fall back).
+- **Tests:** server +2 (main bin 525 → **527 passed** / 5 ignored):
+  `proposal_view_round_trips_decided_at` (approved-set / pending-`None` /
+  expired-set) + `proposals_since_filters_created_at_and_is_optional`; client
+  +3 (**108 → 111 passed**): `calibration_stats_rates_and_median`,
+  `calibration_stats_handles_empty_and_zero_denominators`,
+  `rubber_stamp_warns_only_over_real_workload`. Both trees clippy `-D warnings`
+  + fmt clean; wasm + all 5 server binaries build clean. `openapi.yaml`
+  documents `ProposalView.decided_at` + the `since` param.
+- **Honest ceilings:** the window is `since`-bounded **and** list-capped
+  (LIMIT 200) — a 30-day window on a busy queue samples the newest 200, so the
+  strip labels itself "last 200 decisions" when the cap is hit (a COUNT-aware
+  window is v2.x). `override_rate` keys on the v1.20.3 read-time `screen_verdict`
+  recomputation, not a stored decision-time verdict (a model swap re-badges
+  in-flight rows). The strip is per-operator-global (all principals), not
+  per-reviewer (RBAC breakdown is v2.3). The `warn` threshold (0.9 / 20) is a
+  constant heuristic, not a reviewer baseline (v2.x cohort tooling).
+
+### The v1.20.x hardening line — closure
+
+v1.20.23 closes the v1.20 harden line. Every release turned an audit/essay gap
+into a shipped, honest control — **Scrub** (v1.20.17, personal-data surface
+scrub + inventory), **Bound** (v1.20.18, unbounded read paths), **Vault**
+(v1.20.19, dead `pii_map` vault removed), **Replay** (v1.20.20, stored decision
+path surfaced), **Subject360** (v1.20.21, DSAR dry-run footprint), **Clocks**
+(v1.20.22, Art 17/12 deadline + retention visibility), and **Calibrate**
+(v1.20.23, reviewer feedback). Each implemented its audit gap with honest
+ceilings carried to v2.x. See `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`.
+
+---
+
 ## [1.20.22] — 2026-08-13
 
 ### Server + client — "Clocks" (DSAR deadline + retention expiry)
