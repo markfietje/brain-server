@@ -729,7 +729,10 @@
 > tombstone + audit), `episodic` memory_kind + `?memory_kind=`. Migration bug
 > fixed: the old `tombstones` `CREATE TABLE IF NOT EXISTS` was a silent no-op
 > against the v0.9.1 schema (purge INSERT would have failed) — now guarded
-> column-adds. 512 tests green. See `CHANGELOG.md` §[1.14.0].
+> column-adds. 512 tests green. See `CHANGELOG.md` §[1.14.0]. *(Correction —
+> **v1.20.19 "Vault"**: the write-time placeholder vault was never built; the
+> shipped PII control is deterministic read-time output redaction, and the
+> `pii_map` table is dropped.)*
 > **v1.13.2 "Harden" shipped 2026-08-06** —
 > post-1.13.1 rough-edges audit hardening pass. Three fixes from a deep
 > API/code review: (1) `PRAGMA busy_timeout=5000` on **every** SQLite pool init
@@ -828,8 +831,49 @@
 
 ## All Agents COMPLETED ✅
 
-## Agent 85: v1.20.18 "Bound" — DoS + performance bounds (session 2026-08-13)
+## Agent 86: v1.20.19 "Vault" — PII-vault promise made honest (session 2026-08-13)
 **Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
+**Date:** 2026-08-13
+
+Shipped the v1.20.19 "Vault" **server** docs-correction release per
+`IMPLEMENTATION_PLAN_v1.20.19_Vault.md`: making the **never-built** v1.14
+`pii_map` write-time placeholder vault honest. Client stays at 1.20.16; one
+schema change (a table *drop*), no new route.
+
+- **M1 — dead read path removed** (`src/handlers/gate.rs`). The only in-tree
+  `pii_map` usage was `/export`'s read side (`?include_pii_map=true` +
+  `pii:read`). `ExportQuery.include_pii_map` and the `pii_map` envelope key are
+  gone; a request carrying `?include_pii_map=true` is simply ignored (serde
+  drops the unknown field). `export_format_version` stays at 2.
+- **M1.2 — real posture documented** (`src/gate.rs`, `src/handlers/observe.rs`).
+  Rewrote the `/export` doc + the `redact_content` `ponytail:` to state plainly:
+  the shipped PII control is deterministic read-time output redaction
+  (`redact_content` + `screen_source_prompt`, default-on unless the caller holds
+  `pii:read`/Admin) + at-rest LUKS (v1.12.2). A fetchable placeholder→raw map
+  would increase the personal-data surface; it is deliberately absent.
+- **M1.3 + M1.4 — table dropped** (`src/migration.rs`). The `CREATE TABLE
+  pii_map` block became `DROP TABLE IF EXISTS pii_map` — erases any legacy
+  placeholder rows and the table at migration (idempotent; a fresh DB never
+  recreates it). Schema stamp → 1.20.19 (`SCHEMA_VERSION_V1_20_19`), guarded by
+  `test_migration_schema_contract` (now asserts the table is *dropped*) +
+  `migration_drops_pii_map_and_empty_table` (seeds a legacy row, re-migrates,
+  asserts row + table gone and ingest still works).
+- **M2 — configuration contract.** `BRAIN_REDACT_PII` had **no** `config.rs`
+  getter — the write-path promise was purely documentation. Deleted the claim
+  from `docs/features.md`/`docs/configuration.md`/`docs/security.md`/
+  `docs/compliance.md`/`docs/human-in-the-loop.md`/`docs/RFP_RESPONSE_KIT.md`/
+  `docs/api.md`/`COMPLIANCE.md`/`SECURITY.md`; `openapi.yaml` `/export` no longer
+  documents `include_pii_map`/`pii_map`.
+
++2 tests (main bin 519 → 521, lib 70 → 71). All gates green: clippy
+`-D warnings` + `fmt` clean, openapi/route/schema guards green, release build
+clean.
+
+**Honest note:** this release retracts a promise that was never delivered —
+there was no write path, so no operator relied on the behavior; the change
+strictly shrinks the personal-data surface (a table we never wrote to is gone).
+
+## Agent 85: v1.20.18 "Bound" — DoS + performance bounds (session 2026-08-13)**Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
 **Date:** 2026-08-13
 
 Shipped the v1.20.18 "Bound" **server** release per
@@ -3634,8 +3678,8 @@ tokens and no auto-promote. See `CHANGELOG.md` §[1.14.0] for the full record.
   `approve_proposal` (promote in one tx + optional `?supersedes` →
   `resolve_supersession`), `reject_proposal`, `list_decayed`, `export`
   (portable JSON; `pii_map` excluded by default, `?include_pii_map` + `pii:read`
-  opts in), `purge` (hard delete across knowledge + vec0 + relationships +
-  proposals in one tx, tombstone + audit, by id or owner), `scope_filter`
+  opts in; *(removed v1.20.19 — the `pii_map` vault was never built)*), `purge`
+  (hard delete across knowledge + vec0 + relationships +  proposals in one tx, tombstone + audit, by id or owner), `scope_filter`
   (JWT-mode deny-by-default access-scope data-layer filter; loopback trusts
   localhost), `principal_to_owner`.
 - **`src/search/mod.rs`**: `SearchFilters` + `SearchResult` gate fields
@@ -3647,7 +3691,9 @@ tokens and no auto-promote. See `CHANGELOG.md` §[1.14.0] for the full record.
   fusion filter, `decayed` flag, PII redaction on output for non-`pii:read`
   principals.
 - **`src/handlers/ingest.rs`**: `pii` flag set on structured ingest.
-- **`src/migration.rs`**: `proposals` + `pii_map` tables; `knowledge` columns
+- **`src/migration.rs`**: `proposals` + `pii_map` tables *(the `pii_map`
+  write-time vault was never built and is dropped in v1.20.19)*; `knowledge`
+  columns
   `expires_at`/`access_scope`/`assertion_kind`/`confidence`/`owner`/`pii`;
   `tombstones` gains `content_hash` + `purged_at` via idempotent `ALTER TABLE`.
   **Bug fixed:** the old `CREATE TABLE IF NOT EXISTS tombstones(...)` was a
@@ -3685,6 +3731,9 @@ Live restart + `brain` CLI review commands + live smoke are operator steps
 - Decay is strict `<`, default-excludes; no background worker, nothing deleted
   autonomously.
 - `BRAIN_REDACT_PII` write-time placeholder mode is opt-in and off by default.
+  *(Correction — **v1.20.19 "Vault"**: the placeholder vault was never built;
+  the control is deterministic read-time output redaction and there is no
+  `BRAIN_REDACT_PII` knob.)*
 
 ---
 

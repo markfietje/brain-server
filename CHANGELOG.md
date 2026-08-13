@@ -10,6 +10,45 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.19] — 2026-08-13
+
+### Server — "Vault" (PII-vault promise made honest)
+
+Server `Cargo.toml` 1.20.18 → 1.20.19; client stays at 1.20.16. The v1.14
+`pii_map` write-time placeholder vault was **never built** — zero `INSERT INTO
+pii_map` sites in-tree, only `/export`'s read path. A docs correction, not a
+feature build: a `pii_map` holding raw PII in exchange for placeholders would
+*increase* the personal-data surface, so the honest move is to stop advertising
+it and erase the dead table. See `IMPLEMENTATION_PLAN_v1.20.19_Vault.md`.
+
+- **M1 — `pii_map` read path removed** (`src/handlers/gate.rs`). `ExportQuery`
+  drops `include_pii_map` (a request carrying `?include_pii_map=true` is simply
+  ignored — serde drops the unknown field), the `pii_map` SELECT is gone, and
+  the `/export` envelope no longer carries a `pii_map` key. `export_format_version`
+  stays at 2.
+- **M1.2 — real posture documented** (`src/gate.rs`, `src/handlers/observe.rs`).
+  The shipped PII control is deterministic **output redaction**
+  (`redact_content` + `screen_source_prompt`, default-on for read paths unless
+  the caller holds `pii:read`/Admin) plus at-rest LUKS (v1.12.2). A fetchable
+  placeholder→raw map is deliberately absent.
+- **M1.3 + M1.4 — table dropped** (`src/migration.rs`). `DROP TABLE IF EXISTS
+  pii_map` erases any legacy placeholder rows and the table at migration (the
+  old `CREATE TABLE IF NOT EXISTS` was removed in the same release, so a fresh
+  DB never recreates it). Schema version → 1.20.19
+  (`SCHEMA_VERSION_V1_20_19`); guarded by `test_migration_schema_contract` +
+  `migration_drops_pii_map_and_empty_table`.
+- **M2 — configuration contract**. `BRAIN_REDACT_PII` had no `config.rs` getter
+  (it was a documentation-only claim); removed from all live docs. `openapi.yaml`
+  `/export` no longer documents `include_pii_map`/`pii_map`.
+
+Tests: +2 (`export_has_no_pii_map_envelope`, `migration_drops_pii_map_and_empty_table`)
+and the schema-contract test now asserts the table is *dropped*. All gates green:
+clippy `-D warnings`, `fmt`, openapi/route/schema guards, release build.
+
+**Honest note:** this is a *documentation correction* — the feature it retracts
+was never shipped, so there is no behavior an operator relied on. See
+`docs/AGENTS_HISTORY.md` Agent 86.
+
 ## [1.20.18] — 2026-08-13
 
 ### Server — "Bound" (DoS + performance bounds)
@@ -2586,6 +2625,10 @@ deletion.
   principal is loopback or `Admin`. Opt-in write-time placeholder mode
   (`BRAIN_REDACT_PII=1`) stores `[pii:email]` in `knowledge.content` with the
   real value only in `pii_map`; `pii:read` resolves it, `/export` excludes it.
+  *(Correction — **v1.20.19 "Vault"**: the write-time placeholder mode was
+  never built (zero write sites) and is retracted; the shipped control is
+  deterministic read-time output redaction, and the `pii_map` table is
+  dropped.)*
 - **M5 — `episodic` memory_kind** + `?memory_kind=` filter (legacy rows default
   `fact`), wired through the shared `push_gate_filters` SQL used by both vec0
   and FTS retrievers.
