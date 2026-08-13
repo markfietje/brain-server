@@ -19,6 +19,7 @@ are assumed; swap `BRAIN_TOKEN_FILE`/`-H 'authorization: Bearer …'` as needed.
 | **Tamper-evident audit hash chain** (`COMPLIANCE.md` §3, `SECURITY.md`) | v1.1.0 | `curl -s localhost:8765/audit/verify` → `{"ok":true}`; `/audit` rows carry `prev_hash` |
 | **DSAR → chain-verifiable deletion certificate** (`COMPLIANCE.md` §DSAR) | v1.15.0 | `curl -s -X POST localhost:8765/dsar -d '{"owner":"..."}'` → cert id; `curl -s localhost:8765/dsar/{id}/certificate` shows `chain_verifies` |
 | **DSAR footprint preview (dry-run)** | v1.20.21 | `curl -s -X POST localhost:8765/dsar -d '{"subject":"alice","dry_run":true}'` → `footprint` counts, **zero rows deleted**, no ledger row, no certificate |
+| **DSAR 30-day Art 17 window visible on the ledger** | v1.20.22 | `curl -s localhost:8765/dsar` → `requests[]` rows carry `deadline` = `created_at + BRAIN_DSAR_WINDOW_DAYS` (default 30); `POST /dsar` response carries `created_at`/`deadline` |
 | **Deletion registry** | v1.15.0 | `curl -s localhost:8765/tombstones` → rows with `content_hash` + `purged_at` |
 | **Opt-in Art 19 webhook** (outbound, HMAC-signed) | v1.15.0 | env `BRAIN_DSAR_WEBHOOK_URL`/`_SECRET`; sign a purge and see the signed POST |
 | **Read-event audit (opt-in)** | v1.15.0 | env `BRAIN_AUDIT_READ_EVENTS=on`; a `/recall` then appears as `kind=recall` in `/audit` |
