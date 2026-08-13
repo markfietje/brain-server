@@ -94,6 +94,27 @@ jobs:
           done
           ls -la dist
 
+      - name: Codesign (macOS, self-signed cert — optional)
+        # Sign the darwin binaries with the operator's self-signed code-signing
+        # identity (PKCS#12, base64 + password in GitHub secrets). Skips when no
+        # cert is configured. Honesty: a self-signed cert is NOT Apple-Developer
+        # trusted — it clears only machines that have the cert in their keychain;
+        # Gatekeeper-on-others needs Developer ID + notarization instead.
+        if: ${{ secrets.MACOS_SELF_SIGNED_CERT_B64 != '' }}
+        env:
+          MAC_CERT_B64: ${{ secrets.MACOS_SELF_SIGNED_CERT_B64 }}
+          MAC_CERT_PW: ${{ secrets.MACOS_SELF_SIGNED_CERT_PW }}
+        run: |
+          set -e
+          echo "$MAC_CERT_B64" | base64 -d >/tmp/codesign.p12
+          security import /tmp/codesign.p12 -k "$HOME/Library/Keychains/login.keychain-db" -P "$MAC_CERT_PW" -T /usr/bin/codesign 2>/dev/null || \
+            security import /tmp/codesign.p12 -k "$HOME/Library/Keychains/login.keychain-db" -P "$MAC_CERT_PW"
+          ID=$(security find-identity -v -p codesigning | sed -nE 's/.*"([^"]+)"/\1/p' | head -1)
+          for f in dist/*-darwin-*; do
+            echo "codesign $ID -> $f"
+            codesign --force --sign "$ID" "$f"
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-darwin
@@ -119,17 +140,24 @@ jobs:
 
       - name: Generate release notes from CHANGELOG
         # `generate_release_notes` produces only PR-based notes (empty here —
-        # the repo ships via direct commits). Instead the body is this tag's
-        # section of CHANGELOG.md (`## [<version>] …` up to the next heading),
-        # written to a file outside dist/ so it isn't uploaded as an asset. The
-        # previous tag is the CHANGELOG heading after the current section, so no
-        # history fetch / tag walk is needed on the runner.
+        # the repo ships via direct commits). Instead the body is a BRIEF core:
+        # this tag's CHANGELOG heading + its intro paragraph (the agent-authored
+        # one-line-what-changed), written outside dist/ so it isn't uploaded as
+        # an asset. The previous tag is the CHANGELOG heading after the current
+        # section, so no history fetch / tag walk is needed on the runner.
         run: |
           set -e
           version="${GITHUB_REF_NAME#v}"
           awk -v ver="$version" '
-            /^## \[/ { if (have) exit; have = ($0 ~ "^## \\[" ver "\\]"); }
-            have { print }
+            /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); if (insec) print; next }
+            !insec { next }
+            insec {
+              if ($0 ~ /^#/) next
+              if ($0 ~ /^([-*+] |[0-9]+\. )/) next
+              if ($0 == "") { if (out) exit; next }
+              if (!out) { print ""; out=1 }
+              print
+            }
           ' CHANGELOG.md > RELEASE_BODY.md
           prev=$(awk -v ver="$version" '
             /^## \[/ { if (have) { print $0; exit } have = ($0 ~ "^## \\[" ver "\\]") }
@@ -137,6 +165,27 @@ jobs:
           printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...%s\n' \
             "$GITHUB_REPOSITORY" "$prev" "$GITHUB_REF_NAME" >> RELEASE_BODY.md
           echo "notes lines: $(wc -l <RELEASE_BODY.md)"
+
+      - name: Platform manifest
+        # Spell out which platform+arch each binary asset targets, so the
+        # attachments are unambiguous. Reflects the files actually staged (a
+        # feature-gated binary that failed to build is simply absent here).
+        run: |
+          set -e
+          : > dist/PLATFORMS.txt
+          printf '%s\n' "Each asset's platform (by name suffix):" "---" >> dist/PLATFORMS.txt
+          for f in dist/*; do
+            case "${f##*/}" in
+              *-linux-x86_64)  p="Linux x86_64 (amd64)";;
+              *-linux-aarch64) p="Linux arm64 (aarch64, e.g. Jetson)";;
+              *-darwin-arm64)  p="macOS arm64 (Apple Silicon)";;
+              *-darwin-x86_64) p="macOS x86_64 (Intel)";;
+              *.cdx.json)      p="CycloneDX SBOM (package manifest, any platform)";;
+              *) continue;;
+            esac
+            printf '  %-34s %s\n' "${f##*/}" "$p" >> dist/PLATFORMS.txt
+          done
+          echo "manifest:"; cat dist/PLATFORMS.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
