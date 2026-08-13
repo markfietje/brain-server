@@ -27,8 +27,8 @@ use rusqlite::Connection;
 /// `idx_audit_tenant` index.
 pub const SCHEMA_VERSION_V1_10_0: &str = "1.10.0";
 /// v1.14.0 "Gate" schema: knowledge gains access_scope/assertion_kind/
-/// confidence/expires_at/pii/owner; new pii_map + tombstones + proposals
-/// tables. Defaults preserve current behavior (no data loss, no re-ingest).
+/// confidence/expires_at/pii/owner; new tombstones + proposals tables.
+/// Defaults preserve current behavior (no data loss, no re-ingest).
 pub const SCHEMA_VERSION_V1_14_0: &str = "1.14.0";
 /// v1.15.0 "Observe" schema: new recall_traces + dsar_requests tables;
 /// tombstones gains reason + origin_id. Additive, defaults preserved.
@@ -48,6 +48,9 @@ pub const SCHEMA_VERSION_V1_20_14: &str = "1.20.14";
 /// v1.20.18 "Bound" adds `idx_tombstones_reason_purged` (tombstone registry +
 /// DSAR certificate read index).
 pub const SCHEMA_VERSION_V1_20_18: &str = "1.20.18";
+/// v1.20.19 "Vault" drops the never-written `pii_map` table (PII control is
+/// deterministic output redaction, not a placeholder vault).
+pub const SCHEMA_VERSION_V1_20_19: &str = "1.20.19";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

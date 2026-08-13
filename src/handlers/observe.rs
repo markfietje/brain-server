@@ -137,7 +137,7 @@ pub async fn post_dsar(
         let (roots, derived) = dsar_locate(&tx, &subject)?;
         let found_count = roots.len() + derived.len();
 
-        // 2. Export bundle (portable JSON; no pii_map — that is /export's job).
+        // 2. Export bundle (portable JSON; raw PII is never included).
         let export_bundle = if matches!(action.as_str(), "export" | "both") {
             let mut rows: Vec<serde_json::Value> = Vec::new();
             let mut stmt = tx

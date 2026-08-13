@@ -9,7 +9,7 @@
 //!   POST /proposals/{id}/approve[?supersedes=<id>] — promote (one tx).
 //!   POST /proposals/{id}/reject — reject (audited, never deleted).
 //!   GET  /decayed             — operator review of decayed chunks.
-//!   GET  /export[?include_pii_map=true] — portable JSON export (GDPR).
+//!   GET  /export — portable JSON export (GDPR).
 //!   POST /purge               — hard, explicit, audited deletion (GDPR).
 //!
 //! Human-in-the-loop: nothing here auto-promotes, auto-decays-away, or
@@ -1346,12 +1346,10 @@ pub(crate) fn load_knowledge_row(
 
 /// `GET /export` — portable, machine-readable JSON export (data portability,
 /// the GDPR "give me my data"). Live `knowledge` rows + graph + proposals
-/// ledger. `pii_map` values excluded by default; only included with
-/// `?include_pii_map=true` AND a `pii:read` principal.
+/// ledger. PII is never exported raw: rows the caller doesn't own are redacted
+/// (`[redacted]`) and there is no write-time placeholder vault to resolve.
 #[derive(Debug, Default, Deserialize)]
 pub struct ExportQuery {
-    #[serde(default)]
-    pub include_pii_map: bool,
     /// v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP records.
     #[serde(default)]
     pub format: Option<String>,
@@ -1483,25 +1481,6 @@ pub async fn export(
                 edges.push(v);
             }
         }
-        let include_pii = q.include_pii_map && crate::gate::has_pii_read(&principal.0);
-        // Only resolve the pii_map when both the flag AND the principal allow it.
-        let pii_map = if include_pii {
-            let mut map = std::collections::BTreeMap::new();
-            let mut stmt = conn
-                .prepare("SELECT placeholder, value FROM pii_map ORDER BY placeholder")
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for v in rows.flatten() {
-                map.insert(v.0, v.1);
-            }
-            serde_json::to_value(map).unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Null
-        };
         // v1.18.2 "Transparency" M1: provenance summary counts per origin/source
         // kind (the Art 50 model-vs-human bridge) + additive format version.
         let mut by_origin: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
@@ -1521,7 +1500,6 @@ pub async fn export(
             "entities": entities,
             "relationships": edges,
             "proposals": proposals,
-            "pii_map": pii_map,
             "provenance_summary": {
                 "total": by_origin.values().sum::<u64>(),
                 "by_origin": by_origin,
@@ -1693,6 +1671,53 @@ mod tests {
             jti: "token-1".to_string(),
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
+    }
+
+    /// v1.20.19 "Vault": the `/export` read-side round-trip for the never-built
+    /// write-time `pii_map` vault is gone. `ExportQuery` no longer carries
+    /// `include_pii_map` (an unknown `?include_pii_map=` is ignored by serde),
+    /// the export envelope has no `pii_map` key, and the table is dropped.
+    #[test]
+    fn export_has_no_pii_map_envelope() {
+        // The dead placeholder table no longer exists after migration.
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pii_map'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "pii_map table must be dropped");
+
+        // A request that passes the removed flag is simply ignored: serde maps
+        // `format` and drops the unknown `include_pii_map` (no error, no read).
+        let uri = axum::http::Uri::from_static("/export?include_pii_map=true&format=ump");
+        let q = axum::extract::Query::<ExportQuery>::try_from_uri(&uri)
+            .expect("unknown include_pii_map flag is ignored");
+        assert_eq!(q.format.as_deref(), Some("ump"));
+
+        // The export envelope carries no pii_map key.
+        let body = serde_json::json!({
+            "export_format_version": 2,
+            "exported_at": "t",
+            "knowledge": [],
+            "entities": [],
+            "relationships": [],
+            "proposals": [],
+            "provenance_summary": {"total": 0, "by_origin": {}, "by_source": {}},
+        });
+        assert!(body.get("pii_map").is_none(), "no pii_map envelope key");
+
+        // The real shipped control is untouched: output redaction still gates on
+        // `pii:read` for non-admin principals.
+        assert!(!crate::gate::has_pii_read(&Some(crate::auth::Principal {
+            sub: "user-42".into(),
+            tenant: "alpha".into(),
+            scopes: vec![],
+            jti: "t".into(),
+        })));
     }
 
     /// v1.20.18 "Bound": `/decayed` returns a bounded first page and `?offset=`

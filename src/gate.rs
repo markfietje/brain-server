@@ -317,9 +317,12 @@ pub fn has_pii_read(principal: &Option<crate::auth::Principal>) -> bool {
 /// ponytail: this re-runs the scanner over the stored text rather than
 /// tracking exact spans at write time, so it can't guarantee span-identity with
 /// the original (patterns may drift). It flags the chunk, not exact offsets —
-/// the deterministic "structural control, not a classifier" posture. v3.7
-/// write-time `pii_map` placeholders replace this heuristic for the opt-in
-/// path.
+/// the deterministic "structural control, not a classifier" posture.
+///
+/// v1.20.19 "Vault": there is **no** write-time PII placeholder vault. A
+/// fetchable stored-placeholder → raw-value map would create a personal-data
+/// store to protect, competing with this default-on output redaction which
+/// never persists the plaintext. This heuristic *is* the shipped control.
 pub fn redact_content(
     content: &str,
     pii: bool,

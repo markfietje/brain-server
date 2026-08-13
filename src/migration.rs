@@ -813,19 +813,13 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         }
     }
 
-    // Write-time PII placeholder vault (M4). Only populated with
-    // BRAIN_REDACT_PII=1 or per-ingest `redact:true`. Holds placeholder→value
-    // so text stays coherent and dedupe/supersession still work while the real
-    // values never live in content/embeddings. At-rest encryption deferred to
-    // v3.7 (SQLCipher + KMS) — documented ceiling, ponytail.
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS pii_map (
-            placeholder TEXT PRIMARY KEY,
-            value       TEXT NOT NULL,
-            created_at  INTEGER NOT NULL
-         );",
-        [],
-    )?;
+    // v1.20.19 "Vault": the v1.14 `pii_map` table was never written to (the
+    // write-time placeholder mode it served was docs-only) and only `/export`
+    // read it — a dead personal-data table. Drop it outright; `DROP TABLE IF
+    // EXISTS` erases any legacy placeholder rows and is idempotent on a fresh
+    // DB (the CREATE below was removed in the same release, so the table no
+    // longer exists to be re-created before this drop).
+    db.execute("DROP TABLE IF EXISTS pii_map", [])?;
 
     // Purge audit trail (M2/GDPR). Append-only; keeps the audit chain
     // verifiable (knowledge_id + content_hash + purged_at, no raw content).
@@ -1083,8 +1077,8 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
 
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.18')
-         ON CONFLICT(key) DO UPDATE SET value = '1.20.18';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.19')
+         ON CONFLICT(key) DO UPDATE SET value = '1.20.19';",
         [],
     )?;
 

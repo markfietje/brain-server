@@ -8012,11 +8012,12 @@ Final paragraph after the rule.";
         // v1.17.3 bumps it for the UMP columns; v1.18.2 for the origin column;
         // v1.20.1 for the proposals.source_prompt column;
         // v1.20.14 for the proposals.edited_at column;
-        // v1.20.18 for the idx_tombstones_reason_purged index.
+        // v1.20.18 for the idx_tombstones_reason_purged index;
+        // v1.20.19 for the pii_map table drop.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_18),
-            "schema_version must be recorded as 1.20.18 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_19),
+            "schema_version must be recorded as 1.20.19 after migration"
         );
 
         // v1.20.14 "Steer": the pending-proposal edit marker column exists.
@@ -8161,7 +8162,6 @@ Final paragraph after the rule.";
             );
         }
         for (tbl, idx) in [
-            ("pii_map", "pii_map placeholder PRIMARY KEY"),
             ("tombstones", "tombstones knowledge_id"),
             ("proposals", "proposals kind"),
         ] {
@@ -8175,6 +8175,18 @@ Final paragraph after the rule.";
             assert_eq!(n, 1, "v1.14.0: {tbl} table must exist after migration");
             let _ = idx;
         }
+        // v1.20.19 "Vault": the dead `pii_map` table is dropped, not present.
+        let pii_map: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pii_map'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            pii_map, 0,
+            "v1.20.19: pii_map table must be dropped after migration"
+        );
         // The knowledge defaults are the back-compat guarantee: legacy rows keep
         // current behavior (private scope, stated assertion, confidence 1.0).
         let defaults: (String, String, f64, i64, Option<String>) = db
@@ -8259,6 +8271,55 @@ Final paragraph after the rule.";
                 "v1.17.1: retention_policy.{col} column must exist after migration"
             );
         }
+    }
+
+    /// v1.20.19 "Vault": a legacy DB carrying `pii_map` rows (the never-built
+    /// write-time placeholder vault) has them erased and the table dropped by
+    /// migration. The privacy-win direction: a dead personal-data table is
+    /// removed, and `/export`/`/recall` still work (nothing depends on it).
+    #[test]
+    fn migration_drops_pii_map_and_empty_table() {
+        crate::register_sqlite_vec();
+        // Simulate a pre-1.20.19 DB: migrate, then re-create the legacy table
+        // with a seeded placeholder row (as the v1.14 CREATE did).
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        conn.execute_batch(
+            "CREATE TABLE pii_map (
+                placeholder TEXT PRIMARY KEY,
+                value       TEXT NOT NULL,
+                created_at  INTEGER NOT NULL
+             );
+             INSERT INTO pii_map (placeholder, value, created_at)
+             VALUES ('[pii:email]', 'alice@example.com', 1);",
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pii_map", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 1, "legacy pii_map row present before re-migration");
+
+        // Re-running the migration drops the row + the table.
+        brain_server::migration::run_migration(&mut conn, 1).expect("re-migration");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pii_map'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "pii_map table dropped after re-migration");
+        // Nothing else reads it: knowledge ingest + export projections still work.
+        conn.execute(
+            "INSERT INTO knowledge (title, content, source, content_hash) \
+             VALUES ('t', 'alice@example.com', 'manual', 'h1')",
+            [],
+        )
+        .unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 1, "knowledge ingest still works without pii_map");
     }
 
     /// v1.14.0 "Gate" M2/M3/M4 schema-level filter check. Runs the real
