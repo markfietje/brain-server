@@ -77,7 +77,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/export[?include_pii_map=true]` | Portable JSON export |
+| GET | `/export` | Portable JSON export |
 | POST | `/purge` | Hard, audited deletion by id or owner |
 | POST | `/dsar` | Locate → export → purge → deletion certificate |
 | GET | `/tombstones?subject=&since=` | Deletion registry |

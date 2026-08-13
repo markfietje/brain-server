@@ -32,7 +32,7 @@ file (`COMPLIANCE.md`), threat model (`THREAT_MODEL.md`), security map
 | DSAR / right to erasure | Locate → export → purge → **deletion certificate** + tombstone registry (`/dsar`, `/tombstones`) | `COMPLIANCE.md` §4 |
 | Right to explanation | Replayable recall trace (`GET /recall/{trace_id}/trace`) = Art 22 "meaningful information about the logic" | `COMPLIANCE.md` §3, §6.3 |
 | Data portability | `/export` emits content + provenance (`source`/`assertion_kind`/`confidence`) | `COMPLIANCE.md` §7 |
-| PII handling | Opt-in write-time placeholder redaction (`BRAIN_REDACT_PII=1`), conservative pattern match; read redaction on output | v1.14, `COMPLIANCE.md` §2 |
+| PII handling | Deterministic read-time output redaction (masked for principals without `pii:read`); no plaintext stored in a placeholder vault | v1.14, v1.20.19, `COMPLIANCE.md` §2 |
 | Onward notification | Opt-in Art 19 HMAC-SHA256-signed webhook on purge | `COMPLIANCE.md` §4, v1.15 |
 | Audit trail | Append-only SHA-256 hash chain, `/audit/verify`, `/metrics` chain-ok gauge | `COMPLIANCE.md` §3 |
 

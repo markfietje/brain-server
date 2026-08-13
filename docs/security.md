@@ -62,9 +62,9 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
   are opt-in (default on in JWT mode, off in loopback).
 - **Prompt-injection quarantine** — suspicious input is stored but excluded from
   retrieval until reviewed (deterministic structural control, not a classifier).
-- **PII** — opt-in write-time placeholder mode (`BRAIN_REDACT_PII=1`) swaps
-  detected email/phone/card patterns for placeholders; output redaction masks PII
-  for principals without `pii:read`.
+- **PII** — deterministic read-time output redaction masks email/phone/card for
+  principals without `pii:read`; plaintext is never stored in a placeholder
+  vault (there is no `pii_map`, removed v1.20.19).
 - **Untrusted-evidence boundary** — every retrieved result serializes
   `untrusted: true` (OWASP LLM01:2025).
 - **Parameterized SQL** — no SQL-injection surface.

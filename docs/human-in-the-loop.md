@@ -234,7 +234,7 @@ a queue-clearer.
 | Plugin `captureMode` | `proposal` | Whether auto-capture routes through the review queue (`proposal`) or writes directly (`direct`, still screen-gated). |
 | `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` | — | Classifier banding thresholds: ≥ high → reject, ≥ low → quarantine. Flippable without restart. |
 | `BRAIN_INJECTION_POLICY` | `quarantine` | `reject` vs `quarantine` for screen hits. |
-| `BRAIN_REDACT_PII` | off | Write-time placeholder mode for PII at ingest. |
+| PII control | read-time | Deterministic output redaction for principals without `pii:read`; no write-time placeholder vault. |
 | Per-kind retention | — | Query-time kind-default expiry; `GET /retention` sets overrides. |
 
 Changing the proposal TTL changes the *reviewability* budget. A tighter TTL forces faster

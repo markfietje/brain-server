@@ -73,7 +73,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## P
 
-- **PII** — personally identifiable information. Brain Server offers output redaction and an opt-in write-time placeholder mode.
+- **PII** — personally identifiable information. Brain Server applies deterministic read-time output redaction to PII; there is no write-time placeholder vault (v1.20.19).
 - **PRF** — pseudo-relevance feedback: deterministic query expansion that fires only when the top result appears in *both* retrieval legs within a bounded rank.
 - **Proposal** — a write-back candidate scored by the server but held in a queue until a human approves it. Nothing enters memory autonomously.
 - **Provenance** — per-retriever ranks, fused score, expansion terms, and evidence attached to each result.

@@ -35,11 +35,11 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_RECALL_ROUTING_ENABLED` | `true` | Automatic retrieval routing (v1.13.1). `false` restores legacy shim behavior. |
 | `BRAIN_GRAPH_RESCUE_ENABLED` | `true` | Complexity-gated graph rescue pass on abstention (v1.12) |
 
-## Write-back gating & PII (v1.14)
+## Write-back gating (v1.14)
 
-| Variable | Default | Description |
-|---|---|---|
-| `BRAIN_REDACT_PII` | `false` | When `1`, swap detected email/phone/card patterns for placeholders at write time (kept in `pii_map`). |
+PII control is deterministic **read-time output redaction** (always-on for
+principals without `pii:read`/Admin); there is no write-time placeholder vault
+and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 
 ## Observability & audit (v1.15)
 

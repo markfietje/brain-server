@@ -49,7 +49,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Read-event audit** (v1.15) — recall/search/get emit rows into the hash chain (opt-in), plus a replayable **recall trace**.
 - **DSAR workflow** (v1.15) — `POST /dsar` locate → export → purge → chain-verifiable deletion certificate; `GET /tombstones` registry; `GET /dsar/{id}/certificate`.
 - **GDPR export/purge** (v1.14) — `GET /export` portable JSON; `POST /purge` hard audited delete by id or owner.
-- **PII controls** (v1.14) — output redaction + opt-in write-time placeholder mode (`BRAIN_REDACT_PII=1`).
+- **PII controls** (v1.14) — deterministic read-time output redaction (`[redacted:…]`); no write-time placeholder vault (v1.20.19).
 
 ## Security
 

@@ -51,9 +51,10 @@ paths are explicit client calls; nothing is inferred or scraped.
   does not enrich, infer, or profile.
 - `POST /ingest` trusts the client's declared entities/relations — the client
   controls the schema of the graph.
-- `BRAIN_REDACT_PII=1` (opt-in, v1.14) swaps detected PII for placeholders at
-  write time (email/phone/Luhn-card patterns, conservative pattern match —
-  "control, not a classifier").
+- PII control is deterministic read-time output redaction for principals without
+  `pii:read`/Admin (email/phone/Luhn-card patterns, conservative pattern match —
+  "control, not a classifier"). No write-time placeholder vault; plaintext is
+  never stored in a `pii_map` (removed v1.20.19).
 - Read-event auditing is **off by default in loopback mode** (noise + the
   personal-use contract) and **on by default in JWT mode** (enterprise
   posture). Override: `BRAIN_AUDIT_READ_EVENTS`, sampling via
@@ -162,7 +163,7 @@ explicit operator action.
 | Unwarranted erasure | DSAR is Admin-only; purge is explicit + tombstoned + audited; `/purge` requires explicit ids/owner |
 | Tampered audit | SHA-256 hash chain + `/audit/verify` + `/metrics` chain-ok gauge + DSAR certificates anchored to the chain |
 | Unauthenticated access | Bearer token (opaque) or JWT/JWS + OIDC discovery (v1.2); loopback-first defaults |
-| PII at rest | Not encrypted at rest — documented posture: full-disk encryption (LUKS/FileVault) is the operator's layer; write-time placeholder mode opt-in (v1.14) |
+| PII at rest | Not encrypted at rest — documented posture: full-disk encryption (LUKS/FileVault) is the operator's layer; PII control is deterministic read-time output redaction, no write-time placeholder vault (v1.20.19) |
 | Exfiltration | No outbound HTTP by default; the only outbound path is the opt-in Art 19 webhook |
 
 ## 6. Framework Maps
@@ -324,7 +325,6 @@ conformity assessment is an operator gate).
 | Permanent | audit chain (excluding pruned window), tombstones, `dsar_requests`, proposals ledger | forever (personal use) | `BRAIN_AUDIT_RETENTION_DAYS` opt-in prune with chain re-anchor |
 | Transient | read-event traces (`recall_traces`) | same window as the audit rows they key | pruned with their audit row |
 | Content | knowledge chunks | until explicitly purged | `/purge` (ids/owner), DSAR, supersession (`valid_to`) |
-| Placeholder map | `pii_map` (write-time redaction mode) | until operator purges | `/purge`, excluded from `/export` by default |
 
 ## 8.5 Release Evidence & Supply Chain (v1.17.5)
 

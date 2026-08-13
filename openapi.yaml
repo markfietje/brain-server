@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.20.18
-  x-api-version: "1.20.18"
+  version: 1.20.19
+  x-api-version: "1.20.19"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -1590,22 +1590,19 @@ paths:
       summary: Portable JSON export for data portability (v1.14.0 M2)
       operationId: exportData
       description: >
-        Live `knowledge` rows + graph + proposals ledger. `pii_map` values are
-        excluded by default; only included with `?include_pii_map=true` AND a
-        `pii:read` principal. v1.17.1 "Govern" M4: `?format=ump` re-renders the
-        payload as UMP wire records (Universal Memory Protocol 1.0,
-        github.com/edihasaj/universal-memory-protocol). v1.18.2 "Transparency"
-        M1: each `knowledge` row carries `source` (ingest kind) + `origin`
-        (human|model|imported), and the envelope adds `export_format_version: 2`
-        + a `provenance_summary` (total / by_origin / by_source) for the Art 50
-        model-vs-human transparency bridge. v1.20.17 "Scrub" M2: with a
-        `redact_owner` query param that doesn't match a row's `owner`, that row's
-        `content` is redacted (`[redacted]`) — a cross-owner export never leaks
-        another subject's chunk body.
+        Live `knowledge` rows + graph + proposals ledger. v1.17.1 "Govern" M4:
+        `?format=ump` re-renders the payload as UMP wire records (Universal
+        Memory Protocol 1.0, github.com/edihasaj/universal-memory-protocol).
+        v1.18.2 "Transparency" M1: each `knowledge` row carries `source` (ingest
+        kind) + `origin` (human|model|imported), and the envelope adds
+        `export_format_version: 2` + a `provenance_summary` (total / by_origin /
+        by_source) for the Art 50 model-vs-human transparency bridge. v1.20.17
+        "Scrub" M2: with a `redact_owner` query param that doesn't match a row's
+        `owner`, that row's `content` is redacted (`[redacted]`) — a cross-owner
+        export never leaks another subject's chunk body. v1.20.19 "Vault": there
+        is no `pii_map` vault to resolve — PII control is deterministic output
+        redaction, so raw PII is never exported.
       parameters:
-        - in: query
-          name: include_pii_map
-          schema: { type: boolean }
         - in: query
           name: format
           description: "`ump` re-renders the payload as UMP records (one per chunk, name-based graph)"
@@ -1643,7 +1640,6 @@ paths:
                   entities: { type: array }
                   relationships: { type: array }
                   proposals: { type: array }
-                  pii_map: { type: object }
   /purge:
     post:
       summary: Hard, explicit, audited deletion across all tables (v1.14.0 M2)

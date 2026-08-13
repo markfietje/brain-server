@@ -37,9 +37,9 @@ are explicit client calls; nothing is inferred or scraped.
   inference, or profiling.
 - `POST /ingest` trusts the client's declared entities/relations — the client
   controls the graph schema.
-- `BRAIN_REDACT_PII=1` (opt-in) swaps detected PII (email / phone / card) for
-  placeholders at write time — conservative pattern matching, "control, not a
-  classifier".
+- PII control is deterministic read-time output redaction for principals without
+  `pii:read`/Admin (email / phone / Luhn card, conservative pattern matching,
+  "control, not a classifier"). No plaintext is stored in a placeholder vault.
 - Read-event auditing is **off by default in loopback**, **on by default in JWT
   mode**; sampling via `BRAIN_AUDIT_READ_SAMPLE_RATE`.
 
