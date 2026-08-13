@@ -34,17 +34,15 @@
 - [Client GUI](client-gui.md)
 - [Client console](client-complete-console.md)
 - [Universal Memory Protocol](universal-memory-protocol.md)
+- [Technical specification](SPECS.md)
 - [Glossary](glossary.md)
 - [FAQ](faq.md)
-- [Dioxus WASM-split research](dioxus-wasm-split-research.md)
-- [Roadmap & release history](roadmap-and-release-history.md)
 
 # Operations
 
 - [Security policy](security.md)
 - [Compliance posture](compliance.md)
 - [Threat model](THREAT_MODEL.md)
-- [Technical specification](SPECS.md)
 
 # Research
 
@@ -56,6 +54,7 @@
 - [Noise-Aware Graph + Hub Dampening](./research/05-hub-dampening.md)
 - [Calibrated Abstention + Span Verification](./research/06-abstention-verify.md)
 - [The PRF Gate + Evidence-Faithful Snippet](./research/07-prf-evidence.md)
+- [Dioxus WASM-split research](dioxus-wasm-split-research.md)
 
 # Trust & verification
 
@@ -80,15 +79,18 @@
 - [OWASP 2026 compliance matrix](OWASP_AGENTIC_2026.md)
 - [Memory-poisoning mitigation (MemGhost / ASI06)](MEMGHOST_MITIGATION.md)
 - [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
+- [California ADMT transparency](admt.md)
+- [CRA evidentiary kit](cra.md)
 - [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
 - [RFP response kit](RFP_RESPONSE_KIT.md)
-- [Media kit](media-kit.md)
 
 # Project
 
 - [Roadmap](roadmap.md)
+- [Release history](roadmap-and-release-history.md)
 - [Changelog](CHANGELOG.md)
 - [Benchmarks](BENCHMARKS.md)
 - [Audit register](AUDIT.md)
+- [Media kit](media-kit.md)
 - [Contributing](CONTRIBUTING.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
