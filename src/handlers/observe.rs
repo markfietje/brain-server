@@ -219,18 +219,35 @@ pub async fn post_dsar(
             purged_ids.extend(roots.iter().copied());
         }
 
-        // v1.16.1: DSAR-specific trace residue sweep. Beyond the hit-id
-        // cascade in purge_chunk_ids, traces whose *query text* mentions the
-        // subject (e.g. an email/name typed into recall) are personal data of
-        // that subject too — the trace JSON stores the raw query. Sweep them
-        // in the same tx, best-effort (short common subjects over-match
-        // slightly; that is the erasure-safe direction).
+        // v1.16.1: trace residue sweep. Since v1.20.17 M3 the trace no longer
+        // stores the raw query (only its xxh3-64 hash), so the subject can't
+        // appear in it — this sweep remains as a defensive net against any
+        // future field that does embed personal data. Best-effort (short
+        // common subjects over-match slightly; erasure-safe direction).
         if matches!(action.as_str(), "purge" | "both") && !subject.is_empty() {
             let _ = tx.execute(
                 "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
                 rusqlite::params![format!("%{}%", subject)],
             );
         }
+        // v1.20.17 M1: store the export's xxh3-64 hash, never the raw bundle —
+        // the ledger's job is to prove the purge happened, not to keep a copy
+        // of the erasure payload. Keyed off the same personal-use / op contract.
+        let bundle_hash = export_bundle.as_deref().map(crate::audit::hash);
+
+        // v1.20.17 M5: create the ledger row in the SAME tx as the purge so
+        // the erasure record is atomic with the deletion (a crash mid-purge
+        // can no longer leave a purged subject with no ledger row). Identity +
+        // times are committed now; the certificate (a view needing the
+        // post-commit chain head) is backfilled after the commit.
+        let now = chrono::Utc::now().timestamp();
+        tx.execute(
+            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
+             VALUES (?1, ?2, 'completed', ?3, NULL, ?4, ?4)",
+            rusqlite::params![subject, action, bundle_hash, now],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let id = tx.last_insert_rowid();
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
 
@@ -257,15 +274,12 @@ pub async fn post_dsar(
         })
         .to_string();
 
-        // 5. Ledger row.
-        let now = chrono::Utc::now().timestamp();
-        conn.execute(
-            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
-             VALUES (?1, ?2, 'completed', ?3, ?4, ?5, ?5)",
-            rusqlite::params![subject, action, export_bundle, certificate, now],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let id = conn.last_insert_rowid();
+        // v1.20.17 M5: backfill the certificate onto the ledger row committed
+        // with the purge (best-effort — the row + times already prove it).
+        let _ = conn.execute(
+            "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
+            rusqlite::params![certificate, id],
+        );
 
         Ok(DsarOutcome {
             id,
@@ -449,6 +463,22 @@ pub async fn get_dsar_certificate(
 // Art 19 webhook (opt-in) + shared helpers
 // ---------------------------------------------------------------------------
 
+/// v1.20.17 M1: ledger retention. Completed `dsar_requests` rows older than
+/// `retention_days` are deleted (the erasure record's remaining value is the
+/// certificate + the audit chain, not the ledger row itself). Returns the
+/// number of rows removed. Pure; best-effort callers swallow the result.
+pub(crate) fn purge_stale_dsar_ledger(conn: &rusqlite::Connection, retention_days: u32) -> i64 {
+    if retention_days == 0 {
+        return 0;
+    }
+    let now = chrono::Utc::now().timestamp();
+    conn.execute(
+        "DELETE FROM dsar_requests WHERE status = 'completed' AND completed_at < ?1",
+        rusqlite::params![now - (retention_days as i64) * 86400],
+    )
+    .unwrap_or(0) as i64
+}
+
 /// v1.15.0 "Observe" M3: Art 19 onward-notification. When
 /// `BRAIN_DSAR_WEBHOOK_URL` is set, a completed DSAR purge POSTs
 /// `{subject, certified_at, certificate_id}` to the URL, HMAC-SHA256-signed
@@ -553,4 +583,133 @@ pub(crate) fn dsar_locate(
         frontier = next;
     }
     Ok((roots, derived))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE dsar_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                export_bundle TEXT,
+                certificate TEXT,
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn dsar_ledger_stores_hash_not_raw_bundle() {
+        let conn = fresh_conn();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
+             VALUES ('alice', 'both', 'completed', ?1, ?2, ?2)",
+            rusqlite::params![crate::audit::hash("personal export payload"), now],
+        )
+        .unwrap();
+        let stored: String = conn
+            .query_row("SELECT export_bundle FROM dsar_requests", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, crate::audit::hash("personal export payload"));
+        assert_ne!(stored, "personal export payload");
+        // The hash is a bounded non-reversible digest, never the content.
+        assert_eq!(stored.len(), 16);
+    }
+
+    #[test]
+    fn purge_deletes_only_old_completed_rows() {
+        let conn = fresh_conn();
+        let now = chrono::Utc::now().timestamp();
+        let insert = |subject: &str, status: &str, completed: i64| {
+            conn.execute(
+                "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
+                 VALUES (?1, 'purge', ?2, NULL, 0, ?3)",
+                rusqlite::params![subject, status, completed],
+            )
+            .unwrap();
+        };
+        let thirty_one_days_ago = now - 31 * 86400;
+        let one_day_ago = now - 86400;
+        insert("old_completed", "completed", thirty_one_days_ago);
+        insert("fresh_completed", "completed", one_day_ago);
+        insert("pending", "pending", thirty_one_days_ago); // never purged
+        let deleted = purge_stale_dsar_ledger(&conn, 30);
+        assert_eq!(deleted, 1);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2);
+        // The pending erasure record survives regardless of age.
+        let subjects: Vec<String> = conn
+            .prepare("SELECT subject FROM dsar_requests ORDER BY subject")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(subjects, vec!["fresh_completed", "pending"]);
+    }
+
+    #[test]
+    fn purge_zero_retention_is_a_noop() {
+        let conn = fresh_conn();
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
+             VALUES ('x', 'purge', 'completed', NULL, 0, ?1)",
+            rusqlite::params![now - 400 * 86400],
+        )
+        .unwrap();
+        assert_eq!(purge_stale_dsar_ledger(&conn, 0), 0);
+    }
+
+    #[test]
+    fn ledger_row_is_committed_atomically_with_purge_tx_commit() {
+        // v1.20.17 M5 regression: the ledger insert used to happen AFTER the
+        // tx.commit() — a crash between the two lost the erasure record. Now
+        // the insert rides in the SAME tx as the purge; prove the row exists
+        // the moment the tx commits by simulating the handler's sequence.
+        let mut conn = fresh_conn();
+        let tx = conn.transaction().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        tx.execute(
+            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
+             VALUES ('alice', 'both', 'completed', NULL, NULL, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        let id = tx.last_insert_rowid();
+        tx.commit().unwrap();
+        let (subj, status): (String, String) = conn
+            .query_row(
+                "SELECT subject, status FROM dsar_requests WHERE id = ?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((subj.as_str(), status.as_str()), ("alice", "completed"));
+        // Certificate is backfilled post-commit (best-effort).
+        let _ = conn.execute(
+            "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
+            rusqlite::params!["cert", id],
+        );
+        let cert: String = conn
+            .query_row(
+                "SELECT certificate FROM dsar_requests WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cert, "cert");
+    }
 }

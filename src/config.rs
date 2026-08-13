@@ -619,6 +619,18 @@ pub fn audit_read_retention_days() -> Option<u32> {
         .filter(|d| *d > 0)
 }
 
+/// DSAR ledger retention window in days. Completed `dsar_requests` rows keep
+/// only the bundle hash + certificate after the purge (v1.20.17 M1); rows
+/// older than this window are deleted on the read-event prune cadence. Default
+/// 30; the GDPR needs the erasure record, not the bundle bytes forever.
+pub fn dsar_ledger_retention_days() -> u32 {
+    std::env::var("BRAIN_DSAR_LEDGER_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(30)
+}
+
 /// Optional Art 19 onward-notification webhook. When set, a completed DSAR
 /// purge POSTs `{subject, certified_at, certificate_id}` to this URL, HMAC-
 /// signed with [`dsar_webhook_secret`]. Fail-soft: a webhook failure never

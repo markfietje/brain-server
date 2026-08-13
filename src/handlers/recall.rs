@@ -592,7 +592,11 @@ pub(crate) async fn run_recall(
             let trace_detail = if req.trace {
                 Some(
                     serde_json::json!({
-                        "query": trace_query.clone(),
+                        // v1.20.17 M3: the trace records a bounded hash of the
+                        // query (xxh3-64), never the raw text — a recall query
+                        // can itself be personal data of the subject (the DSAR
+                        // residue-sweep in observe.rs relies on this too).
+                        "query_hash": crate::audit::hash(&trace_query),
                         "decision": format!("{:?}", decision),
                         "domains_searched": domains_searched,
                         "scope": applied_scopes,
@@ -628,6 +632,12 @@ pub(crate) async fn run_recall(
                     if let Some(days) = crate::config::audit_read_retention_days() {
                         let _ = crate::audit::prune_audit_retention(&conn, days);
                     }
+                    // v1.20.17 M1: piggyback the DSAR ledger retention on the
+                    // same read-event prune cadence (no dedicated timer).
+                    let _ = crate::handlers::observe::purge_stale_dsar_ledger(
+                        &conn,
+                        crate::config::dsar_ledger_retention_days(),
+                    );
                     return id;
                 }
                 None
@@ -1259,5 +1269,42 @@ mod tests {
             abstention_decision(None, true),
             crate::handlers::RecallDecision::Ok
         );
+    }
+
+    /// v1.20.17 M3: the stored recall trace records `query_hash` (bounded xxh3),
+    /// never the raw query text — a recall query typed by a user is itself
+    /// personal data of that subject, and must not linger in the replay
+    /// artifact (the DSAR residue sweep relies on this invariant).
+    #[test]
+    fn stored_trace_hashes_query_never_stores_raw_text() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        let secret_query = "alice@example.com's medical history";
+        let trace_detail = serde_json::json!({
+            "query_hash": crate::audit::hash(secret_query),
+            "decision": "Ok",
+            "graph_rescued": false,
+            "hits": [],
+        })
+        .to_string();
+        let id = crate::audit::record_read_event(
+            &conn,
+            crate::audit::AuditKind::Recall,
+            "alice@example.com",
+            secret_query,
+            Some(&trace_detail),
+            "api",
+        )
+        .expect("trace row");
+        let replayed = crate::audit::read_trace(&conn, id).unwrap();
+        assert!(
+            !replayed.contains(secret_query),
+            "raw query text must never be stored in the trace"
+        );
+        let v: serde_json::Value = serde_json::from_str(&replayed).unwrap();
+        assert_eq!(v["query_hash"], crate::audit::hash(secret_query));
+        // The raw query lives only on the tamper-evident audit row's target
+        // (which is what record_read_event stores), never the replay artifact.
     }
 }

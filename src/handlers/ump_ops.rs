@@ -55,6 +55,27 @@ pub async fn capabilities() -> Json<Value> {
     Json(capabilities_payload())
 }
 
+/// v1.20.17 M4: record a `Denied` auth audit row for a §3.7 consent mismatch.
+/// Extractable for a test (pass an on-disk/in-memory conn); the handler uses a
+/// fresh connection to the live DB. Best-effort: a failure is ignored so a
+/// missing audit log never fails the request.
+fn record_forbidden_scope(
+    conn: &rusqlite::Connection,
+    principal_sub: &str,
+    declared_owner: &str,
+) -> bool {
+    let detail = format!("ump.remember scope.owner={declared_owner} does not match principal");
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Auth,
+        principal_sub,
+        &detail,
+        crate::audit::AuditStatus::Denied,
+        "api",
+    )
+    .is_some()
+}
+
 /// §3.3 `remember` — lower a partial record through the structured-ingest
 /// path (`ingest_one`), with the §3.7 consent/signature gates applied first.
 pub async fn remember(
@@ -75,6 +96,15 @@ pub async fn remember(
     if let Some(owner) = principal_to_owner(&principal.0) {
         if let Some(declared) = &meta.owner {
             if declared != &owner {
+                // v1.20.17 M4: authorize()-style consent denials on the UMP
+                // surface must be audited like any other authz denial
+                // (COMPLIANCE.md §3.5 promised this; it never happened). Fresh
+                // connection, best-effort — a missing audit log must not fail
+                // the request. Detail carries only the declared owner (it is
+                // the handler's own identity assertion, not a secret).
+                if let Ok(audit_conn) = rusqlite::Connection::open(crate::config::brain_db_path()) {
+                    let _ = record_forbidden_scope(&audit_conn, &owner, declared);
+                }
                 return Err(HandlerError::bad_request_with(
                     "forbidden_scope",
                     "record scope.owner does not match the authenticated principal",
@@ -885,5 +915,36 @@ mod tests {
             patched["time"]["valid_to"].is_null(),
             "explicit null patch wins"
         );
+    }
+
+    /// v1.20.17 M4: a §3.7 consent mismatch is audited as a `Denied` auth
+    /// event on the read-event-capable audit chain (COMPLIANCE.md §3.5
+    /// promised it; the gap this closes was a silent 400 with no footprint).
+    #[test]
+    fn forbidden_scope_is_audited_as_denied_auth_event() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        assert!(
+            record_forbidden_scope(&conn, "alice", "eve"),
+            "the audit write succeeds on the migrated chain"
+        );
+        let (kind, status, target_hash): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT kind, status, target_hash FROM audit_events WHERE kind = 'auth' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "auth");
+        assert_eq!(status, "denied");
+        // The scope detail rides in the target slot (record(kind, actor,
+        // target, status, detail)) as a bounded xxh3 hash, never the raw
+        // string. Derive from the helper's OWN format so the test cannot
+        // drift; asserting the exact hash also proves nothing raw persisted.
+        let expected = crate::audit::hash("ump.remember scope.owner=eve does not match principal");
+        assert_eq!(target_hash.as_deref(), Some(expected.as_str()));
+        // The chain still verifies (the denial joined the tamper-evident log).
+        assert!(crate::audit::verify_chain(&conn));
     }
 }

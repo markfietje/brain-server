@@ -10,6 +10,68 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.17] — 2026-08-12
+
+### Server — "Scrub" (GDPR erasure completion)
+
+Server `Cargo.toml` 1.20.16 → 1.20.17; client stays at 1.20.16. Closes five
+verified GDPR-erasure (Art 17 "right to erasure") completeness gaps. **No schema
+change, no new route** — every fix lands on existing code paths. See
+`IMPLEMENTATION_PLAN_v1.20.17_Scrub.md`.
+
+- **M1 — DSAR ledger stores a hash, not the raw bundle** (`src/handlers/observe.rs`).
+  The `dsar_requests` side-table persisted the full exported `bundle` JSON — a
+  retained copy of the very data a DSAR just erased. Now persists
+  `bundle_hash` (xxh3 of the export body) only. Mature DSAR ledger rows are
+  pruned on the existing read-event prune cadence: `purge_stale_dsar_ledger`
+  deletes `status='completed'` rows older than `BRAIN_DSAR_LEDGER_DAYS`
+  (default 30). Also hardened the purge transaction's atomicity (M5): the
+  ledger row + certificate are committed with the erase, and the certificate
+  `signed_at` is backfilled after commit.
+- **M2 — cross-owner export redaction** (`src/handlers/gate.rs`). `GET /export`
+  (and `/export?format=ump`) gained an optional `redact_owner` query param: any
+  row whose `owner` doesn't match is exported with `content` redacted to
+  `[redacted]`. A shared `should_redact` helper keeps the JSON and UMP paths on
+  one rule. So an operator exporting on behalf of one subject never carries
+  another subject's chunk body out of the system.
+- **M3 — stored recall traces hash the query** (`src/handlers/recall.rs`). The
+  `recall_traces` side-table stored the raw `query` text. Now stores
+  `query_hash` (xxh3 fingerprint) — the replay endpoint returns the decision
+  path without retaining the queried prose at rest. Bounded, content-free, and
+  PII-free like the audit chain.
+- **M4 — UMP scope-mismatch audited as a denied auth event**
+  (`src/handlers/ump_ops.rs`). A `ump.remember` whose declared `scope.owner`
+  doesn't match the authenticated principal was silently dropped. It is now
+  recorded as a `denied` auth audit row via the shared `record_forbidden_scope`
+  helper; the detail (xxh3-hashed like all audit fields) names the mismatch
+  without persisting either the owner label or the payload. Best-effort: an
+  audit failure never fails the request.
+- **Tests** (+7, no new files): observe (ledger stores hash not bundle, prune
+  deletes only old completed rows, zero retention no-op, ledger committed with
+  erase), recall (stored trace hashes query never raw text), gate (export
+  redacts non-owned rows via the shared rule), ump_ops (scope mismatch audited
+  as denied with only a hashed detail + chain verifies), plus the M5 atomicity
+  test.
+
+### Verification
+- `cargo test --features bench,migrate`: **514 passed, 5 ignored** (main bin).
+  Clippy `-D warnings` clean. `cargo fmt --check` clean.
+- `test_openapi_covers_routes` + `authz_gates_cover_every_non_public_route` +
+  `test_migration_schema_contract` green (no new routes, no schema change).
+- Release build (all 5 binaries) clean.
+
+### Honest ceilings (carried into v1.21 / v2.0)
+- The export redaction replaces chunk `content` only; metadata (source, origin,
+  owner, id) still reflects the target owner's selection. An operator wanting a
+  fully subject-scoped export scopes the query at source.
+- `purge_stale_dsar_ledger` runs on the read-event prune cadence, not a
+  dedicated boot timer; retention is per whole-ledger, not per-subject.
+- `query_hash`/`bundle_hash` are xxh3 fingerprints (traces and ledger are
+  non-adversarial hashes, per the audit chain's existing pattern) — a consumer
+  needing the exact query/bundle re-derives it from its own source copy.
+
+---
+
 ## [1.20.16] — 2026-08-12
 
 ### Server + client — "Bidi" (close the Unicode bidi-smuggling gap)

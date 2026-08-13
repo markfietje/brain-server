@@ -1336,6 +1336,9 @@ pub async fn export(
     // M2: resolved before the `move` closure so the export path can redact
     // records the principal doesn't own (§2.7).
     let redact_owner = principal.0.as_ref().map(|p| p.sub.clone());
+    // v1.20.17 M2: the closure redacts rows it doesn't own; an owned String
+    // clone so the original is still usable for the UMP render below.
+    let redact_closure = redact_owner.clone();
 
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
@@ -1366,6 +1369,18 @@ pub async fn export(
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             for v in rows.flatten() {
                 knowledge.push(v);
+            }
+        }
+        // v1.20.17 M2: same redaction rule as `render_ump` (which already
+        // redacts the official `.well-known` surface) — empty owner is
+        // personal + shared, so a non-principal exporter sees only the shell;
+        // an exporter whose sub matches the row's OWN owner sees that row.
+        if let Some(redact_owner) = redact_closure.as_deref() {
+            for k in &mut knowledge {
+                let row_owner = k["owner"].as_str();
+                if should_redact(row_owner, Some(redact_owner)) {
+                    k["content"] = serde_json::Value::String("[redacted]".to_string());
+                }
             }
         }
         let mut proposals = Vec::new();
@@ -1520,6 +1535,15 @@ pub async fn export(
 /// Every record goes through `emit_record` (content-addressed id + integrity +
 /// §2.7 redaction for non-owner principals: a JWT subject only ever exports
 /// their own rows unredacted; loopback/operator exports stay full).
+/// Shared §2.7 redaction rule: a row is redacted when an exporter principal is
+/// present (non-None) AND the row is not owned by that principal. A row with
+/// no owner is personal + shared → redacted; `redact_owner == None` (loopback/
+/// opaque) sees everything. Used by the JSON `/export` body (M2) and the UMP
+/// renderer — one rule, two consumers.
+fn should_redact(row_owner: Option<&str>, redact_owner: Option<&str>) -> bool {
+    redact_owner.is_some() && row_owner.map(|o| Some(o) != redact_owner).unwrap_or(true)
+}
+
 fn render_ump(
     body: &serde_json::Value,
     redact_owner: Option<&str>,
@@ -1563,8 +1587,7 @@ fn render_ump(
             let rels = graph_by_chunk.get(&id).cloned().unwrap_or_default();
             let meta = crate::handlers::ump::UmpMeta::parse(row["ump_meta"].as_str());
             let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
-            let redact = redact_owner.is_some()
-                && row_owner.map(|o| Some(o) != redact_owner).unwrap_or(true);
+            let redact = should_redact(row_owner, redact_owner);
             crate::handlers::ump::emit_record(
                 row,
                 "global",
@@ -1730,6 +1753,38 @@ mod tests {
                 "redacted record still verifies"
             );
         }
+    }
+
+    /// v1.20.17 M2: the JSON `/export` body applies the same §2.7 rule as the
+    /// UMP renderer — a principal sees only OWN-owned content (`[redacted]`
+    /// shell for other/ownerless rows), while loopback/opaque sees everything.
+    #[test]
+    fn export_json_body_redacts_non_owned_rows_via_shared_rule() {
+        let body = serde_json::json!({
+            "exported_at": "2026-08-09T00:00:00Z",
+            "knowledge": [
+                {"id": 1, "content": "Mine.", "memory_kind": "fact", "owner": "user-1", "created_at": 1},
+                {"id": 2, "content": "Theirs.", "memory_kind": "fact", "owner": "user-2", "created_at": 2},
+                {"id": 3, "content": "No owner.", "memory_kind": "fact", "created_at": 3},
+            ],
+            "entities": [],
+            "relationships": [],
+        });
+        // Same helper the UMP renderer uses → both surfaces stay in lockstep.
+        let mut exported_as_user1 = body["knowledge"].as_array().unwrap().clone();
+        let redact_owner = Some("user-1");
+        for row in exported_as_user1.iter_mut() {
+            if should_redact(row["owner"].as_str(), redact_owner) {
+                row["content"] = serde_json::Value::String("[redacted]".to_string());
+            }
+        }
+        assert_eq!(exported_as_user1[0]["content"], "Mine.");
+        assert_eq!(exported_as_user1[1]["content"], "[redacted]");
+        assert_eq!(exported_as_user1[2]["content"], "[redacted]");
+        // Loopback (None redact owner) stays unredacted.
+        let no_redact = body["knowledge"].as_array().unwrap().clone();
+        assert_eq!(no_redact[0]["content"], "Mine.");
+        assert_eq!(no_redact[2]["content"], "No owner.");
     }
 
     /// Regression: v1.17.1 M4 added `created_at` to the export SELECT, but the
