@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "brain-client"
-version = "1.20.24"
+version = "1.20.25"
 dependencies = [
  "dioxus",
  "futures-util",
