@@ -12,6 +12,7 @@ const baseCfg = (): ResolvedBrainConfig => ({
   deniedChatIds: [],
   autoRecall: true,
   autoCapture: false,
+  captureMode: DEFAULTS.captureMode,
   strictDomain: false,
   defaultDomain: DEFAULTS.defaultDomain,
   autoRecallTopK: DEFAULTS.autoRecallTopK,

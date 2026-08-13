@@ -311,7 +311,7 @@ describe("agent_end — autoCapture to POST /ingest", () => {
     );
     expect(direct.length).toBe(0);
     expect(proposal.length).toBeGreaterThanOrEqual(1);
-    const body = JSON.parse(String(proposal[0][1]?.body));
+    const body = JSON.parse(String(proposal[0]![1]?.body));
     expect(body.content).toContain("Helix");
     expect(body.source_prompt).toContain("Noted.");
   });
