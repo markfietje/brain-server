@@ -1252,10 +1252,27 @@ paths:
     get:
       summary: List the review queue (v1.14.0 M1)
       operationId: listProposals
+      description: >
+        The human review queue. v1.20.23 adds `decided_at` (the decision
+        timestamp, `null` while pending — the reviewer calibration signal) and
+        an optional `since` window so a client can fetch a bounded 7/30-day
+        decision set in one request.
       parameters:
         - in: query
           name: status
           schema: { type: string, enum: [pending, approved, rejected] }
+        - in: query
+          name: since
+          schema: { type: integer }
+          description: >-
+            v1.20.23: unix ts lower bound on `created_at`; rows created before
+            it are excluded. Absent → every row (the legacy query).
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50 }
+          description: >-
+            Max rows (clamped to 200). A `since` window still stops at
+            `limit`, so a stats fetch must pass `limit=200` to read a full window.
       responses:
         "200":
           description: Proposals in the queue
@@ -1328,6 +1345,13 @@ paths:
                   created_at: { type: integer }
                   screen_verdict: { type: string, enum: [clean, quarantine] }
                   edited_at: { type: integer, nullable: true }
+                  decided_at:
+                    type: integer
+                    nullable: true
+                    description: >-
+                      v1.20.23: unix ts of the decision (approve/reject/expire);
+                      `null` while pending. The reviewer calibration latency
+                      input (`decided_at - created_at`).
                   expires_at:
                     type: integer
                     description: Unix deadline when this proposal ages out of the review window (created_at + TTL); the client ticks its countdown against this.

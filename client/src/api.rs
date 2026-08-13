@@ -467,6 +467,20 @@ impl ApiClient {
         self.get_json(&format!("/proposals?status={status}")).await
     }
 
+    /// v1.20.23 "Calibrate": GET /proposals?status=&since=<unix>&limit=200 —
+    /// a `created_at`-bounded decision page for the review stats. `limit` is
+    /// fetched at the server cap so a window is not chalked to the 50 default.
+    pub async fn proposals_since(
+        &self,
+        status: &str,
+        since: i64,
+    ) -> Result<Vec<Proposal>, ApiError> {
+        self.get_json(&format!(
+            "/proposals?status={status}&since={since}&limit=200"
+        ))
+        .await
+    }
+
     /// POST /proposals/{id}/approve[?supersedes=N]
     pub async fn approve_proposal(
         &self,
@@ -1234,6 +1248,10 @@ pub struct Proposal {
     pub warn_secs: i64,
     #[serde(default)]
     pub critical_secs: i64,
+    /// v1.20.23 "Calibrate": unix ts of the decision (approve/reject/expire),
+    /// `None` while pending. The reviewer-latency input (`decided_at - created_at`).
+    #[serde(default)]
+    pub decided_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -419,6 +419,7 @@ mod tests {
             expires_at: created_at + 7 * 86400,
             warn_secs: 3600,
             critical_secs: 300,
+            decided_at: None,
         }
     }
 

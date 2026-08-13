@@ -292,6 +292,11 @@ pub struct ProposalListQuery {
     pub status: String,
     #[serde(default)]
     pub limit: Option<usize>,
+    /// v1.20.23 "Calibrate" M1.2: `?since=<unix ts>` bounds the page to
+    /// proposals created at or after the timestamp (the review stats' window).
+    /// Absent → the legacy query (every row, newest first).
+    #[serde(default)]
+    pub since: Option<i64>,
 }
 
 fn default_pending() -> String {
@@ -327,6 +332,12 @@ pub struct ProposalView {
     /// the client colors its countdown from the same thresholds as the server.
     pub warn_secs: i64,
     pub critical_secs: i64,
+    /// v1.20.23 "Calibrate" M1.1: unix ts of the decision (approve/reject/expire),
+    /// `None` while the proposal is still pending. Exposed so a consumer can
+    /// compute a decision-latency (`decided_at - created_at`) — the reviewer
+    /// calibration signal. The column was written since v1.14.0 but never read.
+    #[serde(default)]
+    pub decided_at: Option<i64>,
 }
 
 /// v1.20.15 "Clock": the review deadline + SLA bands, shared by every
@@ -356,54 +367,85 @@ pub async fn list_proposals(
         ));
     }
     let limit = q.limit.unwrap_or(50).min(MAX_PROPOSALS);
+    let since = q.since;
     let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
 
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ProposalView>, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, kind, content, source, source_prompt, authority, novelty, conflict_with,
-                        salience, created_at, edited_at
-                 FROM proposals WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2",
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let rows = stmt
-            .query_map(rusqlite::params![status, limit as i64], |r| {
-                let content: String = r.get(2)?;
-                let created_at: i64 = r.get(9)?;
-                let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
-                Ok(ProposalView {
-                    id: r.get(0)?,
-                    kind: r.get(1)?,
-                    screen_verdict: crate::screen::screen_verdict_label(crate::screen::screen(
-                        &content, "",
-                    ))
-                    .to_string(),
-                    content,
-                    source: r.get(3)?,
-                    source_prompt: r.get(4)?,
-                    authority: r.get(5)?,
-                    novelty: r.get(6)?,
-                    conflict_with: r.get(7)?,
-                    salience: r.get(8)?,
-                    created_at,
-                    edited_at: r.get(10)?,
-                    expires_at,
-                    warn_secs,
-                    critical_secs,
-                })
-            })
-            .map_err(|e| HandlerError::internal(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect::<Vec<_>>();
-        Ok(rows)
+        list_proposals_page(&conn, &status, limit, since)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(rows))
+}
+
+/// v1.20.23 "Calibrate": the review-queue SELECT, extracted so the new
+/// `decided_at` column + the optional `since` window are unit-testable with a
+/// bare `&Connection` (the `page_decayed`/`list_dsar_page` idiom — no HTTP
+/// stack, no model). Column order is pinned by the index-based `r.get(n)`.
+/// A `since` bound still leaves `LIMIT` as the hard ceiling, so a windowed
+/// stat fetch MUST pass `limit=MAX_PROPOSALS` or it only samples the default.
+pub(crate) fn list_proposals_page(
+    conn: &rusqlite::Connection,
+    status: &str,
+    limit: usize,
+    since: Option<i64>,
+) -> Result<Vec<ProposalView>, HandlerError> {
+    const COLS: &str =
+        "id, kind, content, source, source_prompt, authority, novelty, conflict_with,
+                        salience, created_at, edited_at, decided_at";
+    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since {
+        Some(s) => (
+            &format!(
+                "SELECT {COLS} FROM proposals WHERE status = ?1 AND created_at >= ?3 \
+                 ORDER BY created_at DESC LIMIT ?2"
+            ),
+            vec![Box::new(status), Box::new(limit as i64), Box::new(s)],
+        ),
+        None => (
+            &format!(
+                "SELECT {COLS} FROM proposals WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2"
+            ),
+            vec![Box::new(status), Box::new(limit as i64)],
+        ),
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params), |r| {
+            let content: String = r.get(2)?;
+            let created_at: i64 = r.get(9)?;
+            let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
+            Ok(ProposalView {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                screen_verdict: crate::screen::screen_verdict_label(crate::screen::screen(
+                    &content, "",
+                ))
+                .to_string(),
+                content,
+                source: r.get(3)?,
+                source_prompt: r.get(4)?,
+                authority: r.get(5)?,
+                novelty: r.get(6)?,
+                conflict_with: r.get(7)?,
+                salience: r.get(8)?,
+                created_at,
+                edited_at: r.get(10)?,
+                expires_at,
+                warn_secs,
+                critical_secs,
+                decided_at: r.get(11)?,
+            })
+        })
+        .map_err(|e| HandlerError::internal(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+    Ok(rows)
 }
 
 /// v1.20.1 "Shield" M2 TTL: if the proposal is older than
@@ -982,6 +1024,7 @@ pub async fn edit_proposal(
                 expires_at,
                 warn_secs,
                 critical_secs,
+                decided_at: None,
             })
         })
         .await
@@ -2029,6 +2072,126 @@ mod tests {
         assert_eq!(
             origin,
             vec!["human", "model", "imported", "imported", "imported"]
+        );
+    }
+
+    /// v1.20.23 "Calibrate" M1.1: `decided_at` surfaces on every `ProposalView`
+    /// — `None` while pending, set after a decision (the write paths stamp it),
+    /// and set on a TTL auto-expire. The round-trip proves the column now reads
+    /// where the writers always wrote it.
+    #[test]
+    fn proposal_view_round_trips_decided_at() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        let now = chrono::Utc::now().timestamp();
+        let pending: i64 = conn
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at)
+                 VALUES ('fact', 'still open', 0.9, 0.5, ?1) RETURNING id",
+                [now],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let decided: i64 = conn
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at)
+                 VALUES ('fact', 'decided body', 0.9, 0.5, ?1) RETURNING id",
+                [now - 100],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Mirror the approve/reject write site (gate.rs:424 / :618 / :753).
+        conn.execute(
+            "UPDATE proposals SET status = 'approved', decided_at = ?1 WHERE id = ?2",
+            rusqlite::params![now - 5, decided],
+        )
+        .unwrap();
+        let expired: i64 = conn
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at)
+                 VALUES ('fact', 'expired body', 0.9, 0.5, ?1) RETURNING id",
+                [now - crate::config::proposal_ttl_secs() - 1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // TTL auto-expire stamps decided_at (expire_if_stale's write).
+        conn.execute(
+            "UPDATE proposals SET status = 'rejected', decided_at = ?1 WHERE id = ?2",
+            rusqlite::params![now - 1, expired],
+        )
+        .unwrap();
+
+        let views = list_proposals_page(&conn, "approved", MAX_PROPOSALS, None).expect("approved");
+        let decided_view = views
+            .iter()
+            .find(|v| v.id == decided)
+            .expect("decided present");
+        assert_eq!(
+            decided_view.decided_at,
+            Some(now - 5),
+            "approved carries its decision"
+        );
+
+        let pending_views =
+            list_proposals_page(&conn, "pending", MAX_PROPOSALS, None).expect("pending");
+        let pending_view = pending_views
+            .iter()
+            .find(|v| v.id == pending)
+            .expect("pending present");
+        assert_eq!(
+            pending_view.decided_at, None,
+            "a pending proposal has no decision"
+        );
+
+        let rejected_views =
+            list_proposals_page(&conn, "rejected", MAX_PROPOSALS, None).expect("rejected");
+        let expired_view = rejected_views
+            .iter()
+            .find(|v| v.id == expired)
+            .expect("expired present");
+        assert_eq!(
+            expired_view.decided_at,
+            Some(now - 1),
+            "an expired (auto-rejected) proposal still records a latency"
+        );
+    }
+
+    /// v1.20.23 "Calibrate" M1.2: `since` bounds the page by `created_at`, and
+    /// its absence returns the legacy full query (back-compat pinned).
+    #[test]
+    fn proposals_since_filters_created_at_and_is_optional() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        // Three approved rows at distinct created_at (newest first by default).
+        conn.execute_batch(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at, status) VALUES
+                 ('fact', 'oldest', 0.9, 0.5, 1000, 'approved'),
+                 ('fact', 'middle', 0.9, 0.5, 2000, 'approved'),
+                 ('fact', 'newest', 0.9, 0.5, 3000, 'approved');",
+        )
+        .unwrap();
+
+        // Absent `since` → all rows, newest first (legacy behavior unchanged).
+        let all = list_proposals_page(&conn, "approved", MAX_PROPOSALS, None).expect("all");
+        let ids: Vec<i64> = all.iter().map(|v| v.id).collect();
+        assert_eq!(ids.len(), 3, "no since → every row");
+        let newest = all.iter().find(|v| v.content == "newest").unwrap();
+        assert_eq!(ids[0], newest.id, "newest first preserved");
+
+        // `since=2000` excludes rows created before the bound.
+        let windowed =
+            list_proposals_page(&conn, "approved", MAX_PROPOSALS, Some(2000)).expect("windowed");
+        let wids: Vec<i64> = windowed.iter().map(|v| v.id).collect();
+        assert_eq!(wids.len(), 2, "since=2000 keeps created_at >= 2000");
+        assert!(
+            windowed.iter().all(|v| v.created_at >= 2000),
+            "no row older than the bound"
+        );
+        assert!(
+            all.iter().any(|v| v.created_at < 2000),
+            "the old row still exists without the bound"
         );
     }
 }

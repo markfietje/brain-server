@@ -294,3 +294,13 @@ replay_title = Decision replay
 replay_audit_link = open audit row
 replay_export = export evidence
 
+## Calibrate (v1.20.23 M2 — reviewer calibration strip)
+cal_title = your recent gate
+cal_approve_rate = approval rate
+cal_latency = median decision
+cal_edit_rate = edit rate
+cal_override_rate = screen-override rate
+cal_decisions = decisions
+cal_last_200 = last 200 decisions
+cal_warn_high = high approval rate — review the last few by hand
+

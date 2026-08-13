@@ -115,6 +115,196 @@ fn batch_summary(outcomes: &HashMap<i64, RowOutcome>) -> Element {
     }
 }
 
+/// v1.20.23 "Calibrate": the reviewer's own decision numbers over a `since`
+/// window — the anti-rubber-stamp feedback loop, pure arithmetic over the wire
+/// rows (zero new server logic). All rates are `[0,1]`; a zero denominator is
+/// `0.0` (never a NaN — the v1.9.0 suggest-metrics lesson).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Calibration {
+    /// Decisions (approved + rejected) in the window.
+    pub decisions: usize,
+    /// approved / (approved + rejected).
+    pub approve_rate: f64,
+    /// median(`decided_at - created_at`) over every decision with both stamps.
+    pub median_latency_secs: Option<i64>,
+    /// approved-with-`edited_at` / approved.
+    pub edit_rate: f64,
+    /// approved-with-`quarantine` read-time verdict / approved.
+    pub override_rate: f64,
+    /// The fetch hit the `limit=200` cap, so the window is a sampled prefix
+    /// (the honest "last 200" label).
+    pub capped: bool,
+}
+
+/// v1.20.23 "Calibrate" M2: the pure calibration core. `approved`/`rejected`
+/// are the windowed fetches; the four signals fall out. Extracted so the
+/// arithmetic is pinned without a Dioxus runtime (the `expiry_order` idiom).
+pub fn calibration_stats(approved: &[Proposal], rejected: &[Proposal]) -> Calibration {
+    let decisions = approved.len() + rejected.len();
+    let approve_rate = if decisions == 0 {
+        0.0
+    } else {
+        approved.len() as f64 / decisions as f64
+    };
+    // Latency per decision (either outcome) that has both stamps.
+    let mut latencies: Vec<i64> = approved
+        .iter()
+        .chain(rejected.iter())
+        .filter_map(|p| match (p.created_at, p.decided_at) {
+            (c, Some(d)) => Some(d - c),
+            _ => None,
+        })
+        .collect();
+    latencies.sort_unstable();
+    let median_latency_secs = match latencies.len() {
+        0 => None,
+        1 => Some(latencies[0]),
+        n if n % 2 == 1 => Some(latencies[n / 2]),
+        n => Some((latencies[n / 2 - 1] + latencies[n / 2]) / 2),
+    };
+    let n = approved.len();
+    let edited = approved.iter().filter(|p| p.edited_at.is_some()).count();
+    let overridden = approved
+        .iter()
+        .filter(|p| p.screen_verdict.as_deref() == Some("quarantine"))
+        .count();
+    Calibration {
+        decisions,
+        approve_rate,
+        median_latency_secs,
+        edit_rate: if n == 0 {
+            0.0
+        } else {
+            edited as f64 / n as f64
+        },
+        override_rate: if n == 0 {
+            0.0
+        } else {
+            overridden as f64 / n as f64
+        },
+        capped: n == 200 || rejected.len() == 200,
+    }
+}
+
+/// v1.20.23 M2.1: the rubber-stamp warning condition — a near-uniform approval
+/// over a meaningful decision count. A pure heuristic (a reviewer baseline is
+/// v2.x cohort tooling); the threshold is the plan's 0.9 / 20 constant.
+fn rubber_stamp(c: &Calibration) -> bool {
+    c.approve_rate > 0.9 && c.decisions >= 20
+}
+
+/// v1.20.23 M2.1: a human decision latency reading from secs (e.g. `12m 5s`).
+/// Pure so the strip is deterministic.
+fn format_latency(secs: i64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// v1.20.23 M2.1: the reviewer calibration strip — four labelled figures +
+/// the rubber-stamp reading, fetched once on mount/refresh. Renders nothing
+/// when the fetch fails (the v1.20.0 offline posture — stats degrade, never an
+/// error card). Dismissable per the plan. A plain fn (like `card`) — no
+/// `#[component]`, so the closures capture signals without the macro's
+/// Clone+PartialEq prop constraints.
+fn calibration_strip(api: Signal<ApiClient>, refresh: Signal<u32>) -> Element {
+    let mut dismissed = use_signal(|| false);
+    let stats = use_resource(move || {
+        let api = api();
+        let _ = refresh(); // subscribe → rerun when the queue refreshes
+        async move {
+            let since = crate::time_budget::now_unix() - 7 * 24 * 3600;
+            match (
+                api.proposals_since("approved", since).await,
+                api.proposals_since("rejected", since).await,
+            ) {
+                (Ok(a), Ok(r)) => Some(calibration_stats(&a, &r)),
+                _ => None,
+            }
+        }
+    });
+    if dismissed() {
+        return rsx! {};
+    }
+    let c = match stats.read().as_ref() {
+        Some(Some(c)) => *c,
+        _ => return rsx! {}, // loading or fetch failed → nothing
+    };
+    let tier_class = if rubber_stamp(&c) {
+        "border-warn"
+    } else {
+        "border-border"
+    };
+    let stamp_hint = if rubber_stamp(&c) {
+        Some(crate::i18n::t("cal_warn_high"))
+    } else {
+        None
+    };
+    let latency = c
+        .median_latency_secs
+        .map(format_latency)
+        .unwrap_or_else(|| "—".to_string());
+    let dec_count = c.decisions.to_string();
+    let dec_label = crate::i18n::t("cal_decisions");
+    let capped_note = if c.capped {
+        format!(" ({})", crate::i18n::t("cal_last_200"))
+    } else {
+        String::new()
+    };
+    rsx! {
+        div {
+            class: "card mt-2 border-2 {tier_class}",
+            role: "status", "aria-live": "polite",
+            div { class: "card-body text-xs",
+                div { class: "flex items-center justify-between",
+                    h2 { class: "card-title text-sm", {crate::i18n::t("cal_title")} }
+                    button {
+                        class: "btn btn-ghost btn-sm",
+                        "aria-label": "dismiss calibration",
+                        onclick: move |_| dismissed.set(true),
+                        "dismiss"
+                    }
+                }
+                div { class: "grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1",
+                    {stat(
+                        crate::i18n::t("cal_approve_rate"),
+                        format!("{:.0}%", c.approve_rate * 100.0),
+                    )}
+                    {stat(crate::i18n::t("cal_latency"), latency)}
+                    {stat(
+                        crate::i18n::t("cal_edit_rate"),
+                        format!("{:.0}%", c.edit_rate * 100.0),
+                    )}
+                    {stat(
+                        crate::i18n::t("cal_override_rate"),
+                        format!("{:.0}%", c.override_rate * 100.0),
+                    )}
+                }
+                p { class: "text-muted-foreground mt-1 tabular",
+                    "{dec_count} {dec_label}{capped_note}"
+                }
+                if let Some(hint) = stamp_hint {
+                    p { class: "text-warn mt-1", "{hint}" }
+                }
+            }
+        }
+    }
+}
+
+/// v1.20.23 M2.1: one labelled figure in the calibration strip.
+fn stat(label: String, value: String) -> Element {
+    rsx! {
+        div { class: "flex flex-col",
+            span { class: "text-ink-faint", "{label}" }
+            span { class: "text-foreground font-medium tabular", "{value}" }
+        }
+    }
+}
+
 /// M3 cancel-safety (DESIGN §6): clears `Pending` rows from the selection
 /// when the batch future is dropped. A `DropGuard` for the `spawn` future so a
 /// mid-flight cancel cannot strand a half-applied selection.
@@ -424,6 +614,10 @@ pub fn panel() -> Element {
             // v1.16.2 M6: one-line batch summary — surfaces partial failure
             // honestly once a batch has run (rows settle out of Pending).
             { batch_summary(&outcomes()) }
+            // v1.20.23 "Calibrate": the reviewer's own decision numbers above
+            // the queue (the anti-rubber-stamp feedback loop). Fetch-failed →
+            // renders nothing (offline degrade, never an error card).
+            { calibration_strip(api, refresh) }
             { if ordered.is_empty() {
                 match &*proposals.read() {
                     Some(Ok(_)) => rsx! {
@@ -1110,6 +1304,7 @@ mod tests {
             expires_at: 1,
             warn_secs: 3600,
             critical_secs: 300,
+            decided_at: None,
         }];
         assert_eq!(locate_proposal(&list, 7).map(|p| p.id), Some(7));
         assert_eq!(locate_proposal(&list, 99), None);
@@ -1137,6 +1332,7 @@ mod tests {
                 expires_at: created_at + 604800,
                 warn_secs: 3600,
                 critical_secs: 300,
+                decided_at: None,
             }
         }
         let mut rows = vec![
@@ -1153,5 +1349,142 @@ mod tests {
         let mut ties = vec![prop(9, 1000), prop(3, 1000), prop(7, 1000)];
         expiry_order(&mut ties);
         assert_eq!(ties.iter().map(|p| p.id).collect::<Vec<_>>(), vec![3, 7, 9]);
+    }
+
+    /// v1.20.23 M2.2: a bounded fixture pins the exact rates + median — the
+    /// arithmetic is pinned the same way `expiry_order` pins the sort.
+    #[test]
+    fn calibration_stats_rates_and_median() {
+        fn prop(
+            id: i64,
+            created: i64,
+            decided: Option<i64>,
+            edited: Option<i64>,
+            verdict: Option<&str>,
+        ) -> Proposal {
+            Proposal {
+                id,
+                kind: "fact".into(),
+                content: "c".into(),
+                source: None,
+                source_prompt: None,
+                screen_verdict: verdict.map(|s| s.to_string()),
+                authority: None,
+                novelty: 0.5,
+                conflict_with: None,
+                salience: 0.5,
+                created_at: created,
+                edited_at: edited,
+                expires_at: created + 604800,
+                warn_secs: 3600,
+                critical_secs: 300,
+                decided_at: decided,
+            }
+        }
+        // 6 approved (latencies 10..60; #2 edited, #5 quarantined-verdict) +
+        // 2 rejected (latencies 100, 200). Sorted latencies: 10,20,30,40,50,
+        // 60,100,200 → median (4th+5th)/2 = (40+50)/2 = 45.
+        let approved = vec![
+            prop(1, 0, Some(10), None, None),
+            prop(2, 0, Some(20), Some(5), None), // edited
+            prop(3, 0, Some(30), None, None),
+            prop(4, 0, Some(40), None, None),
+            prop(5, 0, Some(50), None, Some("quarantine")), // screen override
+            prop(6, 0, Some(60), None, None),
+        ];
+        let rejected = vec![
+            prop(7, 0, Some(100), None, None),
+            prop(8, 0, Some(200), None, None),
+        ];
+        let c = calibration_stats(&approved, &rejected);
+        assert_eq!(c.decisions, 8);
+        assert!(
+            (c.approve_rate - 6.0 / 8.0).abs() < 1e-9,
+            "approve_rate {:.3}",
+            c.approve_rate
+        );
+        assert_eq!(c.median_latency_secs, Some(45));
+        assert_eq!(c.edit_rate, 1.0 / 6.0);
+        assert_eq!(c.override_rate, 1.0 / 6.0);
+        assert!(!c.capped, "8 decisions under the 200 cap");
+    }
+
+    /// v1.20.23 M2.2: empty lists and zero denominators never NaN — rates `0.0`,
+    /// latency `None`; decisions missing either stamp are skipped in the median.
+    #[test]
+    fn calibration_stats_handles_empty_and_zero_denominators() {
+        fn prop(id: i64, created: i64, decided: Option<i64>) -> Proposal {
+            Proposal {
+                id,
+                kind: "fact".into(),
+                content: "c".into(),
+                source: None,
+                source_prompt: None,
+                screen_verdict: None,
+                authority: None,
+                novelty: 0.5,
+                conflict_with: None,
+                salience: 0.5,
+                created_at: created,
+                edited_at: None,
+                expires_at: created + 604800,
+                warn_secs: 3600,
+                critical_secs: 300,
+                decided_at: decided,
+            }
+        }
+        let empty = calibration_stats(&[], &[]);
+        assert_eq!(empty.decisions, 0);
+        assert_eq!(empty.approve_rate, 0.0);
+        assert_eq!(empty.median_latency_secs, None);
+        assert_eq!(empty.edit_rate, 0.0);
+        assert_eq!(empty.override_rate, 0.0);
+
+        // No approved → approve_rate 0, edit/override 0 (zero approved denom).
+        let rej_only = calibration_stats(&[], &[prop(1, 0, Some(10))]);
+        assert_eq!(rej_only.approve_rate, 0.0);
+        assert_eq!(rej_only.edit_rate, 0.0);
+        assert_eq!(
+            rej_only.median_latency_secs,
+            Some(10),
+            "rejects still count a latency"
+        );
+
+        // A decision missing its `decided_at` (still pending, or no stamp) is
+        // skipped in the median — never a bogus negative latency.
+        let mixed = calibration_stats(
+            &[prop(1, 0, Some(50)), prop(2, 0, None)],
+            &[prop(3, 0, Some(70))],
+        );
+        assert_eq!(
+            mixed.median_latency_secs,
+            Some(60),
+            "(50+70)/2, pending skipped"
+        );
+        assert_eq!(mixed.decisions, 3);
+        assert_eq!(mixed.approve_rate, 2.0 / 3.0);
+    }
+
+    /// v1.20.23 M2.1: the rubber-stamp warn fires only over a real workload.
+    #[test]
+    fn rubber_stamp_warns_only_over_real_workload() {
+        let warn = Calibration {
+            decisions: 20,
+            approve_rate: 0.93,
+            ..Calibration::default()
+        };
+        assert!(rubber_stamp(&warn), ">0.9 over >=20 → warn");
+        let few = Calibration {
+            decisions: 10,
+            approve_rate: 1.0,
+            ..Calibration::default()
+        };
+        assert!(!rubber_stamp(&few), "too few decisions → no warn");
+        let balanced = Calibration {
+            decisions: 30,
+            approve_rate: 0.8,
+            ..Calibration::default()
+        };
+        assert!(!rubber_stamp(&balanced), "approve_rate <= 0.9 → no warn");
     }
 }
