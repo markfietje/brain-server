@@ -94,25 +94,22 @@ jobs:
           done
           ls -la dist
 
-      - name: Codesign (macOS, self-signed cert — optional)
-        # Sign the darwin binaries with the operator's self-signed code-signing
-        # identity (PKCS#12, base64 + password in GitHub secrets). Skips when no
-        # cert is configured. Honesty: a self-signed cert is NOT Apple-Developer
-        # trusted — it clears only machines that have the cert in their keychain;
-        # Gatekeeper-on-others needs Developer ID + notarization instead.
-        if: ${{ secrets.MACOS_SELF_SIGNED_CERT_B64 != '' }}
-        env:
-          MAC_CERT_B64: ${{ secrets.MACOS_SELF_SIGNED_CERT_B64 }}
-          MAC_CERT_PW: ${{ secrets.MACOS_SELF_SIGNED_CERT_PW }}
+      - name: Codesign (macOS, ad-hoc)
+        # Ad-hoc signing (`codesign -s -`): a valid signature that detects
+        # tampering, with NO identity, NO cert, NO Apple account, and NO private
+        # key to protect — so no secrets enter the release pipeline at all. This
+        # is the effectively-best option for a self-hosted, no-developer-account
+        # build: a self-signed cert is untrusted by everyone anyway (Gatekeeper
+        # on other Macs needs Developer ID + notarization), so the only thing it
+        # bought was a key to keep secret. The toolchain also ad-hoc signs native
+        # macOS binaries by default, so this is the honest baseline. (The Mac
+        # will still warn on a *downloaded* file until the quarantine/provenance
+        # xattr is cleared — install-service.sh already strips com.apple.provenance.)
         run: |
           set -e
-          echo "$MAC_CERT_B64" | base64 -d >/tmp/codesign.p12
-          security import /tmp/codesign.p12 -k "$HOME/Library/Keychains/login.keychain-db" -P "$MAC_CERT_PW" -T /usr/bin/codesign 2>/dev/null || \
-            security import /tmp/codesign.p12 -k "$HOME/Library/Keychains/login.keychain-db" -P "$MAC_CERT_PW"
-          ID=$(security find-identity -v -p codesigning | sed -nE 's/.*"([^"]+)"/\1/p' | head -1)
           for f in dist/*-darwin-*; do
-            echo "codesign $ID -> $f"
-            codesign --force --sign "$ID" "$f"
+            echo "codesign (ad-hoc) -> $f"
+            codesign --sign - --force "$f"
           done
 
       - uses: actions/upload-artifact@v4
