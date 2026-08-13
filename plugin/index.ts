@@ -507,7 +507,11 @@ export default definePluginEntry({
                   text: `Memory ${chunk.id}:${title}\n${sanitizeForBlock(chunk.content)}`,
                 },
               ],
-              details: { found: true, id: chunk.id, title: chunk.title ? sanitizeForBlock(chunk.title) : chunk.title },
+              details: {
+                found: true,
+                id: chunk.id,
+                title: chunk.title ? sanitizeForBlock(chunk.title) : chunk.title,
+              },
             };
           } catch (err) {
             return {
@@ -560,7 +564,12 @@ export default definePluginEntry({
                     )
                     .join("");
             return {
-              content: [{ type: "text" as const, text: `${sanitizeForBlock(entity.name).trim()}${etype}${rels}` }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: `${sanitizeForBlock(entity.name).trim()}${etype}${rels}`,
+                },
+              ],
               details: {
                 found: true,
                 name: sanitizeForBlock(entity.name),

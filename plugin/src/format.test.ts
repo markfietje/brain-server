@@ -78,7 +78,16 @@ describe("sanitizeForBlock", () => {
   });
   test("strips the bidi/zero-width smuggling class (v1.20.24)", () => {
     // Zero-width space, ZWNJ/ZWJ, LRM/RLM, RLO override, LRI isolate, BOM.
-    for (const c of ["\u200B", "\u200C", "\u200D", "\u200E", "\u200F", "\u202E", "\u2066", "\uFEFF"]) {
+    for (const c of [
+      "\u200B",
+      "\u200C",
+      "\u200D",
+      "\u200E",
+      "\u200F",
+      "\u202E",
+      "\u2066",
+      "\uFEFF",
+    ]) {
       expect(sanitizeForBlock(`ig${c}nore`)).toBe("ignore");
     }
   });
