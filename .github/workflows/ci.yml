@@ -128,6 +128,7 @@ jobs:
           echo "$SCRATCH" > /tmp/ump-scratch
           "$GITHUB_WORKSPACE/target/release/brain" ump keygen --dir "$SCRATCH/keys" > /tmp/ump-keygen.log
           printf 'ump-conformance-ci-token' > "$SCRATCH/token"
+          chmod 600 "$SCRATCH/token"
           BIND_PORT=18483 \
             BRAIN_DB_PATH="$SCRATCH/brain.db" \
             BRAIN_UMP_KEY_DIR="$SCRATCH/keys" \
