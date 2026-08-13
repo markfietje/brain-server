@@ -91,9 +91,9 @@ pub use search::{
 };
 
 use config::{
-    DEFAULT_K, MAX_EXPLAIN_BYTES, MAX_K, MAX_MULTI_GET, MAX_QUERY_LENGTH, MAX_REQUEST_SIZE,
-    MODEL_ID, POOL_CONNECTION_TIMEOUT_SECS, POOL_IDLE_TIMEOUT_SECS, POOL_MAX_LIFETIME_SECS,
-    POOL_MAX_SIZE, POOL_MIN_IDLE, SERVER_VERSION,
+    DEFAULT_K, MAX_EXPLAIN_BYTES, MAX_GRAPH_EDGES, MAX_K, MAX_MULTI_GET, MAX_QUERY_LENGTH,
+    MAX_REQUEST_SIZE, MODEL_ID, POOL_CONNECTION_TIMEOUT_SECS, POOL_IDLE_TIMEOUT_SECS,
+    POOL_MAX_LIFETIME_SECS, POOL_MAX_SIZE, POOL_MIN_IDLE, SERVER_VERSION,
 };
 
 type Pool = r2d2::Pool<SqliteConnectionManager>;
@@ -510,6 +510,14 @@ struct MarkdownPayload {
 struct RelationsQuery {
     from: Option<String>,
     to: Option<String>,
+}
+
+/// v1.20.18 "Bound": graph endpoints read a `?limit=` that is clamped to
+/// `MAX_GRAPH_EDGES` (bounded output on the operator Graph surface).
+#[derive(Deserialize)]
+struct GraphLimit {
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -3006,6 +3014,7 @@ async fn get_entity(
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Path(name): Path<String>,
+    Query(limit_q): Query<GraphLimit>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Allow spaces: entity names are normalized per NAME_RE (^[A-Za-z0-9 _-]{1,100}$),
     // which permits spaces (e.g. note titles like "bignay fruit").
@@ -3030,6 +3039,8 @@ async fn get_entity(
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let name_lower = name.to_lowercase();
+    // v1.20.18 "Bound": finite edge set, clamped like the multi-get cap.
+    let limit = clamp_graph_limit(limit_q.limit);
 
     let result = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
@@ -3038,7 +3049,13 @@ async fn get_entity(
             .query_row(
                 "SELECT id, name, entity_type FROM entities WHERE name = ?1",
                 params![name_lower],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .ok();
 
@@ -3046,24 +3063,7 @@ async fn get_entity(
             return Ok(serde_json::json!({"error": "Entity not found"}));
         };
 
-        let mut stmt = conn.prepare(
-            "SELECT e.name, r.relation_type, CASE WHEN r.from_entity_id = ?1 THEN 'out' ELSE 'in' END as dir
-             FROM relationships r
-             JOIN entities e ON (r.to_entity_id = e.id OR r.from_entity_id = e.id)
-             WHERE r.from_entity_id = ?1 OR r.to_entity_id = ?1"
-        ).map_err(|e| AppError::Internal(e.to_string()))?;
-
-        let relations: Vec<_> = stmt
-            .query_map(params![id], |r| {
-                Ok(serde_json::json!({
-                    "to_entity": r.get::<_, String>(0)?,
-                    "relation_type": r.get::<_, String>(1)?,
-                    "direction": r.get::<_, String>(2)?
-                }))
-            })
-            .map_err(|e| AppError::Internal(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let relations = entity_relations(&conn, id, limit)?;
 
         Ok(serde_json::json!({
             "name": name,
@@ -3077,11 +3077,50 @@ async fn get_entity(
     Ok(Json(result))
 }
 
+/// v1.20.18 "Bound": the edge set for an entity, capped at `limit` (newest ids
+/// first — a stable, reproducible order; the KG has no histogram to rank by).
+/// Extracted so the LIMIT contract is unit-testable without an HTTP stack.
+fn entity_relations(
+    conn: &rusqlite::Connection,
+    id: i64,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.name, r.relation_type, CASE WHEN r.from_entity_id = ?1 THEN 'out' ELSE 'in' END as dir
+             FROM relationships r
+             JOIN entities e ON (r.to_entity_id = e.id OR r.from_entity_id = e.id)
+             WHERE r.from_entity_id = ?1 OR r.to_entity_id = ?1
+             ORDER BY r.id LIMIT ?2",
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let relations = stmt
+        .query_map(params![id, limit], |r| {
+            Ok(serde_json::json!({
+                "to_entity": r.get::<_, String>(0)?,
+                "relation_type": r.get::<_, String>(1)?,
+                "direction": r.get::<_, String>(2)?
+            }))
+        })
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+    Ok(relations)
+}
+
+/// Clamp a graph `?limit=` into `1..=MAX_GRAPH_EDGES` (a missing or bogus value
+/// falls back to the default cap). Shared by `get_entity` and `get_relations`.
+fn clamp_graph_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(MAX_GRAPH_EDGES).clamp(1, MAX_GRAPH_EDGES)
+}
+
 async fn get_relations(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
     Query(params): Query<RelationsQuery>,
+    Query(limit_q): Query<GraphLimit>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (param, is_from) = match (&params.from, &params.to) {
         (Some(f), None) if !f.is_empty() => (f.clone(), true),
@@ -3102,43 +3141,58 @@ async fn get_relations(
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let param_lower = param.to_lowercase();
+    // v1.20.18 "Bound": finite edge set, clamped like the multi-get cap.
+    let limit = clamp_graph_limit(limit_q.limit);
 
     let result = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-
-        let query = if is_from {
-            "SELECT e.name, r.relation_type FROM relationships r
-             JOIN entities e ON r.to_entity_id = e.id
-             WHERE r.from_entity_id = (SELECT id FROM entities WHERE name = ?1)"
-        } else {
-            "SELECT e.name, r.relation_type FROM relationships r
-             JOIN entities e ON r.from_entity_id = e.id
-             WHERE r.to_entity_id = (SELECT id FROM entities WHERE name = ?1)"
-        };
-
-        let mut stmt = conn
-            .prepare(query)
-            .map_err(|e| AppError::Internal(e.to_string()))?;
         let direction = if is_from { "out" } else { "in" };
-
-        let results: Vec<_> = stmt
-            .query_map(params![param_lower], |r| {
-                Ok(serde_json::json!({
-                    "entity": r.get::<_, String>(0)?,
-                    "relation": r.get::<_, String>(1)?,
-                    "direction": direction
-                }))
-            })
-            .map_err(|e| AppError::Internal(e.to_string()))?
-            .filter_map(|r| r.ok())
-            .collect();
-
+        let results = relations_for(&conn, &param_lower, is_from, direction, limit)?;
         Ok(serde_json::json!({ "relations": results }))
     })
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
 
     Ok(Json(result))
+}
+
+/// v1.20.18 "Bound": the relations fan-out/in from an entity, capped at `limit`
+/// (newest ids first). Extracted for the LIMIT contract to be unit-testable.
+fn relations_for(
+    conn: &rusqlite::Connection,
+    param_lower: &str,
+    is_from: bool,
+    direction: &str,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let query = if is_from {
+        "SELECT e.name, r.relation_type FROM relationships r
+         JOIN entities e ON r.to_entity_id = e.id
+         WHERE r.from_entity_id = (SELECT id FROM entities WHERE name = ?1)
+         ORDER BY r.id LIMIT ?2"
+    } else {
+        "SELECT e.name, r.relation_type FROM relationships r
+         JOIN entities e ON r.from_entity_id = e.id
+         WHERE r.to_entity_id = (SELECT id FROM entities WHERE name = ?1)
+         ORDER BY r.id LIMIT ?2"
+    };
+
+    let mut stmt = conn
+        .prepare(query)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let results = stmt
+        .query_map(params![param_lower, limit], |r| {
+            Ok(serde_json::json!({
+                "entity": r.get::<_, String>(0)?,
+                "relation": r.get::<_, String>(1)?,
+                "direction": direction,
+            }))
+        })
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>();
+    Ok(results)
 }
 
 async fn traverse_graph(
@@ -4789,6 +4843,71 @@ mod tests {
         );
         // The limiter still allows a fresh IP.
         assert!(rl.is_allowed("172.16.0.1"));
+    }
+
+    /// v1.20.18 "Bound": the graph endpoints return a finite edge set. A hub
+    /// entity with 1000 edges returns at most `limit` (the 500-lowest, newest
+    /// relationship ids first by the stable `ORDER BY r.id`), and the clamp
+    /// keeps a bogus `?limit=` inside `1..=MAX_GRAPH_EDGES`.
+    #[test]
+    fn graph_entity_respects_limit_and_clamps() {
+        let c = graph_db(1000); // hub id 1 with 1000 out-edges
+                                // The entity query joins both endpoints, so a 1000-edge hub yields
+                                // >1000 rows without a cap; the LIMIT keeps the response finite.
+        let bounded = entity_relations(&c, 1, 500).unwrap();
+        assert_eq!(bounded.len(), 500, "bounded to the cap");
+        // A small explicit limit is honored.
+        let tiny = entity_relations(&c, 1, 3).unwrap();
+        assert_eq!(tiny.len(), 3);
+        // The clamp (handler-side) keeps limits in 1..=MAX_GRAPH_EDGES.
+        assert_eq!(clamp_graph_limit(None), MAX_GRAPH_EDGES);
+        assert_eq!(clamp_graph_limit(Some(0)), 1, "0 clamps up to 1");
+        assert_eq!(clamp_graph_limit(Some(999_999)), MAX_GRAPH_EDGES);
+        assert_eq!(clamp_graph_limit(Some(10)), 10);
+    }
+
+    #[test]
+    fn graph_relations_respects_limit_from_and_to() {
+        let c = graph_db(1000);
+        // from-branch: hub (id 1, name "hub") fans out 1000 edges.
+        let from = relations_for(&c, "hub", true, "out", 2).unwrap();
+        assert_eq!(from.len(), 2);
+        assert_eq!(from[0]["direction"], "out");
+        // to-branch: create an entity every edge points into and query "in".
+        let to = relations_for(&c, "e1005", false, "in", 1).unwrap();
+        assert_eq!(to.len(), 1);
+        assert_eq!(to[0]["direction"], "in");
+        assert_eq!(to[0]["entity"], "hub");
+    }
+
+    /// Build an in-memory graph where entity 1 ("hub") has `edges` out-relations
+    /// to entities `e{1001..}`, each a fresh target with a fresh relationship id.
+    fn graph_db(edges: i64) -> rusqlite::Connection {
+        use rusqlite::Connection;
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE entities(id INTEGER PRIMARY KEY, name TEXT, entity_type TEXT);
+             CREATE TABLE relationships(id INTEGER PRIMARY KEY,
+                from_entity_id INTEGER, to_entity_id INTEGER, relation_type TEXT);",
+        )
+        .unwrap();
+        c.execute("INSERT INTO entities(id, name) VALUES (1, 'hub')", [])
+            .unwrap();
+        for i in 1..=edges {
+            let target_id = 1000 + i;
+            c.execute(
+                "INSERT INTO entities(id, name) VALUES (?1, ?2)",
+                rusqlite::params![target_id, format!("e{target_id}")],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO relationships(id, from_entity_id, to_entity_id, relation_type)
+                 VALUES (?1, 1, ?2, 'links_to')",
+                rusqlite::params![i, target_id],
+            )
+            .unwrap();
+        }
+        c
     }
 
     #[test]
@@ -7892,11 +8011,12 @@ Final paragraph after the rule.";
         // node_kind + step_index schema; v1.15.0 bumps it for Observe;
         // v1.17.3 bumps it for the UMP columns; v1.18.2 for the origin column;
         // v1.20.1 for the proposals.source_prompt column;
-        // v1.20.14 for the proposals.edited_at column.
+        // v1.20.14 for the proposals.edited_at column;
+        // v1.20.18 for the idx_tombstones_reason_purged index.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_14),
-            "schema_version must be recorded as 1.20.14 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_18),
+            "schema_version must be recorded as 1.20.18 after migration"
         );
 
         // v1.20.14 "Steer": the pending-proposal edit marker column exists.
@@ -7964,6 +8084,21 @@ Final paragraph after the rule.";
         assert_eq!(
             dedup_idx, 1,
             "idx_suggest_feedback_chunk_session (v1.9.1) must exist"
+        );
+
+        // v1.20.18 "Bound": the tombstone registry + DSAR certificate reads
+        // `WHERE reason = ? AND purged_at >= ?` — dropping the compound index
+        // makes those full scans behind the operator + erase paths.
+        let tomb_idx: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tombstones_reason_purged'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            tomb_idx, 1,
+            "idx_tombstones_reason_purged (v1.20.18) must exist"
         );
 
         // v1.10.0 "Procedural": evidence_links gained step_index; legacy

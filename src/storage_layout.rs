@@ -45,6 +45,9 @@ pub const SCHEMA_VERSION_V1_18_2: &str = "1.18.2";
 pub const SCHEMA_VERSION_V1_20_1: &str = "1.20.1";
 /// v1.20.14 "Steer" adds `proposals.edited_at` (edit-then-approve provenance).
 pub const SCHEMA_VERSION_V1_20_14: &str = "1.20.14";
+/// v1.20.18 "Bound" adds `idx_tombstones_reason_purged` (tombstone registry +
+/// DSAR certificate read index).
+pub const SCHEMA_VERSION_V1_20_18: &str = "1.20.18";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

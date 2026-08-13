@@ -10,6 +10,54 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.18] — 2026-08-13
+
+### Server — "Bound" (DoS + performance bounds)
+
+Server `Cargo.toml` 1.20.17 → 1.20.18; client stays at 1.20.17. Closes the
+remaining **unbounded read paths** and collapses the two **quadratic scans** the
+v1.20.2 "Harden" D-group left: three read endpoints return bounded, stable pages
+and `find_subject_conflicts` no longer cross-pairs every current chunk. One
+schema change (a tombstone index), no new route. See
+`IMPLEMENTATION_PLAN_v1.20.18_Bound.md`.
+
+- **M1 — Graph endpoints return a finite edge set** (`src/main.rs`).
+  `GET /graph/entity/{name}` and `GET /graph/relations` were returning *every*
+  incident edge — on the live corpus (8732 docs / 21771 rels) a probe on a
+  mega-hub was the same order as the corpus. Both now take a `?limit=`
+  (default `MAX_GRAPH_EDGES` = 500, clamped `1..=500`) and run
+  `ORDER BY r.id LIMIT ?` — a stable, reproducible page (the KG has no
+  histogram to rank by, so a plain bound beats an arbitrary top-N). Shared
+  `GraphLimit` query struct + `clamp_graph_limit` helper; extracted
+  `entity_relations` / `relations_for` so the LIMIT contract is unit-tested.
+- **M2 — `find_subject_conflicts` is no longer O(n²)** (`src/consolidate.rs`).
+  The proposal-write conflict scan cross-paired *all* current chunks even
+  though the rule only compares same-subject rows. Now grouped by subject
+  first → O(sum of m² per subject), ~O(n) dominating on mostly-unique
+  subjects. Output is sorted by `(from_chunk, to_chunk)` for determinism
+  (HashMap iteration order is unspecified; the result feeds the review queue,
+  not an ordered API surface). The conflict *rule* is unchanged.
+- **M3 — `idx_tombstones_reason_purged`** (`src/migration.rs`). The
+  `/tombstones?subject=&since=` registry and the DSAR certificate read
+  `WHERE reason = ? AND purged_at >= ?`; the compound index keeps those off a
+  full tombstone scan. Guarded by the migration schema-contract test. Schema
+  version → 1.20.18.
+- **M4 — `/decayed` is paged** (`src/handlers/gate.rs`). `list_decayed`
+  returned every expired chunk (full-table scan on the Rust-side
+  `effective_expiry` filter). New `?limit=` (default `MAX_DECAYED` = 500) +
+  `?offset=` page the Rust-filtered result — the page split never lands on the
+  "is it actually expired?" decision. Extracted `page_decayed` for testing.
+
+Tests: +6 (graph entity limit/clamp, graph relations from+to, subject-conflict
+grouping ×2, decayed paging, tombstones index guard) → 520 passed. All gates
+green: clippy `-D warnings`, `fmt`, openapi/route/schema guards, release build.
+
+**Honest ceilings:** the graph `ORDER BY r.id` page is a bounded but arbitrary
+window (no semantic ranking), `/decayed` pages the corpus but still scans it
+once (a SQL push-down isn't possible — the expiry is a Rust pure function), and
+the conflict scan is still quadratic within a single subject (inherent to the
+mC2 rule). See `docs/AGENTS_HISTORY.md` Agent 85.
+
 ## [1.20.17] — 2026-08-12
 
 ### Server — "Scrub" (GDPR erasure completion)

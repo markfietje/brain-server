@@ -930,6 +930,14 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         }
     }
 
+    // v1.20.18 "Bound": the `/tombstones?subject=&since=` registry and the DSAR
+    // certificate read `WHERE reason = ? AND purged_at >= ?` — a compound index
+    // keeps those from scanning every tombstone. Both columns exist above.
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tombstones_reason_purged ON tombstones(reason, purged_at)",
+        [],
+    )?;
+
     // v1.16.1: backfill legacy tombstones whose `purged_at` is NULL (rows
     // written by pre-v1.14 builds only set `deleted_at`). `list_tombstones`
     // reads `purged_at` as a non-null INTEGER, so NULL rows were silently
@@ -1075,8 +1083,8 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
 
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.14')
-         ON CONFLICT(key) DO UPDATE SET value = '1.20.14';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.18')
+         ON CONFLICT(key) DO UPDATE SET value = '1.20.18';",
         [],
     )?;
 

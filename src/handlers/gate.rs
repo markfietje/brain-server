@@ -1026,10 +1026,18 @@ fn sha256_hex(s: &str) -> String {
 pub async fn list_decayed(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
+    Query(page): Query<DecayedQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let now = chrono::Utc::now().timestamp();
+    // v1.20.18 "Bound": bounded page; the Rust-side expiry filter runs BEFORE
+    // the page split so a boundary never splits the "is it expired?" decision.
+    let limit = page
+        .limit
+        .unwrap_or(crate::config::MAX_DECAYED)
+        .clamp(1, crate::config::MAX_DECAYED);
+    let offset = page.offset.unwrap_or(0).max(0);
     // Kind policy (empty when disabled → per_chunk only, exact v1.14 behavior).
     let retention_days = if crate::config::brain_retention_enabled() {
         crate::config::retention_kind_days()
@@ -1061,32 +1069,58 @@ pub async fn list_decayed(
                 })
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .filter_map(|r| r.ok())
-                .collect::<Vec<_>>();
-            let mut out = Vec::new();
-            for (id, content_hash, expires_at, kind, created_unix) in rows {
-                let effective = crate::gate::effective_expiry(
-                    expires_at,
-                    Some(created_unix),
-                    &kind,
-                    &retention_days,
-                );
-                if effective.is_some_and(|e| e < now) {
-                    out.push(serde_json::json!({
-                        "id": id,
-                        "content_hash": content_hash,
-                        "expires_at": expires_at,
-                        "effective_expiry": effective,
-                        "memory_kind": kind,
-                        "reason": crate::gate::retention_reason(expires_at, effective),
-                    }));
-                }
-            }
-            Ok(out)
+                .collect::<Vec<DecayedRow>>();
+            Ok(page_decayed(&rows, now, &retention_days, offset, limit))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(rows))
+}
+
+/// v1.20.18 "Bound": `?limit=`/`?offset=` on `/decayed` (clamped to
+/// `MAX_DECAYED`). Extracted so the page + clamp contract is unit-testable
+/// without an HTTP stack.
+#[derive(Deserialize)]
+pub struct DecayedQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+}
+
+/// A loaded `/decayed` row: (id, content_hash, expires_at, node_kind, created_at_unix).
+type DecayedRow = (i64, Option<String>, Option<i64>, String, i64);
+
+/// Pure core of `/decayed`: from the loaded `ORDER BY id` rows, keep the
+/// expired ones (Rust-side [`crate::gate::effective_expiry`] — not an
+/// expressible SQL predicate) and page them. Stable across the Rust filter.
+fn page_decayed(
+    rows: &[DecayedRow],
+    now: i64,
+    retention_days: &std::collections::BTreeMap<String, i64>,
+    offset: i64,
+    limit: i64,
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for (id, content_hash, expires_at, kind, created_unix) in rows {
+        let effective =
+            crate::gate::effective_expiry(*expires_at, Some(*created_unix), kind, retention_days);
+        if effective.is_some_and(|e| e < now) {
+            out.push(serde_json::json!({
+                "id": id,
+                "content_hash": content_hash,
+                "expires_at": expires_at,
+                "effective_expiry": effective,
+                "memory_kind": kind,
+                "reason": crate::gate::retention_reason(*expires_at, effective),
+            }));
+        }
+    }
+    out.into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .collect()
 }
 
 /// `POST /purge` — audited, hard, explicit-only deletion. Two bodies:
@@ -1659,6 +1693,32 @@ mod tests {
             jti: "token-1".to_string(),
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
+    }
+
+    /// v1.20.18 "Bound": `/decayed` returns a bounded first page and `?offset=`
+    /// pages the rest — the page split never re-introduces an unbounded list.
+    #[test]
+    fn page_decayed_respects_limit_and_offset() {
+        // Three expired rows (expires_at in the past); no kind policy.
+        let rows: Vec<DecayedRow> = vec![
+            (1, None, Some(100), "fact".to_string(), 50),
+            (2, None, Some(100), "fact".to_string(), 50),
+            (3, None, Some(100), "fact".to_string(), 50),
+        ];
+        let retention = std::collections::BTreeMap::new();
+        let now = 1000;
+
+        let first = page_decayed(&rows, now, &retention, 0, 2);
+        assert_eq!(first.len(), 2, "first page honors the limit");
+        assert_eq!(first[0]["id"], 1);
+        assert_eq!(first[1]["id"], 2);
+
+        let next = page_decayed(&rows, now, &retention, 2, 2);
+        assert_eq!(next.len(), 1, "offset pages the remainder");
+        assert_eq!(next[0]["id"], 3);
+
+        // A page past the end yields nothing (stable, not an error).
+        assert!(page_decayed(&rows, now, &retention, 99, 2).is_empty());
     }
 
     /// M4: `/export` body → UMP envelope resolves relation names and attaches

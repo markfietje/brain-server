@@ -29,6 +29,15 @@ pub const SNIPPET_CONTEXT_CHARS: usize = 60;
 pub const MAX_EXPLAIN_BYTES: usize = 64 * 1024;
 pub const MAX_MULTI_GET: usize = 1000;
 
+/// v1.20.18 "Bound": graph endpoints return a bounded edge set. The KG's clean
+/// semantic edge set is far below this; the cap exists for the pathological
+/// mega-hub. Mirrors the `MAX_MULTI_GET` bound pattern (consts, not env limits).
+pub const MAX_GRAPH_EDGES: i64 = 500;
+
+/// v1.20.18 "Bound": `/decayed` returns a paged, bounded first page (default
+/// 500, `?offset=` pages the rest). Matches the graph cap for operator review.
+pub const MAX_DECAYED: i64 = 500;
+
 /// v1.20.1 "Shield" M2: how long an auto-captured proposal can sit in the
 /// review queue before a human decides it. A stale prompt's context-loss makes
 /// the candidate unverifiable, so beyond this the queue refuses to act and the

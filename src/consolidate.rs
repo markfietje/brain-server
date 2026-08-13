@@ -466,27 +466,38 @@ pub fn find_subject_conflicts(conn: &Connection) -> Result<Vec<ConflictPair>> {
     };
 
     let mut out = Vec::new();
-    for i in 0..rows.len() {
-        for j in (i + 1)..rows.len() {
-            let (id_a, subj_a, content_a, auth_a, obs_a) = &rows[i];
-            let (id_b, subj_b, content_b, auth_b, obs_b) = &rows[j];
-            if subj_a != subj_b {
-                continue;
+    // v1.20.18 "Bound": the pair loop is collapsed from O(n²) over ALL current
+    // rows to O(sum of m² per subject) by grouping on the subject key first —
+    // the conflict rule only ever compares rows with the SAME subject. For the
+    // live corpus (subjects mostly unique) this is ~O(n) dominating. Output is
+    // sorted for determinism (HashMap iteration order is unspecified); the
+    // result feeds the review queue, not an ordered API surface.
+    let mut by_subject: std::collections::HashMap<String, Vec<&CurrentRow>> =
+        std::collections::HashMap::new();
+    for r in &rows {
+        by_subject.entry(r.1.clone()).or_default().push(r);
+    }
+    for (_subj, group) in by_subject {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (id_a, _subj_a, content_a, auth_a, obs_a) = group[i];
+                let (id_b, _subj_b, content_b, auth_b, obs_b) = group[j];
+                if content_a == content_b {
+                    continue; // identical content → not a conflict (dup handled elsewhere)
+                }
+                let age_gap = observed_secs(obs_b).saturating_sub(observed_secs(obs_a));
+                let authority_delta = (auth_b.unwrap_or(0.8) - auth_a.unwrap_or(0.8)) as f32;
+                out.push(ConflictPair {
+                    from_chunk: *id_a,
+                    to_chunk: *id_b,
+                    subject: _subj_a.clone(),
+                    age_gap_secs: age_gap,
+                    authority_delta,
+                });
             }
-            if content_a == content_b {
-                continue; // identical content → not a conflict (dup handled elsewhere)
-            }
-            let age_gap = observed_secs(obs_b).saturating_sub(observed_secs(obs_a));
-            let authority_delta = (auth_b.unwrap_or(0.8) - auth_a.unwrap_or(0.8)) as f32;
-            out.push(ConflictPair {
-                from_chunk: *id_a,
-                to_chunk: *id_b,
-                subject: subj_a.clone(),
-                age_gap_secs: age_gap,
-                authority_delta,
-            });
         }
     }
+    out.sort_by_key(|p| (p.from_chunk, p.to_chunk));
     Ok(out)
 }
 
@@ -637,6 +648,57 @@ mod tests {
         link_evidence(&tx, 2, 1, LINK_SUPERSEDES).unwrap();
         tx.commit().unwrap();
         assert!(find_subject_conflicts(&c).unwrap().is_empty());
+    }
+
+    // ---- v1.20.18 "Bound": group-by-subject conflict scan collapse ----
+
+    #[test]
+    fn find_subject_conflicts_groups_by_subject_same_output() {
+        // Two subjects, one conflicting pair each: the grouped scan returns the
+        // exact same pairs as the old O(n²) loop, in the deterministic sorted
+        // order (HashMap iteration order is unspecified).
+        let c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, title, observed_at) VALUES
+                (1, 'api a', 'api key', '2024-01-01 00:00:00'),
+                (2, 'api b', 'api key', '2024-06-01 00:00:00'),
+                (3, 'city a', 'city', '2024-01-01 00:00:00'),
+                (4, 'city b', 'city', '2024-06-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+        let conflicts = find_subject_conflicts(&c).unwrap();
+        let pairs: Vec<(i64, i64)> = conflicts
+            .iter()
+            .map(|p| (p.from_chunk, p.to_chunk))
+            .collect();
+        assert_eq!(pairs, vec![(1, 2), (3, 4)], "same pairs, sorted");
+    }
+
+    #[test]
+    fn find_subject_conflicts_returns_all_pairs_per_subject() {
+        // A >2-row single-subject fixture: the grouped scan must return the
+        // exact mC2 pairs across every pairwise content mismatch (regression on
+        // the rule, not the complexity — groups collapse cross-subject rows).
+        let c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, title, observed_at) VALUES
+                (1, 'v1', 'same subject', '2024-01-01 00:00:00'),
+                (2, 'v2', 'same subject', '2024-02-01 00:00:00'),
+                (3, 'v3', 'same subject', '2024-03-01 00:00:00'),
+                (4, 'different', 'other subject', '2024-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+        let conflicts = find_subject_conflicts(&c).unwrap();
+        let mut pairs: Vec<(i64, i64)> = conflicts
+            .iter()
+            .map(|p| (p.from_chunk, p.to_chunk))
+            .collect();
+        pairs.sort();
+        // 3 choose 2 = 3 pairs among ids 1,2,3; the different-subject row 4
+        // must never pair with them.
+        assert_eq!(pairs, vec![(1, 2), (1, 3), (2, 3)]);
     }
 
     // ---- v1.6.0 "Reconcile" — atomic supersession resolution ----

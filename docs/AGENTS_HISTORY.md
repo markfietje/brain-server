@@ -8,6 +8,30 @@
 
 ## Release version notes
 
+> **Version note:** **v1.20.18 "Bound" shipped 2026-08-13** — a
+> **server** release (server Cargo.toml 1.20.17 → 1.20.18; client stays at
+> 1.20.16) closing the **three unbounded read paths** and collapsing the **two
+> quadratic scans** the v1.20.2 Harden D-group left. **M1** `GET
+> /graph/entity/{name}` and `GET /graph/relations` now take a `?limit=`
+> (default `MAX_GRAPH_EDGES` = 500, clamped 1..=500) and run
+> `ORDER BY r.id LIMIT ?` — a stable, reproducible page (shared `GraphLimit`
+> + `clamp_graph_limit`; extracted `entity_relations`/`relations_for`).
+> **M2** `find_subject_conflicts` (`consolidate.rs`) is grouped by subject —
+> O(n²) over all current rows → O(sum of m² per subject), ~O(n) dominating on
+> mostly-unique subjects, output sorted for determinism. **M3**
+> `idx_tombstones_reason_purged` index serves `/tombstones?subject=&since=`
+> + the DSAR certificate reads (schema → 1.20.18, guarded by the schema-
+> contract test). **M4** `/decayed` (`list_decayed`, gate.rs) gains
+> `?limit=`/`?offset=` paging (default `MAX_DECAYED` = 500, applied after the
+> Rust-side `effective_expiry` filter; `page_decayed` extracted). 5 tests (+,
+> main bin 514 → 519 passed), all gates green: 519 passed / 5 ignored (main
+> bin), clippy `-D warnings` + fmt clean, openapi/route/schema guards green,
+> release build clean. Honest ceilings: the graph `ORDER BY r.id` page is a
+> bounded but arbitrary window (no semantic ranking), `/decayed` pages but
+> still scans once (the expiry is a Rust pure function, not a SQL predicate),
+> and the conflict scan is still quadratic within a single subject (inherent
+> to the mC2 rule). See Agent 85 + `CHANGELOG.md` §[1.20.18].
+
 > **Version note:** **v1.20.17 "Scrub" shipped 2026-08-12** — a
 > **server** release (server Cargo.toml 1.20.16 → 1.20.17; client stays at
 > 1.20.16) closing **five verified GDPR-erasure (Art 17) completeness gaps** —
@@ -803,6 +827,47 @@
 ## Agent execution log
 
 ## All Agents COMPLETED ✅
+
+## Agent 85: v1.20.18 "Bound" — DoS + performance bounds (session 2026-08-13)
+**Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
+**Date:** 2026-08-13
+
+Shipped the v1.20.18 "Bound" **server** release per
+`IMPLEMENTATION_PLAN_v1.20.18_Bound.md`: closing the three unbounded read paths
+and collapsing the two quadratic scans the v1.20.2 "Harden" D-group left.
+Client stays at 1.20.16; one schema change (a tombstone index), no new route.
+
+- **M1 — Graph endpoints finite edge sets** (`src/main.rs`). `get_entity` and
+  `get_relations` returned every incident edge. Both now read a `?limit=`
+  (shared `GraphLimit` query struct + `clamp_graph_limit`, default
+  `MAX_GRAPH_EDGES` = 500, clamped 1..=500) and run `ORDER BY r.id LIMIT ?` —
+  a stable, reproducible page (the KG has no histogram to rank by). Extracted
+  `entity_relations` / `relations_for` so the LIMIT contract is unit-tested
+  (`graph_entity_respects_limit_and_clamps`, `graph_relations_respects_limit_*`).
+- **M2 — `find_subject_conflicts` grouped by subject** (`consolidate.rs`). The
+  proposal-write conflict scan was O(n²) over ALL current rows though the rule
+  only compares same-subject rows. Now grouped via `HashMap<String, Vec<&Row>>`
+  → O(sum of m² per subject), ~O(n) dominating on mostly-unique subjects.
+  Output sorted by `(from_chunk, to_chunk)` for determinism. Rule unchanged,
+  verified by `find_subject_conflicts_groups_by_subject_same_output` +
+  `find_subject_conflicts_returns_all_pairs_per_subject`.
+- **M3 — `idx_tombstones_reason_purged`** (`migration.rs`). Compound index on
+  `tombstones(reason, purged_at)` for the `/tombstones?subject=&since=`
+  registry + DSAR certificate reads. Schema stamp → 1.20.18
+  (`SCHEMA_VERSION_V1_20_18`); guarded by `test_migration_schema_contract`.
+- **M4 — `/decayed` paged** (`handlers/gate.rs`). `list_decayed` returned every
+  expired chunk. New `?limit=`/`?offset=` page the Rust-filtered result
+  (default `MAX_DECAYED` = 500) — the split never lands on the "is it
+  expired?" decision. Extracted `page_decayed` (`page_decayed_respects_limit_and_offset`).
+
++5 tests (main bin 514 → 519). All gates green: 519 passed / 5 ignored (main
+bin), clippy `-D warnings` + `fmt` clean, openapi/route/schema guards green,
+release build clean.
+
+**Honest ceilings:** the graph `ORDER BY r.id` page is a bounded but arbitrary
+window (no semantic ranking); `/decayed` pages the corpus but still scans it
+once (the expiry is a Rust pure function, not a SQL predicate); the conflict
+scan is still quadratic within a single subject (inherent to the mC2 rule).
 
 ## Agent 84: v1.20.17 "Scrub" — GDPR erasure (Art 17) completeness (session 2026-08-12)
 **Status:** COMPLETED (code + tests + gates + release wrap; deploy/tag pending operator)
