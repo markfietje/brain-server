@@ -28,6 +28,28 @@ data can be erased on demand with a verifiable deletion certificate.
 The project is maintained by **Mark Fietje**, an independent developer focused
 on privacy-preserving, human-governable AI infrastructure.
 
+### About the maintainer
+
+Mark is an ex-Dell Technologies engineer with **15+ years in enterprise support
+(L1–L3)** across the full server and storage stack — PowerEdge, VxRail,
+PowerStore, and OpenManage, with VMware and Linux underneath. For years he was
+the L3 escalation point for L2 on the VMware stack, the person who saw the
+cases the first two lines couldn't solve.
+
+That background is exactly why Brain Server exists the way it does:
+
+- **He knows what support and contact-center teams need** — recall of past
+  resolutions and policy, human-gated writes, and an audit trail you can defend
+  in a review.
+- **He has lived the compliance stakes** — enterprise infrastructure work is
+  where "what did the system do, when, and why?" stops being theoretical.
+- **He works EU hours from GMT+8**, native Dutch and fluent English, and is
+  available for remote or contract roles — including senior technical support,
+  infrastructure engineering, or sysadmin work where that background matters.
+
+If you're an enterprise evaluating Brain Server, you're talking to someone who
+has run support at scale, not just built the tool. CV available on request.
+
 ---
 
 ## Free pilot & trial on your own hardware
@@ -56,6 +78,7 @@ To arrange a pilot or ask a question, use any channel below.
 Prefer issues for bug reports and feature requests, and the channels below for
 anything else.
 
+- **Email:** [markfietje@gmail.com](mailto:markfietje@gmail.com)
 - **GitHub (issues & discussions):**
   [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server)
 - **X (Twitter):** [x.com/mark_fietje](https://x.com/mark_fietje)
