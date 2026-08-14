@@ -149,8 +149,8 @@ memory in **one `IMMEDIATE` transaction** that:
 6. Sets `status='approved'`, `decided_at`, and audits `proposal_approved`.
 
 `POST /proposals/{id}/reject` and `POST /proposals/{id}/edit` handle the other
-outcomes; a rejection is audited with its reason and **never deletes** the
-proposal row.
+outcomes; a rejection is audited (the decision enters the chain, not a free-text
+rationale) and **never deletes** the proposal row.
 
 ---
 

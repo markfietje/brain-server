@@ -85,8 +85,10 @@ enters. It works like this:
 3. A human reviews it and, in one transaction, either
    - **approves** it into memory (`POST /proposals/{id}/approve`), optionally **superseding**
      the chunk it contradicts (`?supersedes=<id>`), or
-   - **rejects** it (`POST /proposals/{id}/reject`) — audited, never deleted, recorded with
-     an optional reason.
+    - **rejects** it (`POST /proposals/{id}/reject`) — audited, never deleted. The
+      decision itself enters the chain; note the server does **not** currently persist a
+      free-text reject reason (the client's optional `?reason=` is accepted but not stored —
+      the audit row records the rejection, not the rationale).
 
 The consequence is concrete: **no write to the permanent store happens without a human
 signing it.** An LLM cannot inject memory by completing a prompt; a plugin cannot auto-
@@ -184,7 +186,11 @@ make *comprehensibility* real:
 - **Sourcing prompt** — `source_prompt` is PII-screened at persist and shown so you can
   compare the captured fragment against *what the model was doing*, not just a summary.
 - **Screen verdict** — a `clean` / `quarantined` badge from the injection screen, so you
-  know a layer-2 classifier flagged it.
+  know a layer-2 classifier flagged it. Note (v1.20.28): approving a `quarantined`/`Reject`
+  verdict **re-screens the content and stamps the promoted chunk `flagged=1`** — the flag
+  survives HITL promotion as provenance, so the Ops panel's flagged inventory and recall
+  segregation still reflect that the memory originated from a screen hit. This is advisory
+  metadata, not a recall deny: your approval is final and the chunk remains retrievable.
 - **Evidence on demand** — every row opens the shared evidence modal (`GET /get/{id}`),
   showing the *verbatim* span, `source_uri`, revision, heading, and line range. Not a
   paraphrase. Raw evidence.
@@ -210,6 +216,13 @@ made operational:
 - **Gate-health strip.** Approved / rejected / expired counts over a rolling window feed a
   severity hint: **over-rejecting** (are you blocking good captures?) and **under-reviewing**
   (are decisions expiring on you?) are surfaced as operational risks, not hidden in a log.
+- **Reviewer calibration strip** (v1.20.23). Directly above the Review queue, four
+  evaluative signals about *your own decision habits* — **approve-rate**, **median decision
+  latency** (`decided_at − created_at`), **edit-rate**, and **screen-override rate** — plus a
+  **rubber-stamp warning** when approve-rate exceeds `0.9` over ≥ 20 decisions. This is the
+  anti-rubber-stamp feedback loop: it shows you not just the queue, but *how you are
+  reviewing* it. (Dismissable; fetched once per mount/refresh; if the fetch fails nothing
+  renders — offline degrade.)
 
 ### Agent Memory Register — the provenance ledger (`/register`)
 
@@ -248,9 +261,9 @@ a queue-clearer.
    *supersede* is a real judgment: is the new fragment *true and replacing* the old, or
    are they both valid and merely different? Supersession expires the old chunk at a
    timestamp — it is a factual claim about the world, not bookkeeping.
-6. **Reject with a reason.** A rejection with a reason is a data point; a bare rejection
-   is a black box. The reason goes into the audit chain and is how the system (and you,
-   next quarter) learns *why* captures are bad.
+ 6. **Reject deliberately.** A bare rejection is a black box. Rejections enter the audit
+    chain; keep your *reasoning* visible out-of-band (a review note, a ticket) so the why of
+    a capture's demise is recoverable — the server stores the decision, not your rationale.
 7. **Watch the gate-health strip, not just the queue.** If you are over-rejecting, the
    gate is catching too much and good capture is dying in the queue. If you are
    under-reviewing, decisions are expiring on you and the gate is deciding by silence. Both
@@ -291,13 +304,15 @@ Either is a deliberate operator policy, not a default you inherit silently.
 
 ## 6. The audit trail is how consequentiality is proven
 
-Every decision you make — approve, reject (with reason), supersede, expire, purge,
+Every decision you make — approve, reject, supersede, expire, purge,
 consolidate — is appended to the **SHA-256 hash chain** (`/audit`, `/audit/verify`). The
 chain is tamper-evident: any edit to a prior row breaks every subsequent hash, and
 `/audit/verify` recomputes it. This is what makes the human-in-the-loop *consequential*:
 your judgment is not just performed, it is **recorded and reconstructable**, so that later —
-for a recall trace, a compliance audit, or a DSAR — the question *"who decided this, why,
-and on what evidence?"* has a verifiable answer.
+for a recall trace, a compliance audit, or a DSAR — the question *"who decided this, and on
+what evidence?"* has a verifiable answer. (The chain records *that* a decision was made and
+by whom; it does not hold a free-text rationale — a reject reason is not persisted server-
+side, so keep that reasoning in the review note.)
 
 See [**Security**](./security.md) for the chain itself and
 [**MemGhost mitigation**](./MEMGHOST_MITIGATION.md) for how the human gate is the
@@ -341,7 +356,7 @@ Operator / QA wants a memory removed
 WHAT is being removed, and why?
    │
    ├─ A proposal still waiting in the Review queue (NOT yet memory)
-   │     └─► Reviewer: REJECT (with a reason)      → audited; never persists. No Admin needed.
+   │     └─► Reviewer: REJECT  → audited; never persists. No Admin needed.
    │
    ├─ An already-admitted memory that is WRONG / stale / sensitive
    │     └─► Reviewer has NO delete authority
@@ -364,9 +379,11 @@ WHAT is being removed, and why?
 
 ### The steps, path by path
 
-**Path A — bad proposal (QA, no Admin needed).** Reject from the Review panel with a reason.
-Rejection is audited, the reason enters the chain, and the content never becomes memory. This
-is the *primary* QA delete: it happens before admission, so nothing has to be un-done.
+**Path A — bad proposal (QA, no Admin needed).** Reject from the Review panel.
+Rejection is audited (the decision enters the chain) and the content never becomes memory.
+This is the *primary* QA delete: it happens before admission, so nothing has to be un-done.
+(Keep your rejection rationale in the review note — the server records the decision, not a
+free-text reason.)
 
 **Path B — bad already-approved memory (Admin).** The reviewer cannot delete; they flag it.
 Admin opens the Data panel, enters the chunk id(s) or owner, and chooses **soft** (`ump/forget`,

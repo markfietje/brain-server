@@ -79,8 +79,9 @@ curl http://localhost:8765/proposals?status=pending
 # The human decides — approve into memory (optionally superseding a conflicting chunk)
 curl -X POST http://localhost:8765/proposals/1/approve
 
-# …or reject, audited, never deleted
-curl -X POST http://localhost:8765/proposals/1/reject?reason=duplicate
+# …or reject, audited, never deleted (note: the server records the rejection,
+# not a free-text reason — any ?reason= is accepted but not persisted)
+curl -X POST http://localhost:8765/proposals/1/reject
 ```
 
 The web client at `/app` puts this in a control room: the **Review** panel (scoring
