@@ -13,6 +13,11 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_WORKER_THREADS` | # cores | Tokio runtime worker threads (set `2` on Jetson) |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist |
 | `BRAIN_CLIENT_DIR` | `client/dist` | Directory served at `/app` (the web GUI) |
+| `BRAIN_CHAIN_CHECK_SECS` | `60` | How often the background audit-chain integrity check runs |
+| `BRAIN_MULTI_DB` | — | Enables per-domain SQLite files (multi-DB mode) |
+| `BRAIN_CONTROLLER_NAME` | — | Operator/controller identity label |
+| `MODEL_PROFILE` | — | Model profile selector (affects embedding defaults) |
+| `DOMAIN_MIN_COUNT` | — | Minimum chunk count for a domain to be listed/used |
 
 ## Authentication
 
@@ -23,6 +28,8 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_JWT_KEY_DIR` | `~/.config/brain-server/keys/` | Directory holding JWT signing key PEMs (mode 0700; private keys 0600). |
 | `BRAIN_JWT_AUDIENCE` | `brain-server` | Expected `aud` claim value. |
 | `BRAIN_PUBLIC_BASE_URL` | — | Public base URL for OIDC discovery. **Never** inferred from `Host`. |
+| `BRAIN_UMP_KEY_DIR` | `~/.config/brain-server/ump/` | Directory holding the UMP operator Ed25519 signing key (distinct from the JWT key dir). |
+| `BRAIN_TRUST_PROXY` | off | When set, trust `X-Forwarded-For` from the named proxy for real-IP + rate-limit accounting. Off by default so a spoofed header can't bypass rate limits. |
 
 ## Retrieval & expansion
 
@@ -41,6 +48,20 @@ PII control is deterministic **read-time output redaction** (always-on for
 principals without `pii:read`/Admin); there is no write-time placeholder vault
 and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 
+| Variable | Default | Description |
+|---|---|---|
+| `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` — how prompt-injection-suspicious input is handled. |
+| `BRAIN_INJECTION_CLASSIFIER` | — | Injection classifier selector |
+| `BRAIN_INJECTION_TOKENIZER` | — | Tokenizer used by the injection classifier |
+| `BRAIN_INJECTION_THRESHOLD_HIGH` | — | Classifier banding: score ≥ this → reject |
+| `BRAIN_INJECTION_THRESHOLD_LOW` | — | Classifier banding: score ≥ this (below high) → quarantine |
+| `BRAIN_PROPOSAL_TTL_SECS` | `604800` (7 d) | How long a proposal can sit pending before auto-expire (audited). |
+| `BRAIN_DSAR_WINDOW_DAYS` | `30` | GDPR Art 17 response window shown on DSARs |
+| `BRAIN_DSAR_LEDGER_DAYS` | `30` | Retention window for the DSAR ledger |
+| `BRAIN_RETENTION_ENABLED` | — | Enable per-kind query-time retention expiry |
+| `BRAIN_RETENTION_KIND_DAYS` | — | Per-kind retention overrides (`kind=days,kind=days`) |
+| `BRAIN_ALERT_WEBHOOK_URL` / `BRAIN_ALERT_WEBHOOK_SECRET` | — | Outbound alert webhook sink (uses the hardened egress client) |
+
 ## Observability & audit (v1.15)
 
 | Variable | Default | Description |
@@ -49,13 +70,15 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | Read-event sampling (0.0..=1.0); `1.0` = every read event. |
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window; when set, expired rows are pruned and the chain re-anchored. Deployers subject to AI Act Art 26(6) guidance: set ≥180. |
 | `BRAIN_DSAR_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_SECRET` | — | Opt-in Art 19 onward-notification: on a completed DSAR purge, POSTs `{subject, certified_at, certificate_id}` HMAC-SHA256-signed. Fail-soft. |
+| `BRAIN_OTEL_ENABLED` / `BRAIN_OTEL_ENDPOINT` | off | Optional OpenTelemetry export (endpoint + on/off) |
+| `CORS_METHODS` | `GET,POST,PUT,DELETE,OPTIONS` | Allowed CORS methods |
+| `CORS_HEADERS` | `content-type,authorization` | Allowed CORS request headers |
 
 ## Features & kill switches
 
 | Variable | Default | Description |
 |---|---|---|
 | `BRAIN_SUGGEST_ENABLED` | `true` | v1.9 kill switch: when `false`, the `/suggest/*` routes return `501`. |
-| `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` — how prompt-injection-suspicious input is handled. |
 
 ## Capacity envelope (v0.9.9)
 
