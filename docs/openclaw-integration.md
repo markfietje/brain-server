@@ -40,6 +40,10 @@ OpenClaw fires `before_prompt_build` before each turn. The plugin:
    (`normalizeRecallQuery`, capped by `recallMaxChars`).
 3. Makes **one** `POST /recall` (`client.recall`) — the only memory call per turn, with
    `limit = autoRecallTopK` (default 3), auto-routing domains server-side via centroids.
+   Recall is **bounded per session** (v1.20.29): a closure-scoped map collapses
+   same-query-in-flight recalls into a single server POST, and a per-session counter
+   caps recalls at `MAX_RECALLS_PER_TURN = 10` (over-cap → silent no-op, not error),
+   reset on `session_end`. So "one per turn" is the common case, not a hard ceiling.
 4. If the server answers `decision: "low_confidence"` with zero hits, it is **calibrated
    abstention** (v1.5): the plugin fails **open** and injects nothing — it does not fabricate.
 5. Otherwise it formats the hits through `formatRecallContext` (numbered, each tagged with its
@@ -136,7 +140,7 @@ The operator console (client GUI) renders this queue in its Review panel and dri
 
 | Tool                  | Purpose |
 | --------------------- | ------- |
-| `memory_recall`       | Hybrid semantic + lexical recall. **Power overrides:** `domain`, `source`, `since`, `lex`, `vec`, `hyde`, `intent`. **Advanced (v0.3.0):** `at`/`asOf` (bi-temporal point-in-time), `memoryKind` (`fact`\|`procedure`\|`step`\|`decision`\|`episodic`), `minRelevance`, `includeDecayed`, `graph` (graph-PPR third leg), `maxContextTokens` (evidence packing). Returns numbered untrusted citations; surfaces `low_confidence` abstention. |
+| `memory_recall`       | Hybrid semantic + lexical recall. **Power overrides:** `domain`, `source`, `since`, `lex`, `vec`, `hyde`, `intent`. **Advanced (v0.3.0):** `at`/`asOf` (bi-temporal point-in-time), `memoryKind` (`fact`\|`procedure`\|`step`\|`decision`\|`episodic`), `minRelevance`, `includeDecayed`, `graph` (graph-PPR third leg), `maxContextTokens` (evidence packing; schema max **8000**, matching the auto-recall ceiling — clamped v1.20.29). Returns numbered untrusted citations; surfaces `low_confidence` abstention. |
 | `memory_store`        | Save a durable fact, optionally with `entities[]`/`relations[]` for the knowledge graph. In the default `captureMode: "proposal"` this **submits for human review** (`/ingest/proposal`); it only becomes memory after approval. |
 | `memory_verify`       | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact. |
 | `memory_get`          | Fetch the full stored text behind a recalled snippet by id. |
@@ -436,6 +440,12 @@ settings without restarting the gateway.
   (`conflict`) hits are flagged, and the server marks each hit `untrusted: true`. `sanitizeForBlock`
   strips the invisible-Unicode/bidi smuggling set across content, titles, and tool `details`
   (v1.20.25) so raw control/zero-width bytes never reach the model verbatim.
+- **Enforced sentinel fence** (v1.20.28): each injected block is wrapped in
+  `UNTRUSTED_BEGIN`/`UNTRUSTED_END` sentinels, `sanitizeForBlock` strips any literal sentinel
+  from hit bodies (a recalled chunk cannot forge the close), and `formatRecallContext` drops any
+  hit not explicitly tagged `untrusted === true` (fail-safe → empty injection if none qualify).
+- **Markdown-ref strip** (v1.20.27): the plugin also strips markdown image/link references, so a
+  recalled chunk cannot exfiltrate context through a rendered URL to an LLM consumer.
 - **Human-gated writes**: default `captureMode: "proposal"` means no turn- or tool-triggered fact
   enters memory without a reviewer approving it.
 - **Deterministic + local**: no embedding/decision tokens, no data egress, loopback only.
