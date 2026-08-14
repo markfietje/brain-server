@@ -253,6 +253,25 @@ impl WebhookQueue {
     }
 }
 
+/// v1.20.26 "Tourniquet": the one outbound HTTP client used by both webhook
+/// sinks (alert + Art-19 DSAR). Redirects are refused (a 3xx is surfaced to
+/// the caller, not fetched), so an operator URL that bounces to cloud metadata
+/// or loopback cannot be followed. Defense-in-depth, not a replacement for
+/// operator care.
+///
+/// ponytail: this does NOT resolve+validate the host's IPs against RFC1918 /
+/// loopback / link-local / 169.254.x before the *first* request — that is the
+/// v2.x per-request resolver upgrade. The redirect refusal closes the cheap,
+/// high-probability SSRF class (302→metadata) today; DNS-rebinding across the
+/// connection-pool TTL remains the documented ceiling. It also does NOT touch
+/// body handling, request signing, retry policy, or any URL allowlist.
+pub fn egress_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("hardened egress client has no invalid defaults")
+}
+
 /// Pop and return the oldest queued delivery (by `id`), deleting it. Returns
 /// `None` when the queue is empty. Used by the drain worker.
 fn drain_one(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(String, String, String)>> {
@@ -528,5 +547,136 @@ mod tests {
             .enqueue("github", "push", "deliv-overflow", b"payload")
             .unwrap();
         assert_eq!(full, EnqueueOutcome::Full);
+    }
+
+    // ── v1.20.26 "Tourniquet" SSRF egress tests ──────────────────────────────
+    //
+    // Reuses the raw-HTTP `TcpListener` responder idiom from
+    // `main.rs::test_observe_art19_webhook_posts_on_purge` — no new dev-dep.
+
+    /// v1.20.26: the hardened egress client MUST NOT follow a 302 redirect.
+    /// The responder returns `302 → http://{same-listener}/followed`; if the
+    /// client followed it, a second connection would land on the same listener
+    /// and bump the accept counter. We assert the returned status is the 302
+    /// itself AND that exactly one connection was accepted (no follow).
+    #[test]
+    fn egress_client_refuses_redirect_to_loopback() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/sink");
+        let connects = Arc::new(AtomicU32::new(0));
+        let connects_cloned = Arc::clone(&connects);
+        // Non-blocking + deadline so the responder self-terminates whether or
+        // not a buggy follow arrives (no hang on the second accept).
+        listener.set_nonblocking(true).unwrap();
+        let thread = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+            while std::time::Instant::now() < deadline {
+                let (mut sock, _) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                // Read the request as blocking (accepted sockets inherit
+                // non-blocking from the listener).
+                let _ = sock.set_nonblocking(false);
+                connects_cloned.fetch_add(1, Ordering::SeqCst);
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let n = sock.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                // First connection → 302 to the same listener; any stray
+                // second connection (a buggy follow) → 200.
+                if connects_cloned.load(Ordering::SeqCst) == 1 {
+                    let loc = format!("http://{addr}/followed");
+                    let resp = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\n\r\n"
+                    );
+                    let _ = sock.write_all(resp.as_bytes());
+                } else {
+                    let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                }
+            }
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let status = rt.block_on(async {
+            let client = egress_client();
+            let resp = client
+                .post(&url)
+                .body(b"x".to_vec())
+                .send()
+                .await
+                .expect("send");
+            resp.status()
+        });
+
+        // Wait for the responder's deadline so its accept count is final.
+        thread.join().expect("responder");
+
+        assert_eq!(
+            status.as_u16(),
+            302,
+            "Policy::none surfaces the redirect instead of fetching it"
+        );
+        assert_eq!(
+            connects.load(Ordering::SeqCst),
+            1,
+            "client must NOT issue a second request to the redirect target"
+        );
+    }
+
+    /// v1.20.26: happy path — the hardened client still delivers a legitimate
+    /// 200 response (regression: redirect refusal did not break normal egress).
+    #[test]
+    fn egress_client_sends_to_allowed_host() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/sink");
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            let _ = sent_tx.send(buf);
+        });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (status, body) = rt.block_on(async {
+            let client = egress_client();
+            let resp = client.post(&url).body("hello").send().await.expect("send");
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            (status, body)
+        });
+        let _ = sent_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let _ = thread.join();
+        assert!(status.is_success(), "legitimate URL is delivered: {status}");
+        assert_eq!(body, "ok", "response body is read intact");
     }
 }

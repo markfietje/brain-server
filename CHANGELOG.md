@@ -10,7 +10,38 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [1.20.25] — 2026-08-13
+full historical record.
+## [1.20.26] — 2026-08-14
+
+### Server — "Tourniquet" (SSRF egress paths closed)
+
+Server `Cargo.toml`/lock 1.20.25 → 1.20.26; plugin unchanged. One shared client
+  builder, two call-site swaps. No new endpoints, no new fields, no new deps. See
+`IMPLEMENTATION_PLAN_v1.20.26_Tourniquet.md`. **ATLAS F-1 (High).**
+
+- **`webhook::egress_client`** is the one outbound HTTP client now used by both
+  webhook sinks (`alert.rs::sink` and `handlers/observe.rs::notify_art19`). Both
+  previously built `reqwest::Client::new()`, which follows up to 10 redirects with
+  no IP validation — so a misconfigured operator `BRAIN_*_WEBHOOK_URL` that 302s
+  to `http://169.254.169.254/...` (cloud metadata) or `http://127.0.0.1:8765/...`
+  (self) was followed. The new builder sets `.redirect(Policy::none())`, so a 3xx
+  is surfaced to the caller, never fetched. URLs remain env-var-only (operator-
+  controlled), so this is defense-in-depth, not a request-time fix. `+2 tests`
+  (reuse the `TcpListener` 302-responder idiom from the existing Art-19 webhook
+  test — no new dep).
+
+**Honest ceilings:** does NOT resolve+validate host IPs against RFC1918 /
+  loopback / link-local / `169.254.x` before the first request (the v2.x
+  per-request resolver; DNS-rebinding across the connection-pool TTL remains the
+  documented ceiling). Does NOT change body signing, retry policy, or add a URL
+  allowlist. **Validation:** clippy clean; the two redirect tests are CI-runnable
+  but unrunnable in this sandbox (network bind is blocked — the same restriction
+  that already applies to the existing Art-19 webhook test); the
+  `redirect::Policy::none()` call is reqwest's documented contract, type-verified
+  by the build. (Doc note: the `--lib webhook` invocation in the plan reaches 0
+  tests — `webhook` is binary-private; the correct command is `cargo test
+  --features bench --bin brain-server -- egress_client`.)
+
 
 ### Server + client + plugin — "Consolidate" (the post-Sweep tail, closed)
 

@@ -207,7 +207,7 @@ async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
     let queue = crate::webhook::WebhookQueue::new(Arc::new(state.pool.clone()));
     let _ = queue.enqueue("alert", "alert", &delivery_id, body.as_bytes());
 
-    let client = reqwest::Client::new();
+    let client = crate::webhook::egress_client();
     let ts = chrono::Utc::now().to_rfc3339();
     let mut last_err: Option<String> = None;
     for attempt in 0..3u32 {

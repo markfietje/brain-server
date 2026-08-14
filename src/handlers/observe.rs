@@ -647,7 +647,7 @@ pub(crate) fn notify_art19(subject: String, certificate_id: i64, certified_at: S
     })
     .to_string();
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = crate::webhook::egress_client();
         let mut last_err: Option<String> = None;
         for attempt in 0..3u32 {
             let mut req = client.post(&url).header("content-type", "application/json");
