@@ -97,6 +97,13 @@ historical recall (`?at=<past>`) still returns it, current recall does not.
   certificate (`POST /dsar`), plus a queryable `/tombstones` registry.
 - **Calibrated abstention**, **span verification** (`/verify`), and **reviewable
   proposals** keep the memory honest without an LLM.
+- **Read-seam sanitization** — every emitted text field passes redaction →
+  markdown-reference strip (EchoLeak) → invisible-Unicode strip before leaving
+  the server, so a stored chunk cannot smuggle context out through a rendered
+  URL or bidi/zero-width trickery (v1.20.3 / v1.20.27).
+- **Fail-closed bind + SSRF-hardened egress** — startup refuses a non-loopback
+  bind without auth (v1.20.29); outbound webhook/alert calls follow no redirects
+  (v1.20.26).
 
 ---
 

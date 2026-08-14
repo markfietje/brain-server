@@ -66,11 +66,23 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
   principals without `pii:read`; plaintext is never stored in a placeholder
   vault (there is no `pii_map`, removed v1.20.19).
 - **Untrusted-evidence boundary** — every retrieved result serializes
-  `untrusted: true` (OWASP LLM01:2025).
+  `untrusted: true` (OWASP LLM01:2025). v1.20.28 wraps each injected block in
+  `UNTRUSTED_BEGIN`/`UNTRUSTED_END` sentinels and drops any hit not explicitly
+  tagged `untrusted` (fail-safe toward the security wedge).
+- **EchoLeak / markdown-exfil strip** — the read seam rewrites markdown image/link
+  references (`![label](url)` → `[label]`, `[text](url)` → `text`) so a recalled
+  chunk cannot exfiltrate context via a rendered URL (v1.20.27).
 - **Parameterized SQL** — no SQL-injection surface.
 - **Encrypted backup** — AES-256-GCM, checksummed, excludes secrets.
 - **Constant-time / verified-writes guards** — the token compare and the audit
   chain verification are pinned by regression tests.
+- **Fail-closed bind** — the server refuses to start on a non-loopback bind when
+  no auth (bearer token or JWT) is configured, so an unauthenticated
+  superuser API is never exposed off the loopback (v1.20.29).
+- **SSRF-hardened egress** — outbound webhook/alert calls use a single client
+  with redirects disabled (`redirect: none`), so a misconfigured callback URL
+  that 302s to a cloud-metadata or loopback address is surfaced, never followed
+  (v1.20.26).
 
 ---
 
