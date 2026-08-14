@@ -221,7 +221,7 @@ brain ingest-dir ./vault      # ingest a vault
 brain check-consistency       # duplicates, conflicts, stale sources
 brain resolve <new> <old>     # supersede a fact
 brain suggest "<context>"     # opt-in anticipation
-brain backup <out-path>       # AES-256-GCM encrypted backup (DB taken from BRAIN_DB_PATH/default)
+brain backup <out-path> --passphrase-file PATH  # AES-256-GCM encrypted backup (passphrase required; DB taken from BRAIN_DB_PATH/default)
 ```
 
 ## Security
@@ -259,9 +259,9 @@ For security issues, do not open a public issue. Use the GitHub *Report a vulner
 
 ## Contact
 
-Maintained by **Mark Fietje** — [X (Twitter)](https://x.com/mark_fietje) ·
-[LinkedIn](https://www.linkedin.com/in/markfietje/) · Signal: `markfietje.77` ·
-WhatsApp: `markfietje`. For project support, prefer GitHub Issues / Discussions.
+Maintained by **Mark Fietje** — connect on
+[LinkedIn](https://www.linkedin.com/in/markfietje/). For project support and
+feature requests, prefer GitHub Issues / Discussions.
 
 ## License
 
