@@ -315,13 +315,20 @@ annotation engine was retired in v0.9.0).
 ## 4. Supporting endpoints
 
 ### `GET /health` → `200`
+> Illustrative example — the `version` is `env!("CARGO_PKG_VERSION")` at runtime and
+> `capacity` is present only when the connection pool is not momentarily exhausted.
 ```json
 {
   "status": "ok",
-  "version": "0.9.4",
+  "version": "1.20.29",
   "model": "minishlab/potion-retrieval-32M",
   "system": { "memory_used_mb": 220, "memory_total_mb": 4096, "memory_percent": 5.4 },
-  "pool":   { "connections": 2, "idle_connections": 1, "busy_connections": 1 }
+  "pool":   { "connections": 2, "idle_connections": 1, "busy_connections": 1 },
+  "backup": { "ok": true },
+  "webhook": { "replay_secs": 600, "timestamp_required": 0, "scheme": "legacy" },
+  "otel":   { "enabled": false, "endpoint": "http://127.0.0.1:4317" },
+  "integrity": { "chain_ok": true, "last_checked_at": "...", "chain_head": "..." },
+  "capacity": { "status": "ok", "docs": 430, "db_mib": 12, "rss_mib": 84 }
 }
 ```
 The primary consumer probes this to confirm the server is up (it only
@@ -489,14 +496,30 @@ pub struct RecallRequest {
     pub limit: u32,
     pub domain: Option<String>,
     #[serde(default)] pub strict: bool,
-    #[serde(default)] pub provenance: bool,
+    #[serde(default)] pub provenance: bool,   // alias "explain"
     #[serde(default)] pub source: Option<String>,
     #[serde(default)] pub since: Option<String>,
-    #[serde(default)] pub lex: Option<String>,
+    #[serde(default)] pub lex: Option<String>, // bare string or LexSpec object
     #[serde(default)] pub vec: Option<String>,
     #[serde(default)] pub hyde: Option<String>,
     #[serde(default)] pub intent: Option<String>,
+    #[serde(default)] pub sources: Vec<String>, // OR filter over ingest kind
+    #[serde(default)] pub profile: Option<String>,
+    #[serde(default)] pub include_flagged: bool,
+    #[serde(default)] pub as_of: Option<String>,
+    #[serde(default)] pub evidence: bool,
+    #[serde(default)] pub at: Option<String>,
+    #[serde(default)] pub max_context_tokens: Option<usize>,
+    #[serde(default)] pub gold_answer: Option<String>,
+    #[serde(default)] pub graph: bool,
+    #[serde(default)] pub include_decayed: bool,
+    #[serde(default)] pub memory_kind: Option<String>,
+    #[serde(default)] pub min_relevance: Option<String>,
+    #[serde(default)] pub trace: bool,
 }
+```
+> Canonical field list as of v1.20.29; the current source is authoritative —
+> see `src/handlers/recall.rs`.
 ```
 
 ### `src/handlers/ingest.rs` — request

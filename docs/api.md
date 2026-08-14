@@ -18,9 +18,11 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | POST | `/ingest/memory` | Structured memory ingest |
 | POST | `/ingest/markdown` | Markdown ingest + graph extraction |
 | POST | `/ingest` | Structured ingest (explicit entities/relations) |
+| POST | `/sources/reconcile` · DELETE `/sources/{id}` | Sweep deleted sources / retire a source |
 | POST | `/recall` | Structured recall — the primary endpoint |
 | GET | `/search` | Semantic search *(deprecated; use `/recall`)* |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
+| GET | `/recall/{trace_id}/trace` | Recall-trace replay (decision-path evidence) |
 | POST | `/verify` | Span verification — is a claim supported by a chunk's text? |
 
 ---
@@ -79,11 +81,27 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 |---|---|---|
 | GET | `/export` | Portable JSON export |
 | POST | `/purge` | Hard, audited deletion by id or owner |
-| POST | `/dsar` | Locate → export → purge → deletion certificate |
+| POST | `/dsar` | Locate → export → purge → deletion certificate (supports `dry_run` footprint preview) |
+| GET | `/dsar` | DSAR ledger (admin, newest-first, per-row deadline) |
 | GET | `/tombstones?subject=&since=` | Deletion registry |
 | GET | `/dsar/{id}/certificate` | Re-fetch certificate + live chain check |
 | GET | `/audit` · `/audit/verify` | Append-only audit log + chain integrity |
 | GET | `/quarantine` · `/quarantine/{id}/release` · `/delete` | Injection review |
+| GET | `/retention` · POST `/retention` · GET `/art30` | Per-kind retention policy + Art 30 record |
+| GET | `/snapshot/status` | Point-in-time snapshot state |
+
+---
+
+## UMP (Universal Memory Protocol)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/ump/capabilities` | Protocol negotiation (conformance level, retrieval signals, `max_recall`, writable, audit) |
+| POST | `/ump/remember` · `/ump/revise` · `/ump/forget` · `/ump/feedback` | Record / patch / soft-delete / outcome-feedback |
+| POST | `/ump/recall` | Ranked recall with per-result signals |
+| GET | `/ump/memory/{id}` | Read one record with on-read integrity re-verification |
+| GET | `/ump/subscribe` | SSE broadcast of memory events |
+| POST | `/ump/audit` · GET `/ump/audit/verify` | UMP-scoped audit row family + chain verification |
 
 ---
 
@@ -108,8 +126,9 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 
 ## Clients
 
-- **`brain` CLI** — status, query, get, explain, ingest-dir, reconcile, audit,
-  backup/restore, and more (see [CLI reference](./cli-reference.md)).
+- **`brain` CLI** — status, query, get, explain, ingest-dir, reconcile, retention,
+  domains, ump, backup/restore, key management, and more (see
+  [CLI reference](./cli-reference.md)).
 - **`mcp` binary** — search/recall/ingest exposed as MCP tools for agent clients.
 - **Dioxus client** — the visual control surface served at `/app`.
 

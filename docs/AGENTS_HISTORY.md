@@ -855,7 +855,7 @@ new regression tests exposed.
   the submit-form content columns become a bounded scroll box
   (`max-h-40 overflow-y-auto`) — LITL smuggling is screened server-side; this
   is the display fence. CSS-only → client test count unchanged (111).
-- **G2 — PII read-path uniformity.** `GET /chunk/{id}` + `POST /chunk/multi-get`
+- **G2 — PII read-path uniformity.** `GET /get/{id}` + `POST /multi-get`
   now select + mask `pii` rows for non-admin principals (the v1.14
   `redact_content` pattern; `pii_principal` cloned pre-move), `POST /search`
   masks after flagged-evidence suppression, `GET /proposals` masks content via
