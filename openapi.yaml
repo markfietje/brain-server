@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.20.25
-  x-api-version: "1.20.25"
+  version: 1.20.29
+  x-api-version: "1.20.29"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -2339,6 +2339,20 @@ paths:
                   cop: true
                   status: self_attested
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Bearer token authentication. Accepted credentials: a JWT signed by a
+        `BRAIN_JWT_KEY_DIR` key, or the static bearer token from
+        `BRAIN_TOKEN_FILE`/`BRAIN_TOKEN`. Authz is scope-based
+        (`<action>:<team>/<domain>`; see the `Scope` schema); the per-route role
+        matrix (public / read / write / admin) lives in src/main.rs
+        (the authz-guard table) and API_CONTRACT.md. Most routes require auth;
+        the exempt public set is /health, /ready, /version, /openapi.yaml,
+        /.well-known/*, /ump/capabilities and the /auth refresh/logout surface.
   responses:
     BadRequest:
       description: Validation failure
