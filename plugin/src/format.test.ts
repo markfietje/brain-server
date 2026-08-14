@@ -71,7 +71,8 @@ describe("RECALL_ABSTENTION", () => {
 describe("sanitizeForBlock", () => {
   test("collapses whitespace and strips control chars", () => {
     expect(sanitizeForBlock("a\n\n b   c")).toBe("a b c");
-    expect(sanitizeForBlock("a\u0001b")).toBe("a b");
+    expect(sanitizeForBlock("a\u0001b")).toBe("a b"); // C0
+    expect(sanitizeForBlock("a\u0080b")).toBe("a b"); // C1 (v0.4.0 hardening)
   });
   test("trims leading/trailing space", () => {
     expect(sanitizeForBlock("   hello   ")).toBe("hello");

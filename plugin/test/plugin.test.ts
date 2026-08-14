@@ -47,6 +47,7 @@ type MockApi = {
   registerTool: (tool: unknown, opts?: { name?: string }) => void;
   registerService: (s: { id: string; start?: () => unknown; stop?: () => void }) => void;
   registerMemoryCapability?: (cap: { promptBuilder: () => unknown[] }) => void;
+  registerMemoryCorpusSupplement?: (supplement: unknown) => void;
 };
 
 function mockResponse(body: unknown, init: { status?: number } = {}) {
@@ -81,6 +82,7 @@ function registerPlugin(pluginConfig: unknown) {
     }),
     registerService: vi.fn((s) => services.push(s)),
     registerMemoryCapability: vi.fn(),
+    registerMemoryCorpusSupplement: vi.fn(),
   };
 
   plugin.register(api as unknown as OpenClawPluginApi);
@@ -110,6 +112,21 @@ describe("plugin registration", () => {
     expect(tools.has("memory_verify")).toBe(true);
     expect(tools.has("memory_get")).toBe(true);
     expect(tools.has("memory_graph_entity")).toBe(true);
+    // v0.3.0: graph traversal is always registered.
+    expect(tools.has("memory_graph_traverse")).toBe(true);
+    // v0.3.0: proposal review tools are gated behind config.proposalTools (off by default).
+    expect(tools.has("memory_proposal_list")).toBe(false);
+    expect(tools.has("memory_proposal_decide")).toBe(false);
+    // v0.4.0: procedural tools (runbooks / decision trees) are always registered.
+    expect(tools.has("memory_procedure_get")).toBe(true);
+    expect(tools.has("memory_procedure_store")).toBe(true);
+    expect(tools.has("memory_decision_evaluate")).toBe(true);
+  });
+
+  test("registers the proposal review tools when config.proposalTools is true", () => {
+    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
+    expect(tools.has("memory_proposal_list")).toBe(true);
+    expect(tools.has("memory_proposal_decide")).toBe(true);
   });
 
   test("registers a static memory capability (prompt-cached system guidance)", () => {
@@ -122,6 +139,7 @@ describe("plugin registration", () => {
       registerTool: vi.fn(),
       registerService: vi.fn(),
       registerMemoryCapability,
+      registerMemoryCorpusSupplement: vi.fn(),
     } as unknown as MockApi;
     plugin.register(api as unknown as OpenClawPluginApi);
     expect(registerMemoryCapability).toHaveBeenCalledTimes(1);
@@ -218,6 +236,94 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
     );
     const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
     expect(body.domain).toBe("health");
+  });
+});
+
+describe("live config — re-reads the plugin slice from the runtime snapshot", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** Register with a live runtime config snapshot the plugin can re-read each turn. */
+  function registerWithLiveConfig(pluginConfig: unknown, liveEntryConfig: unknown) {
+    const hooks = new Map<string, HookHandler>();
+    const tools = new Map<string, { execute: (...args: unknown[]) => unknown }>();
+    const services: Array<{ id: string; start?: () => unknown; stop?: () => void }> = [];
+    const api: MockApi = {
+      pluginConfig,
+      runtime: {
+        config: {
+          current: () => ({
+            plugins: { entries: { "brain-server": { config: liveEntryConfig } } },
+          }),
+        },
+      },
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      on: vi.fn((name: string, handler: HookHandler) => hooks.set(name, handler)),
+      registerTool: vi.fn((tool, opts) => {
+        const t = tool as { name?: string; execute?: (...a: unknown[]) => unknown };
+        const name = opts?.name ?? t.name;
+        if (name && t.execute) {
+          tools.set(name, t as { execute: (...a: unknown[]) => unknown });
+        }
+      }),
+      registerService: vi.fn((s) => services.push(s)),
+      registerMemoryCapability: vi.fn(),
+      registerMemoryCorpusSupplement: vi.fn(),
+    };
+    plugin.register(api as unknown as OpenClawPluginApi);
+    return { hooks, tools, services };
+  }
+
+  test("a live override disabling autoRecall takes effect without re-registration", async () => {
+    // Registered with autoRecall ON, but the runtime snapshot says it is now OFF.
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const { hooks } = registerWithLiveConfig(
+      { agents: ["main"], autoRecall: true },
+      {
+        agents: ["main"],
+        autoRecall: false,
+      },
+    );
+    await getHook(hooks, "before_prompt_build")(
+      { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
+      { agentId: "main" },
+    );
+    // The live snapshot wins over the registration-time pluginConfig.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("a live override enabling autoRecall takes effect even when registered OFF", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ hits: [{ id: 1, content: "prefers vim", score: 0.9 }] }),
+    );
+    const { hooks } = registerWithLiveConfig(
+      { agents: ["main"], autoRecall: false },
+      {
+        agents: ["main"],
+        autoRecall: true,
+      },
+    );
+    const result = await getHook(hooks, "before_prompt_build")(
+      {
+        prompt: "what editor?",
+        messages: [{ role: "user", content: "what editor should i use?" }],
+      },
+      { agentId: "main" },
+    );
+    expect(result).toEqual({ prependContext: expect.stringContaining("prefers vim") });
+  });
+
+  test("falls back to pluginConfig when the live snapshot has no brain-server entry", async () => {
+    // liveEntryConfig is undefined: the live slice is absent, so the plugin must
+    // fall back to the registration-time pluginConfig (autoRecall still on).
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "ok", score: 0.5 }] }));
+    const { hooks } = registerWithLiveConfig({ agents: ["main"], autoRecall: true }, undefined);
+    await getHook(hooks, "before_prompt_build")(
+      { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
+      { agentId: "main" },
+    );
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
 
@@ -362,7 +468,7 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
 
   test("memory_store queues a proposal for human review by default (captureMode: proposal)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ id: 42, status: "pending", novelty: 1.0 }),
+      mockResponse({ id: 42, status: "pending", novelty: 1 }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools.get("memory_store")!.execute("call-1", { text: "a durable fact" });
@@ -435,5 +541,331 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("alternative_to");
     expect((res as { details: { found: boolean } }).details.found).toBe(true);
+  });
+});
+
+describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus supplement", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("memory_graph_traverse forwards start/maxDepth/kind and maps the response", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        traversal: [
+          {
+            entity: "insulin resistance",
+            depth: 1,
+            path: "1",
+            edge_path: "causes",
+            from_entity: "metabolic syndrome",
+            domain: "health",
+          },
+          {
+            entity: "type 2 diabetes",
+            depth: 2,
+            path: "1->2",
+            edge_path: "causes|causes",
+            from_entity: "metabolic syndrome",
+            domain: "health",
+          },
+        ],
+        visited: 2,
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_graph_traverse")!
+      .execute("call-1", { start: "metabolic syndrome", maxDepth: 2, kind: "causes:" });
+    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
+    expect(url).toContain("/graph/traverse");
+    expect(url).toContain("start=metabolic+syndrome");
+    expect(url).toContain("max_depth=2");
+    expect(url).toContain("kind=causes%3A");
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("type 2 diabetes");
+    expect((res as { details: { found: boolean; visited: number } }).details).toMatchObject({
+      found: true,
+      visited: 2,
+    });
+  });
+
+  test("memory_graph_traverse empty traversal => not found", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ traversal: [], visited: 0 }));
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_graph_traverse")!.execute("call-1", { start: "nothing" });
+    expect((res as { details: { found: boolean } }).details.found).toBe(false);
+  });
+
+  test("memory_proposal_list is gated off unless proposalTools:true", () => {
+    const { tools } = registerPlugin({ agents: ["main"] });
+    expect(tools.has("memory_proposal_list")).toBe(false);
+  });
+
+  test("memory_proposal_list lists pending proposals", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse([
+        {
+          id: 42,
+          kind: "fact",
+          content: "prefers dark mode",
+          novelty: 0.8,
+          conflict_with: null,
+          salience: 0.5,
+          created_at: 1700000000,
+          screen_verdict: "clean",
+          expires_at: 1700604800,
+          warn_secs: 3600,
+          critical_secs: 300,
+        },
+      ]),
+    );
+    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
+    const res = await tools.get("memory_proposal_list")!.execute("call-1", { status: "pending" });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("#42");
+    expect(text).toContain("prefers dark mode");
+    expect((res as { details: { count: number } }).details.count).toBe(1);
+  });
+
+  test("memory_proposal_decide approve promotes and forwards supersedes", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        mockResponse({ proposal_id: 42, chunk_id: 99, status: "approved", superseded: 7 }),
+      );
+    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
+    const res = await tools
+      .get("memory_proposal_decide")!
+      .execute("call-1", { id: 42, decision: "approve", supersedes: 7 });
+    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
+    expect(url).toContain("/proposals/42/approve");
+    expect(url).toContain("supersedes=7");
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("chunk #99");
+    expect((res as { details: { decided: boolean } }).details.decided).toBe(true);
+  });
+
+  test("memory_proposal_decide reject drops the proposal", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ proposal_id: 42, status: "rejected" }));
+    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
+    const res = await tools
+      .get("memory_proposal_decide")!
+      .execute("call-1", { id: 42, decision: "reject" });
+    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
+    expect(url).toContain("/proposals/42/reject");
+    expect((res as { details: { decided: boolean } }).details.decided).toBe(true);
+  });
+
+  test("memory_recall forwards the v0.3.0 advanced params", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        mockResponse({ hits: [{ id: 1, content: "x", score: 0.5 }], decision: "ok" }),
+      );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    await tools.get("memory_recall")!.execute("call-1", {
+      query: "what was true then",
+      at: "2024-01-01",
+      memoryKind: "fact",
+      minRelevance: "high",
+      graph: true,
+      maxContextTokens: 1000,
+    });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.at).toBe("2024-01-01");
+    expect(body.memory_kind).toBe("fact");
+    expect(body.min_relevance).toBe("high");
+    expect(body.graph).toBe(true);
+    expect(body.max_context_tokens).toBe(1000);
+  });
+
+  test("auto-recall forwards autoRecallGraph + autoRecallMaxContextTokens", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const { hooks } = registerPlugin({
+      agents: ["main"],
+      autoRecallGraph: true,
+      autoRecallMaxContextTokens: 2048,
+    });
+    await getHook(hooks, "before_prompt_build")(
+      { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
+      { agentId: "main" },
+    );
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.graph).toBe(true);
+    expect(body.max_context_tokens).toBe(2048);
+  });
+
+  test("registers a memory corpus supplement whose search maps recall hits", async () => {
+    let supplement:
+      | {
+          search(p: {
+            query: string;
+            maxResults?: number;
+            agentId?: string;
+            sandboxed?: boolean;
+          }): Promise<unknown[]>;
+        }
+      | undefined;
+    const api = {
+      pluginConfig: { agents: ["main"] },
+      runtime: {},
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerService: vi.fn(),
+      registerMemoryCapability: vi.fn(),
+      registerMemoryCorpusSupplement: vi.fn((s) => {
+        supplement = s;
+      }),
+    } as unknown as MockApi;
+    plugin.register(api as unknown as OpenClawPluginApi);
+    expect(api.registerMemoryCorpusSupplement).toHaveBeenCalledTimes(1);
+    expect(supplement).toBeDefined();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        hits: [{ id: 9, content: "a fact", title: "t", domain: "health", score: 0.7 }],
+      }),
+    );
+    const out = (await supplement!.search({ query: "fact", agentId: "main" })) as Array<{
+      corpus: string;
+      snippet: string;
+      id: string;
+    }>;
+    expect(out.length).toBe(1);
+    expect(out[0]?.corpus).toBe("brain-server");
+    expect(out[0]?.id).toBe("9");
+    expect(out[0]?.snippet).toContain("a fact");
+  });
+
+  test("corpus supplement search honors the agent allowlist (empty => none)", async () => {
+    let supplement:
+      | { search(p: { query: string; agentId?: string }): Promise<unknown[]> }
+      | undefined;
+    const api = {
+      // No agents opted in => gate denies everyone.
+      pluginConfig: { agents: [] },
+      runtime: {},
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+      on: vi.fn(),
+      registerTool: vi.fn(),
+      registerService: vi.fn(),
+      registerMemoryCapability: vi.fn(),
+      registerMemoryCorpusSupplement: vi.fn((s) => {
+        supplement = s;
+      }),
+    } as unknown as MockApi;
+    plugin.register(api as unknown as OpenClawPluginApi);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const out = await supplement!.search({ query: "anything", agentId: "main" });
+    expect(out).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("memory_procedure_get renders the ordered step chain", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        procedure_id: 7,
+        title: "AI readiness",
+        content: "Overview",
+        steps: [
+          {
+            step_index: 0,
+            id: 8,
+            title: "Inventory",
+            content: "list software",
+            memory_kind: "step",
+          },
+          { step_index: 1, id: 9, title: "Decide tier", content: "{}", memory_kind: "decision" },
+        ],
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_procedure_get")!.execute("call-1", { id: 7 });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("Runbook #7");
+    expect(text).toContain("Inventory");
+    expect(text).toContain("[decision]");
+    expect((res as { details: { found: boolean; stepCount: number } }).details).toMatchObject({
+      found: true,
+      stepCount: 2,
+    });
+  });
+
+  test("memory_procedure_get 404 => not found", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("no procedure", { status: 404 }));
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_procedure_get")!.execute("call-1", { id: 99 });
+    expect((res as { details: { found: boolean } }).details.found).toBe(false);
+  });
+
+  test("memory_procedure_store forwards title/content/steps + is_decision", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ id: 7, status: "created", step_ids: [8, 9] }));
+    const { tools } = registerPlugin({ agents: ["main"] });
+    expect(tools.has("memory_procedure_store")).toBe(true);
+    const res = await tools.get("memory_procedure_store")!.execute("call-1", {
+      title: "Onboarding",
+      content: "overview",
+      steps: [{ title: "s1", content: "do x", isDecision: true }],
+    });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.title).toBe("Onboarding");
+    expect(body.steps[0].is_decision).toBe(true);
+    expect(
+      (res as { details: { stored: boolean; id: number; stepIds: number[] } }).details,
+    ).toMatchObject({
+      stored: true,
+      id: 7,
+      stepIds: [8, 9],
+    });
+  });
+
+  test("memory_decision_evaluate forwards variables and maps a matched branch", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        result: "enterprise",
+        matched_condition: "employee_count >= 50",
+        used_default: false,
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: { employee_count: 75 } });
+    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
+    expect(url).toContain("/decision/5/evaluate");
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.variables.employee_count).toBe(75);
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("enterprise");
+    expect(text).toContain("employee_count >= 50");
+  });
+
+  test("memory_decision_evaluate default branch renders as default", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ result: "small-business", used_default: true }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: {} });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("small-business");
+    expect(text).toContain("default");
+  });
+
+  test("memory_decision_evaluate 404 => not found", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("no rule", { status: 404 }));
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: {} });
+    expect((res as { details: { evaluated: boolean } }).details.evaluated).toBe(false);
   });
 });

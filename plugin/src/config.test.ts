@@ -21,6 +21,8 @@ describe("resolveConfig", () => {
       requestTimeoutMs: DEFAULTS.requestTimeoutMs,
       minQueryLength: DEFAULTS.minQueryLength,
       recallMaxChars: DEFAULTS.recallMaxChars,
+      autoRecallGraph: DEFAULTS.autoRecallGraph,
+      proposalTools: DEFAULTS.proposalTools,
     });
   });
 
