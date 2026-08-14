@@ -3,6 +3,11 @@
 Five minutes from running server to a verified recall. Commands assume the
 `brain` CLI from [Install](./install.md) is on `$PATH`.
 
+> **Repository:** [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server).
+> Clone it (`git clone https://github.com/markfietje/brain-server.git`) or open
+> the [releases](https://github.com/markfietje/brain-server/releases). Full
+> install runbooks: [Deployment](../deployment.md) and [Docker](../docker.md).
+
 ## 1. Run the server
 
 ```sh
@@ -14,9 +19,10 @@ brain doctor     # health: config, DB, auth, schema
 ## 2. Store a memory
 
 ```sh
-# A memory (manual). The write gate proposes it; it becomes memory only on
-# approval — see step 4.
-curl -s -X POST localhost:8765/ingest/memory \
+# A memory (manual). The write gate screens it; if the gate wants a human
+# sign-off it holds it as a *proposal* (see step 4) instead of writing straight
+# to memory.
+curl -s -X POST http://localhost:8765/ingest/memory \
   -H 'content-type: application/json' \
   -d '{"items":[{"content":"the acme project ships on the first of every month"}]}'
 ```
@@ -33,23 +39,24 @@ brain query "when does acme ship" --k 3
 Every hit carries per-retriever provenance; add `--explain` to see the fused
 score and decision path.
 
-## 4. Approve the proposal (human-in-the-loop)
+## 4. Review the gate (human-in-the-loop)
 
-Memory candidates are *proposed*, never auto-promoted. Approve from the
-console (`/ops` or Review) or the API:
+The server's injection screen runs on every write. If a write is flagged for a
+human decision, it lands in the review queue as a **proposal** and only becomes
+memory after approval:
 
 ```sh
-# Find the pending proposal id.
-curl -s 'localhost:8765/proposals?status=pending'
+# Find the pending proposal id (empty = the write passed the gate directly).
+curl -s 'http://localhost:8765/proposals?status=pending'
 # Approve it (one tx, optional ?supersedes=<old_chunk_id>).
-curl -s -X POST 'localhost:8765/proposals/1/approve'
+curl -s -X POST 'http://localhost:8765/proposals/1/approve'
 ```
 
 ## 5. Verify the audit chain
 
 ```sh
-curl -s localhost:8765/audit/verify          # {"ok":true} — chain intact
-curl -s localhost:8765/health | jq .         # service + corpus + capacity
+curl -s http://localhost:8765/audit/verify          # {"ok":true} — chain intact
+curl -s http://localhost:8765/health | jq .         # service + corpus + capacity
 ```
 
 ## What just happened
@@ -64,4 +71,4 @@ that never thinks, writes a human can audit, and a chain a reviewer can verify.
 
 - [`docs/overview.md`](../overview.md) — the full design.
 - [`docs/architecture.md`](../architecture.md) — components + data flow.
-- [`docs/api.md`](../api.md) and [`GET /openapi.yaml`](../../openapi.yaml) — the contract.
+- [`docs/api.md`](../api.md) and [`openapi.yaml`](https://github.com/markfietje/brain-server/blob/main/openapi.yaml) — the contract.

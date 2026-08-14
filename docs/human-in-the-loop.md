@@ -86,9 +86,9 @@ enters. It works like this:
    - **approves** it into memory (`POST /proposals/{id}/approve`), optionally **superseding**
      the chunk it contradicts (`?supersedes=<id>`), or
     - **rejects** it (`POST /proposals/{id}/reject`) — audited, never deleted. The
-      decision itself enters the chain; note the server does **not** currently persist a
-      free-text reject reason (the client's optional `?reason=` is accepted but not stored —
-      the audit row records the rejection, not the rationale).
+      decision itself enters the chain; the reject handler takes no free-text
+      reason parameter, so any client-supplied `?reason=` query string is ignored —
+      the audit row records the rejection, not the rationale.
 
 The consequence is concrete: **no write to the permanent store happens without a human
 signing it.** An LLM cannot inject memory by completing a prompt; a plugin cannot auto-

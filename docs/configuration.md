@@ -51,6 +51,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | Variable | Default | Description |
 |---|---|---|
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` — how prompt-injection-suspicious input is handled. |
+| `BRAIN_INGEST_SKIP_PATTERNS` | — (off) | Newline- or comma-separated prefixes; text beginning with any is skipped at ingest (e.g. `!redacted,```). Opt-in; default behavior unchanged. |
 | `BRAIN_INJECTION_CLASSIFIER` | — | Injection classifier selector |
 | `BRAIN_INJECTION_TOKENIZER` | — | Tokenizer used by the injection classifier |
 | `BRAIN_INJECTION_THRESHOLD_HIGH` | — | Classifier banding: score ≥ this → reject |

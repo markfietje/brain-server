@@ -10,7 +10,7 @@ the full per-version record is
 
 ## Current status
 
-**v1.20.x — the current server line (1.20.25 "Consolidate").** Brain Server ships a
+**v1.20.x — the current server line (1.20.29 "Bound").** Brain Server ships a
 Dioxus GUI (web + desktop + iOS + Android from one Rust codebase) on top of a
 mature server. The v1.20 server line is the GhostJacking-hardening line: the
 shared `/ingest` write core now screens injection like its siblings
@@ -19,10 +19,11 @@ routes through the human review queue by default (`captureMode: "proposal"`)
 with PII-screened `source_prompt` provenance + a 7-day TTL + expiry audit.
 The v1.20 client line added the system-following theme, a CI bundle budget,
 and offline-tolerance (client 1.20.25 "Consolidate"). The harden tail
-(v1.20.15–v1.20.25) closed the audit gaps: SHA-256 audit/trace/deletion
+(v1.20.15–v1.20.29) closed the audit gaps: SHA-256 audit/trace/deletion
 digests, PII read-path masking on every emitted text field, cross-domain DSAR
-+ deadline/retention visibility, reviewer calibration, and DSAR/purge erasure
-of the graph + review-queue residue. Earlier server releases
++ deadline/retention visibility, reviewer calibration, DSAR/purge erasure
+of the graph + review-queue residue, SSRF-egress refusals (v1.20.26), and a
+fail-closed loopback bind guard (v1.20.29). Earlier server releases
 added: connection state machine,
 honest-batch review, recall decision-path viewer, DSAR certificate cards,
 auth-failure feed, audit filters + export, a shadcn/ui-styled sidebar dashboard,

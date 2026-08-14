@@ -66,7 +66,7 @@ reading the audit log), use the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain key generate` [`--kid ID`] [`--alg RS256`] [`--dir PATH`] | Generate an RSA-2048 JWT signing keypair (JWT mode) |
+| `brain key generate` [`--kid ID`] [`--dir PATH`] | Generate an RSA-2048 (RS256) JWT signing keypair (JWT mode). Algorithm is fixed at RSA-2048/RS256. |
 | `brain key list` [`--dir PATH`] | Show loaded keys |
 | `brain key prune` [`--dir PATH`] [`--keep N`] | Drop expired keys from JWKS |
 

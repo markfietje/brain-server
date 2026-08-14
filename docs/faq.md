@@ -11,7 +11,7 @@ A local-first semantic-memory and knowledge-graph server for AI agents. It gives
 Yes — **zero per-query cost**. Recall uses a *static, local embedding model* and a deterministic pipeline. There is no LLM or embedding API charged on every read and write. Token accounting: **0 decision tokens, 0 embedding tokens.**
 
 **Where does my data live?**
-On your device. There is no cloud, no telemetry to third parties, and no data egress by default. Outbound HTTP is limited to an opt-in Art 19 DSAR webhook, disabled unless configured.
+On your device. There is no cloud and no telemetry to third parties. Outbound HTTP is opt-in and off unless configured (an Art 19 DSAR webhook and an optional system-alert webhook).
 
 **What does it run on?**
 Anything Rust compiles to. It's designed for 4 GB ARM edge devices (Jetson Nano, Raspberry Pi 5, a mini PC) drawing **under 5 watts**, but it runs on any macOS/Linux host.

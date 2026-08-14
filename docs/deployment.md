@@ -149,8 +149,8 @@ sha256sum /path/to/model.onnx >> models.sha256
 ## Backup & restore
 
 ```bash
-brain backup <db> <out>    # AES-256-GCM encrypted, checksummed, excludes secrets
-brain restore <backup> <db>
+brain backup <out-path>    # AES-256-GCM encrypted, checksummed, excludes secrets (DB from BRAIN_DB_PATH/default)
+brain restore <in-path>
 ```
 
 ---
@@ -173,8 +173,9 @@ See [Client GUI](./client-gui.md).
 ## Edge deployment (Jetson Nano / Raspberry Pi)
 
 - Set `BRAIN_WORKER_THREADS=2` to trim RSS and context-switch overhead.
-- The release profile is size-optimized and the memory ceiling is bounded
-  (≤350 MB RSS on a 4 GB ARM device).
+- The release profile is size-optimized and the memory ceiling is bounded and
+  configurable (default `CAPACITY_MAX_RSS_MIB=512` on a 4 GB ARM device; RSS is
+  an advisory soft signal, not a hard kill).
 - No GPU, no embedding API, no Docker stack required.
 
 ---

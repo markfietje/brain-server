@@ -4,9 +4,9 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.20.25 "Consolidate" (2026-08-13) — the post-Sweep tail: audit + recall-trace digests go xxh3-64 → SHA-256, a shared read seam masks every emitted text field, DSAR + purge erase the graph + review-queue residue, and the webhook signing secret fails closed on wide modes.
+- **Latest server version:** 1.20.29 "Bound" (2026-08-14) — the ATLAS-hardening tail closed: SSRF-egress refusals (Tourniquet), quarantine-taint provenance (Fencepost), and the fail-closed loopback bind guard (Bound).
 - **Latest client version:** 1.20.25 "Consolidate" (2026-08-13) — ships alongside the server (read-seam rendering, DSAR/purge surfaces).
-- **Latest plugin version:** 0.2.2 "Consolidate" (2026-08-13) — Unicode-strip + redaction parity with the server read seam.
+- **Latest plugin version:** 0.4.2 "Bound" (2026-08-14) — recall amplification bound + schema-clamped tool params.
 - **Next milestone:** v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 

@@ -13,7 +13,7 @@ Brain Server is built for the edge — private, offline, deterministic, and free
 ```bash
 # Ingest a fact
 curl -X POST http://localhost:8765/ingest/markdown \
-  -d '{"title":"Client","content":"Acme Corp prefers [[uses::bignay}}."}'
+  -d '{"title":"Client","content":"Acme Corp prefers [[uses::bignay]]."}'
 
 # Recall it on a later turn
 curl -X POST http://localhost:8765/recall -d '{"query":"what does acme prefer"}'
@@ -60,7 +60,7 @@ curl -X POST http://localhost:8765/recall \
 
 **The problem.** You want memory on a Jetson Nano or Raspberry Pi, not in the cloud.
 
-**The fix.** One Rust binary, embedded SQLite + sqlite-vec, int8-quantized vectors, ≤350 MB RSS on 4 GB ARM. No GPU, no embedding API, no Docker stack. Set `BRAIN_WORKER_THREADS=2` to trim RSS further.
+**The fix.** One Rust binary, embedded SQLite + sqlite-vec, int8-quantized vectors, bounded RSS (default 512 MiB, `CAPACITY_MAX_RSS_MIB`) on 4 GB ARM. No GPU, no embedding API, no Docker stack. Set `BRAIN_WORKER_THREADS=2` to trim RSS further.
 
 ## Next steps
 

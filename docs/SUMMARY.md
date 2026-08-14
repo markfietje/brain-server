@@ -4,8 +4,8 @@
 
 # Getting started
 
-- [Installation & configuration](deployment.md)
 - [Quickstart](quickstart.md)
+- [Installation & configuration](deployment.md)
 - [Docker deployment](docker.md)
 - [Reverse-proxy SSO](proxy-sso.md)
 
@@ -13,9 +13,11 @@
 
 - [Overview](overview.md)
 - [Who it's for — target audiences](audiences.md)
+- [One brain for the whole team](team-workflow.md)
 - [Human in the loop](human-in-the-loop.md)
 - [The memory lifecycle](memory-lifecycle.md)
 - [Architecture](architecture.md)
+- [Connectors](connectors.md)
 
 # API & developer
 
@@ -26,11 +28,13 @@
 
 - [Features](features.md)
 - [Use cases](use-cases.md)
+- [Procedures & runbooks](runbooks.md)
 - [Configuration](configuration.md)
 - [Retrieval & recall](retrieval-and-recall.md)
 - [Knowledge graph](knowledge-graph.md)
 - [CLI reference](cli-reference.md)
 - [OpenClaw integration](openclaw-integration.md)
+- [MCP server](mcp.md)
 - [Client GUI](client-gui.md)
 - [Client console](client-complete-console.md)
 - [Universal Memory Protocol](universal-memory-protocol.md)
@@ -41,6 +45,7 @@
 # Operations
 
 - [Security policy](security.md)
+- [Observability](observability.md)
 - [Compliance posture](compliance.md)
 - [Threat model](THREAT_MODEL.md)
 
@@ -54,6 +59,9 @@
 - [Noise-Aware Graph + Hub Dampening](./research/05-hub-dampening.md)
 - [Calibrated Abstention + Span Verification](./research/06-abstention-verify.md)
 - [The PRF Gate + Evidence-Faithful Snippet](./research/07-prf-evidence.md)
+- [Hybrid Fusion: RRF over BM25 + quantized vectors](./research/08-hybrid-fusion.md)
+- [Opt-in Anticipation (the Suggest surface)](./research/09-anticipation.md)
+- [Structure-Aware Markdown Chunking](./research/10-chunking.md)
 - [Dioxus WASM-split research](dioxus-wasm-split-research.md)
 
 # Trust & verification
@@ -84,11 +92,19 @@
 - [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
 - [RFP response kit](RFP_RESPONSE_KIT.md)
 
+# Product site
+
+- [Product landing](./product-site/index.md)
+- [Editions](./product-site/editions.md)
+- [Install](./product-site/install.md)
+- [Quickstart](./product-site/quickstart.md)
+
 # Project
 
 - [Roadmap](roadmap.md)
 - [Release history](roadmap-and-release-history.md)
 - [Changelog](CHANGELOG.md)
+- [Release checklist](release-checklist.md)
 - [Benchmarks](BENCHMARKS.md)
 - [Audit register](AUDIT.md)
 - [Media kit](media-kit.md)

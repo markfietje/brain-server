@@ -67,7 +67,7 @@ memory.
 |---|---|---|---|
 | **OpenClaw users** | Deterministic memory in the memory slot, zero token cost | Native `kind: "memory"` plugin (autoRecall/autoCapture/Proposal) | Shipped |
 | **Agent / LLM developers** | A self-hosted memory store with standard contracts | Open HTTP, MCP binary, OpenAPI, **UMP 1.0 L3** | Shipped |
-| **Edge / privacy-first agent builders** | Memory on-device, no embedding API | Local static `model2vec`, offline, ≤350 MB RSS | Shipped |
+| **Edge / privacy-first agent builders** | Memory on-device, no embedding API | Local static `model2vec`, offline, bounded RSS (default 512 MiB) | Shipped |
 | **Agent platforms & ISVs** | A memory backend to embed without lock-in | Standard-based (UMP, MCP, open HTTP), self-hostable | Shipped |
 
 ## 4. Edge, field & hardware deployments

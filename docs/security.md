@@ -13,7 +13,9 @@ is the informational summary.
 - **Loopback-safe by default.** The server refuses to bind `0.0.0.0` unless
   `BIND_PUBLIC=1`. The default posture is that the memory lives on the host.
 - **No data egress.** There is no telemetry to third parties. Outbound HTTP is
-  limited to an opt-in Art 19 DSAR webhook and is disabled unless configured.
+  opt-in and off unless configured: an Art 19 DSAR webhook and a system-alert
+  webhook (`BRAIN_ALERT_WEBHOOK_URL`), both Standard Webhooks signed and
+  redirect-refusing.
 - **Authentication is explicit.** Off by default if no token resolves; when on, it
   is either opaque bearer or JWT/JWS.
 - **Least privilege.** A deny-by-default AuthZ layer gates every non-public route.

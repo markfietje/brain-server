@@ -65,7 +65,8 @@ miss.
 
 ### ④ Edge-first, memory-bounded, single binary
 A **single Rust binary** with embedded SQLite + sqlite-vec. int8/binary vector
-quantization (4–32× smaller), bounded connection pools, ≤350 MB RSS ceiling on a
+quantization (4–32× smaller), bounded connection pools, a configurable memory
+ceiling (default 512 MiB, `CAPACITY_MAX_RSS_MIB`) on a
 4 GB ARM device. No separate vector-DB process, no Python runtime, no Docker stack.
 
 ### ⑤ Native OpenClaw memory plugin

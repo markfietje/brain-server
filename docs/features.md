@@ -40,7 +40,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 
 ## Source lifecycle & connectors
 
-- **Source lifecycle** — every chunk carries provenance (`source` + immutable `revision`). Connectors backfill external sources through a supervised pipeline; `POST /reconcile` sweeps orphans from deleted sources.
+- **Source lifecycle** — every chunk carries provenance (`source` + immutable `revision`). Connectors backfill external sources through a supervised pipeline; `POST /sources/reconcile` sweeps orphans from deleted sources.
 - **Connectors** — supervised ingesters (GitHub issues via App auth) that backfill through the existing source/revision pipeline. Extensible connector contract.
 
 ## Governance, privacy & compliance

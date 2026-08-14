@@ -29,12 +29,13 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 
 ## Retrieval
 
-**`POST /recall`** takes a structured `QueryDoc`:
+**`POST /recall`** takes a structured query document (`QueryDoc`; the `query`/`limit`
+fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equivalents):
 
 ```json
 {
-  "q": "blueberry alternative",
-  "k": 5,
+  "query": "blueberry alternative",
+  "limit": 5,
   "sources": ["memory", "vault"],
   "provenance": true,
   "graph": false

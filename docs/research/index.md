@@ -12,6 +12,9 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [Noise-Aware Graph + Hub Dampening](./05-hub-dampening.md) — the Discern release
 - [Calibrated Abstention + Faithful Span Verification](./06-abstention-verify.md)
 - [The PRF Gate + Evidence-Faithful Snippet](./07-prf-evidence.md) — grounding the answer
+- [Hybrid Fusion: RRF over BM25 + quantized vectors](./08-hybrid-fusion.md) — Cormack & Clarke RRF, Robertson & Zaragoza BM25, Jégou quantization
+- [Opt-in Anticipation (the Suggest surface)](./09-anticipation.md) — Generative Agents / MemGPT / Mem0, honestly bounded
+- [Structure-Aware Markdown Chunking](./10-chunking.md) — CommonMark split, Lewis 2020 RAG framing
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store — no LLM in the retrieval loop, no data egress.

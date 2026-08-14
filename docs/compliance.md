@@ -4,7 +4,7 @@ Brain Server is a single-node, loopback-first memory component for an AI system.
 This page summarizes its compliance posture for buyers and procurement. It is a
 **documented engineering posture, not a certification** — ISO/IEC 42001 and SOC 2
 attestation are organization-level audits outside this repository. The full
-buyer-facing technical file is [COMPLIANCE.md](./compliance.md).
+buyer-facing technical file is [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
 
 ---
 
@@ -88,7 +88,7 @@ its predecessor; `/audit/verify` proves integrity; `/metrics` reports
 | **GDPR / CCPA / PH DPA** | Data portability, erasure, DSAR workflow, jurisdiction posture |
 
 The full, row-by-row mapping with the intent-based-auditing coverage and the
-jurisdiction table is in [COMPLIANCE.md](./compliance.md).
+jurisdiction table is in [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
 
 ---
 

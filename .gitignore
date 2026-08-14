@@ -70,3 +70,4 @@ marketing/
 
 # mdBook build output
 /book/
+docs/DOC_ACCURACY_AUDIT_PROMPT.md

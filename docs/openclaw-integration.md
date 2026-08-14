@@ -339,7 +339,7 @@ Operator-side retrieval uses the **brain-server HTTP API** (the CLI/GUI are thin
    procedure-root ids. (`/search?memory_kind=procedure&q=…` works too.)
 2. **Read its ordered steps**: `GET /procedure/{id}/steps`.
 3. **Fetch any single chunk**: `GET /get/{id}`, or `brain get <id>` from the CLI.
-4. **Walk related runbooks**: `POST /graph/traverse` with `start: "<procedure title>", kind:"next_step"`.
+4. **Walk related runbooks**: `GET /graph/traverse` with `start: "<procedure title>", kind:"next_step"`.
 
 `brain procedure <title> [--step …]` only **creates** — for browsing, scope `recall`/`search` to
 `memory_kind=procedure`.
