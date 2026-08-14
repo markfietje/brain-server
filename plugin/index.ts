@@ -22,14 +22,13 @@
  *   - api.registerTool(tool, { name })
  *   - api.registerService({ id, start(), stop() })
  *   - api.registerMemoryCapability({ promptBuilder })
+ *   - api.registerMemoryCorpusSupplement({ search, get })
  *   - api.resolvePath, api.logger, api.pluginConfig, api.runtime.config.current()
  */
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { Type } from "typebox";
-import { BrainClient, describeBrainError } from "./src/brain-client.js";
+import { BrainClient } from "./src/brain-client.js";
 import { brainPluginConfigSchema, resolveConfig, type ResolvedBrainConfig } from "./src/config.js";
 import {
-  RECALL_ABSTENTION,
   STATIC_SYSTEM_GUIDANCE,
   formatRecallContext,
   latestUserText,
@@ -38,6 +37,8 @@ import {
   sanitizeForBlock,
 } from "./src/format.js";
 import { deriveChatType, isRecallAllowed, type GateContext } from "./src/gating.js";
+import { registerProceduralTools } from "./src/procedural.js";
+import { registerBrainTools } from "./src/tools.js";
 
 const PLUGIN_ID = "brain-server";
 
@@ -52,15 +53,16 @@ export default definePluginEntry({
     const cfg: ResolvedBrainConfig = resolveConfig(api.pluginConfig);
     const client = new BrainClient(cfg);
 
-    // Live-config resolver: operators may change settings without a restart.
+    // Live-config resolver: re-read this plugin's config slice from the current
+    // runtime snapshot (api.runtime.config.current()) so operator changes take
+    // effect without a restart. api.pluginConfig is the registration-time
+    // snapshot (set once in buildPluginApi), so only the live snapshot reflects
+    // post-registration config mutations. Falls back to cfg if the runtime is
+    // unavailable or the slice is absent.
     const liveCfg = (): ResolvedBrainConfig => {
       try {
-        const current = api.runtime.config?.current;
-        if (!current) {
-          return cfg;
-        }
-        // Plugin config is authoritative; re-resolve from the live object.
-        return resolveConfig(api.pluginConfig);
+        const live = api.runtime.config.current().plugins?.entries?.[PLUGIN_ID]?.config;
+        return resolveConfig(live ?? api.pluginConfig);
       } catch {
         return cfg;
       }
@@ -76,8 +78,65 @@ export default definePluginEntry({
     // dynamic recall happens in before_prompt_build). Using prependSystemContext
     // for static guidance avoids per-turn token re-billing (prompt caching).
     // ------------------------------------------------------------------------
-    api.registerMemoryCapability?.({
+    api.registerMemoryCapability({
       promptBuilder: () => [STATIC_SYSTEM_GUIDANCE],
+    });
+
+    // ------------------------------------------------------------------------
+    // v0.3.0: expose brain-server's index as a NON-exclusive unified search
+    // corpus (api.registerMemoryCorpusSupplement). This composes with the
+    // built-in memory slot rather than competing for it: the stock
+    // `memory_search`/`memory_get` tools gain brain-server hits alongside
+    // memory-core, gated by the same `agents` allowlist + chat-type policy as
+    // auto-recall. Fail-open — corpus search never stalls the host on a server error.
+    // ------------------------------------------------------------------------
+    api.registerMemoryCorpusSupplement({
+      search: async ({ query, maxResults, agentId, sandboxed }) => {
+        // Reuse the auto-recall gate so the corpus honors the same least-privilege
+        // policy (per-agent opt-in + chat-type leakage prevention).
+        const allowed = isRecallAllowed(liveCfg(), {
+          ...(agentId !== undefined ? { agentId } : {}),
+          // Unified memory search has no single chat context; treat it as the
+          // operator's direct surface (allowed by default) unless sandboxed.
+          ...(sandboxed ? { chatType: "group" as const } : {}),
+        });
+        if (!allowed.allowed) {
+          return [];
+        }
+        try {
+          const result = await client.recall({
+            query,
+            limit: Math.min(maxResults ?? 5, 20),
+            timeoutMs: liveCfg().requestTimeoutMs,
+          });
+          if (!result.hits.length) {
+            return [];
+          }
+          return result.hits.map(hitToCorpusResult);
+        } catch {
+          return [];
+        }
+      },
+      get: async ({ lookup }) => {
+        try {
+          const id = lookup.replace(/^.*\//, "");
+          const chunk = await client.get(id, liveCfg().requestTimeoutMs);
+          if (!chunk) {
+            return null;
+          }
+          return {
+            corpus: "brain-server",
+            path: `/memory/${String(chunk.id)}`,
+            ...(chunk.title ? { title: sanitizeForBlock(chunk.title) } : {}),
+            content: sanitizeForBlock(chunk.content),
+            fromLine: 1,
+            lineCount: 1,
+            ...(chunk.source_uri ? { sourcePath: chunk.source_uri } : {}),
+          };
+        } catch {
+          return null;
+        }
+      },
     });
 
     // ------------------------------------------------------------------------
@@ -115,6 +174,11 @@ export default definePluginEntry({
             ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
             ...(c.strictDomain ? { strictDomain: true } : {}),
             limit: c.autoRecallTopK,
+            // v0.3.0: optional graph-PPR third leg + token-budgeted packing.
+            ...(c.autoRecallGraph ? { graph: true } : {}),
+            ...(c.autoRecallMaxContextTokens !== undefined
+              ? { maxContextTokens: c.autoRecallMaxContextTokens }
+              : {}),
             timeoutMs: c.autoRecallTimeoutMs,
           });
           if (!result.hits.length) {
@@ -205,395 +269,12 @@ export default definePluginEntry({
     });
 
     // ------------------------------------------------------------------------
-    // Tools — explicit agent-callable. These supersede the legacy MCP skill.
+    // Tools — explicit agent-callable surfaces. Defined in src/tools.ts.
     // ------------------------------------------------------------------------
-    api.registerTool(
-      {
-        name: "memory_recall",
-        label: "Memory Recall",
-        description:
-          "Search long-term memory. Use for past decisions, preferences, or previously discussed topics. Optionally scope by source or time, or override the semantic query.",
-        parameters: Type.Object({
-          query: Type.String({ description: "Search query" }),
-          limit: Type.Optional(
-            Type.Integer({ minimum: 1, maximum: 50, description: "Max results (default 5)" }),
-          ),
-          domain: Type.Optional(
-            Type.String({ description: "Force a specific domain (auto-routing is default)" }),
-          ),
-          source: Type.Optional(Type.String({ description: "Filter by knowledge source id/name" })),
-          since: Type.Optional(
-            Type.String({
-              description: "Only rows with created_at after this ISO-8601/RFC3339 time",
-            }),
-          ),
-          lex: Type.Optional(
-            Type.String({
-              description: "Lexical (FTS5) query override: exact terms, phrases, -exclusions",
-            }),
-          ),
-          vec: Type.Optional(Type.String({ description: "Semantic embedding-query override" })),
-          hyde: Type.Optional(
-            Type.String({ description: "Hypothetical-answer embedding override (beats vec)" }),
-          ),
-          intent: Type.Optional(
-            Type.String({ description: "Free-form intent label, recorded for provenance" }),
-          ),
-        }),
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as {
-            query?: string;
-            limit?: number;
-            domain?: string;
-            source?: string;
-            since?: string;
-            lex?: string;
-            vec?: string;
-            hyde?: string;
-            intent?: string;
-          };
-          const query = normalizeRecallQuery(p.query ?? "", c.recallMaxChars);
-          if (!query) {
-            return {
-              content: [{ type: "text" as const, text: "No query provided." }],
-              details: { count: 0 },
-            };
-          }
-          let result;
-          try {
-            result = await client.recall({
-              query,
-              ...(p.domain ? { domain: p.domain } : {}),
-              limit: p.limit ?? 5,
-              source: p.source,
-              since: p.since,
-              lex: p.lex,
-              vec: p.vec,
-              hyde: p.hyde,
-              intent: p.intent,
-              timeoutMs: c.requestTimeoutMs,
-            });
-          } catch (err) {
-            // Tools surface the failure so the agent can react; recall errors
-            // are not silent here (unlike the fail-open auto-recall hook).
-            return {
-              content: [
-                { type: "text" as const, text: `Recall failed: ${describeBrainError(err)}` },
-              ],
-              details: { count: 0, error: describeBrainError(err) },
-            };
-          }
-          if (result.decision === "low_confidence") {
-            // Calibrated abstention (v1.5): empty by design, not a miss.
-            return {
-              content: [{ type: "text" as const, text: RECALL_ABSTENTION }],
-              details: { count: 0, decision: result.decision },
-            };
-          }
-          if (!result.hits.length) {
-            return {
-              content: [{ type: "text" as const, text: "No relevant memories found." }],
-              details: { count: 0, decision: result.decision },
-            };
-          }
-          return {
-            content: [{ type: "text" as const, text: formatRecallContext(result.hits) }],
-            details: {
-              count: result.hits.length,
-              decision: result.decision,
-              domainsSearched: result.domainsSearched,
-              // v1.20.25: if the runtime serializes tool `details` into the
-              // model context, raw bidi/zero-width bytes would reach the model
-              // verbatim — run every hit field through the same block boundary
-              // the `content` path already uses (the v1.20.24 Sweep closed the
-              // content seam; this closes the `details` seam).
-              memories: result.hits.map((h) => ({
-                ...h,
-                title: h.title ? sanitizeForBlock(h.title) : h.title,
-                content: sanitizeForBlock(h.content),
-              })),
-            },
-          };
-        },
-      },
-      { name: "memory_recall" },
-    );
+    registerBrainTools(api, client, liveCfg, cfg.proposalTools);
 
-    api.registerTool(
-      {
-        name: "memory_store",
-        label: "Memory Store",
-        description:
-          "Save a durable fact/decision to long-term memory. Optionally include entities/relations for the knowledge graph.",
-        parameters: Type.Object({
-          text: Type.String({ description: "Information to remember" }),
-          title: Type.Optional(
-            Type.String({ description: "Short title (default: first 80 chars)" }),
-          ),
-          domain: Type.Optional(Type.String()),
-          entities: Type.Optional(
-            Type.Array(
-              Type.Object({
-                name: Type.String(),
-                type: Type.Optional(Type.String()),
-              }),
-            ),
-          ),
-          relations: Type.Optional(
-            Type.Array(
-              Type.Object({
-                from: Type.String(),
-                to: Type.String(),
-                type: Type.String(),
-              }),
-            ),
-          ),
-        }),
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as {
-            text?: string;
-            title?: string;
-            domain?: string;
-            entities?: unknown;
-            relations?: unknown;
-          };
-          const text = (p.text ?? "").trim();
-          if (!text) {
-            return {
-              content: [{ type: "text" as const, text: "No text provided." }],
-              details: { stored: false },
-            };
-          }
-          let res;
-          try {
-            // v1.20.25: the agent's write surface must respect the same
-            // capture-mode rule as autoCapture. Default `captureMode:
-            // "proposal"` queues the fact for HUMAN review (POST
-            // /ingest/proposal) instead of writing it straight to memory — an
-            // agent driving this tool can no longer persist arbitrary
-            // instructions into long-term memory without a reviewer. Only an
-            // operator who explicitly configured `captureMode: "direct"`
-            // keeps the straight-to-memory path (still server-screened).
-            if (c.captureMode === "direct") {
-              res = await client.store({
-                title: p.title?.trim() || text.slice(0, 80),
-                content: text,
-                ...(p.domain ? { domain: p.domain } : {}),
-                ...(Array.isArray(p.entities) ? { entities: p.entities as never[] } : {}),
-                ...(Array.isArray(p.relations) ? { relations: p.relations as never[] } : {}),
-                timeoutMs: c.requestTimeoutMs,
-              });
-            } else {
-              const prop = await client.submitProposal({
-                content: text,
-                source: "memory_store",
-                ...(p.title?.trim() ? { sourcePrompt: p.title.trim() } : {}),
-                timeoutMs: c.requestTimeoutMs,
-              });
-              res = { id: prop.id, status: prop.status };
-            }
-          } catch (err) {
-            return {
-              content: [
-                { type: "text" as const, text: `Store failed: ${describeBrainError(err)}` },
-              ],
-              details: { stored: false, error: describeBrainError(err) },
-            };
-          }
-          const pending = res.status === "pending";
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: pending
-                  ? `Submitted for review (proposal id: ${res.id}). It becomes memory only after a reviewer approves it.`
-                  : `Memory ${res.status} (id: ${res.id}).`,
-              },
-            ],
-            details: { stored: !pending, pending, id: res.id, status: res.status },
-          };
-        },
-      },
-      { name: "memory_store" },
-    );
-
-    // v1.20.25: the agent-facing `memory_forget` tool is REMOVED. An agent can
-    // autonomously hard-delete long-term memory with no human gate — ambient
-    // authority in the exact shape the mantra forbids ("memory you can see,
-    // approve, and erase" — erase is a HUMAN action). The read-only recall/
-    // get/verify/graph tools + the review-queued `memory_store` are the agent's
-    // only surface. Erasure remains a human action via the operator console
-    // (DSAR subject purge, Data-panel purge, quarantine delete — all Admin).
-    // The `brain` CLI has NO erase command (its delete surface is `reconcile`
-    // / `source-delete` only); server `DELETE /memory/{id}` is untouched.
-
-    api.registerTool(
-      {
-        name: "memory_verify",
-        label: "Memory Verify",
-        description:
-          "Deterministic span verification (no LLM): checks whether a claim is literally supported by a chunk's stored text. Use after recalling a fact to confirm the brain actually said it before acting on it.",
-        parameters: Type.Object({
-          chunk_id: Type.Integer({ description: "Chunk/memory id (from a recall hit)" }),
-          claim: Type.String({ description: "The claim to verify against the chunk text" }),
-        }),
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as { chunk_id?: number; claim?: string };
-          const claim = (p.claim ?? "").trim();
-          if (!claim || typeof p.chunk_id !== "number") {
-            return {
-              content: [{ type: "text" as const, text: "Both chunk_id and claim are required." }],
-              details: { verified: false },
-            };
-          }
-          try {
-            const res = await client.verify({
-              chunkId: p.chunk_id,
-              claim,
-              timeoutMs: c.requestTimeoutMs,
-            });
-            const text = res.supported
-              ? `Supported: the chunk ${res.chunkId} contains the claim (${res.matchRanges.length} match${res.matchRanges.length === 1 ? "" : "es"}).`
-              : `Not supported: the chunk ${res.chunkId} does not contain the claim. Do not present it as memory-backed.`;
-            return {
-              content: [{ type: "text" as const, text }],
-              details: { verified: res.supported, decision: res.decision, chunkId: res.chunkId },
-            };
-          } catch (err) {
-            return {
-              content: [
-                { type: "text" as const, text: `Verify failed: ${describeBrainError(err)}` },
-              ],
-              details: { verified: false, error: describeBrainError(err) },
-            };
-          }
-        },
-      },
-      { name: "memory_verify" },
-    );
-
-    api.registerTool(
-      {
-        name: "memory_get",
-        label: "Memory Get",
-        description:
-          "Fetch the full stored text of a memory/chunk by id. Use to read the complete context behind a recalled snippet before relying on it.",
-        parameters: Type.Object({
-          id: Type.Integer({ description: "Chunk/memory id (from a recall hit)" }),
-        }),
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as { id?: number };
-          if (typeof p.id !== "number") {
-            return {
-              content: [{ type: "text" as const, text: "id is required." }],
-              details: { found: false },
-            };
-          }
-          try {
-            const chunk = await client.get(p.id, c.requestTimeoutMs);
-            if (!chunk) {
-              return {
-                content: [{ type: "text" as const, text: `No memory with id ${p.id}.` }],
-                details: { found: false, id: p.id },
-              };
-            }
-            const title = chunk.title?.trim() ? `\n${sanitizeForBlock(chunk.title)}` : "";
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Memory ${chunk.id}:${title}\n${sanitizeForBlock(chunk.content)}`,
-                },
-              ],
-              details: {
-                found: true,
-                id: chunk.id,
-                title: chunk.title ? sanitizeForBlock(chunk.title) : chunk.title,
-              },
-            };
-          } catch (err) {
-            return {
-              content: [{ type: "text" as const, text: `Get failed: ${describeBrainError(err)}` }],
-              details: { found: false, error: describeBrainError(err) },
-            };
-          }
-        },
-      },
-      { name: "memory_get" },
-    );
-
-    api.registerTool(
-      {
-        name: "memory_graph_entity",
-        label: "Memory Graph Entity",
-        description:
-          "Look up an entity in the knowledge graph and its one-hop relations. Use to explore how a concept connects to others.",
-        parameters: Type.Object({
-          name: Type.String({ description: "Entity name (e.g. 'vitamin d3')" }),
-        }),
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as { name?: string };
-          const name = (p.name ?? "").trim();
-          if (!name) {
-            return {
-              content: [{ type: "text" as const, text: "name is required." }],
-              details: { found: false },
-            };
-          }
-          try {
-            const entity = await client.graphEntity(name, c.requestTimeoutMs);
-            if (!entity) {
-              return {
-                content: [
-                  { type: "text" as const, text: `No entity named "${name}" in the graph.` },
-                ],
-                details: { found: false, name },
-              };
-            }
-            const etype = entity.type ? ` (${sanitizeForBlock(entity.type).trim()})` : "";
-            const rels =
-              entity.relations.length === 0
-                ? " (no relations)"
-                : entity.relations
-                    .map(
-                      (r) =>
-                        `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}`,
-                    )
-                    .join("");
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `${sanitizeForBlock(entity.name).trim()}${etype}${rels}`,
-                },
-              ],
-              details: {
-                found: true,
-                name: sanitizeForBlock(entity.name),
-                relations: entity.relations.map((r) => ({
-                  ...r,
-                  to_entity: sanitizeForBlock(r.to_entity),
-                  relation_type: sanitizeForBlock(r.relation_type),
-                })),
-              },
-            };
-          } catch (err) {
-            return {
-              content: [
-                { type: "text" as const, text: `Graph lookup failed: ${describeBrainError(err)}` },
-              ],
-              details: { found: false, error: describeBrainError(err) },
-            };
-          }
-        },
-      },
-      { name: "memory_graph_entity" },
-    );
+    // v0.4.0 procedural memory (runbooks / decision trees) — src/procedural.ts.
+    registerProceduralTools(api, client, liveCfg);
 
     // ------------------------------------------------------------------------
     // Service lifecycle
@@ -655,6 +336,43 @@ function mapCtx(ctx: HookContextLike | undefined): GateContext {
       ? { chatId: (ctx.chatId ?? ctx.channelId) as string }
       : {}),
     ...(chatType ? { chatType } : {}),
+  };
+}
+
+/**
+ * A unified-search corpus result this plugin contributes to memory_search.
+ * Optional fields are populated only when the hit carries them (built
+ * field-by-field, not spread, to satisfy oxc/no-map-spread).
+ */
+type CorpusResult = {
+  corpus: "brain-server";
+  path: string;
+  score: number;
+  snippet: string;
+  id: string;
+  title?: string;
+  kind?: string;
+  source?: string;
+};
+
+type CorpusHit = {
+  id: number | string;
+  title?: string;
+  content: string;
+  score: number;
+  domain?: string;
+};
+
+/** Map a recall hit into a corpus-search result (non-exclusive unified search). */
+function hitToCorpusResult(hit: CorpusHit): CorpusResult {
+  return {
+    corpus: "brain-server",
+    path: `/memory/${String(hit.id)}`,
+    ...(hit.title ? { title: sanitizeForBlock(hit.title) } : {}),
+    score: hit.score,
+    snippet: sanitizeForBlock(hit.content),
+    id: String(hit.id),
+    ...(hit.domain ? { kind: hit.domain, source: hit.domain } : {}),
   };
 }
 

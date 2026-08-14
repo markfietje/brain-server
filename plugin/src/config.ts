@@ -47,6 +47,16 @@ export const brainConfigSchema = Type.Object({
   requestTimeoutMs: Type.Optional(Type.Integer({ minimum: 250, maximum: 30_000 })),
   minQueryLength: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
   recallMaxChars: Type.Optional(Type.Integer({ minimum: 40, maximum: 10_000 })),
+  // v0.3.0: advanced auto-recall tuning. `autoRecallGraph` adds the server's
+  // zero-token graph-PPR retriever as a third RRF leg; `autoRecallMaxContextTokens`
+  // asks the server to submodularly pack injected memories to a token budget
+  // (coverage/diversity) instead of always taking the top-K verbatim.
+  autoRecallGraph: Type.Optional(Type.Boolean()),
+  autoRecallMaxContextTokens: Type.Optional(Type.Integer({ minimum: 0, maximum: 8_000 })),
+  // v0.3.0: expose the human review-queue tools (memory_proposal_list /
+  // memory_proposal_decide). Off by default — promoting a capture to memory is
+  // an operator action, so the agent must not gain it unless explicitly opted in.
+  proposalTools: Type.Optional(Type.Boolean()),
 });
 
 export type BrainConfig = Static<typeof brainConfigSchema>;
@@ -65,6 +75,8 @@ export const DEFAULTS = {
   requestTimeoutMs: 8_000,
   minQueryLength: 5,
   recallMaxChars: 1_000,
+  autoRecallGraph: false,
+  proposalTools: false,
 } as const;
 
 export type ResolvedBrainConfig = {
@@ -85,6 +97,9 @@ export type ResolvedBrainConfig = {
   requestTimeoutMs: number;
   minQueryLength: number;
   recallMaxChars: number;
+  autoRecallGraph: boolean;
+  autoRecallMaxContextTokens?: number;
+  proposalTools: boolean;
 };
 
 /** Resolve raw plugin config into a fully-populated, validated config. */
@@ -110,6 +125,11 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
     requestTimeoutMs: cfg.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     minQueryLength: cfg.minQueryLength ?? DEFAULTS.minQueryLength,
     recallMaxChars: cfg.recallMaxChars ?? DEFAULTS.recallMaxChars,
+    autoRecallGraph: cfg.autoRecallGraph ?? DEFAULTS.autoRecallGraph,
+    ...(cfg.autoRecallMaxContextTokens !== undefined
+      ? { autoRecallMaxContextTokens: cfg.autoRecallMaxContextTokens }
+      : {}),
+    proposalTools: cfg.proposalTools ?? DEFAULTS.proposalTools,
   };
 }
 

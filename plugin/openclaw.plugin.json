@@ -13,7 +13,13 @@
       "memory_store",
       "memory_verify",
       "memory_get",
-      "memory_graph_entity"
+      "memory_graph_entity",
+      "memory_graph_traverse",
+      "memory_proposal_list",
+      "memory_proposal_decide",
+      "memory_procedure_get",
+      "memory_procedure_store",
+      "memory_decision_evaluate"
     ]
   },
   "configSchema": {
@@ -81,7 +87,23 @@
       "autoRecallTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000, "default": 5000 },
       "requestTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000, "default": 8000 },
       "minQueryLength": { "type": "integer", "minimum": 1, "maximum": 200, "default": 5 },
-      "recallMaxChars": { "type": "integer", "minimum": 40, "maximum": 10000, "default": 1000 }
+      "recallMaxChars": { "type": "integer", "minimum": 40, "maximum": 10000, "default": 1000 },
+      "autoRecallGraph": {
+        "type": "boolean",
+        "default": false,
+        "description": "Add the server's zero-token graph-PPR retriever as a third RRF leg on auto-recall."
+      },
+      "autoRecallMaxContextTokens": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 8000,
+        "description": "Ask the server to submodularly pack auto-recalled memories to a token budget (coverage/diversity) instead of always taking the top-K verbatim."
+      },
+      "proposalTools": {
+        "type": "boolean",
+        "default": false,
+        "description": "Expose the memory_proposal_list / memory_proposal_decide tools so the agent can close the review loop on captureMode:'proposal'. Off by default — promoting a capture to memory is an operator action."
+      }
     }
   },
   "uiHints": {
