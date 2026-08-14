@@ -95,6 +95,7 @@
 # Product site
 
 - [Product landing](./product-site/index.md)
+- [About & Contact](./product-site/about.md)
 - [Editions](./product-site/editions.md)
 - [Install](./product-site/install.md)
 - [Quickstart](./product-site/quickstart.md)
