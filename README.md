@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.20.25-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.20.29-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -21,7 +21,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](docs/universal-memory-protocol.md)
-  [![Tests](https://img.shields.io/badge/tests-653%20passed-brightgreen.svg)](#)
+  [![Tests](https://img.shields.io/badge/tests-542%20passed%20%2F%205%20ignored-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
   [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)
@@ -221,7 +221,7 @@ brain ingest-dir ./vault      # ingest a vault
 brain check-consistency       # duplicates, conflicts, stale sources
 brain resolve <new> <old>     # supersede a fact
 brain suggest "<context>"     # opt-in anticipation
-brain backup <db> <out>       # AES-256-GCM encrypted backup
+brain backup <out-path>       # AES-256-GCM encrypted backup (DB taken from BRAIN_DB_PATH/default)
 ```
 
 ## Security
@@ -256,6 +256,12 @@ cargo test --features bench
 ```
 
 For security issues, do not open a public issue. Use the GitHub *Report a vulnerability* tab.
+
+## Contact
+
+Maintained by **Mark Fietje** — [X (Twitter)](https://x.com/mark_fietje) ·
+[LinkedIn](https://www.linkedin.com/in/markfietje/) · Signal: `markfietje.77` ·
+WhatsApp: `markfietje`. For project support, prefer GitHub Issues / Discussions.
 
 ## License
 

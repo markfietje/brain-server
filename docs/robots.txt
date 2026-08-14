@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://markfietje.github.io/brain-server/sitemap.xml

@@ -61,3 +61,17 @@ For the narrative — the why / who-it's-for / market-shift stories — see the
 [blog](../blog/01-compliance-time-bomb.md) (one post per hard-won mechanism, each tied to its research or
 trust source) and the [media kit](../media-kit.md) (positioning, one-liners, and
 a Brain-vs-the-field sizing table with honest ceilings).
+
+---
+
+## Contact
+
+Built and maintained by **Mark Fietje**:
+
+- **X (Twitter):** [x.com/mark_fietje](https://x.com/mark_fietje)
+- **LinkedIn:** [linkedin.com/in/markfietje](https://www.linkedin.com/in/markfietje/)
+- **Signal:** `markfietje.77`
+- **WhatsApp:** `markfietje`
+
+Report bugs and open feature requests on the
+[GitHub repository](https://github.com/markfietje/brain-server) (Issues / Discussions).

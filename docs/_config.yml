@@ -1,0 +1,9 @@
+# GitHub Pages site configuration.
+# The docs site is static mdBook output uploaded as a Pages artifact (see
+# .github/workflows/docs.yml), so Jekyll processing is disabled to keep the
+# files byte-for-byte as mdBook emits them.
+exclude:
+  - README.md
+  - SUMMARY.md
+  - theme
+markdown: kramdown

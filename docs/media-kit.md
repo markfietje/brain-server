@@ -102,3 +102,12 @@ memory store that tells you its limits.
 Name has no built-in icon yet (operator step). The wordmark is "Brain Server";
 the CLI/product family is `brain` / `brain-server` / `mcp`. Repository:
 `markfietje/brain-server`.
+
+## Author / contact
+
+Maintained by **Mark Fietje**:
+
+- X (Twitter): [x.com/mark_fietje](https://x.com/mark_fietje)
+- LinkedIn: [linkedin.com/in/markfietje](https://www.linkedin.com/in/markfietje/)
+- Signal: `markfietje.77`
+- WhatsApp: `markfietje`

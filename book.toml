@@ -9,6 +9,10 @@ src = "docs"
 create-missing = false
 
 [output.html]
+# Canonical public URL — the GitHub Pages site. mdBook uses this for the
+# <base href> (404 page) so relative links resolve correctly under the
+# /brain-server/ subdirectory.
+site-url = "https://markfietje.github.io/brain-server/"
 # brain-server brand: steel/blue accent, gold mark. Follows the OS
 # (light default, dark preferred) and the toolbar sun/moon button flips it.
 default-theme = "light"
