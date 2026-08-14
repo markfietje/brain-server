@@ -40,8 +40,8 @@ Brain Server is configured through environment variables (all resolved in
 |---|---|---|
 | `BIND_HOST` | `127.0.0.1` | Bind address; `0.0.0.0` refused unless `BIND_PUBLIC=1` |
 | `BIND_PORT` | `8765` | Listen port |
-| `BRAIN_DB_PATH` | `brain.db` | SQLite database path |
-| `CORS_ORIGINS` | `localhost:3000,localhost:8080` | CORS allowlist |
+| `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
+| `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist (scheme included) |
 | `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s); newline-separated = live rotation; off if unset |
 | `BRAIN_JWT_ISSUER` | — | Enables JWT mode when set + keys loaded |
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
@@ -56,7 +56,10 @@ including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webho
 
 ## Security posture in deployment
 
-- **Loopback-safe by default** — refuses `0.0.0.0` unless `BIND_PUBLIC=1`.
+- **Loopback-safe by default** — refuses `0.0.0.0` unless `BIND_PUBLIC=1`. In
+  addition (v1.20.29) the server **fails closed on startup**: a non-loopback bind
+  with no auth configured (no bearer token, no JWT keys) refuses to start, so an
+  unauthenticated superuser API is never exposed off the loopback.
 - **Two auth modes**:
   - **Opaque bearer** (default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`, constant-time
     compare, multiple tokens for rotation.

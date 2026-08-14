@@ -42,7 +42,7 @@ State lives under `/data` in the container:
 | Path | Purpose |
 |---|---|
 | `/data/brain.db` | SQLite store (`BRAIN_DB_PATH`) |
-| `/data/keys/` | JWT signing/verification PEMs (`BRAIN_UMP_KEY_DIR`) |
+| `/data/keys/` | JWT signing/verification PEMs (`BRAIN_JWT_KEY_DIR`); the UMP operator Ed25519 key lives under `/data/ump/` (`BRAIN_UMP_KEY_DIR`) |
 | `/data/auth-token` | opaque bearer token file (0600) |
 
 ## Compose (recommended)
