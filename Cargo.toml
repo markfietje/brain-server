@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.20.26"
+version = "1.20.27"
 edition = "2021"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
 license = "MIT"
