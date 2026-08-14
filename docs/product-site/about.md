@@ -69,22 +69,20 @@ A free pilot is available:
   out. We're happy to help you get a trial running — at no cost and with no
   obligation.
 
-To arrange a pilot or ask a question, use any channel below.
+To arrange a pilot or ask a question, connect with me on
+[LinkedIn](https://www.linkedin.com/in/markfietje/) — or use any channel below.
 
 ---
 
 ## Contact
 
-Prefer issues for bug reports and feature requests, and the channels below for
-anything else.
+Connect with me on [LinkedIn](https://www.linkedin.com/in/markfietje/) — that's
+the best place to reach me. For bug reports and feature requests, prefer GitHub
+Issues / Discussions:
 
-- **Email:** [markfietje@gmail.com](mailto:markfietje@gmail.com)
+- **LinkedIn:** [linkedin.com/in/markfietje](https://www.linkedin.com/in/markfietje/)
 - **GitHub (issues & discussions):**
   [github.com/markfietje/brain-server](https://github.com/markfietje/brain-server)
-- **X (Twitter):** [x.com/mark_fietje](https://x.com/mark_fietje)
-- **LinkedIn:** [linkedin.com/in/markfietje](https://www.linkedin.com/in/markfietje/)
-- **Signal:** `markfietje.77`
-- **WhatsApp:** `markfietje`
 
-Reach out any time — we're glad to help you get Brain Server running, and happy
-to talk through whether it's the right fit for your use case.
+Reach out any time — I'm glad to help you get Brain Server running, and happy to
+talk through whether it's the right fit for your use case.
