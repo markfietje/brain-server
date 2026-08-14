@@ -16,6 +16,30 @@ use xxhash_rust::xxh3::xxh3_64;
 use zerocopy::IntoBytes;
 
 pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
+    // The historical default: every pre-v1.28 DB is 512-d (potion-retrieval-32M
+    // + the legacy JSON-vector era). All test fixtures, the migrate-rehearse
+    // binary, and the per-domain opener call this. The live boot path calls
+    // [`run_migration_with_store_dim`] with the active embedder's `store_dim()`
+    // so the `enterprise`/`desktop` profiles build a 1024/768-d store instead.
+    run_migration_with_store_dim(db, mmap_mib, 512)
+}
+
+/// The dim-aware migration. `store_dim` MUST match the active embedder's
+/// `Embedder::store_dim()`, or a query embedding would be silently compared
+/// against store vectors of a different dimension → garbage recall. The
+/// `embedding_dim` stamp in `schema_meta` makes a mismatch fail closed at boot
+/// with a clear error (re-embed or switch profile) rather than corrupt recall.
+///
+/// - Fresh DB: stamps `embedding_dim = store_dim`, creates `vec_knowledge` at it.
+/// - Existing DB, same dim: no-op stamp check, idempotent.
+/// - Existing DB, different dim: returns `Err` — the explicit-operator-action
+///   gate (a dim change means re-embedding the whole corpus; that's `brain
+///   re-embed`, not a silent migration, same doctrine as DSAR purge).
+pub fn run_migration_with_store_dim(
+    db: &mut Connection,
+    mmap_mib: i64,
+    store_dim: usize,
+) -> Result<()> {
     let mmap_bytes = mmap_mib * 1024 * 1024;
     let pragmas = format!(
         "PRAGMA journal_mode=WAL; \
@@ -284,35 +308,82 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
          );",
     )?;
 
+    // ── schema_meta + embedding_dim fail-closed gate (BEFORE vec0) ─────────
+    // The embedding-dimension stamp must be checked/created before the vec0
+    // table, because the vec0 DDL interpolates the dim. A DB opened by a
+    // profile whose embedder emits a different dim than the store was built for
+    // fails closed here — never silently comparing a 1024-d query against a
+    // 512-d store (or vice versa).
+    db.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);")?;
+    let stamped_dim: Option<i64> = db
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'embedding_dim'",
+            [],
+            |r| {
+                let s: String = r.get(0)?;
+                Ok(s.parse::<i64>().ok())
+            },
+        )
+        .ok()
+        .flatten();
+    match stamped_dim {
+        Some(d) if d as usize == store_dim => { /* match — proceed */ }
+        Some(d) => {
+            return Err(anyhow::anyhow!(
+                "embedding dimension mismatch: this DB was built for {}-d vectors but the \
+                 active profile's embedder emits {}-d. Switch to a compatible profile, or re-embed \
+                 the corpus offline: stop the server and run `brain-server --re-embed <profile>` \
+                 (rebuilds the vector store at {}-d and re-embeds every chunk); a silent \
+                 cross-dim migration would corrupt recall.",
+                d,
+                store_dim,
+                store_dim
+            ));
+        }
+        None => {
+            // Fresh DB (no stamp yet). Stamp the active embedder's dim so every
+            // future boot can verify against it.
+            db.execute(
+                "INSERT INTO schema_meta(key, value) VALUES ('embedding_dim', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1;",
+                params![store_dim.to_string()],
+            )?;
+            info!("Stamped embedding_dim = {store_dim} (fresh DB)");
+        }
+    }
+
     // ── v0.9.0 Phase 1: sqlite-vec vec0 virtual table ────────────────────
-    // Replaces the old JSON-text vector storage in `embeddings.vector`.
+    // Replaces the old JSON-text vector storage in `embeddings.vector`. The
+    // dimension is the active embedder's `store_dim` (512 edge / 768 desktop /
+    // 1024 enterprise) — NOT a hardcoded 512. v1.28 "Caliber" M2.
     //
     // Schema per Context7-verified sqlite-vec docs (July 2026):
-    //   embedding_int8  int8[512] distance_metric=cosine — default search tier
+    //   embedding_int8  int8[{dim}] distance_metric=cosine — default search tier
     //     (quantized f32→int8). cosine is REQUIRED: vec0 defaults to L2, but the
     //     int8-quantized vectors are not unit-normalized, so an L2 distance is
     //     meaningless for semantic similarity. cosine distance is well-defined
     //     on int8 vectors and yields similarity = 1 - distance in [0,1].
-    //   embedding_bit   bit[512]   — archive / first-pass tier (binary quantized)
+    //   embedding_bit   bit[{dim}]   — archive / first-pass tier (binary quantized)
     //   source          text       — metadata column (enables filtered KNN)
     //   created_at      text       — metadata column (enables temporal filtering)
-    db.execute_batch(
+    let vec0_ddl = format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS vec_knowledge USING vec0(
             knowledge_id INTEGER PRIMARY KEY,
-            embedding_int8 int8[512] distance_metric=cosine,
-            embedding_bit  bit[512],
+            embedding_int8 int8[{dim}] distance_metric=cosine,
+            embedding_bit  bit[{dim}],
             source         text,
             created_at     text
         );",
-    )?;
+        dim = store_dim
+    );
+    db.execute_batch(&vec0_ddl)?;
 
     // ── One-time migration: rebuild vec_knowledge with the cosine metric ──
     // Earlier v0.9.0 builds created vec0 WITHOUT distance_metric=cosine, so the
     // int8 index used the default L2 metric — useless for semantic similarity
     // (yielded flat ~0 scores). Rebuild the table once, then the backfill below
     // repopulates it from the f32 `embeddings` table (the source of truth). The
-    // `schema_meta` marker makes this idempotent across restarts.
-    db.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);")?;
+    // `vec_metric` marker makes this idempotent across restarts.
     let needs_rebuild: bool = db
         .query_row(
             "SELECT value IS NULL OR value <> 'cosine' FROM schema_meta WHERE key = 'vec_metric'",
@@ -322,17 +393,21 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
         .map(|n| n != 0)
         .unwrap_or(true);
     if needs_rebuild {
-        info!("Rebuilding vec_knowledge with distance_metric=cosine (one-time fix)");
-        db.execute_batch(
+        info!(
+            "Rebuilding vec_knowledge with distance_metric=cosine (one-time fix, dim={store_dim})"
+        );
+        let rebuild_ddl = format!(
             "DROP TABLE IF EXISTS vec_knowledge;
              CREATE VIRTUAL TABLE vec_knowledge USING vec0(
                 knowledge_id INTEGER PRIMARY KEY,
-                embedding_int8 int8[512] distance_metric=cosine,
-                embedding_bit  bit[512],
+                embedding_int8 int8[{dim}] distance_metric=cosine,
+                embedding_bit  bit[{dim}],
                 source         text,
                 created_at     text
              );",
-        )?;
+            dim = store_dim
+        );
+        db.execute_batch(&rebuild_ddl)?;
         db.execute(
             "INSERT INTO schema_meta(key, value) VALUES ('vec_metric', 'cosine')
              ON CONFLICT(key) DO UPDATE SET value = 'cosine';",
@@ -1119,6 +1194,43 @@ pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
     Ok(())
 }
 
+/// v1.28 "Caliber": the `--re-embed` escape hatch. Re-points the store at
+/// `store_dim`: overwrites the `embedding_dim` stamp, drops + recreates
+/// `vec_knowledge` at the new dim, and clears the legacy JSON `embeddings`
+/// backfill source (its f32 rows are the OLD dim — re-backfilling them into the
+/// new store would be cross-dim corruption; the content they derive from lives
+/// on in `knowledge.content`, re-embedded by the caller).
+///
+/// Leaves the store EMPTY — the caller re-embeds every chunk afterward
+/// (main.rs `--re-embed` does exactly that). ponytail ceiling: no transaction
+/// gymnastics; this is an offline operator command, a crash mid-way is
+/// re-runnable (idempotent: stamp + DROP/CREATE + DELETE are all safe to repeat).
+pub fn rebuild_vec_store_at_dim(db: &mut Connection, store_dim: usize) -> Result<()> {
+    db.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);")?;
+    db.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('embedding_dim', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = ?1;",
+        params![store_dim.to_string()],
+    )?;
+    let ddl = format!(
+        "DROP TABLE IF EXISTS vec_knowledge;
+         CREATE VIRTUAL TABLE vec_knowledge USING vec0(
+            knowledge_id INTEGER PRIMARY KEY,
+            embedding_int8 int8[{dim}] distance_metric=cosine,
+            embedding_bit  bit[{dim}],
+            source         text,
+            created_at     text
+         );
+         DELETE FROM embeddings;",
+        dim = store_dim
+    );
+    db.execute_batch(&ddl)?;
+    info!(
+        "vec store rebuilt at {store_dim}-d (legacy embeddings cleared; corpus re-embed pending)"
+    );
+    Ok(())
+}
+
 /// Reversibility path for the v0.9.0 migration (plan M4).
 ///
 /// Drops the v0.9.0+ structures (vec0, FTS5, vocab, schema markers), leaving
@@ -1140,4 +1252,97 @@ pub fn migrate_down_0_9_0(db: &mut Connection) -> Result<()> {
     )?;
     info!("migrate_down_0_9_0: dropped vec0 + FTS5 structures; embeddings table preserved");
     Ok(())
+}
+
+#[cfg(test)]
+mod dim_tests {
+    //! v1.28 "Caliber" M2: the profile-parameterized store-dimension behavior.
+    //! The fail-closed mismatch guard is the load-bearing guarantee — a cross-dim
+    //! query/store pair silently corrupts recall, so it must refuse, not auto-migrate.
+    use super::*;
+    use crate::register_sqlite_vec::register_sqlite_vec;
+
+    fn fresh() -> Connection {
+        register_sqlite_vec();
+        Connection::open_in_memory().expect("open in-memory DB")
+    }
+
+    #[test]
+    fn fresh_db_stamps_embedding_dim_and_creates_vec0_at_it() {
+        let mut db = fresh();
+        run_migration_with_store_dim(&mut db, 1, 768).expect("migrate");
+        let stamped: String = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'embedding_dim'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("stamp");
+        assert_eq!(stamped, "768");
+        // The vec0 store exists (cosine metric, the 768-dim DDL accepted).
+        let n: i64 = db
+            .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn same_dim_rerun_is_idempotent() {
+        let mut db = fresh();
+        run_migration_with_store_dim(&mut db, 1, 512).expect("first");
+        // Second run at the same dim must succeed (no false mismatch).
+        run_migration_with_store_dim(&mut db, 1, 512).expect("second");
+    }
+
+    #[test]
+    fn mismatched_dim_fails_closed_with_a_clear_message() {
+        let mut db = fresh();
+        run_migration_with_store_dim(&mut db, 1, 512).expect("built at 512");
+        // Opening the same DB with a 1024-d embedder (enterprise) must refuse —
+        // a silent cross-dim migration would corrupt recall.
+        let err = run_migration_with_store_dim(&mut db, 1, 1024).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("dimension mismatch"), "msg was: {msg}");
+        assert!(msg.contains("512"), "msg should name the stored dim: {msg}");
+        assert!(
+            msg.contains("1024"),
+            "msg should name the requested dim: {msg}"
+        );
+    }
+
+    #[test]
+    fn legacy_run_migration_defaults_to_512_and_round_trips_with_explicit_512() {
+        // The pre-v1.28 callers (tests, migrate-rehearse, domain_registry) get 512.
+        // A DB they build must be openable by an explicit-512 embedder (edge).
+        let mut db = fresh();
+        run_migration(&mut db, 1).expect("legacy 512 default");
+        run_migration_with_store_dim(&mut db, 1, 512).expect("explicit 512 matches");
+        // And must FAIL against enterprise 1024 — the guard works for legacy DBs too.
+        let err = run_migration_with_store_dim(&mut db, 1, 1024).unwrap_err();
+        assert!(format!("{err}").contains("dimension mismatch"));
+    }
+
+    /// The `--re-embed` escape hatch: after the fail-closed refusal,
+    /// `rebuild_vec_store_at_dim` repoints the store and the previously-failing
+    /// dim then boots cleanly. This is the one check that the sanctioned bypass
+    /// actually works (the re-embed loop itself is the /reindex shape).
+    #[test]
+    fn rebuild_vec_store_repoints_dim_and_unblocks_migration() {
+        let mut db = fresh();
+        run_migration_with_store_dim(&mut db, 1, 512).expect("built at 512");
+        run_migration_with_store_dim(&mut db, 1, 1024).unwrap_err(); // fails closed
+        rebuild_vec_store_at_dim(&mut db, 1024).expect("repoint to 1024");
+        run_migration_with_store_dim(&mut db, 1, 1024).expect("now boots at 1024");
+        let stamped: String = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'embedding_dim'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("stamp");
+        assert_eq!(stamped, "1024");
+        // Back down again — the hatch is reversible too.
+        rebuild_vec_store_at_dim(&mut db, 512).expect("repoint back to 512");
+        run_migration_with_store_dim(&mut db, 1, 512).expect("boots at 512 again");
+    }
 }

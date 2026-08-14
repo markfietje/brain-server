@@ -10,7 +10,6 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use model2vec_rs::model::StaticModel;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -50,7 +49,9 @@ use brain_server::audit;
 // (the lib has no dependency on the server-private `config` module).
 #[cfg(test)]
 use brain_server::migration::migrate_down_0_9_0;
-use brain_server::migration::run_migration;
+#[cfg(test)]
+use brain_server::migration::run_migration; // tests use the 512-default; boot uses run_migration_with_store_dim
+use brain_server::migration::run_migration_with_store_dim;
 use brain_server::register_sqlite_vec::register_sqlite_vec;
 mod alert;
 mod auth;
@@ -289,7 +290,11 @@ pub fn spawn_rss_watchdog() {
 }
 
 struct AppState {
-    model: Arc<StaticModel>,
+    // v1.28 "Caliber" M2: the embedding model behind the `Embedder` trait so the
+    // active profile (edge-default potion / enterprise bge-m3 / …) is selected
+    // at boot by `embed::embedder_for_profile`, not compiled in. Recall/ingest
+    // sites call `model.encode_one(&t)` and are profile-agnostic.
+    model: Arc<dyn brain_server::embed::Embedder>,
     pool: Pool,
     /// Per-domain DB registry (P2). In shim mode (BRAIN_MULTI_DB off) every
     /// domain resolves to `pool`; the domain-aware write/search paths use this.
@@ -677,12 +682,10 @@ async fn add_chunk(
             screen::ScreenResult::Clean => false,
         };
 
-        let embedding = match model.encode(std::slice::from_ref(&text)).into_iter().next() {
-            Some(e) => e,
-            None => {
-                return AddResponse::error("Embedding generation failed");
-            }
-        };
+        let embedding = model.encode_one(&text);
+        if embedding.is_empty() {
+            return AddResponse::error("Embedding generation failed");
+        }
 
         let content_hash = format!("{:016x}", xxh3_64(text.as_bytes()));
         let mut conn = match pool.get() {
@@ -893,7 +896,7 @@ async fn search(
     let task_filters = filters.clone();
     let task_q = qtext.clone();
     let search_future = task::spawn_blocking(move || {
-        perform_search_with_prf(&pool, &model, task_q.clone(), k, &task_filters).map(
+        perform_search_with_prf(&pool, &*model, task_q.clone(), k, &task_filters).map(
             |(mut results, tel)| {
                 // Attach faithful, bounded snippets derived from the query.
                 let snippet_q = task_filters
@@ -1103,10 +1106,10 @@ async fn ingest_memory(
                 continue;
             }
 
-            let embedding = match model.encode(std::slice::from_ref(&text)).into_iter().next() {
-                Some(e) => e,
-                None => continue,
-            };
+            let embedding = model.encode_one(&text);
+            if embedding.is_empty() {
+                continue;
+            }
 
             // v0.9.4: prep source/revision identity for this entry before the
             // transaction opens. URI is `manual://{content_hash}` so each
@@ -1860,7 +1863,11 @@ async fn embeddings(
     let model = Arc::clone(&s.model);
     let model_name = req.model;
 
-    let encode_future = task::spawn_blocking(move || model.encode(&inputs));
+    let encode_future = task::spawn_blocking(move || {
+        // The Embedder trait takes &[&str]; build the refs from the owned inputs.
+        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        model.encode(&refs)
+    });
 
     match timeout(StdDuration::from_secs(30), encode_future).await {
         Ok(Ok(embeddings)) => {
@@ -2236,9 +2243,13 @@ async fn ingest_markdown(
 
     let chunk_texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
     let total_chunks = chunks.len();
-    let embeddings = task::spawn_blocking(move || model.encode(&chunk_texts))
-        .await
-        .map_err(|_| AppError::Internal("Embedding task failed".into()))?;
+    let embeddings = task::spawn_blocking(move || {
+        // The Embedder trait takes &[&str]; build the refs from the owned chunk texts.
+        let refs: Vec<&str> = chunk_texts.iter().map(String::as_str).collect();
+        model.encode(&refs)
+    })
+    .await
+    .map_err(|_| AppError::Internal("Embedding task failed".into()))?;
     if embeddings.len() != chunks.len() {
         return Err(AppError::Internal("Embedding count mismatch".into()));
     }
@@ -2632,6 +2643,52 @@ fn link_vault_source(
     Ok(())
 }
 
+/// v1.28 "Caliber": the offline `--re-embed <profile>` body. Loads the TARGET
+/// profile's embedder, repoints the vec store at its dim (the fail-closed
+/// guard's sanctioned bypass), then re-embeds every chunk — the same loop shape
+/// as the `/reindex` handler, inline here because the handler needs a live
+/// AppState (a server that can't boot under a dim mismatch) and this runs cold.
+fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
+    let model = brain_server::embed::embedder_for_profile(target_profile)?;
+    let dim = model.store_dim();
+    println!("re-embed → profile={target_profile} dim={dim}");
+    let mut conn = pool.get().context("DB connection failed")?;
+    brain_server::migration::rebuild_vec_store_at_dim(&mut conn, dim)?;
+    // Same loop as /reindex: encode → delete + re-insert (vec0 has no UPSERT).
+    let ids: Vec<(i64, String)> = conn
+        .prepare("SELECT id, content FROM knowledge ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let mut reembedded = 0usize;
+    let mut skipped = 0usize;
+    for (id, content) in &ids {
+        let v = model.encode_one(content);
+        if v.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let tx = conn.unchecked_transaction()?;
+        let _ = tx.execute(
+            "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
+            params![id],
+        );
+        let _ = tx.execute(
+            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+             SELECT ?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2),
+                    COALESCE((SELECT source FROM knowledge WHERE id = ?1), 'manual'),
+                    datetime('now')",
+            params![id, v.as_bytes()],
+        );
+        tx.commit()?;
+        reembedded += 1;
+    }
+    println!(
+        "re-embed complete: {reembedded} re-embedded, {skipped} skipped — boot with BRAIN_MODEL_PROFILE={target_profile}"
+    );
+    Ok(())
+}
+
 async fn reindex(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -2655,7 +2712,8 @@ async fn reindex(
         let mut reembedded = 0usize;
         let mut skipped = 0usize;
         for (id, content) in &ids {
-            let Some(v) = model.encode(std::slice::from_ref(content)).into_iter().next() else {
+            let v = model.encode_one(content);
+            if v.is_empty() {
                 skipped += 1;
                 continue;
             };
@@ -4155,6 +4213,18 @@ async fn main_inner() -> Result<()> {
                 .with_init(|c| c.execute_batch("PRAGMA busy_timeout=5000;")),
         )?;
 
+    // v1.28 "Caliber": offline `--re-embed <profile>` — the fail-closed dim
+    // guard's escape hatch. Runs INSTEAD of serving: rebuilds the vector store
+    // at the target profile's dim and re-embeds every chunk, then exits.
+    // Offline by design (the server can't boot under a dim mismatch).
+    if let Some(target) = std::env::args()
+        .nth(1)
+        .filter(|a| a == "--re-embed")
+        .and(std::env::args().nth(2))
+    {
+        return run_reembed(&pool, &target).map(|_| ());
+    }
+
     // ── Pre-migration safety backup (plan v0.9.0 M4) ─────────────────────
     // One-shot `VACUUM INTO` snapshot taken BEFORE the first v0.9.0 migration
     // touches the DB, so the Rollback section's restore path is always possible.
@@ -4195,11 +4265,44 @@ async fn main_inner() -> Result<()> {
         }
     }
 
-    run_migration(
+    // P3 retrieval profile → embedder. MUST load before the migration: the
+    // migration creates `vec_knowledge` at the embedder's `store_dim()` and
+    // stamps `embedding_dim` so a later profile switch fails closed instead of
+    // silently cross-dim-comparing. v1.28 "Caliber" M2.
+    let profile = config::model_profile();
+    let model_id = config::model_id_for_profile(profile);
+    info!("Loading model: {} (profile: {})", model_id, profile);
+    let model = brain_server::embed::embedder_for_profile(profile)?;
+    info!(
+        "Model loaded (profile: {}, dim: {})",
+        profile,
+        model.store_dim()
+    );
+
+    // v1.28 "Caliber" M1: enable the cross-encoder rerank tier on the profiles
+    // whose hardware can afford it (enterprise/desktop). search/mod.rs is lib
+    // code and can't read the server-private profile, so the gate is an env var
+    // the boot owns. edge-default/air-gapped stay rerank-free (the v0.9.5 doctrine).
+    if matches!(
+        profile,
+        config::PROFILE_ENTERPRISE | config::PROFILE_DESKTOP | config::PROFILE_QUALITY_LOCAL
+    ) {
+        std::env::set_var("BRAIN_RERANK_ENABLED", "1");
+        info!("rerank tier armed (profile={profile}); loading bge-reranker-v2-m3…");
+        // Warm at boot, not on first recall: the lazy load would otherwise put
+        // the model download inside the request path (observed: first-query 503
+        // `recall timed out` while the reranker downloaded).
+        #[cfg(feature = "rerank-tier")]
+        search::rerank::warmup();
+        info!("rerank tier ready (profile={profile})");
+    }
+
+    run_migration_with_store_dim(
         &mut *pool.get().context("migration failed")?,
         config::DB_MMAP_SIZE_MIB,
+        model.store_dim(),
     )?;
-    info!("Migration complete");
+    info!("Migration complete (embedding_dim = {})", model.store_dim());
 
     // ── v1.0.0 legacy cutover: brain.db → global.db (M6) ─────────────────
     // When `BRAIN_MULTI_DB=true`, the per-domain system needs the legacy
@@ -4259,28 +4362,6 @@ async fn main_inner() -> Result<()> {
             }
         }
     }
-
-    // P3 retrieval profile: select the embedding model for the active profile.
-    // edge-default/quality-local/air-gapped keep the small static model; only
-    // the multilingual profile swaps it. (Rerank/expansion trade-offs are
-    // env-driven, not model-swapping.)
-    let profile = config::model_profile();
-    let model_id = config::model_id_for_profile(profile);
-    info!("Loading model: {} (profile: {})", model_id, profile);
-    // ponytail (audit G8, v1.11.0): the embedding model is a single source of
-    // truth fetched from HuggingFace at boot (`StaticModel::from_pretrained`).
-    // Risk: a transient HF outage or a model-repo takeover both present as the
-    // same failure mode, and every /recall + /ingest embedding depends on this
-    // one download. Upgrade path: vendor the model weights at install time (the
-    // `brain-migrate-rehearse`/install tooling already knows how to fetch) and
-    // load from a local path, so recall works offline and the boot-time fetch
-    // is eliminated. No-op today because the air-gapped Jetson deploy ships the
-    // weights separately (see IMPLEMENTATION_ROADMAP §v1.3).
-    let model = Arc::new(
-        StaticModel::from_pretrained(model_id, None, Some(true), None)
-            .map_err(|e| anyhow::anyhow!("Model load failed: {}", e))?,
-    );
-    info!("Model loaded");
 
     // Report effective PRF configuration so the retrieval behavior is
     // observable at startup (no hidden constants).
@@ -6835,7 +6916,6 @@ mod tests {
     #[test]
     #[ignore]
     fn eval_recall_harness() {
-        use model2vec_rs::model::StaticModel;
         use tempfile::NamedTempFile;
 
         let docs: &[&str] = &[
@@ -6872,19 +6952,14 @@ mod tests {
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
 
         // Ingest the corpus.
-        let model = Arc::new(
-            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
-                .expect("model"),
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let conn = pool.get().expect("conn");
         let mut ids: Vec<i64> = Vec::new();
         for (i, doc) in docs.iter().enumerate() {
             let doc_str = doc.to_string();
-            let v = model
-                .encode(std::slice::from_ref(&doc_str))
-                .into_iter()
-                .next()
-                .unwrap();
+            let v = model.encode_one(&doc_str);
             conn.execute(
                 "INSERT INTO knowledge (content, source, content_hash) VALUES (?1, 'eval', ?2)",
                 params![doc_str, format!("ev{i}")],
@@ -6923,11 +6998,7 @@ mod tests {
         for (q, rel) in queries {
             let conn = pool.get().unwrap();
             let q_str = q.to_string();
-            let v = model
-                .encode(std::slice::from_ref(&q_str))
-                .into_iter()
-                .next()
-                .unwrap();
+            let v = model.encode_one(&q_str);
             let res =
                 crate::search::vec0_knn(&conn, &v, 10, &crate::search::SearchFilters::default())
                     .unwrap();
@@ -6943,7 +7014,7 @@ mod tests {
         for (q, rel) in queries {
             let res = crate::search::perform_search(
                 &pool,
-                &model,
+                &*model,
                 q.to_string(),
                 10,
                 &crate::search::SearchFilters::default(),
@@ -6960,7 +7031,7 @@ mod tests {
         for (q, rel) in queries {
             let (res, _tel) = crate::search::perform_search_with_prf(
                 &pool,
-                &model,
+                &*model,
                 q.to_string(),
                 10,
                 &crate::search::SearchFilters::default(),
@@ -10639,7 +10710,6 @@ Final paragraph after the rule.";
         use axum::body::to_bytes;
         use axum::http::Request;
         use brain_server::ump_integrity::{content_id, record_hash};
-        use model2vec_rs::model::StaticModel;
         use tempfile::NamedTempFile;
         use tower::ServiceExt;
 
@@ -10648,9 +10718,8 @@ Final paragraph after the rule.";
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
-        let model = Arc::new(
-            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
-                .expect("model"),
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
             model,
@@ -10812,7 +10881,6 @@ Final paragraph after the rule.";
     async fn ingest_screens_injection_like_its_siblings() {
         use axum::body::to_bytes;
         use axum::http::Request;
-        use model2vec_rs::model::StaticModel;
         use tempfile::NamedTempFile;
         use tower::ServiceExt;
 
@@ -10822,9 +10890,8 @@ Final paragraph after the rule.";
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
-        let model = Arc::new(
-            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
-                .expect("model"),
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
             model,
@@ -10946,7 +11013,6 @@ Final paragraph after the rule.";
     async fn procedure_screens_injection_like_its_siblings() {
         use axum::body::to_bytes;
         use axum::http::Request;
-        use model2vec_rs::model::StaticModel;
         use tempfile::NamedTempFile;
         use tower::ServiceExt;
 
@@ -10956,9 +11022,8 @@ Final paragraph after the rule.";
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
-        let model = Arc::new(
-            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
-                .expect("model"),
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
             model,
@@ -11092,7 +11157,6 @@ Final paragraph after the rule.";
     async fn ump_suite_parity_l1_to_l3() {
         use axum::body::to_bytes;
         use axum::http::Request;
-        use model2vec_rs::model::StaticModel;
         use rand::RngCore;
         use tempfile::TempDir;
         use tower::ServiceExt;
@@ -11110,9 +11174,8 @@ Final paragraph after the rule.";
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
-        let model = Arc::new(
-            StaticModel::from_pretrained(crate::config::MODEL_ID, None, Some(true), None)
-                .expect("model"),
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
             model,

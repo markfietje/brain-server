@@ -155,6 +155,14 @@ pub const PROFILE_EDGE_DEFAULT: &str = "edge-default";
 pub const PROFILE_QUALITY_LOCAL: &str = "quality-local";
 pub const PROFILE_MULTILINGUAL: &str = "multilingual";
 pub const PROFILE_AIR_GAPPED: &str = "air-gapped";
+/// v1.28 "Caliber": the enterprise profile selects the neural tier (BGE-M3 via
+/// FastEmbed-rs, `--features neural-embed`) when compiled in, else falls back to
+/// the static default. See `embed::embedder_for_profile`.
+pub const PROFILE_ENTERPRISE: &str = "enterprise";
+/// v1.28 "Caliber": the desktop profile (laptop/AMD-desktop) selects
+/// `gte-base-en-v1.5` (768-d) — the light-English neural tier. Same feature
+/// gate as enterprise.
+pub const PROFILE_DESKTOP: &str = "desktop";
 
 // ── Env-var helpers ──────────────────────────────────────────────────
 // Each reads an env var with a fallback to the config constant above.
@@ -744,6 +752,8 @@ pub fn model_profile() -> &'static str {
         Some(PROFILE_QUALITY_LOCAL) => PROFILE_QUALITY_LOCAL,
         Some(PROFILE_MULTILINGUAL) => PROFILE_MULTILINGUAL,
         Some(PROFILE_AIR_GAPPED) => PROFILE_AIR_GAPPED,
+        Some(PROFILE_ENTERPRISE) => PROFILE_ENTERPRISE,
+        Some(PROFILE_DESKTOP) => PROFILE_DESKTOP,
         _ => PROFILE_EDGE_DEFAULT,
     }
 }
@@ -754,6 +764,8 @@ pub fn model_profile() -> &'static str {
 pub fn model_id_for_profile(profile: &str) -> &'static str {
     match profile {
         PROFILE_MULTILINGUAL => "minishlab/potion-base-2M", // multilingual static alternative
+        PROFILE_ENTERPRISE => "BAAI/bge-m3", // v1.28 neural tier (1024-d, dense+sparse+colbert)
+        PROFILE_DESKTOP => "Alibaba-NLP/gte-base-en-v1.5", // v1.28 desktop tier (768-d, dense)
         _ => MODEL_ID, // edge-default / quality-local / air-gapped keep the default static model
     }
 }

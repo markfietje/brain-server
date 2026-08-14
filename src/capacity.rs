@@ -50,7 +50,12 @@ impl CapacityEnvelope {
             // a transient spike (large /multi-get, backup pass) must not sit
             // in the warning band. RSS is a soft signal anyway (Warning only,
             // never blocks writes).
-            CapacityTarget::Desktop => (50_000, 2_048, 512),
+            // v1.28 "Caliber": Desktop RSS 512 → 1024 MiB — the neural tiers
+            // (gte-base-en-v1.5 + bge-reranker-v2-m3) measured ~830 MiB live;
+            // 512 would pin the warning band permanently on desktop hardware.
+            // Jetson stays 512 (the 4 GB edge contract — edge-default runs the
+            // static potion model, ~340 MiB, well under it).
+            CapacityTarget::Desktop => (50_000, 2_048, 1024),
             CapacityTarget::Jetson => (10_000, 512, 512),
         };
         Self::from_env(max_docs, max_db_mib, max_rss_mib)

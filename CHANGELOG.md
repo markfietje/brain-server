@@ -10,6 +10,94 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.30] — 2026-08-14
+
+### Server — "Caliber (foundation)" (the Embedder trait + tiered neural store)
+
+Server `Cargo.toml`/lock 1.20.29 → 1.20.30 (server-only; client + plugin
+unchanged). The v1.28 "Caliber" M1+M2 groundwork, released early so it does
+not sit unreleased across the v1.21–v1.27 compliance line — the two lines are
+independent (Acuity touched embedding/search internals; Profiles touches
+ingest defaults + API surface). **The default build is byte-identical in
+behavior**: `edge-default` stays on `potion-retrieval-32M`, no reranker, 512-d
+store — every neural path is opt-in via feature flags + profile env. See
+`IMPLEMENTATION_PLAN_v1.28_Caliber.md` +
+`IMPLEMENTATION_ROADMAP_v1.28_to_v2.0_ACUITY_EVIDENCE_GATED.md`.
+
+- **M2 — the `Embedder` abstraction** (`src/embed.rs`, new lib module). The
+  embedding model moves behind an object-safe trait
+  (`encode`/`encode_one`/`store_dim`/`model_id`); `AppState.model` becomes
+  `Arc<dyn Embedder>`; all ~13 encode call sites (recall/ingest/proposals/
+  procedure/suggest/embeddings/reindex) are profile-agnostic. The default
+  `StaticEmbedder` delegates to model2vec verbatim (the golden-vector test is
+  `#[ignore]` — HF fetch; the practical proof is the whole suite passing
+  unchanged + the edge eval matching the v1.17.4 baseline byte-for-byte).
+- **M2 — profile-parameterized store dimension** (`src/migration.rs`).
+  `run_migration_with_store_dim(db, mmap, dim)` interpolates the vec0 DDL's
+  dimension; `run_migration` stays as the 512-d wrapper so every existing
+  caller (tests, migrate-rehearse, domain_registry) is unchanged. A new
+  `embedding_dim` stamp in `schema_meta` is checked **before** any vec0 DDL:
+  fresh DB stamps the active dim; same-dim is idempotent; **a cross-dim
+  profile switch fails closed** with a clear error instead of silently
+  comparing a 1024-d query against a 512-d store. `+5 dim_tests` (fresh-stamp,
+  idempotent, mismatch-refusal, legacy-default round-trip, repoint-escape).
+- **M2 — the neural tiers** (`--features neural-embed`, off by default — the
+  ROADMAP "no new heavy runtime" doctrine holds; fastembed 5 optional,
+  ort rc.12 → rc.13 to unify the graph). `MODEL_PROFILE=enterprise` →
+  BGE-M3 (1024-d; verified end-to-end: dense+sparse+colbert from one
+  FastEmbed pass — the sparse/colbert heads land as a v1.30 RRF leg +
+  rerank, consumed here only as dense). `MODEL_PROFILE=desktop` →
+  gte-base-en-v1.5 (768-d, FastEmbed in-enum).
+  **ponytail:** gte-modernbert-base (55.33 vs 54.09 BEIR) is the better desktop
+  model but is NOT in FastEmbed's enum — it needs a custom-ONNX fetch
+  (`try_new_from_user_defined`); gte-base-en-v1.5 ships now, modernbert is
+  the verified upgrade path.
+- **M1 — the rerank tier** (`src/search/rerank.rs`, new, `--features
+  rerank-tier`). `bge-reranker-v2-m3` via FastEmbed `TextRerank` (the current
+  local-SOTA cross-encoder — NOT the 2021 ms-marco-MiniLM), LazyLock-loaded,
+  **fail-open** (any ONNX/lock fault leaves the RRF order standing), writing
+  the reserved `rerank_score`/`rerank_truncated` provenance slots after
+  fusion+PRF in `perform_search_with_prf`. Boot arms it
+  (`BRAIN_RERANK_ENABLED=1`) on enterprise/desktop/quality-local and **warms
+  it at boot** — a lazy first-recall load put the model download inside the
+  request path (observed live: first-query 503 `recall timed out`; fixed).
+- **The `--re-embed <profile>` escape hatch** (`src/main.rs` +
+  `migration::rebuild_vec_store_at_dim`). Offline operator command: repoints
+  the store at the target dim (stamp + DROP/CREATE + legacy `embeddings`
+  cleared — those f32 rows are the OLD dim and re-backfilling them would be
+  cross-dim corruption), then re-embeds every chunk (the `/reindex` loop
+  shape, inline — the handler needs a bootable AppState, this runs cold).
+  The fail-closed error names it.
+- **Capacity: Desktop RSS ceiling 512 → 1024 MiB** (`src/capacity.rs`). The
+  neural tiers measured ~830 MiB live (gte + reranker); 512 pinned the
+  warning band permanently on desktop hardware. Jetson stays 512 — the 4 GB
+  edge contract (edge-default on potion measured ~340 MiB, well under).
+
+**Tier smoke (directional, NOT a parity claim — `BENCHMARKS.md` §v1.28):** all
+three tiers run live through `/recall` (fresh DB, 10-doc corpus, `brain eval`,
+37 queries, this M1 Pro, cached models): edge = the v1.17.4 baseline
+byte-consistent (MRR 0.905 / nDCG 0.911); desktop & enterprise = MRR 0.919 /
+nDCG 0.917 — the rerank precision lift is visible even on a recall-saturated
+set. Desktop and enterprise are identical on this set (expected: same
+reranker, and the set can't differentiate recall at n=37).
+
+**Server validation:** main bin 534 → 542 passed / 5 ignored; lib 76 → 80
+passed / 1 ignored (incl. the `#[ignore]`d BGE-M3 end-to-end load test —
+downloads ~600 MB, run with `--features neural-embed -- --ignored`); clippy
+`-D warnings` + fmt clean across default AND `--features
+neural-embed,rerank-tier`; live `/recall` smoke against an 8,732-doc copy of
+the operator vault (edge) + the per-profile tier runs above.
+
+**Honest ceilings:** the tier smoke's 10-doc/37-query set is recall-saturated
+— it shows the rerank ordering lift only; the ≥100-query frozen set + the
+IronCurtain head-to-head (v1.31 "Proven") are still `pending`, so **no
+parity-or-better claim is made**. BGE-M3's sparse+colbert outputs are verified
+emitted but not yet consumed (v1.30). `--re-embed` is offline-only and
+re-runnable but not transactional. The neural tiers are desktop-verified;
+Jetson + ARM release-build verification is the operator's `bench --envelope`
+step. `install-service.sh`/`brain -V` pick this up on the next install — the
+running launchd service still runs 1.20.29 until then.
+
 ## [1.20.29] — 2026-08-14
 
 ### Server + plugin — "Bound" (amplification + clamp + bind fail-closed)

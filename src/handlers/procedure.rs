@@ -283,14 +283,11 @@ async fn embed_procedure_chunks(
             }
         }
         for (chunk_id, text) in &targets {
-            // Same shape as add_chunk: encode one sentence, take the first vec.
-            let Some(emb) = model
-                .encode(std::slice::from_ref(text))
-                .into_iter()
-                .next()
-            else {
+            // Same shape as add_chunk: encode one sentence; empty ⇒ skip.
+            let emb = model.encode_one(text);
+            if emb.is_empty() {
                 continue;
-            };
+            }
             let _ = conn.execute(
                 "INSERT OR REPLACE INTO vec_knowledge (knowledge_id, embedding_int8, embedding_bit, source, created_at)
                  VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'manual', datetime('now'))",

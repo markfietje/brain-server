@@ -257,6 +257,29 @@ reachable. Faster per-core but a different machine; kept for the delta.
 | 1 000  | 183 | 1 772 | 17.38 | 17.86 | OK |
 | 5 000  | 184 |   923 | 25.22 | 25.72 | OK |
 
+### v1.28 "Caliber" tier smoke (2026-08-14) — edge vs desktop vs enterprise
+
+> **Directional only — not a parity claim.** The 10-doc/37-query CI smoke set
+> is recall-saturated for every profile (r@5 = r@10 = 0.919 across the board),
+> so it **cannot differentiate recall** — only the precision-sensitive metrics
+> (MRR/nDCG) move. Parity-or-better vs external baselines stays `PENDING` the
+> ≥100-query frozen set (v1.31 "Proven"). Per profile: fresh DB, the 10-doc
+> corpus ingested via `/add`, `brain eval` (37 queries, `/recall`, k=10), this
+> dev host (M1 Pro), debug build, cached models. Desktop = gte-base-en-v1.5
+> (768-d) + bge-reranker-v2-m3; Enterprise = BGE-M3 (1024-d) + the same
+> reranker; both built `--features neural-embed,rerank-tier`.
+
+| Profile | recall@5 | recall@10 | nDCG@10 | MRR | precision@k | note |
+|---|---|---|---|---|---|---|
+| edge-default (potion 512-d, no rerank) | 0.919 | 0.919 | 0.911 | 0.905 | p@5 0.276 / p@10 0.138 | = the v1.17.4 baseline row (byte-consistent) |
+| desktop (gte-base 768-d + rerank) | 0.919 | 0.919 | **0.917** | **0.919** | p@5 0.276 / p@10 0.138 | the reranker's precision lift shows even at n=37 |
+| enterprise (BGE-M3 1024-d + rerank) | 0.919 | 0.919 | **0.917** | **0.919** | p@5 0.276 / p@10 0.138 | identical to desktop on this set — expected: recall-saturated, same reranker |
+
+> Ceiling: at n=37 saturated, MRR 0.905 → 0.919 is the only honest signal
+> (rerank reorders the top correctly). Desktop vs enterprise cannot be
+> separated by this set — BGE-M3's sparse/colbert heads aren't even consumed
+> yet (that's v1.30). The real gate is the ≥100-query frozen set.
+
 ### Quality (frozen final query set)
 
 > **v1.17.4 smoke run (2026-08-09)** — the 10-doc CI smoke corpus

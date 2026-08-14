@@ -167,11 +167,7 @@ pub async fn suggest(
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
             // Embed once (same path as /recall).
-            let qvec = model
-                .encode(std::slice::from_ref(&context))
-                .into_iter()
-                .next()
-                .unwrap_or_default();
+            let qvec = model.encode_one(&context);
             // Over-fetch by exclude.len() so filtering excluded ids doesn't starve
             // the result, then truncate to k. Capped at MAX_K to bound the query.
             let overfetch = k_for_task

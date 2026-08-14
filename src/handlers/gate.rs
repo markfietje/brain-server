@@ -157,16 +157,10 @@ pub async fn ingest_proposal(
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         // Deterministic scoring (M1): novelty via vec0 KNN, conflict via the
         // consolidate machinery, salience via the length/entity heuristic.
-        let embedding = match model
-            .encode(std::slice::from_ref(&content_for_task))
-            .into_iter()
-            .next()
-        {
-            Some(e) => e,
-            None => {
-                return Err(HandlerError::internal("embedding generation failed"));
-            }
-        };
+        let embedding = model.encode_one(&content_for_task);
+        if embedding.is_empty() {
+            return Err(HandlerError::internal("embedding generation failed"));
+        }
         let novelty = crate::gate::novelty(&conn, &embedding).unwrap_or(1.0); // first memory / no index → max novelty
         let conflict_with = find_conflict(&conn, &content_for_task);
         let entity_count = crate::linker::extract_vocabulary(&content_for_task, &[])
@@ -606,11 +600,10 @@ pub async fn approve_proposal(
         );
 
         // Embed + insert the chunk through the same knowledge + vec0 path.
-        let embedding = model
-            .encode(std::slice::from_ref(&content))
-            .into_iter()
-            .next()
-            .ok_or_else(|| HandlerError::internal("embedding generation failed"))?;
+        let embedding = model.encode_one(&content);
+        if embedding.is_empty() {
+            return Err(HandlerError::internal("embedding generation failed"));
+        }
         let content_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(content.as_bytes()));
         let source_kind = source.clone().unwrap_or_else(|| "manual".to_string());
         let assertion = "stated"; // promoted proposals are declarative by default
@@ -994,11 +987,10 @@ pub async fn edit_proposal(
             } = p;
 
             // Re-score the edited content deterministically (the ingest path).
-            let embedding = model
-                .encode(std::slice::from_ref(&content))
-                .into_iter()
-                .next()
-                .ok_or_else(|| HandlerError::internal("embedding generation failed"))?;
+            let embedding = model.encode_one(&content);
+            if embedding.is_empty() {
+                return Err(HandlerError::internal("embedding generation failed"));
+            }
             let new_novelty = crate::gate::novelty(&tx, &embedding).unwrap_or(1.0);
             let new_conflict = find_conflict(&tx, &content);
             let entity_count = crate::linker::extract_vocabulary(&content, &[])

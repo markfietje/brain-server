@@ -71,3 +71,6 @@ marketing/
 # mdBook build output
 /book/
 docs/DOC_ACCURACY_AUDIT_PROMPT.md
+
+# v1.20.30: local model cache for the fastembed neural tiers (bge-m3, gte-base, bge-reranker) — machine-local, never commit
+.fastembed_cache/

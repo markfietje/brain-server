@@ -307,10 +307,7 @@ pub(crate) async fn run_recall(
                 // Centroid routing: encode once, compare to each centroid.
                 let qvec = {
                     let m = Arc::clone(&model);
-                    m.encode(std::slice::from_ref(&query))
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default()
+                    m.encode_one(&query)
                 };
                 let centroids =
                     crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
@@ -331,10 +328,7 @@ pub(crate) async fn run_recall(
             // centroid, route if a domain clears the confidence threshold.
             let qvec = {
                 let m = Arc::clone(&model);
-                m.encode(std::slice::from_ref(&query))
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default()
+                m.encode_one(&query)
             };
             let centroids = crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
             routed = crate::domain_router::route(&qvec, &centroids);
@@ -490,7 +484,7 @@ pub(crate) async fn run_recall(
                 f.domain = Some(domain.clone());
             }
             if let Ok((mut rs, t)) =
-                crate::perform_search_with_prf(pool, &model, query.clone(), k, &f)
+                crate::perform_search_with_prf(pool, &*model, query.clone(), k, &f)
             {
                 tel = t;
                 for r in &mut rs {

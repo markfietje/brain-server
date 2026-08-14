@@ -58,3 +58,9 @@ pub mod register_sqlite_vec;
 // bidi/zero-width smuggling class as the server screen. The server binary's
 // `screen.rs` re-exports these so `crate::screen::*` paths stay unchanged.
 pub mod strip_invisible;
+
+// The embedding abstraction (v1.28 "Caliber" M2): the trait + the static
+// (default) backend + the feature-gated neural (BGE-M3) backend. Lives in the
+// lib so `bench` consumes it without a #[path] include, same pattern as
+// `eval`/`capacity`. `AppState` rewiring is the gated follow-up.
+pub mod embed;

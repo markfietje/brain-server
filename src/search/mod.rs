@@ -12,8 +12,8 @@ use crate::search::graph_ppr::graph_retrieve;
 use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualityEstimator};
 use crate::search::query::LegFilter;
 use anyhow::{Context, Result};
+use brain_server::embed::Embedder;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use model2vec_rs::model::StaticModel;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::time::Instant;
@@ -1550,7 +1550,7 @@ type ScopedRetrieval = Result<
 /// concurrently on independent read connections, then fuse with RRF.
 pub fn perform_search(
     pool: &Pool,
-    model: &StaticModel,
+    model: &dyn Embedder,
     q: String,
     k: usize,
     filters: &SearchFilters,
@@ -1562,7 +1562,7 @@ pub fn perform_search(
 /// returns it alongside the results.
 pub fn perform_search_traced(
     pool: &Pool,
-    model: &StaticModel,
+    model: &dyn Embedder,
     q: String,
     k: usize,
     filters: &SearchFilters,
@@ -1572,11 +1572,10 @@ pub fn perform_search_traced(
     // Structured query: prefer the `hyde`/`vec` embedding query so a caller can
     // supply a hypothetical answer or semantic intent; fall back to the bare q.
     let embed_q = filters.embedding_query.clone().unwrap_or_else(|| q.clone());
-    let v = model
-        .encode(std::slice::from_ref(&embed_q))
-        .into_iter()
-        .next()
-        .context("Query encoding failed")?;
+    let v = model.encode_one(&embed_q);
+    if v.is_empty() {
+        return Err(anyhow::anyhow!("Query encoding failed"));
+    }
     tel.embed_ms = t_embed.elapsed().as_secs_f32() * 1000.0;
     tel.intent = filters.intent.clone();
 
@@ -1794,7 +1793,7 @@ fn parse_obs(s: Option<&str>) -> i64 {
 /// Returns the results plus per-stage [`SearchTelemetry`] (for `explain`).
 pub fn perform_search_with_prf(
     pool: &Pool,
-    model: &StaticModel,
+    model: &dyn Embedder,
     q: String,
     k: usize,
     filters: &SearchFilters,
@@ -1935,12 +1934,11 @@ pub fn perform_search_with_prf(
 
     let t_rr = Instant::now();
     candidates.truncate(k);
+    // v1.28 "Caliber" M1: rerank the survivors iff the profile loaded a
+    // reranker (enterprise/desktop). No-op on edge — RRF order stands. Fail-open.
+    #[cfg(feature = "rerank-tier")]
+    rerank::maybe_rerank(&q, &mut candidates, &mut tel);
     tel.rerank_ms = t_rr.elapsed().as_secs_f32() * 1000.0;
-
-    // Final strategy is already resolved; no reranker tier is wired in.
-    if let Some(top) = candidates.first_mut() {
-        top.provenance.retrieval_strategy = Some(final_strategy);
-    }
 
     tracing::debug!(
         embed_ms = tel.embed_ms,
@@ -1957,8 +1955,15 @@ pub fn perform_search_with_prf(
     Ok((candidates, tel))
 }
 
-// ── v0.9.5 M1 structured query document ───────────────────────────────────
+// ── v0.9.5 M1 structured query document ─────────────────────────────────────
 pub mod query;
+
+// v1.28 "Caliber" M1: the profile-gated cross-encoder reranker. Feature-gated
+// (`rerank-tier`) and further gated at runtime by `BRAIN_RERANK_ENABLED` (set
+// by the server boot for enterprise/desktop). Loads bge-reranker-v2-m3 and
+// writes the reserved `rerank_score`/`rerank_truncated` provenance slots.
+#[cfg(feature = "rerank-tier")]
+pub mod rerank;
 
 // ── Retrieval quality estimation (QPP) ────────────────────────────────────
 pub mod quality;

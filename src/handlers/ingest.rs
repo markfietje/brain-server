@@ -422,15 +422,12 @@ pub(crate) async fn ingest_one(
     let content_for_embed = content.clone();
     let title_for_store = title.clone();
 
-    let embedding = tokio::task::spawn_blocking(move || {
-        model
-            .encode(std::slice::from_ref(&content_for_embed))
-            .into_iter()
-            .next()
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))?
-    .ok_or_else(|| HandlerError::internal("embedding produced no vector"))?;
+    let embedding = tokio::task::spawn_blocking(move || model.encode_one(&content_for_embed))
+        .await
+        .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))?;
+    if embedding.is_empty() {
+        return Err(HandlerError::internal("embedding produced no vector"));
+    }
 
     // v1.13.0 M2: auto-route when the caller omits a domain. The chunk
     // embedding is already computed above — reuse it against the stored
