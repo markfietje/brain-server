@@ -73,21 +73,36 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
   "allowedChatTypes": ["direct", "explicit"],
   "autoRecall": true, // deterministic per-turn recall
   "autoCapture": false, // store durable facts after a turn
+  "captureMode": "proposal", // route captures through human review (default)
   "strictDomain": false, // false = cross-domain fallback on miss
   "autoRecallTopK": 3,
   "autoRecallTimeoutMs": 5000,
+  "autoRecallGraph": false, // add graph-PPR as a third recall leg
+  "proposalTools": false, // expose proposal review tools to the agent
 }
 ```
 
 ## Tools
 
-| Tool                  | Purpose                                                                                                                                                                                          |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `memory_recall`       | Hybrid semantic + lexical recall. Optional power-tools: `domain`, `source`, `since`, `lex`, `vec`, `hyde`, `intent`. Returns numbered untrusted citations; surfaces `low_confidence` abstention. |
-| `memory_store`        | Save a durable fact, optionally with `entities[]`/`relations[]` for the knowledge graph. In the default `captureMode: "proposal"` this **submits for human review** (`/ingest/proposal`) and only becomes memory after approval. |
-| `memory_verify`       | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact.                                                                |
-| `memory_get`          | Fetch the full stored text behind a recalled snippet by id.                                                                                                                                      |
-| `memory_graph_entity` | Look up an entity and its one-hop knowledge-graph relations.                                                                                                                                     |
+| Tool                       | Purpose                                                                                                                                                                                                                     |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `memory_recall`            | Hybrid semantic + lexical recall. Power overrides `domain`/`source`/`since`/`lex`/`vec`/`hyde`/`intent`; advanced `at`/`asOf`/`memoryKind`/`minRelevance`/`graph`/`maxContextTokens`. Surfaces `low_confidence` abstention. |
+| `memory_store`             | Save a durable fact, optionally with `entities[]`/`relations[]` for the KG. Default `captureMode: "proposal"` → human review.                                                                                               |
+| `memory_verify`            | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact.                                                                                           |
+| `memory_get`               | Fetch the full stored text behind a recalled snippet by id.                                                                                                                                                                 |
+| `memory_graph_entity`      | Look up an entity and its one-hop knowledge-graph relations.                                                                                                                                                                |
+| `memory_graph_traverse`    | Multi-hop KG traversal (causal subgraphs `kind="causes:"`, bi-temporal `at`, explained paths).                                                                                                                              |
+| `memory_proposal_list`     | List captures awaiting human review. Gated behind `proposalTools`.                                                                                                                                                          |
+| `memory_proposal_decide`   | Approve/reject a captured proposal. Gated behind `proposalTools`.                                                                                                                                                           |
+| `memory_procedure_get`     | Fetch the ordered steps of a runbook/procedure.                                                                                                                                                                             |
+| `memory_procedure_store`   | Create a runbook/procedure with ordered steps (direct write, server-screened).                                                                                                                                              |
+| `memory_decision_evaluate` | Deterministically evaluate a stored decision rule against numeric variables (no LLM).                                                                                                                                       |
+
+> No `memory_forget` tool — erasure is a human action (operator console / HTTP API), removed
+> v1.20.25. The plugin also feeds brain-server hits into the stock `memory_search`/`memory_get`
+> via `registerMemoryCorpusSupplement` (non-exclusive unified search). See
+> [`docs/openclaw-integration.md`](https://github.com/markfietje/brain-server/blob/main/docs/openclaw-integration.md)
+> for the procedural-memory scenarios (runbooks, decision trees).
 
 ## Files
 
