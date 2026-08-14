@@ -25,6 +25,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
 import plugin from "../index.js";
+import { MAX_HIT_CHARS } from "../src/tools.js";
 
 /**
  * Structural mock of OpenClawPluginApi. We only import the SDK *type* for the
@@ -156,7 +157,9 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
   test("issues exactly ONE /recall call and injects prependContext", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "prefers Helix", score: 0.9 }] }));
+      .mockResolvedValue(
+        mockResponse({ hits: [{ id: 1, content: "prefers Helix", score: 0.9, untrusted: true }] }),
+      );
 
     const { hooks } = registerPlugin({ agents: ["main"] });
     const result = await getHook(hooks, "before_prompt_build")(
@@ -293,7 +296,7 @@ describe("live config — re-reads the plugin slice from the runtime snapshot", 
 
   test("a live override enabling autoRecall takes effect even when registered OFF", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ hits: [{ id: 1, content: "prefers vim", score: 0.9 }] }),
+      mockResponse({ hits: [{ id: 1, content: "prefers vim", score: 0.9, untrusted: true }] }),
     );
     const { hooks } = registerWithLiveConfig(
       { agents: ["main"], autoRecall: false },
@@ -867,5 +870,104 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
       .get("memory_decision_evaluate")!
       .execute("call-1", { id: 5, variables: {} });
     expect((res as { details: { evaluated: boolean } }).details.evaluated).toBe(false);
+  });
+});
+
+// v1.20.29 "Bound" — request-amplification bound + param clamp + body cap.
+//   - F-6: inflight de-dup collapses same-query same-turn recalls to ONE POST;
+//     a per-session cap no-ops beyond MAX_RECALLS_PER_TURN.
+//   - F-7: `memory_recall.maxContextTokens` schema max is now 8_000 (was 32k),
+//     and the per-hit body cap (MAX_HIT_CHARS) truncates huge chunks before
+//     formatting. format.ts is untouched (Release C owns it).
+describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token clamp', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("inflight dedup collapses same-query same-turn to one POST", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      // Delay so both callers are inflight at once (the dedup only collapses
+      // concurrent calls; sequential calls resolve + evict before the next).
+      () =>
+        new Promise<Response>((resolve) => {
+          setTimeout(() => {
+            resolve(mockResponse({ hits: [{ id: 1, content: "prefers Helix", score: 0.9, untrusted: true }] }));
+          }, 10);
+        }),
+    );
+    const { hooks } = registerPlugin({ agents: ["main"] });
+    const fire = () =>
+      getHook(hooks, "before_prompt_build")(
+        { prompt: "what editor?", messages: [{ role: "user", content: "what editor should i use?" }] },
+        { agentId: "main" },
+      );
+    // Two CONCURRENT same-query recalls in one turn.
+    const [a, b] = await Promise.all([fire(), fire()]);
+    const recallCalls = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/recall"));
+    expect(recallCalls).toHaveLength(1); // collapsed to a single server POST
+    expect(a).toEqual({ prependContext: expect.stringContaining("prefers Helix") });
+    expect(b).toEqual({ prependContext: expect.stringContaining("prefers Helix") });
+  });
+
+  test("per-session cap returns empty (no-op) after the ceiling", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ hits: [{ id: 1, content: "a fact", score: 0.5 }] }),
+    );
+    const { hooks } = registerPlugin({ agents: ["main"] });
+    const fire = (i: number) =>
+      getHook(hooks, "before_prompt_build")(
+        { prompt: `query number ${i}`, messages: [{ role: "user", content: `query number ${i}` }] },
+        { agentId: "main" },
+      );
+    // Distinct queries => no dedup => each consumes one slot of the cap.
+    for (let i = 0; i < 10; i++) {
+      await fire(i);
+    }
+    const callsBeforeCap = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/recall"))
+      .length;
+    expect(callsBeforeCap).toBe(10);
+    // 11th distinct query => cap exceeded => no-op (undefined, no POST).
+    const over = await fire(100);
+    expect(over).toBeUndefined();
+    const callsAfterCap = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/recall"))
+      .length;
+    expect(callsAfterCap).toBe(10); // the 11th never reached the server
+  });
+
+  test("hit body clamped + memory_recall maxContextTokens schema is 8000", async () => {
+    // (a) Per-hit body cap: a hit whose content far exceeds MAX_HIT_CHARS is
+    // truncated to MAX_HIT_CHARS on the caller side before formatting.
+    const longContent = "A".repeat(MAX_HIT_CHARS * 4);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ hits: [{ id: 1, content: longContent, score: 0.9, untrusted: true }] }),
+    );
+    const { hooks } = registerPlugin({ agents: ["main"] });
+    const out = (await getHook(hooks, "before_prompt_build")(
+      { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
+      { agentId: "main" },
+    )) as { prependContext: string } | undefined;
+    expect(out).toBeDefined();
+    // The injected block contains at most MAX_HIT_CHARS of the hit's content
+    // (plus the anti-injection banner — so it's bounded but >= the truncated body).
+    expect(out!.prependContext).toContain("A".repeat(MAX_HIT_CHARS));
+    expect(out!.prependContext).not.toContain("A".repeat(MAX_HIT_CHARS + 1));
+
+    // (b) Schema max for maxContextTokens is now 8_000 (not 32_000): a recall
+    //     at the 8k ceiling is forwarded; a value over the new ceiling is
+    //     dropped by the Typebox Check guard (params collapse to {} => no query).
+    const { tools } = registerPlugin({ agents: ["main"] });
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "x", score: 0.5 }] }));
+    await tools.get("memory_recall")!.execute("c1", { query: "what", maxContextTokens: 8_000 });
+    const atCeiling = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(atCeiling.max_context_tokens).toBe(8_000);
+
+    fetchMock.mockClear();
+    const overCeiling = await tools
+      .get("memory_recall")!
+      .execute("c2", { query: "what", maxContextTokens: 32_000 });
+    // Check failed (32k > 8k max) => params => {} => "No query provided." + no POST.
+    expect((overCeiling as { content: { text: string }[] }).content[0]!.text).toContain(
+      "No query provided",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

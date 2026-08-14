@@ -11,12 +11,14 @@
  * narrow (unknown) params to the Static-derived type rather than re-validating.
  */
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
+import { Type, type Static, type TObject } from "typebox";
 import {
   BrainClient,
   describeBrainError,
   type BrainApproveResult,
   type BrainProposal,
+  type BrainRecallHit,
   type BrainRejectResult,
   type BrainTraverseResult,
 } from "./brain-client.js";
@@ -29,6 +31,34 @@ import {
 } from "./format.js";
 
 type LiveCfg = () => ResolvedBrainConfig;
+
+// v1.20.29 "Bound" (F-7): replace the raw `as X` casts at handler dispatch
+// with a Typebox `Check` narrowing guard. `Check` is a type predicate
+// (`value is Static<S>`), so no `as` is needed once it passes. The SDK runtime
+// validates `params` against `parameters` before invoking `execute`, so this is
+// defense-in-depth at the plugin seam — a loose host runtime can no longer
+// forward out-of-range args to the Rust server (which remains the authority).
+// ponytail: does NOT add a full Zod layer (typebox is the existing dep; reuse
+// it). On schema failure the params collapse to `{}` and the handler's
+// existing `?? default` branches take over (graceful, fail-closed).
+function checkedParams<S extends TObject>(schema: S, raw: unknown): Partial<Static<S>> {
+  return Check(schema, raw) ? raw : {};
+}
+
+// v1.20.29 "Bound": per-hit body cap applied on the CALLER side (here + the
+// auto-recall hook in index.ts), so `format.ts` (Release C) stays untouched.
+// Caps the largest single field a recall hit can contribute to injected
+// context; applied BEFORE `formatRecallContext`, not inside it.
+export const MAX_HIT_CHARS = 1000;
+
+/** Clamp each hit's `content` to `MAX_HIT_CHARS`. Non-mutating — returns a new
+ *  array (only copies hits that actually need truncation) so the shared result
+ *  from the dedup map is never mutated in place. */
+function clampHitBodies(hits: ReadonlyArray<BrainRecallHit>): BrainRecallHit[] {
+  return hits.map((h) =>
+    h.content.length > MAX_HIT_CHARS ? { ...h, content: h.content.slice(0, MAX_HIT_CHARS) } : h,
+  );
+}
 
 /**
  * Sanitized mirror of a recall hit for the tool `details` seam. Built
@@ -151,13 +181,16 @@ export function registerBrainTools(
     maxContextTokens: Type.Optional(
       Type.Integer({
         minimum: 0,
-        maximum: 32000,
+        // v1.20.29 "Bound" (F-7): match the auto-recall ceiling (config.ts
+        // autoRecallMaxContextTokens max = 8_000) so the tool can't request a
+        // 32k-token pack the operator never intended to allow through the
+        // auto-recall path. The server's validate_recall is still the authority.
+        maximum: 8_000,
         description:
           "Submodular evidence-packing token budget: re-rank + truncate for coverage/diversity.",
       }),
     ),
   });
-  type MemoryRecallParams = Partial<Static<typeof memoryRecallParamsSchema>>;
 
   api.registerTool(
     {
@@ -168,7 +201,8 @@ export function registerBrainTools(
       parameters: memoryRecallParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
-        const p = (params ?? {}) as MemoryRecallParams;
+        // v1.20.29 "Bound": `Check` narrows params to the schema type (no `as`).
+        const p = checkedParams(memoryRecallParamsSchema, params ?? {});
         const query = normalizeRecallQuery(p.query ?? "", c.recallMaxChars);
         if (!query) {
           return {
@@ -220,17 +254,21 @@ export function registerBrainTools(
             details: { count: 0, decision: result.decision },
           };
         }
+        // v1.20.29 "Bound": per-hit body cap (caller-side, before formatting)
+        // so a single huge chunk can't dominate the injected context. format.ts
+        // is untouched (Release C owns it); the cap is applied here + the hook.
+        const hits = clampHitBodies(result.hits);
         return {
-          content: [{ type: "text" as const, text: formatRecallContext(result.hits) }],
+          content: [{ type: "text" as const, text: formatRecallContext(hits) }],
           details: {
-            count: result.hits.length,
+            count: hits.length,
             decision: result.decision,
             domainsSearched: result.domainsSearched,
             // v1.20.25: if the runtime serializes tool `details` into the
             // model context, raw bidi/zero-width bytes would reach the model
             // verbatim — run every hit field through the same block boundary
             // the `content` path already uses.
-            memories: result.hits.map(sanitizeHit),
+            memories: hits.map(sanitizeHit),
           },
         };
       },
@@ -260,7 +298,6 @@ export function registerBrainTools(
       ),
     ),
   });
-  type MemoryStoreParams = Partial<Static<typeof memoryStoreParamsSchema>>;
 
   api.registerTool(
     {
@@ -271,7 +308,7 @@ export function registerBrainTools(
       parameters: memoryStoreParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
-        const p = (params ?? {}) as MemoryStoreParams;
+        const p = checkedParams(memoryStoreParamsSchema, params ?? {});
         const text = (p.text ?? "").trim();
         if (!text) {
           return {
@@ -342,7 +379,6 @@ export function registerBrainTools(
     chunk_id: Type.Integer({ description: "Chunk/memory id (from a recall hit)" }),
     claim: Type.String({ description: "The claim to verify against the chunk text" }),
   });
-  type MemoryVerifyParams = Partial<Static<typeof memoryVerifyParamsSchema>>;
 
   api.registerTool(
     {
@@ -353,7 +389,7 @@ export function registerBrainTools(
       parameters: memoryVerifyParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
-        const p = (params ?? {}) as MemoryVerifyParams;
+        const p = checkedParams(memoryVerifyParamsSchema, params ?? {});
         const claim = (p.claim ?? "").trim();
         if (!claim || typeof p.chunk_id !== "number") {
           return {
@@ -388,7 +424,6 @@ export function registerBrainTools(
   const memoryGetParamsSchema = Type.Object({
     id: Type.Integer({ description: "Chunk/memory id (from a recall hit)" }),
   });
-  type MemoryGetParams = Partial<Static<typeof memoryGetParamsSchema>>;
 
   api.registerTool(
     {
@@ -399,7 +434,7 @@ export function registerBrainTools(
       parameters: memoryGetParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
-        const p = (params ?? {}) as MemoryGetParams;
+        const p = checkedParams(memoryGetParamsSchema, params ?? {});
         if (typeof p.id !== "number") {
           return {
             content: [{ type: "text" as const, text: "id is required." }],
@@ -442,7 +477,6 @@ export function registerBrainTools(
   const memoryGraphEntityParamsSchema = Type.Object({
     name: Type.String({ description: "Entity name (e.g. 'vitamin d3')" }),
   });
-  type MemoryGraphEntityParams = Partial<Static<typeof memoryGraphEntityParamsSchema>>;
 
   api.registerTool(
     {
@@ -453,7 +487,7 @@ export function registerBrainTools(
       parameters: memoryGraphEntityParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
-        const p = (params ?? {}) as MemoryGraphEntityParams;
+        const p = checkedParams(memoryGraphEntityParamsSchema, params ?? {});
         const name = (p.name ?? "").trim();
         if (!name) {
           return {
@@ -545,7 +579,6 @@ export function registerBrainTools(
       }),
     ),
   });
-  type MemoryGraphTraverseParams = Partial<Static<typeof memoryGraphTraverseParamsSchema>>;
 
   api.registerTool(
     {
@@ -556,7 +589,7 @@ export function registerBrainTools(
       parameters: memoryGraphTraverseParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
-        const p = (params ?? {}) as MemoryGraphTraverseParams;
+        const p = checkedParams(memoryGraphTraverseParamsSchema, params ?? {});
         const start = (p.start ?? "").trim();
         if (!start) {
           return {
@@ -632,7 +665,6 @@ export function registerBrainTools(
       ),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
     });
-    type MemoryProposalListParams = Partial<Static<typeof memoryProposalListParamsSchema>>;
 
     api.registerTool(
       {
@@ -643,7 +675,7 @@ export function registerBrainTools(
         parameters: memoryProposalListParamsSchema,
         async execute(_toolCallId, params) {
           const c = liveCfg();
-          const p = (params ?? {}) as MemoryProposalListParams;
+          const p = checkedParams(memoryProposalListParamsSchema, params ?? {});
           try {
             const proposals: BrainProposal[] = await client.listProposals({
               ...(p.status ? { status: p.status } : {}),
@@ -692,7 +724,6 @@ export function registerBrainTools(
         }),
       ),
     });
-    type MemoryProposalDecideParams = Partial<Static<typeof memoryProposalDecideParamsSchema>>;
 
     api.registerTool(
       {
@@ -703,7 +734,7 @@ export function registerBrainTools(
         parameters: memoryProposalDecideParamsSchema,
         async execute(_toolCallId, params) {
           const c = liveCfg();
-          const p = (params ?? {}) as MemoryProposalDecideParams;
+          const p = checkedParams(memoryProposalDecideParamsSchema, params ?? {});
           if (typeof p.id !== "number" || (p.decision !== "approve" && p.decision !== "reject")) {
             return {
               content: [

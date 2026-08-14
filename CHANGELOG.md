@@ -10,6 +10,43 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.29] — 2026-08-14
+
+### Server + plugin — "Bound" (amplification + clamp + bind fail-closed)
+
+Server `Cargo.toml`/lock 1.20.28 → 1.20.29; plugin 0.4.1 → 0.4.2. The cleanup /
+consolidation release of the ATLAS audit line — three bounds closed, one theme.
+No new endpoints, no new fields, no telemetry. See
+`IMPLEMENTATION_PLAN_v1.20.29_Bound.md`. **ATLAS F-5 / F-6 / F-7.**
+
+- **Bind fail-closed** (`src/main.rs`). `handlers/mod.rs:385` treats a `None`
+  principal as superuser (the loopback back-compat posture); the symmetric gap
+  was that a non-loopback bind with no `AUTH_TOKEN`/JWT configured would expose
+  an unauthenticated superuser API. New `enforce_loopback_bind_guard` (two pure
+  predicates `bind_is_loopback`/`auth_configured`, reusing `config::auth_tokens`
+  + `AuthMode`) refuses to start in that case — the G3 fail-closed posture,
+  applied to the bind side. `+1 test`. **ponytail:** startup-only enforcement;
+  no runtime rebind re-check; does NOT add per-principal rate limiting (v2.1).
+- **Plugin request amplification bound** (`plugin/index.ts`). The three recall
+  call sites (auto-recall hook, corpus `search`, `memory_recall` tool) shared no
+  guard, so one turn could fan out N recalls. A closure-scoped
+  `Map<queryKey, Promise>` collapses same-query-same-turn recalls into one server
+  POST, and a per-session counter caps recalls per turn (`MAX_RECALLS_PER_TURN
+  = 10`; over-cap → empty no-op, not error). `+2 plugin tests`.
+- **Plugin param clamp + body cap** (`plugin/src/tools.ts`). The raw
+  `(params ?? {}) as X` casts (no narrowing guard) are replaced by a
+  `checkedParams()` helper backed by typebox `Check` (a `value is Static<S>` type
+  predicate — on schema failure params collapse to `{}` and existing `??
+  default` branches take over, fail-closed). `memory_recall.maxContextTokens`
+  schema max 32000 → 8000 to match `config.ts:55`. Per-hit `content` is clamped
+  to `MAX_HIT_CHARS = 1000` before `formatRecallContext` (caller-side, so
+  `format.ts` stays untouched). `+1 plugin test`.
+
+**Server validation:** `cargo test --features bench` 542 → 542 passed / 5 ignored
+(main bin; +1 net new), clippy `-D warnings` + fmt clean. **Plugin validation:**
+`tsc --noEmit` + vitest 47 passed + oxlint clean (run via the openclaw workspace —
+`plugin/` has no standalone runner; `@openclaw/plugin-sdk` is `workspace:*`).
+
 ## [1.20.28] — 2026-08-14
 
 ### Server + plugin — "Fencepost" (information-flow integrity)

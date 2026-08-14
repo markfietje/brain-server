@@ -26,7 +26,7 @@
  *   - api.resolvePath, api.logger, api.pluginConfig, api.runtime.config.current()
  */
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { BrainClient } from "./src/brain-client.js";
+import { BrainClient, type BrainRecallResult } from "./src/brain-client.js";
 import { brainPluginConfigSchema, resolveConfig, type ResolvedBrainConfig } from "./src/config.js";
 import {
   STATIC_SYSTEM_GUIDANCE,
@@ -38,9 +38,17 @@ import {
 } from "./src/format.js";
 import { deriveChatType, isRecallAllowed, type GateContext } from "./src/gating.js";
 import { registerProceduralTools } from "./src/procedural.js";
-import { registerBrainTools } from "./src/tools.js";
+import { registerBrainTools, MAX_HIT_CHARS } from "./src/tools.js";
 
 const PLUGIN_ID = "brain-server";
+
+// v1.20.29 "Bound" (F-6): per-session recall ceiling. Auto-recall + corpus
+// search share a closure-scoped counter; once exceeded, further recalls return
+// empty (no-op, not error) so an agent loop can't fan out unbounded POSTs in a
+// single session. Reset on `session_end`. ponytail: client-side bound only —
+// the server's per-IP limiter still keys on 127.0.0.1 (one shared bucket for
+// all loopback clients); per-principal limiting is v2.1 (needs Redis).
+const MAX_RECALLS_PER_TURN = 10;
 
 export default definePluginEntry({
   id: PLUGIN_ID,
@@ -66,6 +74,45 @@ export default definePluginEntry({
       } catch {
         return cfg;
       }
+    };
+
+    // ------------------------------------------------------------------
+    // v1.20.29 "Bound" (F-6): shared inflight de-dup + per-session cap.
+    // The three recall call sites (auto-recall hook, corpus `search`, and the
+    // `memory_recall` tool) previously shared no guard — same-turn duplicates
+    // and agent loops fanned out unbounded POSTs. This closure-scoped gate is
+    // shared by the hook + corpus search (the two automated paths); the tool
+    // stays explicit (an agent-callable surface, different semantics).
+    //   - `inflight`: same query-same-turn collapses to ONE server POST (the
+    //     second caller awaits the first's Promise).
+    //   - `sessionRecallCount`: bounds total automated recalls per session;
+    //     reset on `session_end`. Exceeding `MAX_RECALLS_PER_TURN` returns an
+    //     empty-hits result (no-op, never an error).
+    // ponytail: client-side bound only; the server's per-IP limiter still keys
+    // on 127.0.0.1 (one shared bucket). Per-principal limiting is v2.1.
+    // ------------------------------------------------------------------
+    const inflight = new Map<string, Promise<BrainRecallResult>>();
+    let sessionRecallCount = 0;
+    const boundedRecall = (
+      queryKey: string,
+      run: () => Promise<BrainRecallResult>,
+    ): Promise<BrainRecallResult> => {
+      // Cap exceeded → no-op empty result (fail-closed, not an error).
+      if (sessionRecallCount >= MAX_RECALLS_PER_TURN) {
+        return Promise.resolve({ hits: [], decision: "ok" });
+      }
+      // Same query already inflight this turn → await the shared POST.
+      const existing = inflight.get(queryKey);
+      if (existing) {
+        return existing;
+      }
+      sessionRecallCount += 1;
+      const p = run().finally(() => {
+        // Evict once resolved so the NEXT turn's same query fires fresh.
+        inflight.delete(queryKey);
+      });
+      inflight.set(queryKey, p);
+      return p;
     };
 
     api.logger.info(
@@ -104,11 +151,13 @@ export default definePluginEntry({
           return [];
         }
         try {
-          const result = await client.recall({
-            query,
-            limit: Math.min(maxResults ?? 5, 20),
-            timeoutMs: liveCfg().requestTimeoutMs,
-          });
+          const result = await boundedRecall(query, () =>
+            client.recall({
+              query,
+              limit: Math.min(maxResults ?? 5, 20),
+              timeoutMs: liveCfg().requestTimeoutMs,
+            }),
+          );
           if (!result.hits.length) {
             return [];
           }
@@ -168,19 +217,21 @@ export default definePluginEntry({
         }
 
         try {
-          const result = await client.recall({
-            query,
-            // Let the server auto-route via centroids; only force a domain if caller set one.
-            ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
-            ...(c.strictDomain ? { strictDomain: true } : {}),
-            limit: c.autoRecallTopK,
-            // v0.3.0: optional graph-PPR third leg + token-budgeted packing.
-            ...(c.autoRecallGraph ? { graph: true } : {}),
-            ...(c.autoRecallMaxContextTokens !== undefined
-              ? { maxContextTokens: c.autoRecallMaxContextTokens }
-              : {}),
-            timeoutMs: c.autoRecallTimeoutMs,
-          });
+          const result = await boundedRecall(query, () =>
+            client.recall({
+              query,
+              // Let the server auto-route via centroids; only force a domain if caller set one.
+              ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
+              ...(c.strictDomain ? { strictDomain: true } : {}),
+              limit: c.autoRecallTopK,
+              // v0.3.0: optional graph-PPR third leg + token-budgeted packing.
+              ...(c.autoRecallGraph ? { graph: true } : {}),
+              ...(c.autoRecallMaxContextTokens !== undefined
+                ? { maxContextTokens: c.autoRecallMaxContextTokens }
+                : {}),
+              timeoutMs: c.autoRecallTimeoutMs,
+            }),
+          );
           if (!result.hits.length) {
             // Calibrated abstention (v1.5): the server returned no hits on
             // purpose because quality was too low. Fail-open — inject nothing.
@@ -192,13 +243,19 @@ export default definePluginEntry({
             return undefined;
           }
 
-          const block = formatRecallContext(result.hits);
+          // v1.20.29 "Bound": per-hit body cap (caller-side, before formatting)
+          // so a single huge chunk can't dominate the injected context.
+          // format.ts is untouched (Release C owns it); the cap is applied here.
+          const hits = result.hits.map((h) =>
+            h.content.length > MAX_HIT_CHARS ? { ...h, content: h.content.slice(0, MAX_HIT_CHARS) } : h,
+          );
+          const block = formatRecallContext(hits);
           if (!block) {
             return undefined;
           }
 
           api.logger.info?.(
-            `${PLUGIN_ID}: injecting ${result.hits.length} memories (domain=${result.domain ?? "auto"})`,
+            `${PLUGIN_ID}: injecting ${hits.length} memories (domain=${result.domain ?? "auto"})`,
           );
           // Dynamic recall => prependContext (per-turn, NOT cached).
           // Static guidance is handled separately via registerMemoryCapability (cacheable).
@@ -265,7 +322,11 @@ export default definePluginEntry({
     });
 
     api.on("session_end", () => {
-      // No per-session state to clean in this shim (cursors live server-side).
+      // v1.20.29 "Bound": reset the per-session recall counter + drop any
+      // stranded inflight entries so a new session starts unbounded. (Cursors
+      // still live server-side — this is the amplification bound only.)
+      sessionRecallCount = 0;
+      inflight.clear();
     });
 
     // ------------------------------------------------------------------------
