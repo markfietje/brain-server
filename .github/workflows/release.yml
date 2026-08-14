@@ -3,6 +3,12 @@ name: release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.20.26). Leave empty to use the pushed tag'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -144,7 +150,12 @@ jobs:
         # section, so no history fetch / tag walk is needed on the runner.
         run: |
           set -e
-          version="${GITHUB_REF_NAME#v}"
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${version}" >> "$GITHUB_ENV"
           awk -v ver="$version" '
             /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); if (insec) print; next }
             !insec { next }
@@ -187,6 +198,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.version }}
           body_path: RELEASE_BODY.md
           files: dist/*
           fail_on_unmatched_files: false
