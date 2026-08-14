@@ -10,6 +10,46 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.20.28] — 2026-08-14
+
+### Server + plugin — "Fencepost" (information-flow integrity)
+
+Server `Cargo.toml`/lock 1.20.27 → 1.20.28; plugin 0.4.0 → 0.4.1. Two coupled
+information-flow changes, one theme. No new endpoints, no new fields. See
+`IMPLEMENTATION_PLAN_v1.20.28_Fencepost.md`. **ATLAS F-3 / F-4.**
+
+- **Server: quarantine taint survives HITL promotion as provenance**
+  (`src/handlers/gate.rs`). The `approve_proposal` INSERT (L624) omitted the
+  `flagged` column (default `0`), so a proposal the deterministic screen
+  **quarantined** at ingest became, on approval, an unflagged retrievable memory
+  with no provenance that it was flagged. The approve path now re-runs the screen
+  (`crate::screen::screen(&content, "")`) and sets `flagged` from the verdict
+  (`Quarantine`/`Reject` → 1, `Clean` → 0), and the audit detail carries the
+  verdict label (`proposal_approved:screen_quarantine` etc.). The human's decision
+  stays final (mantra #3) — `flagged` is provenance, NOT a recall deny; recall
+  segregation unchanged. `+2 tests`.
+- **Plugin: the `untrusted` tag is now enforced, behind an unforgeable fence**
+  (`plugin/src/format.ts`). `MEMORY_BANNER` was an advisory preamble with no
+closing delimiter and `hit.untrusted` was carried but never read (decorative;
+the plugin admitted this at `format.ts:76-78`). New `UNTRUSTED_BEGIN` /
+  `UNTRUSTED_END` sentinels wrap the block; `sanitizeForBlock` strips any literal
+  sentinel from hit bodies so a recalled chunk cannot forge the close.
+  `formatRecallContext` now filters to `untrusted === true` (drops the rest;
+  fail-safe → empty injection if none qualify). `sanitizeForBlock` also gains the
+  `U+E0000–U+E007F` tag block (the one set the prior regex omitted — requires the
+  `u` flag + `\u{...}` form) and the markdown-ref strip (defense-in-depth; the
+  server strip from v1.20.27 means the plugin already receives clean text).
+  `+3 plugin tests` (+ 2 supporting fixes to keep the existing suite green under
+  the enforced-fence contract).
+
+**Honest ceilings:** NOT a CaMeL/FIDES capability lattice (mantra #2 forbids);
+  the fence is transport-layer data/instruction separation only. `flagged` is
+  advisory metadata, not a recall deny (a v2.x ACL could deny recall of
+  post-quarantine chunks by role). **Validation:** server 44 gate tests pass
+  (`cargo test --features bench --bin brain-server gate`), clippy clean; plugin
+  `tsc`/`vitest` clean via the openclaw workspace (`plugin/` has no standalone
+  runner).
+
 ## [1.20.27] — 2026-08-14
 
 ### Server — "Cordon" (EchoLeak markdown exfil neutralized at the read seam)
