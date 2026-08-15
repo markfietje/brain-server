@@ -46,6 +46,11 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   server also marks every hit `untrusted: true` (OWASP LLM01:2025). Memories are
   rendered as numbered citations, never executed as instructions; contested
   (`conflict`) hits are flagged.
+- **Provenance-labeled recall (v1.27.12 / plugin 0.4.3)** — each hit renders a
+  deterministic `[src: · mk: · lb: · reg:]` line (source / memory kind / lawful
+  basis / region) inside the `UNTRUSTED` fence; labels run through
+  `sanitizeForBlock`, so recalled content can neither forge its attribution nor
+  break the fence markers.
 - **Fail-open** on recall errors (never stall the agent); **fail-closed** on auth.
 
 ## Install

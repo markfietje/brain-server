@@ -121,8 +121,12 @@ The review queue (`GET /proposals`) returns each candidate with its **score
 components**, its **read-time screen verdict**, an **expiry deadline**
 (`expires_at = created_at + BRAIN_PROPOSAL_TTL_SECS`, default **7 days**), the
 SLA bands (`warn_secs` 1 hr, `critical_secs` 5 min), and — for decided rows —
-`decided_at` (the v1.20.23 calibration signal). The default page limit is 50,
-hard-capped at `MAX_PROPOSALS` = 200.
+`decided_at` (the v1.20.23 calibration signal). Since v1.27.12 the queue serves
+the **read-canonical review form** (PII-redacted, markdown-ref-stripped,
+invisible-Unicode-free) plus a stable SHA-256 `content_digest`; the approve
+call may carry that digest and is rejected (`409`) on any drift — the decision
+binds to the bytes shown. The default page limit is 50, hard-capped at
+`MAX_PROPOSALS` = 200.
 
 **TTL expiry:** a pending proposal older than the TTL is **refused** (neither
 approve nor reject) — its capture context is unrecoverable. `expire_if_stale`

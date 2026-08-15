@@ -17,7 +17,7 @@ This page is the map of that console. Everything below is client-side; the serve
 | Group | Panel | Route | Purpose |
 |---|---|---|---|
 | Overview | **Overview** | `/` | Decision-first home; status cards + alerts + pending queue |
-| Review | **Review** | `/review` | Write-back approval queue (A/S/R/J/K) |
+| Review | **Review** | `/review` | Write-back approval queue (A/S/R/J/K). Since v1.27.12 approvals forward the server `content_digest` — the decision binds to the bytes displayed |
 | Retrieve | **Recall** | `/recall` | Search + decision-path viewer |
 | Explore | **Graph** | `/graph` | Knowledge-graph lookup + traversal |
 | Write | **Create** | `/create` | Ingest / procedures / consolidate hub |

@@ -1,6 +1,6 @@
-# OWASP 2026 Compliance Matrix — brain-server (v1.20.5 "Agentic")
+# OWASP 2026 Compliance Matrix — brain-server (v1.27.12 "Agentic")
 
-**Last reviewed:** 2026-08-11 against the two 2026 OWASP agentic frameworks.
+**Last reviewed:** 2026-08-15 against the two 2026 OWASP agentic frameworks.
 
 | Framework | Edition | Published | Canonical source |
 |---|---|---|---|
@@ -32,7 +32,7 @@ supply-chain pinning).
 
 | LLM01–10:2026 | brain-server control | Status |
 |---|---|---|
-| **LLM01 Prompt Injection** | Every ingest write path screened (`screen()` — deterministic blocklist always on + optional feature-gated local ONNX classifier, v1.20.3); `untrusted`/quarantined segregation; provenance-labeled recall banner (plugin marks untrusted content); approval gate for autoCapture (v1.20.1); invisible-char strip at ingest + client render boundary | **Shipped v1.11+ / v1.20.1 / v1.20.3** |
+| **LLM01 Prompt Injection** | Every ingest write path screened (`screen()` — deterministic blocklist always on + optional feature-gated local ONNX classifier, v1.20.3); `untrusted`/quarantined segregation; per-hit provenance tags (`source`/`node_kind`/`lawful_basis`/`region`) rendered inside the `UNTRUSTED_*` fence with `sanitizeForBlock` — recalled content cannot forge its own attribution or the fence markers (v1.27.12); approval gate for autoCapture (v1.20.1); invisible-char strip at ingest + client render boundary | **Shipped v1.11+ / v1.20.1 / v1.20.3 / v1.27.12** |
 | **LLM02 Sensitive Information Disclosure** | PII scan + `[redacted:…]` output masking + `pii:read` gate; record-level `access_scope`/`owner`; DSAR locate→export→purge→certificate + tombstone registry; read-event audit | **Shipped v1.14 + v1.15** |
 | **LLM03 Excessive Agency** | AuthZ action matrix at every non-public handler (`authorize`, v1.12.1, test-pinned route-by-route); capability tokens verbs×scope (v1.17.3); per-action human approval for memory writes (Rule of Two, v1.20.1) | **Shipped v1.12.1 / v1.17.3 / v1.20.1** |
 | **LLM04 Supply Chain** | CycloneDX SBOM ships with every release + CI `cargo audit` gate (v1.17.5); pinned deps + `.cargo/audit.toml`; UMP §2.8 integrity blocks (v1.17.3); MCP servers are first-party + HMAC/`webhook_seen` verified | **Shipped v1.17.5 / v1.17.3** |
@@ -59,7 +59,7 @@ GitHub MCP exploit (supply chain), AutoGPT RCE (code exec), Gemini memory attack
 | **ASI06 Memory & Context Poisoning** | **The core of this line**: screen (G1) + approval gate (G2) + classifier (G5) + quarantine + retention decay + cryptographic integrity (audit chain, UMP blocks) + provenance (`origin`) | **Shipped + v1.20.1–3** |
 | **ASI07 Insecure Inter-Agent Communication** | HMAC webhooks + `webhook_seen` idempotency; **Standard Webhooks handshake (v1.20.4)**; UMP capability tokens | **Shipped + v1.20.4**; A2A federation = **Ceiling v2.x** (owner v2.0 Cortex) |
 | **ASI08 Cascading Failures** | Proposal TTL auto-reject + expiry audit (v1.20.1); bounded webhook queue + idempotency; per-row batch outcomes; failure isolation in DSAR/consolidate | **Shipped + v1.20.1** |
-| **ASI09 Human-Agent Trust Exploitation** | Review panel surfaces **exact content + `source_prompt`** (never a summary); approval TTL; audit trail of every gate decision | **Shipped v1.20.1** |
+| **ASI09 Human-Agent Trust Exploitation** | Review panel surfaces **exact content + `source_prompt`** (never a summary); approval TTL; **digest-bound approval** — the approve call carries the SHA-256 of the read-canonical form and is rejected on any drift (v1.27.12), so a rubber-stamped decision can never bless modified content; audit trail of every gate decision | **Shipped v1.20.1 / v1.27.12** |
 | **ASI10 Rogue Agents** | A compromised agent can only write via screened + gated paths; revocation; read-event audit; DSAR purge = eject-and-forget | **Shipped + v1.20.1** |
 
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)

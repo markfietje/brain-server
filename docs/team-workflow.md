@@ -61,6 +61,11 @@ rejects (optionally superseding a conflict), or suggests re-ingest.
   latency, edit-rate, and screen-override rate. If anyone is rubber-stamping
   (approve-rate > 0.9 over ≥ 20 decisions), the strip says so. This keeps the
   gate honest for the *whole* team, not just one reviewer.
+- **Approvals bind to the shown bytes** (v1.27.12) — the review form is
+  read-canonical (PII-redacted, markdown-ref-stripped, invisible-Unicode-free)
+  and the approve call carries its SHA-256 `content_digest`; any drift between
+  what was displayed and what exists at approve time is rejected (`409`). A
+  stale-tab approval can never bless content that changed underneath it.
 - **Erasure stays with admins** — reviewers can approve/reject but only an
   operator with the `brain` binary purges or DSARs. The authority split is
   deliberate.

@@ -28,6 +28,9 @@ is the informational summary.
 Set `AUTH_TOKEN` or `AUTH_TOKEN_FILE`. Multiple tokens are accepted (newline-
 separated) for live rotation. Comparison is constant-time. The install script
 relocates any plaintext token out of the launchd plist into a 0600 file.
+Rotate atomically with `brain token rotate` (fresh 32-byte token → 0600 temp
+→ fsync → rename over the file; v1.27.12). The server refuses to start with
+group/world-readable token or key files (fail-closed).
 
 ### JWT/JWS (opt-in)
 Set `BRAIN_JWT_ISSUER` and load signing keys:
@@ -70,7 +73,14 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
 - **Untrusted-evidence boundary** — every retrieved result serializes
   `untrusted: true` (OWASP LLM01:2025). v1.20.28 wraps each injected block in
   `UNTRUSTED_BEGIN`/`UNTRUSTED_END` sentinels and drops any hit not explicitly
-  tagged `untrusted` (fail-safe toward the security wedge).
+  tagged `untrusted` (fail-safe toward the security wedge). v1.27.12 adds
+  per-hit provenance tags (source, node kind, lawful basis, region) rendered
+  inside the fence, so attribution cannot be forged by recalled content.
+- **Audited approval integrity (ReviewArmour, v1.27.12)** — `/proposals`
+  returns the read-canonical review form plus a stable SHA-256 `content_digest`
+  (PII-free, identical for admin and non-admin readers). Approving with a
+  stale digest is rejected (`409`), so a decision binds to the bytes the
+  reviewer was shown.
 - **EchoLeak / markdown-exfil strip** — the read seam rewrites markdown image/link
   references (`![label](url)` → `[label]`, `[text](url)` → `text`) so a recalled
   chunk cannot exfiltrate context via a rendered URL (v1.20.27).
@@ -108,7 +118,7 @@ what it may. Denials return `403`, never `404`, so route existence is not leaked
 
 | Line | Status |
 |---|---|
-| Current minor (`1.20.x`) | Supported — receives fixes |
+| Current minor (`1.27.x`) | Supported — receives fixes |
 | Previous minor | Supported |
 | `0.9.x` / `1.0.x` | Maintained for back-compat / security fixes |
 | < 0.9 | Unsupported |

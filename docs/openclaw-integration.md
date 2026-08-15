@@ -444,6 +444,10 @@ settings without restarting the gateway.
   `UNTRUSTED_BEGIN`/`UNTRUSTED_END` sentinels, `sanitizeForBlock` strips any literal sentinel
   from hit bodies (a recalled chunk cannot forge the close), and `formatRecallContext` drops any
   hit not explicitly tagged `untrusted === true` (fail-safe → empty injection if none qualify).
+- **Provenance inside the fence** (v1.27.12 / plugin 0.4.3): each hit renders a deterministic
+  `[src: · mk: · lb: · reg:]` line (source / memory kind / lawful basis / region) inside the
+  untrusted block; labels pass through `sanitizeForBlock` and are never trusted as instructions —
+  attribution is displayed, not asserted.
 - **Markdown-ref strip** (v1.20.27): the plugin also strips markdown image/link references, so a
   recalled chunk cannot exfiltrate context through a rendered URL to an LLM consumer.
 - **Human-gated writes**: default `captureMode: "proposal"` means no turn- or tool-triggered fact

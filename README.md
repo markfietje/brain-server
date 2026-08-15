@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.21.0-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.27.12-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -21,7 +21,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](docs/universal-memory-protocol.md)
-  [![Tests](https://img.shields.io/badge/tests-542%20passed%20%2F%205%20ignored-brightgreen.svg)](#)
+  [![Tests](https://img.shields.io/badge/tests-773%20passed%20%2F%207%20ignored-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
   [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)
@@ -53,7 +53,7 @@ That is the whole pitch: zero per-query cost, zero data egress, zero recall late
 - **Knowledge graph.** Entities and relationships extracted from `[[relation::entity]]` in markdown, with faithful multi-hop explanations.
 - **Temporal evidence.** Every ingest records `observed_at`, `valid_from`, and `valid_to`. Ask for any point in time and get the fact as it was then.
 - **Honest when it is unsure.** Recall abstains with `{decision: "low_confidence"}` instead of returning a confident wrong answer. `/verify` checks that a claim really appears in a chunk's text.
-- **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it.
+- **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it. Approvals bind to the exact bytes the reviewer saw (`content_digest`, mismatch = rejection), so a decision can never bless content that would render differently (v1.27.12).
 - **Governance and compliance.** An append-only SHA-256 audit chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
 - **Universal Memory Protocol (UMP 1.0).** A full implementation of the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) standard for portable agent memory: signed records, capability tokens, HTTP + MCP + file bindings, conformance level L3. Memory written here can be read by any other UMP agent.
 - **One self-contained binary.** Embedded SQLite and sqlite-vec. Runs anywhere Rust compiles.
@@ -222,6 +222,7 @@ brain check-consistency       # duplicates, conflicts, stale sources
 brain resolve <new> <old>     # supersede a fact
 brain suggest "<context>"     # opt-in anticipation
 brain backup <out-path> --passphrase-file PATH  # AES-256-GCM encrypted backup (passphrase required; DB taken from BRAIN_DB_PATH/default)
+brain token rotate                          # atomically rotate the bearer token (new 0600 file, old token invalidated on restart)
 ```
 
 ## Security
@@ -230,7 +231,9 @@ brain backup <out-path> --passphrase-file PATH  # AES-256-GCM encrypted backup (
 - **Two auth modes.** Opaque bearer (default) or JWT/JWS (opt-in, RS256/ES256/EdDSA only) with per-route AuthZ and OIDC/JWKS discovery.
 - **Append-only SHA-256 audit chain.** Tamper-evident and hash-only.
 - **Prompt-injection quarantine.** Suspicious input is stored but excluded from retrieval.
-- **Untrusted-evidence boundary.** Every result serializes `untrusted: true` (OWASP LLM01:2025).
+- **Untrusted-evidence boundary.** Every result serializes `untrusted: true` (OWASP LLM01:2025), and recalled context carries per-hit provenance tags (ingest kind, memory kind, lawful basis, region) inside the untrusted-data fence so the model can attribute what it recalls (v1.27.12).
+- **Audited approval integrity.** `/proposals` returns the read-canonical review form plus a stable `content_digest`; approvals with a stale digest are rejected (`409`) — the reviewer's decision binds to the bytes shown.
+- **Rotatable bearer tokens.** `brain token rotate` atomically replaces the auth token; the server refuses to run with group/world-readable secret files (fail-closed).
 - **Encrypted backup.** AES-256-GCM, checksummed, and excludes secrets.
 
 See [`SECURITY.md`](./SECURITY.md) and the [Security docs page](docs/security.md).

@@ -98,6 +98,13 @@ capture into the store unless the operator has explicitly turned that gate off.
 
 The same philosophy extends across the write surface:
 
+- **Approval binds to the shown bytes (ReviewArmour, v1.27.12)** — the review
+  form is read-canonical (PII-redacted, markdown-ref-stripped, invisible-
+  Unicode-free) so what you see is exactly what recall would render, and the
+  approve call carries a stable SHA-256 `content_digest` of it. Any drift —
+  tampered content, a re-ingest, a different render path — is rejected with
+  `409` inside the approval transaction. A decision can never bless content
+  that would appear differently in context.
 - **Consolidation** (`/consolidate/propose`) detects duplicates, contradictions, stale
   sources, and near-duplicates, and **proposes** resolutions. Applying them
   (`/consolidate/apply`, `/consolidate/undo`) is a human call.

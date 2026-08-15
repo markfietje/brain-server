@@ -70,6 +70,12 @@ reading the audit log), use the HTTP API or the client console.
 | `brain key list` [`--dir PATH`] | Show loaded keys |
 | `brain key prune` [`--dir PATH`] [`--keep N`] | Drop expired keys from JWKS |
 
+## Token management
+
+| Command | Purpose |
+|---|---|
+| `brain token rotate` | Atomically rotate the bearer token (v1.27.12): a fresh 32-byte hex token is written to a 0600 temp file (`create_new`, never umask-dependent), fsync'd, and renamed over the configured token file. Refuses to overwrite a group/world-readable target. Restart the server to pick it up. |
+
 ## UMP (Universal Memory Protocol)
 
 | Command | Purpose |

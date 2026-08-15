@@ -64,6 +64,7 @@ against the controls below, see [`SECURITY.md`](./SECURITY.md).
 |---|---|---|---|
 | **S**poofing | Attacker forges tenant identity | JWT/JWS verify + tenant from signed claim (v1.2) | ✅ |
 | **T**ampering | Direct DB edit on disk | Filesystem perms; SQLCipher + KMS (v3.7) | 🚧 |
+| **T**ampering | Modify a proposal between display and approval | Approve carries the SHA-256 `content_digest` of the read-canonical form; any drift → `409` inside the tx (v1.27.12) | ✅ |
 | **R**epudiation | "I didn't write that" | Audit hash chain (v1.1 M2.3) | ✅ |
 | **I**nformation disclosure | Tenant A reads tenant B | Per-tenant files + AuthZ at data layer (v1.0+v1.2) | ✅ |
 | **D**enial of service | Burst fills the DB | Capacity envelope 507 (v0.9.9); per-tenant limiter (v2.1) | ✅/🚧 |
@@ -74,6 +75,7 @@ against the controls below, see [`SECURITY.md`](./SECURITY.md).
 | Threat | Attack | Mitigation | Status |
 |---|---|---|---|
 | **S**poofing | Stolen token reuse | Short-lived JWT (≤15 min) + refresh rotation + revocation (v1.2) | ✅ |
+| **T**ampering | Readable token/key files (group/world) | Startup fails closed on wide modes (`mode & 0o077`); `brain token rotate` writes 0600 temp + fsync + atomic rename (v1.27.12) | ✅ |
 | **T**ampering | Modify JWT payload | JWS signature (RS256/ES256/EdDSA only) (v1.2) | ✅ |
 | **R**epudiation | "I didn't issue that token" | `iss` claim verified; key rotation log (v1.2) | ✅ |
 | **I**nformation disclosure | Token in URL/logs | `Authorization: Bearer` header only; `SensitiveHeadersLayer` redacts logs (v0.9.4) | ✅ |

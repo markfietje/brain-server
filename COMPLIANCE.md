@@ -118,7 +118,10 @@ the raw material; the evidence bundle for an incident / SOC 2 review:
    `/audit/verify`.
 2. **Why** — recall traces (`GET /recall/{trace_id}/trace`: query, decision,
    domains, actor) + the proposal-gate trail (`source_prompt` +
-   proposed/approved/rejected/expired audit rows, v1.20.1).
+   proposed/approved/rejected/expired audit rows, v1.20.1). Since v1.27.12 an
+   approval additionally records the SHA-256 `content_digest` of the
+   read-canonical form the reviewer saw — the bundle can prove *exactly which
+   bytes* were approved, and any drift would have been rejected (`409`).
 3. **To whom** — principal pillar on every response; DSAR certificates +
    tombstone registry; `origin` per row (v1.18.2).
 4. **For how long** — per-kind retention (`/retention`, v1.17.1) +

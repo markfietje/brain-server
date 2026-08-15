@@ -24,6 +24,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Self-correction** (v1.6) — operator-approved `supersedes` links atomically expire the prior fact; historical recall (`?at=<past>`) still returns it. `brain resolve` + `brain check-consistency` surface action items.
 - **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
 - **Write-back gating** (v1.14) — `POST /ingest/proposal` scores a candidate (novelty via KNN, conflict via consolidation, salience via heuristics) but creates **no** `knowledge` row; it becomes memory only via human approval.
+- **Approval binds to the displayed bytes** (v1.27.12) — `/proposals` serves the read-canonical review form (PII-redacted, markdown-ref-stripped, invisible-Unicode-free) plus a stable `content_digest`; approving with a stale digest is rejected (`409`), so a decision can never bless content that recall would render differently.
 
 ## Human in the loop
 
@@ -55,6 +56,8 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 ## Security
 
 - **Two authentication modes** — opaque bearer (default) or JWT/JWS (opt-in), with per-route AuthZ and record-level access scoping.
+- **Atomic token rotation** (v1.27.12) — `brain token rotate` replaces the bearer token via a 0600 temp file (fsync + rename); the server fails closed on group/world-readable tokens and signing keys.
+- **Provenance-labeled recall** (v1.27.12) — recalled context carries per-hit `source` / `node_kind` / `lawful_basis` / `region` tags inside the `UNTRUSTED_*` fence, so the model can attribute — not just trust — what it recalls.
 - **Verified webhooks** — HMAC verification, replay-window enforcement, idempotency.
 - **Encrypted backup/restore** — AES-256-GCM, checksummed, excludes secrets.
 

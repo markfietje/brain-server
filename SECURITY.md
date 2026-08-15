@@ -164,6 +164,7 @@ browser local storage, and validated for signature, issuer, and audience."
 | `401` on missing/invalid/malformed | `auth_middleware` | ✅ |
 | Audit row on every auth failure | `audit_events` | ✅ v1.1 M2.1 |
 | Token rotation (file-watch) | `AUTH_TOKEN_FILE` hot reload | ✅ v1.1 M1.4 |
+| Token rotation (CLI) | `brain token rotate` — atomic 0600 replace, fsync, refuses wide secret modes | ✅ v1.27.12 |
 | JWT `(jti, iss)` revocation | `revoked_tokens` table | ✅ v1.2 |
 | Refresh token rotation + reuse detection | refresh endpoint | ✅ v1.2 |
 | Account lockout / rate limit on auth | per-tenant limiter | 🚧 v2.1 |
@@ -181,6 +182,7 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 | Content integrity via XXH3-64 hash | `knowledge.content_hash` | ✅ |
 | Source revision hashing | `source_revisions.revision` | ✅ |
 | Webhook HMAC verification | `webhook.rs` | ✅ |
+| HITL approval binds to displayed bytes | `approve_proposal` verifies `content_digest` (SHA-256 of the read-canonical form) inside the tx; stale digest → `409` | ✅ v1.27.12 |
 | Signed releases (GPG + git tag) | `git tag -s` | 🚧 release process |
 
 ### A09:2025 — Security Logging and Alerting Failures ✅ / 🚧
@@ -434,7 +436,11 @@ OWASP Secrets Management Cheat Sheet (Context7-verified 2026-07-26):
 ### Hierarchy
 
 1. **File (default, v0.9+)**: `~/.config/brain-server/auth-token` mode 0600.
-   Hot-rotatable via file-watch (v1.1 M1.4).
+   Hot-rotatable via file-watch (v1.1 M1.4) or atomically via
+   `brain token rotate` (v1.27.12): the replacement is written to a fresh
+   0600 temp (never umask-dependent), fsync'd, then renamed over the target.
+   The server refuses group/world-readable token files and JWT key material
+   at startup (fail-closed).
 2. **JWT signing keys (v1.2)**: `~/.config/brain-server/keys/` mode 0700;
    private keys mode 0600; rotated via `brain key generate/list/prune` CLI.
 3. **External KMS (v3.7, BYOK pattern)**:
@@ -585,7 +591,8 @@ are operations work, not engineering.
 ## Version History
 
 | Version | Date | Changes |
-|---|---|---|---|
+|---|---|---|
+| 1.27.12 | 2026-08-15 | "ReviewArmour · Rotate · Provenance": HITL approvals bind to the displayed bytes — `/proposals` serves the read-canonical review form (`sanitize_read`: PII redact → markdown-ref → invisible strip) + a principal-independent `content_digest`; `approve_proposal` accepts the digest and `409`s on any drift, checked inside the `BEGIN IMMEDIATE` tx. `brain token rotate` atomically replaces the bearer token (0600 temp + `create_new`, fsync, rename) and refuses wide secret modes; startup warns on unsigned webhook sinks + wide UMP signing keys. Retrievers thread `source`/`node_kind`/`lawful_basis`/`region` through fusion into `RecallHit` and the plugin renders a deterministic `[src: · mk: · lb: · reg:]` line inside the `UNTRUSTED_*` fence (`sanitizeForBlock` closes fence-marker forging). |---|
 | 1.20.3 | 2026-08-11 | "Classify" (G5): two-layer injection screen — layer 1 deterministic blocklist (always on) + optional feature-gated local ONNX classifier (layer 2, off by default; the blocklist + `flagged`/`untrusted` stay the always-on defense). Canonical invisible-char predicate shared by screen/classifier/client-render boundary (client strips invisible smuggling chars from displayed hits; raw bytes never rewritten). `screen_verdict` review badge recomputed at read. Policy + thresholds read per call |
 | 1.16.7 | 2026-08-08 | Client "Integrated": deep links + PWA (offline shell caches app shell only — never the API, no content caching) + paginated audit + command palette + recall debounce + hardening (drawer focus trap, aria-live, `dir="auto"`). Client-only; server + API contract unchanged |
 | 1.16.6 | 2026-08-08 | Client "Mobile": secure token storage via OS keyring (`keyring`, non-web; web stays in-memory — browser localStorage is not a secure credential store per MASVS-STORAGE) + responsive tab-bar UX; Dioxus pinned to 0.7.10 (wasm-hotpatch TOCTOU/UB + panic-resilience fixes compiled in) |

@@ -99,7 +99,9 @@ Give each agent principal its own token and rotate on a cadence (≤90d
 recommended).
 
 ```bash
-# opaque bearer: write a new token into the 0600 file; file-watch hot-reloads it
+# opaque bearer: rotate atomically — fresh 0600 temp, fsync, rename (v1.27.12)
+brain token rotate
+# (or, manually: write a new token into the 0600 file; file-watch hot-reloads it)
 umask 077 && head -c 32 /dev/urandom | base64 > ~/.config/brain-server/auth-token
 # JWT mode: mint a fresh key, let the old one drain, then prune
 brain key generate
@@ -107,6 +109,11 @@ brain key generate
 brain key prune
 scripts/install-service.sh   # reload the key set
 ```
+
+`brain token rotate` refuses to replace a group/world-readable token file and
+the server fails closed at startup on wide secret modes (token file, JWT keys,
+webhook signing secret, UMP signing keys — v1.27.12). Restart the server after
+rotating (`scripts/install-service.sh`) to load the new token.
 
 ### Incident response — suspected memory poisoning
 
