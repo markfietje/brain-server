@@ -19,6 +19,49 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.26.2] — 2026-08-15
+
+### Server — "Cross-Border" third pass
+
+Server `Cargo.toml`/lock 1.26.1 → 1.26.2; client + plugin unchanged. The
+deep-review follow-up of v1.26.1 — evidence fidelity at the row boundary.
+
+### Release notes
+
+**Improvements**
+
+- **A NULL lawful basis stays NULL** — `GET /transfers` rows and the DPA
+  artifact now serialize an unrecorded `lawful_basis` as `null` rather than
+  the empty string `""` (an evidence artifact should never show a blank
+  basis as if one were recorded).
+- **Canonical basis spelling on write** — a mixed-case `lawful_basis`
+  (`"Contract"`) is stored in the vocabulary's lowercase form (`"contract"`),
+  matching how mechanism/ jurisdiction codes are normalized — validation and
+  storage now agree exactly.
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `Transfer.lawful_basis` becomes `Option<String>` — the None-vs-empty
+  distinction survives `transfer_row` instead of `unwrap_or_default()`;
+  `register` stores `b.trim().to_ascii_lowercase()` (was `str::trim` only).
+  New regression `lawful_basis_stored_canonical_and_null_semantics_preserved`
+  (lowercase storage + NULL→null in row and DPA). Panic/unsafe sweep over the
+  new modules: zero `unwrap()`/`unsafe` outside `#[cfg(test)]`. openapi 400
+  description covers the timestamp bounds.
+- Tests: server bin 591 → **592** / 6 ignored; lib 105; clippy `-D warnings`
+  (default + bench + otel) + fmt clean; route audits green; client wasm
+  untouched.
+
+---
+
 ## [1.26.1] — 2026-08-15
 
 ### Server — "Cross-Border" second pass

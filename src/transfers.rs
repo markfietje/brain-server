@@ -189,7 +189,9 @@ pub fn lawful_basis_flag(strict_domain: bool, basis: Option<&str>) -> bool {
 }
 
 /// One cross-border transfer register row (Art 30 processing-activities +
-/// Art 46 transfer-safeguard evidence).
+/// Art 46 transfer-safeguard evidence). `lawful_basis` keeps the
+/// None-vs-blank distinction at the row boundary — a NULL serializes as
+/// `null`, never as an empty-string basis in an evidence artifact.
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct Transfer {
     pub id: i64,
@@ -198,7 +200,7 @@ pub(crate) struct Transfer {
     pub destination_jurisdiction: String,
     pub mechanism: String,
     pub counterparty: String,
-    pub lawful_basis: String,
+    pub lawful_basis: Option<String>,
     pub purpose: String,
     pub signed_at: Option<i64>,
     pub expires_at: Option<i64>,
@@ -302,7 +304,10 @@ pub(crate) fn register(
             destination.trim().to_ascii_lowercase(),
             mechanism.trim().to_ascii_lowercase(),
             counterparty.trim(),
-            lawful_basis.map(str::trim),
+            // The validated basis lands in its canonical lowercase form —
+            // validation accepted `Contract` (trim + case-insensitive), so the
+            // stored value must match the vocabulary exactly, like mechanism.
+            lawful_basis.map(|b| b.trim().to_ascii_lowercase()),
             purpose.trim(),
             signed_at,
             expires_at
@@ -320,7 +325,7 @@ fn transfer_row(r: &rusqlite::Row) -> rusqlite::Result<Transfer> {
         destination_jurisdiction: r.get(3)?,
         mechanism: r.get(4)?,
         counterparty: r.get(5)?,
-        lawful_basis: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        lawful_basis: r.get(6)?,
         purpose: r.get(7)?,
         signed_at: r.get(8)?,
         expires_at: r.get(9)?,
@@ -651,6 +656,43 @@ mod tests {
         for j in JURISDICTIONS {
             assert!(is_jurisdiction_code(j.code));
         }
+    }
+
+    #[test]
+    fn lawful_basis_stored_canonical_and_null_semantics_preserved() {
+        // 3rd pass: a mixed-case basis validates then lands in the canonical
+        // lowercase vocabulary form (matching mechanism/jurisdiction), and a
+        // NULL basis stays `null` in the row + artifacts — never "".
+        let mut conn = db();
+        let tx = conn.transaction().unwrap();
+        let id = register(
+            &tx,
+            "d",
+            "ph",
+            "us",
+            "scc-eu-2021",
+            "C",
+            Some("Contract"),
+            "p",
+            None,
+            None,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let row = transfer_by_id(&conn, id).unwrap().unwrap();
+        assert_eq!(row.lawful_basis.as_deref(), Some("contract"));
+        let dpa = dpa_fields(&row);
+        assert_eq!(dpa["lawful_basis"], "contract");
+        let tx = conn.transaction().unwrap();
+        let id2 = register(
+            &tx, "d2", "eu", "uk", "uk-idta", "C2", None, "p2", None, None,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let no_basis = transfer_by_id(&conn, id2).unwrap().unwrap();
+        assert_eq!(no_basis.lawful_basis, None, "NULL stays NULL");
+        let dpa2 = dpa_fields(&no_basis);
+        assert!(dpa2["lawful_basis"].is_null());
     }
 
     #[test]
