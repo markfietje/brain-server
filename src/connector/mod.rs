@@ -46,6 +46,8 @@
 pub mod auth;
 #[cfg(feature = "connector-github")]
 pub mod github;
+pub mod kind;
+pub mod pipeline;
 pub mod supervisor;
 
 use anyhow::{Context, Result};
