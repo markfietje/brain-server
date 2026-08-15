@@ -1176,6 +1176,15 @@ pub async fn list_decayed(
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .filter_map(|r| r.ok())
                 .collect::<Vec<DecayedRow>>();
+            // v1.22.0 "Regulated" M1: a held id never shows up in the decay
+            // registry — the operator must never see a frozen id as "safe to
+            // purge". Filter the loaded rows before the Rust arbiter pages them
+            // (keeps `page_decayed` a pure function of the rows + policy).
+            let held = crate::legal_hold::active_hold_ids(&conn)?;
+            let rows = rows
+                .into_iter()
+                .filter(|(id, ..)| !held.contains(id))
+                .collect::<Vec<DecayedRow>>();
             Ok(page_decayed(
                 &rows,
                 now,
@@ -1359,6 +1368,18 @@ pub async fn purge(
             return Err(HandlerError::not_found("no matching chunks to purge"));
         }
 
+        // v1.22.0 "Regulated" M1: a held id is frozen against EVERY erasure
+        // path. Refuse with 409 + the hold reasons; the operator must release
+        // every hold first (POST /legal-hold/{id}/release).
+        let held = crate::legal_hold::active_reasons(&tx, &ids)?;
+        if !held.is_empty() {
+            return Err(HandlerError::conflict_with(
+                "legal_hold_active",
+                "one or more ids are under legal hold",
+                serde_json::json!({ "held": held }),
+            ));
+        }
+
         let purged = purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
@@ -1521,7 +1542,7 @@ pub(crate) fn purge_chunk_ids(
 pub(crate) const KNOWLEDGE_ROW_COLS: &str =
     "id, content, node_kind, source, origin, authority, assertion_kind, confidence,
         access_scope, owner, observed_at, valid_from, valid_to,
-        content_hash, title, expires_at, created_at, ump_meta, ump_id";
+        content_hash, title, expires_at, created_at, ump_meta, ump_id, region";
 
 /// Row → the JSON shape the record engine (`emit_record`) renders from.
 pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
@@ -1547,6 +1568,8 @@ pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde
             .filter(|&ts| ts != 0),
         "ump_meta": r.get::<_, Option<String>>(17)?,
         "ump_id": r.get::<_, Option<String>>(18)?,
+        // v1.22.0 M3: the residency stamp on every chunk (data residency).
+        "region": r.get::<_, Option<String>>(19)?,
     }))
 }
 
@@ -1715,6 +1738,8 @@ pub async fn export(
         Ok(serde_json::json!({
             "export_format_version": 2,
             "exported_at": chrono::Utc::now().to_rfc3339(),
+            // v1.22.0 M3: the residency stamp — where data lived.
+            "region": brain_server::storage_layout::region(),
             "knowledge": knowledge,
             "entities": entities,
             "relationships": edges,

@@ -27,6 +27,7 @@ pub mod domains;
 pub mod forget;
 pub mod gate;
 pub mod govern;
+pub mod holds;
 pub mod ingest;
 pub mod observe;
 pub mod procedure;
@@ -308,6 +309,14 @@ impl HandlerError {
         Self {
             status: StatusCode::CONFLICT,
             inner: ApiError::new("conflict", message.into()),
+        }
+    }
+    /// v1.22.0 "Regulated" M1: a 409 with an explicit code + details. Used by
+    /// the legal-hold gate (`409 legal_hold_active` listing reasons).
+    pub fn conflict_with(code: &'static str, message: impl Into<String>, details: Value) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            inner: ApiError::new(code, message.into()).with_details(details),
         }
     }
 }

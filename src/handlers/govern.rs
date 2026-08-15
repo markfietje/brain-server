@@ -176,6 +176,155 @@ pub async fn retention_post(
 }
 
 // ---------------------------------------------------------------------------
+// M6 — /retention/report (v1.22.0 "Regulated" M2)
+// ---------------------------------------------------------------------------
+
+/// v1.22.0 M2: the report window — rows whose effective expiry falls inside
+/// the next `REPORT_WINDOW_DAYS` days are counted as "expiring soon".
+const REPORT_WINDOW_DAYS: i64 = 30;
+
+/// Pure core of `/retention/report`: one domain's retention schedule rows.
+/// `policy` is the EFFECTIVE kind→days map for this domain (the caller merges
+/// a bound profile's retention block over the server-wide map already). A
+/// domain × kind row exists for every knowledge kind present OR every policy
+/// kind (whichever is larger) — the schedule reports coverage even at zero
+/// rows. `ttl_days` is `None` = the kind never decays by kind-default (a
+/// per-chunk `expires_at` still counts toward expiry). `expiring_30d` counts
+/// rows whose *effective* expiry (explicit `expires_at`, else kind-default
+/// from `created_at`) falls inside the next 30 days.
+fn retention_report_rows(
+    conn: &rusqlite::Connection,
+    now_unix: i64,
+    domain: &str,
+    policy: &std::collections::BTreeMap<String, i64>,
+) -> Result<Vec<serde_json::Value>, HandlerError> {
+    let mut present: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT node_kind FROM knowledge ORDER BY node_kind")
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        rows.flatten().collect()
+    };
+    for k in policy.keys() {
+        if !present.contains(k) {
+            present.push(k.clone());
+        }
+    }
+    present.sort();
+    let cutoff = now_unix + REPORT_WINDOW_DAYS * 86_400;
+    let mut rows = Vec::with_capacity(present.len());
+    for kind in present {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE node_kind = ?1",
+                rusqlite::params![kind],
+                |r| r.get(0),
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let ttl = policy.get(&kind).copied();
+        let expiring_30d: i64 = match ttl {
+            Some(days) => {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT COUNT(*) FROM knowledge
+                          WHERE node_kind = ?1 AND (
+                            expires_at IS NOT NULL AND expires_at < ?2
+                         OR expires_at IS NULL AND created_at IS NOT NULL
+                            AND unixepoch(COALESCE(created_at,'1970-01-01 00:00:00'))
+                                < ?2 - ?3 * 86400
+                          )",
+                    )
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                stmt.query_row(rusqlite::params![kind, cutoff, days], |r| r.get(0))
+                    .map_err(|e| HandlerError::internal(e.to_string()))?
+            }
+            None => conn
+                .query_row(
+                    "SELECT COUNT(*) FROM knowledge
+                      WHERE node_kind = ?1 AND expires_at IS NOT NULL AND expires_at < ?2",
+                    rusqlite::params![kind, cutoff],
+                    |r| r.get(0),
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?,
+        };
+        rows.push(serde_json::json!({
+            "domain": domain,
+            "kind": kind,
+            "ttl_days": ttl,
+            "count": count,
+            "expiring_30d": expiring_30d,
+        }));
+    }
+    Ok(rows)
+}
+
+/// `GET /retention/report` — the per-domain × per-kind retention schedule:
+/// ttl_days → row count → rows expiring in the next 30 days. Admin. This is
+/// the Art 5(1)(e) storage-limitation + HIPAA/SOX retention-schedule evidence
+/// the regulated presets (finance-sox 7yr, health-hipaa, call-center 90d) ship
+/// out of the box. A bound profile's retention block (v1.21.0) is the effective
+/// policy for its domain; other domains fall back to the server-wide policy.
+/// Reports TTL coverage; it does not auto-enforce (the human purges).
+pub async fn retention_report(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    // Server-wide effective policy (code defaults + persisted overrides).
+    let mut policy = crate::config::retention_kind_days();
+    if let Ok(conn) = state.pool.get() {
+        if let Ok(mut stmt) = conn.prepare("SELECT kind, days FROM retention_policy ORDER BY kind")
+        {
+            for (k, d) in stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(|e| HandlerError::internal(e.to_string()))?
+                .flatten()
+            {
+                policy.insert(k, d);
+            }
+        }
+    }
+    // Per-domain policies from the bound profiles (the /decayed resolution).
+    let per_domain: std::collections::HashMap<String, std::collections::BTreeMap<String, i64>> =
+        match state.pool.get() {
+            Ok(conn) => brain_server::profile::domain_profiles(&conn)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
+                .collect(),
+            Err(_) => std::collections::HashMap::new(),
+        };
+    let domains: Vec<String> = if state.registry.is_multi_db() {
+        state.registry.known_domains()
+    } else {
+        vec!["global".to_string()]
+    };
+    let now = chrono::Utc::now().timestamp();
+    let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        for d in &domains {
+            let pool = super::resolve_domain_pool(&state.registry, Some(d))?;
+            let conn = pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let p = per_domain.get(d).unwrap_or(&policy);
+            rows.extend(retention_report_rows(&conn, now, d, p)?);
+        }
+        Ok(serde_json::json!({
+            "window_days": REPORT_WINDOW_DAYS,
+            "generated_at": chrono::Utc::now().to_rfc3339(),
+            "rows": rows,
+            "projection": "effective expiry = explicit expires_at, else created_at + ttl_days"
+        }))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    Ok(Json(body))
+}
+
+// ---------------------------------------------------------------------------
 // M5 — /art30
 // ---------------------------------------------------------------------------
 
@@ -407,4 +556,84 @@ fn check_snapshot(p: &std::path::Path) -> serde_json::Value {
         "audit_chain_ok": chain_ok,
         "ok": exists && mode_ok && integrity_ok && chain_ok,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v1.22.0 "Regulated" M2 — plan Verification 4: the retention report
+    /// reflects the configured per-kind TTL + counts + the 30-day-expiring
+    /// window. A kind with a policy reports expiring rows via created_at; a
+    /// kind with no policy counts only explicit `expires_at`, and the schedule
+    /// still reports the policy kind even at zero rows.
+    #[test]
+    fn retention_report_matches_policy() -> rusqlite::Result<()> {
+        use rusqlite::OptionalExtension;
+        let conn = rusqlite::Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE knowledge(
+                id INTEGER PRIMARY KEY,
+                node_kind TEXT NOT NULL,
+                expires_at INTEGER,
+                created_at TEXT
+             );
+             INSERT INTO knowledge(node_kind, created_at) VALUES ('fact', '2020-01-01 00:00:00');
+             INSERT INTO knowledge(node_kind, created_at) VALUES ('episodic', '2026-08-01 00:00:00');
+             INSERT INTO knowledge(node_kind, expires_at) VALUES ('episodic', 1000000);",
+        )?;
+        let now = 1_800_000_000_i64; // fixed "today"
+        let policy: std::collections::BTreeMap<String, i64> =
+            [("fact".to_string(), 2555), ("episodic".to_string(), 90)]
+                .into_iter()
+                .collect();
+        let rows = retention_report_rows(&conn, now, "finance", &policy)
+            .expect("report for a known policy");
+
+        let by_kind: std::collections::HashMap<&str, &serde_json::Value> = rows
+            .iter()
+            .map(|r| (r["kind"].as_str().expect("row has a kind"), r))
+            .collect();
+        assert_eq!(by_kind.len(), 2, "fact + episodic reported");
+        // fact: policy TTL 2555d, 1 row, created 2020 → long expired → expiring.
+        let fact = by_kind["fact"];
+        assert_eq!(fact["ttl_days"], 2555);
+        assert_eq!(fact["count"], 1);
+        assert_eq!(
+            fact["expiring_30d"], 1,
+            "2020 fact expires within the window"
+        );
+        // episodic: policy TTL 90d; 1 explicit-expiry row + 1 created 2026-08.
+        let ep = by_kind["episodic"];
+        assert_eq!(ep["ttl_days"], 90);
+        assert_eq!(ep["count"], 2);
+        assert_eq!(ep["expiring_30d"], 2, "both episodic rows expiring");
+
+        // A kind with no policy counts only explicit expires_at.
+        let bare: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        let rows =
+            retention_report_rows(&conn, now, "global", &bare).expect("report on a bare policy");
+        let by_kind: std::collections::HashMap<&str, &serde_json::Value> = rows
+            .iter()
+            .map(|r| (r["kind"].as_str().expect("row has a kind"), r))
+            .collect();
+        assert_eq!(by_kind["fact"]["ttl_days"], serde_json::Value::Null);
+        assert_eq!(
+            by_kind["fact"]["expiring_30d"], 0,
+            "no explicit expires_at on the fact"
+        );
+
+        // Coverage at zero rows: a policy kind absent from the data still ships.
+        let policy: std::collections::BTreeMap<String, i64> =
+            [("decision".to_string(), 365)].into_iter().collect();
+        let rows = retention_report_rows(&conn, now, "global", &policy)
+            .expect("report for the decision policy");
+        let decision = rows
+            .iter()
+            .find(|r| r["kind"] == "decision")
+            .expect("decision kind is reported");
+        assert_eq!(decision["count"], 0);
+        assert_eq!(decision["ttl_days"], 365);
+        Ok(())
+    }
 }

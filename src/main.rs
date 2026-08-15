@@ -65,6 +65,7 @@ mod gate;
 mod handlers;
 mod hygiene;
 mod integrity;
+mod legal_hold;
 mod linker;
 mod procedural;
 mod search;
@@ -4655,6 +4656,14 @@ async fn main_inner() -> Result<()> {
             "/domains/{name}/profile",
             post(handlers::profiles::domain_profile_bind),
         )
+        // v1.22.0 "Regulated" M1: legal hold — place/release/list holds that
+        // freeze ids against erasure (decay, /purge, DSAR).
+        .route("/legal-hold", post(handlers::holds::post_legal_hold))
+        .route(
+            "/legal-hold/{id}/release",
+            post(handlers::holds::release_legal_hold),
+        )
+        .route("/legal-holds", get(handlers::holds::list_legal_holds))
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -4722,6 +4731,7 @@ async fn main_inner() -> Result<()> {
         // (Admin + audited); /art30 and /snapshot/status are Admin read-only.
         .route("/retention", get(handlers::govern::retention_get))
         .route("/retention", post(handlers::govern::retention_post))
+        .route("/retention/report", get(handlers::govern::retention_report))
         .route("/art30", get(handlers::govern::art30))
         .route("/snapshot/status", get(handlers::govern::snapshot_status))
         // v1.15.0 "Observe": read-event trace + DSAR workflow. `/recall/{id}/
@@ -8022,6 +8032,8 @@ Final paragraph after the rule.";
             // v1.2.0 AuthN
             "revoked_tokens",
             "refresh_chains",
+            // v1.22.0 Regulated
+            "legal_holds",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -8070,6 +8082,8 @@ Final paragraph after the rule.";
             "authority",
             // v1.18.2 Transparency
             "origin",
+            // v1.22.0 Regulated M3: the residency stamp column.
+            "region",
         ];
         let actual_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(knowledge)")
@@ -8204,10 +8218,11 @@ Final paragraph after the rule.";
         // v1.20.18 for the idx_tombstones_reason_purged index;
         // v1.20.19 for the pii_map table drop;
         // v1.21.0 for the profiles + domain_profiles tables (the preset system).
+        // v1.22.0 for the legal_holds table + knowledge.region.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_21_0),
-            "schema_version must be recorded as 1.21.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_22_0),
+            "schema_version must be recorded as 1.22.0 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -9373,6 +9388,11 @@ Final paragraph after the rule.";
             "/profiles",
             "/profiles/{name}",
             "/domains/{name}/profile",
+            // v1.22.0 Regulated
+            "/legal-hold",
+            "/legal-hold/{id}/release",
+            "/legal-holds",
+            "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
             // v0.9.6 Bridge
@@ -10133,6 +10153,12 @@ Final paragraph after the rule.";
             ("/profiles", "Read"),
             ("/profiles/{name}", "Admin"),
             ("/domains/{name}/profile", "Admin"),
+            // v1.22.0 Regulated: legal hold + the retention schedule are
+            // operator surfaces (Admin).
+            ("/legal-hold", "Admin"),
+            ("/legal-hold/{id}/release", "Admin"),
+            ("/legal-holds", "Admin"),
+            ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
             ("/connectors", "Read"),
@@ -10246,6 +10272,7 @@ Final paragraph after the rule.";
                     "gate" => include_str!("handlers/gate.rs"),
                     "observe" => include_str!("handlers/observe.rs"),
                     "govern" => include_str!("handlers/govern.rs"),
+                    "holds" => include_str!("handlers/holds.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),
                     "alert" => include_str!("alert.rs"),
@@ -11738,6 +11765,229 @@ Final paragraph after the rule.";
         assert_eq!(fb["ok"], true, "{fb}");
 
         std::env::remove_var("BRAIN_UMP_KEY_DIR");
+    }
+
+    /// v1.22.0 "Regulated" M1 — the WORM-lite enforcement end to end:
+    /// (1) a held id is absent from the `/decayed` registry, (2) `/purge`
+    /// refuses it with `409 legal_hold_active` + reasons, (3) a DSAR defers it
+    /// and lists it (+ reason) on the certificate while still purging the
+    /// free rows, and (4) releasing every hold un-freezes it so a later purge
+    /// succeeds. Covers plan Verifications 1, 2-ish (release-gated), 3.
+    #[tokio::test]
+    async fn legal_hold_freezes_erasure_and_dsar_defers(
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use axum::body::to_bytes;
+        use tower::ServiceExt;
+
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new()?;
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr)?;
+        let mut mig_conn = pool.get()?;
+        run_migration(&mut mig_conn, config::DB_MMAP_SIZE_MIB)?;
+        drop(mig_conn);
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID)?,
+        );
+        let state = Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool: pool.clone(),
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))?,
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+        let app = axum::Router::new()
+            .route(
+                "/legal-hold",
+                axum::routing::post(handlers::holds::post_legal_hold),
+            )
+            .route(
+                "/legal-hold/{id}/release",
+                axum::routing::post(handlers::holds::release_legal_hold),
+            )
+            .route(
+                "/legal-holds",
+                axum::routing::get(handlers::holds::list_legal_holds),
+            )
+            .route("/decayed", axum::routing::get(handlers::gate::list_decayed))
+            .route("/purge", axum::routing::post(handlers::gate::purge))
+            .route("/dsar", axum::routing::post(handlers::observe::post_dsar))
+            .with_state(state.clone());
+
+        async fn call(
+            app: &axum::Router,
+            method: &str,
+            uri: &str,
+            body: Option<serde_json::Value>,
+        ) -> Result<
+            (axum::http::StatusCode, serde_json::Value),
+            Box<dyn std::error::Error + Send + Sync>,
+        > {
+            let req = match method {
+                "POST" => Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        body.unwrap_or(serde_json::json!({})).to_string(),
+                    ))?,
+                "GET" => Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(axum::body::Body::empty())?,
+                m => return Err(format!("unsupported method {m}").into()),
+            };
+            let resp = app.clone().oneshot(req).await?;
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await?;
+            let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            Ok((status, v))
+        }
+
+        // Two expired alice-owned rows; one of them will go under hold.
+        let now = chrono::Utc::now().timestamp();
+        let past = now - 3600;
+        let conn = pool.get()?;
+        conn.execute(
+            "INSERT INTO knowledge(content, source, owner, node_kind, expires_at) VALUES (?1,'manual',?2,'episodic',?3)",
+            rusqlite::params!["held record", "alice", past],
+        )?;
+        let held_id: i64 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO knowledge(content, source, owner, node_kind, expires_at) VALUES (?1,'manual',?2,'episodic',?3)",
+            rusqlite::params!["free record", "alice", past],
+        )?;
+        let free_id: i64 = conn.last_insert_rowid();
+        drop(conn);
+
+        // Place the hold.
+        let (s1, held_resp) = call(
+            &app,
+            "POST",
+            "/legal-hold",
+            Some(serde_json::json!({ "ids": [held_id], "reason": "litigation 2026-118" })),
+        )
+        .await?;
+        assert_eq!(s1, axum::http::StatusCode::OK, "hold: {held_resp}");
+        let hold_ids = held_resp["hold_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let hold_row: i64 = hold_ids[0].as_i64().expect("hold_ids[0] is an id");
+
+        // (1) with a hold: the held id is excluded from /decayed while the
+        // free id still shows.
+        let (s2, decay_held) = call(&app, "GET", "/decayed", None).await?;
+        assert_eq!(s2, axum::http::StatusCode::OK);
+        let visible: Vec<i64> = decay_held
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| r["id"].as_i64())
+            .collect();
+        assert!(
+            visible.iter().all(|id| *id != held_id),
+            "held id must be absent from /decayed: {decay_held}"
+        );
+        assert!(
+            visible.contains(&free_id),
+            "the free id still decays: {decay_held}"
+        );
+
+        // (2) /purge of the held id → 409 legal_hold_active listing the reason.
+        let (s3, purple) = call(
+            &app,
+            "POST",
+            "/purge",
+            Some(serde_json::json!({ "ids": [held_id] })),
+        )
+        .await?;
+        assert_eq!(s3, axum::http::StatusCode::CONFLICT, "purge: {purple}");
+        assert_eq!(purple["error"]["code"], "legal_hold_active", "{purple}");
+        assert_eq!(
+            purple["error"]["details"]["held"][&held_id.to_string()][0],
+            "litigation 2026-118",
+            "{purple}"
+        );
+
+        // (3) DSAR defers the held id, purges the free one, and lists the held
+        // id + reason on the certificate.
+        let (s4, dsar) = call(
+            &app,
+            "POST",
+            "/dsar",
+            Some(serde_json::json!({ "subject": "alice", "action": "both" })),
+        )
+        .await?;
+        assert_eq!(s4, axum::http::StatusCode::OK, "dsar: {dsar}");
+        let cert = dsar["certificate"].clone();
+        let held_ids = cert["held_ids"].as_array().cloned().unwrap_or_default();
+        let listed: Vec<i64> = held_ids.iter().filter_map(|h| h["id"].as_i64()).collect();
+        assert!(
+            listed.contains(&held_id),
+            "certificate must list the held id: {cert}"
+        );
+        let entry = held_ids
+            .iter()
+            .find(|h| h["id"] == held_id)
+            .expect("held id listed");
+        assert_eq!(entry["reasons"][0], "litigation 2026-118", "{cert}");
+        let purged = cert["purged_ids"].as_array().cloned().unwrap_or_default();
+        assert!(
+            purged.iter().all(|p| p.as_i64() != Some(held_id)),
+            "a held id is never purged"
+        );
+        assert!(
+            purged.iter().any(|p| p.as_i64() == Some(free_id)),
+            "the free id was purged by the DSAR: {cert}"
+        );
+        // The held row survives in the DB.
+        let conn = pool.get()?;
+        let still: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM knowledge WHERE id=?1",
+            rusqlite::params![held_id],
+            |r| r.get(0),
+        )?;
+        drop(conn);
+        assert_eq!(still, 1, "held row survives the DSAR");
+
+        // (4) Release the hold → a later purge succeeds.
+        let (s5, rel) = call(
+            &app,
+            "POST",
+            &format!("/legal-hold/{hold_row}/release"),
+            Some(serde_json::json!({})),
+        )
+        .await?;
+        assert_eq!(s5, axum::http::StatusCode::OK, "release: {rel}");
+        let (s6, purge_ok) = call(
+            &app,
+            "POST",
+            "/purge",
+            Some(serde_json::json!({ "ids": [held_id] })),
+        )
+        .await?;
+        assert_eq!(
+            s6,
+            axum::http::StatusCode::OK,
+            "purge after release: {purge_ok}"
+        );
+        assert_eq!(purge_ok["purged"], 1);
+        Ok(())
     }
 
     fn urlencoding(s: &str) -> String {

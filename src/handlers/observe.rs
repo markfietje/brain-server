@@ -274,11 +274,13 @@ pub async fn post_dsar(
         let certified_at = chrono::Utc::now().to_rfc3339();
         let mut purged_ids = cross_ids;
         let mut found_count: usize = 0;
+        let mut held: Vec<serde_json::Value> = Vec::new();
         let mut tombstone_root: Option<i64> = None;
         let mut ledger_id: Option<i64> = None;
         for r in &runs {
             found_count += r.roots + r.derived;
             purged_ids.extend(r.purged_ids.iter().copied());
+            held.extend(r.held.iter().cloned());
             // Prefer the ledger-bearing (global) run's root as the certificate
             // anchor — the registry of record — falling back to any domain.
             if r.ledger_id.is_some() || tombstone_root.is_none() {
@@ -291,6 +293,10 @@ pub async fn post_dsar(
             "action": action,
             "found_count": found_count,
             "purged_ids": purged_ids,
+            // v1.22.0 M1/M3: held ids (deferred erasure, with reasons) + the
+            // residency stamp that proves where the data lived.
+            "region": brain_server::storage_layout::region(),
+            "held_ids": held,
             "tombstone_root": tombstone_root,
             "certified_at": certified_at,
             "chain_head": chain_head,
@@ -730,6 +736,8 @@ fn build_export_bundle(
     }
     Ok(serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
+        // v1.22.0 M3: the residency stamp on the DSAR bundle too.
+        "region": brain_server::storage_layout::region(),
         "subject": subject,
         "knowledge": rows,
     })
@@ -787,6 +795,10 @@ struct DsarPoolRun {
     dsar_rows: usize,
     /// Live-purge ids from this pool (certificate payload).
     purged_ids: Vec<i64>,
+    /// v1.22.0 "Regulated" M1: ids under legal hold that erasure DEFERRED,
+    /// with their reasons — listed on the certificate as the why. A held id
+    /// is never purged here.
+    held: Vec<serde_json::Value>,
     /// This pool's export bundle (cross-domain aggregate input).
     bundle: Option<String>,
     /// `Some(ledger row id)` when this pool wrote the ledger row (global).
@@ -859,6 +871,7 @@ fn run_dsar_pool(
             tombstones: tombstones as usize,
             dsar_rows: dsar_rows as usize,
             purged_ids: Vec::new(),
+            held: Vec::new(),
             bundle: None,
             ledger_id: None,
             tombstone_root: None,
@@ -868,7 +881,28 @@ fn run_dsar_pool(
     // 3. Purge (all-or-nothing with the export, same tx): roots with the
     //    owner reason, derived descendants with `derived` + origin id.
     let mut purged_ids: Vec<i64> = Vec::new();
+    let mut held: Vec<serde_json::Value> = Vec::new();
     if matches!(action, "purge" | "both") {
+        // v1.22.0 "Regulated" M1: a held id is frozen against DSAR erasure too
+        // (the WORM-lite posture). The subject's located set that is under an
+        // active legal hold is DEFERRED — not purged — and listed (+ reasons)
+        // on the certificate so the subject is told *why* erasure is deferred.
+        let all_targets: Vec<i64> = roots
+            .iter()
+            .copied()
+            .chain(derived.iter().map(|(d, _)| *d))
+            .collect();
+        let held_map = crate::legal_hold::active_reasons(&tx, &all_targets)?;
+        let deferred: std::collections::HashSet<i64> = held_map.keys().copied().collect();
+        for (kid, reasons) in &held_map {
+            held.push(serde_json::json!({ "id": kid, "reasons": reasons }));
+        }
+        let free = |ids: &[i64]| {
+            ids.iter()
+                .filter(|i| !deferred.contains(i))
+                .copied()
+                .collect::<Vec<_>>()
+        };
         for root in &roots {
             let closure: Vec<i64> = derived
                 .iter()
@@ -876,12 +910,12 @@ fn run_dsar_pool(
                 .map(|(d, _)| *d)
                 .collect();
             if !closure.is_empty() {
-                purged_ids.extend(closure.iter().copied());
+                purged_ids.extend(free(&closure).iter().copied());
             }
         }
         let _ = crate::handlers::gate::purge_chunk_ids(
             &tx,
-            &roots,
+            &free(&roots),
             now,
             &format!("owner:{subject}"),
             None,
@@ -895,14 +929,14 @@ fn run_dsar_pool(
             if !closure.is_empty() {
                 let _ = crate::handlers::gate::purge_chunk_ids(
                     &tx,
-                    &closure,
+                    &free(&closure),
                     now,
                     "derived",
                     Some(*root),
                 )?;
             }
         }
-        purged_ids.extend(roots.iter().copied());
+        purged_ids.extend(free(&roots).iter().copied());
     }
 
     // v1.16.1: trace residue sweep. Since v1.20.17 M3 the trace no longer
@@ -958,6 +992,7 @@ fn run_dsar_pool(
         tombstones: 0,
         dsar_rows: 0,
         purged_ids,
+        held,
         bundle: export_bundle,
         ledger_id,
         tombstone_root: roots.first().copied(),

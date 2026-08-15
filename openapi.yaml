@@ -1448,6 +1448,63 @@ paths:
       responses:
         "200":
           description: Per-snapshot status
+  /legal-hold:
+    post:
+      summary: Freeze knowledge ids against erasure (v1.22.0 M1)
+      operationId: postLegalHold
+      description: >
+        Places one legal hold per id. A held id is frozen against every erasure
+        path (decay registry, /purge, DSAR) until EVERY hold on it is released
+        — never auto-released. Admin + audited. Body: `{ids, reason, domain?}`.
+        Unknown ids refuse the whole request; one id may carry multiple
+        concurrent holds (litigation + retention audit).
+      responses:
+        "200":
+          description: The hold ids created
+        "400":
+          description: Empty/oversized ids or a blank/oversized reason
+        "409":
+          description: A target id is already under an active legal hold
+  /legal-hold/{id}/release:
+    post:
+      summary: Release one legal hold (v1.22.0 M1)
+      operationId: releaseLegalHold
+      description: >
+        The explicit un-freeze. Releasing an already-released hold is a no-op;
+        the id stays frozen while ANY other active hold on it remains. 404 when
+        the hold row does not exist. Admin + audited. `?domain=` targets the
+        hold's pool in multi-db mode.
+      responses:
+        "200":
+          description: The released hold
+        "404":
+          description: No legal hold with this id
+  /legal-holds:
+    get:
+      summary: The legal-hold registry (v1.22.0 M1)
+      operationId: listLegalHolds
+      description: >
+        Every hold, released or not, newest-first, bounded (default 100).
+        `?id=` filters by knowledge id, `?reason=` by substring, `?active=true`
+        narrows to unreleased holds, `?limit=` bounds the page. Multi-db: every
+        pool's holds, tagged with the pool's domain. Admin.
+      responses:
+        "200":
+          description: The hold registry
+  /retention/report:
+    get:
+      summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
+      operationId: retentionReport
+      description: >
+        The effective per-domain ✕ per-kind TTL policy surfaced as a report:
+        ttl_days → row count → rows expiring in the next 30 days. The Art
+        5(1)(e) storage-limitation + HIPAA/SOX retention-schedule evidence the
+        regulated presets ship. Effective TTL is a bound profile's retention
+        block (v1.21.0) for its domain, else the server-wide policy. Reports
+        coverage; it does not auto-enforce (the human purges). Admin.
+      responses:
+        "200":
+          description: The retention schedule table
   /ump/capabilities:
     get:
       summary: UMP 1.0 negotiation handshake (v1.17.3 M2)

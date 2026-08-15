@@ -1195,10 +1195,80 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
+    // ── v1.22.0 "Regulated" M1: legal holds ────────────────────────────
+    // One row per (chunk, hold): multiple concurrent holds are allowed
+    // (litigation + retention audit) and an id stays frozen against every
+    // erasure path (decay skip, /purge 409, DSAR deferral) until EVERY hold on
+    // it is released — never auto-released. Append-only except `released_at`.
+    // Lives in every domain file (the migration runs per-DB) so enforcement
+    // checks are local to the same pool/tx as the purge they gate.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS legal_holds (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            knowledge_id  INTEGER NOT NULL,
+            reason        TEXT NOT NULL,
+            held_by       TEXT,
+            held_at       INTEGER NOT NULL,
+            released_at   INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_legal_holds_open
+         ON legal_holds(knowledge_id) WHERE released_at IS NULL",
+        [],
+    )?;
+
+    // ── v1.22.0 "Regulated" M3: region pin (data residency) ───────────
+    // `knowledge.region` is stamped at INSERT by the trigger below (all current
+    // + future ingest paths, incl. connector/UMP/import, with zero per-site
+    // churn), then surfaced on /export + the DSAR certificate. Read-only
+    // provenance: the backfill stamps only NULL rows (legacy rows on first
+    // v1.22 boot; a region change never rewrites where old rows lived).
+    let region_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='region'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !region_present {
+        db.execute("ALTER TABLE knowledge ADD COLUMN region TEXT", [])?;
+    }
+    let region = crate::storage_layout::region();
+    match region.as_deref() {
+        Some(r) => {
+            // Recreate per boot so a region change re-points the stamp (the
+            // backfill above never overwrites, so history is preserved).
+            db.execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS knowledge_region_stamp;
+                 CREATE TRIGGER knowledge_region_stamp
+                 AFTER INSERT ON knowledge
+                 WHEN NEW.region IS NULL
+                 BEGIN
+                     UPDATE knowledge SET region = '{r}' WHERE id = NEW.id;
+                 END;"
+            ))?;
+            let stamped = db.execute(
+                "UPDATE knowledge SET region = ?1 WHERE region IS NULL",
+                rusqlite::params![r],
+            )?;
+            if stamped > 0 {
+                info!("region pin: stamped {stamped} pre-existing chunks as '{r}'");
+            }
+        }
+        None => {
+            // No pin: stop stamping (a leftover trigger from a previous pin
+            // would keep writing a region the operator removed).
+            db.execute_batch("DROP TRIGGER IF EXISTS knowledge_region_stamp;")?;
+        }
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.21.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.21.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.22.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.22.0';",
         [],
     )?;
 

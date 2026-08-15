@@ -56,6 +56,11 @@ pub const SCHEMA_VERSION_V1_20_19: &str = "1.20.19";
 /// seeded INSERT OR IGNORE (operator edits survive re-migrations). No column
 /// changes anywhere.
 pub const SCHEMA_VERSION_V1_21_0: &str = "1.21.0";
+/// v1.22.0 "Regulated" schema: new `legal_holds` table (freeze ids vs decay +
+/// purge + DSAR) + additive `knowledge.region` (residency stamp, backfilled
+/// NULLs only — a stamp is never overwritten, so a region change preserves
+/// where pre-existing rows lived).
+pub const SCHEMA_VERSION_V1_22_0: &str = "1.22.0";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
@@ -76,6 +81,31 @@ pub fn schema_version(db: &Connection) -> Option<String> {
         |r| r.get::<_, String>(0),
     )
     .ok()
+}
+
+// ── v1.22.0 "Regulated" M3: region pin (data residency) ─────────────────────
+
+/// The residency stamp for this deployment, from `BRAIN_REGION` (e.g.
+/// `eu-west-1`, `ph-manila`). Unset/invalid → `None` (no stamp — pre-v1.22
+/// behavior). Lives here (lib) because the lib's migration stamps it onto every
+/// chunk; the server binary re-exports it from `config`. Read-only provenance:
+/// the stamp proves *where data lived* — multi-region *routing* is v2.x.
+pub fn region() -> Option<String> {
+    region_from(std::env::var("BRAIN_REGION").ok().as_deref())
+}
+
+/// Pure resolver (the `resolve_root` pattern — tests never mutate process env).
+/// Shape: lowercase alnum + hyphen, 1..=63 chars, alnum first (the domain
+/// charset minus `_`) — a region is a label stamped into rows + certificates,
+/// so it must stay inert (no separators, no spaces, no case games).
+pub fn region_from(raw: Option<&str>) -> Option<String> {
+    let r = raw?.trim().to_string();
+    let ok = !r.is_empty()
+        && r.len() <= 63
+        && r.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && r.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    ok.then_some(r)
 }
 
 /// Validate a domain name is safe to use as a filename. Matches the handler
@@ -278,6 +308,34 @@ mod tests {
         assert!(layout.root().ends_with(".openclaw/workspace"));
         assert!(layout.legacy_db().starts_with(layout.root()));
         assert!(layout.legacy_db().ends_with("brain.db"));
+    }
+
+    #[test]
+    fn region_from_accepts_valid_residency_labels_and_rejects_unsafe_ones() {
+        // M3 "Regulated": the residency stamp is inert (lowercase alnum +
+        // hyphen, 1..=63, alnum first) so it is safe to bake into rows +
+        // certificates. Uppercase, separators, spaces, empties and over-long
+        // labels are refused rather than stamped (fail-closed provenance).
+        assert_eq!(
+            region_from(Some("eu-west-1")),
+            Some("eu-west-1".to_string())
+        );
+        assert_eq!(
+            region_from(Some("ph-manila")),
+            Some("ph-manila".to_string())
+        );
+        assert_eq!(
+            region_from(Some("  us-east-1  ")),
+            Some("us-east-1".to_string())
+        );
+        assert_eq!(region_from(Some("global")), Some("global".to_string()));
+        assert_eq!(region_from(None), None);
+        assert_eq!(region_from(Some("")), None);
+        assert_eq!(region_from(Some("EU-WEST-1")), None);
+        assert_eq!(region_from(Some("eu west")), None);
+        assert_eq!(region_from(Some("eu/west")), None);
+        assert_eq!(region_from(Some("-eu")), None);
+        assert_eq!(region_from(Some(&"x".repeat(64))), None);
     }
 
     #[test]
