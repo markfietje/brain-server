@@ -127,9 +127,10 @@ pub(crate) fn list(conn: &Connection) -> Result<Vec<Client>, HandlerError> {
 ///    client-row write (`profile::bind` refuses an unknown profile).
 /// 3. Register the client row, idempotent for an already-existent client.
 ///
-/// The caller owns its own connection to the GLOBAL pool; step 1 uses the
-/// registry only. `register` wraps row (3) in a transaction, so a failed bind
-/// never leaves a `clients` row or `domain_profiles` bind (atomicity).
+/// The pool is the GLOBAL pool holding the `clients` (and `domain_profiles`)
+/// tables; step 1 uses the registry only. The bind + row-write run in one
+/// transaction, so a failed bind never leaves a `clients` row or
+/// `domain_profiles` bind (atomicity).
 pub(crate) fn scaffold_and_register(
     registry: &crate::domain_registry::DomainRegistry,
     pool: &crate::Pool,
