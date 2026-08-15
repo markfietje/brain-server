@@ -137,6 +137,8 @@ fn main() {
         // v1.17.1 "Govern": per-kind retention policy + snapshot self-check.
         "retention" => cmd_retention(rest),
         "snapshot-status" => cmd_snapshot_status(rest),
+        // v1.21.0 "Profiles": the use-case onboarding wizard.
+        "setup" => cmd_setup(rest),
         // v1.17.3 "UMP": the §4.3 file binding.
         "ump" => cmd_ump(rest),
         // v1.10.0 "Procedural": procedural memory + deterministic categorization.
@@ -204,6 +206,7 @@ usage:
   brain suggest-metrics [--session S] [--since DATE]
   brain retention get
   brain retention set <kind> <days>
+  brain setup [domain] [--profile NAME] [--yes]
   brain snapshot-status
   brain eval [--floor r5=0.85 r10=0.9]
   brain procedure <title> [--step "title: content" ...] [--domain D]
@@ -1433,6 +1436,171 @@ fn cmd_retention(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     Err("usage: brain retention get | set <kind> <days>".into())
+}
+
+// ── v1.21.0 "Profiles": the use-case onboarding wizard ─────────────────────
+
+/// Pure: render a profile's knobs as the wizard's confirm lines (one knob per
+/// line, `null` retention shown as "no decay"). Unit-tested so the wizard's
+/// displayed knobs can't drift from what the server stores.
+fn render_knobs(p: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(s) = p["default_access_scope"].as_str() {
+        out.push(format!("default access scope: {s}"));
+    }
+    if let Some(m) = p["pii_mode"].as_str() {
+        out.push(format!("pii mode:              {m}"));
+    }
+    if let Some(obj) = p["retention"].as_object() {
+        if obj.is_empty() {
+            out.push("retention:             no decay (empty policy)".into());
+        } else {
+            let parts: Vec<String> = obj
+                .iter()
+                .map(|(k, v)| {
+                    format!(
+                        "{k}={}",
+                        v.as_i64()
+                            .map(|d| format!("{d}d"))
+                            .unwrap_or_else(|| "no-decay".into())
+                    )
+                })
+                .collect();
+            out.push(format!("retention:             {}", parts.join(", ")));
+        }
+    }
+    if let Some(a) = p["audit_level"].as_str() {
+        out.push(format!("audit level:           {a}"));
+    }
+    if let Some(ks) = p["kinds"].as_array() {
+        let parts: Vec<&str> = ks.iter().filter_map(|k| k.as_str()).collect();
+        out.push(format!("allowed kinds:         {}", parts.join(", ")));
+    }
+    if let Some(cs) = p["connectors_allowed"].as_array() {
+        let parts: Vec<&str> = cs.iter().filter_map(|c| c.as_str()).collect();
+        let joined = if parts.is_empty() {
+            "(none — air-gap)".to_string()
+        } else {
+            parts.join(", ")
+        };
+        out.push(format!("connectors allowed:    {joined}"));
+    }
+    if let Some(h) = p["legal_hold_default"].as_bool() {
+        out.push(format!("legal hold default:    {h}"));
+    }
+    out
+}
+
+/// Read one trimmed line from stdin (the wizard's prompts).
+fn read_line(prompt: &str) -> Result<String, String> {
+    use std::io::Write as _;
+    print!("{prompt} ");
+    let _ = std::io::stdout().flush();
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(|e| format!("stdin: {e}"))?;
+    Ok(buf.trim().to_string())
+}
+
+/// `brain setup [domain] [--profile NAME] [--yes]` — the use-case wizard:
+/// pick a preset, see the knobs it sets, bind it to a domain. The output is a
+/// live configured store in under a minute — no feature tours. Non-interactive
+/// form (`--profile` + `--yes`) is the scriptable path. The profile sets
+/// DEFAULTS; an explicit row value always wins; existing rows are untouched.
+fn cmd_setup(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let domain = positionals
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "global".to_string());
+    let chosen = flags.get("profile").and_then(|o| o.clone());
+    let yes = flags.contains_key("yes");
+
+    // The pick list (seeded presets + operator clones).
+    let resp = get(&base_url(), "/profiles", &[], auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    let profiles: Vec<serde_json::Value> = v["profiles"]
+        .as_array()
+        .cloned()
+        .ok_or("server returned no profile list")?;
+    if profiles.is_empty() {
+        return Err("server has no profiles (migration did not seed presets?)".into());
+    }
+
+    let pick = match &chosen {
+        Some(name) => profiles
+            .iter()
+            .find(|p| p["name"].as_str() == Some(name.as_str()))
+            .cloned()
+            .ok_or_else(|| format!("no profile named '{name}'"))?,
+        None => {
+            // The wizard step: "What best describes your team?"
+            println!("What best describes your team?");
+            for (i, p) in profiles.iter().enumerate() {
+                let name = p["name"].as_str().unwrap_or("?");
+                let desc = p["description"].as_str().unwrap_or("");
+                println!("  {:>2}. {name:<20} {desc}", i + 1);
+            }
+            loop {
+                let a = read_line("Pick a number (q to quit):")?;
+                if a == "q" || a.is_empty() {
+                    return Ok(());
+                }
+                let n: usize = a
+                    .parse()
+                    .map_err(|_| format!("enter a number 1-{} or q", profiles.len()))?;
+                if n >= 1 && n <= profiles.len() {
+                    break profiles[n - 1].clone();
+                }
+                eprintln!("  (pick 1-{})", profiles.len());
+            }
+        }
+    };
+    let name = pick["name"].as_str().unwrap_or("?").to_string();
+
+    println!("\nProfile '{name}' sets these knobs for domain '{domain}':");
+    for line in render_knobs(&pick) {
+        println!("  {line}");
+    }
+    println!("  (defaults only — an explicit row value always wins)");
+
+    if !yes {
+        let a = read_line(&format!("Bind '{name}' to '{domain}'? [y/N]"))?;
+        if !a.eq_ignore_ascii_case("y") {
+            println!("aborted (nothing changed)");
+            return Ok(());
+        }
+    }
+
+    let body = serde_json::json!({ "profile": name }).to_string();
+    let path = format!("/domains/{domain}/profile");
+    let resp = post(
+        &base_url(),
+        &path,
+        &[],
+        "application/json",
+        &body,
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "bind failed (status {}): {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("\nbound: domain '{domain}' → profile '{name}'");
+    println!("next: ingest something and check the Health panel (brain doctor / brain status)");
+    Ok(())
 }
 
 /// `brain snapshot-status` — run the snapshot self-check panel and exit
@@ -3150,4 +3318,40 @@ mod tests {
             "refuses to overwrite an existing key"
         );
     }
+}
+
+/// v1.21.0 "Profiles": the wizard's confirm lines render every knob the
+/// chosen preset sets — the display can't drift from the stored shape.
+#[test]
+fn setup_render_knobs_shows_every_set_knob() {
+    let p: serde_json::Value = serde_json::from_str(
+        r#"{"name":"call-center","default_access_scope":"private","pii_mode":"standard",
+                "retention":{"fact":730,"episodic":90},
+                "audit_level":"verbose","kinds":["fact","episodic"],
+                "connectors_allowed":["crm"],"legal_hold_default":false}"#,
+    )
+    .expect("preset parses");
+    let lines = render_knobs(&p);
+    let all = lines.join("\n");
+    for want in [
+        "default access scope: private",
+        "pii mode:              standard",
+        "retention:             episodic=90d, fact=730d",
+        "audit level:           verbose",
+        "allowed kinds:         fact, episodic",
+        "connectors allowed:    crm",
+        "legal hold default:    false",
+    ] {
+        assert!(all.contains(want), "missing {want:?} in:\n{all}");
+    }
+    // null retention = explicit no-decay for that kind.
+    let q: serde_json::Value =
+        serde_json::from_str(r#"{"name":"health-hipaa","retention":{"fact":null,"episodic":90}}"#)
+            .unwrap();
+    let lines = render_knobs(&q).join("\n");
+    assert!(lines.contains("episodic=90d, fact=no-decay"), "{lines}");
+    // An empty policy = nothing decays (the smb-simple posture).
+    let e: serde_json::Value =
+        serde_json::from_str(r#"{"name":"smb-simple","retention":{}}"#).unwrap();
+    assert!(render_knobs(&e).join("\n").contains("no decay"));
 }
