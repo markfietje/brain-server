@@ -2,7 +2,7 @@ pub fn scope_violation(restricted: bool, domains: &[String]) -> bool {
     restricted && domains.iter().any(|d| d != "global")
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn scorecard(in_scope: bool, cited: bool, confident: bool) -> i64 {
     let base = if in_scope { 50 } else { 0 };
     base + if cited { 30 } else { 0 } + if confident { 20 } else { 10 }
