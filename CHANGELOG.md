@@ -4,6 +4,15 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+Release-notes convention (v1.21.0+): every section splits into `### Release
+notes` (written for USERS — **Bug fixes** / **Improvements** /
+**Security fixes**, marked "None" when a category is empty) followed by
+`### Engineering record` (the milestone detail, validation counts, honest
+ceilings). The release workflow publishes ONLY the `### Release notes` block
+as the GitHub release body (older sections fall back to the intro paragraph)
+and strips internal references (implementation plans, agent history) before
+publishing.
+
 Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
@@ -22,6 +31,46 @@ bound to a domain, read at request time. The invariant throughout: **the
 profile sets defaults, the row wins**; a domain with no bound profile is
 byte-identical to pre-v1.21 (the back-compat test pins this). See
 `IMPLEMENTATION_PLAN_v1.21.0_Profiles.md` + `USE_CASES.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Profiles** — a preset bundle of governance defaults (default access
+  scope, PII posture, per-kind retention, audit level, allowed memory kinds)
+  that binds to any domain. Takes effect at the next request — no restart,
+  no re-ingest; profiles set defaults, an explicit per-row value always
+  wins, and an unbound domain behaves exactly as before.
+- **12 ship-with presets** for common team postures (health/HIPAA, call
+  center, sales, engineering, HR, finance/SOX, government, small business,
+  and more) — curated starting points, every field editable via the API.
+- **Onboarding wizard** — `brain setup` (CLI) and a "What best describes
+  your team?" step in the web client: pick a preset, see the knobs it sets,
+  apply. A configured store in under a minute.
+- **Friendlier retention on ingest** — new `ttl_days` field (expiry in days
+  from now) alongside the absolute `expires_at`.
+- **Per-domain retention schedules** — a bound profile's retention replaces
+  the server-wide policy for that domain, including "this kind never
+  decays"; recall and the decay review view both honor it.
+- **Profile API + visibility** — `GET /profiles`, profile upsert, and the
+  domain bind/unbind endpoints (documented in the OpenAPI spec); the client
+  Health panel shows the active profile and its effective knobs.
+
+**Security fixes**
+
+- New `pii_mode: strict` profile posture: emails, phone numbers, and card
+  numbers are masked **before storage** (one-way placeholders — the raw
+  values never reach the database). Previously masking happened only when
+  content was read back.
+- A domain bound to an unreadable or tampered profile now **fails closed**
+  (the ingest is refused) instead of silently proceeding without the
+  policy.
+
+### Engineering record
 
 - **M1 — apply semantics** (`src/profile.rs`, new lib module + migration).
   `profiles(name PK, json)` + `domain_profiles(domain PK → profile)` tables
