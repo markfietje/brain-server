@@ -45,11 +45,31 @@ pub fn connector_state_cls(state: &str) -> &'static str {
     }
 }
 
+/// The panel a role-view resolves to. `Undefined` → `Stock`: a non-BPO
+/// principal (agent/staff/no-roles) reaching `/clients` directly (palette or
+/// deep link) gets the stock operations console, never the all-clients BPO
+/// board. Pure so the security property is unit-testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsolePanel {
+    ClientAdmin,
+    BpoOps,
+    Stock,
+}
+
+pub fn console_panel(view: crate::role::ConsoleView) -> ConsolePanel {
+    match view {
+        crate::role::ConsoleView::ClientAdmin => ConsolePanel::ClientAdmin,
+        crate::role::ConsoleView::BpoOps => ConsolePanel::BpoOps,
+        crate::role::ConsoleView::Undefined => ConsolePanel::Stock,
+    }
+}
+
 pub fn panel() -> Element {
     let api = use_context::<Signal<ApiClient>>();
-    match crate::role::console_view(&api().roles()) {
-        crate::role::ConsoleView::ClientAdmin => client_admin(),
-        _ => bpo_ops(),
+    match console_panel(crate::role::console_view(&api().roles())) {
+        ConsolePanel::ClientAdmin => client_admin(),
+        ConsolePanel::BpoOps => bpo_ops(),
+        ConsolePanel::Stock => crate::panels::ops::panel(),
     }
 }
 
@@ -211,6 +231,7 @@ fn bpo_ops() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::role::ConsoleView;
 
     fn row(name: &str, domain: &str) -> ClientRow {
         ClientRow {
@@ -222,6 +243,20 @@ mod tests {
             created_at: None,
             archived_at: None,
         }
+    }
+
+    #[test]
+    fn console_panel_maps_each_view_exactly() {
+        assert_eq!(
+            console_panel(ConsoleView::ClientAdmin),
+            ConsolePanel::ClientAdmin
+        );
+        assert_eq!(console_panel(ConsoleView::BpoOps), ConsolePanel::BpoOps);
+        assert_eq!(
+            console_panel(ConsoleView::Undefined),
+            ConsolePanel::Stock,
+            "non-BPO principal never gets the all-clients BPO board"
+        );
     }
 
     #[test]
