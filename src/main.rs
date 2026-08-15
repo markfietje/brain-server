@@ -4719,6 +4719,7 @@ async fn main_inner() -> Result<()> {
             get(handlers::clients::get_client_dpa),
         )
         .route("/clients/{name}/dsar", post(handlers::clients::client_dsar))
+        .route("/clients/{name}/hold", post(handlers::clients::client_hold))
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -9496,6 +9497,7 @@ Final paragraph after the rule.";
             "/clients/{name}",
             "/clients/{name}/dpa",
             "/clients/{name}/dsar",
+            "/clients/{name}/hold",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10435,6 +10437,7 @@ Final paragraph after the rule.";
             ("/clients/{name}", "Admin"),
             ("/clients/{name}/dpa", "Admin"),
             ("/clients/{name}/dsar", "Admin"),
+            ("/clients/{name}/hold", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
@@ -10569,7 +10572,7 @@ Final paragraph after the rule.";
             // shared `run_*`/`*_one` core (the `/recall` + `/ingest` bindings
             // route through `run_recall`/`ingest_one`), so the scan follows
             // the delegation when the handler itself delegates.
-            let delegated_gate = ["run_recall(", "ingest_one("]
+            let delegated_gate = ["run_recall(", "ingest_one(", "post_legal_hold_for_domain("]
                 .into_iter()
                 .find(|d| body.contains(d))
                 .and_then(|core| handler_body(src, &core[..core.len() - 1]))
@@ -10580,7 +10583,7 @@ Final paragraph after the rule.";
             );
             let action_ok = body.contains(&format!("Action::{action}"))
                 || (delegated_gate
-                    && ["run_recall(", "ingest_one("]
+                    && ["run_recall(", "ingest_one(", "post_legal_hold_for_domain("]
                         .into_iter()
                         .find(|d| body.contains(d))
                         .and_then(|core| handler_body(src, &core[..core.len() - 1]))

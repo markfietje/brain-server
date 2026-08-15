@@ -34,22 +34,38 @@ pub struct HoldResponse {
     pub hold_ids: Vec<i64>,
 }
 
-/// `POST /legal-hold` — place one hold per id. Fails closed on unknown ids
-/// (a hold on nothing is operator error, not a silent no-op). Audited.
+/// `POST /legal-hold` — place a hold on the `global` (or `?domain=`) pool.
+/// Composes the shared per-domain hold write (`post_legal_hold_for_domain`).
 pub async fn post_legal_hold(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
     Json(req): Json<HoldRequest>,
 ) -> Result<Json<HoldResponse>, HandlerError> {
+    let domain = req.domain.as_deref().unwrap_or("global");
+    post_legal_hold_for_domain(state, principal, domain, req.ids, req.reason).await
+}
+
+/// Shared per-domain hold write: place one hold per id on `domain`'s pool.
+/// Fails closed on unknown ids (a hold on nothing is operator error, not a
+/// silent no-op). Admin + audited. Called by the `/legal-hold` route (with
+/// `global` / its `?domain=`) and `/clients/{name}/hold` (with the client's
+/// domain) — composition keeps the per-isolation write in one place.
+pub(crate) async fn post_legal_hold_for_domain(
+    state: Arc<AppState>,
+    principal: OptPrincipal,
+    domain: &str,
+    ids: Vec<i64>,
+    reason: String,
+) -> Result<Json<HoldResponse>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
-    crate::legal_hold::validate(&req.ids, &req.reason)?;
-    let reason = req.reason.trim().to_string();
+    crate::legal_hold::validate(&ids, &reason)?;
+    let reason = reason.trim().to_string();
     let held_by = principal
         .0
         .as_ref()
         .map(|p| p.sub.clone())
         .unwrap_or_else(|| "loopback".to_string());
-    let pool = super::resolve_domain_pool(&state.registry, req.domain.as_deref())?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
     let pool_for = pool.clone();
     let reason_for = reason.clone();
 
@@ -68,7 +84,7 @@ pub async fn post_legal_hold(
                 let mut exists = tx
                     .prepare("SELECT COUNT(*) FROM knowledge WHERE id = ?1")
                     .map_err(|e| HandlerError::internal(e.to_string()))?;
-                for id in &req.ids {
+                for id in &ids {
                     let n: i64 = exists
                         .query_row(rusqlite::params![id], |r| r.get(0))
                         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -83,7 +99,7 @@ pub async fn post_legal_hold(
             }
             let now = chrono::Utc::now().timestamp();
             let created =
-                crate::legal_hold::insert_holds(&tx, &req.ids, &reason_for, Some(&held_by), now)?;
+                crate::legal_hold::insert_holds(&tx, &ids, &reason_for, Some(&held_by), now)?;
             tx.commit()
                 .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
             Ok((created.len(), created))
