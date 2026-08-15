@@ -52,6 +52,9 @@ pub enum AuditKind {
     Recall,
     Search,
     Get,
+    /// v1.25.0 "PH-Compliant" M2: breach workflow events (open/notification/
+    /// close) — the DPO incident ledger mirrors the hash chain.
+    Breach,
 }
 
 impl AuditKind {
@@ -66,6 +69,7 @@ impl AuditKind {
             AuditKind::Recall => "recall",
             AuditKind::Search => "search",
             AuditKind::Get => "get",
+            AuditKind::Breach => "breach",
         }
     }
 }

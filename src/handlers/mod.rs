@@ -21,6 +21,7 @@
 //!    changing the contract.
 
 pub mod auth;
+pub mod breaches;
 pub mod connectors;
 pub mod consolidate;
 pub mod domains;
