@@ -152,25 +152,7 @@ pub async fn post_dsar(
     principal: OptPrincipal,
     Json(req): Json<DsarRequest>,
 ) -> Result<Json<DsarResponse>, HandlerError> {
-    let subject = req.subject.trim().to_string();
-    if subject.is_empty() {
-        return Err(HandlerError::bad_request(
-            "subject_empty",
-            "dsar subject must not be empty",
-        ));
-    }
-    if subject.len() > MAX_QUERY {
-        return Err(HandlerError::bad_request(
-            "subject_too_long",
-            format!("subject exceeds {MAX_QUERY} characters"),
-        ));
-    }
-    if !matches!(req.action.as_str(), "export" | "purge" | "both") {
-        return Err(HandlerError::bad_request(
-            "invalid_action",
-            "dsar action must be export|purge|both",
-        ));
-    }
+    let subject = normalize_dsar_subject(&req.subject, &req.action)?;
     // Erasure is irreversible: Admin.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let action = req.action.clone();
@@ -433,6 +415,145 @@ enum DsarOutcome {
         created_at: i64,
     },
     Footprint(Footprint),
+}
+
+/// Trim + validate a DSAR subject + action, shared by every DSAR surface so the
+/// trust-boundary checks live in exactly one place (`subject_empty`,
+/// `subject_too_long`, `invalid_action`).
+fn normalize_dsar_subject(subject: &str, action: &str) -> Result<String, HandlerError> {
+    let subject = subject.trim().to_string();
+    if subject.is_empty() {
+        return Err(HandlerError::bad_request(
+            "subject_empty",
+            "dsar subject must not be empty",
+        ));
+    }
+    if subject.len() > MAX_QUERY {
+        return Err(HandlerError::bad_request(
+            "subject_too_long",
+            format!("subject exceeds {MAX_QUERY} characters"),
+        ));
+    }
+    if !matches!(action, "export" | "purge" | "both") {
+        return Err(HandlerError::bad_request(
+            "invalid_action",
+            "dsar action must be export|purge|both",
+        ));
+    }
+    Ok(subject)
+}
+
+/// Run a DSAR against ONE domain pool and produce the full `DsarResponse`
+/// (certificate or dry-run footprint), jurisdiction-stamped. The shared seam
+/// for the per-client surface — the real locate/purge/export/certificate +
+/// legal-hold deferral all live in `run_dsar_pool`; this only composes a single
+/// run with the caller's resolved pool + jurisdiction + mechanism (no new purge
+/// path). The audit + chain anchor stay on the global pool (the hash chain is
+/// the server's single registry of record), while the ledger row lives in the
+/// run's domain pool.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_dsar_subject(
+    state: Arc<AppState>,
+    principal: OptPrincipal,
+    pool: crate::Pool,
+    subject: &str,
+    action: &str,
+    dry_run: bool,
+    jurisdiction: Option<String>,
+    mechanism: Option<String>,
+    now: i64,
+) -> Result<DsarResponse, HandlerError> {
+    let subject = subject.to_string();
+    let action = action.to_string();
+    let mech_for_cert = mechanism.map(|m| m.trim().to_string());
+    let state_for = state.clone();
+    tokio::task::spawn_blocking(move || -> Result<DsarResponse, HandlerError> {
+        let subject = normalize_dsar_subject(&subject, &action)?;
+        super::authorize_role(&principal.0, &pool, "dsar_export")?;
+        let rights: Vec<&'static str> = jurisdiction
+            .as_deref()
+            .and_then(crate::transfers::jurisdiction_rule)
+            .map(|r| r.rights.to_vec())
+            .unwrap_or_default();
+        let run = run_dsar_pool(&pool, &subject, &action, dry_run, now, true, None)?;
+        if dry_run {
+            return Ok(DsarResponse {
+                id: 0,
+                subject: String::new(),
+                status: "preview",
+                created_at: 0,
+                deadline: 0,
+                jurisdiction: None,
+                rights: Vec::new(),
+                certificate: None,
+                footprint: Some(Footprint {
+                    roots: run.roots,
+                    derived: run.derived,
+                    export_rows: run.export_rows,
+                    tombstones: run.tombstones,
+                    dsar_rows: run.dsar_rows,
+                    dry_run: true,
+                }),
+            });
+        }
+        let ledger_id = run
+            .ledger_id
+            .ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
+        let global_conn = state_for
+            .pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        crate::audit::record(
+            &global_conn,
+            crate::audit::AuditKind::Client,
+            "api",
+            &format!("client-dsar:{subject}"),
+            crate::audit::AuditStatus::Ok,
+            "dsar",
+        );
+        let chain_head = crate::audit::chain_head(&global_conn);
+        let certified_at = chrono::Utc::now().to_rfc3339();
+        let certificate = serde_json::json!({
+            "subject": subject,
+            "action": action,
+            "found_count": run.roots + run.derived,
+            "purged_ids": run.purged_ids,
+            "region": brain_server::storage_layout::region(),
+            "held_ids": run.held,
+            "jurisdiction": jurisdiction,
+            "mechanism": mech_for_cert,
+            "tombstone_root": run.tombstone_root,
+            "certified_at": certified_at,
+            "chain_head": chain_head,
+        })
+        .to_string();
+        let conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let _ = conn.execute(
+            "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
+            rusqlite::params![certificate, ledger_id],
+        );
+        let deadline = jurisdiction
+            .as_deref()
+            .map(|j| crate::transfers::dsar_deadline_for(now, j))
+            .unwrap_or_else(|| dsar_deadline(now));
+        let cert: serde_json::Value = serde_json::from_str(&certificate)
+            .map_err(|_| HandlerError::internal("stored certificate is not valid JSON"))?;
+        Ok(DsarResponse {
+            id: ledger_id,
+            subject,
+            status: "completed",
+            created_at: now,
+            deadline,
+            jurisdiction,
+            rights,
+            certificate: Some(cert),
+            footprint: None,
+        })
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
 }
 
 // ---------------------------------------------------------------------------
