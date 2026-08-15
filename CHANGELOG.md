@@ -19,6 +19,71 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.13] — 2026-08-16
+
+### Patch — "Contract"
+
+Server + client patch release (server + client `Cargo.toml`/locks
+`1.27.12` → **`1.27.13`**; plugin **0.4.3**, first released here). Ships the
+two post-1.27.12 integrity fixes and completes the documentation contract:
+every documented endpoint now states its response body.
+
+### Release notes
+
+**Bug fixes**
+- Client: detail-modal approvals now forward the server `content_digest`
+  like the queue and batch paths already did — previously a modal approval
+  sent no digest, so a drifted (tampered or stale) proposal could still be
+  approved from the detail view. The decision now binds to the bytes
+  displayed in every client path.
+- Plugin: the provenance tag labels (`src`/`mk`/`lb`/`reg`) rendered inside
+  the `UNTRUSTED_*` fence now run through `sanitizeForBlock` like hit
+  bodies — a recalled chunk can no longer forge its own attribution line
+  or break the fence markers through a label.
+
+**Improvements**
+- The OpenAPI contract (`GET /openapi.yaml`) now documents the response
+  body of every `200`/`201` endpoint: 51 previously description-only
+  responses carry wire-exact examples, and `/auth/logout` is corrected to
+  its real contract (204 on success, 401 when no principal is presented).
+- Docs: the endpoint inventory in `docs/api.md` and the README API tables
+  now cover the full v1.21–v1.27 surface (profiles, roles, connectors,
+  domains, clients register, cross-border transfers, breach, legal hold).
+
+**Security fixes**
+- None beyond the two integrity bug fixes above (no new surface; the
+  fixes close gaps in the v1.27.12 features).
+
+### Engineering record
+
+- **Client fix:** `client/src/panels/review.rs` `DetailActions` now passes
+  `Some(&digest)` (previously `None`), matching the queue quick-approve and
+  batch paths. The key-accelerator quick-approve, ops panel, and offline
+  replay still deliberately pass `None` (the documented legacy path; the
+  server enforces the binding only when a digest is present).
+- **Plugin fix:** the `[src: · mk: · lb: · reg:]` provenance line (v1.27.12)
+  labels pass through the same sanitizer as hit bodies before rendering.
+- **Contract pass:** `openapi.yaml` examples were extracted from the
+  handler sources (BreachView, Transfer, TiaTemplate, DpaTerms, Client,
+  LegalHoldRow, DsarResponse, DsarLedgerRow, AuditRow, capabilities, recall
+  trace, ProposalView), not guessed; YAML validated and
+  `test_openapi_covers_routes` + `authz_gates_cover_every_non_public_route`
+  re-pinned. The `x-api-version: "1.21.0"` contract stamp is unchanged
+  (the wire contract did not move; the runtime `X-Api-Version` header
+  follows `CARGO_PKG_VERSION` as before).
+- Tests: server bin **626** passed / 6 ignored, lib 105 / 1 ignored, brain
+  12, mcp 15, bench 5 (`--features bench`); client **124** passed; clippy
+  `-D warnings` + fmt clean on both trees; `cargo audit` clean (2
+  allowlisted warnings); UMP conformance **L3**; recall eval gate r@5 0.919
+  / r@10 0.919 / mrr 0.905 (floor 0.850).
+- Honest ceilings: the contract pass documents shapes that were already
+  shipping — it changes no wire behavior; the detail-modal fix binds the
+  digest but legacy no-digest approvals remain accepted by design
+  (backward compat); ROADMAP.md's Caliber-line header is intentionally not
+  touched (the v1.27 line has never updated it).
+
+---
+
 ## [1.27.12] — 2026-08-15
 
 ### Security — "ReviewArmour · Rotate · Provenance"

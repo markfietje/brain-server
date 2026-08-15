@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.27.12-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.27.13-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2021-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -21,7 +21,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](docs/universal-memory-protocol.md)
-  [![Tests](https://img.shields.io/badge/tests-773%20passed%20%2F%207%20ignored-brightgreen.svg)](#)
+  [![Tests](https://img.shields.io/badge/tests-782%20passed%20%2F%207%20ignored-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
   [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)
@@ -176,23 +176,57 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 | POST | `/recall` | Structured recall, the primary endpoint. |
 | POST | `/ingest` · `/ingest/markdown` · `/ingest/memory` | Ingest structured, markdown, or memory. |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunks by id. |
-| GET | `/graph/entity/{name}` · `/graph/traverse` | Knowledge-graph queries. |
+| GET | `/graph/entity/{name}` · `/graph/relations` · `/graph/traverse` | Knowledge-graph queries (bounded walks, hop explanations). |
 | POST | `/verify` | Claim span verification. |
 | POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization and decision rules. |
+| POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint. |
+| POST | `/reindex` · GET `/metrics` · GET `/events` | Index rebuild, Prometheus metrics, SSE event feed. |
 
 **Governance and write-back**
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/ingest/proposal` · `/proposals/{id}/approve` | Human-in-the-loop write-back. |
+| POST | `/ingest/proposal` · `/proposals/{id}/approve` · `/reject` · `/proposals/{id}/edit` | Human-in-the-loop write-back; approvals bind to the displayed bytes (`content_digest`, v1.27.12). |
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation. |
-| POST | `/dsar` · GET `/tombstones` | DSAR and the deletion registry. |
+| POST | `/dsar` · GET `/tombstones` | DSAR (with dry-run footprint preview) and the deletion registry. |
 | GET | `/dsar/{id}/certificate` · `/recall/{trace_id}/trace` | DSAR certificates and recall decision traces. |
 | GET | `/audit` · `/audit/verify` | Audit log and chain integrity. |
 | POST | `/suggest` · `/suggest/feedback` | Opt-in anticipation. |
-| GET | `/export` · POST `/purge` | GDPR export and hard, audited delete. |
-| GET | `/decayed` · `/retention` | Expiry review and per-kind retention. |
-| GET | `/art30` · `/snapshot/status` | Art 30 register and snapshot self-check. |
+| GET | `/export` · POST `/purge` · DELETE `/memory/{id}` | GDPR export and hard, audited deletion. |
+| GET | `/decayed` · `/retention` · `/art30` · `/retention/report` · `/snapshot/status` | Expiry review, per-kind retention, Art 30 register, snapshot self-check. |
+
+**Policy — profiles, roles, connectors**
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET/POST | `/profiles/{name}` · `/domains/{name}/profile` | Preset knob bundles + domain binding (v1.21). |
+| GET/POST | `/roles/{name}` | Role postures and capability sets (v1.23). |
+| GET | `/connectors` · POST `/connectors/register` | Connector registry, profile-gated registration (v1.24). |
+
+**Domains**
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET/POST | `/domains` | List (per-domain counts) / create a domain pool. |
+| DELETE | `/domains/{name}?confirm=<name>` | Delete a domain (echo-confirm; `global` protected). |
+| POST | `/domains/{name}/vacuum` · `/domains/recompute` · `/domains/move` | Reclaim pages, recompute centroids, bulk relabel. |
+| GET/POST | `/domains/{name}/export` · `/domains/{name}/import` | Consistent SQLite snapshot out / restore into a new domain. |
+
+**BPO clients register (v1.27)**
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST/GET | `/clients` · GET `/clients/{name}` | Client register (one domain per client; auditor row-filtering). |
+| POST | `/clients/{name}/dsar` · `/clients/{name}/hold` · `/clients/{name}/end` | Per-client DSAR, legal hold, termination. |
+| GET | `/clients/{name}/proposals` | Supervisor QA queue. |
+
+**Compliance — breach, legal hold, transfers**
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/legal-hold` · `/legal-hold/{id}/release` · GET `/legal-holds` | Per-domain holds; held ids frozen (v1.22). |
+| POST | `/breach` · `/breach/{id}/event` · `/breach/{id}/close` | Breach-notification workflow with jurisdiction deadlines (v1.25). |
+| POST/GET | `/transfers` · GET `/transfers/{id}/tia` · `/transfers/{id}/dpa` | Cross-border transfer register + TIA/DPA evidence (v1.26). |
 
 **Portability (UMP 1.0)**
 

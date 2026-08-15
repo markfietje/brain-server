@@ -2193,7 +2193,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"server": {"name": "brain-server", "version": "1.27.12"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                example: {"server": {"name": "brain-server", "version": "1.27.13"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
                 description: 'conformance = L3 when an operator signing key is configured, L2 otherwise'
   /ump/remember:
     post:
@@ -2381,7 +2381,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"server": {"name": "brain-server", "version": "1.27.12"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                example: {"server": {"name": "brain-server", "version": "1.27.13"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
                 description: 'identical payload to /ump/capabilities, mounted on the public well-known surface'
   /events:
     get:
