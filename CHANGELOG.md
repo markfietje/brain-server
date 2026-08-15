@@ -19,6 +19,45 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.0] — 2026-08-15
+
+### Server — "BPO Ops" (series root, staggered)
+
+The parent milestone behind the 1.27.x line
+(`IMPLEMENTATION_PLAN_v1.27.0_BPO_Ops.md`). It was **staggered into a
+compounding chain of ten small, independently-shippable releases** (v1.27.1 …
+v1.27.10) rather than cut as one large release: the full BPO-ops scope (client
+register, onboarding, per-client DPA terms, jurisdiction-aware DSAR, legal-hold
+isolation, termination, QA scoring, the supervisor review surface, role-scoped
+client views, and the client-administration console) was too large for a single
+release to land, review, and verify cleanly. Each sub-release consumes the
+previous one's seams; the register shipped first (v1.27.1) is the spine the
+rest read.
+
+### Release notes
+
+**Improvements**
+
+- **Series-root tracking** — this entry records the `v1.27.0` milestone and
+  its decomposition into v1.27.1 … v1.27.10. No separate binaries were cut for
+  `v1.27.0`; the first shipped code is `v1.27.1` (Clients).
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- Anchor-only release: schema remains **1.27.0** (bumped by v1.27.1) and the
+  crate carries the parent-plan version with no new code — every change ships
+  under a numbered sub-release that follows this entry.
+
+---
+
 ## [1.27.1] — 2026-08-15
 
 ### Server — "Clients" (the BPO operating register)
