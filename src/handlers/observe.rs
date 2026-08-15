@@ -195,7 +195,10 @@ pub async fn post_dsar(
         .and_then(crate::transfers::jurisdiction_rule)
         .map(|r| r.rights.to_vec())
         .unwrap_or_default();
-    let mechanism = req.mechanism.clone();
+    // The mechanism stays free-text (the operator records exactly what they
+    // signed) — whitespace-trimmed only, like the jurisdiction above, so the
+    // certificate carries the label the operator typed.
+    let mechanism = req.mechanism.clone().map(|m| m.trim().to_string());
     let jur_for_cert = jurisdiction.clone();
     let mech_for_cert = mechanism.clone();
 

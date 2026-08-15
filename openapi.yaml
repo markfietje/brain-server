@@ -1602,7 +1602,7 @@ paths:
         "200":
           description: The transfer id + recorded mechanism
         "400":
-          description: Invalid dataset/jurisdiction/mechanism/counterparty/purpose/lawful_basis or non-negative epoch bounds on signed_at/expires_at
+          description: Invalid dataset/jurisdiction/mechanism/counterparty/purpose/lawful_basis or invalid timestamp bounds (non-negative epoch; expires_at not before signed_at)
         "403":
           description: The principal is not admin
     get:

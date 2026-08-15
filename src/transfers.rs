@@ -268,6 +268,16 @@ pub(crate) fn validate_register(
             ));
         }
     }
+    // An agreement cannot expire before it was signed — a backwards-dated row
+    // would be evidence nobody can honestly sign off on.
+    if let (Some(s), Some(e)) = (signed_at, expires_at) {
+        if e < s {
+            return Err(HandlerError::bad_request(
+                "transfer_timestamp_invalid",
+                "expires_at must not precede signed_at",
+            ));
+        }
+    }
     if let Some(b) = lawful_basis {
         let b = b.trim();
         if !LAWFUL_BASISES.contains(&b.to_ascii_lowercase().as_str()) {
@@ -816,6 +826,34 @@ mod tests {
             Some(99)
         )
         .is_ok());
+        // 4th pass: the register must not accept a backwards-dated agreement.
+        assert!(validate_register(
+            "d",
+            "ph",
+            "us",
+            "scc-eu-2021",
+            "C",
+            "p",
+            None,
+            Some(100),
+            Some(99)
+        )
+        .is_err());
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                None,
+                Some(99),
+                Some(99)
+            )
+            .is_ok(),
+            "signed == expiry is valid (same-instant instruments)"
+        );
     }
 
     #[test]
