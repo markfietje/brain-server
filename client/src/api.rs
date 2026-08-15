@@ -222,6 +222,17 @@ impl ApiClient {
             .access
             .clone()
     }
+    /// v1.23.0 "Roles": the JWT `roles` claim of the current access token
+    /// (empty for an opaque/loopback token or a non-JWT). Defense-in-depth UI
+    /// source — brain-server verifies + enforces; the client only reads it for
+    /// button/panel gating. Never used for authorization.
+    pub fn roles(&self) -> Vec<String> {
+        self.access_token()
+            .as_deref()
+            .and_then(decode_claims)
+            .map(|c| c.roles)
+            .unwrap_or_default()
+    }
     fn refresh_token(&self) -> Option<String> {
         self.tokens
             .state
@@ -918,6 +929,8 @@ pub struct TokenClaims {
     pub scope: Option<String>,
     #[serde(default)]
     pub team: Option<String>,
+    #[serde(default)]
+    pub roles: Vec<String>,
 }
 /// v1.16.5 M3: the `/auth/refresh` response pair. Mirrors openapi.yaml's
 /// `TokenPair`; `token_type`/`expires_in` are read but unused by the client.
@@ -2278,6 +2291,7 @@ mod tests {
             exp: Some(now_unix() + 30),
             scope: None,
             team: None,
+            roles: vec![],
         };
         assert!(needs_refresh(Some(&soon)));
         // exp far out → no refresh.
@@ -2286,6 +2300,7 @@ mod tests {
             exp: Some(now_unix() + 3600),
             scope: None,
             team: None,
+            roles: vec![],
         };
         assert!(!needs_refresh(Some(&far)));
         // No exp (opaque token) → never refresh.
@@ -2295,6 +2310,7 @@ mod tests {
             exp: None,
             scope: None,
             team: None,
+            roles: vec![],
         })));
     }
     /// v1.16.5 M1.2: a real JWT payload decodes to its `sub`/`exp`. The header
@@ -2306,6 +2322,7 @@ mod tests {
             exp: Some(1750000000),
             scope: Some("read:global".into()),
             team: Some("alpha".into()),
+            roles: vec!["dpo".into()],
         };
         let payload = serde_json::to_string(&claims).unwrap();
         let b64 = base64url_encode(payload.as_bytes());
@@ -2352,11 +2369,13 @@ mod tests {
             exp: Some(now_unix() + 300),
             scope: None,
             team: None,
+            roles: vec![],
         };
         let payload = base64url_encode(serde_json::to_string(&claims).unwrap().as_bytes());
         let jwt = format!("e30.{payload}.e30");
         let c = ApiClient::with_refresh_pair("http://h", Some(jwt.clone()), Some("rt".to_string()));
         assert_eq!(c.principal(), Some("user:carol"));
+        assert!(c.roles().is_empty(), "no roles claim → empty");
 
         // A JWT without a sub still shows something for the identity pillar.
         let no_sub = TokenClaims {
@@ -2364,6 +2383,7 @@ mod tests {
             exp: None,
             scope: None,
             team: None,
+            roles: vec![],
         };
         let p2 = base64url_encode(serde_json::to_string(&no_sub).unwrap().as_bytes());
         let c2 = ApiClient::with_refresh_pair("http://h", Some(format!("e30.{p2}.e30")), None);

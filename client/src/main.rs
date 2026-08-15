@@ -24,6 +24,9 @@ use panels::{
 // The serde round-trip tests pin them; not dead, just waiting.
 #[allow(dead_code)]
 mod api;
+// v1.23.0 M3 "Roles": client-side role capability + panel-visibility helpers
+// (defense-in-depth UI only — the server enforces). See the module.
+mod role;
 // v1.16.8 M1–M5: i18n (t / LOCALE), RTL readiness, theme + density toggles,
 // and locale-aware number formatting. Zero-dep FTL parsing — see the module.
 mod i18n;
@@ -954,6 +957,10 @@ fn AppShell() -> Element {
     let disconnected = t("disconnected");
     let reverifying = t("reverifying");
 
+    // v1.23.0 M3 "Roles": the resolved role names gate which nav panels render
+    // (defense-in-depth — the server still enforces the underlying endpoints).
+    let nav_roles = api().roles();
+
     // v1.16.7 M5: cmd/ctrl+K toggles the command palette. Handled on the shell
     // root (focused by default when the app has focus); the palette's own input
     // captures its keys while open.
@@ -990,12 +997,20 @@ fn AppShell() -> Element {
                     NavLink { to: Route::Review {}, "{nav_review}" }
                     NavLink { to: Route::Recall {}, "{nav_recall}" }
                     NavLink { to: Route::Graph {}, "{nav_graph}" }
-                    NavLink { to: Route::Subjects {}, "{nav_subjects}" }
-                    NavLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
-                    NavLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
+                    if role::role_can_see(&nav_roles, "subjects") {
+                        NavLink { to: Route::Subjects {}, "{nav_subjects}" }
+                    }
+                    if role::role_can_see(&nav_roles, "security") {
+                        NavLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
+                    }
+                    if role::role_can_see(&nav_roles, "audit") {
+                        NavLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
+                    }
                     NavLink { to: Route::Create {}, "{nav_create}" }
                     NavLink { to: Route::Health {}, "{nav_health}" }
-                    NavLink { to: Route::Data {}, "{nav_data}" }
+                    if role::role_can_see(&nav_roles, "data") {
+                        NavLink { to: Route::Data {}, "{nav_data}" }
+                    }
                     NavLink { to: Route::Ump {}, "{nav_ump}" }
                     NavLink { to: Route::System {}, "{nav_system}" }
                     NavLink { to: Route::Ops {}, "{nav_ops}" }
@@ -1037,12 +1052,20 @@ fn AppShell() -> Element {
                 TabLink { to: Route::Review {}, "{nav_review}" }
                 TabLink { to: Route::Recall {}, "{nav_recall}" }
                 TabLink { to: Route::Graph {}, "{nav_graph}" }
-                TabLink { to: Route::Subjects {}, "{nav_subjects}" }
-                TabLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
-                TabLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
+                if role::role_can_see(&nav_roles, "subjects") {
+                    TabLink { to: Route::Subjects {}, "{nav_subjects}" }
+                }
+                if role::role_can_see(&nav_roles, "security") {
+                    TabLink { to: Route::Security {}, badge: Some(security_badge), "{nav_security}" }
+                }
+                if role::role_can_see(&nav_roles, "audit") {
+                    TabLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
+                }
                 TabLink { to: Route::Create {}, "{nav_create}" }
                 TabLink { to: Route::Health {}, "{nav_health}" }
-                TabLink { to: Route::Data {}, "{nav_data}" }
+                if role::role_can_see(&nav_roles, "data") {
+                    TabLink { to: Route::Data {}, "{nav_data}" }
+                }
                 TabLink { to: Route::Ump {}, "{nav_ump}" }
                 TabLink { to: Route::System {}, "{nav_system}" }
                 TabLink { to: Route::Ops {}, "{nav_ops}" }

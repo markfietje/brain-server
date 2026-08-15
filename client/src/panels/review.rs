@@ -1151,10 +1151,12 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
             }
         });
     };
+    let gates = crate::role::role_allows(&api().roles(), "approve");
+    let gatej = crate::role::role_allows(&api().roles(), "reject");
     rsx! {
         div { class: "flex gap-2 items-center flex-wrap",
-            button { class: "btn btn-primary btn-md", disabled: !writes, onclick: approve, {crate::i18n::t("approve")} }
-            button { class: "btn btn-destructive btn-md", disabled: !writes, onclick: reject, {crate::i18n::t("reject")} }
+            button { class: "btn btn-primary btn-md", disabled: !writes || !gates, onclick: approve, {crate::i18n::t("approve")} }
+            button { class: "btn btn-destructive btn-md", disabled: !writes || !gatej, onclick: reject, {crate::i18n::t("reject")} }
             if !state().is_empty() { span { class: "text-danger text-sm", "{state}" } }
         }
     }
