@@ -212,6 +212,7 @@ usage:
 brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]
   brain client dpa get <name>
   brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S
+  brain client hold add <name> <id> [<id> ...] --reason R | list <name>
   brain snapshot-status
   brain eval [--floor r5=0.85 r10=0.9]
   brain procedure <title> [--step "title: content" ...] [--domain D]
@@ -1636,9 +1637,97 @@ fn cmd_client(args: &[String]) -> Result<(), String> {
         Some("add") => cmd_client_add(&args[1..]),
         Some("dpa") => cmd_client_dpa(&args[1..]),
         Some("dsar") => cmd_client_dsar(&args[1..]),
+        Some("hold") => cmd_client_hold(&args[1..]),
         _ => Err(
-            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]"
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>"
                 .into(),
+        ),
+    }
+}
+
+fn cmd_client_hold(args: &[String]) -> Result<(), String> {
+    let cmd = args.first().map(|s| s.as_str()).ok_or_else(|| {
+        "usage: brain client hold add <name> <id> [<id> ...] --reason R | list <name>".to_string()
+    })?;
+    let (positionals, flags) = parse_flags(&args[1..]);
+    let name = require_positional(&positionals, "name")?;
+    match cmd {
+        "add" => {
+            let ids: Result<Vec<i64>, String> = positionals[1..]
+                .iter()
+                .map(|s| s.parse::<i64>().map_err(|_| format!("invalid id: {s}")))
+                .collect();
+            let ids = ids?;
+            let reason = flags
+                .get("reason")
+                .and_then(|o| o.clone())
+                .ok_or_else(|| "missing required argument: --reason R".to_string())?;
+            let body = serde_json::json!({ "ids": ids, "reason": reason });
+            let resp = post(
+                &base_url(),
+                &format!("/clients/{name}/hold"),
+                &[],
+                "application/json",
+                &body.to_string(),
+                auth_token().as_deref(),
+            )?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            println!("{}", resp.body);
+            Ok(())
+        }
+        "list" => {
+            let resp = get(
+                &base_url(),
+                &format!("/clients/{name}"),
+                &[],
+                auth_token().as_deref(),
+            )?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            let client: serde_json::Value =
+                serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+            let domain = client
+                .get("domain")
+                .and_then(|d| d.as_str())
+                .ok_or("client response has no domain")?;
+            let resp = get(&base_url(), "/legal-holds", &[], auth_token().as_deref())?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            let list: serde_json::Value =
+                serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+            let holds = list
+                .get("holds")
+                .and_then(|h| h.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let scoped: Vec<serde_json::Value> = holds
+                .into_iter()
+                .filter(|h| h["domain"] == domain)
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({ "domain": domain, "holds": scoped })
+            );
+            Ok(())
+        }
+        _ => Err(
+            "usage: brain client hold add <name> <id> [<id> ...] --reason R | list <name>".into(),
         ),
     }
 }
