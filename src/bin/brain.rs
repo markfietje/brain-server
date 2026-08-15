@@ -1638,11 +1638,67 @@ fn cmd_client(args: &[String]) -> Result<(), String> {
         Some("dpa") => cmd_client_dpa(&args[1..]),
         Some("dsar") => cmd_client_dsar(&args[1..]),
         Some("hold") => cmd_client_hold(&args[1..]),
+        Some("qa") => cmd_client_qa(&args[1..]),
         Some("end") => cmd_client_end(&args[1..]),
         _ => Err(
-            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>\n       brain client end <name> [--purge|--return] [--dataset D] [--yes]"
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>\n       brain client qa list <name> | coach <name> <id> --note N [--flag]\n       brain client end <name> [--purge|--return] [--dataset D] [--yes]"
                 .into(),
         ),
+    }
+}
+
+fn cmd_client_qa(args: &[String]) -> Result<(), String> {
+    let cmd = args.first().map(|s| s.as_str()).ok_or_else(|| {
+        "usage: brain client qa list <name> | coach <name> <id> --note N [--flag]".to_string()
+    })?;
+    let (positionals, flags) = parse_flags(&args[1..]);
+    let name = require_positional(&positionals, "name")?;
+    match cmd {
+        "list" => {
+            let resp = get(
+                &base_url(),
+                &format!("/clients/{name}/proposals"),
+                &[],
+                auth_token().as_deref(),
+            )?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            println!("{}", resp.body);
+            Ok(())
+        }
+        "coach" => {
+            let id: i64 = positionals
+                .get(1)
+                .ok_or_else(|| "missing required argument: id".to_string())?
+                .parse::<i64>()
+                .map_err(|e| format!("invalid id: {e}"))?;
+            let note = flags.get("note").and_then(|o| o.clone());
+            let flagged = flags.contains_key("flag");
+            let body = serde_json::json!({ "flagged": flagged, "note": note });
+            let resp = post(
+                &base_url(),
+                &format!("/clients/{name}/proposals/{id}/coach"),
+                &[],
+                "application/json",
+                &body.to_string(),
+                auth_token().as_deref(),
+            )?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            println!("{}", resp.body);
+            Ok(())
+        }
+        _ => Err("usage: brain client qa list <name> | coach <name> <id> --note N [--flag]".into()),
     }
 }
 
