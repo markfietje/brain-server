@@ -141,6 +141,8 @@ fn main() {
         "setup" => cmd_setup(rest),
         // v1.17.3 "UMP": the §4.3 file binding.
         "ump" => cmd_ump(rest),
+        // v1.27.2 "Onboard": the operator client wizard.
+        "client" => cmd_client(rest),
         // v1.10.0 "Procedural": procedural memory + deterministic categorization.
         "procedure" => cmd_procedure(rest),
         "classify" => cmd_classify(rest),
@@ -207,6 +209,7 @@ usage:
   brain retention get
   brain retention set <kind> <days>
   brain setup [domain] [--profile NAME] [--yes]
+  brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]
   brain snapshot-status
   brain eval [--floor r5=0.85 r10=0.9]
   brain procedure <title> [--step "title: content" ...] [--domain D]
@@ -1621,6 +1624,120 @@ fn cmd_ump(args: &[String]) -> Result<(), String> {
                 .into(),
         ),
     }
+}
+
+/// `brain client add ...` — the "Onboard" wizard: POST one compose call that
+/// scaffolds the client's domain, binds its law-tuned profile, and registers
+/// the `clients` row (src/handlers/clients.rs `register_client`).
+fn cmd_client(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()) {
+        Some("add") => cmd_client_add(&args[1..]),
+        _ => Err(
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]"
+                .into(),
+        ),
+    }
+}
+
+fn cmd_client_add(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let name = require_positional(&positionals, "name")?;
+    let jurisdiction = flags
+        .get("jurisdiction")
+        .and_then(|o| o.clone())
+        .ok_or_else(|| "missing required argument: --jurisdiction J".to_string())?;
+    let domain = flags
+        .get("domain")
+        .and_then(|o| o.clone())
+        .unwrap_or_else(|| name.clone());
+    // Profile optional: absent → the `cmd_setup` wizard pick (list + numbered
+    // prompt), confirmed unless `--yes`.
+    let profile = match flags.get("profile").and_then(|o| o.clone()) {
+        Some(p) => Some(p),
+        None => {
+            let resp = get(&base_url(), "/profiles", &[], auth_token().as_deref())?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            let v: serde_json::Value =
+                serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+            let profiles: Vec<serde_json::Value> = v["profiles"]
+                .as_array()
+                .cloned()
+                .ok_or("server returned no profile list")?;
+            if profiles.is_empty() {
+                return Err("server has no profiles (migration did not seed presets?)".into());
+            }
+            println!("Bind a profile to domain '{domain}'?");
+            for (i, p) in profiles.iter().enumerate() {
+                let pname = p["name"].as_str().unwrap_or("?");
+                let desc = p["description"].as_str().unwrap_or("");
+                println!("  {:>2}. {pname:<20} {desc}", i + 1);
+            }
+            let a = read_line("Pick a number, or leave blank to skip:")?;
+            if a.trim().is_empty() {
+                None
+            } else {
+                let n: usize = a
+                    .parse()
+                    .map_err(|_| format!("enter a number 1-{} or blank", profiles.len()))?;
+                if !(1..=profiles.len()).contains(&n) {
+                    return Err(format!("pick 1-{}", profiles.len()));
+                }
+                profiles[n - 1]
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
+            }
+        }
+    };
+
+    if !flags.contains_key("yes") && profile.is_some() {
+        let a = read_line(&format!(
+            "Add client '{name}' (domain '{domain}', jurisdiction '{jurisdiction}'{} )? [y/N]",
+            profile
+                .as_ref()
+                .map(|p| format!(", profile '{p}'"))
+                .unwrap_or_default()
+        ))?;
+        if !a.eq_ignore_ascii_case("y") {
+            println!("aborted (nothing changed)");
+            return Ok(());
+        }
+    }
+
+    let mut body = serde_json::json!({
+        "name": name,
+        "domain": domain,
+        "jurisdiction": jurisdiction,
+    });
+    if let Some(p) = &profile {
+        body["profile"] = serde_json::json!(p);
+    }
+    let resp = post(
+        &base_url(),
+        "/clients",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let tail = profile
+        .map(|p| format!(", profile '{p}'"))
+        .unwrap_or_default();
+    println!("client '{name}' registered \u{2192} domain '{domain}'{tail}");
+    Ok(())
 }
 
 /// `brain ump keygen` — generate an Ed25519 operator key for the UMP

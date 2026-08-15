@@ -118,6 +118,51 @@ pub(crate) fn list(conn: &Connection) -> Result<Vec<Client>, HandlerError> {
     Ok(rows.flatten().collect())
 }
 
+/// v1.27.2 "Onboard" composition seam, shared by the handler + CLI.
+///
+/// 1. Make the client's domain real (`registry.pool_for` — creates + migrates
+///    in multi-db mode, touches the shared pool in shim; idempotent when the
+///    domain already exists).
+/// 2. Bind the profile (optional, the v1.21 seam) — fails CLOSED before any
+///    client-row write (`profile::bind` refuses an unknown profile).
+/// 3. Register the client row, idempotent for an already-existent client.
+///
+/// The caller owns its own connection to the GLOBAL pool; step 1 uses the
+/// registry only. `register` wraps row (3) in a transaction, so a failed bind
+/// never leaves a `clients` row or `domain_profiles` bind (atomicity).
+pub(crate) fn scaffold_and_register(
+    registry: &crate::domain_registry::DomainRegistry,
+    pool: &crate::Pool,
+    name: &str,
+    domain: &str,
+    jurisdiction: &str,
+    profile: Option<&str>,
+    now: i64,
+) -> Result<(), HandlerError> {
+    registry.pool_for(domain).map_err(|e| {
+        HandlerError::bad_request(
+            "client_domain_invalid",
+            format!("cannot scaffold domain '{domain}': {e}"),
+        )
+    })?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    if by_name(&conn, name)?.is_some() {
+        return Ok(());
+    }
+    let tx = conn
+        .transaction()
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    if let Some(p) = profile {
+        brain_server::profile::bind(&tx, domain, Some(p))
+            .map_err(|e| HandlerError::bad_request("profile_not_found", e))?;
+    }
+    register(&tx, name, domain, jurisdiction, profile, now)?;
+    tx.commit()
+        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))
+}
+
 /// Resolve a single client by its PK. `None` → 404 in the handler.
 pub(crate) fn by_name(conn: &Connection, name: &str) -> Result<Option<Client>, HandlerError> {
     conn.query_row(
@@ -206,5 +251,100 @@ mod tests {
         assert_eq!(err.status.as_u16(), 409, "handler maps conflict → 409");
         tx.commit().unwrap();
         assert!(by_name(&conn, "no-such-client").unwrap().is_none());
+    }
+
+    /// Build a real multi-db registry (temp dir, migration-seeded global DB)
+    /// so `scaffold_and_register` exercises the actual `pool_for` creation seam.
+    fn registry() -> (
+        tempfile::TempDir,
+        crate::Pool,
+        crate::domain_registry::DomainRegistry,
+    ) {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brain.db");
+        let mgr = r2d2_sqlite::SqliteConnectionManager::file(&path);
+        let global: crate::Pool = r2d2::Pool::builder().build(mgr).expect("global pool");
+        brain_server::migration::run_migration(
+            &mut global.get().unwrap(),
+            crate::config::DB_MMAP_SIZE_MIB,
+        )
+        .expect("migration seeds profiles + clients");
+        let reg = crate::domain_registry::DomainRegistry::new(global.clone(), &path, true);
+        (dir, global, reg)
+    }
+
+    #[test]
+    fn create_domain_scaffolding_is_idempotent_and_binds_profile() {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let (_dir, global, reg) = registry();
+        scaffold_and_register(
+            &reg,
+            &global,
+            "acme",
+            "acme",
+            "us",
+            Some("health-hipaa"),
+            1_000,
+        )
+        .unwrap();
+        scaffold_and_register(
+            &reg,
+            &global,
+            "acme",
+            "acme",
+            "us",
+            Some("health-hipaa"),
+            2_000,
+        )
+        .expect("second compose (same domain) must not error");
+        let conn = global.get().unwrap();
+        let rows = list(&conn).unwrap();
+        assert_eq!(rows.len(), 1, "one client row across two composes");
+        let bound: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM domain_profiles WHERE domain = 'acme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound, 1, "exactly one profile bind for the domain");
+        drop(conn);
+        let domain_conn = reg.pool_for("acme").unwrap().get().unwrap();
+        let knowledge: i64 = domain_conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(knowledge, 0, "client domain DB was scaffolded by pool_for");
+    }
+
+    #[test]
+    fn create_domain_bad_profile_fails_closed_no_client_row() {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let (_dir, global, reg) = registry();
+        let err = scaffold_and_register(
+            &reg,
+            &global,
+            "acme",
+            "acme",
+            "us",
+            Some("no-such-profile"),
+            1_000,
+        )
+        .unwrap_err();
+        assert_eq!(err.status.as_u16(), 400, "unknown profile closes the write");
+        assert_eq!(err.inner.code, "profile_not_found");
+        let conn = global.get().unwrap();
+        assert!(
+            by_name(&conn, "acme").unwrap().is_none(),
+            "tx atomicity: no clients row after a failed bind"
+        );
+        let bound: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM domain_profiles WHERE domain = 'acme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bound, 0, "no domain_profiles bind persists on failure");
     }
 }

@@ -58,6 +58,62 @@ rest read.
 
 ---
 
+## [1.27.2] — 2026-08-15
+
+### Server — "Onboard" (the operator client wizard)
+
+Release 2 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.1 →
+**1.27.2**; schema unchanged (`1.27.0`); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- **`brain client add`** — one command that scaffolds a new client domain
+  end-to-end: `POST /clients` now creates + migrates the client's isolation
+  domain, optionally binds its law-tuned profile, and registers the `clients`
+  row (from v1.27.1). `--domain` defaults to the client name (one domain per
+  client); `--jurisdiction` is required; an absent `--profile` runs the preset
+  pick list; `--yes` skips confirm. Idempotent — re-running for an existing
+  client is a safe no-op.
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `src/handlers/clients.rs` `register_client` now composes through a single
+  testable seam `scaffold_and_register` in `src/clients.rs`: `pool_for`
+  (creates/migrates the domain, the one creation seam) → `profile::bind`
+  (v1.21 seam; unknown profile fails CLOSED `400 profile_not_found`) →
+  `register` (the v1.27.1 row write). All three steps run in one
+  `spawn_blocking`; the profile bind is inside the register transaction, so a
+  failed bind leaves neither a `clients` row nor a `domain_profiles` bind
+  (atomicity). The compose short-circuits via `by_name`, making the CLI
+  re-run idempotent. `src/bin/brain.rs` gains `client` dispatch + `cmd_client_add`
+  (the `cmd_ump` model; preset pick reuses the `cmd_setup` list/probe), wired
+  into `main` + `print_usage`.
+- Panic/unsafe sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]` in the
+  new code; no new tables or schema bump; no `/clients` DELETE (termination
+  is a later release's `end`, which archives, never deletes).
+- Tests: server bin **597** / 6 ignored (+2 — `create_domain_scaffolding_`
+  `_is_idempotent_and_binds_profile` + `create_domain_bad_profile_fails_`
+  `closed_no_client_row`, both driving the real multi-db registry + migration);
+  lib 105 unchanged; clippy `-D warnings` (default + bench + otel) + fmt clean;
+  `brain` release build clean. The CLI itself is thin (HTTP call); its shape is
+  pinned by `parse_flags`/`post` already covered by existing CLI tests — no
+  wizard integration test (R8/R10 territory).
+- Honest ceilings: this is evidence + tagging, not enforcement — nothing gates
+  recall or DSAR on client membership; `pool_for` still falls back to the
+  shared pool in shim mode; the profile pick is the operator's judge.
+
+---
+
 ## [1.27.1] — 2026-08-15
 
 ### Server — "Clients" (the BPO operating register)

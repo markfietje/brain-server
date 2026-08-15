@@ -33,38 +33,34 @@ pub async fn register_client(
     principal: OptPrincipal,
     Json(req): Json<CreateClientRequest>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
-    let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     crate::clients::validate_new_client(&req.name, &req.domain, &req.jurisdiction)?;
 
-    let pool_for = pool.clone();
+    // Scaffold the client's domain before writing the row — `pool_for` creates
+    // + migrates the domain DB (multi-db) or touches the shared pool (shim).
+    // The optional profile bind is the v1.21 seam; `register` (via the compose
+    // fn) makes the `clients` row. Composition only, no new logic.
+    let st = state.clone();
     let now = chrono::Utc::now().timestamp();
     let name_for = req.name.clone();
     let domain_for = req.domain.clone();
     let jurisdiction_for = req.jurisdiction.clone();
     let profile_for = req.profile.clone();
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
-        let mut conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        crate::clients::register(
-            &tx,
+        crate::clients::scaffold_and_register(
+            &st.registry,
+            &st.pool,
             &name_for,
             &domain_for,
             &jurisdiction_for,
             profile_for.as_deref(),
             now,
-        )?;
-        tx.commit()
-            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))
+        )
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
-    if let Ok(conn) = pool.get() {
+    if let Ok(conn) = state.pool.get() {
         crate::audit::record(
             &conn,
             AuditKind::Client,
