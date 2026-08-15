@@ -1950,6 +1950,18 @@ paths:
                     footprint (locate + bundle build) without executing any
                     write: no purge, no sweep, no ledger row, no certificate.
                     The 200 carries `footprint` instead of `certificate`.
+                jurisdiction:
+                  type: string
+                  description: >
+                    v1.26.0 — the subject's jurisdiction (short lowercase
+                    country code, e.g. `eu`, `us`, `uk`). When set, the
+                    response + certificate carry the law's deadline + subject
+                    rights per the curated `JurisdictionRule` table.
+                mechanism:
+                  type: string
+                  description: >
+                    v1.26.0 — the free-text transfer safeguard label attached
+                    to the certificate (not validated — curated in the DPA).
       responses:
         "200":
           description: Workflow row id + deletion certificate (or footprint when dry-run)
@@ -1972,6 +1984,19 @@ paths:
                       v1.20.22 — computed Art 17 erasure deadline
                       (`created_at + window`, unix ts); 0 on a dry-run. The
                       subject-countdown source of truth.
+                  jurisdiction:
+                    type: string
+                    nullable: true
+                    description: >
+                      v1.26.0 — the subject's jurisdiction when provided on the
+                      request (absent on a dry-run preview / generic surface).
+                  rights:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      v1.26.0 — the jurisdiction's applicable subject rights
+                      (access/erasure/rectification/... per the curated table;
+                      empty when no jurisdiction was given).
                   certificate:
                     type: object
                     description: >
@@ -2097,6 +2122,17 @@ paths:
                         maxLength: 64
                         pattern: "^[a-z0-9_]{1,64}$"
                     required: [from, to, type]
+                lawful_basis:
+                  type: string
+                  description: >
+                    v1.25.0 — the documented lawful basis for the ingest
+                    (e.g. consent | contract). A strict-posture domain without
+                    one is flagged in `compliance.lawful_basis_missing`.
+                purpose:
+                  type: string
+                  description: >
+                    v1.26.0 — the purpose-limitation label (Art 5/6 + NPC
+                    2024-04 evidence) attached to the record.
               required: [title, content]
       responses:
         "200":
@@ -2111,6 +2147,17 @@ paths:
                   domain: { type: string }
                   entities_added: { type: integer }
                   relations_added: { type: integer }
+                  compliance:
+                    type: object
+                    description: >
+                      v1.26.0 — compliance signals for this ingest.
+                    properties:
+                      lawful_basis_missing:
+                        type: boolean
+                        description: >
+                          v1.26.0 — true when the target domain runs the
+                          strict PII posture and no `lawful_basis` was
+                          documented (Art 5/6 + NPC 2024-04 evidence flag).
         "400": { $ref: "#/components/responses/BadRequest" }
         "507": { $ref: "#/components/responses/CapacityExceeded" }
   /memory/{id}:

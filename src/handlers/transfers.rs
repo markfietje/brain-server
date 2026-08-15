@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use crate::audit::{AuditKind, AuditStatus};
 use crate::handlers::auth::OptPrincipal;
-use crate::handlers::{HandlerError, MAX_LIMIT};
+use crate::handlers::HandlerError;
 use crate::AppState;
 
 /// `POST /transfers` body — the Art 30/Art 46 register entry.
@@ -53,15 +53,9 @@ pub async fn register_transfer(
         &req.counterparty,
         &req.purpose,
         req.lawful_basis.as_deref(),
+        req.signed_at,
+        req.expires_at,
     )?;
-    if let Some(e) = req.expires_at {
-        if e < 0 {
-            return Err(HandlerError::bad_request(
-                "transfer_expiry_invalid",
-                "expires_at must be >= 0",
-            ));
-        }
-    }
 
     let pool_for = pool.clone();
     let dataset_for = req.dataset.clone();
@@ -115,7 +109,7 @@ pub async fn register_transfer(
         );
     }
     Ok(Json(
-        serde_json::json!({ "transfer_id": id, "mechanism": mechanism_label }),
+        serde_json::json!({ "id": id, "mechanism": mechanism_label }),
     ))
 }
 
@@ -136,7 +130,8 @@ pub async fn list_transfers(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
-    let limit = q.limit.unwrap_or(100).clamp(1, MAX_LIMIT as i64 * 10);
+    // The clamp is applied once, in `list` (bounds = MAX_TRANSFER_LIMIT).
+    let limit = q.limit.unwrap_or(100);
     let pool_for = pool.clone();
     let m = q.mechanism.clone();
     let j = q.jurisdiction.clone();

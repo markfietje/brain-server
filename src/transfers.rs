@@ -34,7 +34,7 @@ pub(crate) const MAX_TRANSFER_LIMIT: i64 = 300;
 /// Operator-set — the operator knows which SCC/DPF they signed; we don't
 /// scrape commission decisions. Each is a fixed identifier the TIA/DPA
 /// templates branch on.
-pub const MECHANISMS: &[&str] = &[
+pub(crate) const MECHANISMS: &[&str] = &[
     "scc-eu-2021",
     "uk-idta",
     "dpf-us",
@@ -44,7 +44,7 @@ pub const MECHANISMS: &[&str] = &[
 ];
 
 /// The GDPR Art 6 / RA 10173 lawful bases accepted for `lawful_basis` tagging.
-pub const LAWFUL_BASISES: &[&str] = &[
+pub(crate) const LAWFUL_BASISES: &[&str] = &[
     "consent",
     "contract",
     "legal-obligation",
@@ -70,7 +70,7 @@ pub fn is_jurisdiction_code(code: &str) -> bool {
 /// (commensurate)" per the law (PH RA 10173) — the operator window is used as
 /// the practical countdown. Curated + versioned; re-checked on each release.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-pub struct JurisdictionRule {
+pub(crate) struct JurisdictionRule {
     pub code: &'static str,
     pub law: &'static str,
     pub deadline_days: Option<i64>,
@@ -144,17 +144,14 @@ pub fn jurisdiction_rule(code: &str) -> Option<&'static JurisdictionRule> {
 
 /// The DSAR erasure deadline for a subject of `code`: the curated days when the
 /// law fixes a number, else the operator's `BRAIN_DSAR_WINDOW_DAYS` window
-/// (the PH "reasonable" fallback). Unknown code → operator window. Pure, so
-/// the `dsar_deadline_matches_jurisdiction` test pins the law directly.
+/// (the PH "reasonable" + unknown-law fallback). Pure, so the
+/// `dsar_deadline_matches_jurisdiction` test pins the law directly. The
+/// fallback expression is shared with `handlers::observe::dsar_deadline` —
+/// the operator window stays the single practical countdown.
 pub fn dsar_deadline_for(created_at: i64, code: &str) -> i64 {
-    match jurisdiction_rule(code) {
-        Some(r) => match r.deadline_days {
-            Some(days) => created_at + days * 86400,
-            // PH RA 10173 "reasonable (commensurate)": the operator window is
-            // the practical countdown (BRAIN_DSAR_WINDOW_DAYS).
-            None => created_at + crate::config::dsar_window_secs(),
-        },
-        // Unknown law → the operator window (the DPO confirms the law).
+    match jurisdiction_rule(code).and_then(|r| r.deadline_days) {
+        Some(days) => created_at + days * 86400,
+        // RA 10173 "reasonable (commensurate)" / unknown law → operator window.
         None => created_at + crate::config::dsar_window_secs(),
     }
 }
@@ -163,7 +160,7 @@ pub fn dsar_deadline_for(created_at: i64, code: &str) -> i64 {
 /// A curated snapshot (not a legal opinion) — the operator's counsel confirms
 /// the assessment. `note` names the specific authority to weigh.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-pub struct SurveillancePosture {
+pub(crate) struct SurveillancePosture {
     pub country: &'static str,
     pub note: &'static str,
 }
@@ -194,7 +191,7 @@ pub fn lawful_basis_flag(strict_domain: bool, basis: Option<&str>) -> bool {
 /// One cross-border transfer register row (Art 30 processing-activities +
 /// Art 46 transfer-safeguard evidence).
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct Transfer {
+pub(crate) struct Transfer {
     pub id: i64,
     pub dataset: String,
     pub origin_jurisdiction: String,
@@ -207,7 +204,10 @@ pub struct Transfer {
     pub expires_at: Option<i64>,
 }
 
-/// Validate the register payload before any write. Shared by the handler.
+/// Validate the register payload before any write. Shared by the handler —
+/// including the `signed_at`/`expires_at` epoch bounds so every timestamp has
+/// exactly one validation site.
+#[allow(clippy::too_many_arguments)] // 9 register fields; a struct would add ceremony to the single-write path
 pub(crate) fn validate_register(
     dataset: &str,
     origin: &str,
@@ -216,6 +216,8 @@ pub(crate) fn validate_register(
     counterparty: &str,
     purpose: &str,
     lawful_basis: Option<&str>,
+    signed_at: Option<i64>,
+    expires_at: Option<i64>,
 ) -> Result<(), HandlerError> {
     if dataset.trim().is_empty() || dataset.len() > MAX_TRANSFER_CP {
         return Err(HandlerError::bad_request(
@@ -224,9 +226,10 @@ pub(crate) fn validate_register(
         ));
     }
     if !is_jurisdiction_code(origin) || !is_jurisdiction_code(destination) {
+        // Same code + message as the DSAR `jurisdiction` gate (observe.rs).
         return Err(HandlerError::bad_request(
-            "transfer_jurisdiction_invalid",
-            "origin/destination must be a short lowercase jurisdiction code",
+            "jurisdiction_invalid",
+            "jurisdiction must be a short lowercase country code",
         ));
     }
     if !MECHANISMS.contains(&mechanism.trim().to_ascii_lowercase().as_str()) {
@@ -246,6 +249,22 @@ pub(crate) fn validate_register(
             "transfer_purpose_invalid",
             format!("purpose is required and ≤ {MAX_TRANSFER_PURPOSE} characters"),
         ));
+    }
+    if let Some(t) = signed_at {
+        if t < 0 {
+            return Err(HandlerError::bad_request(
+                "transfer_timestamp_invalid",
+                "signed_at must be a non-negative epoch timestamp",
+            ));
+        }
+    }
+    if let Some(t) = expires_at {
+        if t < 0 {
+            return Err(HandlerError::bad_request(
+                "transfer_timestamp_invalid",
+                "expires_at must be a non-negative epoch timestamp",
+            ));
+        }
     }
     if let Some(b) = lawful_basis {
         let b = b.trim();
@@ -382,7 +401,7 @@ pub struct TiaTemplate {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct TiaSection {
+pub(crate) struct TiaSection {
     pub key: &'static str,
     pub title: &'static str,
     pub prompt: String,
@@ -668,17 +687,6 @@ mod tests {
 
     #[test]
     fn validate_register_bounds_fields() {
-        assert!(
-            validate_register("d", "ph", "us", "scc-eu-2021", "C", "p", Some("contract")).is_ok()
-        );
-        assert!(validate_register(" ", "ph", "us", "scc-eu-2021", "C", "p", None).is_err());
-        assert!(
-            validate_register("d", "PH", "us", "scc-eu-2021", "C", "p", None).is_ok(),
-            "case-insensitive codes"
-        );
-        assert!(validate_register("d", "ph", "us", "not-a-mechanism", "C", "p", None).is_err());
-        assert!(validate_register("d", "ph", "us", "scc-eu-2021", " ", "p", None).is_err());
-        assert!(validate_register("d", "ph", "us", "scc-eu-2021", "C", "", None).is_err());
         assert!(validate_register(
             "d",
             "ph",
@@ -686,9 +694,86 @@ mod tests {
             "scc-eu-2021",
             "C",
             "p",
-            Some("not-a-basis")
+            Some("contract"),
+            None,
+            None
+        )
+        .is_ok());
+        assert!(
+            validate_register(" ", "ph", "us", "scc-eu-2021", "C", "p", None, None, None).is_err()
+        );
+        assert!(
+            validate_register("d", "PH", "us", "scc-eu-2021", "C", "p", None, None, None).is_ok(),
+            "case-insensitive codes"
+        );
+        assert!(validate_register(
+            "d",
+            "ph",
+            "us",
+            "not-a-mechanism",
+            "C",
+            "p",
+            None,
+            None,
+            None
         )
         .is_err());
+        assert!(
+            validate_register("d", "ph", "us", "scc-eu-2021", " ", "p", None, None, None).is_err()
+        );
+        assert!(
+            validate_register("d", "ph", "us", "scc-eu-2021", "C", "", None, None, None).is_err()
+        );
+        assert!(validate_register(
+            "d",
+            "ph",
+            "us",
+            "scc-eu-2021",
+            "C",
+            "p",
+            Some("not-a-basis"),
+            None,
+            None
+        )
+        .is_err());
+        // v1.26.0 second pass: signed/expiry timestamps validated in the shared
+        // validator — the write path's single validation site.
+        assert!(validate_register(
+            "d",
+            "ph",
+            "us",
+            "scc-eu-2021",
+            "C",
+            "p",
+            None,
+            Some(-1),
+            None
+        )
+        .is_err());
+        assert!(validate_register(
+            "d",
+            "ph",
+            "us",
+            "scc-eu-2021",
+            "C",
+            "p",
+            None,
+            None,
+            Some(-1)
+        )
+        .is_err());
+        assert!(validate_register(
+            "d",
+            "ph",
+            "us",
+            "scc-eu-2021",
+            "C",
+            "p",
+            None,
+            Some(0),
+            Some(99)
+        )
+        .is_ok());
     }
 
     #[test]
