@@ -214,6 +214,8 @@ usage:
   brain evaluate <decision_id> --var name=value [--var name=value ...]
   brain connect github --app-id N --install-id N --key-file PATH \
                       --repo owner/repo [...] [--webhook-secret-file PATH]
+  brain connect --kind crm-salesforce ...   (vocabulary accepts the v1.24 set;
+                                             only github has a runnable binary)
   brain sync [github] [--config PATH]
   brain connector-status
   brain backup <out-path> [--passphrase-file PATH]
@@ -1999,7 +2001,11 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
         .to_string();
     if kind != "github" {
         return Err(format!(
-            "v0.9.6 supports only kind=github (got '{kind}'); other connectors land in v0.9.7+"
+            "v1.24.0 ships the {kind} connector kind in the registry (supervised \
+             ingest-on-trigger; register via POST /connectors/register), but no \
+             runnable binary yet — the v0.9.6 github connector is the working \
+             backfill template. Shipped kinds: {}.",
+            brain_server::connector::kind::CONNECTOR_KINDS.join(", ")
         ));
     }
 
@@ -2159,7 +2165,10 @@ fn cmd_sync(args: &[String]) -> Result<(), String> {
         .unwrap_or("github");
     if kind != "github" {
         return Err(format!(
-            "v0.9.6 supports only kind=github (got '{kind}'); other connectors land in v0.9.7+"
+            "kind '{kind}' has no sync binary yet — the v1.24 registry ships the \
+             vocabulary (POST /connectors/register); the github backfill is the \
+             working template. Shipped kinds: {}.",
+            brain_server::connector::kind::CONNECTOR_KINDS.join(", ")
         ));
     }
 
@@ -2529,7 +2538,14 @@ fn cmd_connector_status(_args: &[String]) -> Result<(), String> {
         .ok_or_else(|| "response missing 'connectors' array".to_string())?;
     if connectors.is_empty() {
         println!("no connectors registered");
-        println!("\nregister one with: brain connect github --app-id N --install-id N --key-file PATH --repo owner/name");
+        println!("\nregister one with:");
+        println!(
+            "  brain connect github --app-id N --install-id N --key-file PATH --repo owner/name"
+        );
+        println!(
+            "  POST /connectors/register  (any v1.24 kind: {})",
+            brain_server::connector::kind::CONNECTOR_KINDS.join(", ")
+        );
         return Ok(());
     }
     println!(
