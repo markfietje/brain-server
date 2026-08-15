@@ -61,6 +61,9 @@ pub const SCHEMA_VERSION_V1_21_0: &str = "1.21.0";
 /// NULLs only — a stamp is never overwritten, so a region change preserves
 /// where pre-existing rows lived).
 pub const SCHEMA_VERSION_V1_22_0: &str = "1.22.0";
+/// v1.23.0 "Roles" schema: new `roles` table (the named scope/action bundles,
+/// 10 seeded presets). Additive; no column changes anywhere.
+pub const SCHEMA_VERSION_V1_23_0: &str = "1.23.0";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

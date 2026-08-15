@@ -69,3 +69,10 @@ pub mod embed;
 // ship-with presets. Lives in the lib because `migration` (lib) seeds the
 // presets at first boot and the `brain` CLI renders them for `brain setup`.
 pub mod profile;
+
+// v1.23.0 "Roles": the role bundle type (scopes + owner_filter + `can` +
+// panel visibility + MCP tools), persistence, the 10 ship-with roles, and the
+// record-level retrieval gate. Lives in the lib because `migration` (lib)
+// seeds the presets at first boot and `handlers`/`mcp` (server binaries)
+// enforce the gate.
+pub mod role;

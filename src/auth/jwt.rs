@@ -77,6 +77,16 @@ pub struct Claims {
     /// and is never presented to data routes).
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// v1.23.0 "Roles": role *names* assigned by the IdP (set by the SSO
+    /// integration). Mapped to the `roles` store's named bundles at request
+    /// time (server-side data + action scoping). Optional — a token without
+    /// this claim is v1.14-scope-only (back-compat).
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// v1.23.0 "Roles": the principal's direct reports (their agents) — the
+    /// `owner_filter: "reports"` data-gate source (the call-center pattern).
+    #[serde(default)]
+    pub manages: Vec<String>,
 }
 
 fn default_tenant() -> String {
@@ -354,6 +364,8 @@ mod tests {
             exp: now + 600,
             tenant: "team-alpha".to_string(),
             scopes: vec!["read:team-alpha/*".to_string()],
+            roles: vec![],
+            manages: vec![],
         }
     }
 

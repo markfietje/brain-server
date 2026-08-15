@@ -512,6 +512,7 @@ pub async fn approve_proposal(
     let domain = "global";
     super::authorize(&principal.0, crate::auth::Action::Write, "", domain)?;
     let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
+    super::authorize_role(&principal.0, &pool, "approve")?;
     let model = Arc::clone(&state.model);
 
     // v1.20.7 "Telemetry" (M1): capture the actor label before `principal` is
@@ -772,6 +773,44 @@ pub fn scope_filter(p: &Option<crate::auth::Principal>) -> Option<Vec<String>> {
     }
 }
 
+/// v1.23.0 "Roles": the record-level retrieval gate when a JWT principal
+/// carries a `roles` claim. `None` when the principal has no roles (the
+/// v1.14 `scope_filter` path applies unchanged). Otherwise resolves the role
+/// bundles and returns the narrowed `access_scopes` + the `owner_in` set
+/// (self/reports). A DB error or unreadable role degrades to the caller's
+/// no-roles behavior (transient, availability-first — the gate is additive,
+/// never a 500 on a busy pool).
+pub fn role_retrieval_gate(
+    principal: &Option<crate::auth::Principal>,
+    pool: &crate::Pool,
+) -> Option<brain_server::role::RetrievalGate> {
+    let pr = principal.as_ref()?;
+    if pr.roles.is_empty() {
+        return None;
+    }
+    let conn = pool.get().ok()?;
+    let roles = brain_server::role::resolve(&conn, &pr.roles).ok()?;
+    Some(brain_server::role::effective_filter(
+        &pr.sub,
+        &pr.manages,
+        &roles,
+    ))
+}
+
+/// Apply a resolved retrieval gate onto the search filter bundle. Only the
+/// fields the gate decides are overwritten; a `None` in the gate leaves the
+/// (no-roles) scope/owner decision untouched — a no-role principal passes
+/// through exactly as before.
+pub fn apply_role_gate(
+    filters: &mut crate::search::SearchFilters,
+    gate: &brain_server::role::RetrievalGate,
+) {
+    if let Some(s) = &gate.access_scopes {
+        filters.access_scopes = Some(s.clone());
+    }
+    filters.owner_in = gate.owner_in.clone();
+}
+
 /// `POST /proposals/{id}/reject` — mark rejected + decided_at. Kept in the
 /// audit trail (append-only, hash-only via `/audit`); never silently dropped,
 /// never deleted.
@@ -796,6 +835,7 @@ pub async fn reject_proposal(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
+    super::authorize_role(&principal.0, &pool, "reject")?;
 
     let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
         let conn = pool
@@ -1336,6 +1376,7 @@ pub async fn purge(
         ));
     }
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
+    super::authorize_role(&principal.0, &pool, "purge")?;
 
     let count = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
         let mut conn = pool
@@ -1913,6 +1954,8 @@ mod tests {
             tenant: "alpha".to_string(),
             scopes: vec![],
             jti: "token-1".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
     }
@@ -1961,6 +2004,8 @@ mod tests {
             tenant: "alpha".into(),
             scopes: vec![],
             jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
         })));
     }
 

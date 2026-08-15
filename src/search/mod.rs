@@ -590,6 +590,12 @@ pub struct SearchFilters {
     /// deny-by-default `WHERE access_scope ∈ allowed`. `None` (loopback/
     /// opaque) = no scope restriction (trusts localhost).
     pub access_scopes: Option<Vec<String>>,
+    /// v1.23.0 "Roles": record-owner filter (self/reports), JWT + roles mode
+    /// only. `Some` (list of `owner` values) is applied as `WHERE k.owner IN
+    /// (…)`. `None` (no role, or `all`/`admin` owner_filter) = no owner
+    /// restriction. Deny-by-default: a `reports` role with an empty `manages`
+    /// claim gets `Some(vec![])` → reads nothing.
+    pub owner_in: Option<Vec<String>>,
     /// v1.17.1 "Govern" M2: per-kind retention policy (`kind -> days`) used to
     /// derive a kind-default `expires_at` for chunks with none. Applied at query
     /// time: when `include_decayed` is false, a chunk whose *effective* expiry
@@ -622,6 +628,7 @@ impl Default for SearchFilters {
             memory_kind: None,
             min_relevance: None,
             access_scopes: None,
+            owner_in: None,
             retention_days: Vec::new(),
         }
     }
@@ -1279,6 +1286,15 @@ fn push_gate_filters(
             params_vec.push(Box::new(s.clone()));
         }
     }
+    if let Some(owners) = &filters.owner_in {
+        let ph = std::iter::repeat_n("?", owners.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!(" AND k.owner IN ({ph})"));
+        for o in owners {
+            params_vec.push(Box::new(o.clone()));
+        }
+    }
 }
 
 pub fn vec0_knn(
@@ -1609,6 +1625,7 @@ pub fn perform_search_traced(
             memory_kind: filters.memory_kind.clone(),
             min_relevance: filters.min_relevance.clone(),
             access_scopes: filters.access_scopes.clone(),
+            owner_in: filters.owner_in.clone(),
             retention_days: filters.retention_days.clone(),
         }
     } else {

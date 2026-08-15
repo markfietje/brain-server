@@ -178,6 +178,9 @@ pub async fn post_dsar(
             super::resolve_domain_pool(&state.registry, Some(d))?,
         ));
     }
+    // v1.23.0 "Roles": a DSAR (export|purge) is a capability-gated action on
+    // the data surface; a roles-principal needs `dsar_export` in the allowlist.
+    super::authorize_role(&principal.0, &pools[0].1, "dsar_export")?;
     // Global runs LAST so its ledger row can carry the cross-domain digest.
     pools.sort_by(|a, b| match (a.0 == "global", b.0 == "global") {
         (true, false) => std::cmp::Ordering::Greater,

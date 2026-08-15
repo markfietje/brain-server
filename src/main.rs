@@ -3831,6 +3831,8 @@ async fn jwt_auth_middleware(
             tenant: claims.tenant,
             scopes,
             jti: claims.jti,
+            roles: claims.roles,
+            manages: claims.manages,
         })
     })
     .await;
@@ -4656,6 +4658,13 @@ async fn main_inner() -> Result<()> {
             "/domains/{name}/profile",
             post(handlers::profiles::domain_profile_bind),
         )
+        // v1.23.0 "Roles" M4: the role API. Reads are Read-gated; writes
+        // (role upsert) are Admin + audited. Dual-method on {name}: GET then
+        // POST, so the authz source-scan lands on the Admin POST as the
+        // conservative check (the /retention + /profiles precedent).
+        .route("/roles", get(handlers::roles::list_roles))
+        .route("/roles/{name}", get(handlers::roles::get_role))
+        .route("/roles/{name}", post(handlers::roles::upsert_role))
         // v1.22.0 "Regulated" M1: legal hold — place/release/list holds that
         // freeze ids against erasure (decay, /purge, DSAR).
         .route("/legal-hold", post(handlers::holds::post_legal_hold))
@@ -8219,10 +8228,11 @@ Final paragraph after the rule.";
         // v1.20.19 for the pii_map table drop;
         // v1.21.0 for the profiles + domain_profiles tables (the preset system).
         // v1.22.0 for the legal_holds table + knowledge.region.
+        // v1.23.0 for the roles table (the named scope/action bundles).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_22_0),
-            "schema_version must be recorded as 1.22.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_23_0),
+            "schema_version must be recorded as 1.23.0 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -8246,6 +8256,21 @@ Final paragraph after the rule.";
             .query_row("SELECT COUNT(*) FROM domain_profiles", [], |r| r.get(0))
             .unwrap();
         assert_eq!(bindings, 0, "no domain is bound to a profile by default");
+
+        // v1.23.0 "Roles": the roles table exists and the 10 ship-with roles
+        // are seeded (INSERT OR IGNORE — a re-migration never overwrites an
+        // operator edit). The `solo` SMB role carries every action (the
+        // simplest default).
+        let roles_seeded: i64 = db
+            .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(roles_seeded, 10, "the 10 ship-with roles are seeded");
+        let solo: String = db
+            .query_row("SELECT json FROM roles WHERE name = 'solo'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(solo.contains("\"owner_filter\":\"all\""));
 
         // v1.20.14 "Steer": the pending-proposal edit marker column exists.
         // The review badge + read-time view key off it; a missing column here
@@ -9021,6 +9046,8 @@ Final paragraph after the rule.";
                 domain: "*".to_string(),
             }],
             jti: "token-1".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         let owner = handlers::gate::principal_to_owner(&Some(alice));
         assert_eq!(owner.as_deref(), Some("alice@example.com"));
@@ -9388,6 +9415,9 @@ Final paragraph after the rule.";
             "/profiles",
             "/profiles/{name}",
             "/domains/{name}/profile",
+            // v1.23.0 Roles
+            "/roles",
+            "/roles/{name}",
             // v1.22.0 Regulated
             "/legal-hold",
             "/legal-hold/{id}/release",
@@ -9861,6 +9891,7 @@ Final paragraph after the rule.";
         sub: &str,
         tenant: &str,
         scopes: &[&str],
+        roles: &[&str],
         exp_delta: u64,
     ) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -9879,6 +9910,8 @@ Final paragraph after the rule.";
             exp: now + exp_delta,
             tenant: tenant.to_string(),
             scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            roles: roles.iter().map(|s| s.to_string()).collect(),
+            manages: Vec::new(),
         };
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("test-kid".to_string());
@@ -9899,6 +9932,7 @@ Final paragraph after the rule.";
             "user:alice",
             "team-alpha",
             &["read:team-alpha/*"],
+            &[],
             600,
         );
         // Verify the token directly through the verification core (the
@@ -9917,6 +9951,143 @@ Final paragraph after the rule.";
         assert_eq!(typ, auth::jwt::TokenType::Access);
     }
 
+    // ── v1.23.0 "Roles" verification ─────────────────────────────────────
+
+    /// A migrated, roles-seeded connection pool (both role gates only need a
+    /// pool + the roles store; no AppState required).
+    fn roles_pool() -> crate::Pool {
+        use tempfile::NamedTempFile;
+        let tmp = NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(2).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        pool
+    }
+
+    /// The principal literals the four handler-level roles tests share.
+    fn role_p(sup: &str, roles: &[&str], manages: &[&str]) -> auth::Principal {
+        use auth::Scope;
+        auth::Principal {
+            sub: sup.to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![Scope::parse("read:team-alpha/*").unwrap()],
+            jti: "jti-r".to_string(),
+            roles: roles.iter().map(|s| s.to_string()).collect(),
+            manages: manages.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// v1.23.0 plan #1: `role_scopes_filter_recall` — the roles data gate
+    /// (access_scopes + owner) drives the retrieval filter for self/reports/
+    /// admin, pulled straight from the seeded role bundles.
+    #[test]
+    fn role_retrieval_gate_resolves_seeded_bundles() {
+        let pool = roles_pool();
+        let gate = |p: &auth::Principal| {
+            handlers::gate::role_retrieval_gate(&Some(p.clone()), &pool).unwrap()
+        };
+        // agent → owner=self, private scope only.
+        let g = gate(&role_p("ana", &["agent"], &[]));
+        assert_eq!(g.owner_in, Some(vec!["ana".to_string()]), "self");
+        assert_eq!(g.access_scopes, Some(vec!["private".to_string()]));
+        // supervisor (reports) → only managed rows (owner IN managed).
+        let g2 = gate(&role_p("bob", &["supervisor"], &["ana", "chris"]));
+        assert_eq!(
+            g2.owner_in,
+            Some(vec!["ana".to_string(), "chris".to_string()])
+        );
+        // admin → no owner restriction, no scope restriction.
+        let g3 = gate(&role_p("root", &["admin"], &[]));
+        assert_eq!(g3.owner_in, None);
+        assert_eq!(g3.access_scopes, None);
+    }
+
+    /// v1.23.0 plan #3/#4: `action_gating_matches_can` + `solo_role_full_access`
+    /// — the role action gate denies a held action a role's `can` omits, and
+    /// the SMB `solo` role passes every action.
+    #[test]
+    fn authorize_role_gates_can_allowlist() {
+        let pool = roles_pool();
+        let ok = |p: &auth::Principal, cap: &str| {
+            handlers::authorize_role(&Some(p.clone()), &pool, cap).is_ok()
+        };
+        // qa-specialist can read + calibrate, cannot approve/purge/dsar_export.
+        let qa = role_p("qa1", &["qa-specialist"], &["ana"]);
+        assert!(!ok(&qa, "approve"), "qa cannot approve");
+        assert!(!ok(&qa, "purge"), "qa cannot purge");
+        assert!(!ok(&qa, "dsar_export"), "qa cannot run DSAR");
+        assert!(ok(&qa, "calibrate"), "qa can calibrate");
+        // supervisor can approve but not purge.
+        let sup = role_p("bob", &["supervisor"], &["ana"]);
+        assert!(ok(&sup, "approve"), "supervisor approves");
+        assert!(!ok(&sup, "purge"), "supervisor cannot purge");
+        // solo = every action.
+        let solo = role_p("ceo", &["solo"], &[]);
+        for cap in [
+            "approve",
+            "reject",
+            "purge",
+            "dsar_export",
+            "release_quarantine",
+            "calibrate",
+        ] {
+            assert!(ok(&solo, cap), "solo can {cap}");
+        }
+        // A principal with NO roles is untouched (back-compat: authorize only).
+        let nora = auth::Principal {
+            sub: "op".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![auth::Scope::parse("admin:team-alpha/*").unwrap()],
+            jti: "j".to_string(),
+            roles: vec![],
+            manages: vec![],
+        };
+        assert!(ok(&nora, "approve"), "no-roles principal not role-gated");
+    }
+
+    /// v1.23.0 plan #5: `role_resolved_from_jwt_claim` — a JWT with a `roles`
+    /// claim resolves to the role without a lookup (the IdP sets the claim;
+    /// the middleware harvests it into the principal).
+    #[test]
+    fn role_resolved_from_jwt_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, priv_key) = test_jwt_state(dir.path());
+        let raw = mint_test_token(
+            &priv_key,
+            "jti-dpo",
+            "user:dp",
+            "team-alpha",
+            &["read:team-alpha/*"],
+            &["dpo"],
+            600,
+        );
+        let keys = state.key_store.verifying_keys();
+        let (claims, _) = auth::jwt::verify_access_token(
+            &raw,
+            &keys,
+            &state.jwt_issuer,
+            &state.jwt_audience,
+            auth::jwt::TokenType::Access,
+        )
+        .expect("valid token must verify");
+        assert_eq!(claims.roles, vec!["dpo".to_string()], "roles claim carried");
+        // The middleware's harvest maps it into the principal untouched.
+        let scopes: Vec<auth::Scope> = claims
+            .scopes
+            .iter()
+            .filter_map(|s| auth::Scope::parse(s))
+            .collect();
+        let principal = auth::Principal {
+            sub: claims.sub,
+            tenant: claims.tenant,
+            scopes,
+            jti: claims.jti,
+            roles: claims.roles,
+            manages: claims.manages,
+        };
+        assert_eq!(principal.roles, vec!["dpo".to_string()]);
+    }
+
     /// Revocation: after logout, the jti is in the denylist. The middleware's
     /// revocation check path must catch it.
     #[test]
@@ -9929,6 +10100,7 @@ Final paragraph after the rule.";
             "user:bob",
             "team-alpha",
             &["read:team-alpha/*"],
+            &[],
             600,
         );
         // Revoke the jti (simulating /auth/logout).
@@ -9977,6 +10149,8 @@ Final paragraph after the rule.";
             tenant: "team-alpha".to_string(),
             scopes: vec![auth::Scope::parse("read:team-alpha/*").unwrap()],
             jti: "jti-eve".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         // Same team: allowed.
         assert!(handlers::authorize(
@@ -10062,6 +10236,8 @@ Final paragraph after the rule.";
             tenant: "t".to_string(),
             scopes: vec![auth::Scope::parse("write:t/l1").unwrap()],
             jti: "j".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         assert!(handlers::authorize(&Some(writer.clone()), auth::Action::Read, "t", "l1").is_ok());
         assert!(handlers::authorize(&Some(writer), auth::Action::Write, "t", "l1").is_ok());
@@ -10070,6 +10246,8 @@ Final paragraph after the rule.";
             tenant: "t".to_string(),
             scopes: vec![auth::Scope::parse("admin:t/l1").unwrap()],
             jti: "j".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         assert!(handlers::authorize(&Some(admin.clone()), auth::Action::Read, "t", "l1").is_ok());
         assert!(handlers::authorize(&Some(admin.clone()), auth::Action::Write, "t", "l1").is_ok());
@@ -10085,6 +10263,8 @@ Final paragraph after the rule.";
             tenant: "team-alpha".to_string(),
             scopes: vec![auth::Scope::parse("admin:team-alpha/*").unwrap()],
             jti: "jti-eve".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         // No requested tenant -> forced to own tenant.
         assert_eq!(
@@ -10153,6 +10333,11 @@ Final paragraph after the rule.";
             ("/profiles", "Read"),
             ("/profiles/{name}", "Admin"),
             ("/domains/{name}/profile", "Admin"),
+            // v1.23.0 Roles: reads are Read; upsert is Admin (the POST on
+            // /roles/{name} shares its path with a Read GET, so Admin is the
+            // conservative check — the /profiles precedent).
+            ("/roles", "Read"),
+            ("/roles/{name}", "Admin"),
             // v1.22.0 Regulated: legal hold + the retention schedule are
             // operator surfaces (Admin).
             ("/legal-hold", "Admin"),
@@ -10274,6 +10459,7 @@ Final paragraph after the rule.";
                     "govern" => include_str!("handlers/govern.rs"),
                     "holds" => include_str!("handlers/holds.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
+                    "roles" => include_str!("handlers/roles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),
                     "alert" => include_str!("alert.rs"),
                     m => panic!("no source mapping for handlers module {m}"),

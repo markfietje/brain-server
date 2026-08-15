@@ -664,6 +664,8 @@ mod tests {
                 domain: "*".into(),
             }],
             jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
         })
     }
 
@@ -681,6 +683,8 @@ mod tests {
                 domain: "alpha".into(),
             }],
             jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
         };
         let masked = redact_content(text, true, &Some(p));
         assert!(masked.contains("[redacted:email]"));
@@ -749,6 +753,8 @@ mod tests {
                 tenant: "team-a".into(),
                 scopes: vec![],
                 jti: "test".into(),
+                roles: vec![],
+                manages: vec![],
             }),
         );
         assert!(
@@ -778,6 +784,8 @@ mod tests {
                 domain: "alpha".into(),
             }],
             jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
         };
         // em-dash (3-byte) right after a valid 10-digit run — the exact boundary
         // that panicked (`out[i..i+1]` on the em-dash's first byte is not a char).
@@ -809,6 +817,8 @@ mod tests {
                 domain: "alpha".into(),
             }],
             jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
         };
         assert!(!has_pii_read(&Some(p)));
     }

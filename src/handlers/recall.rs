@@ -441,6 +441,12 @@ pub(crate) async fn run_recall(
         base_filters.min_relevance = Some(t.clone());
     }
     base_filters.access_scopes = crate::handlers::gate::scope_filter(principal);
+    // v1.23.0 "Roles": a JWT principal with a `roles` claim is scoped by its
+    // role bundles (narrowed access_scopes + an owner predicate for
+    // self/reports). No roles → the v1.14 scope path above applies unchanged.
+    if let Some(gate) = crate::handlers::gate::role_retrieval_gate(principal, &state.pool) {
+        crate::handlers::gate::apply_role_gate(&mut base_filters, &gate);
+    }
     // v1.17.1 "Govern" M2: when per-kind retention is enabled, carry the policy
     // into the retriever so chunks whose kind-default expiry has elapsed are
     // excluded from default recall exactly like an explicit `expires_at`.
@@ -1362,6 +1368,8 @@ mod tests {
                 domain: "global".into(),
             }],
             jti: "t".into(),
+            roles: vec![],
+            manages: vec![],
         });
         let mut r = crate::SearchResult::raw(
             1,

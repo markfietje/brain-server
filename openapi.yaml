@@ -2234,6 +2234,68 @@ paths:
                   profile: { type: string, nullable: true }
                   status: { type: string }
         "404": { $ref: "#/components/responses/NotFound" }
+  /roles:
+    get:
+      summary: List every role bundle (admin surface, Read)
+      operationId: listRoles
+      description: >
+        The seeded presets + operator-defined bundles, name-ordered. Reads are
+        Read at global scope (roles are server config, not domain data). Roles
+        bind to a principal via the IdP `roles` claim or an admin.
+      responses:
+        "200":
+          description: The role bundles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items: { $ref: "#/components/schemas/Role" }
+  /roles/{name}:
+    get:
+      summary: Get one role bundle (Read)
+      operationId: getRole
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The role bundle
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Role" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Define or edit a role bundle (Admin, audited)
+      operationId: upsertRole
+      description: >
+        The path is the name (a body `name` field is ignored). Absent vectors
+        default to empty (deny-by-default for reads + actions). The change
+        takes effect at the next request (no restart): the data gate + the
+        action gate read the same store. Editing a seeded preset overwrites it;
+        operator edits survive re-migrations.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleUpsert" }
+      responses:
+        "200":
+          description: The stored role bundle
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
   /domains/move:
     post:
       summary: Bulk-relabel chunks into a target domain (v1.13.0 Route)
@@ -2603,6 +2665,61 @@ components:
         kinds: { type: array, items: { type: string } }
         connectors_allowed: { type: array, items: { type: string } }
         legal_hold_default: { type: boolean }
+    Role:
+      type: object
+      description: >
+        v1.23.0 — a named bundle of scopes + panel visibility + an action
+        `can` allowlist, resolved from a JWT principal's `roles` claim. The
+        server enforces the data gate (access_scopes + owner) and the action
+        gate (can); panel visibility is client UX (defense-in-depth, not the
+        only gate). `admin` short-circuits to unrestricted data.
+      properties:
+        name: { type: string }
+        description: { type: string, description: Display-only one-liner. Never interpreted. }
+        scopes:
+          type: array
+          description: access_scope values this role may read; empty + not admin = deny-by-default.
+          items: { type: string, enum: [private, domain, team] }
+        owner_filter:
+          type: string
+          description: self = own owner rows; reports = the manages claim set; all = unrestricted.
+          enum: [self, reports, all]
+        can:
+          type: array
+          description: Action allowlist enforced by the authorize_role gate (a held action omitted here is 403).
+          items:
+            type: string
+            enum: [read, write, approve, reject, calibrate, release_quarantine, dsar_export, purge, admin]
+        panels_default:
+          type: array
+          items: { type: string }
+          nullable: true
+        panels_hidden:
+          type: array
+          items: { type: string }
+          nullable: true
+        tools_allowed:
+          type: array
+          description: MCP ump.* tools (stored + surfaced now; enforcement is v1.24). "*" = all.
+          items: { type: string }
+          nullable: true
+    RoleUpsert:
+      type: object
+      description: POST /roles/{name} body — a Role minus the name (the path is the name).
+      properties:
+        description: { type: string }
+        scopes:
+          type: array
+          items: { type: string, enum: [private, domain, team] }
+        owner_filter: { type: string, enum: [self, reports, all] }
+        can:
+          type: array
+          items:
+            type: string
+            enum: [read, write, approve, reject, calibrate, release_quarantine, dsar_export, purge, admin]
+        panels_default: { type: array, items: { type: string }, nullable: true }
+        panels_hidden: { type: array, items: { type: string }, nullable: true }
+        tools_allowed: { type: array, items: { type: string }, nullable: true }
     Footprint:
       type: object
       description: >

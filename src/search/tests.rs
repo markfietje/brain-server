@@ -620,6 +620,26 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
     assert!(sql.contains("k.node_kind = ?"), "kind clause");
     // Access scope: deny-by-default IN list with 2 placeholders.
     assert!(sql.contains("k.access_scope IN (?,?)"), "scope clause");
+    // v1.23.0 "Roles": the owner filter is an AND-ed IN list emitted after the
+    // scope clause (self/reports record gating).
+    let mut sql_roled = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
+    let mut p_roled: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let f_roled = SearchFilters {
+        access_scopes: Some(vec!["private".into(), "team".into()]),
+        owner_in: Some(vec!["ana".into(), "chris".into()]),
+        ..Default::default()
+    };
+    push_gate_filters(&mut sql_roled, &mut p_roled, &f_roled);
+    assert!(
+        sql_roled.contains("k.access_scope IN (?,?)"),
+        "scope clause"
+    );
+    assert!(sql_roled.contains("k.owner IN (?,?)"), "owner-in clause");
+    assert_eq!(
+        p_roled.len(),
+        5,
+        "decay(now_unix) + 2 scope params + 2 owner params stay in order"
+    );
     assert_eq!(params.len(), 4, "now_unix + kind + 2 scope params");
 
     // include_decayed=true emits NO decay clause.

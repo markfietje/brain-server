@@ -76,6 +76,8 @@ fn mint_pair(
         exp: now + ACCESS_LIFETIME_SECS,
         tenant: source.tenant.clone(),
         scopes: source.scopes.clone(),
+        roles: source.roles.clone(),
+        manages: source.manages.clone(),
     };
     let mut access_header = Header::new(alg);
     access_header.kid = Some(signing_kid.to_string());
@@ -92,6 +94,8 @@ fn mint_pair(
         exp: now + REFRESH_LIFETIME_SECS,
         tenant: source.tenant.clone(),
         scopes: Vec::new(), // refresh tokens carry no scopes
+        roles: Vec::new(),  // nor roles — not presented to data routes
+        manages: Vec::new(),
     };
     let mut refresh_header = Header::new(alg);
     refresh_header.kid = Some(signing_kid.to_string());

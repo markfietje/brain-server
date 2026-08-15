@@ -64,6 +64,13 @@ pub struct Principal {
     /// The `jti` of the access token this principal came from. Used for
     /// audit attribution (who did what, with which token).
     pub jti: String,
+    /// v1.23.0 "Roles": the role *names* from the JWT `roles` claim. Empty =
+    /// no role layer (the v1.14 scope path applies unchanged — back-compat).
+    pub roles: Vec<String>,
+    /// v1.23.0 "Roles": the `manages` claim (their direct reports / agents),
+    /// the source for an `owner_filter: "reports"` role's record gate. Empty =
+    /// no reports (a reports-role sees nothing by default — deny-by-default).
+    pub manages: Vec<String>,
 }
 
 /// A parsed scope. `<action>:<team>/<domain>`. Lowercased on parse so
@@ -204,6 +211,8 @@ mod tests {
             tenant: "global".to_string(),
             scopes: vec![],
             jti: String::new(),
+            roles: vec![],
+            manages: vec![],
         };
         assert!(!is_authorized(&p, Action::Read, "any", "any"));
         assert!(!is_authorized(&p, Action::Admin, "any", "any"));
@@ -213,6 +222,8 @@ mod tests {
             tenant: "global".to_string(),
             scopes: vec![Scope::parse("*:*/*").unwrap()],
             jti: String::new(),
+            roles: vec![],
+            manages: vec![],
         };
         assert!(is_authorized(&admin, Action::Admin, "any", "any"));
     }
@@ -224,6 +235,8 @@ mod tests {
             tenant: "team-alpha".to_string(),
             scopes: vec![Scope::parse("read:team-alpha/*").unwrap()],
             jti: "jti-1".to_string(),
+            roles: vec![],
+            manages: vec![],
         };
         assert!(is_authorized(&p, Action::Read, "team-alpha", "any"));
         assert!(!is_authorized(&p, Action::Read, "team-beta", "any"));

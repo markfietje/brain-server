@@ -1265,10 +1265,31 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // ── v1.23.0 "Roles": the named scope/action bundles ──────────────
+    // `roles` holds the JSON bundles (the 10 seeded presets + operator
+    // clones), resolved from a JWT principal's `roles` claim at request time
+    // (data gate + action gate + MCP tools). Seeding is INSERT OR IGNORE so an
+    // operator edit to a preset survives a re-migration (only a missing preset
+    // is re-inserted).
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS roles (
+            name       TEXT PRIMARY KEY,
+            json       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+         );",
+        [],
+    )?;
+    for (name, json) in crate::role::PRESETS_RAW {
+        db.execute(
+            "INSERT OR IGNORE INTO roles(name, json) VALUES (?1, ?2)",
+            rusqlite::params![name, json],
+        )?;
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.22.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.22.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.23.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.23.0';",
         [],
     )?;
 

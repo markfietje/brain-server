@@ -33,6 +33,7 @@ pub mod observe;
 pub mod procedure;
 pub mod profiles;
 pub mod recall;
+pub mod roles;
 pub mod sources;
 pub mod suggest;
 pub mod ump;
@@ -403,6 +404,40 @@ pub fn authorize(
                 Err(HandlerError::forbidden(action, effective_team, domain))
             }
         }
+    }
+}
+
+/// v1.23.0 "Roles": the action-gate layer on top of `authorize`. When the
+/// principal carries a `roles` claim, the requested `can`-capability must be
+/// in at least one resolved role's allowlist or the action is FORBIDDEN (403)
+/// — the server enforces even if a client hid/disabled the button. A principal
+/// with **no** roles (or an opaque/loopback principal) is untouched: `authorize`
+/// remains the only gate (back-compat byte-identical). Deny-by-default: a role
+/// whose `can` omits the capability (e.g. an `agent` calling approve) is
+/// refused. Call AFTER `authorize` and AFTER the pool is resolved (the role
+/// store reads from the pool).
+pub fn authorize_role(
+    principal: &Option<crate::auth::Principal>,
+    pool: &crate::Pool,
+    capability: &str,
+) -> Result<(), HandlerError> {
+    let Some(p) = principal else { return Ok(()) };
+    if p.roles.is_empty() {
+        return Ok(());
+    }
+    let conn = pool
+        .get()
+        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    let roles = brain_server::role::resolve(&conn, &p.roles)
+        .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
+    if roles.iter().any(|r| r.can(capability)) {
+        Ok(())
+    } else {
+        Err(HandlerError::forbidden(
+            crate::auth::Action::Write,
+            &p.tenant,
+            "global",
+        ))
     }
 }
 
