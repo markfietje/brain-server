@@ -19,6 +19,52 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.9] — 2026-08-15
+
+### Server — "Roles"
+
+Release 9 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.8 →
+**1.27.9**; schema unchanged (**1.27.8**); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- Two new role presets: a **`client-auditor`** (a client's compliance login —
+  a read-only view of exactly one client domain, no write/approve/purge) and a
+  **`bpo-ops`** (the all-clients operations read). Both seed as editable rows.
+- Domain-scoped client views — a `client-auditor`'s `GET /clients` +
+  `GET /clients/{name}` are filtered to its granted client-domain(s); other
+  clients never appear (and are denied with no existence leak).
+
+### Engineering record
+
+The BPO per-client role postures + the domain-scoped client read. M1:
+`role::PRESETS_RAW` gains the two presets (INSERT OR IGNORE seeded by the
+existing migration — no schema bump: roles are rows, not tables). M2:
+`auth::client_authorized_domains` — the pure allowlist seam mapping a
+`client-auditor` principal to the non-wildcard domains of its `scopes`
+(`None` = unrestricted; `Some(&[])` = sees nothing, deny-by-default). M3:
+`GET /clients` + `GET /clients/{name}` in `handlers::clients.rs` enforce the
+row filter (the handler still calls `authorize`, defense-in-depth); every
+non-`client-auditor` principal keeps the existing Admin path gate, so
+`bpo-ops`/admin/opaque all see the full register. Wire/route-coverage +
+route-authz guard tables note the change; no openapi schema drift (only rows
+vary).
+
+Tests: server bin 617 → **619** passed / 6 ignored (incl. parent verification
+#7: `client_auditor_sees_only_their_domain` — auditor sees only `acme-us`,
+`{beta}` is 404, `bpo-ops` sees all; + `client_auditor_can_read_only` — the
+read-only wedge); lib role presets parse/validate at 12; schema-contract test
+pins 12 seeded roles; clippy `-D warnings` + fmt clean. Honest ceilings: this
+is a read-time row filter on one deployment's register — not true multi-
+tenancy (per-client authz authority/keys/independent failure) = v2.0 Cortex;
+auditor tokens are not auto-provisioned (the operator binds the auditor's
+`scopes` to its client domain, a documented setup step); `POST /clients`
+creation stays Admin. See `IMPLEMENTATION_PLAN_v1.27.9_Roles.md`.
+
+---
+
 ## [1.27.8] — 2026-08-15
 
 ### Server — "QaQueue"
