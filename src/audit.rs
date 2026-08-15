@@ -58,6 +58,10 @@ pub enum AuditKind {
     /// v1.26.0 "Cross-Border" M1: transfer-register writes (Art 30/Art 46
     /// evidence) — every recorded cross-border flow is hash-chained.
     Transfer,
+    /// v1.27.1 "Clients": the BPO operating-register lifecycle (register, and
+    /// later onboard/dpa/dsar/hold/termination writes) — every client-level
+    /// action is hash-chained.
+    Client,
 }
 
 impl AuditKind {
@@ -74,6 +78,7 @@ impl AuditKind {
             AuditKind::Get => "get",
             AuditKind::Breach => "breach",
             AuditKind::Transfer => "transfer",
+            AuditKind::Client => "client",
         }
     }
 }

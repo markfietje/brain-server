@@ -1380,10 +1380,34 @@ pub fn run_migration_with_store_dim(
     // release-versioned table, not a DB table (it is read at request time and
     // re-checked on release, per the plan's honest ceiling). Nothing to migrate.
 
+    // ── v1.27.1 "Clients": the BPO operating register ────────────────
+    // One row per operating client, stored in the **global DB** like the
+    // `transfers` register it mirrors. `name` is the BPO-facing id (lowercase
+    // domain-safe identifier); `domain` is the one-domain-per-client isolation
+    // seam (v1.0); `status` = active | archived (archived set on termination,
+    // v1.27.6); `dpa_terms` (nullable JSON) filled by v1.27.3.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS clients(
+            name TEXT PRIMARY KEY,
+            domain TEXT NOT NULL,
+            jurisdiction TEXT NOT NULL,
+            profile TEXT,
+            dpa_terms TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            archived_at INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clients_domain ON clients(domain)",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.26.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.26.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.0';",
         [],
     )?;
 

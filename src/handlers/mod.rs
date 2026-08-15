@@ -22,6 +22,7 @@
 
 pub mod auth;
 pub mod breaches;
+pub mod clients;
 pub mod connectors;
 pub mod consolidate;
 pub mod domains;

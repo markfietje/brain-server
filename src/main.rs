@@ -57,6 +57,7 @@ mod alert;
 mod auth;
 mod breach;
 mod chunker;
+mod clients;
 mod config;
 mod connector;
 mod consolidate;
@@ -4702,6 +4703,13 @@ async fn main_inner() -> Result<()> {
         .route("/transfers", get(handlers::transfers::list_transfers))
         .route("/transfers/{id}/tia", get(handlers::transfers::get_tia))
         .route("/transfers/{id}/dpa", get(handlers::transfers::get_dpa))
+        // v1.27.1 "Clients": the BPO operating register — the spine every later
+        // BPO release (onboard/dpa/dsar/holds/termination) reads. Writes are
+        // Admin + audited (AuditKind::Client); the identity/evidence surface
+        // only (no enforcement gate).
+        .route("/clients", post(handlers::clients::register_client))
+        .route("/clients", get(handlers::clients::list_clients))
+        .route("/clients/{name}", get(handlers::clients::get_client))
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -8080,6 +8088,8 @@ Final paragraph after the rule.";
             "breach_events",
             // v1.26.0 Cross-Border: the transfer register (Art 30/46 evidence).
             "transfers",
+            // v1.27.1 Clients: the BPO operating register (global-operator rows).
+            "clients",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -8268,10 +8278,11 @@ Final paragraph after the rule.";
         // v1.23.0 for the roles table (the named scope/action bundles).
         // v1.25.0 for the breaches + breach_events tables (the breach workflow).
         // v1.26.0 for the transfers table + knowledge.lawful_basis/purpose.
+        // v1.27.1 for the clients table (the BPO operating register).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_26_0),
-            "schema_version must be recorded as 1.26.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_0),
+            "schema_version must be recorded as 1.27.0 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -9471,6 +9482,9 @@ Final paragraph after the rule.";
             "/transfers",
             "/transfers/{id}/tia",
             "/transfers/{id}/dpa",
+            // v1.27.1 Clients: the BPO operating register.
+            "/clients",
+            "/clients/{name}",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10405,6 +10419,9 @@ Final paragraph after the rule.";
             ("/transfers", "Admin"),
             ("/transfers/{id}/tia", "Admin"),
             ("/transfers/{id}/dpa", "Admin"),
+            // v1.27.1 Clients: the BPO operating register (Admin, audited).
+            ("/clients", "Admin"),
+            ("/clients/{name}", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
@@ -10523,6 +10540,7 @@ Final paragraph after the rule.";
                     "holds" => include_str!("handlers/holds.rs"),
                     "breaches" => include_str!("handlers/breaches.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
+                    "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
                     "roles" => include_str!("handlers/roles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),

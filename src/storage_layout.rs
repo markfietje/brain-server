@@ -68,6 +68,8 @@ pub const SCHEMA_VERSION_V1_23_0: &str = "1.23.0";
 pub const SCHEMA_VERSION_V1_25_0: &str = "1.25.0";
 /// v1.26.0 "Cross-Border": the transfers table + knowledge.lawful_basis/purpose.
 pub const SCHEMA_VERSION_V1_26_0: &str = "1.26.0";
+/// v1.27.1 "Clients": the BPO operating `clients` register (global-operator rows).
+pub const SCHEMA_VERSION_V1_27_0: &str = "1.27.0";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

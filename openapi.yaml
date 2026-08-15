@@ -1644,6 +1644,45 @@ paths:
           description: The pre-filled DPA fields
         "404":
           description: No transfer with this id
+  /clients:
+    post:
+      summary: Register an operating client (v1.27.1)
+      operationId: registerClient
+      description: >
+        The BPO operating-register entry (the spine later BPO releases read —
+        onboard/DPA/DSAR/holds/termination). Body: `{name, domain,
+        jurisdiction, profile?}`. `name` + `domain` are lowercase
+        domain-safe identifiers; `jurisdiction` is a short lowercase country
+        code. Admin + audited (kind 'client'). Identity/evidence only — this
+        does not gate enforcement.
+      responses:
+        "200":
+          description: The registered client name
+        "400":
+          description: Invalid name/domain/jurisdiction
+        "403":
+          description: The principal is not admin
+        "409":
+          description: A client with this name already exists
+    get:
+      summary: List the client register (v1.27.1)
+      operationId: listClients
+      description: >
+        The full BPO client register, ordered by name. Admin read.
+      responses:
+        "200":
+          description: {clients: [...]}
+  /clients/{name}:
+    get:
+      summary: Resolve one client (v1.27.1)
+      operationId: getClient
+      description: >
+        A single client register row by its `name`. Admin read.
+      responses:
+        "200":
+          description: The client row
+        "404":
+          description: No client with this name
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
