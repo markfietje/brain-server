@@ -276,10 +276,17 @@ mod tests {
     use axum::http::StatusCode;
 
     fn app_state(dir: &tempfile::TempDir) -> Arc<AppState> {
+        app_state_with(dir, true, 4)
+    }
+
+    fn app_state_with(dir: &tempfile::TempDir, multi_db: bool, max_size: u32) -> Arc<AppState> {
         brain_server::register_sqlite_vec::register_sqlite_vec();
         let path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&path);
-        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .max_size(max_size)
+            .build(mgr)
+            .expect("pool");
         brain_server::migration::run_migration(
             &mut pool.get().unwrap(),
             crate::config::DB_MMAP_SIZE_MIB,
@@ -290,7 +297,7 @@ mod tests {
         );
         Arc::new(AppState {
             model,
-            registry: DomainRegistry::new(pool.clone(), &path, true),
+            registry: DomainRegistry::new(pool.clone(), &path, multi_db),
             pool,
             db_path: path.clone(),
             connection_tracker: Arc::new(ConnectionTracker::new()),
@@ -423,5 +430,41 @@ mod tests {
         .await
         .expect_err("archived client 409s");
         assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn per_client_dsar_shim_single_pool_no_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state_with(&dir, false, 1);
+        register_client(&state, "beta", "beta", "eu");
+        seed_subject(&state, "global", "alice@beta");
+
+        let resp = client_dsar(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("beta".to_string()),
+            Json(ClientDsarRequest {
+                subject: "alice@beta".to_string(),
+                action: "purge".to_string(),
+                dry_run: false,
+            }),
+        )
+        .await
+        .expect("shim dsar completes (no pool deadlock)");
+        assert_eq!(resp.status, "completed");
+        assert!(resp.certificate.is_some());
+        assert_eq!(count_knowledge(&state, "global"), 0, "shim subject purged");
+        let cert: Option<String> = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT certificate FROM dsar_requests LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .expect("ledger row");
+        assert!(
+            cert.is_some() && cert.unwrap().contains("\"jurisdiction\":\"eu\""),
+            "certificate backfilled with the client's jurisdiction"
+        );
     }
 }
