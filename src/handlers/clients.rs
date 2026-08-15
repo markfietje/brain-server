@@ -234,6 +234,8 @@ pub async fn client_hold(
     }
     super::holds::post_legal_hold_for_domain(state, principal, &domain, req.ids, req.reason).await
 }
+
+/// `POST /clients/{name}/dpa` — set Art 28 sub-processor terms (the evidence a
 /// client's controller checks). Admin + audited. 404 when the client is
 /// unknown (via the update's affected-row count, no second query).
 pub async fn set_client_dpa(
