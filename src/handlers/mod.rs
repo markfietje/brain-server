@@ -135,6 +135,20 @@ pub struct RecallHit {
     /// Only present when the caller opted into decayed results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decayed: Option<bool>,
+    /// v1.27.12 "Provenance": stored-row provenance labels carried from the
+    /// `knowledge` row so a consuming agent can attribute a hit. `ingest_kind`
+    /// is the ingest path (memory/markdown/structured/manual/vault/connector),
+    /// `memory_kind` the `node_kind` vocabulary (fact/procedure/...),
+    /// `lawful_basis` the Art 5/6 posture when declared, `region` the data
+    /// residency stamp. Labels only — no ranking or trust assertion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingest_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lawful_basis: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 }
 
 /// v1.5.0 "Epistemic" — calibrated abstention. When the existing

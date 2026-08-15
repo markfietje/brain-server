@@ -231,6 +231,23 @@ pub struct SearchResult {
     /// serialized (drives read-path redaction only).
     #[serde(skip)]
     pub pii: bool,
+    /// v1.27.12 "Provenance": the `knowledge.source` ingest-kind (memory /
+    /// markdown / structured / manual / vault / connector). Internal provenance
+    /// label destined for the plugin; never serialized in `/recall` JSON.
+    #[serde(skip)]
+    pub ingest_kind: Option<String>,
+    /// v1.27.12 "Provenance": the `knowledge.node_kind` memory-kind (fact /
+    /// procedure / ...). Internal provenance label; never serialized.
+    #[serde(skip)]
+    pub memory_kind: Option<String>,
+    /// v1.27.12 "Provenance": the `knowledge.lawful_basis` (may be NULL).
+    /// Internal provenance label; never serialized.
+    #[serde(skip)]
+    pub lawful_basis: Option<String>,
+    /// v1.27.12 "Provenance": the `knowledge.region` data-residency stamp.
+    /// Internal provenance label; never serialized.
+    #[serde(skip)]
+    pub region: Option<String>,
 }
 
 fn provenance_is_empty(p: &Provenance) -> bool {
@@ -263,6 +280,10 @@ impl SearchResult {
             confidence: None,
             expires_at: None,
             pii: false,
+            ingest_kind: None,
+            memory_kind: None,
+            lawful_basis: None,
+            region: None,
         }
     }
 
@@ -396,6 +417,10 @@ impl SearchResult {
                 confidence: None,
                 expires_at: None,
                 pii: false,
+                ingest_kind: None,
+                memory_kind: None,
+                lawful_basis: None,
+                region: None,
             };
             snap.with_snippet(snippet_q);
             let text = snap.snippet.clone().unwrap_or_default();
@@ -842,6 +867,10 @@ pub fn rrf_fuse(
             confidence: r.confidence,
             expires_at: r.expires_at,
             pii: r.pii,
+            ingest_kind: r.ingest_kind.clone(),
+            memory_kind: r.memory_kind.clone(),
+            lawful_basis: r.lawful_basis.clone(),
+            region: r.region.clone(),
         });
     }
 
@@ -1306,7 +1335,7 @@ pub fn vec0_knn(
     let mut sql = String::from(
         "SELECT k.id, k.title, k.content, v.distance, k.flagged,
                 k.observed_at, k.authority, k.assertion_kind, k.confidence,
-                k.expires_at, k.pii
+                k.expires_at, k.pii, k.source, k.node_kind, k.lawful_basis, k.region
          FROM vec_knowledge v
          JOIN knowledge k ON k.id = v.knowledge_id
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -1401,6 +1430,10 @@ pub fn vec0_knn(
             r.confidence = row.get::<_, Option<f64>>(8)?.map(|c| c as f32);
             r.expires_at = row.get(9)?;
             r.pii = row.get::<_, i64>(10)? != 0;
+            r.ingest_kind = row.get(11)?;
+            r.memory_kind = row.get(12)?;
+            r.lawful_basis = row.get(13)?;
+            r.region = row.get(14)?;
             Ok(r)
         })?
         .filter_map(|r| r.ok())
@@ -1418,7 +1451,7 @@ fn fts_search(
     let mut sql = String::from(
         "SELECT k.id, k.title, k.content, bm25(knowledge_fts) AS score, k.flagged,
                 k.observed_at, k.authority, k.assertion_kind, k.confidence,
-                k.expires_at, k.pii
+                k.expires_at, k.pii, k.source, k.node_kind, k.lawful_basis, k.region
          FROM knowledge_fts
          JOIN knowledge k ON k.id = knowledge_fts.rowid
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -1501,6 +1534,10 @@ fn fts_search(
             r.confidence = row.get::<_, Option<f64>>(8)?.map(|c| c as f32);
             r.expires_at = row.get(9)?;
             r.pii = row.get::<_, i64>(10)? != 0;
+            r.ingest_kind = row.get(11)?;
+            r.memory_kind = row.get(12)?;
+            r.lawful_basis = row.get(13)?;
+            r.region = row.get(14)?;
             Ok(r)
         })?
         .filter_map(|r| r.ok())

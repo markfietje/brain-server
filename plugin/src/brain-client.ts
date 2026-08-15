@@ -78,6 +78,11 @@ export type BrainRecallHit = {
   snippet?: string;
   untrusted?: boolean;
   conflict?: boolean;
+  /** v1.27.12 "Provenance": stored-row labels from the server (absent when unset). */
+  ingest_kind?: string;
+  memory_kind?: string;
+  lawful_basis?: string;
+  region?: string;
 };
 
 /**
@@ -265,6 +270,11 @@ type RecallHitWire = {
   snippet?: string;
   untrusted?: boolean;
   conflict?: boolean;
+  /** v1.27.12 "Provenance": stored-row labels from the server (absent when unset). */
+  ingest_kind?: string;
+  memory_kind?: string;
+  lawful_basis?: string;
+  region?: string;
 };
 
 type RecallResponseWire = {

@@ -832,6 +832,10 @@ fn results_to_hits(
                 assertion_kind: r.assertion_kind,
                 relevance: Some(crate::gate::relevance_tier(r.score)),
                 decayed: include_decayed.then(|| crate::gate::is_decayed(r.expires_at, now_unix)),
+                ingest_kind: r.ingest_kind,
+                memory_kind: r.memory_kind,
+                lawful_basis: r.lawful_basis,
+                region: r.region,
             }
         })
         .collect()
@@ -1104,6 +1108,41 @@ mod tests {
         assert_eq!(hits[0].source, Some(HitSource::Vector));
         assert!((hits[0].score - 0.9).abs() < f32::EPSILON);
         assert!(hits[1].title.is_none());
+    }
+
+    #[test]
+    fn results_to_hits_forwards_provenance_labels() {
+        let results = vec![SearchResult {
+            id: 7,
+            score: 0.6,
+            title: None,
+            content: "c".into(),
+            source: None,
+            provenance: Default::default(),
+            flagged: false,
+            untrusted: true,
+            snippet: None,
+            evidence: None,
+            ingest_kind: Some("connector-github".into()),
+            memory_kind: Some("procedure".into()),
+            lawful_basis: Some("consent".into()),
+            region: Some("eu-west-1".into()),
+            ..Default::default()
+        }];
+        let hits = results_to_hits(
+            results
+                .into_iter()
+                .map(|r| (r, "global".to_string()))
+                .collect(),
+            false,
+            false,
+            &None,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].ingest_kind.as_deref(), Some("connector-github"));
+        assert_eq!(hits[0].memory_kind.as_deref(), Some("procedure"));
+        assert_eq!(hits[0].lawful_basis.as_deref(), Some("consent"));
+        assert_eq!(hits[0].region.as_deref(), Some("eu-west-1"));
     }
 
     #[test]
