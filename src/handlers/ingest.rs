@@ -96,6 +96,15 @@ pub struct IngestRequest {
     pub valid_to: Option<String>,
     #[serde(default)]
     pub ump_meta: Option<String>,
+    /// v1.25.0 "PH-Compliant" M3: an optional provenance source hint. Scraped
+    /// data (`scrape`/`scraped`/`crawler`) without a documented [`Self::lawful_basis`]
+    /// is quarantined, not stored (the NPC 2026-01 scraping advisory posture).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// v1.25.0 "PH-Compliant" M3: the documented lawful basis for scraped data.
+    /// Absent/blank on a scrape ingest → the record is quarantined (fail-closed).
+    #[serde(default)]
+    pub lawful_basis: Option<String>,
 }
 
 /// v1.17.1 "Govern" M4: `?format=ump` accepts a UMP envelope instead of the
@@ -259,6 +268,8 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
         valid_from: row["valid_from"].as_str().map(|s| s.to_string()),
         valid_to: row["valid_to"].as_str().map(|s| s.to_string()),
         ump_meta: Some(serde_json::to_string(&meta).unwrap_or_default()),
+        source: None,       // UMP provenance carries no scrape source
+        lawful_basis: None, // a UMP record declares lawful basis separately
     };
     Ok((req, meta))
 }
@@ -317,7 +328,13 @@ pub(crate) async fn ingest_one(
             "input contains suspicious patterns",
         ));
     }
-    let quarantine_flagged = screen_result == crate::screen::ScreenResult::Quarantine;
+    let quarantine_flagged = screen_result == crate::screen::ScreenResult::Quarantine
+        // v1.25.0 "PH-Compliant" M3: scraped data without a documented lawful
+        // basis is quarantined (the NPC 2026-01 posture), never stored as memory.
+        || matches!(
+            crate::ph::scrape_posture(req.source.as_deref(), req.lawful_basis.as_deref()),
+            crate::ph::ScrapePosture::Quarantine
+        );
 
     if req.entities.len() > MAX_ENTITIES {
         return Err(HandlerError::bad_request_with(

@@ -752,6 +752,18 @@ pub fn controller_name() -> String {
         .unwrap_or_else(|| "brain-server operator".to_string())
 }
 
+/// v1.25.0 "PH-Compliant" M1: the named **Data Protection Officer** contact.
+/// A non-secret, operator-facing label (name/role/duty-officer email) surfaced
+/// on `/health` + the public privacy notice so a data-subject/breach event has
+/// a named channel. `None` when unset — the posture degrades to "no named
+/// contact" rather than inventing one (the operator fills `BRAIN_DPO_CONTACT`).
+pub fn dpo_contact() -> Option<String> {
+    std::env::var("BRAIN_DPO_CONTACT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to
 /// `edge-default`. Unknown values fall back to `edge-default`.
 pub fn model_profile() -> &'static str {

@@ -19,6 +19,87 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.25.0] — 2026-08-15
+
+### Server — "PH-Compliant" (Philippines home-jurisdiction posture)
+
+Server `Cargo.toml`/lock 1.24.0 → 1.25.0; client + plugin unchanged. An
+**evidence + workflow** release for the regulated buyer in the Philippines,
+honestly framed: the Philippines has **no AI statute yet** — RA 10173 (DPA
+2012) + NPC advisories (2024-04 AI; 2026-01 scraping) + EO 119 (gov-data
+residency) are the law in force, and **HB 7396 (risk-based AI) is pending, not
+enacted**. This release documents the DPA/NPC posture (`COMPLIANCE_PH.md`),
+ships the **breach-notification workflow** (the one genuinely-new primitive),
+and adds the **PIA template + scraping provenance** rule — all layered on the
+existing profile/role/region primitives. See
+`IMPLEMENTATION_PLAN_v1.25.0_PH_Compliant.md`.
+
+### Release notes
+
+**Improvements**
+
+- **Philippines compliance annex** — `COMPLIANCE_PH.md` maps every RA 10173
+  control (PIC/PIP duties, privacy-by-design, lawful basis, NPC registration,
+  DPO, subject rights, EO 119 residency) to the shipped feature, with an
+  HB 7396 forward-watch note. A cross-reference test pins doc ↔ code coupling.
+- **Breach-notification workflow** — `POST /breach` opens an incident
+  (DPO/admin role-gated, 72h PH-DPA + EU-Art-33 deadlines computed per
+  affected jurisdiction), `POST /breach/{id}/event` appends an append-only
+  notification/assessment log, `POST /breach/{id}/close` closes it, and
+  `GET /breaches` / `GET /breaches/{id}` are the DPO/auditor ledger. Every
+  event is hash-chained into the existing audit (`kind: "breach"`). Automating
+  detection is v2.x — the workflow is human-opened by the DPO.
+- **Scraping provenance (NPC 2026-01)** — a scrape ingest without a documented
+  `lawful_basis` is **quarantined, not stored** (the v0.9.7 quarantine flag:
+  excluded from recall, KG, and export); a documented basis stores normally.
+- **Pre-filled PIA template** — `PIA_TEMPLATE.md` draws the ops picture (data,
+  lawful basis, retention, recipients, transfers) so the DPO's PIA is not a
+  blank page (pre-filled, not auto-filed).
+- **DPO contact on `/health`** — `BRAIN_DPO_CONTACT` surfaces the named Data
+  Protection Officer on the public health probe + privacy notice (null when
+  unset, never invented).
+
+**Security fixes**
+
+- Scraped data without a lawful-basis provenance is no longer silently stored.
+
+**Bug fixes**
+
+- None in this release.
+
+### Engineering record
+
+- **M1 — posture.** `src/ph.rs` ships the pure decision logic: the `DPA_CONTROLS`
+  cross-reference map + `scrape_posture` (scrape-family sources need a bounded
+  `lawful_basis` or they quarantine) + `notification_deadlines` (ph NPC 72h /
+  eu authority 72h / subject-notification, de-duplicated, from `discovered_at`).
+  `COMPLIANCE_PH.md` documents the control map to shipped features.
+- **M2 — breach workflow.** `src/breach.rs` (`open`/`add_event`/`close`/`list`/
+  `get`) + `src/handlers/breaches.rs` (the five routes, DPO/admin role-gated via
+  `can_act_on_breach`, audited); `AuditKind::Breach`; migration adds the
+  `breaches` + `breach_events` tables (schema → 1.25.0); wired into the router,
+  the route-coverage + route-authz guard tables, and openapi.yaml.
+- **M3 — PIA + scraping.** `PIA_TEMPLATE.md`; `IngestRequest` gains `source` +
+  `lawful_basis`; `ingest_one` quarantines a no-basis scrape via the existing
+  flag seam.
+- **DPO contact** — `config::dpo_contact()` (`BRAIN_DPO_CONTACT`) surfaced on
+  `health_body.compliance.dpo_contact`.
+- **Tests** (server bin 571 → 582 passed / 6 ignored; lib 105 unchanged):
+  `compliance_ph_covers_dpa_controls` (M1), `breach_workflow_computes_
+  jurisdiction_deadlines` + `countdown` + `dpo_role_is_the_breach_actor` (M2),
+  `breach_chain_verified` (audit chain over breach events), `health_surfaces_
+  dpo_contact`, `scraped_data_without_basis_quarantined`, `breach_lifecycle_
+  open_event_close` + list bounds + validation. Clippy `-D warnings` (default +
+  bench + otel) + fmt clean. Route-coverage + route-authz audit green.
+- **Honest ceilings** — breach detection is **human-opened** (anomaly/leak
+  sensors are v2.x); a jurisdiction absent from the deadline table yields no
+  deadline (the DPO confirms); the PIA is pre-filled, not auto-filed; **HB 7396
+  is forward-watch only** — the structure absorbs it but nothing is
+  pre-implemented; each BPO client's own jurisdiction is the v1.26.0 cross-border
+  follow-up; the client Security-panel countdown surfacing is a client release.
+
+---
+
 ## [1.24.0] — 2026-08-15
 
 ### Server — "Connectors" (vertical tool integrations, profile-gated)
