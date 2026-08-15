@@ -10,6 +10,95 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.21.0] — 2026-08-15
+
+### Server + client — "Profiles" (presets + the use-case onboarding wizard)
+
+Server `Cargo.toml`/lock 1.20.30 → 1.21.0; client 1.20.25 → 1.21.0; plugin
+unchanged. A **Profile** is a typed JSON bundle of the *existing* v1.14/v1.15/
+v1.17.1 knobs (access_scope default, PII posture, per-kind retention, audit
+level, kind vocabulary) — **no new governance primitives**. One row per name,
+bound to a domain, read at request time. The invariant throughout: **the
+profile sets defaults, the row wins**; a domain with no bound profile is
+byte-identical to pre-v1.21 (the back-compat test pins this). See
+`IMPLEMENTATION_PLAN_v1.21.0_Profiles.md` + `USE_CASES.md`.
+
+- **M1 — apply semantics** (`src/profile.rs`, new lib module + migration).
+  `profiles(name PK, json)` + `domain_profiles(domain PK → profile)` tables
+  (the plan's `domain.profile` FK — domains are labels, so the binding is its
+  own keyed row); schema_version → 1.21.0 (additive; no column changes).
+  At ingest: `pii_mode: strict` masks title+content at the write boundary via
+  the existing `screen_source_prompt` maskers (`[redacted:email|phone|card]`
+  stored, raw never lands — deliberately NOT a vault, per the v1.20.19
+  posture: one-way, no recovery map); `default_access_scope` fills only an
+  ABSENT value; `kinds` is a constraint (an out-of-vocabulary effective kind
+  → 400 `kind_not_allowed`). Unreadable bound profile fails CLOSED (a
+  strict-posture domain must not silently ingest raw PII). New friendly
+  `ttl_days` ingest field (days-from-now → `expires_at`; an explicit absolute
+  always wins). At retrieval: a bound profile's `retention` block REPLACES
+  the server-wide policy for that domain (explicit JSON `null` = that kind
+  never decays; an empty block = nothing decays — the smb-simple posture);
+  `/decayed` judges each row by ITS domain's policy (the SQL superset unions
+  kinds + the least-restrictive cutoff, so the superset property holds);
+  `audit_level` drives `/recall` read-events when `BRAIN_AUDIT_READ_EVENTS`
+  is unset (verbose on / minimal off / standard = the JWT posture default;
+  the env stays the deployer kill-switch).
+- **M2 — the 12 ship-with presets**, seeded by migration from the
+  USE_CASES.md matrix (`gov-fedramp`, `health-hipaa`, `call-center`,
+  `sales-team`, `engineering`, `hr-people`, `finance-sox`, `smb-simple`,
+  `medium-team`, `bpo-multi`, `enterprise`, `global-multi-region`). Seeding
+  is INSERT OR IGNORE — operator edits to a preset survive re-migrations.
+  They are starting points, not locked: every field is editable via
+  `POST /profiles/{name}`.
+- **M3 — the onboarding wizard.** `brain setup [domain] [--profile NAME]
+  [--yes]`: pick a preset from the live list, see the knobs it sets
+  (render_knobs, unit-tested), bind, done — a configured store in under a
+  minute, no feature tours. The client connect flow gains the "What best
+  describes your team?" step (native `<select>`, knob preview, Apply/Skip;
+  shows when the home domain is unbound; the skip persists via the web pref
+  seam; the silent auto-reconnect path stays silent — a returning operator
+  with a saved token is not the onboarding audience).
+- **M4 — the API + visibility.** `GET /profiles`, `GET|POST /profiles/{name}`
+  (upsert, Admin + audited), `GET|POST /domains/{name}/profile` (bind/unbind,
+  Admin + audited; `null` unbinds — the back-compat escape hatch), documented
+  in `openapi.yaml` (+ the `Profile`/`ProfileUpsert` schemas, a `NotFound`
+  response component); the client Health panel gains the profile card — the
+  active profile + effective knobs (transparency = the 2026 compliance ask),
+  rendering the unbound state explicitly rather than a blank.
+
+**Validation:** server main bin 542 → 548 passed / 6 ignored (incl. the new
+`#[ignore]`d `profiles_end_to_end_wizard_and_ingest` — verification 1–4
+through the real router: strict masking stores only placeholders, explicit
+`ttl_days` beats the profile's episodic default, the bind flow lands the
+binding + effective knobs, an unbound domain is byte-identical); lib 80 → 86
+(profile parse/validate/bind/audit-layering + the 12-preset contract); brain
+CLI +1 (render_knobs); client 111 → 113 (profiles parse + retention labels,
+bound/unbound binding views). Clippy `-D warnings` + fmt clean on default,
+`bench`, AND `otel` features; client wasm release build 4.99 MB (budget 7 MB).
+
+**Honest ceilings:** profile defaults apply on the structured `/ingest`
+family (incl. `?format=ump` / `ump-md`); the `/ingest/markdown` +
+`/ingest/memory` vault paths and the HITL `/ingest/proposal` flow keep their
+current behavior (binding those is v1.22 work). Strict-mode masking runs
+after auto-routing (the route
+needs the embedding), so the quantized vec0 embedding + caller-declared
+entity names derive from the raw text (neither practically invertible;
+entities were always stored verbatim). The HITL `/ingest/proposal` flow keeps
+its v1.14 posture — promotion lands in `global` with column defaults (binding
+the gate flow to profiles is v1.22 work). `audit_level` covers `/recall` (the
+decision-path read); `/search`, `/get`, `/multi-get` keep the global env
+posture. `connectors_allowed` is stored + surfaced only (the connector
+registry is not domain-scoped in v1.21; enforcement lands with the v1.24
+connector work). `legal_hold_default` is a stored flag; enforcement is
+v1.22.0 "Regulated". The wizard binds the home (`global`) domain — per-domain
+wizard targeting is `brain setup`'s job; knob EDITING in the wizard is the
+API's job. The 12 presets are curated starting points, not certified
+configurations (certification is the operator's external audit; COMPLIANCE.md
+maps the path). Profiles set defaults; they are not a locked policy an
+operator can't override per-row (by design — the human decides).
+
+---
+
 ## [1.20.30] — 2026-08-14
 
 ### Server — "Caliber (foundation)" (the Embedder trait + tiered neural store)
