@@ -1638,8 +1638,9 @@ fn cmd_client(args: &[String]) -> Result<(), String> {
         Some("dpa") => cmd_client_dpa(&args[1..]),
         Some("dsar") => cmd_client_dsar(&args[1..]),
         Some("hold") => cmd_client_hold(&args[1..]),
+        Some("end") => cmd_client_end(&args[1..]),
         _ => Err(
-            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>"
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>\n       brain client end <name> [--purge|--return] [--dataset D] [--yes]"
                 .into(),
         ),
     }
@@ -1755,6 +1756,58 @@ fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
     let resp = post(
         &base_url(),
         &path,
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("{}", resp.body);
+    Ok(())
+}
+
+fn cmd_client_end(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let name = require_positional(&positionals, "name")?;
+    let purge_opt: Option<bool> = if flags.contains_key("purge") && flags.contains_key("return") {
+        return Err("cannot pass both --purge and --return".to_string());
+    } else if flags.contains_key("purge") {
+        Some(true)
+    } else if flags.contains_key("return") {
+        Some(false)
+    } else {
+        None
+    };
+    let dataset = flags
+        .get("dataset")
+        .and_then(|o| o.clone())
+        .unwrap_or_else(|| "termination".to_string());
+    let yes = flags.contains_key("yes");
+    let mode = match purge_opt {
+        Some(true) => "and PURGE its data",
+        Some(false) => "and EXPORT its data (no purge)",
+        None => "(policy from its DPA terms)",
+    };
+    if !yes {
+        let a = read_line(&format!("end contract for client '{name}' {mode}? [y/N]"))?;
+        if !a.eq_ignore_ascii_case("y") {
+            println!("aborted (nothing changed)");
+            return Ok(());
+        }
+    }
+    let mut body = serde_json::json!({ "dataset": dataset });
+    if let Some(p) = purge_opt {
+        body["purge"] = serde_json::json!(p);
+    }
+    let resp = post(
+        &base_url(),
+        &format!("/clients/{name}/end"),
         &[],
         "application/json",
         &body.to_string(),

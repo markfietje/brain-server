@@ -235,6 +235,190 @@ pub async fn client_hold(
     super::holds::post_legal_hold_for_domain(state, principal, &domain, req.ids, req.reason).await
 }
 
+/// `POST /clients/{name}/end` body. `purge` (optional) overrides the DPA
+/// `retention_on_termination` (absent → follow the terms); `dataset` is the
+/// tombstone/audit reason tag.
+#[derive(Debug, Deserialize)]
+pub struct ClientEndRequest {
+    #[serde(default, rename = "purge")]
+    pub purge_opt: Option<bool>,
+    #[serde(default = "default_dataset")]
+    pub dataset: String,
+}
+
+fn default_dataset() -> String {
+    "termination".to_string()
+}
+
+/// The contract-end certificate (the operator's durable record; the register
+/// archive + audit row survive in the DB). `held_ids` are deferred (never
+/// purged); `exported_bundle` is the return-path export; `chain_head` anchors
+/// the certificate to the audit tip.
+#[derive(Debug, serde::Serialize)]
+pub struct TerminationCertificate {
+    pub client: String,
+    pub domain: String,
+    pub jurisdiction: String,
+    pub policy: String,
+    pub purged_chunk_count: i64,
+    pub held_ids: Vec<i64>,
+    pub exported_bundle: Option<String>,
+    pub archived_at: i64,
+    pub chain_head: Option<String>,
+}
+
+/// `POST /clients/{name}/end` — run the per-client termination clause: purge or
+/// return per the DPA's `retention_on_termination` (overridable), then archive
+/// the client + domain (the audit chain is never deleted). Reuses the shared
+/// primitives (`purge_chunk_ids`, the DSAR export builder, holds); one audit
+/// row. Admin + audited. 404 unknown client, 409 archived.
+pub async fn client_end(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(name): Path<String>,
+    Json(req): Json<ClientEndRequest>,
+) -> Result<Json<TerminationCertificate>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    let pool_for = pool.clone();
+    let key = name.trim().to_ascii_lowercase();
+    let key_for = key.clone();
+    let (domain, jurisdiction, status, dpa_purge) = tokio::task::spawn_blocking(
+        move || -> Result<(String, String, String, bool), HandlerError> {
+            let conn = pool_for
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let c = crate::clients::by_name(&conn, &key_for)?
+                .ok_or_else(|| HandlerError::not_found("client not found"))?;
+            let dpa_purge = c
+                .dpa_terms
+                .as_ref()
+                .map(|t| t.retention_on_termination.trim() == "purge")
+                .unwrap_or(false);
+            Ok((c.domain, c.jurisdiction, c.status, dpa_purge))
+        },
+    )
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    if status != "active" {
+        return Err(HandlerError::conflict("client not active (archived)"));
+    }
+    let purge = req.purge_opt.unwrap_or(dpa_purge);
+    let policy = if purge { "purge" } else { "return" }.to_string();
+    let dataset = if req.dataset.trim().is_empty() {
+        "termination".to_string()
+    } else {
+        req.dataset.trim().to_string()
+    };
+    let now = chrono::Utc::now().timestamp();
+    let domain_pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+
+    let state_for = state.clone();
+    let key_for2 = key.clone();
+    let policy_for = policy.clone();
+    let dataset_for = dataset.clone();
+    let cert =
+        tokio::task::spawn_blocking(move || -> Result<TerminationCertificate, HandlerError> {
+            // Domain first, then global archive + audit: the domain conn is
+            // dropped before the global pool conn (shim shares one r2d2 pool,
+            // so holding both could deadlock a `max_size(1)`). `archive`
+            // no-ops after the first flip, so a crash post-purge recovers by
+            // re-running `end`.
+            let (purged_chunk_count, held_ids, exported_bundle) = {
+                let mut conn = domain_pool
+                    .get()
+                    .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+                let tx = conn
+                    .transaction()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                let active: Vec<i64> = {
+                    let mut stmt = tx
+                        .prepare("SELECT id FROM knowledge")
+                        .map_err(|e| HandlerError::internal(e.to_string()))?;
+                    let rows = stmt
+                        .query_map([], |r| r.get::<_, i64>(0))
+                        .map_err(|e| HandlerError::internal(e.to_string()))?;
+                    rows.flatten().collect()
+                };
+                let held_set = crate::legal_hold::active_hold_ids(&tx)?;
+                let held_ids: Vec<i64> = active
+                    .iter()
+                    .filter(|id| held_set.contains(id))
+                    .copied()
+                    .collect();
+                let free: Vec<i64> = active
+                    .iter()
+                    .filter(|id| !held_set.contains(id))
+                    .copied()
+                    .collect();
+                let (n, bundle) = if purge {
+                    let n = crate::handlers::gate::purge_chunk_ids(
+                        &tx,
+                        &free,
+                        now,
+                        &dataset_for,
+                        None,
+                    )?;
+                    (n, None)
+                } else {
+                    (
+                        0,
+                        Some(crate::handlers::observe::build_export_bundle(
+                            &tx,
+                            &key_for2,
+                            &active,
+                            &[],
+                        )?),
+                    )
+                };
+                tx.commit()
+                    .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+                (n, held_ids, bundle)
+            };
+            // Archive + audit on the GLOBAL pool after the domain conn is dropped
+            // (shim mode shares one r2d2 pool — a held domain conn could deadlock a
+            // `max_size(1)` pool). Re-running on an already-archived client is safe:
+            // `archive` no-ops after the first flip, so a crash post-purge recovers.
+            let mut g = state_for
+                .pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let tx = g
+                .transaction()
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if !crate::clients::archive(&tx, &key_for2, now)? {
+                return Err(HandlerError::internal(
+                    "client row status changed concurrently".to_string(),
+                ));
+            }
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            crate::audit::record(
+                &g,
+                crate::audit::AuditKind::Client,
+                "api",
+                &format!("client:{key_for2}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("termination:{policy_for}:{dataset_for}"),
+            );
+            let chain_head = crate::audit::chain_head(&g);
+            Ok(TerminationCertificate {
+                client: key_for2,
+                domain,
+                jurisdiction,
+                policy: policy_for,
+                purged_chunk_count,
+                held_ids,
+                exported_bundle,
+                archived_at: now,
+                chain_head,
+            })
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    Ok(Json(cert))
+}
+
 /// `POST /clients/{name}/dpa` — set Art 28 sub-processor terms (the evidence a
 /// client's controller checks). Admin + audited. 404 when the client is
 /// unknown (via the update's affected-row count, no second query).
@@ -614,5 +798,167 @@ mod tests {
             cert.is_some() && cert.unwrap().contains("\"jurisdiction\":\"eu\""),
             "certificate backfilled with the client's jurisdiction"
         );
+    }
+
+    fn seed_rows(state: &AppState, domain: &str, n: i64) -> Vec<i64> {
+        let pool = state.registry.pool_for(domain).unwrap();
+        let conn = pool.get().unwrap();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            conn.execute(
+                "INSERT INTO knowledge(content, content_hash, owner) VALUES (?1, ?2, 'o')",
+                rusqlite::params![format!("data-{i}"), format!("h{i}")],
+            )
+            .expect("seed row");
+            ids.push(conn.last_insert_rowid());
+        }
+        ids
+    }
+
+    fn set_client_dpa_direct(state: &AppState, name: &str, retention: &str) {
+        let terms = crate::clients::DpaTerms {
+            retention_on_termination: retention.into(),
+            deletion_timeline: "30d".into(),
+            audit_rights: "annual".into(),
+            breach_notification_timeline: "72h".into(),
+            onward_transfer_restriction: "none".into(),
+            sub_sub_processor_list: "none".into(),
+        };
+        let mut conn = state.pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::clients::set_dpa_terms(&tx, name, &terms).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_end_runs_termination_clause() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "acme", "acme-us", "us");
+        set_client_dpa_direct(&state, "acme", "purge");
+        seed_rows(&state, "acme-us", 2);
+
+        let resp = client_end(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("acme".to_string()),
+            Json(ClientEndRequest {
+                purge_opt: None,
+                dataset: "termination".to_string(),
+            }),
+        )
+        .await
+        .expect("end follows the DPA purge policy");
+        assert_eq!(resp.policy, "purge");
+        assert_eq!(resp.purged_chunk_count, 2);
+        assert!(resp.exported_bundle.is_none());
+        assert!(resp.chain_head.is_some());
+        assert_eq!(count_knowledge(&state, "acme-us"), 0);
+        let c = crate::clients::by_name(&state.pool.get().unwrap(), "acme")
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.status, "archived");
+        assert_eq!(c.archived_at, Some(resp.archived_at));
+    }
+
+    #[tokio::test]
+    async fn client_end_return_exports_and_archives_no_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "acme", "acme-us", "us");
+        set_client_dpa_direct(&state, "acme", "return");
+        seed_rows(&state, "acme-us", 2);
+
+        let resp = client_end(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("acme".to_string()),
+            Json(ClientEndRequest {
+                purge_opt: Some(false),
+                dataset: "termination".to_string(),
+            }),
+        )
+        .await
+        .expect("return policy exports without purging");
+        assert_eq!(resp.policy, "return");
+        assert_eq!(resp.purged_chunk_count, 0);
+        let bundle = resp.exported_bundle.as_deref().expect("bundle present");
+        let v: serde_json::Value = serde_json::from_str(bundle).unwrap();
+        assert_eq!(v["subject"].as_str(), Some("acme"));
+        assert_eq!(v["knowledge"].as_array().unwrap().len(), 2);
+        assert_eq!(count_knowledge(&state, "acme-us"), 2, "no purge on return");
+        assert_eq!(
+            crate::clients::by_name(&state.pool.get().unwrap(), "acme")
+                .unwrap()
+                .unwrap()
+                .status,
+            "archived"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_end_defers_held_ids_and_archive_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "acme", "acme-us", "us");
+        let ids = seed_rows(&state, "acme-us", 2);
+        let pool = state.registry.pool_for("acme-us").unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO legal_holds(knowledge_id, reason, held_by, held_at)
+             VALUES (?1, 'case-42', 'test', 1)",
+            rusqlite::params![ids[1]],
+        )
+        .expect("hold the second row");
+
+        let resp = client_end(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("acme".to_string()),
+            Json(ClientEndRequest {
+                purge_opt: Some(true),
+                dataset: "termination".to_string(),
+            }),
+        )
+        .await
+        .expect("purge terminates");
+        assert_eq!(resp.purged_chunk_count, 1, "only the free row purged");
+        assert_eq!(
+            resp.held_ids,
+            vec![ids[1]],
+            "held id deferred on the certificate, never purged"
+        );
+        assert_eq!(count_knowledge(&state, "acme-us"), 1, "held row survives");
+
+        let err = client_end(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("acme".to_string()),
+            Json(ClientEndRequest {
+                purge_opt: Some(true),
+                dataset: "termination".to_string(),
+            }),
+        )
+        .await
+        .expect_err("already-archived client 409s");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn client_end_unknown_client_404s_before_pool_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt.block_on(client_end(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("nope".to_string()),
+            Json(ClientEndRequest {
+                purge_opt: None,
+                dataset: "termination".to_string(),
+            }),
+        ));
+        let err = err.expect_err("unknown client 404s");
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
     }
 }

@@ -912,7 +912,7 @@ fn collect_ids(
 /// v1.20.21: build the portable export bundle (the JSON a live purge embeds
 /// into its ledger row) for the given locate result. Extracted so the dry-run
 /// preview and the live path run the EXACT same query — behavior-preserving.
-fn build_export_bundle(
+pub(crate) fn build_export_bundle(
     tx: &rusqlite::Transaction,
     subject: &str,
     roots: &[i64],

@@ -158,6 +158,19 @@ pub(crate) fn set_dpa_terms(
     .map_err(|e| HandlerError::internal(e.to_string()))
 }
 
+/// Audit-chain-preserving termination: flip the client row to `archived` (the
+/// WORM-lite posture — nothing is DELETEd, R1 `status` is the only change).
+/// `Ok(false)` = already archived (handler maps to 409) or unknown (404).
+pub(crate) fn archive(tx: &Transaction, name: &str, now: i64) -> Result<bool, HandlerError> {
+    let n = tx
+        .execute(
+            "UPDATE clients SET status='archived', archived_at=?1 WHERE name=?2 AND status<>'archived'",
+            rusqlite::params![now, name.trim().to_ascii_lowercase()],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    Ok(n > 0)
+}
+
 /// Parse stored DPA-term JSON, `None`-preserving: a client with no terms →
 /// `None`, never a panic or a zeroed struct.
 fn dpa_terms_of(json: Option<&str>) -> Option<DpaTerms> {
@@ -423,6 +436,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bound, 0, "no domain_profiles bind persists on failure");
+    }
+
+    #[test]
+    fn archive_is_idempotent_and_unknown_is_false() {
+        let mut conn = db();
+        add_one(&mut conn);
+        let tx = conn.transaction().unwrap();
+        assert!(
+            archive(&tx, "acme corp", 5_000).unwrap(),
+            "active → archived"
+        );
+        assert!(
+            !archive(&tx, "acme corp", 6_000).unwrap(),
+            "second archive is a no-op (idempotent)"
+        );
+        assert!(
+            !archive(&tx, "no-such-client", 6_000).unwrap(),
+            "unknown client affects zero rows"
+        );
+        tx.commit().unwrap();
+        let one = by_name(&conn, "acme corp").unwrap().unwrap();
+        assert_eq!(one.status, "archived");
+        assert_eq!(one.archived_at, Some(5_000), "first archive stamps 5000");
     }
 
     #[test]

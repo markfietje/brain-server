@@ -1828,6 +1828,54 @@ paths:
           description: No client with this name
         "409":
           description: Client is not active (archived)
+  /clients/{name}/end:
+    post:
+      summary: Run a client's contract-end termination clause (v1.27.6)
+      operationId: clientEnd
+      description: >
+        The clean exit: erase (purge) or export (return) the client's active
+        memory per its DPA `retention_on_termination` (the default — a purge
+        DPA is the common PH BPO posture), honor per-domain legal holds
+        (deferred on the certificate, never purged), then archive the client +
+        domain. The audit chain is never deleted. Body: `{purge?, dataset?}` —
+        `purge` overrides the DPA policy (absent follows the terms); `dataset`
+        is the tombstone/audit reason tag (default `termination`). Returns a
+        TerminationCertificate. Admin + audited (kind 'client').
+      parameters:
+        - in: path
+          name: name
+          required: true
+          description: Client name (lowercase, domain-safe).
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                purge:
+                  type: boolean
+                  description: >
+                    Override the DPA retention policy (true = erase, false =
+                    export-and-freeze); absent follows the client's terms.
+                dataset:
+                  type: string
+                  default: termination
+                  description: Tombstone + audit reason tag (max 2000 chars).
+      responses:
+        "200":
+          description: The TerminationCertificate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TerminationCertificate"
+        "403":
+          description: The principal is not admin
+        "404":
+          description: No client with this name
+        "409":
+          description: Client is not active (archived)
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
@@ -3138,6 +3186,34 @@ components:
         tombstones: { type: integer, description: prior deletions for this subject (ledger trace) }
         dsar_rows: { type: integer, description: prior DSAR ledger rows for this subject }
         dry_run: { type: boolean, default: true }
+    TerminationCertificate:
+      type: object
+      description: >
+        v1.27.6 — the contract-end record: which policy the termination ran
+        (purge = erased active memory; return = exported + frozen), how many
+        chunks were purged, which ids a legal hold deferred (never purged), the
+        return-path export bundle, and the audit chain head anchoring it. The
+        register archive + audit row survive; the certificate is the operator's
+        durable evidence.
+      properties:
+        client: { type: string }
+        domain: { type: string }
+        jurisdiction: { type: string }
+        policy: { type: string, enum: [purge, return] }
+        purged_chunk_count: { type: integer }
+        held_ids:
+          type: array
+          items: { type: integer }
+          description: Ids frozen by a legal hold (deferred, never purged).
+        exported_bundle:
+          type: string
+          nullable: true
+          description: The return-path export bundle (null on purge).
+        archived_at: { type: integer }
+        chain_head:
+          type: string
+          nullable: true
+          description: The audit chain tip anchoring the certificate.
     DsarLedger:
       type: object
       description: >
