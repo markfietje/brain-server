@@ -318,24 +318,18 @@ pub async fn post_dsar(
             }
             ledger_id = r.ledger_id.or(ledger_id);
         }
-        let certificate = serde_json::json!({
-            "subject": subject,
-            "action": action,
-            "found_count": found_count,
-            "purged_ids": purged_ids,
-            // v1.22.0 M1/M3: held ids (deferred erasure, with reasons) + the
-            // residency stamp that proves where the data lived.
-            "region": brain_server::storage_layout::region(),
-            "held_ids": held,
-            // v1.26.0 M2: the per-law proof — the subject's jurisdiction + the
-            // mechanism the operator recorded (Art 46 safeguard).
-            "jurisdiction": jur_for_cert,
-            "mechanism": mech_for_cert,
-            "tombstone_root": tombstone_root,
-            "certified_at": certified_at,
-            "chain_head": chain_head,
-        })
-        .to_string();
+        let certificate = certificate_json(
+            &subject,
+            &action,
+            found_count,
+            purged_ids,
+            held,
+            jur_for_cert.as_deref(),
+            mech_for_cert.as_deref(),
+            tombstone_root,
+            &certified_at,
+            chain_head,
+        );
         let ledger_id =
             ledger_id.ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
 
@@ -443,6 +437,40 @@ fn normalize_dsar_subject(subject: &str, action: &str) -> Result<String, Handler
     Ok(subject)
 }
 
+/// The DSAR deletion-certificate JSON shape — shared by the generic
+/// `post_dsar` (aggregated across domain pools) and the per-client
+/// `run_dsar_subject` (a single pool) so the audit-visible contract lives in
+/// one place. `purged_ids`/`held`/`tombstone_root` are the run(s)' erased sets;
+/// jurisdiction/mechanism are the request's per-law stamp (advisory).
+#[allow(clippy::too_many_arguments)]
+fn certificate_json(
+    subject: &str,
+    action: &str,
+    found_count: usize,
+    purged_ids: Vec<i64>,
+    held: Vec<serde_json::Value>,
+    jurisdiction: Option<&str>,
+    mechanism: Option<&str>,
+    tombstone_root: Option<i64>,
+    certified_at: &str,
+    chain_head: Option<String>,
+) -> String {
+    serde_json::json!({
+        "subject": subject,
+        "action": action,
+        "found_count": found_count,
+        "purged_ids": purged_ids,
+        "region": brain_server::storage_layout::region(),
+        "held_ids": held,
+        "jurisdiction": jurisdiction,
+        "mechanism": mechanism,
+        "tombstone_root": tombstone_root,
+        "certified_at": certified_at,
+        "chain_head": chain_head,
+    })
+    .to_string()
+}
+
 /// Run a DSAR against ONE domain pool and produce the full `DsarResponse`
 /// (certificate or dry-run footprint), jurisdiction-stamped. The shared seam
 /// for the per-client surface — the real locate/purge/export/certificate +
@@ -513,20 +541,18 @@ pub(crate) async fn run_dsar_subject(
         );
         let chain_head = crate::audit::chain_head(&global_conn);
         let certified_at = chrono::Utc::now().to_rfc3339();
-        let certificate = serde_json::json!({
-            "subject": subject,
-            "action": action,
-            "found_count": run.roots + run.derived,
-            "purged_ids": run.purged_ids,
-            "region": brain_server::storage_layout::region(),
-            "held_ids": run.held,
-            "jurisdiction": jurisdiction,
-            "mechanism": mech_for_cert,
-            "tombstone_root": run.tombstone_root,
-            "certified_at": certified_at,
-            "chain_head": chain_head,
-        })
-        .to_string();
+        let certificate = certificate_json(
+            &subject,
+            &action,
+            run.roots + run.derived,
+            run.purged_ids,
+            run.held,
+            jurisdiction.as_deref(),
+            mech_for_cert.as_deref(),
+            run.tombstone_root,
+            &certified_at,
+            chain_head,
+        );
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
