@@ -156,6 +156,10 @@ fn main() {
         // no server roundtrip (the server picks up new keys via its own
         // KeyStore reload, currently on restart — hot-reload is a follow-up).
         "key" => cmd_key(rest),
+        // v1.27.12 "Rotate": rotate the shared static bearer so a leaked copy
+        // is retired (operator-in-the-loop; the server + file-reading consumers
+        // reload the new value within the rotation poll).
+        "token" => cmd_token(rest),
         "bench" => cmd_bench(),
         "eval" => cmd_eval(rest),
         "status" => cmd_status(),
@@ -2748,6 +2752,115 @@ fn key_dir(flags: &std::collections::HashMap<String, Option<String>>) -> PathBuf
     dirs_home().join(".config/brain-server/keys")
 }
 
+/// `brain token rotate` — replace the shared static bearer token. Subcommands:
+///   rotate  — generate a fresh random token + atomically rewrite the token file.
+fn cmd_token(args: &[String]) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("usage: brain token <rotate>".to_string());
+    }
+    match args[0].as_str() {
+        "rotate" => cmd_token_rotate(&args[1..]),
+        other => Err(format!(
+            "unknown 'brain token' subcommand: '{other}' (try rotate)"
+        )),
+    }
+}
+
+/// Mirror `auth_token`'s file resolution (BRAIN_TOKEN_FILE → default install
+/// path) but return the PATH, for rotation. Env-only (`BRAIN_TOKEN`) sources
+/// have no file to rewrite.
+fn token_file_path() -> PathBuf {
+    match std::env::var("BRAIN_TOKEN_FILE") {
+        Ok(s) if !s.trim().is_empty() => PathBuf::from(s.trim()),
+        _ => dirs_home().join(".config/brain-server/auth-token"),
+    }
+}
+
+/// v1.27.12 "Rotate": replace the shared static bearer token file so a leaked
+/// copy (e.g. the historical openclaw DB rows) is retired on the next reload.
+/// The running server + every file-reading consumer (brain/mcp/bench) pick the
+/// new value up through their rotation watchers within a poll interval (~5s).
+/// Atomic write + owner-only perms; refuses to rewrite a group/world-readable
+/// secret (fail-closed, mirroring the server's `check_secret_permissions`).
+///
+/// ponytail: rotates the SERVER-side token FILE only. The openclaw plugin's
+/// `authToken` is usually an env reference (`${BRAIN_SERVER_AUTH_TOKEN}`); this
+/// CLI does NOT edit the live openclaw config it does not own — it prints that
+/// the env value must be applied to match. Operator-in-the-loop (mantra #3): a
+/// non-human actor never rewrites the shared secret unilaterally.
+fn cmd_token_rotate(_args: &[String]) -> Result<(), String> {
+    let path = token_file_path();
+    rotate_token_file_at(&path)?;
+    println!("rotated bearer token in {path:?}");
+    println!("the running server + file-reading consumers reload it within ~5s (rotation poll).");
+    println!(
+        "keep the openclaw plugin in step: apply this token to BRAIN_SERVER_AUTH_TOKEN \
+         (its auth source) if that is set."
+    );
+    Ok(())
+}
+
+fn rotate_token_file_at(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!(
+            "token file {path:?} does not exist — nothing to rotate"
+        ));
+    }
+    // Fail-closed: never rewrite a secret with group/world bits.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| format!("stat {path:?}: {e}"))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "token file {path:?} is group/world-accessible (mode {:o}) — chmod 0600 before rotating",
+                mode & 0o777
+            ));
+        }
+    }
+    let new_token = random_hex_token();
+    // Atomic replace: create a sibling temp already at 0600 (never umask-
+    // dependent — the secret must not exist with broader perms for even a
+    // moment), write, fsync, then rename over the target so a reader never
+    // observes a partially-written token.
+    let tmp = path.with_file_name(format!(".auth-token.rotate.{}.tmp", std::process::id()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true).mode(0o600);
+        let mut f = opts
+            .open(&tmp)
+            .map_err(|e| format!("create {tmp:?}: {e}"))?;
+        use std::io::Write;
+        f.write_all(new_token.as_bytes())
+            .map_err(|e| format!("write {tmp:?}: {e}"))?;
+        f.sync_all().map_err(|e| format!("fsync {tmp:?}: {e}"))?;
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("create {tmp:?}: {e}"))?;
+        f.write_all(new_token.as_bytes())
+            .map_err(|e| format!("write {tmp:?}: {e}"))?;
+        f.sync_all().map_err(|e| format!("fsync {tmp:?}: {e}"))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename {tmp:?} -> {path:?}: {e}"))?;
+    Ok(())
+}
+
+/// 32 random bytes hex-encoded (64 hex chars). Local (no `hex` dep): the token
+/// is a high-entropy bearer secret, matching the server's opaqueness.
+fn random_hex_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 fn cmd_key(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         return Err("usage: brain key <generate|list|prune> [...]".to_string());
@@ -3720,6 +3833,54 @@ mod tests {
             ])
             .is_err(),
             "unknown format rejected before any request"
+        );
+    }
+
+    /// v1.27.12 "Rotate": the generated token is 32 random bytes hex-encoded
+    /// (64 hex chars) — high-entropy, matching the server's opaque bearer.
+    #[test]
+    fn random_hex_token_is_64_hex_chars() {
+        let t = random_hex_token();
+        assert_eq!(t.len(), 64, "32 bytes → 64 hex chars");
+        assert!(t.chars().all(|c| c.is_ascii_hexdigit()), "hex only");
+        assert_ne!(
+            random_hex_token(),
+            random_hex_token(),
+            "two rotations differ"
+        );
+    }
+
+    /// v1.27.12 "Rotate": `brain token rotate` rewrites an owner-only token file
+    /// to a fresh 64-hex token, preserving owner-only perms.
+    #[test]
+    #[cfg(unix)]
+    fn token_rotate_rewrites_owner_only_file_to_fresh_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("auth-token");
+        std::fs::write(&path, "old-token").expect("write old");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("0600");
+        assert!(rotate_token_file_at(&path).is_ok(), "rotate success");
+        let new = std::fs::read_to_string(&path).expect("read new");
+        assert_eq!(new.trim().len(), 64, "fresh token is 64 hex");
+        assert_ne!(new.trim(), "old-token", "old value retired");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "rotated secret stays owner-only");
+    }
+
+    /// v1.27.12 "Rotate": the CLI refuses to rewrite a group/world-readable
+    /// secret (fail-closed mirror of `check_secret_permissions`).
+    #[test]
+    #[cfg(unix)]
+    fn token_rotate_refuses_group_readable_secret() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("auth-token-wide");
+        std::fs::write(&path, "old").expect("write old");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("0644");
+        assert!(
+            rotate_token_file_at(&path).is_err(),
+            "must refuse to rewrite a world-readable secret"
         );
     }
 

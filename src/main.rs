@@ -4510,6 +4510,32 @@ async fn main_inner() -> Result<()> {
         auth::jwks::KeyStore::default()
     });
     let auth_mode = auth::AuthMode::from_env(key_store.len());
+    // v1.27.12 "Rotate" (M2): the UMP operator Ed25519 signing key is read from
+    // ambient `BRAIN_UMP_KEY_DIR` without a perms check in its own load path.
+    // Warn once at startup if any key file there is group/world-readable (the
+    // fail-soft L2 degrade posture is preserved — this is a warning, not a boot
+    // refusal, because `operator_signing_key` deliberately swallows load errors).
+    #[cfg(unix)]
+    {
+        let dir = crate::config::ump_key_dir();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                if e.path().is_file() {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(meta) = std::fs::metadata(e.path()) {
+                        if meta.permissions().mode() & 0o077 != 0 {
+                            warn!(
+                                "UMP operator signing key {:?} is group/world-readable \
+                                 (mode {:o}) — chmod 600 it to keep the signing key private",
+                                e.path(),
+                                meta.permissions().mode() & 0o777
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     let jwt_issuer = std::env::var("BRAIN_JWT_ISSUER")
         .ok()
         .map(|s| s.trim().to_string())
@@ -5006,6 +5032,25 @@ async fn main_inner() -> Result<()> {
     enforce_loopback_bind_guard(&addr, auth_mode)?;
 
     println!("🚀 Server: http://{}:{}", bind_host, bind_port);
+    // v1.27.12 "Rotate" (M2): make the two unsigned-by-default egress signatures
+    // a visible startup warning, never a silent default — an operator shipping a
+    // webhook sink should know the payload integrity is off until the secret is
+    // set. `eprintln!` so it lands in `err.log` beside the rest of the warnings.
+    if crate::config::alert_webhook_url().is_some()
+        && crate::config::alert_webhook_secret().is_none()
+    {
+        eprintln!(
+            "⚠️ BRAIN_ALERT_WEBHOOK_URL is set but BRAIN_ALERT_WEBHOOK_SECRET is not — \
+             alert webhook payloads are sent UNSIGNED (a receiver cannot verify integrity)."
+        );
+    }
+    if crate::config::dsar_webhook_url().is_some() && crate::config::dsar_webhook_secret().is_none()
+    {
+        eprintln!(
+            "⚠️ BRAIN_DSAR_WEBHOOK_URL is set but BRAIN_DSAR_WEBHOOK_SECRET is not — \
+             DSAR Art-19 notifications are sent UNSIGNED."
+        );
+    }
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     // v1.3.0 Bedrock fix: the v1.1.0 `timeout(drain_cap, axum::serve(...))`
