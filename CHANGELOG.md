@@ -19,6 +19,69 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.12] — 2026-08-15
+
+### Security — "ReviewArmour · Rotate · Provenance"
+
+Server + client + plugin security release against the 2026 agentic-AI threat
+landscape (OWASP Agentic Top 10 / MS AI Red Team v2 lines): the HITL approval
+now binds to the bytes the reviewer was shown, ambient bearer tokens can be
+retired, and recalled context carries its provenance into the prompt.
+
+### Release notes
+
+**Security fixes**
+- Review approvals now bind to the displayed bytes: `/proposals` returns the
+  read-canonical review form + a stable `content_digest`; approving with a
+  stale digest is rejected (`409`). The reviewer's decision can no longer
+  bless content that recall would render differently.
+- Recalled context now carries per-hit provenance tags (ingest kind, memory
+  kind, lawful basis, region) inside the untrusted-data fence, so the model
+  can attribute — not just trust — what it recalls.
+- The operator CLI can now rotate the server bearer token (`brain token
+  rotate`), retiring a leaked copy; server startup warns when a webhook sink
+  is unsigned or the UMP signing key is group/world-readable.
+
+**Improvements**
+- No new storage, no new tables, no telemetry. All changes ride the existing
+  seams (read seam, recall wire, CLI).
+
+**Bug fixes**
+- None.
+
+### Engineering record
+
+- **ReviewArmour (gate.rs):** `list_proposals` serves the read-canonical
+  `content` (`sanitize_read`: PII redaction → markdown-ref strip →
+  invisible-Unicode strip) alongside a stable, principal-independent
+  `review_digest` over the stripped form (PII kept *out* of the fingerprint so
+  admin and non-admin readers see the same digest). `approve_proposal` accepts
+  an optional `digest` (backward-compatible: `None` = legacy quick-approve /
+  offline-replay) and returns `409` on any drift.
+- **Rotate (brain CLI):** `token rotate` generates a fresh 32-byte hex token,
+  atomically rewrites the token file (0600; fail-closed on group/world-readable
+  secrets) and prints the operator-side `BRAYN/BRAIN_SERVER_AUTH_TOKEN`
+  coordination step — the server never unilaterally rewrites the openclaw env
+  source. Startup warnings added for unsigned webhook sinks (alert/DSAR) and
+  loose UMP signing keys.
+- **Provenance (search/handlers/plugin):** `knowledge`'s stored `source`
+  (ingest kind), `node_kind` (memory kind), `lawful_basis`, `region` are now
+  selected by the vec0 + FTS retrievers, threaded through fusion, and
+  serialized on `RecallHit` (all `Option<String>`, absent when null). The
+  plugin renders a deterministic per-hit `[src: · mk: · lb: · reg:]` line
+  inside the `UNTRUSTED_...` fence; `brain-client.ts` hit/wire types extended.
+- Tests: server bin **626** passed / 6 ignored (search 72, recall 23, gate 50,
+  results_to_hits 7 incl. the new provenance-forwarding pin); brain bin 12;
+  clippy `-D warnings` + fmt clean.
+- Honest ceilings: approve *binds* — it does not force full-read or rewrite
+  at-rest rows; `token rotate` coordinates the file only (the env source is a
+  printed step, not auto-edited); provenance tags are labels, not an enforced
+  taint/declassification policy; the optional domain-isolation federation flag
+  ("Boundary") is intentionally not in this release (it changes recall
+  breadth and ships gated).
+
+---
+
 ## [1.27.11] — 2026-08-15
 
 ### Client — "Console"
