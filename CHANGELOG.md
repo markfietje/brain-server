@@ -19,6 +19,46 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.6] — 2026-08-15
+
+### Server — "Terminate" (per-client contract-end)
+
+Release 6 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.5 →
+**1.27.6**; schema unchanged (`1.27.0`); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- **Contract-end termination** — `POST /clients/{name}/end` runs the per-client
+  termination clause: it erases (purge) or exports-and-freezes (return) the
+  client's active memory per its DPA `retention_on_termination` — a purge DPA is
+  the common posture, and the flag `--purge`/`--return` overrides the policy —
+  honors per-domain legal holds (deferred on the certificate, never purged),
+  then **archives** the client + its domain (`status='archived'`, `archived_at`
+  stamped; the audit chain is never deleted). Returns a `TerminationCertificate`
+  (`policy`, `purged_chunk_count`, `held_ids`, `exported_bundle`, `chain_head`)
+  the operator keeps as the durable record. Admin + audited (kind 'client').
+- **`brain client end <name> [--purge|--return] [--dataset D] [--yes]`** — the
+  CLI driver with a destructive-action confirm (skipped with `--yes`).
+
+### Engineering record
+
+Every primitive already existed — this composes them: the domain pool's active
+ids are purged via the shared `purge_chunk_ids` (erase + tombstone + orphan
+sweep, the DSAR helper) excluding active holds (`active_hold_ids`), or exported
+via the shared DSAR `build_export_bundle`; termination writes NO new table, the
+archive is an `clients.status` toggle. Domain work runs first, the global
+register archive + single audit row second — two transactions across pools
+(multi-db) are not atomic, so a crash mid-way leaves the domain purged but the
+row active, recoverable by re-running `end` (the archive is a no-op once
+archived).
+
+Tests: server bin 605 → **610** passed / 6 ignored, lib 105 → **106**; clippy
+`-D warnings` + fmt clean; route + route-authz + openapi audits green (route `/clients/{name}/end` added to the router + guard tables, `TerminationCertificate` schema). Honest ceilings: this is the clean-exit record, NOT enforcement — gating recall on the archived status is a later release; per-client holds are deferred (the DPO decides, never auto-released); the certificate + register archive are the durable record, not a distributed transaction. See `IMPLEMENTATION_PLAN_v1.27.6_Terminate.md`.
+
+---
+
 ## [1.27.5] — 2026-08-15
 
 ### Server — "Holds" (per-client legal-hold isolation)
