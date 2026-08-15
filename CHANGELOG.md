@@ -19,6 +19,59 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.26.1] — 2026-08-15
+
+### Server — "Cross-Border" second pass
+
+Server `Cargo.toml`/lock 1.26.0 → 1.26.1; client + plugin unchanged. The
+post-review cleanup of v1.26.0 — same feature set, tighter edges. Standards
+re-checked 2026-08-15: the mechanism vocabulary is current (EU SCC 2021 +
+UK IDTA/Addendum both still in force — the ICO plans an update *during* 2026
+and the register is a curated snapshot a human re-checks; EU-US DPF adequacy
+live since 2023-07-10).
+
+### Release notes
+
+**Improvements**
+
+- **One validation site per field** — `POST /transfers` now validates
+  `signed_at`/`expires_at` epoch bounds in the same shared validator as the
+  rest of the payload (previously `expires_at` was checked in the handler and
+  `signed_at` not at all). Invalid negative epochs → `400`
+  `transfer_timestamp_invalid`.
+- **Consistent register response** — `POST /transfers` returns `id` (was
+  `transfer_id`) to match the `GET /transfers` rows and the `/transfers/{id}`
+  artifact routes. Same `jurisdiction_invalid` code + message as the DSAR
+  jurisdiction gate.
+
+**Bug fixes**
+
+- **OpenAPI schema drift** — `/dsar` now documents `jurisdiction`/
+  `mechanism` (request) + `jurisdiction`/`rights` (response) and `/ingest`
+  documents `lawful_basis`/`purpose` + the `compliance.lawful_basis_missing`
+  flag — fields already returned since v1.25.0/v1.26.0 but absent from the
+  contract file.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `validate_register` gains the `signed_at`/`expires_at` bounds (+3
+  assertions in `validate_register_bounds_fields`); dead `MAX_LIMIT*10`
+  pre-clamp removed from `GET /transfers` (`list` is the single bound);
+  `dsar_deadline_for` collapses two identical fallback branches via
+  `and_then` on `deadline_days`; module-internal types tightened
+  `pub` → `pub(crate)` (MECHANISMS, LAWFUL_BASISES, JurisdictionRule,
+  SurveillancePosture, Transfer, TiaSection).
+- Tests: server bin **591** / 6 ignored (unchanged — assertions grew in the
+  existing bounds test); lib 105; clippy `-D warnings` (default + bench +
+  otel) + fmt clean; route-coverage + route-authz audits green; client wasm
+  untouched.
+
+---
+
 ## [1.26.0] — 2026-08-15
 
 ### Server — "Cross-Border" (multi-jurisdiction client evidence, PH BPO)
