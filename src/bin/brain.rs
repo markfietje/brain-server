@@ -1653,11 +1653,10 @@ fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
         .get("action")
         .and_then(|o| o.clone())
         .unwrap_or_else(|| "purge".to_string());
-    let dry_run = flags
-        .get("dry-run")
-        .and_then(|o| o.clone())
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let dry_run = match flags.get("dry-run").and_then(|o| o.as_deref()) {
+        Some("false") | Some("0") => false,
+        _ => flags.contains_key("dry-run"),
+    };
     let body = serde_json::json!({
         "subject": subject,
         "action": action,
