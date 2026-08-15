@@ -346,14 +346,17 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
 ];
 
-/// The parsed view of the ship-with roles (`PRESETS_RAW`), used by tests.
+/// The parsed view of the ship-with roles (`PRESETS_RAW`), used by tests. A
+/// preset that fails to parse is skipped; `all_presets_parse_and_validate`
+/// pins `presets().len() == PRESETS_RAW.len()`, so a malformed preset fails
+/// that test instead of panicking at parse time.
 pub fn presets() -> Vec<Role> {
     PRESETS_RAW
         .iter()
-        .map(|(name, json)| {
-            let mut r: Role = serde_json::from_str(json).expect("preset JSON parses");
+        .filter_map(|(name, json)| {
+            let mut r: Role = serde_json::from_str(json).ok()?;
             r.name = (*name).to_string();
-            r
+            Some(r)
         })
         .collect()
 }

@@ -366,15 +366,19 @@ pub async fn post_dsar(
             footprint: Some(fp.clone()),
         }));
     }
-    let DsarOutcome::Completed {
-        id,
-        subject,
-        certificate,
-        certified_at,
-        created_at,
-    } = outcome
-    else {
-        unreachable!("footprint already returned above")
+    let (id, subject, certificate, certified_at, created_at) = match outcome {
+        DsarOutcome::Completed {
+            id,
+            subject,
+            certificate,
+            certified_at,
+            created_at,
+        } => (id, subject, certificate, certified_at, created_at),
+        DsarOutcome::Footprint(_) => {
+            return Err(HandlerError::internal(
+                "dry_run returned no completion state".to_string(),
+            ));
+        }
     };
 
     // 6. Art 19 onward-notification: opt-in, fire-and-forget, fail-soft.
@@ -870,8 +874,9 @@ pub(crate) fn notify_art19(subject: String, certificate_id: i64, certified_at: S
         for attempt in 0..3u32 {
             let mut req = client.post(&url).header("content-type", "application/json");
             if let Some(secret) = crate::config::dsar_webhook_secret() {
-                let sig = hmac_hex(secret.as_bytes(), payload.as_bytes());
-                req = req.header("x-brain-signature-256", format!("sha256={sig}"));
+                if let Some(sig) = hmac_hex(secret.as_bytes(), payload.as_bytes()) {
+                    req = req.header("x-brain-signature-256", format!("sha256={sig}"));
+                }
             }
             match req.body(payload.clone()).send().await {
                 Ok(r) if r.status().is_success() => return,
@@ -886,12 +891,14 @@ pub(crate) fn notify_art19(subject: String, certificate_id: i64, certified_at: S
 
 /// HMAC-SHA256 hex signature (the same scheme `webhook.rs` verifies for
 /// inbound GitHub webhooks — the DSAR webhook is the outbound mirror).
-fn hmac_hex(secret: &[u8], body: &[u8]) -> String {
+/// `None` on an invalid key length — the caller signs with no header
+/// (fail-soft, matching `notify_art19`'s never-rolls-back posture).
+fn hmac_hex(secret: &[u8], body: &[u8]) -> Option<String> {
     use hmac::{Hmac, Mac};
     type HmacSha256 = Hmac<sha2::Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key is any length");
+    let mut mac = HmacSha256::new_from_slice(secret).ok()?;
     mac.update(body);
-    hex::encode(mac.finalize().into_bytes())
+    Some(hex::encode(mac.finalize().into_bytes()))
 }
 
 /// Collect all rows of `SELECT <i64>` sql (one `?` param) into a Vec.
