@@ -191,9 +191,14 @@ jobs:
               { if (!out) { print ""; out=1 }; print }
             ' CHANGELOG.md | sanitize > RELEASE_BODY.md
           fi
-          prev=$(awk -v ver="$version" '
-            /^## \[/ { if (have) { print $0; exit } have = ($0 ~ "^## \\[" ver "\\]") }
-          ' CHANGELOG.md | sed -E 's/^## \[([0-9.]+)\].*/\1/')
+          # Previous release = the largest CHANGELOG version numerically
+          # below this one (heading order in the file is not strictly sorted
+          # and [Unreleased] headings must be skipped).
+          prev=""
+          while IFS= read -r v; do
+            if [ "$v" = "$version" ]; then break; fi
+            prev="$v"
+          done < <(sed -nE 's/^## \[([0-9][0-9.]*)\].*/\1/p' CHANGELOG.md | sort -V)
           printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...v%s\n' \
             "$GITHUB_REPOSITORY" "$prev" "$version" >> RELEASE_BODY.md
           echo "notes lines: $(wc -l <RELEASE_BODY.md)"

@@ -788,6 +788,25 @@ to v2.x. See `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`.
 ---
 
 ## [1.20.22] — 2026-08-13
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **DSAR deadlines**: erasure responses now include the created date and a server-computed 30-day response deadline (configurable), matching the GDPR Article 17 window.
+- New admin endpoint lists the data-subject request ledger — status, timestamps, and a server-computed deadline per row — newest first and paginated.
+- The web client shows a live, color-coded 30-day countdown on each open erasure request in the Subjects panel.
+- The Data panel now lists the next items approaching retention expiry, with time-remaining labels.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + client — "Clocks" (DSAR deadline + retention expiry)
 
@@ -837,6 +856,23 @@ core (reused unchanged) into the erasure + retention clocks. See
   boundary that would surface a near-expiry row if the server ever returned one.
 
 ## [1.20.21] — 2026-08-13
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **DSAR dry-run**: erasure requests accept a dry-run flag that reports exactly what would be deleted — root items, derived chunks, export rows, prior tombstones — and writes nothing.
+- The web client adds a "Preview DSAR footprint" card with an explicit "nothing deleted" note; previewing and erasing deliberately remain separate actions.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + client — "Subject360" (DSAR footprint preview)
 
@@ -886,6 +922,24 @@ path writes — no new schema.
 ---
 
 ## [1.20.20] — 2026-08-13
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- The web client's decision-replay view now shows the full stored decision path — decision, actor, domains searched, and the access scope applied.
+- Recall rows in the audit ledger deep-link to their decision replay.
+- The replay view can export the raw trace JSON as an evidence artifact.
+
+**Security fixes**
+
+- Replay rendering strips invisible Unicode (including bidi directional overrides) from every displayed string, closing a display-smuggling gap on the new surface.
+
+### Engineering record
+
 
 ### Client — "Replay" (decision-path replay surface)
 
@@ -927,6 +981,23 @@ sampled (JWT mode default), so the ledger link exists only where a trace row
 exists. No screenshot/PDF export — the JSON is the honest evidence artifact.
 
 ## [1.20.19] — 2026-08-13
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Export responses no longer include a PII-map key, and docs now describe the real privacy control: deterministic read-time redaction plus at-rest encryption.
+- A documented environment variable that had no runtime effect was removed from the documentation.
+
+**Security fixes**
+
+- The unused placeholder-to-raw-PII table is dropped during migration, erasing any legacy rows — no fetchable map from redacted placeholders back to raw personal data exists, by design.
+
+### Engineering record
+
 
 ### Server — "Vault" (PII-vault promise made honest)
 
@@ -966,6 +1037,25 @@ was never shipped, so there is no behavior an operator relied on. See
 `docs/AGENTS_HISTORY.md` Agent 86.
 
 ## [1.20.18] — 2026-08-13
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Graph entity and relations endpoints now return a bounded page (default and max 500 edges) instead of every incident edge on hub entities.
+- The subject-conflict scan no longer cross-pairs the whole corpus — proposal writes are dramatically faster on large stores, with deterministic results.
+- The retention-expired listing endpoint is now paginated instead of returning every expired item at once.
+- A new index speeds up tombstone registry queries and erasure-certificate reads.
+
+**Security fixes**
+
+- Unbounded reads that could be forced to return corpus-sized responses (graph edges, expired items) are now capped, closing a denial-of-service surface.
+
+### Engineering record
+
 
 ### Server — "Bound" (DoS + performance bounds)
 
@@ -1014,6 +1104,25 @@ the conflict scan is still quadratic within a single subject (inherent to the
 mC2 rule). See `docs/AGENTS_HISTORY.md` Agent 85.
 
 ## [1.20.17] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- The erasure transaction is now fully atomic: the ledger entry and certificate commit together with the erase itself.
+
+**Security fixes**
+
+- **The erasure ledger no longer retains erased data** — it previously kept a full copy of the exported bundle; now only a hash is stored, and completed entries age out after a configurable window.
+- Exports support owner redaction: exporting one subject's data no longer carries another subject's content out of the system.
+- Stored recall traces keep a fingerprint of the query, not the raw text, so replay works without retaining queried prose at rest.
+- Memory writes with a mismatched owner scope are now recorded as denied audit events instead of being silently dropped.
+
+### Engineering record
+
 
 ### Server — "Scrub" (GDPR erasure completion)
 
@@ -1076,6 +1185,23 @@ change, no new route** — every fix lands on existing code paths. See
 ---
 
 ## [1.20.16] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- **Injection screening now strips Unicode bidi-control characters** (directional overrides and isolates), closing the "Trojan Source" obfuscation class at the scoring boundary.
+- The web client renders the de-obfuscated form, stripping bidi and other invisible characters from displayed text.
+
+### Engineering record
+
 
 ### Server + client — "Bidi" (close the Unicode bidi-smuggling gap)
 
@@ -1123,6 +1249,24 @@ applied" change, out of scope for this hardening recommendation.
 ---
 
 ## [1.20.15] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Live deadline clocks in the review queue**: every pending proposal shows a tier-colored countdown to expiry; expired rows are flagged and their action buttons disabled.
+- Deadlines come from the server (absolute expiry plus thresholds), so client badges and server alerts always agree — even with a custom TTL configured.
+- New "expiry first" sort toggle surfaces the nearest deadlines at the top of the queue.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + client — "Clock" (deadline clocks in the review queue)
 
@@ -1175,6 +1319,24 @@ The 30s tick is a signal, not enforcement — the server's 400 on a stale
 approve stays authoritative.
 
 ## [1.20.14] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Edit-then-approve**: reviewers can rewrite a pending proposal and approve the corrected version, instead of rejecting and re-ingesting.
+- Edited proposals are re-scored and re-screened for injection on save, and carry an "edited" badge so reviewers see the content is not the original.
+- Edits are audited (hashes of before/after only, never raw text) and never reset the expiry clock; edits also work offline via the client's queue.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + client — "Steer" (edit-then-approve: evaluative substitution)
 
@@ -1226,6 +1388,23 @@ an edit never dodges expiry (consequentiality preserved). See
   operator step remains open).
 
 ## [1.20.13] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Eight technical blog posts (compliance, human-in-the-loop review, tamper-evident audit, retrieval, no lock-in) plus a media kit are now in the public docs.
+- Docs navigation, README, and the product-site pages cross-link the new content.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + client + docs — "Media" (GTM content + media kit, version-aligned)
 
@@ -1265,6 +1444,24 @@ the public in-tree `docs/`, matching the v1.20.12 reuse precedent.
   analyst's endorsement; every technical claim maps to a proof-map row.
 
 ## [1.20.12] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- New public documentation: product-site pages (overview, install, quickstart, editions) consumable by any static site generator.
+- A research section explains each retrieval mechanism — problem, reference, deterministic implementation, and known ceiling.
+- A trust proof map ties every security/compliance claim to the release that shipped it and the command that verifies it, with a scripted reproduce walkthrough.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + client + docs — "Docs" (GTM documentation line, version-aligned)
 
@@ -1309,6 +1506,23 @@ serving can consume them.
   client feature release remains v1.20.9 "Register".
 
 ## [1.20.11] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- README badges and roadmap status corrected — the hand-typed test count had drifted from the measured suite, and two shipped releases were still listed as planned.
+
+**Improvements**
+
+- New script generates README badges (versions, test count, conformance level, SBOM presence) from the actual build — it never fabricates a number.
+- New release checklist documents the wrap steps and the quality gates that must stay green.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + docs — "Housekeeping" (badge generation + release hygiene)
 
@@ -1356,6 +1570,25 @@ hand-typed claims.
   six steps is a v2.x dev-infra nicety, deliberately not built here.
 
 ## [1.20.10] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Audit-chain integrity watcher**: the tamper-evident chain is re-verified on a cadence (default 60s); breaks and recoveries raise alerts, and the health endpoint shows the posture.
+- A script assembles a CRA-ready evidence bundle (SBOM, security/support/deployment/compliance docs) with a SHA-256 manifest.
+- A second script builds per-decision transparency records answering "why did this become memory, by what path, from what source".
+- New SUPPORT.md states supported versions and update guidance.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server + docs — "Proof" (integrity feed + CRA/ADMT evidentiary kits + SUPPORT.md)
 
@@ -1396,6 +1629,24 @@ no schema change, no new deps.**
   watcher's `ChainWatchState`.
 
 ## [1.20.9] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Agent Memory Register panel**: stored knowledge grouped by origin (human / model / imported) with live counts, plus filters by owner, source, and kind.
+- A shared evidence viewer shows the verbatim source span, source URI, revision, and line range from any register row.
+- Read-only by construction — the register cannot be fed a mutation's response.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Register" (read-only Agent Memory Register + shared evidence viewer)
 
@@ -1439,6 +1690,24 @@ visible in the console as an operator-facing provenance ledger.
 ---
 
 ## [1.20.8] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Live operator alert stream**: server-sent events for proposals entering review, deadline crossings, injection quarantines, and audit-chain checks — filterable by kind.
+- Optional outbound webhook delivers each alert with an HMAC-SHA256 signature and retries; an unreachable endpoint drops alerts fail-soft.
+- The web client subscribes live: alerts refresh the right panels and are announced to screen readers; the periodic poll remains the fallback.
+
+**Security fixes**
+
+- Alert payloads carry ids and sequence numbers only — content and personal data never leave the server through the feed.
+
+### Engineering record
+
 
 ### Server — "Signal" (operator alert feed `GET /events` + optional alert webhook sink)
 
@@ -1489,6 +1758,23 @@ no longer silent. **No schema change, no new deps** (reuses the existing
 ---
 
 ## [1.20.7] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Optional OpenTelemetry tracing (behind a build feature; the default build is unchanged) covers the three decision seams: injection screen, review gate, and recall.
+- Spans carry stable labels and a bounded query fingerprint — query content is never sent to the collector.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server — "Telemetry" (instrumented decision cores behind `--features otel`)
 
@@ -1543,6 +1829,24 @@ feature rides into the next tagged release.
 ---
 
 ## [1.20.6] — 2026-08-12
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Memory Operations dashboard**: a live pending queue with full content, source prompt, and SLA countdown, plus keyboard approve/reject.
+- Flagged and quarantined items are visible in one place, with screen-caught recall hits badged and stripped of invisible characters at display.
+- A gate-health strip summarizes approved/rejected/expired counts with a severity hint.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Console" (Memory Operations panel + SLA clocks + flagged surface)
 
@@ -1609,6 +1913,25 @@ tiers into the in-tree `docs/`**; the blog posts + media kit stayed private in
 `marketing/` until the v1.20.13 "Media" release.
 
 ## [1.20.5] — 2026-08-11
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **OWASP compliance matrix**: the stack mapped control-by-control to the OWASP GenAI LLM Top 10 (2026) and Top 10 for Agentic Applications (2026).
+- Zero-trust AI posture documented: workload identity, least agency, and a single egress boundary.
+- An audit-ready-replay playbook for assembling decision-path evidence from existing exports.
+- An enterprise ops runbook: token rotation, memory-poisoning incident response, and classifier operations.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 v1.20.5 "Agentic" — the **enterprise capstone** of the GhostJacking-hardening
 line (G1–G6 all closed across v1.20.1–v1.20.4). **Docs only** — zero new routes,
@@ -1663,6 +1986,24 @@ needs.
 ---
 
 ## [1.20.4] — 2026-08-11
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- The health endpoint now surfaces the webhook posture at a glance: replay window, scheme, and whether timestamps are required.
+- Documented how GitHub's webhook replay protection works (delivery-id idempotency) and how first-party senders can opt into signed timestamps.
+
+**Security fixes**
+
+- **Optional Standard Webhooks verification**: when enabled, deliveries must carry signed id/timestamp/signature headers, verified in constant time.
+- The signed timestamp rides inside the HMAC, so a replayed delivery cannot be re-stamped; delivery-id idempotency still applies.
+
+### Engineering record
+
 
 v1.20.4 "Replay" — the G6 close from the GhostJacking audit: an **optional,
 config-driven replay window** for webhook senders that provide a signed
@@ -1719,6 +2060,25 @@ Standard Webhooks handshake rides the existing `/webhooks/{kind}` surface.
 ---
 
 ## [1.20.3] — 2026-08-11
+### Release notes
+
+**Bug fixes**
+
+- **Fixed a crash in PII masking**: chunks containing multi-byte characters (em-dash, CJK) after a digit run crashed reads; masking now handles them and leaves non-ASCII text untouched.
+
+**Improvements**
+
+- Review proposals show a screen verdict badge (clean/quarantined), recomputed deterministically at read time.
+- The health endpoint reports whether the optional injection classifier is actually loaded.
+
+**Security fixes**
+
+- **Optional second-layer injection classifier** (local model, off by default) catches novel or obfuscated injections the blocklist misses; high scores reject, borderline content is stored flagged.
+- Injection screening now covers every ingest write path, including procedures.
+- Invisible-character coverage widened (tag blocks, variation selectors); the web client shows recall hits and proposals de-obfuscated while stored bytes stay untouched.
+
+### Engineering record
+
 
 v1.20.3 "Classify" — the G5 upgrade path from the GhostJacking audit (layer 2 of
 the injection screen) plus the client render-boundary hardening. **Server** Cargo
@@ -1802,6 +2162,29 @@ stays at 1.20.1/1.20.2 and `test_migration_schema_contract` is untouched.
 ---
 
 ## [1.20.2] — 2026-08-11
+### Release notes
+
+**Bug fixes**
+
+- **Audit-chain fork fixed**: concurrent writers could append with the same predecessor hash; chain writes now serialize and the tamper-evident chain stays linear.
+- Concurrently approving the same proposal no longer yields a generic server error — the second attempt gets a clean "already decided" conflict.
+- Proposal-expiration events are now recorded durably instead of silently rolling back when a later step fails.
+
+**Improvements**
+
+- **MCP protocol update (2026-07-28)**: stateless discovery, per-request metadata validation, caching hints, and spec-exact error codes; legacy clients keep working.
+- Resource bounds: export no longer buffers the entire database, embedding batches are capped, and adversarial content can no longer trigger quadratic entity extraction.
+- Source prompts are length-capped and PII-screened before storage; multi-item fetches collapsed from per-id queries to a single lookup.
+
+**Security fixes**
+
+- The procedure write path bypassed injection screening — it now screens the root and every step like all other ingest routes.
+- **Card numbers slipped through PII redaction**: 16–19 digit Luhn-valid cards were flagged but leaked verbatim on redacted reads; they are now masked.
+- Rate limiting was evadable by spoofing X-Forwarded-For (the header is now trusted only when configured) and used unbounded memory; tracking is now capped.
+- Tombstone and erasure-certificate listings no longer expose other tenants' records to team-scoped admins; the detailed DB-health endpoint is no longer public.
+
+### Engineering record
+
 
 ### Server — "Harden" (deep + security second-pass audit fixes)
 
@@ -1940,6 +2323,25 @@ stays 1.20.0. See `IMPLEMENTATION_PLAN_v1.20.2_Harden.md`.
   chain is v2.1).
 
 ## [1.20.1] — 2026-08-11
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Proposals now expire: pending captures aging past a configurable TTL (default 7 days) are auto-rejected and audited; deciding a stale proposal returns an error.
+- The capture-triggering prompt is shown in the review panel so reviewers see the context that produced a proposed memory.
+
+**Security fixes**
+
+- **The /ingest write path bypassed injection screening** — it now rejects or quarantines suspicious content exactly like every other write path.
+- **Auto-capture no longer bypasses human review**: the openclaw plugin's autoCapture defaults to the approval queue; direct mode remains available (still screened).
+- The capture-triggering turn is stored only in PII-screened form — redacted placeholders, never the raw prompt.
+
+### Engineering record
+
 
 ### Server + Plugin — "Shield" (GhostJacking P0: injection screen on the shared write core + autoCapture through the human review gate)
 
@@ -1999,6 +2401,24 @@ approval (G2). See `IMPLEMENTATION_PLAN_v1.20.1_Shield.md`.
 ---
 
 ## [1.20.0] — 2026-08-11
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Theme toggle now cycles dark → light → system, following the OS preference.
+- **Offline tolerance**: decisions, purges, and erasure actions taken while disconnected are queued locally and replayed on recovery, each applied exactly once; a badge shows the queue count.
+- A client bundle-size budget gate lands in CI to catch growth regressions.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Polish" (theming, perf, offline-tolerance — the v1.20.0 done-state)
 
@@ -2048,6 +2468,22 @@ budgets documented in `BENCHMARKS.md`.
 ---
 
 ## [1.19.0] — 2026-08-10
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Audit-panel filters are now URL-addressable — a link like /audit?principal=alice opens the view pre-filtered, shareable with other reviewers.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Integrated" (the audit-verified remainder of the v1.19.0 plan)
 
@@ -2085,6 +2521,24 @@ ceilings (below).
 ---
 
 ## [1.18.2] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Origin markers**: every stored item is tagged human, model, or imported (backfilled by source kind); bulk imports never claim human authorship.
+- Exports carry a provenance block: per-row source and origin plus a summary by origin and source; existing field names are unchanged for downstream importers.
+- The public AI notice now advertises origin metadata alongside source and confidence.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server — "Transparency" (EU AI Act Art 50 origin marker + export provenance)
 
@@ -2212,7 +2666,42 @@ gaps and formalizes the CI gate.
 
 ---
 
+## [1.17.9] — 2026-08-09
+
+### Release notes
+
+**Bug fixes**
+
+- **Web client fix:** the UMP capabilities request fired on every render instead of once per mount — a per-keystroke request loop that tripped the server's rate limiter and flipped the client to "reconnecting". Capabilities now load once.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
 ## [1.17.6] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- The connect screen now lives at its own address, avoiding a redirect loop with the app shell's connect-first behavior.
+
+**Improvements**
+
+- **Command palette v2** — one keyboard surface (Cmd/Ctrl+K) for navigation, lookups, and actions, with grouped results, recent commands, and full keyboard control.
+- Destructive actions like reindex now require an explicit press-Enter-to-confirm step before running.
+- **New Overview home page** — status cards for health, snapshot integrity, retention, and protocol conformance, plus a severity-sorted alert list and the top pending items with one-click approve/reject.
+- The new surfaces are translated in all five UI languages (English, German, French, Spanish, Dutch).
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Complete" part 1: command palette v2 + Overview
 
@@ -2300,6 +2789,25 @@ stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
 ---
 
 ## [1.17.8] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Data & Rights panel** — purge by record ids or owner, portable export (JSON, UMP, or Markdown), a per-kind retention editor, the decayed-content review list, and the deletion registry, all in one place.
+- **UMP panel** — protocol capabilities with an integrity badge, remember/recall with filters, and loading plus verifying the audit chain.
+- **System panel** — domains, snapshot integrity, the Article 30 register, reindexing, connectors, and source reconciliation.
+- A **try-it console** for issuing raw API requests from the client, with token-bearing bodies stripped from the saved history.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Complete" part 3: Data & Rights + UMP panel + System & Try-it console
 
@@ -2368,6 +2876,26 @@ stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
 No server restart needed (client-only static bundle).
 
 ## [1.17.7] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- Graph path display rendered a doubled separator between hops; chains now read correctly (A --relation--> B --relation--> C).
+- The Create workspace pages no longer render duplicate top-level headings, fixing an accessibility regression.
+
+**Improvements**
+
+- **Graph panel** — look up entities and their relations, and run traversals rendered as readable hop chains, with kind filtering.
+- **Create workspace** — a single hub for writing: structured/Markdown/memory ingest with up-front JSON validation, a procedure step builder with classification and decision evaluation, and consolidation proposals with one-click apply/undo.
+- New Graph and Create destinations in the sidebar, mobile tab bar, and command palette.
+- All new surfaces translated in the five UI languages.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Client — "Complete" part 2: Graph panel + Create workspace
 
@@ -2460,6 +2988,27 @@ static bundle).
 ---
 
 ## [1.17.5] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- **`brain eval` never worked** — every run failed with a 405 because it called the recall endpoint with the wrong HTTP method; the command now runs and produces scores.
+- Eval scores were computed against the wrong matched indices (arbitrary set ordering); indices now match the fixture's documented positions.
+- The eval parser now reads both the search and recall response shapes, instead of only the search shape.
+
+**Improvements**
+
+- Release builds must pass automated recall-quality floors before shipping.
+- An automated check asserts the server's declared UMP conformance level.
+- Every tagged release now ships a CycloneDX software bill of materials (SBOM).
+- First published benchmark results for the default configuration (recall@5/10 0.919, MRR 0.905).
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### CLI — "Eval Fix" (`brain eval` + `bench`)
 
@@ -2494,6 +3043,27 @@ static bundle).
 ---
 
 ## [1.17.4] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- **Record identities were mis-derived** — the did:key encoding was rejected by reference UMP implementations; it is now spec-correct, and records signed by the previous release still verify.
+- Looking up records by their content-addressed id on the UMP endpoints returned 404; urn-form ids now resolve everywhere.
+- UMP imports rejected requests that omitted a protocol version field; a missing version now defaults to 1.0.
+- Provenance and consent metadata was silently dropped on import; it is now stored and re-emitted with every record.
+
+**Improvements**
+
+- The record integrity block now uses the reference format (content hash, signature, signer), so third-party UMP tools byte-match brain-server records.
+- Revising a record now marks the prior one with its end-of-validity time and a link to its successor.
+- Forget now clearly reports whether content was erased or tombstoned, and feedback returns the response conforming tools expect.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server — "UMP Conformance" (wire fixes)
 
@@ -2574,6 +3144,25 @@ prior `time.valid_to` + `superseded_by` pointing at the new urn, forget →
 ---
 
 ## [1.17.3] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- Exporting from a store with no records failed with a fatal error; empty stores now export cleanly.
+
+**Improvements**
+
+- **Full UMP 1.0 memory API** — capabilities handshake, remember, integrity-verified get, recall with relevance signals, revise, forget, feedback, audit, and a subscription change feed.
+- The same surface is exposed as MCP tools (`ump.*`) for agent integrations, with token pass-through.
+- **Portable record files** — export and import memories as UMP Markdown or JSON via the CLI, round-trip lossless.
+- **Operator signing keys and capability tokens** — generate an Ed25519 identity key, and grant scoped, expiring read/write/export tokens enforced per endpoint.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server — "UMP Rollout"
 
@@ -2674,6 +3263,23 @@ discovery doc) report `conformance: "L3"` when an operator key is configured,
 - Client-side §5.3 obligations are documented, not enforced by the server.
 
 ## [1.17.2] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- The UMP export/import adapter shipped with a guessed wire format that real UMP 1.0 software would not understand; records now conform to the published spec — correct version tag, kind vocabulary, content-addressed ids, RFC 3339 timestamps, and relation shapes.
+
+**Improvements**
+
+- Imports now reject records declaring an unknown protocol major version instead of silently reinterpreting them.
+- The server declares UMP 1.0 / L0 (portable-record file binding) conformance.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server — "Harden"
 
@@ -2693,6 +3299,25 @@ discovery doc) report `conformance: "L3"` when an operator key is configured,
   **UMP 1.0 / L0** (portable-record file binding).
 
 ## [1.17.1] — 2026-08-09
+### Release notes
+
+**Bug fixes**
+
+- Ingest now consistently records the acting user as the record owner, so authenticated writes carry the correct subject instead of an inconsistent one.
+
+**Improvements**
+
+- **Per-kind retention** — each memory kind expires on its own schedule (defaults overridable), enforced at query time; the decayed list explains why each item expired.
+- `brain eval` runs a fixed query set against recall and enforces quality floors, usable as a pre-ship gate.
+- **Governance records** — an Article 30 processing register, a public EU AI Act Code-of-Practice conformity marker, an AI-literacy disclosure endpoint, and a deployer playbook plus RFP response kit.
+- **Snapshot self-check** — verify each backup exists, has correct permissions, and passes integrity and audit-chain checks, from the CLI.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server — "Govern"
 
@@ -2758,6 +3383,25 @@ discovery doc) report `conformance: "L3"` when an operator key is configured,
   the same governance story as the repo.
 
 ## [1.17.0] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Refresh controls on the Review, Audit, and Health panels work on every platform, including mobile.
+- `brain://` deep links are registered on iOS and Android, so custom-scheme links open the app.
+- The connect screen remembers the last successful server URL and pre-fills it on return; the token stays in the OS keyring.
+- Store-readiness package: App Store / Play privacy labels ("no data collected" — self-hosted backend, no analytics or tracking) and a submission checklist.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **v1.17.0 "Mobile" — client-only.** Completes the v1.17.0 Mobile plan on top of
 the v1.16.6 mobile groundwork (secure token storage seam + responsive bottom-tab
@@ -2810,6 +3454,25 @@ store-readiness milestones. Server + API contract unchanged (still 1.16.7).
   governance tool, not social/UGC).
 
 ## [1.16.8] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- Web deployments could ship stale CSS — style edits silently never reached the bundle; the build now recompiles styles every deploy.
+
+**Improvements**
+
+- **Five UI languages** (English, German, French, Spanish, Dutch) with automatic English fallback for missing strings.
+- **Light theme** toggle (dark remains the default) and a **compact density** mode (~12.5% tighter spacing) for high-volume reviewers.
+- Locale-aware number grouping throughout the shell.
+- A privacy panel on the connect screen states exactly what the client sends, stores, and never does (no telemetry, analytics, or third-party requests); theme, density, and locale preferences persist — never the token.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 Client-only release: the v1.16.8 "Global" plan — locale (i18n) + light/dark
 theme + density + locale-aware number formatting + a privacy block on the
@@ -2887,6 +3550,27 @@ connect screen. **Server + API contract unchanged** (server stays at 1.16.7).
   degrades to the key name (visible) rather than failing, by design.
 
 ## [1.16.7] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- The `limit` parameter on the deletion registry was silently ignored, always returning all rows; it is now honored.
+- Export now includes the record source column it was documented to emit.
+
+**Improvements**
+
+- **Web client** — installable as a PWA with an offline app shell, and review-proposal / DSAR-certificate pages are now shareable URLs.
+- **Web client** — command palette (Cmd/Ctrl+K), paginated audit log with load-more, and a debounced recall input.
+- Accessibility: dialogs trap focus, batch and certificate outcomes are announced to screen readers, and RTL-scripted memory content flows correctly.
+- New public AI-transparency notice endpoint (EU AI Act Article 50) disclosing that AI-generated content is stored and may be returned.
+
+**Security fixes**
+
+- SQLite snapshot backups were written world-readable — each is a plaintext copy of the whole store; they are now restricted to owner-only access.
+- The unauthenticated health endpoint is pinned to never expose store contents or personal data.
+
+### Engineering record
+
 
 Server + client release. **Server** (Cargo.toml 1.16.6 → 1.16.7): hardening +
 compliance round (security + fixes + Art 50), landing on top of the client
@@ -3001,6 +3685,25 @@ client or API-contract break.
 ---
 
 ## [1.16.5] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- Fixed a concurrency flaw in the client's request path: an internal lock was held across a network call.
+
+**Improvements**
+
+- **Session lifecycle** — expired access tokens are silently refreshed once on a 401 and proactively within 60 seconds of expiry; no infinite retry loops.
+- The top bar shows the acting identity from the token ("acting as <subject>" vs "loopback") instead of a hardcoded placeholder.
+- The connect screen accepts an access + refresh token pair, pasteable from the CLI or an identity provider.
+- Clearer auth errors: a reused refresh token reports "session revoked" with a reconnect path instead of a generic failure.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### "Secure" (client-only — JWT refresh lifecycle + principal)
 
@@ -3055,6 +3758,25 @@ awareness, and the honest revocation path. See
 ---
 
 ## [1.16.6] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Secure token storage** — on native installs the auth token persists to the OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service); the web client keeps it in memory only.
+- **Auto-reconnect** — a saved token is quietly validated on launch, dropping you straight into the app when valid and back to the sign-in form when stale.
+- **Responsive layout** — a mobile bottom tab bar, at least 44px touch targets, notch/home-indicator safe areas, and a bottom-sheet drawer on small screens.
+- Server and client version numbers are kept in lockstep, so the CLI and GUI report the same version.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### Server version alignment (no functional server change)
 
@@ -3104,6 +3826,24 @@ no Android SDK / cargo-ndk / `dx` is available in this environment.
 ---
 
 ## [1.16.4] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- Deployments could ship a stale stylesheet while the page referenced the new one; the deploy script now always picks the freshest CSS build.
+
+**Improvements**
+
+- **Redesigned app shell** — a fixed left sidebar with live count badges and a slim sticky top bar showing connection, pending count, and security/audit-chain status.
+- A shadcn-style design system: semantic color tokens, a radius scale, and consistent buttons, inputs, badges, and tables.
+- Every panel (Review, Recall, Subjects, Security, Audit, Health, Connect) restyled to the new system with no loss of accessibility or semantics.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### "Styled" (client-only shadcn/ui design-system restyle)
 
@@ -3137,6 +3877,25 @@ no Android SDK / cargo-ndk / `dx` is available in this environment.
 ---
 
 ## [1.16.3] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- **The compiled web client was unreachable** — asset URLs were mis-based and rejected; it is now correctly served under `/app`.
+- The web client never rendered under the security policy because the WASM runtime was blocked; the app path now permits what it needs.
+- Connecting defaulted to a hardcoded remote URL even when the page was served by brain-server itself; same-origin pages now default correctly.
+- Deployments could race stale hashed assets; the deploy script now derives exact filenames from the fresh build.
+
+**Improvements**
+
+- One-command web deploy: build the bundle, inject the stylesheet reference, and ship it to the directory the server serves.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 ### "Serve" (client web-bundle serving + live bugfixes)
 
@@ -3191,6 +3950,28 @@ can't retrofit code into an already-tagged history.
 ---
 
 ## [1.16.2] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- A crash in any panel no longer leaves a blank screen — an operator-facing fallback with a dismiss button renders instead.
+- Low-contrast text was raised to meet WCAG AA (3.8:1 → 4.6:1 contrast).
+
+**Improvements**
+
+- **The server now serves the web client itself** at `/app`, with deep-link fallback and brotli-compressed assets.
+- Screen-reader support on navigation: each page heading receives focus on route change, per-route document titles are set, and focused elements no longer hide under the sticky nav.
+- Actionable error messages (expired session, not found, rate limited, unavailable) in the Review, Recall, and Health panels.
+- Batch review collapses to an honest one-line summary that surfaces partial failures instead of hiding them.
+
+**Security fixes**
+
+- The auth token is barred from browser localStorage (readable by script attacks) — enforced by an automated source guard.
+- The raw-HTML rendering escape hatch, the client's only XSS vector, is banned across the codebase by an automated guard.
+- Content security policy is now path-aware: API routes keep the strictest policy (`default-src 'none'`); only the web-app path allows what the WASM runtime requires.
+
+### Engineering record
+
 
 ### "Harden" (server + client security/serving foundation)
 
@@ -3222,6 +4003,23 @@ can't retrofit code into an already-tagged history.
 ---
 
 ## [1.16.1] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- **The deletion registry was under-reporting** — older tombstone rows without a purge timestamp were silently dropped (on the live database, 6,008 of 6,009 rows were invisible); all rows now appear, with a one-time backfill.
+- Retention pruning now removes recall traces whose audit entries were pruned, instead of leaving them orphaned forever.
+
+**Improvements**
+
+- The memory-usage warning band was raised from 320 to 512 MiB to match desktop reality — fewer false warnings during large reads and backups (it remains a soft signal that never blocks writes).
+
+**Security fixes**
+
+- **Deletion completeness** — purging records and running erasure requests now also delete the recall traces that reference them, including traces whose stored query text mentions the subject; these previously survived every deletion path.
+
+### Engineering record
+
 
 ### Operations
 
@@ -3260,6 +4058,25 @@ can't retrofit code into an already-tagged history.
 ---
 
 ## [1.16.0] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- The recall trace toggle was disabled during reconnects even though it is a read-only control; reads now stay interactive while reconnecting.
+
+**Improvements**
+
+- **First shippable client** for web, desktop, and mobile-ready targets, covering the review queue, recall, data-subject requests, security, audit, and health panels.
+- **Offline-safe by design** — panels keep showing last-known data when the connection drops, writes are frozen, and they resume only after the audit chain re-verifies.
+- **Keyboard-first review** (A/S/R/J/K) with reject-with-reason, edit-and-repropose, and batch results that surface every failure — nothing silently dropped.
+- **Recall inspector** — per-hit relevance tiers and a minimum-relevance filter, plus a shareable, replayable decision-path trace; erasure requests render a deletion-certificate card with live chain verification.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Client" — the Dioxus control surface (web + desktop + iOS + Android).** The
 first externally-shippable brain-client: one Rust codebase consuming brain-
@@ -3392,6 +4209,25 @@ clippy `-D warnings` + fmt clean, zero new deps.
 ---
 
 ## [1.15.0] — 2026-08-08
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Read-event audit:** recall/search/get reads can be logged into the tamper-evident audit chain (hashes only, never content or raw queries); opt-in for personal installs, on by default in JWT mode.
+- **Recall traces:** admins can replay a past recall decision — query, abstention, domains searched, scope filter, per-hit scores — the transparency artifact for automated-decision requests.
+- **DSAR workflow:** locate → export → purge a subject's records (including derived data) in one audited call, with a re-verifiable deletion certificate and an optional signed notification webhook.
+- **Compliance pack:** deletions are queryable by subject and date, and a new buyer-facing compliance document maps the system to GDPR, EU AI Act, and NIST AI RMF controls.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Observe" — read-event audit + recall trace + DSAR + COMPLIANCE.md.** The
 observability + compliance-workflow layer on v1.14's governance primitives:
@@ -3501,6 +4337,26 @@ asserted), `test_observe_audit_retention_prunes_and_reanchors`.
 ---
 
 ## [1.14.0] — 2026-08-07
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Human-in-the-loop memory:** candidate memories are scored for novelty and conflict, then queued as proposals — nothing is stored until a person approves; approval embeds and files the memory atomically.
+- **Memory lifecycle:** chunks can carry expiry dates (excluded from results once decayed, reviewable — nothing auto-deletes), plus portable JSON export and audited hard purge with tombstones.
+- **Richer recall metadata:** every hit carries a confidence score, a stated/observed/inferred label, and a relevance tier you can filter on.
+- **Episodic memories:** a new memory kind and filter alongside facts.
+
+**Security fixes**
+
+- **Record-level access control:** private/domain/team/public scopes with an owner field, enforced deny-by-default in JWT mode.
+- **PII handling:** ingest scans for emails, phone numbers, and card numbers and flags them; recall output is redacted for non-admin readers.
+
+### Engineering record
+
 
 **"Gate" — write-back gating + trust surfaces.** The Alex Xu thread's #1 ask —
 "make the write path deliberate" — answered with zero tokens and no auto-promote.
@@ -3564,6 +4420,24 @@ the v0.9.1 schema and would have failed the purge INSERT on real DBs).
 operator step (`scripts/install-service.sh`).
 
 ## [1.13.6] — 2026-08-07
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Disclosure endpoint:** a standard `security.txt` (RFC 9116) advertises vulnerability-reporting contact, expiry, and languages.
+- **Software bill of materials:** each release now ships a CycloneDX SBOM, with support windows documented.
+- **Quieter auto-capture:** configurable skip patterns drop known noise (e.g. dream-prompt entries) from raw-text ingest.
+
+**Security fixes**
+
+- **Ingest hygiene:** raw-text ingest now strips model reasoning/trace blocks (thinking, reasoning, reflection tags) before storage — reasoning traces are never silently stored.
+
+### Engineering record
+
 
 **"Hygiene" — CRA conformance bundle + ingest capture hygiene.**
 
@@ -3588,6 +4462,22 @@ No schema change, no new runtime dependency, no `unsafe`. Gates: fmt, clippy
 `-D warnings`, `cargo test --features bench`.
 
 ## [1.13.5] — 2026-08-07
+### Release notes
+
+**Bug fixes**
+
+- **Fixed memory metric:** the RSS gauge reported system-wide memory, not the process (~50x too high on busy hosts, hiding the real capacity envelope); `/metrics` and `/health` now agree on the true footprint.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **`/metrics` `brain_rss_mib` now reports the process's own RSS.**
 
@@ -3602,6 +4492,22 @@ No schema change, no new runtime dependency, no `unsafe`. Gates: fmt, clippy
   test (bounds the gauge to a process-scale value, not host-scale).
 
 ## [1.13.4] — 2026-08-06
+### Release notes
+
+**Bug fixes**
+
+- **Recall source filter:** a query-string `?source=` on recall was silently ignored — callers got 200 OK unfiltered while believing they had filtered. It is now honored and validated, matching search.
+
+**Improvements**
+
+- Unknown `source` values are now rejected with 422 before any search work; a body value still wins when both are supplied.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **POST /recall query-string `source` parity.**
 
@@ -3616,6 +4522,24 @@ No schema change, no new runtime dependency, no `unsafe`. Gates: fmt, clippy
   consistency gap between the two retrieval endpoints.
 
 ## [1.13.3] — 2026-08-06
+### Release notes
+
+**Bug fixes**
+
+- **Source filter repaired:** every documented `source` value returned 0 hits. Ingest kinds now filter in SQL, retrieval legs filter post-fusion, and invalid values return 422.
+- **Honest ingest responses:** memory ingest reported an entry count as the chunk id; it now returns real chunk ids, entries added, and duplicates skipped.
+- `domains_searched` is now always present on recall responses, no longer missing when there are no hits.
+
+**Improvements**
+
+- API docs, MCP schema, and CLI help now match the repaired source-filter contract.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **Retrieval source-filter contract repair + ingest response honesty.**
 
@@ -3646,6 +4570,24 @@ No schema migration. Response-shape changes are additive or on the
 documented-but-broken `source` contract (422 for invalid values).
 
 ## [1.13.2] — 2026-08-06
+### Release notes
+
+**Bug fixes**
+
+- **Recall routing regression:** memories moved out of the default domain had become unreachable to standard recall after a domain move; recall now auto-routes to the matching domain with a global fallback.
+- **Write contention:** concurrent writers could fail immediately with SQLITE_BUSY under load; writes now queue up to 5 seconds.
+
+**Improvements**
+
+- Un-routed queries never spill into bulk domains, so one huge domain can no longer swamp working-memory lookups; a kill switch restores legacy global-only recall.
+- `/recall` accepts `explain` as an alias for `provenance`; graph traverse accepts `name`/`entity` aliases for `start` — no more per-endpoint spelling quirks.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **Hardening pass (post-1.13.1 review).**
 
@@ -3700,7 +4642,41 @@ First container story for brain-server (Round 26 enterprise plan, §33):
 
 No version bump — lands under [Unreleased] until the v1.19.0 release ceremony.
 
+## [1.13.1] — 2026-08-06
+
+### Release notes
+
+**Bug fixes**
+
+- **Memories moved to another domain became unreachable:** default recall never routed by domain in single-database mode, so rows relocated by the 1.13.0 domain-move tool were invisible to the agent's every-turn recall. Routing now works in both modes (matched domain first, with a global rescue leg), and a kill switch restores the exact previous behavior.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
 ## [1.13.0] — 2026-08-06
+### Release notes
+
+**Bug fixes**
+
+- **Auto-routing actually works:** ingest never auto-routed (an omitted domain always fell to the default) and domain centroids were computed from a stale legacy table, leaving them effectively empty — nearly everything piled into one domain.
+
+**Improvements**
+
+- Ingest now auto-routes each memory against live domain centroids; an explicit domain still wins, with no extra embedding work.
+- **Bulk domain moves:** relabel chunks into a target domain in one transaction, with guards against accidental default-domain drains; CLI included.
+- **Centroid rebuild:** a one-shot recompute of every domain centroid from correct data, cleaning up emptied domains; CLI included.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Route" — real domain auto-routing (root-cause fix + relabel migration).**
 
@@ -3742,6 +4718,24 @@ and gives the operator a non-re-ingest migration path. No schema migration —
 - `cargo fmt --check`: clean.
 
 ## [1.12.2] — 2026-08-04
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- **Refresh-token race closed:** two concurrent replays of the same refresh token could both mint access tokens, silently defeating reuse detection; presentations now serialize and the token family burns exactly once.
+- **Database stack upgraded:** bundled SQLite 3.51 → 3.53 with tokenizer hardening and security fixes; rusqlite, sqlite-vec, and r2d2 refreshed.
+- **Advisory hygiene:** the one unfixable RSA timing advisory is formally documented and accepted (no fixed release exists anywhere); EdDSA keys avoid RSA entirely.
+
+### Engineering record
+
 
 **"Harden" — audit-fix release (refresh-race serialization + dependency bumps + green CI).**
 
@@ -3782,6 +4776,24 @@ dependency stack, and one permanently-red CI job. All three closed.
 - `cargo build --release --features bench,migrate`: all 5 binaries clean.
 
 ## [1.12.1] — 2026-08-04
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- **Authorization completed:** ~20 routes (search, stats, get, multi-get, graph, metrics, audit, connectors, and more) relied on "any valid token passes"; every route now enforces its intended read/write/admin action.
+- Reindex and memory deletion were writer-level actions; both are now admin-only.
+- **Audit tenant isolation:** principals can only read their own tenant's audit rows — cross-tenant requests are rejected.
+
+### Engineering record
+
 
 **"Harden" — AuthZ wiring completion (closes the v1.2 S1 audit finding).**
 
@@ -3841,6 +4853,24 @@ non-public route now enforces its §3.3 matrix action at handler entry.
   (unchanged from v1.2).
 
 ## [1.12.0] — 2026-08-03
+### Release notes
+
+**Bug fixes**
+
+- **Graph ranking corrected:** tag/alias edges no longer outrank true semantic relations around mixed hubs.
+
+**Improvements**
+
+- **Noise-aware graph search:** taxonomy edges (tags, aliases) now weigh far less than semantic relations, and mega-hub influence is damped.
+- **Graph rescue:** on hard queries that would otherwise come back empty, one bounded graph pass runs automatically before abstaining; a kill switch restores the old abstain-only behavior.
+- Telemetry now shows when a graph rescue fired, so quality is observable.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Discern" — noise-aware graph retrieval + complexity-gated activation
 (light cut, roadmap-compliant).**
@@ -3902,6 +4932,24 @@ per the plan.
   rescue arm). clippy `-D warnings` + fmt clean.
 
 ## [1.11.0] — 2026-08-03
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Graph retrieval leg (opt-in):** personalized PageRank over the entity knowledge graph joins lexical + vector search, answering multi-hop association questions those two legs can't bridge.
+- Runs concurrently on its own connection with zero added latency when off; per-hit provenance shows the graph rank.
+- Enabled per request on search and recall, plus a CLI flag. No LLM, no schema change, no re-ingest.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Associate" — HippoRAG-2-style graph retrieval (light cut, roadmap-compliant).**
 
@@ -3954,6 +5002,25 @@ leg, `< 5W`** — the low-power manifesto holds.
   `authorize()` remains unwired — v2.0 multi-tenancy work.
 
 ## [1.10.0] — 2026-08-02
+### Release notes
+
+**Bug fixes**
+
+- **Classification keyword bug:** the winning category's matched-keywords list was pulled from the wrong lexicon (e.g. HIPAA reported without PII); it is now correct and auditable.
+
+**Improvements**
+
+- **Procedural memory:** ingest a procedure with up to 100 ordered steps in one call; steps remain searchable even if embedding fails, and the ordered chain is fetchable with kinds normalized.
+- **Deterministic categorization:** classify text into a taxonomy with confidence and matched keywords — no LLM, no cloud.
+- **Decision rules:** store JSON decision rules and evaluate them against numeric variables; first matching branch wins, with a citation chain.
+- **Memory kinds:** fact/procedure/step/decision taxonomy; legacy 'event' rows relabeled to fact.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Procedural" — ordered steps + deterministic categorization + decision
 rules** (the finalized v1.10.0 cut on top of the v1.9.1 hotfix base).
@@ -4002,6 +5069,24 @@ rules** (the finalized v1.10.0 cut on top of the v1.9.1 hotfix base).
   and decisions are explicit, operator- or agent-authored writes.
 
 ## [1.9.1] — 2026-08-02
+### Release notes
+
+**Bug fixes**
+
+- **Near-duplicate scan fixed:** it read a frozen legacy table and silently covered 2 of ~8,500 live chunks; it now scans the real vector index end to end.
+- **Feedback deduplication:** client retries or replays double-counted suggestion feedback, poisoning false-positive metrics; feedback is now last-wins per suggestion per session, with existing duplicates cleaned up.
+- Removed a misleading explanation-path code path that collected ids it never used; its docs now match actual behavior.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **Bug-fix release on top of v1.9.0** (post-release security + correctness audit
 of v1.7.0–v1.9.0). Three fixes, no new features.
@@ -4038,6 +5123,25 @@ of v1.7.0–v1.9.0). Three fixes, no new features.
   forward as v2.0 multi-tenancy work (the audit flagged them, not this fix).
 
 ## [1.9.0] — 2026-08-02
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Anticipation (opt-in pull):** send what you're working on and get relevant memories you haven't cited yet; superseded and quarantined items are never suggested. No push, no background tracking.
+- **Feedback + metrics:** record accept/dismiss per surfaced suggestion and query the false-positive rate by session and time window — the feature's keep-or-remove evidence, made measurable.
+- **Kill switch:** all suggestion routes can be disabled without a rebuild.
+- New CLI commands for suggestions, feedback, and metrics.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Suggest" — opt-in, non-interrupting anticipation (light cut).**
 
@@ -4134,6 +5238,25 @@ a session.
   the rest of the retrieval stack).
 
 ## [1.8.0] — 2026-08-01
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Undo:** reverse a supersession resolution atomically and idempotently (batch-safe, audited) — the expired fact becomes current again with no retrieval regression.
+- **Stale-source detection:** vault files that no longer exist on disk are flagged for operator review; nothing is auto-archived or deleted.
+- **Near-duplicate detection:** semantically near-identical chunk pairs (cosine > 0.95) are surfaced in consistency proposals, capped at 50 pairs per run.
+- Both new checks surface in the consistency proposals and the CLI report; maintenance stays operator-triggered by design.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Maintain" — reviewable proposals + undo (light cut).**
 
@@ -4228,6 +5351,23 @@ not shipped** — the roadmap forbids autonomous/background maintenance:
   demand. This is the roadmap's explicit choice, not a gap.
 
 ## [1.7.0] — 2026-08-01
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Explainable graph paths:** traversal can now return structured, typed hop chains (A --works_at--> B --ceo_of--> C) that agents can render verbatim, alongside the legacy flat output.
+- **Edge-type filter:** restrict a walk to a relation type by exact or prefix match (e.g. all causal edges); wildcards in input are escaped.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Explain" — bounded graph evidence + faithful explanations (light cut).**
 
@@ -4314,6 +5454,24 @@ intervention-ready causal model + domain expert validation:
   true in the world. This is the roadmap's explicit guardrail.
 
 ## [1.6.0] — 2026-08-01
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Atomic supersession:** recording a "supersedes" link now expires the old fact in the same transaction — current recall drops it, historical queries still return it; idempotent and audited (hash only, no PII).
+- **Contradiction triage:** a consistency check now lists contradiction links with no resolution, so unresolved conflicts stop hiding in the graph.
+- CLI shortcuts: record a resolution in one command, or run a full consistency check on demand.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Reconcile" — correct without erasing (light cut).**
 
@@ -4408,6 +5566,23 @@ the watts without a measured benefit:
   `/graph/traverse?at=`. A unified claim-level resolution is the v2.x path.
 
 ## [1.5.0] — 2026-08-01
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Calibrated abstention:** vague, low-signal queries now return an explicit `low_confidence` decision with no hits instead of shipping top-ranked garbage — agents can escalate or fall back to web search.
+- **Claim verification:** verify "the memory said X" against the original chunk text, with exact match ranges returned — deterministic, zero model cost, opt-in and off the recall hot path.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 **"Epistemic" — calibrated abstention + span verification (light cut).**
 
@@ -4494,6 +5669,28 @@ held-out benefit is demonstrated on a judged-query corpus:
   becomes a requirement, it lands with v1.6 Reconcile.
 
 ## [1.4.2] — 2026-07-30
+### Release notes
+
+**Bug fixes**
+
+- Re-ingesting with `--replace` now sweeps orphaned and stale relationships, so zombie graph edges no longer survive across re-ingests.
+- Markdown table cells and bold definition-list labels no longer generate spurious entities and relationship types.
+- Numbered section headings now match their body mentions: number prefixes like "5.1 Ceph Components" are stripped before entity extraction.
+- Code blocks, tables, bold-label text, and entity names no longer leak into verb-pattern and relationship discovery.
+
+**Improvements**
+
+- New `brain ingest-dir --replace` flag re-ingests cleanly: existing chunks are deleted and the knowledge graph is regenerated from scratch.
+- Heading hierarchy becomes graph structure: adjacent sections that are both known entities get `part_of` edges (e.g. CRUSH Map → Ceph).
+- Stricter relationship-type filtering: nouns like "maps", "data", or "example" and the false verb "date" can no longer become relationship types.
+- On a real-world vault, graph noise dropped 51% (390 → 193 relationships) with the entity count unchanged.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
 
 Noise-reduction release on top of v1.4.1. Eleven changes (cumulative with v1.4.1).
 Research basis: Aho-Corasick (ACL/EMNLP, confirmed SOTA for deterministic
@@ -5334,6 +6531,222 @@ launchd service upgrades in place via `scripts/install-service.sh`.
   pre-v0.9.8 chunks (no revision linkage) are always treated as current.
 
 ---
+
+## [1.4.1] — 2026-07-30
+
+### Release notes
+
+**Bug fixes**
+
+- Entity names no longer leak into verb-pattern discovery, so a known entity can't become a spurious relationship type.
+
+**Improvements**
+
+- Heading hierarchy becomes graph structure: adjacent markdown sections that are both known entities get `part_of` edges.
+- Verb-suffix filtering rejects nouns like "maps", "data", or "example" from becoming relationship types.
+- First version of `brain ingest-dir --replace` (the clean-reingest flag; completed in 1.4.2).
+
+**Security fixes**
+
+- None in this release.
+
+Note: this release's changes are also included cumulatively in 1.4.2.
+
+
+## [1.4.0] — 2026-07-30
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Time-aware graph: relationships gain validity intervals extracted from text ("since 2020", "until 2019"); old facts expire instead of being deleted.
+- Point-in-time queries: `/recall` and `/graph/traverse` accept an `at` timestamp and return only facts valid at that moment.
+- Budgeted context packing on `/recall` maximizes relevance, coverage, and diversity under a token budget — more signal per token of context.
+- Typed graph edges (`supersedes:`, `contradicts:`, `causes:`, `update:`) with bounded traversal; a new `bench eval` mode reports MRR/NDCG to catch regressions.
+
+**Security fixes**
+
+- None in this release.
+
+
+## [1.3.0] — 2026-07-29
+
+### Release notes
+
+**Bug fixes**
+
+- MCP requests without an id (notifications) crashed the JSON-RPC handler; they are now handled.
+- Two additional panic paths eliminated (a first-line unwrap on empty vault input; a poisoned-lock crash on connector mutex contention).
+
+**Improvements**
+
+- Property-based test suites added for the chunker, domain normalization, and capacity classification (hundreds of generated cases each).
+- Fuzzing infrastructure added for the chunker, query compiler, and validators.
+- `/health` reports the memory-safety posture (unsafe-block count, panics caught).
+- Configurable worker-thread count for low-power targets.
+
+**Security fixes**
+
+- **Unsafe-code audit:** ten duplicated unsafe SQLite-vec registration blocks consolidated into one documented wrapper; every remaining unsafe block carries a safety comment.
+
+
+## [1.2.1] — 2026-07-29
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- Authorization now uses the principal's tenant as the team context directly.
+- Unused auth abstractions and dead code removed, shrinking the auth surface.
+
+**Security fixes**
+
+- None in this release.
+
+
+## [1.2.0] — 2026-07-29
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Opt-in JWT authentication** with full backward compatibility: existing opaque-token installs keep working unchanged.
+- OIDC discovery and JWKS endpoints published for third-party token verification; the issuer is pinned in config, never inferred from the Host header.
+- Key management CLI: generate, list, and prune signing keys with owner-only permissions; two keys live during rotation.
+
+**Security fixes**
+
+- **JWT verification with an algorithm whitelist** (RS/ES/Ed families only — `none` and HMAC rejected unconditionally) and full claim validation (issuer, audience, expiry, not-before, subject, id).
+- **Token revocation and refresh-chain reuse detection:** replaying a stale refresh token burns the whole token family.
+- **Scope-based authorization** (read/write/admin per team and domain), deny-by-default, returning 403 rather than 404 so existence is never leaked.
+
+
+## [1.1.2] — 2026-07-29
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- **Bearer-token comparison made constant-time** — the previous hand-rolled comparison could be short-circuited by the optimizer, reintroducing a timing oracle on token verification.
+
+
+## [1.1.1] — 2026-07-29
+
+### Release notes
+
+**Bug fixes**
+
+- **Audit verification false-negative on migrated databases:** after upgrading, the tamper-evidence check reported tampering on a clean database (every pre-upgrade row tripped the chain walk). Verification now handles migrated rows correctly.
+- Audit writes inside an existing transaction no longer risk partial state (savepoint wrapping).
+- The metrics endpoint no longer triggers a full audit-chain scan on every scrape (result cached briefly).
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+
+## [1.1.0] — 2026-07-28
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Rolling backups with integrity self-check:** periodic verified snapshots, retention of the last four copies, and backup posture on `/health`.
+- **Graceful shutdown:** in-flight requests drain under a hard cap, then the write-ahead log is checkpointed so power loss can't leave un-replayed frames.
+- **Memory watchdog:** sustained RSS breaches above the capacity envelope are alerted on (opt-in supervisor restart).
+- **Prometheus metrics endpoint** (memory, pool, capacity, audit-chain status).
+
+**Security fixes**
+
+- **Tamper-evident audit chain:** every audit row is hash-linked to its predecessor; `/audit/verify` walks the chain and detects any edit.
+- **Per-tenant audit scoping** enforced at the SQL layer, so a forgotten application filter cannot leak cross-tenant rows.
+- **Hot token rotation:** the bearer-token file is watched and reloaded without restart; a deleted or emptied file keeps the last valid token set rather than silently clearing auth.
+
+
+## [1.0.1] — 2026-07-26
+
+### Release notes
+
+**Bug fixes**
+
+- **Structured ingest now auto-creates entities referenced by relations** but missing from the input entity list — the canonical "vitamin d3 helps inflammation" example works as documented.
+- Ingest responses report the real database delta for entities/relations added instead of the input array length.
+
+**Improvements**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+
+## [1.0.0] — 2026-07-26
+
+### Release notes
+
+**Bug fixes**
+
+- **Entity-name validation regression:** names containing spaces were silently rejected by a validator that ignored its own pattern — breaking documented examples; validation now matches the documented shapes.
+
+**Improvements**
+
+- **Multi-domain support:** every endpoint accepts a domain via header or request field; domains are created, deleted, vacuumed, exported, and imported as first-class API operations (with a confirm guard against accidental deletion).
+- **Structured ingest** (`POST /ingest`) with inline entity/relation upsert becomes the primary write path; the domain centroid recomputes after each ingest.
+- **Cross-domain federated search** with rank-based merging (raw scores aren't comparable across domains) and labeled domains-searched responses; graph traversal can walk across domains.
+- Single-database behavior is preserved byte-for-byte by default; per-domain database files are opt-in.
+
+**Security fixes**
+
+- None in this release.
+
+
+## [0.9.9] — 2026-07-25
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Migration rehearsal tool:** copy the live database, run the upgrade against the copy, and verify row counts, search indexes, and vector embeddings match — a dry-run for upgrades, with rollback.
+- **Capacity envelopes:** published per-target limits (documents, database size, memory) surfaced on `/health`; ingest is refused with a clear over-capacity error when the envelope is exceeded, while reads always keep answering.
+- **Benchmark ship gate:** the bench tool can assert memory and latency ceilings and fail the run on breach.
+- Every on-disk path derived from one configurable data root (relocation without touching the database path).
+
+**Security fixes**
+
+- None in this release.
 
 ## [0.9.7] — "Guard" — 2026-07-20 (released)
 
