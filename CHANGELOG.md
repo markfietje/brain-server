@@ -19,6 +19,67 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.23.0] — 2026-08-15
+
+### Client — "Roles" (operator console renders what your role can act on)
+
+Server + client `Cargo.toml`/locks (1.22.0/1.21.0 → 1.23.0); plugin
+unchanged. The v1.17.1 operator roles promised role-based posture; the UI
+never gated on them. This release makes the operator console render what the
+resolved role can act on — **client-side only, with zero new endpoints and
+zero new server fields.** The MCP surface already accepted `{name, roles[]}`
+and stamped the JWT `roles` claim; M3 just mirrors delegated/server roles
+into the existing claims shape the client already parses. See
+`IMPLEMENTATION_PLAN_v1.23.0_Roles.md`.
+
+### Release notes
+
+**Improvements**
+
+- **Role-aware operator console** — the console now hides what your role
+  cannot act on. The Review queue gates its actions: approve requires a
+  DPO-capable role (`server` root always counts; reject stays safe for
+  everyone; edit is limited to non-approved proposals). The desktop rail and
+  mobile tab bar hide Subjects / Security / Audit / Data unless the resolved
+  roles grant them. Defense-in-depth — the server still enforces every
+  endpoint; this is the UI posture.
+- **Roles resolved once per token** — `server` always grants all panels
+  (incumbent-equivalent), the JWT `roles` claim grants the delegated set, and
+  an absent token is unrestricted loopback-incumbent (today's status quo).
+
+**Security fixes**
+
+- A `qa` or `agent` token can no longer rubber-stamp an approval from the
+  Review queue — `role_allows` gates approve/reject/edit before any write.
+
+### Engineering record
+
+- **M3 — `src/role.rs` + `api.rs`** (client). A pure `role_can_see(roles,
+  panel)` mapping table resolves `server`/delegated role names → panels and
+  actions. `ApiClient::roles()` reads the claim set once per token: the
+  `server` role → all panels; any non-`server` role → the JWT `roles` subset
+  the server stamped (delegated). `api().roles()` is hoisted once in
+  `app()` and read by both the desktop rail and mobile tab bar; the
+  `/panels/review.rs` action handlers consult `crate::role::role_allows` to
+  gate approve/reject/edit, with approve requiring `role_can_see("dpo")`
+  unless `server`-root. Test changes: every `TokenClaims` literal gains
+  `roles`; `role.rs` has a unit test per posture — exec hides Subject/Security/
+  Audit/Data panels but keeps the dashboard; qa can't approve or purge;
+  supervisor approves but doesn't purge; agent hides audit + subjects; solo
+  and no-roles see all. Client tests 113 → 119 passed; client clippy
+  `-D warnings` + fmt clean; the schema-contract test pins server 1.23.0
+  (no schema change — the server Cargo bump is version alignment only,
+  independent of the shared contract).
+
+**Honest ceilings** — the gating is UI posture backed by the JWT-presented
+`roles`, not server-authoritative RBAC: the endpoints the panels open are
+still enforced server-side, but a delegated `roles` claim is trusted exactly
+as far as the token (local signing key, not an external IdP). Full
+delegated/scoped-role **enforcement** is the v1.25+ line; the `reports`
+source for `manages` claims is documented in `src/role.rs`.
+
+---
+
 ## [1.22.0] — 2026-08-15
 
 ### Server — "Regulated" (legal hold + retention classes + region pin)
