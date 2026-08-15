@@ -1328,10 +1328,62 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
+    // ── v1.26.0 "Cross-Border" M1/M3: the transfer register + tagging ────
+    // `transfers` is the Art 30 processing-activities + Art 46 transfer-
+    // safeguard evidence: every cross-border data flow as a row. The `knowledge`
+    // columns (`lawful_basis`, `purpose`) carry the Art 5/6 purpose-limitation
+    // + data-minimization evidence; both additive + nullable (NULL = the legacy
+    // "unspecified" behavior — never a behavior change for existing rows).
+    // Lives in every domain file like `legal_holds`/`breaches`; the handler
+    // operates on the `global` pool (a transfer is operator data, not
+    // domain-scoped memory).
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS transfers(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset TEXT NOT NULL,
+            origin_jurisdiction TEXT NOT NULL,
+            destination_jurisdiction TEXT NOT NULL,
+            mechanism TEXT NOT NULL,
+            counterparty TEXT NOT NULL,
+            lawful_basis TEXT,
+            purpose TEXT NOT NULL,
+            signed_at INTEGER,
+            expires_at INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transfers_destination
+         ON transfers(destination_jurisdiction)",
+        [],
+    )?;
+    for (col, def) in [("lawful_basis", "TEXT"), ("purpose", "TEXT")] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE knowledge ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_purpose ON knowledge(purpose)",
+        [],
+    )?;
+
+    // v1.26.0 "Cross-Border": the per-jurisdiction DSAR deadline + rights table
+    // is shipped in code (`crate::transfers::JURISDICTIONS`) — a curated,
+    // release-versioned table, not a DB table (it is read at request time and
+    // re-checked on release, per the plan's honest ceiling). Nothing to migrate.
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.25.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.25.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.26.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.26.0';",
         [],
     )?;
 

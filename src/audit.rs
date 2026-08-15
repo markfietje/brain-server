@@ -55,6 +55,9 @@ pub enum AuditKind {
     /// v1.25.0 "PH-Compliant" M2: breach workflow events (open/notification/
     /// close) — the DPO incident ledger mirrors the hash chain.
     Breach,
+    /// v1.26.0 "Cross-Border" M1: transfer-register writes (Art 30/Art 46
+    /// evidence) — every recorded cross-border flow is hash-chained.
+    Transfer,
 }
 
 impl AuditKind {
@@ -70,6 +73,7 @@ impl AuditKind {
             AuditKind::Search => "search",
             AuditKind::Get => "get",
             AuditKind::Breach => "breach",
+            AuditKind::Transfer => "transfer",
         }
     }
 }
