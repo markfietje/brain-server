@@ -25,7 +25,6 @@ struct TokenState {
     access: Option<String>,
     refresh: Option<String>,
 }
-
 /// v1.16.7 M7.2: the shared refresh single-flight guard. Held across a clone
 /// boundary (inside the `Arc`) so two concurrent panel requests awaiting the
 /// mutex can't both present the SAME refresh token — the loser would be burned
@@ -36,7 +35,6 @@ struct SharedTokens {
     state: RwLock<TokenState>,
     refresh_lock: tokio::sync::Mutex<()>,
 }
-
 #[derive(Clone)]
 pub struct ApiClient {
     base: String,
@@ -46,7 +44,6 @@ pub struct ApiClient {
     principal: Option<String>,
     http: reqwest::Client,
 }
-
 #[derive(Debug)]
 pub enum ApiError {
     // ponytail: payloads are carried now so the error UI can render
@@ -56,7 +53,6 @@ pub enum ApiError {
     #[allow(dead_code)]
     Status(u16, String),
 }
-
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -65,9 +61,7 @@ impl std::fmt::Display for ApiError {
         }
     }
 }
-
 impl std::error::Error for ApiError {}
-
 /// v1.20.8 M3: an alert feed signal (the `/events` SSE `data:` line). The
 /// server's envelope is exactly `{kind, ts, seq, payload}`; the client parses
 /// only `kind` + `seq` — **content/PII never leaves the wire** (the console
@@ -77,7 +71,6 @@ pub struct AlertEvent {
     pub kind: String,
     pub seq: u64,
 }
-
 /// Parse one SSE `data:` JSON line into an `AlertEvent`. `None` on a malformed
 /// line, a missing `kind`, or a missing `seq` — a dropped signal is safe
 /// (the monotonic `seq` guard + polling re-sync cover any loss).
@@ -88,7 +81,6 @@ pub fn parse_alert_event(data: &str) -> Option<AlertEvent> {
         seq: v.get("seq")?.as_u64()?,
     })
 }
-
 /// v1.16.2 "Harden" M4.2: operator-facing error message from an `ApiError`.
 /// Maps HTTP status codes to actionable hints. Never includes the bearer token
 /// (it's not in the error payload).
@@ -115,19 +107,16 @@ pub fn error_message(e: &ApiError) -> String {
         ApiError::Status(code, body) => format!("error {code}: {body}"),
     }
 }
-
 impl ApiClient {
     pub fn new(base: impl Into<String>, token: Option<String>) -> Self {
         Self::with_principal(base, token, None)
     }
-
     /// v1.16.7 M7.1: the pre-connect / signed-out state (empty base, no token,
     /// no principal). The logout flow sets this back into the shared signal so
     /// every panel stops using the old identity.
     pub fn unconfigured() -> Self {
         Self::new("", None)
     }
-
     /// v1.16.0 M2.1: connect with a known principal (remote/JWT mode). A
     /// v1.16.5 M2 refinement: when `principal` is `None` but the access token
     /// is a JWT, the principal is derived from its `sub` claim (the identity
@@ -152,7 +141,6 @@ impl ApiClient {
             http: reqwest::Client::new(),
         }
     }
-
     /// v1.16.5 M1.4: connect in JWT-pair mode (access + refresh). Enables silent
     /// refresh-on-401 + pre-emptive expiry refresh. The principal is derived
     /// from the JWT `sub` claim (M2) for the identity pillar.
@@ -172,7 +160,6 @@ impl ApiClient {
             http: reqwest::Client::new(),
         }
     }
-
     /// v1.16.5 M5.2: `true` when the current access token is a JWT within
     /// `REFRESH_AHEAD_SECS` of expiry AND a refresh token is available.
     pub fn should_preemptive_refresh(&self) -> bool {
@@ -185,19 +172,16 @@ impl ApiClient {
                 .map(|c| needs_refresh(Some(&c)))
                 .unwrap_or(false)
     }
-
     /// v1.16.0 M1.1: the probe skips an unconfigured client (empty base = the
     /// pre-connect state) so the failure counter doesn't accumulate before the
     /// operator has entered a backend URL.
     pub fn is_configured(&self) -> bool {
         !self.base.is_empty()
     }
-
     /// v1.16.0 M2.1: identity-pillar accessor for the top bar.
     pub fn principal(&self) -> Option<&str> {
         self.principal.as_deref()
     }
-
     /// v1.16.5 M3.2: the request core — wraps one HTTP call with pre-emptive
     /// refresh + a single 401→refresh→retry. `f` builds the request (so the
     /// bearer can be re-attached after rotation). Returns the deserialized
@@ -230,7 +214,6 @@ impl ApiClient {
         }
         self.unpack(resp).await
     }
-
     fn access_token(&self) -> Option<String> {
         self.tokens
             .state
@@ -239,7 +222,6 @@ impl ApiClient {
             .access
             .clone()
     }
-
     fn refresh_token(&self) -> Option<String> {
         self.tokens
             .state
@@ -248,7 +230,6 @@ impl ApiClient {
             .refresh
             .clone()
     }
-
     /// v1.16.5 M3.2: `POST /auth/refresh` — rotates the chain, stores the new
     /// pair in the shared state. brain-server serializes concurrent rotations
     /// under `BEGIN IMMEDIATE`; the loser gets 403 `refresh_reuse_detected`.
@@ -285,7 +266,6 @@ impl ApiClient {
         state.refresh = Some(pair.refresh_token);
         Ok(())
     }
-
     async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ApiError> {
         let base = self.base.clone();
         let http = self.http.clone();
@@ -298,7 +278,6 @@ impl ApiClient {
         })
         .await
     }
-
     async fn post_json<T, B>(&self, path: &str, body: &B) -> Result<T, ApiError>
     where
         T: for<'de> Deserialize<'de>,
@@ -317,7 +296,6 @@ impl ApiClient {
         })
         .await
     }
-
     /// v1.17.7 M4: POST a raw text body (the `/ingest/memory` contract reads
     /// the body as a UTF-8 text block, not JSON).
     pub async fn post_raw(&self, path: &str, body: String) -> Result<serde_json::Value, ApiError> {
@@ -332,7 +310,6 @@ impl ApiClient {
         })
         .await
     }
-
     async fn post_empty<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ApiError> {
         let base = self.base.clone();
         let http = self.http.clone();
@@ -345,7 +322,6 @@ impl ApiClient {
         })
         .await
     }
-
     /// v1.17.8 M7.3: the console's raw GET — returns the response body JSON
     /// (the try-it history is rendered from this). 404s surface as errors like
     /// every other call, so a bad path shows red, not silence.
@@ -361,7 +337,6 @@ impl ApiClient {
         })
         .await
     }
-
     /// v1.20.8 M3: one bounded read of the `/events` SSE feed. Connects, drains
     /// the first chunk (the server's handshake + the alerts it broadcasts from
     /// its bounded ring to a new subscriber), then closes. The caller reconnects
@@ -395,7 +370,6 @@ impl ApiClient {
         }
         Ok(events)
     }
-
     /// v1.17.8 M7.3: the console's raw DELETE.
     pub async fn delete_raw(&self, path: &str) -> Result<serde_json::Value, ApiError> {
         let base = self.base.clone();
@@ -409,7 +383,6 @@ impl ApiClient {
         })
         .await
     }
-
     async fn unpack<T: for<'de> Deserialize<'de>>(
         &self,
         resp: reqwest::Response,
@@ -421,12 +394,10 @@ impl ApiClient {
         }
         resp.json::<T>().await.map_err(ApiError::Network)
     }
-
     /// GET /health — the connect-first onboarding probe + capacity story.
     pub async fn health(&self) -> Result<Health, ApiError> {
         self.get_json("/health").await
     }
-
     /// POST /recall — the decision-path viewer data. Empty for short queries
     /// (mirrors the backend's min_query_length gate). When `trace` is true the
     /// response carries a `trace_id` (v1.15.0 M2) replayable via `recall_trace`.
@@ -454,19 +425,16 @@ impl ApiClient {
         }
         self.post_json("/recall", &body).await
     }
-
     /// GET /recall/{trace_id}/trace — replay the recorded decision path (the
     /// deep-linkable artifact, v1.15.0 M2 / DESIGN §4.2). Returns the raw JSON
     /// the server stored (query, decision, domains, per-hit id/score/source).
     pub async fn recall_trace(&self, trace_id: i64) -> Result<serde_json::Value, ApiError> {
         self.get_json(&format!("/recall/{trace_id}/trace")).await
     }
-
     /// GET /proposals?status= — the review queue (bare Vec, not wrapped).
     pub async fn proposals(&self, status: &str) -> Result<Vec<Proposal>, ApiError> {
         self.get_json(&format!("/proposals?status={status}")).await
     }
-
     /// v1.20.23 "Calibrate": GET /proposals?status=&since=<unix>&limit=200 —
     /// a `created_at`-bounded decision page for the review stats. `limit` is
     /// fetched at the server cap so a window is not chalked to the 50 default.
@@ -480,7 +448,6 @@ impl ApiClient {
         ))
         .await
     }
-
     /// POST /proposals/{id}/approve[?supersedes=N]
     pub async fn approve_proposal(
         &self,
@@ -493,7 +460,6 @@ impl ApiClient {
         };
         self.post_empty(&path).await
     }
-
     /// POST /proposals/{id}/reject[?reason=…] — v1.16.0 M3: optional reason
     /// recorded in the audit log so a rejection isn't a silent drop.
     pub async fn reject_proposal(
@@ -507,13 +473,11 @@ impl ApiClient {
         };
         self.post_empty(&path).await
     }
-
     /// POST /ingest/proposal — seed a sample proposal (onboarding first-value).
     pub async fn propose(&self, content: &str) -> Result<ProposalResponse, ApiError> {
         let body = serde_json::json!({ "content": content });
         self.post_json("/ingest/proposal", &body).await
     }
-
     /// POST /proposals/{id}/edit — v1.20.14 "Steer" M1: rewrite a pending
     /// proposal's content; the server re-scores deterministically and stamps
     /// `edited_at`. Returns the re-scored proposal.
@@ -522,7 +486,6 @@ impl ApiClient {
         self.post_json(&format!("/proposals/{id}/edit"), &body)
             .await
     }
-
     /// GET /audit — the hash-chain browser. v1.16.0 M6/M7: `kind` is forwarded
     /// server-side (the backend filters the `kind` column — auth/ingest/recall/
     /// …); principal/since stay client-side (the wire contract for those params
@@ -530,30 +493,25 @@ impl ApiClient {
     pub async fn audit(&self) -> Result<AuditResponse, ApiError> {
         self.get_json("/audit").await
     }
-
     /// GET /audit?kind=… — filtered audit feed (M6 auth-failure feed uses
     /// `kind=auth`, then the client filters `status == "denied"`).
     pub async fn audit_kind(&self, kind: &str) -> Result<AuditResponse, ApiError> {
         self.get_json(&format!("/audit?kind={kind}")).await
     }
-
     /// v1.16.7 M4: GET /audit?limit=N&offset=N — one page of the hash-chain
     /// browser (newest-first). The audit panel accumulates pages via this.
     pub async fn audit_page(&self, offset: usize, limit: usize) -> Result<AuditResponse, ApiError> {
         self.get_json(&format!("/audit?limit={limit}&offset={offset}"))
             .await
     }
-
     /// GET /audit/verify — chain integrity.
     pub async fn audit_verify(&self) -> Result<ChainVerify, ApiError> {
         self.get_json("/audit/verify").await
     }
-
     /// GET /quarantine — injection suspects awaiting review.
     pub async fn quarantine(&self) -> Result<QuarantineResponse, ApiError> {
         self.get_json("/quarantine").await
     }
-
     /// POST /quarantine/{id}/release | /delete
     pub async fn quarantine_action(
         &self,
@@ -562,13 +520,11 @@ impl ApiClient {
     ) -> Result<QuarantineAction, ApiError> {
         self.post_empty(&format!("/quarantine/{id}/{action}")).await
     }
-
     /// POST /dsar — the locate→export→purge workflow.
     pub async fn dsar(&self, subject: &str, action: &str) -> Result<DsarResponse, ApiError> {
         let body = serde_json::json!({ "subject": subject, "action": action });
         self.post_json("/dsar", &body).await
     }
-
     /// v1.20.21 M2: POST /dsar with `dry_run: true` — preview the would-be
     /// deletion footprint (locate + bundle build) with no writes. Thin wrapper
     /// over the same `/dsar` path; the live builder above omits `dry_run`.
@@ -578,57 +534,47 @@ impl ApiClient {
         resp.footprint
             .ok_or_else(|| ApiError::Status(200, "no footprint in preview response".into()))
     }
-
     /// GET /dsar/{id}/certificate — re-fetch a deletion certificate + live
     /// chain check. Returns the raw JSON `{certificate, chain_verifies}` so
     /// `DsarCertificate::from_value` can pull the typed card fields up.
     pub async fn dsar_certificate(&self, id: i64) -> Result<serde_json::Value, ApiError> {
         self.get_json(&format!("/dsar/{id}/certificate")).await
     }
-
     /// v1.20.22 M2.1: GET /dsar — the DSAR ledger page. The Subjects-panel
     /// clock derives each open row's Art 17 deadline from `created_at`.
     pub async fn dsar_ledger(&self) -> Result<DsarLedger, ApiError> {
         self.get_json("/dsar").await
     }
-
     /// GET /stats — corpus counts for the Health/onboarding story.
     pub async fn stats(&self) -> Result<Stats, ApiError> {
         self.get_json("/stats").await
     }
-
     // --- v1.17.6 M2 — Overview status + alert resources ----------------------
 
     /// GET /snapshot/status — `VACUUM INTO` `.bak` snapshot integrity (Admin).
     pub async fn snapshot_status(&self) -> Result<SnapshotStatus, ApiError> {
         self.get_json("/snapshot/status").await
     }
-
     /// GET /retention — the effective per-kind retention policy + counts.
     pub async fn retention(&self) -> Result<RetentionStatus, ApiError> {
         self.get_json("/retention").await
     }
-
     /// GET /ump/capabilities — the UMP 1.0 negotiation handshake (public).
     pub async fn ump_capabilities(&self) -> Result<UmpCapabilities, ApiError> {
         self.get_json("/ump/capabilities").await
     }
-
     /// GET /decayed — chunks whose effective expiry has passed (bare Vec).
     pub async fn decayed(&self) -> Result<Vec<DecayedRow>, ApiError> {
         self.get_json("/decayed").await
     }
-
     /// POST /consolidate/propose — pure detection, zero mutation (no body).
     pub async fn consolidate_propose(&self) -> Result<ConsolidateProposal, ApiError> {
         self.post_empty("/consolidate/propose").await
     }
-
     /// GET /tombstones?limit=N — the deletion registry page.
     pub async fn tombstones(&self, limit: u32) -> Result<TombstonesResponse, ApiError> {
         self.get_json(&format!("/tombstones?limit={limit}")).await
     }
-
     // --- v1.17.7 M3 — Graph methods -----------------------------------------
 
     /// GET /graph/entity/{name} — browse one entity. Returns raw JSON so the
@@ -638,7 +584,6 @@ impl ApiClient {
         self.get_json(&format!("/graph/entity/{}", url_encode(name)))
             .await
     }
-
     /// GET /graph/traverse — bounded walk from a seed. `explain=true` is always
     /// set (the panel renders the `paths` chains); `kind` supports `causes:`
     /// prefix semantics, `at` is a bi-temporal date, `cross_domain` fans out.
@@ -667,7 +612,6 @@ impl ApiClient {
         }
         self.get_json(&q).await
     }
-
     // --- v1.17.7 M4 — Create methods ----------------------------------------
 
     /// POST /ingest — structured memory with entities/relations (v1.14/v1.0).
@@ -701,7 +645,6 @@ impl ApiClient {
         }
         self.post_json("/ingest", &body).await
     }
-
     /// POST /ingest/markdown — markdown paste (source-path linkage when given).
     pub async fn ingest_markdown(
         &self,
@@ -726,13 +669,11 @@ impl ApiClient {
         }
         self.post_json("/ingest/markdown", &body).await
     }
-
     /// POST /ingest/memory — a markdown-style block of `## [Title]` entries.
     /// The backend parses entries client-free (raw text body, not JSON).
     pub async fn ingest_memory(&self, content: &str) -> Result<serde_json::Value, ApiError> {
         self.post_raw("/ingest/memory", content.to_string()).await
     }
-
     /// POST /procedure — an ordered-step procedure in one tx.
     pub async fn procedure_create(
         &self,
@@ -752,18 +693,15 @@ impl ApiClient {
         }
         self.post_json("/procedure", &body).await
     }
-
     /// GET /procedure/{id}/steps — the ordered steps view.
     pub async fn procedure_steps(&self, id: i64) -> Result<ProcedureStepsResponse, ApiError> {
         self.get_json(&format!("/procedure/{id}/steps")).await
     }
-
     /// POST /classify — deterministic keyword categorization.
     pub async fn classify(&self, text: &str) -> Result<ClassifyResponse, ApiError> {
         let body = serde_json::json!({ "text": text });
         self.post_json("/classify", &body).await
     }
-
     /// POST /decision/{id}/evaluate — the fired branch for numeric variables.
     pub async fn decision_evaluate(
         &self,
@@ -774,7 +712,6 @@ impl ApiClient {
         self.post_json(&format!("/decision/{id}/evaluate"), &body)
             .await
     }
-
     /// POST /consolidate/apply — record one or more operator-chosen links
     /// (`kind = "supersedes"` expires the older chunk at retrieval time).
     pub async fn consolidate_apply(
@@ -784,13 +721,11 @@ impl ApiClient {
         let body = serde_json::json!({ "links": links });
         self.post_json("/consolidate/apply", &body).await
     }
-
     /// POST /consolidate/undo — reverse prior supersession resolutions.
     pub async fn consolidate_undo(&self, ids: &[i64]) -> Result<UndoResponse, ApiError> {
         let body = serde_json::json!({ "old_chunks": ids });
         self.post_json("/consolidate/undo", &body).await
     }
-
     // --- v1.17.8 M5 — Rights/Data methods ------------------------------------
 
     /// POST /purge — hard erasure of chunks by id or owner (Admin). `ids XOR
@@ -805,7 +740,6 @@ impl ApiClient {
         }
         self.post_json("/purge", &body).await
     }
-
     /// GET /export?format= — the portable GDPR/UMP export body (Admin for
     /// `format != json`). `json` returns the full `{knowledge, entities,
     /// relationships, proposals}` object the panel can hand to a downloader.
@@ -813,7 +747,6 @@ impl ApiClient {
         self.get_json(&format!("/export?format={}", url_encode(format)))
             .await
     }
-
     /// POST /retention — set an override (`{kind, days}`) or a full
     /// `{policy: {kind: days}}` map (Admin). Returns `{updated, set}`.
     pub async fn retention_set(
@@ -824,13 +757,11 @@ impl ApiClient {
         let body = serde_json::json!({ "kind": kind, "days": days });
         self.post_json("/retention", &body).await
     }
-
     /// POST /retention — clear an override back to the code default.
     pub async fn retention_clear(&self, kind: &str) -> Result<RetentionSetResult, ApiError> {
         let body = serde_json::json!({ "kind": kind, "days": serde_json::Value::Null });
         self.post_json("/retention", &body).await
     }
-
     // --- v1.17.8 M6 — UMP ops methods ----------------------------------------
 
     /// GET /ump/memory/{id} — one UMP record by numeric id or `urn:ump:…`.
@@ -838,12 +769,10 @@ impl ApiClient {
         self.get_json(&format!("/ump/memory/{}", url_encode(id)))
             .await
     }
-
     /// POST /ump/remember — lower a partial record (created|merged|rejected).
     pub async fn ump_remember(&self, record: &serde_json::Value) -> Result<UmpWrite, ApiError> {
         self.post_json("/ump/remember", record).await
     }
-
     /// POST /ump/revise — patch an existing record → new revision + supersede.
     pub async fn ump_revise(
         &self,
@@ -853,7 +782,6 @@ impl ApiClient {
         let body = serde_json::json!({ "id": id, "patch": patch });
         self.post_json("/ump/revise", &body).await
     }
-
     /// POST /ump/forget — soft (tombstoned) or hard (erased) deletion.
     pub async fn ump_forget(
         &self,
@@ -867,7 +795,6 @@ impl ApiClient {
         }
         self.post_json("/ump/forget", &body).await
     }
-
     /// POST /ump/feedback — followed|overridden|ignored|contradicted.
     pub async fn ump_feedback(
         &self,
@@ -881,7 +808,6 @@ impl ApiClient {
         }
         self.post_json("/ump/feedback", &body).await
     }
-
     /// POST /ump/recall — UMP §3.2 recall with the five signals per result.
     pub async fn ump_recall(
         &self,
@@ -895,7 +821,6 @@ impl ApiClient {
         }
         self.post_json("/ump/recall", &body).await
     }
-
     /// POST /ump/audit — the reference audit facility (Admin, tenant-scoped).
     pub async fn ump_audit(&self, kind: Option<&str>, limit: usize) -> Result<UmpAudit, ApiError> {
         let mut body = serde_json::json!({ "limit": limit });
@@ -904,35 +829,57 @@ impl ApiClient {
         }
         self.post_json("/ump/audit", &body).await
     }
-
     /// GET /ump/audit/verify — authoritative full-chain verification.
     pub async fn ump_audit_verify(&self) -> Result<UmpOk, ApiError> {
         self.get_json("/ump/audit/verify").await
     }
-
     // --- v1.17.8 M7 — System methods -----------------------------------------
 
     /// GET /art30 — the Art 30 records-of-processing register (Admin).
     pub async fn art30(&self) -> Result<serde_json::Value, ApiError> {
         self.get_json("/art30").await
     }
-
     /// GET /domains — the domain registry (name + counts).
     pub async fn domains(&self) -> Result<DomainsResponse, ApiError> {
         self.get_json("/domains").await
     }
-
+    /// v1.21.0 "Profiles": GET /profiles — the wizard's pick list (the 12
+    /// seeded presets + operator clones), name-ordered.
+    pub async fn profiles(&self) -> Result<Vec<ProfileView>, ApiError> {
+        let v: serde_json::Value = self.get_json("/profiles").await?;
+        Ok(v["profiles"]
+            .as_array()
+            .map(|a| a.iter().map(ProfileView::from_value).collect())
+            .unwrap_or_default())
+    }
+    /// v1.21.0: GET /domains/{domain}/profile — the binding + effective knobs
+    /// (Health panel + wizard eligibility).
+    pub async fn domain_profile(&self, domain: &str) -> Result<DomainProfile, ApiError> {
+        let v: serde_json::Value = self.get_json(&format!("/domains/{domain}/profile")).await?;
+        Ok(DomainProfile::from_value(&v))
+    }
+    /// v1.21.0: POST /domains/{domain}/profile — bind (`Some`) or unbind
+    /// (`None`). Takes effect at the next request (defaults, not a migration).
+    pub async fn bind_profile(
+        &self,
+        domain: &str,
+        profile: Option<&str>,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.post_json(
+            &format!("/domains/{domain}/profile"),
+            &serde_json::json!({ "profile": profile }),
+        )
+        .await
+    }
     /// GET /connectors — the registered connector ledger.
     pub async fn connectors(&self) -> Result<ConnectorsResponse, ApiError> {
         self.get_json("/connectors").await
     }
-
     /// POST /reindex — re-embed every chunk (Admin). Returns `{status,
     /// reembedded, skipped}`.
     pub async fn reindex(&self) -> Result<ReindexResult, ApiError> {
         self.post_empty("/reindex").await
     }
-
     /// POST /sources/reconcile — retire sources whose URI is no longer live.
     pub async fn sources_reconcile(
         &self,
@@ -942,7 +889,6 @@ impl ApiClient {
         let body = serde_json::json!({ "kind": kind, "live_uris": live_uris });
         self.post_json("/sources/reconcile", &body).await
     }
-
     /// DELETE /sources/{id} — retire one source + sweep its chunks.
     pub async fn delete_source(&self, id: i64) -> Result<serde_json::Value, ApiError> {
         let base = self.base.clone();
@@ -957,7 +903,6 @@ impl ApiClient {
         .await
     }
 }
-
 // --- v1.16.5 "Secure" helpers ------------------------------------------------
 
 /// v1.16.5 M1: decoded JWT claims the client reads for display + expiry
@@ -974,7 +919,6 @@ pub struct TokenClaims {
     #[serde(default)]
     pub team: Option<String>,
 }
-
 /// v1.16.5 M3: the `/auth/refresh` response pair. Mirrors openapi.yaml's
 /// `TokenPair`; `token_type`/`expires_in` are read but unused by the client.
 #[derive(Debug, Deserialize)]
@@ -983,7 +927,6 @@ struct TokenPair {
     access_token: String,
     refresh_token: String,
 }
-
 /// v1.16.5 M1.2: decode the JWT payload (middle segment) WITHOUT signature
 /// verification. Ponytail: the client does NOT verify the JWT signature —
 /// brain-server verifies on receipt. A forged JWT would be rejected by
@@ -998,14 +941,12 @@ pub fn decode_claims(token: &str) -> Option<TokenClaims> {
     let payload = base64url_decode(parts[1])?;
     serde_json::from_slice(&payload).ok()
 }
-
 /// v1.16.5 M1.2: is this a JWT-shaped token (3 dot-separated segments)?
 /// Used to distinguish an opaque loopback token (no identity) from a JWT that
 /// failed payload decode (still shown a neutral identity label).
 fn is_jwt_shaped(token: Option<&str>) -> bool {
     token.map(|t| t.split('.').count() == 3).unwrap_or(false)
 }
-
 /// v1.16.5 M2: derive the identity-pillar principal from an access token.
 /// `Some(sub)` when the token is a decodable JWT with a `sub`; a neutral
 /// label for a JWT-shaped token without one; `None` for an opaque token
@@ -1017,7 +958,6 @@ fn derive_principal(token: Option<&str>) -> Option<String> {
         None => None,
     }
 }
-
 /// v1.16.5 M1.2: base64url-decode (RFC 4648 §5, the JWT alphabet — `-`/`_`
 /// instead of `+`/`/`, padding optional). Ponytail: no base64 dep — the few
 /// lines beat a crate for one decode path. Returns `None` on invalid chars.
@@ -1055,7 +995,6 @@ fn base64url_decode(s: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
-
 /// v1.16.5 M1.2: base64url-encode (RFC 4648 §5, the JWT alphabet — `-`/`_`,
 /// unpadded). Test-only mirror of the decode path (production never mints
 /// tokens, so encode exists only to build round-trip fixtures).
@@ -1078,14 +1017,12 @@ fn base64url_encode(bytes: &[u8]) -> String {
     }
     out
 }
-
 /// v1.16.5 M5.1: current unix time in seconds (the `exp` claim's unit).
 /// v1.20.15 "Clock": delegates to the shared core (one implementation, no
 /// per-module copies).
 fn now_unix() -> i64 {
     crate::time_budget::now_unix()
 }
-
 /// v1.16.5 M5.1: pre-emptive expiry check, extracted pure for tests.
 /// `exp` within `REFRESH_AHEAD_SECS` of now → refresh needed. `None` exp
 /// (opaque token) → never.
@@ -1095,7 +1032,6 @@ fn needs_refresh(claims: Option<&TokenClaims>) -> bool {
         None => false,
     }
 }
-
 /// v1.16.0 M3: percent-encode a query value for `?reason=…`. Ponytail: the
 /// backend reads `reason` as a flat string; we encode the few reserved chars
 /// that would break the query (`&`, `=`, `+`, `#`, ` `, `?`) rather than pull
@@ -1112,7 +1048,6 @@ fn url_encode(s: &str) -> String {
     }
     out
 }
-
 // --- Wire types (mirror openapi.yaml) ----------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1124,7 +1059,6 @@ pub struct Health {
     #[serde(default)]
     pub hardening: Option<Hardening>,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Capacity {
@@ -1134,7 +1068,6 @@ pub struct Capacity {
     pub max_rss_mib: u64,
     pub status: String,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Hardening {
@@ -1142,7 +1075,6 @@ pub struct Hardening {
     pub panics_caught: u64,
     pub memory_leaks_detected: u64,
 }
-
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct RecallResponse {
     #[serde(default)]
@@ -1155,7 +1087,6 @@ pub struct RecallResponse {
     #[serde(default)]
     pub trace_id: Option<i64>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Hit {
     pub id: i64,
@@ -1192,7 +1123,6 @@ pub struct Hit {
     #[serde(default)]
     pub flagged: Option<bool>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HitProvenance {
@@ -1207,7 +1137,6 @@ pub struct HitProvenance {
     #[serde(default)]
     pub rerank_score: Option<f64>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Proposal {
@@ -1253,7 +1182,6 @@ pub struct Proposal {
     #[serde(default)]
     pub decided_at: Option<i64>,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ApproveResult {
@@ -1263,14 +1191,12 @@ pub struct ApproveResult {
     #[serde(default)]
     pub superseded: Option<i64>,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RejectResult {
     pub proposal_id: i64,
     pub status: String,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProposalResponse {
@@ -1281,12 +1207,10 @@ pub struct ProposalResponse {
     pub conflict_with: Option<i64>,
     pub salience: f32,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct AuditResponse {
     pub events: Vec<AuditRow>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AuditRow {
     pub id: i64,
@@ -1301,19 +1225,16 @@ pub struct AuditRow {
     #[serde(default)]
     pub tenant_id: String,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct ChainVerify {
     pub ok: bool,
 }
-
 #[derive(Debug, Deserialize)]
 pub struct QuarantineResponse {
     pub quarantined: Vec<QuarantineRow>,
     pub count: u64,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuarantineRow {
     pub id: i64,
@@ -1326,13 +1247,11 @@ pub struct QuarantineRow {
     #[serde(default)]
     pub created_at: Option<String>,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct QuarantineAction {
     pub ok: bool,
 }
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DsarResponse {
@@ -1345,7 +1264,6 @@ pub struct DsarResponse {
     #[serde(default)]
     pub footprint: Option<Footprint>,
 }
-
 /// v1.20.22 M1.2: `GET /dsar` — the bounded ledger page. The client clock
 /// derives each open row's Art 17 deadline from `created_at` (server-window
 /// stamp; there's no client mirror of `BRAIN_DSAR_WINDOW_DAYS`).
@@ -1357,7 +1275,6 @@ pub struct DsarLedger {
     #[serde(default)]
     pub total: i64,
 }
-
 /// v1.20.22 M1.2: one DSAR request ledger row. `#[serde(default)]` timestamps
 /// make a row with a missing `completed_at` (an open request) parse cleanly —
 /// the countdown is `created_at`-keyed.
@@ -1381,7 +1298,6 @@ pub struct DsarLedgerRow {
     #[serde(default)]
     pub completed_at: Option<i64>,
 }
-
 /// v1.20.21: the would-be DSAR deletion footprint a dry-run returns — what a
 /// live purge would locate + export + delete, without executing any write.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1394,7 +1310,6 @@ pub struct Footprint {
     pub dsar_rows: usize,
     pub dry_run: bool,
 }
-
 /// v1.20.21 M2: pure core — pull the `Footprint` out of a `/dsar` dry-run
 /// response. `None` on shape drift (no `footprint` object). Mirrors the
 /// `parse_purge_result`/`parse_ump_recall` decode pattern.
@@ -1403,14 +1318,12 @@ pub fn parse_footprint(value: &serde_json::Value) -> Option<Footprint> {
         .get("footprint")
         .and_then(|f| serde_json::from_value(f.clone()).ok())
 }
-
 /// v1.20.21 M2: the dry-run request body builder. Pure so a wire test pins
 /// that `dry_run: true` rides the `/dsar` body (the panic-risk of a preview
 /// accidentally purging is a serialization detail, so it's worth a pin).
 pub fn dsar_preview_body(subject: &str) -> serde_json::Value {
     serde_json::json!({ "subject": subject, "action": "both", "dry_run": true })
 }
-
 /// v1.16.0 M5: the deletion-certificate card fields, pulled up from the
 /// raw `{certificate, chain_verifies}` envelope by `from_value`. Not derived
 /// Deserialize directly: the typed fields live inside the nested `certificate`
@@ -1428,7 +1341,6 @@ pub struct DsarCertificate {
     pub certified_at: String,
     pub chain_head: String,
 }
-
 impl DsarCertificate {
     /// v1.16.0 M5: the typed fields live inside `certificate` on the wire; pull
     /// them up so the card reads typed values. Unknown fields stay in the raw
@@ -1460,7 +1372,6 @@ impl DsarCertificate {
         }
     }
 }
-
 #[derive(Debug, Deserialize)]
 pub struct Stats {
     pub count: u64,
@@ -1470,7 +1381,6 @@ pub struct Stats {
     pub model: String,
     pub version: String,
 }
-
 // --- v1.17.6 M2 — Overview wire types (mirror the confirmed handler shapes) --
 
 /// `GET /snapshot/status` (govern.rs) — every `VACUUM INTO` `.bak` in the DB dir.
@@ -1483,7 +1393,6 @@ pub struct SnapshotStatus {
     #[serde(default)]
     pub snapshots: Vec<SnapshotRow>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SnapshotRow {
@@ -1495,7 +1404,6 @@ pub struct SnapshotRow {
     pub audit_chain_ok: bool,
     pub ok: bool,
 }
-
 /// `GET /retention` (govern.rs) — effective policy + per-kind counts.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1508,7 +1416,6 @@ pub struct RetentionStatus {
     #[serde(default)]
     pub projection: String,
 }
-
 /// `GET /ump/capabilities` (ump_ops.rs) — the §3.1 negotiation handshake.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UmpCapabilities {
@@ -1525,13 +1432,11 @@ pub struct UmpCapabilities {
     pub writable: bool,
     pub audit: bool,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct UmpServer {
     pub name: String,
     pub version: String,
 }
-
 /// `GET /decayed` (gate.rs) — a bare Vec of expired chunks.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1548,7 +1453,6 @@ pub struct DecayedRow {
     #[serde(default)]
     pub reason: String,
 }
-
 /// `POST /consolidate/propose` (consolidate.rs) — detection counts for the
 /// alert list. Nested views (`conflicts`/`stale_sources`/`near_duplicates`)
 /// are only counted here, so they stay raw `Value`s; the typed pair/id shapes
@@ -1567,14 +1471,12 @@ pub struct ConsolidateProposal {
     #[serde(default)]
     pub near_duplicates: Vec<serde_json::Value>,
 }
-
 /// `GET /tombstones?limit=` (observe.rs) — the deletion-registry page.
 #[derive(Debug, Deserialize)]
 pub struct TombstonesResponse {
     #[serde(default)]
     pub tombstones: Vec<TombstoneRow>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TombstoneRow {
@@ -1588,7 +1490,6 @@ pub struct TombstoneRow {
     #[serde(default)]
     pub origin_id: Option<i64>,
 }
-
 // --- v1.17.7 M3/M4 — Graph + Create wire types (pinned to the real server) ---
 
 /// `GET /graph/entity/{name}` — one entity + its typed relation rows. The
@@ -1602,7 +1503,6 @@ pub struct EntityView {
     #[serde(default)]
     pub relations: Vec<EntityRel>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EntityRel {
     #[serde(rename = "to_entity")]
@@ -1611,7 +1511,6 @@ pub struct EntityRel {
     #[serde(rename = "direction")]
     pub dir: String,
 }
-
 /// `GET /graph/traverse` — the flat `traversal` rows (back-compat) + the
 /// structured `paths` chains (v1.7.0 "Explain"). Field names pinned to the
 /// actual server output (`from_entity` is the seed name; `path` is `id->id`,
@@ -1626,7 +1525,6 @@ pub struct TraverseResponse {
     #[serde(default)]
     pub paths: Vec<PathChain>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TraversalRow {
@@ -1641,7 +1539,6 @@ pub struct TraversalRow {
     #[serde(default)]
     pub domain: Option<String>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PathChain {
     #[serde(default)]
@@ -1651,14 +1548,12 @@ pub struct PathChain {
     #[serde(default)]
     pub domain: Option<String>,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Hop {
     pub from: HopNode,
     pub relation: String,
     pub to: HopNode,
 }
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HopNode {
     #[serde(default)]
@@ -1666,7 +1561,6 @@ pub struct HopNode {
     #[serde(default)]
     pub name: String,
 }
-
 /// `POST /procedure` — id + step ids (the steps are their own chunks).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1676,7 +1570,6 @@ pub struct ProcedureResponse {
     #[serde(default)]
     pub step_ids: Vec<i64>,
 }
-
 /// `GET /procedure/{id}/steps` — the ordered step view.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1689,7 +1582,6 @@ pub struct ProcedureStepsResponse {
     #[serde(default)]
     pub steps: Vec<StepView>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct StepView {
@@ -1701,7 +1593,6 @@ pub struct StepView {
     #[serde(default)]
     pub memory_kind: String,
 }
-
 /// `POST /classify` — the winning category + its matched keywords + taxonomy.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1710,7 +1601,6 @@ pub struct ClassifyResponse {
     #[serde(default)]
     pub categories: Vec<String>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CategoryResult {
@@ -1719,7 +1609,6 @@ pub struct CategoryResult {
     #[serde(default)]
     pub matched_keywords: Vec<String>,
 }
-
 /// `POST /decision/{id}/evaluate` — the fired branch (or the default).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1731,7 +1620,6 @@ pub struct DecisionOutcome {
     pub citation: Option<i64>,
     pub used_default: bool,
 }
-
 /// `POST /consolidate/apply` — how many links were recorded vs rejected.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1740,7 +1628,6 @@ pub struct ApplyResponse {
     #[serde(default)]
     pub rejected: Vec<String>,
 }
-
 /// `POST /consolidate/undo` — how many prior supersessions were reversed.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1749,7 +1636,6 @@ pub struct UndoResponse {
     #[serde(default)]
     pub rejected: Vec<String>,
 }
-
 // --- v1.17.8 M5/M6/M7 — Rights, UMP, System wire types ------------------------
 
 /// `POST /purge` (gate.rs) — how many chunks were erased + the tombstone reason.
@@ -1759,7 +1645,6 @@ pub struct PurgeResult {
     #[serde(default)]
     pub reason: String,
 }
-
 /// `POST /retention` (govern.rs) — how many overrides were written.
 #[derive(Debug, Deserialize)]
 pub struct RetentionSetResult {
@@ -1767,7 +1652,6 @@ pub struct RetentionSetResult {
     #[serde(default)]
     pub set: Vec<serde_json::Value>,
 }
-
 /// `POST /ump/remember` (ump_ops.rs) — the content-addressed id + the §3.3
 /// result word (`created | merged | rejected`).
 #[derive(Debug, Deserialize)]
@@ -1775,7 +1659,6 @@ pub struct UmpWrite {
     pub id: String,
     pub result: String,
 }
-
 /// `POST /ump/revise` (ump_ops.rs) — the new revision id + the old id it
 /// superseded.
 #[derive(Debug, Deserialize)]
@@ -1784,26 +1667,22 @@ pub struct UmpRevise {
     #[serde(default)]
     pub supersedes: Vec<String>,
 }
-
 /// `POST /ump/forget` (ump_ops.rs) — `erased` (hard) vs `tombstoned` (soft).
 #[derive(Debug, Deserialize)]
 pub struct UmpForget {
     pub result: String,
 }
-
 /// `POST /ump/feedback` / `GET /ump/audit/verify` — the `{ok: true}` contract.
 #[derive(Debug, Deserialize)]
 pub struct UmpOk {
     pub ok: bool,
 }
-
 /// `POST /ump/recall` (ump_ops.rs) — §3.2 results: record + five signals.
 #[derive(Debug, Deserialize)]
 pub struct UmpRecall {
     #[serde(default)]
     pub results: Vec<UmpRecallResult>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct UmpRecallResult {
     pub record: serde_json::Value,
@@ -1812,7 +1691,6 @@ pub struct UmpRecallResult {
     #[serde(default)]
     pub score: f32,
 }
-
 /// `POST /ump/audit` (ump_ops.rs) — `{rows, count}` (rows stay raw Values;
 /// the exact `AuditRow` shape is already pinned by the `/audit` client type,
 /// so the UMP panel just renders `rows.len()` + the JSON).
@@ -1822,14 +1700,100 @@ pub struct UmpAudit {
     pub rows: Vec<serde_json::Value>,
     pub count: usize,
 }
-
 /// `GET /domains` (domains.rs) — the registry.
 #[derive(Debug, Deserialize)]
 pub struct DomainsResponse {
     #[serde(default)]
     pub domains: Vec<DomainInfo>,
 }
-
+/// v1.21.0 "Profiles": a preset bundle as the client renders it. Every knob
+/// optional — absent = "this profile doesn't touch that knob".
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProfileView {
+    pub name: String,
+    pub description: Option<String>,
+    pub default_access_scope: Option<String>,
+    pub pii_mode: Option<String>,
+    pub retention: Option<std::collections::BTreeMap<String, Option<i64>>>,
+    pub audit_level: Option<String>,
+    pub kinds: Option<Vec<String>>,
+    pub connectors_allowed: Option<Vec<String>>,
+    pub legal_hold_default: Option<bool>,
+}
+impl ProfileView {
+    /// The one-line retention summary the wizard + Health panel render
+    /// ("episodic=90d, fact=no-decay"; empty policy = "no decay").
+    pub fn retention_label(&self) -> Option<String> {
+        let map = self.retention.as_ref()?;
+        if map.is_empty() {
+            return Some("no decay".to_string());
+        }
+        let parts: Vec<String> = map
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{k}={}",
+                    v.map(|d| format!("{d}d"))
+                        .unwrap_or_else(|| "no-decay".into())
+                )
+            })
+            .collect();
+        Some(parts.join(", "))
+    }
+    pub fn from_value(v: &serde_json::Value) -> Self {
+        let g = |k: &str| v[k].as_str().map(|s| s.to_string());
+        Self {
+            name: g("name").unwrap_or_default(),
+            description: g("description"),
+            default_access_scope: g("default_access_scope"),
+            pii_mode: g("pii_mode"),
+            retention: v["retention"]
+                .as_object()
+                .map(|o| o.iter().map(|(k, val)| (k.clone(), val.as_i64())).collect()),
+            audit_level: g("audit_level"),
+            kinds: v["kinds"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|k| k.as_str().map(String::from))
+                    .collect()
+            }),
+            connectors_allowed: v["connectors_allowed"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|k| k.as_str().map(String::from))
+                    .collect()
+            }),
+            legal_hold_default: v["legal_hold_default"].as_bool(),
+        }
+    }
+}
+/// v1.21.0: the domain binding + effective knobs (Health panel + wizard
+/// eligibility). `profile` is null when unbound (server defaults).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DomainProfile {
+    pub domain: String,
+    pub profile: Option<String>,
+    pub knobs: Option<ProfileView>,
+    /// What recall will apply for the domain (null = the server-wide policy
+    /// governs — the profile has no retention block).
+    pub effective_retention: Option<std::collections::BTreeMap<String, i64>>,
+}
+impl DomainProfile {
+    pub fn from_value(v: &serde_json::Value) -> Self {
+        Self {
+            domain: v["domain"].as_str().unwrap_or_default().to_string(),
+            profile: v["profile"].as_str().map(|s| s.to_string()),
+            knobs: if v["knobs"].is_object() {
+                Some(ProfileView::from_value(&v["knobs"]))
+            } else {
+                None
+            },
+            effective_retention: v["effective"]["retention_days"].as_object().map(|o| {
+                o.iter()
+                    .filter_map(|(k, val)| val.as_i64().map(|d| (k.clone(), d)))
+                    .collect()
+            }),
+        }
+    }
+}
 #[derive(Debug, Clone, Deserialize)]
 pub struct DomainInfo {
     pub name: String,
@@ -1839,14 +1803,12 @@ pub struct DomainInfo {
     #[serde(default)]
     pub multi_db: bool,
 }
-
 /// `GET /connectors` (connectors.rs) — the ledger rows.
 #[derive(Debug, Deserialize)]
 pub struct ConnectorsResponse {
     #[serde(default)]
     pub connectors: Vec<ConnectorRow>,
 }
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConnectorRow {
@@ -1859,7 +1821,6 @@ pub struct ConnectorRow {
     #[serde(default)]
     pub last_error: Option<String>,
 }
-
 /// `POST /reindex` (main.rs) — re-embed counts.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReindexResult {
@@ -1869,7 +1830,6 @@ pub struct ReindexResult {
     #[serde(default)]
     pub skipped: usize,
 }
-
 /// `POST /sources/reconcile` (sources.rs) — retired sources/chunks + orphans.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReconcileResult {
@@ -1881,7 +1841,6 @@ pub struct ReconcileResult {
     #[serde(default)]
     pub orphan_uris: Vec<String>,
 }
-
 // --- v1.17.7 M3/M4 — pure cores (wire decode + display, testable) ------------
 
 /// v1.17.7 M3.4: decode the entity response. `None` for the backend's 200
@@ -1892,13 +1851,11 @@ pub fn parse_entity(json: &serde_json::Value) -> Option<EntityView> {
     }
     serde_json::from_value(json.clone()).ok()
 }
-
 /// v1.17.7 M3.4: decode the traverse response (pins the field names the UI
 /// reads). `None` on any shape drift — the panel then shows the error.
 pub fn parse_traverse(json: serde_json::Value) -> Option<TraverseResponse> {
     serde_json::from_value(json).ok()
 }
-
 /// v1.17.7 M3.4: render a path chain as faithful `A --rel--> B --rel--> C`
 /// text. Intermediate node names are best-effort (the server names only the
 /// seed + leaf; an unnamed node falls back to its id) — mirror the v1.7.0
@@ -1929,7 +1886,6 @@ pub fn render_path(p: &PathChain) -> String {
     }
     out
 }
-
 /// v1.17.7 M3.3: the `kind` filter input validator. Accepts relation-type
 /// identifiers, optionally with a `causes:`-style prefix (a trailing `:`
 /// selects the whole subgraph). Rejects anything that isn't a safe token.
@@ -1943,7 +1899,6 @@ pub fn kind_is_valid(kind: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
 }
-
 /// v1.17.7 M4.1: reduce the three ingest response shapes to one honest outcome
 /// (created / duplicate / error — the review panel's row pattern, no silent
 /// failures). Reads the union of the contract keys each endpoint emits:
@@ -1955,7 +1910,6 @@ pub enum IngestOutcome {
     Duplicate,
     Error(String),
 }
-
 pub fn parse_ingest_result(json: &serde_json::Value) -> IngestOutcome {
     let status = json.get("status").and_then(|s| s.as_str()).unwrap_or("");
     match status {
@@ -1981,7 +1935,6 @@ pub fn parse_ingest_result(json: &serde_json::Value) -> IngestOutcome {
         }
     }
 }
-
 // --- v1.17.8 M5/M6/M7 — pure cores (Rights, UMP, System wire decode) ----------
 
 /// v1.17.8 M5: reduce the `POST /purge` response to the tombstone count + the
@@ -1989,14 +1942,12 @@ pub fn parse_ingest_result(json: &serde_json::Value) -> IngestOutcome {
 pub fn parse_purge_result(json: &serde_json::Value) -> Option<PurgeResult> {
     serde_json::from_value(json.clone()).ok()
 }
-
 /// v1.17.8 M5: render the retention policy `BTreeMap` as a sortable Vec of
 /// (kind, days) so the editor iterates deterministically (BTreeMap already
 /// sorts by key; this is the display shape). Empty map → empty Vec.
 pub fn retention_to_edits(policy: &std::collections::BTreeMap<String, i64>) -> Vec<(String, i64)> {
     policy.iter().map(|(k, v)| (k.clone(), *v)).collect()
 }
-
 /// v1.17.8 M6: decode one UMP record — the panel reads `{record: …}` (the
 /// `/ump/memory/{id}` shape) OR a bare record (the `/ump/recall` result
 /// record). Returns the record object or `None` on a non-object shape.
@@ -2008,13 +1959,11 @@ pub fn parse_ump_record(json: &serde_json::Value) -> Option<serde_json::Value> {
         None
     }
 }
-
 /// v1.17.8 M6: decode the `POST /ump/recall` §3.2 results envelope into the
 /// typed results. `None` on shape drift.
 pub fn parse_ump_recall(json: &serde_json::Value) -> Option<UmpRecall> {
     serde_json::from_value(json.clone()).ok()
 }
-
 /// v1.17.8 M6: the integrity/conformance badge — L3 when a key is configured,
 /// L2 otherwise, "unknown" on any other value. Returns the badge token class +
 /// the label, both i18n-free (the panel renders them; `t()` wraps the label).
@@ -2026,7 +1975,6 @@ pub fn ump_integrity_badge(conformance: &str) -> (&'static str, String) {
     };
     (class, format!("UMP 1.0 · {conformance}"))
 }
-
 /// v1.17.8 M7.3: render a request as the wire line the console displays/sends —
 /// `METHOD /path` + the (optional) JSON body pretty-printed. The token is NEVER
 /// embedded; the caller attaches it as the bearer separately. Returns the line
@@ -2043,7 +1991,6 @@ pub fn serialize_request(method: &str, path: &str, body: &str) -> String {
         format!("{method} {path}\n{pretty}")
     }
 }
-
 /// v1.17.8 M7.3: strip PII-shaped values from a request body before it lands in
 /// the persisted console history (localStorage is non-secret). Replaces values
 /// under obvious secret-ish keys with `"[redacted]"`; the shape survives so the
@@ -2077,7 +2024,6 @@ pub fn redact_for_history(body: &str) -> String {
     }
     serde_json::to_string(&v).unwrap_or_default()
 }
-
 /// v1.18.1 M1: a console history line + whether it is safe to persist.
 /// `secret` lines are held in-memory only — never written to localStorage.
 #[derive(Clone)]
@@ -2085,7 +2031,6 @@ pub struct StoredLine {
     pub text: String,
     pub secret: bool,
 }
-
 /// v1.18.1 M1: a line is `secret` when its request body was non-JSON.
 /// `redact_for_history` returns "" for non-JSON (the body is dropped from the
 /// line) but an opaque body is token-like — we can't prove the request is
@@ -2094,7 +2039,6 @@ pub fn line_is_secret(body: &str) -> bool {
     let b = body.trim();
     !b.is_empty() && serde_json::from_str::<serde_json::Value>(b).is_err()
 }
-
 /// v1.18.1 M1: the console-history subset safe to persist. Drops `secret` and
 /// empty lines, keeps the last `cap` (newest), returns them in display order.
 /// The `redact_for_history` output was already applied before the line existed;
@@ -2108,7 +2052,6 @@ pub fn persist_history(entries: Vec<StoredLine>, cap: usize) -> Vec<String> {
     let n = clean.len();
     clean.into_iter().skip(n.saturating_sub(cap)).collect()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2128,7 +2071,6 @@ mod tests {
         assert!(parse_alert_event(r#"{"kind":"pending"}"#).is_none()); // no seq
         assert!(parse_alert_event(r#"{"seq":3}"#).is_none()); // no kind
     }
-
     /// Wire-contract pin: representative JSON for every shape the panels read,
     /// deserialized through the same types the client uses. Mirrors openapi.yaml
     /// and the backend handlers (source of truth). Fails if a rename or field
@@ -2149,14 +2091,12 @@ mod tests {
         assert_eq!(c.status, "ok");
         assert!(h.hardening.is_none());
     }
-
     #[test]
     fn health_capacity_optional() {
         // capacity is omitted when the pool was momentarily exhausted
         let h: Health = serde_json::from_str(r#"{"status":"ok","version":"1.15.0"}"#).unwrap();
         assert!(h.capacity.is_none());
     }
-
     #[test]
     fn recall_parses_hits_and_decision() {
         let r: RecallResponse = serde_json::from_str(
@@ -2187,7 +2127,6 @@ mod tests {
         assert_eq!(h.relevance.as_deref(), Some("high"));
         assert_eq!(h.decayed, Some(false));
     }
-
     /// v1.16.0 M4: a server response missing the v1.14 fields still parses
     /// (every new field is `#[serde(default)]` → backward-safe).
     #[test]
@@ -2197,7 +2136,6 @@ mod tests {
         assert!(h.assertion_kind.is_none());
         assert!(h.relevance.is_none());
     }
-
     #[test]
     fn proposals_is_a_bare_vec() {
         let v: Vec<Proposal> = serde_json::from_str(
@@ -2213,7 +2151,6 @@ mod tests {
         assert_eq!(v[0].novelty, 0.8);
         assert!(v[0].conflict_with.is_none());
     }
-
     #[test]
     fn audit_and_quarantine_parse() {
         let a: AuditResponse = serde_json::from_str(
@@ -2231,7 +2168,6 @@ mod tests {
         assert_eq!(q.count, 1);
         assert_eq!(q.quarantined[0].id, 3);
     }
-
     #[test]
     fn dsar_certificate_and_stats_parse() {
         // v1.16.0 M5: the typed card fields are pulled up via `from_value` so
@@ -2263,7 +2199,6 @@ mod tests {
         assert_eq!(s.count, 5);
         assert_eq!(s.version, "1.15.0");
     }
-
     /// v1.16.0 M5: an older server missing fields still renders (defaults).
     #[test]
     fn dsar_certificate_defaults_when_fields_absent() {
@@ -2276,7 +2211,6 @@ mod tests {
         assert!(d.purged_ids.is_empty());
         assert!(d.tombstone_root.is_none());
     }
-
     #[test]
     fn propose_and_approve_shapes_parse() {
         let p: ProposalResponse = serde_json::from_str(
@@ -2293,7 +2227,6 @@ mod tests {
         assert_eq!(a.chunk_id, 10);
         assert_eq!(a.superseded, Some(2));
     }
-
     /// v1.16.0 M3: the reject reason is percent-encoded into the query string
     /// so a space / `&` / `#` in the reason can't break the URL.
     #[test]
@@ -2303,7 +2236,6 @@ mod tests {
         assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(url_encode("a#b"), "a%23b");
     }
-
     /// v1.16.0 M2.1: principal accessor + is_configured.
     #[test]
     fn api_client_principal_and_configured() {
@@ -2319,7 +2251,6 @@ mod tests {
         assert!(remote.is_configured());
         assert_eq!(remote.principal(), Some("user:alice"));
     }
-
     /// v1.16.2 "Harden" M4.2: operator-facing error messages map status codes
     /// to actionable hints and never leak the token (it's not in the error).
     #[test]
@@ -2335,7 +2266,6 @@ mod tests {
         // test isn't possible — its constructor is pub(crate)); the hint text
         // is pinned by the Display arm, which is exercised above via the fallback.
     }
-
     // --- v1.16.5 "Secure" tests --------------------------------------------
 
     /// v1.16.5 M5.2: the pure pre-emptive refresh check — near expiry → true,
@@ -2367,7 +2297,6 @@ mod tests {
             team: None,
         })));
     }
-
     /// v1.16.5 M1.2: a real JWT payload decodes to its `sub`/`exp`. The header
     /// and signature segments are arbitrary — the client reads only the payload.
     #[test]
@@ -2387,7 +2316,6 @@ mod tests {
         assert_eq!(decoded.exp, Some(1750000000));
         assert_eq!(decoded.team.as_deref(), Some("alpha"));
     }
-
     /// v1.16.5 M1.2: malformed input is `None`, never a panic — a forged/garbage
     /// JWT falls through to the display fallback, and brain-server rejects it.
     #[test]
@@ -2401,7 +2329,6 @@ mod tests {
         let b64 = base64url_encode(b"not json");
         assert!(decode_claims(&format!("x.{b64}.x")).is_none());
     }
-
     /// v1.16.5 M1.2: base64url round-trip (the JWT alphabet + unpadded).
     #[test]
     fn base64url_encode_decode_roundtrip() {
@@ -2416,7 +2343,6 @@ mod tests {
         // Decode rejects length≡1 mod 4 (can't encode whole bytes).
         assert!(base64url_decode("A").is_none());
     }
-
     /// v1.16.5 M1.4: the JWT-pair constructor derives the principal from the
     /// access token's `sub`; opaque mode keeps `None`.
     #[test]
@@ -2447,7 +2373,6 @@ mod tests {
         let c3 = ApiClient::with_refresh_pair("http://h", Some("opaque-token".into()), None);
         assert!(c3.principal().is_none());
     }
-
     // --- v1.17.6 M2 — Overview wire-contract pins ----------------------------
 
     /// `GET /snapshot/status` — the `.bak` integrity envelope.
@@ -2467,7 +2392,6 @@ mod tests {
         assert!(s.all_ok);
         assert!(s.snapshots[0].mode_0600 && s.snapshots[0].ok);
     }
-
     /// `GET /retention` — enabled + policy/counts maps.
     #[test]
     fn retention_status_parses() {
@@ -2479,7 +2403,6 @@ mod tests {
         assert_eq!(r.policy.get("fact"), Some(&365));
         assert_eq!(r.counts.get("fact"), Some(&10));
     }
-
     /// `GET /ump/capabilities` — the §3.1 handshake.
     #[test]
     fn ump_capabilities_parses() {
@@ -2497,7 +2420,6 @@ mod tests {
         assert_eq!(u.conformance, "L3");
         assert!(u.writable && u.audit);
     }
-
     /// `GET /decayed` — a bare Vec of expired rows.
     #[test]
     fn decayed_parses_bare_vec() {
@@ -2512,7 +2434,6 @@ mod tests {
         assert_eq!(v[0].memory_kind, "fact");
         assert_eq!(v[0].effective_expiry, Some(900));
     }
-
     /// `POST /consolidate/propose` — detection counts.
     #[test]
     fn consolidate_propose_parses_counts() {
@@ -2532,7 +2453,6 @@ mod tests {
         assert_eq!(p.stale_sources.len(), 1);
         assert_eq!(p.near_duplicates.len(), 1);
     }
-
     /// `GET /tombstones` — the deletion-registry page envelope.
     #[test]
     fn tombstones_parse() {
@@ -2547,7 +2467,6 @@ mod tests {
         assert_eq!(t.tombstones[0].reason.as_deref(), Some("owner:u"));
         assert_eq!(t.tombstones[0].origin_id, Some(8));
     }
-
     // --- v1.17.7 M3/M4 — Graph + Create wire pins ----------------------------
 
     /// `GET /graph/entity` — a real entity (spaces allowed) + typed relations.
@@ -2576,7 +2495,6 @@ mod tests {
             serde_json::from_str(r#"{"error":"Entity not found"}"#).unwrap();
         assert!(parse_entity(&missing).is_none());
     }
-
     /// `GET /graph/traverse` — the flat rows + the structured chains, pinned to
     /// the real server field names (`from_entity` = seed, `path` = id->id,
     /// `edge_path` = rel|rel).
@@ -2611,7 +2529,6 @@ mod tests {
         assert_eq!(t.paths[0].hops[0].from.name, "dave");
         assert_eq!(t.paths[0].hops[0].relation, "employs");
     }
-
     /// v1.17.7 M3.4: the chain text renderer — empty hops → empty; multi-hop
     /// renders `A --rel--> B --rel--> C`; unnamed intermediates fall back to id.
     #[test]
@@ -2653,7 +2570,6 @@ mod tests {
         };
         assert_eq!(render_path(&named), "dave --employs--> 2 --ceo_of--> carol");
     }
-
     /// v1.17.7 M3.3: the `kind` filter validator — exact tokens + `causes:`
     /// prefixes pass; empty/space/invalid chars fail.
     #[test]
@@ -2666,7 +2582,6 @@ mod tests {
         assert!(!kind_is_valid("has space"));
         assert!(!kind_is_valid("rel'"));
     }
-
     /// v1.17.7 M4.1: the ingest outcome reducer — `/ingest` status, markdown
     /// `success`, memory `error`, and the no-signal fallback.
     #[test]
@@ -2690,7 +2605,6 @@ mod tests {
             IngestOutcome::Error("ingest returned no success signal".into())
         );
     }
-
     /// v1.17.7 M4: procedure/classify/decision/apply/undo response pins.
     #[test]
     fn create_wire_types_parse() {
@@ -2731,7 +2645,6 @@ mod tests {
         let u: UndoResponse = serde_json::from_str(r#"{"undone":1,"rejected":[]}"#).unwrap();
         assert_eq!(u.undone, 1);
     }
-
     #[test]
     fn decision_vars_parse_leniently() {
         let map = crate::panels::procedures::parse_decision_vars(r#"{"revenue":1200,"s":"x"}"#);
@@ -2739,7 +2652,6 @@ mod tests {
         assert!(!map.contains_key("s"));
         assert!(crate::panels::procedures::parse_decision_vars("not json").is_empty());
     }
-
     // --- v1.17.8 M5/M6/M7 — Rights, UMP, System pure cores --------------------
 
     #[test]
@@ -2750,7 +2662,6 @@ mod tests {
         assert_eq!(r.purged, 3);
         assert_eq!(r.reason, "operator purge");
     }
-
     #[test]
     fn retention_to_edits_sorts_by_kind() {
         let mut m = std::collections::BTreeMap::new();
@@ -2763,7 +2674,6 @@ mod tests {
         );
         assert!(retention_to_edits(&std::collections::BTreeMap::new()).is_empty());
     }
-
     #[test]
     fn ump_record_parses_wrapped_and_bare() {
         let wrapped: serde_json::Value =
@@ -2774,7 +2684,6 @@ mod tests {
         assert_eq!(parse_ump_record(&bare).unwrap()["id"], "urn:ump:1");
         assert!(parse_ump_record(&serde_json::json!(42)).is_none());
     }
-
     #[test]
     fn ump_recall_parses_results_envelope() {
         let v: serde_json::Value = serde_json::from_str(
@@ -2786,7 +2695,6 @@ mod tests {
         assert_eq!(r.results[0].score, 0.9);
         assert_eq!(r.results[0].record["id"], "urn:ump:1");
     }
-
     #[test]
     fn ump_integrity_badge_maps_levels() {
         let (c3, l3) = ump_integrity_badge("L3");
@@ -2798,7 +2706,6 @@ mod tests {
         assert_eq!(cn, "badge-neutral");
         assert_eq!(ln, "UMP 1.0 · X9");
     }
-
     #[test]
     fn serialize_request_handles_json_and_plain() {
         let with_body = serialize_request("POST", "/ump/remember", r#"{"content":"x"}"#);
@@ -2807,7 +2714,6 @@ mod tests {
         let no_body = serialize_request("GET", "/ump/capabilities", "");
         assert_eq!(no_body, "GET /ump/capabilities");
     }
-
     #[test]
     fn redact_for_history_strips_secrets_preserves_shape() {
         let red = redact_for_history(r#"{"content":"x","token":"abc","ok":true}"#);
@@ -2817,7 +2723,6 @@ mod tests {
         assert_eq!(redact_for_history("not json"), "");
         assert_eq!(redact_for_history(""), "");
     }
-
     /// v1.18.1 M1: an opaque (non-JSON) body marks the line secret so it never
     /// persists; JSON bodies are redactable and persistable.
     #[test]
@@ -2828,7 +2733,6 @@ mod tests {
         assert!(!line_is_secret(""));
         assert!(!line_is_secret("  "));
     }
-
     /// v1.18.1 M1: `persist_history` drops secret + empty lines and caps to the
     /// newest N in display order.
     #[test]
@@ -2861,7 +2765,6 @@ mod tests {
         );
         assert_eq!(persist_history(Vec::new(), 100), Vec::<String>::new());
     }
-
     /// v1.20.21 M2.1: a dry-run response's `footprint` object parses into the
     /// typed counts + dry_run flag; an absent/non-footprint shape is `None`.
     #[test]
@@ -2890,7 +2793,6 @@ mod tests {
         // No footprint object → None (a live response or shape drift).
         assert!(parse_footprint(&serde_json::json!({ "id": 1 })).is_none());
     }
-
     /// v1.20.21 M2.1: the dry-run wire carries `dry_run: true`; a live DSAR
     /// leaves it absent. Proves the request body builder is dry-run-safe (the
     /// panic-risk here — a preview silently purging — is worth a real pin).
@@ -2904,7 +2806,6 @@ mod tests {
         let live = serde_json::json!({ "subject": "a", "action": "both" });
         assert!(live.get("dry_run").is_none());
     }
-
     /// v1.20.22 M2.1: the `/dsar` ledger page parses with a missing
     /// `completed_at` (an open request) — `#[serde(default)]` timestamps mean
     /// an absent clock field never panics the wire decode.
@@ -2928,5 +2829,85 @@ mod tests {
         assert_eq!(open.status, "pending");
         // A fully-populated row keeps both timestamps.
         assert_eq!(v.requests[0].completed_at, Some(3001));
+    }
+    /// v1.21.0 "Profiles": the wizard pick list parses (12 seeded presets,
+    /// each with its description + knobs) and the retention label renders
+    /// null-as-no-decay.
+    #[test]
+    fn profiles_parse_and_retention_label_handles_nulls() {
+        let body = serde_json::json!({
+            "profiles": [
+                {"name": "health-hipaa",
+                 "description": "Health/care posture",
+                 "default_access_scope": "private",
+                 "pii_mode": "strict",
+                 "retention": {"fact": null, "episodic": 90},
+                 "audit_level": "verbose",
+                 "kinds": ["fact", "episodic"],
+                 "connectors_allowed": ["ehr-readonly"],
+                 "legal_hold_default": false},
+                {"name": "smb-simple", "retention": {}}
+            ]
+        });
+        let list: Vec<crate::api::ProfileView> = body["profiles"]
+            .as_array()
+            .map(|a| a.iter().map(crate::api::ProfileView::from_value).collect())
+            .unwrap_or_default();
+        assert_eq!(list.len(), 2);
+        let hipaa = &list[0];
+        assert_eq!(hipaa.pii_mode.as_deref(), Some("strict"));
+        assert_eq!(hipaa.default_access_scope.as_deref(), Some("private"));
+        assert_eq!(
+            hipaa.retention.as_ref().unwrap().get("fact"),
+            Some(&None),
+            "explicit null retention = no decay"
+        );
+        assert_eq!(
+            hipaa.retention_label().as_deref(),
+            Some("episodic=90d, fact=no-decay")
+        );
+        // Empty policy = nothing decays.
+        assert_eq!(list[1].retention_label().as_deref(), Some("no decay"));
+        // Absent block = None (the server-wide policy governs).
+        assert_eq!(list[1].pii_mode, None);
+    }
+    /// v1.21.0: the domain binding view parses both shapes — bound (knobs +
+    /// effective retention) and unbound (null profile + null knobs, the
+    /// pre-v1.21 posture the Health panel must render explicitly).
+    #[test]
+    fn domain_profile_parses_bound_and_unbound() {
+        let bound = serde_json::json!({
+            "domain": "global",
+            "profile": "call-center",
+            "knobs": {
+                "default_access_scope": "private",
+                "pii_mode": "standard",
+                "retention": {"episodic": 90},
+                "audit_level": "verbose",
+                "kinds": ["fact", "episodic", "procedure"],
+                "connectors_allowed": ["crm"],
+                "legal_hold_default": false
+            },
+            "effective": {"retention_days": {"episodic": 90}}
+        });
+        let dp = crate::api::DomainProfile::from_value(&bound);
+        assert_eq!(dp.domain, "global");
+        assert_eq!(dp.profile.as_deref(), Some("call-center"));
+        let knobs = dp.knobs.as_ref().expect("knobs present");
+        assert_eq!(knobs.audit_level.as_deref(), Some("verbose"));
+        assert_eq!(
+            dp.effective_retention.as_ref().unwrap().get("episodic"),
+            Some(&90)
+        );
+
+        let unbound = serde_json::json!({
+            "domain": "global",
+            "profile": null,
+            "knobs": null
+        });
+        let dp2 = crate::api::DomainProfile::from_value(&unbound);
+        assert_eq!(dp2.profile, None);
+        assert_eq!(dp2.knobs, None);
+        assert_eq!(dp2.effective_retention, None);
     }
 }

@@ -488,6 +488,16 @@ fn Connect() -> Element {
     let mut refresh_token = use_signal(String::new);
     let status = use_signal(|| None::<Result<String, String>>);
     let busy = use_signal(|| false);
+    // v1.21.0 "Profiles" M3: the use-case wizard step. After a successful
+    // MANUAL connect, if the home domain has no bound profile and the operator
+    // hasn't skipped, show "What best describes your team?" — pick a preset,
+    // see the knobs, apply. The auto-reconnect path stays silent (a returning
+    // operator with a saved token is not the onboarding audience).
+    // ponytail: binds the `global` home domain (the client is single-domain;
+    // per-domain wizard targeting is `brain setup`'s job). Knob EDITING in the
+    // wizard is a ceiling — the wizard picks, the API edits (POST /profiles).
+    let wizard_profiles = use_signal(Vec::new as fn() -> Vec<crate::api::ProfileView>);
+    let mut wizard_chosen = use_signal(|| 0usize);
     let api_signal = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
     let nav = navigator();
@@ -559,6 +569,8 @@ fn Connect() -> Element {
         let mut busy = busy;
         let mut api_signal = api_signal;
         let mut ui = ui;
+        let mut wizard_profiles = wizard_profiles;
+        let mut wizard_chosen = wizard_chosen;
         let nav = nav;
         spawn(async move {
             busy.set(true);
@@ -604,11 +616,86 @@ fn Connect() -> Element {
                 ui.conn.set(Conn::Connected);
                 ui.writes_enabled.set(true);
                 ui.pending_reverify.set(false);
+                // v1.21.0 "Profiles" M3: the wizard eligibility check — home
+                // domain unbound + not previously skipped + presets reachable.
+                // Any failure just falls through to Review (the wizard is an
+                // enhancement, never a gate). pref_load is web-only; on desktop
+                // the wizard reappears until a profile is bound (by design).
+                let probe = api_signal();
+                let eligible = matches!(
+                    probe.domain_profile("global").await,
+                    Ok(dp) if dp.profile.is_none()
+                ) && i18n::pref_load("wizard_done").await.is_none();
+                if eligible {
+                    if let Ok(ps) = probe.profiles().await {
+                        if !ps.is_empty() {
+                            wizard_profiles.set(ps);
+                            wizard_chosen.set(0);
+                            busy.set(false);
+                            return;
+                        }
+                    }
+                }
                 nav.replace(Route::Review {});
             }
             busy.set(false);
         });
     };
+
+    // v1.21.0 "Profiles" M3: hoisted wizard reads + handlers (a `let` as a
+    // direct child of an rsx `if` breaks the parser — see panels/data.rs).
+    // The labels/knob lines are precomputed so the rsx body stays a pure
+    // element list. `wizard_pick` is None until the eligibility check (post-
+    // connect) fills the list — the wizard then renders below the connect card.
+    let wizard_list = wizard_profiles();
+    let wizard_pick = wizard_list
+        .get(wizard_chosen().min(wizard_list.len().saturating_sub(1)))
+        .cloned();
+    let wizard_labels: Vec<String> = wizard_list
+        .iter()
+        .map(|p| format!("{} — {}", p.name, p.description.as_deref().unwrap_or("")))
+        .collect();
+    let wizard_kinds_label = wizard_pick
+        .as_ref()
+        .and_then(|p| p.kinds.clone())
+        .map(|k| k.join(", "));
+    let wizard_apply_name = wizard_pick.as_ref().map(|p| p.name.clone());
+    let mut wizard_status = status;
+    let on_wizard_apply = move |_| {
+        let Some(name) = wizard_apply_name.clone() else {
+            return;
+        };
+        let mut wizard_profiles = wizard_profiles;
+        let api_signal = api_signal;
+        let nav = nav;
+        spawn(async move {
+            let client = api_signal();
+            match client.bind_profile("global", Some(&name)).await {
+                Ok(_) => {
+                    i18n::pref_save("wizard_done", "1");
+                    wizard_profiles.set(Vec::new());
+                    nav.replace(Route::Review {});
+                }
+                Err(e) => wizard_status.set(Some(Err(format!(
+                    "bind failed: {}",
+                    crate::api::error_message(&e)
+                )))),
+            }
+        });
+    };
+    let on_wizard_skip = move |_| {
+        let mut wizard_profiles = wizard_profiles;
+        let nav = nav;
+        spawn(async move {
+            i18n::pref_save("wizard_done", "1");
+            wizard_profiles.set(Vec::new());
+            nav.replace(Route::Review {});
+        });
+    };
+    let wizard_title_lbl = t("wizard_title");
+    let wizard_hint_lbl = t("wizard_hint");
+    let wizard_apply_lbl = t("wizard_apply");
+    let wizard_skip_lbl = t("wizard_skip");
 
     rsx! {
         div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
@@ -685,6 +772,70 @@ fn Connect() -> Element {
                         }
                         if let Some(Err(msg)) = &*status.read() {
                             p { class: "text-danger text-sm", "{msg}" }
+                        }
+                    }
+                }
+                // v1.21.0 "Profiles" M3: the wizard step. A native <select> (real
+                // keyboard/a11y for free) + the chosen preset's knobs + Apply/Skip.
+                // The output is a live, configured store — no feature tours.
+                if let Some(pick) = &wizard_pick {
+                    div { class: "card",
+                        div { class: "card-header",
+                            div { class: "card-title", "{wizard_title_lbl}" }
+                            p { class: "text-sm text-muted-foreground", "{wizard_hint_lbl}" }
+                        }
+                        div { class: "card-body space-y-3",
+                            select {
+                                class: "input w-full",
+                                "aria-label": "profile preset",
+                                value: "{pick.name}",
+                                onchange: move |e| {
+                                    if let Some(i) = wizard_profiles()
+                                        .iter()
+                                        .position(|p| p.name == e.value())
+                                    {
+                                        wizard_chosen.set(i);
+                                    }
+                                },
+                                for (p, label) in wizard_list.iter().zip(&wizard_labels) {
+                                    option { value: "{p.name}", "{label}" }
+                                }
+                            }
+                            dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm tabular",
+                                if let Some(v) = &pick.default_access_scope {
+                                    dt { class: "text-muted-foreground", "default scope" } dd { "{v}" }
+                                }
+                                if let Some(v) = &pick.pii_mode {
+                                    dt { class: "text-muted-foreground", "pii mode" } dd { "{v}" }
+                                }
+                                if let Some(v) = pick.retention_label() {
+                                    dt { class: "text-muted-foreground", "retention" } dd { "{v}" }
+                                }
+                                if let Some(v) = &pick.audit_level {
+                                    dt { class: "text-muted-foreground", "audit" } dd { "{v}" }
+                                }
+                                if let Some(v) = &wizard_kinds_label {
+                                    dt { class: "text-muted-foreground", "kinds" } dd { "{v}" }
+                                }
+                                if let Some(v) = pick.legal_hold_default {
+                                    dt { class: "text-muted-foreground", "legal hold" } dd { "{v}" }
+                                }
+                            }
+                            p { class: "text-xs text-ink-faint",
+                                "defaults only — an explicit row value always wins; bind target: global"
+                            }
+                            div { class: "flex gap-2",
+                                button {
+                                    class: "btn btn-primary btn-md flex-1",
+                                    onclick: on_wizard_apply,
+                                    "{wizard_apply_lbl}"
+                                }
+                                button {
+                                    class: "btn btn-md",
+                                    onclick: on_wizard_skip,
+                                    "{wizard_skip_lbl}"
+                                }
+                            }
                         }
                     }
                 }

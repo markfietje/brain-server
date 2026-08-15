@@ -304,3 +304,14 @@ cal_decisions = decisions
 cal_last_200 = last 200 decisions
 cal_warn_high = high approval rate — review the last few by hand
 
+
+## v1.21.0 Profiles — wizard (connect flow) + Health panel
+wizard_title = What best describes your team?
+wizard_hint = Pick a starting posture — every knob stays editable later.
+wizard_apply = Use this profile
+wizard_applied = applied — defaults set, nothing re-ingested
+wizard_skip = Skip for now
+wizard_load_failed = could not load profiles
+health_profile = Profile
+health_profile_none = none — server defaults
+health_profile_knobs = effective knobs
