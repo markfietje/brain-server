@@ -19,6 +19,57 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.1] — 2026-08-15
+
+### Server — "Clients" (the BPO operating register)
+
+The spine of the BPO arc (series root `IMPLEMENTATION_PLAN_v1.27.0_BPO_Ops.md`,
+Release 1 of 10). Server `Cargo.toml`/lock 1.26.3 → **1.27.1**; schema →
+**1.27.0**; client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- **Client register** — `POST /clients`, `GET /clients`, `GET /clients/{name}`
+  (Admin + audited, `kind 'client'`): one row per operating client (name /
+  isolation domain / jurisdiction / bound profile / status), stored in the
+  global DB like the `transfers` register it mirrors. `name` + `domain` reuse
+  the existing path-safe domain validator; `jurisdiction` reuses the
+  cross-border code gate (the same `400 jurisdiction_invalid` as DSAR /
+  transfers). Duplicate `name` → `409 conflict`. This is the **identity /
+  evidence register** that later BPO releases (onboard, DPA terms, DSAR,
+  holds, termination, QA) read — it does not gate enforcement.
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- New `src/clients.rs` (constants n/a — reuses the domain/jurisdiction
+  validators, `validate_new_client`, `register`, `list`, `by_name` + 3 unit
+  tests) + `src/handlers/clients.rs` (3 routes, thin pool/authz/spawn_blocking
+  surface, no test module — the transfers convention). `AuditKind::Client`
+  added (exhaustive `as_str`). Migration adds the `clients` table + domain
+  index, schema_version → `'1.27.0'`; `SCHEMA_VERSION_V1_27_0` added. Wired
+  into the router, route-coverage + route-authz guard tables, the schema-
+  contract table list + version assertion, the source-listing match, and
+  openapi.yaml (`/clients`, `/clients/{name}`).
+- Panic/unsafe sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]`; every
+  SQL statement parameterized (`INSERT OR IGNORE` + row-count check for the
+  409, no `ON CONFLICT` churn); name/domain path-safety via the shared
+  validator; jurisdiction gate reused from `transfers` (no re-write).
+- Tests: server bin **595** / 6 ignored (+3); lib 105 unchanged; clippy
+  `-D warnings` (default + bench + otel) + fmt clean; route-coverage +
+  route-authz + schema-contract + openapi-coverage audits green.
+
+---
+
 ## [1.26.3] — 2026-08-15
 
 ### Server — "Cross-Border" fourth pass
