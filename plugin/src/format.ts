@@ -48,7 +48,10 @@ export function provenanceTag(hit: BrainRecallHit): string {
   if (parts.length === 0) {
     return "";
   }
-  return ` [${parts.join(" · ")}]`;
+  // The labels are operator/stored text (lawful_basis is free-form): run the
+  // composed tag through the same block sanitation as bodies so a label can
+  // never forge a fence marker or smuggle invisible/bidi content.
+  return ` [${sanitizeForBlock(parts.join(" · "))}]`;
 }
 
 /** Format hits into the dynamic per-turn block (goes to prependContext). */
