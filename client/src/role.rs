@@ -76,6 +76,12 @@ pub static ROLE_ACTION: &[(&str, &[&str])] = &[
     ("clinician", &["read", "write"]),
     ("dpo", &["read", "dsar_export", "calibrate"]),
     ("exec", &["read"]),
+    // v1.27.9/1.27.11 "Roles/Console": the BPO client postures mirror the
+    // server presets exactly — both are READ-ONLY (`can == ["read"]`), so
+    // neither can write/approve/purge through the client either (defense-in-
+    // depth; the server enforces the same on the wire).
+    ("client-auditor", &["read"]),
+    ("bpo-ops", &["read"]),
 ];
 
 /// Roles listed in `panels_hidden` — panel names a role never shows. A role
@@ -87,6 +93,24 @@ pub static ROLE_HIDDEN_PANELS: &[(&str, &[&str])] = &[
     ("recruiter", &["audit", "subjects"]),
     ("controller", &["security"]),
     ("exec", &["audit", "data", "subjects"]),
+    // v1.27.11 "Console": the BPO client postures show only their own view.
+    // `client-auditor` sees the single-client dashboard (overview/health/ops);
+    // `bpo-ops` sees the all-clients ops board (overview/health/ops) — each
+    // hides the operator-only write surfaces + the other's register.
+    (
+        "client-auditor",
+        &[
+            "review", "recall", "graph", "create", "subjects", "security", "audit", "data", "ump",
+            "system", "register", "clients",
+        ],
+    ),
+    (
+        "bpo-ops",
+        &[
+            "review", "recall", "graph", "create", "subjects", "security", "audit", "data", "ump",
+            "system", "register", "client", "clients",
+        ],
+    ),
 ];
 
 /// Whether any held role's `can` allowlist names `action`. Empty roles
@@ -121,6 +145,40 @@ pub fn role_can_see(roles: &[String], panel: &str) -> bool {
             .find(|(name, _)| name == r)
             .is_some_and(|(_, hidden)| hidden.contains(&panel))
     })
+}
+
+/// v1.27.11 "Console": which BPO console board the held roles render. The
+/// single-tenant-per-client poster: a `client-auditor` sees ONLY its client's
+/// dashboard; `bpo-ops` + the full-control roles see the all-clients ops
+/// board; everything else (agent, staff, no-roles) gets the stock console
+/// (the existing panel gating governs). Pure so each view is route-gated by
+/// the same rule the nav tests assert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleView {
+    /// The client-auditor's own single-client dashboard.
+    ClientAdmin,
+    /// The all-clients operations board (bpo-ops + admin-equivalent roles).
+    BpoOps,
+    /// The stock console — no BPO board (agent/no-roles).
+    Undefined,
+}
+
+pub fn console_view(roles: &[String]) -> ConsoleView {
+    if roles.iter().any(|r| r == "client-auditor") {
+        return ConsoleView::ClientAdmin;
+    }
+    // Full-control roles (admin/solo/controller) + bpo-ops render the board.
+    // Loopback (empty roles) → Undefined: the stock console governs, NOT a BPO
+    // board — a loopback operator's primary console is unchanged.
+    if !roles.is_empty()
+        && (roles.iter().any(|r| r == "bpo-ops")
+            || roles
+                .iter()
+                .any(|r| ["admin", "solo", "controller"].contains(&r.as_str())))
+    {
+        return ConsoleView::BpoOps;
+    }
+    ConsoleView::Undefined
 }
 
 #[cfg(test)]
@@ -182,5 +240,31 @@ mod tests {
         assert!(!role_can_see(&agent, "audit"));
         assert!(!role_can_see(&agent, "subjects"));
         assert!(role_can_see(&agent, "recall"));
+    }
+
+    #[test]
+    fn console_view_gates_each_bpo_view() {
+        // client-auditor renders the client-admin dashboard, NOT the ops board.
+        let auditor = r(&["client-auditor"]);
+        assert_eq!(console_view(&auditor), ConsoleView::ClientAdmin);
+        assert!(
+            !role_allows(&auditor, "write"),
+            "client-auditor is read-only"
+        );
+        // bpo-ops renders the all-clients board, NOT the client dashboard.
+        let ops = r(&["bpo-ops"]);
+        assert_eq!(console_view(&ops), ConsoleView::BpoOps);
+        assert!(!role_allows(&ops, "purge"), "bpo-ops cannot purge");
+        // Full-control & agent: agent has no board; admin gets the ops board.
+        let agent = r(&["agent"]);
+        assert_eq!(console_view(&agent), ConsoleView::Undefined);
+        let admin = r(&["admin"]);
+        assert_eq!(console_view(&admin), ConsoleView::BpoOps);
+        // A client-auditor never sees the ops board (and vice versa).
+        assert_ne!(console_view(&auditor), ConsoleView::BpoOps);
+        assert_ne!(console_view(&ops), ConsoleView::ClientAdmin);
+        // No roles (loopback) → stock console.
+        let none: Vec<String> = vec![];
+        assert_eq!(console_view(&none), ConsoleView::Undefined);
     }
 }

@@ -289,6 +289,17 @@ gate_under_reviewing = under-reviewing
 ## Register (v1.20.9 M1–M2 — Agent Memory Register, read-only provenance ledger)
 nav_register = Register
 
+## Console (v1.27.11 — BPO dashboard views, role-gated by R9 presets)
+nav_clients = Clients
+console_client_title = Client dashboard
+console_client_sub = Read-only overview of the clients granted to your auditor token. Domain-scoped to your JWT scopes.
+console_ops_title = BPO operations board
+console_ops_sub = All-clients register + connector + review workload. Read-only.
+console_ops_board = Client register
+console_connectors = Connectors
+console_queue_depth = queue depth
+console_empty = Nothing to show for this token.
+
 ## Replay (v1.20.20 M1–M3 — decision-path replay surface)
 replay_title = Decision replay
 replay_audit_link = open audit row

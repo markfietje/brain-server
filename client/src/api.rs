@@ -233,6 +233,23 @@ impl ApiClient {
             .map(|c| c.roles)
             .unwrap_or_default()
     }
+    /// v1.27.11 "Console": the client-domain allowlist of a `client-auditor`,
+    /// derived from the JWT `scopes` claim — the client mirror of the server's
+    /// `client_authorized_domains` seam. `None` = not a client-auditor (or no
+    /// token): unrestricted, the register was not row-filtered. `Some(&[])` =
+    /// a client-auditor whose scopes grant nothing → renders NO clients. The
+    /// client-admin dashboard re-filters its `/clients` rows by this allowlist
+    /// (defense-in-depth — never renders a client the scopes don't grant, even
+    /// if a misconfigured server returned it).
+    pub fn client_auditor_domains(&self) -> Option<Vec<String>> {
+        let tok = self.access_token()?;
+        let claims = decode_claims(tok.as_ref())?;
+        let auditor = claims.roles.iter().any(|r| r == "client-auditor");
+        if !auditor {
+            return None;
+        }
+        Some(scope_client_domains(claims.scope.as_deref()))
+    }
     fn refresh_token(&self) -> Option<String> {
         self.tokens
             .state
@@ -913,6 +930,23 @@ impl ApiClient {
         })
         .await
     }
+    /// v1.27.11 "Console": GET /clients — the BPO register. A `client-auditor`
+    /// sees only its granted client-domain(s) (server-side R9 row filter); the
+    /// client-admin dashboard renders exactly these rows and nothing else.
+    pub async fn clients(&self) -> Result<Vec<ClientRow>, ApiError> {
+        let v: serde_json::Value = self.get_json("/clients").await?;
+        Ok(v["clients"]
+            .as_array()
+            .map(|a| a.iter().filter_map(ClientRow::from_value).collect())
+            .unwrap_or_default())
+    }
+    /// v1.27.11 "Console": GET /clients/{name} — resolve one register row.
+    pub async fn client_by_name(&self, name: &str) -> Result<ClientRow, ApiError> {
+        let v: serde_json::Value = self
+            .get_json(&format!("/clients/{}", url_encode(name)))
+            .await?;
+        Ok(ClientRow::from_value(&v).unwrap_or_default())
+    }
 }
 // --- v1.16.5 "Secure" helpers ------------------------------------------------
 
@@ -953,6 +987,27 @@ pub fn decode_claims(token: &str) -> Option<TokenClaims> {
     }
     let payload = base64url_decode(parts[1])?;
     serde_json::from_slice(&payload).ok()
+}
+
+/// v1.27.11 "Console": parse the JWT `scopes` claim (a whitespace-separated
+/// `action:team/domain` list, mirroring the server `Scope`) and extract the
+/// non-wildcard client-domains. The `global` operator root + `*` are never a
+/// valid auditor grant (the min-necessary wedge). Mirrors the server
+/// `client_authorized_domains` filter exactly, so the client dashboard and the
+/// server row-filter agree. `None`/unknown → empty (deny-by-default).
+pub fn scope_client_domains(scope: Option<&str>) -> Vec<String> {
+    scope
+        .unwrap_or("")
+        .split_whitespace()
+        .filter_map(|grant| {
+            let domain = grant.rsplit('/').next()?;
+            if domain == "*" || domain == "global" {
+                None
+            } else {
+                Some(domain.to_string())
+            }
+        })
+        .collect()
 }
 /// v1.16.5 M1.2: is this a JWT-shaped token (3 dot-separated segments)?
 /// Used to distinguish an opaque loopback token (no identity) from a JWT that
@@ -1833,6 +1888,47 @@ pub struct ConnectorRow {
     pub last_sync_at: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,
+}
+/// v1.27.11 "Console": `GET /clients` — one BPO register row. Every field
+/// optional so an older server body (or a redacted auditor view) still parses
+/// cleanly; the client renders only the fields present.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClientRow {
+    pub name: String,
+    pub domain: String,
+    pub jurisdiction: String,
+    pub status: String,
+    pub profile: Option<String>,
+    pub created_at: Option<i64>,
+    pub archived_at: Option<i64>,
+}
+impl ClientRow {
+    /// Tolerant read of one `/clients` row. Unknown/absent fields degrade to
+    /// ""/None so the dashboard still renders against a partial register.
+    pub fn from_value(v: &serde_json::Value) -> Option<Self> {
+        let name = v.get("name")?.as_str()?.to_string();
+        Some(ClientRow {
+            name,
+            domain: v
+                .get("domain")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            jurisdiction: v
+                .get("jurisdiction")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            status: v
+                .get("status")
+                .and_then(|x| x.as_str())
+                .unwrap_or("active")
+                .to_string(),
+            profile: v.get("profile").and_then(|x| x.as_str()).map(String::from),
+            created_at: v.get("created_at").and_then(|x| x.as_i64()),
+            archived_at: v.get("archived_at").and_then(|x| x.as_i64()),
+        })
+    }
 }
 /// `POST /reindex` (main.rs) — re-embed counts.
 #[derive(Debug, Clone, Deserialize)]

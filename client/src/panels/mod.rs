@@ -4,6 +4,7 @@
 //! already exist, recall-trace → v1.15.0).
 
 pub mod audit;
+pub mod console;
 pub mod consolidate;
 pub mod create;
 pub mod data;

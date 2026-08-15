@@ -19,7 +19,52 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [1.27.10] — 2026-08-15
+## [1.27.11] — 2026-08-15
+
+### Client — "Console"
+
+The series capstone (Release 10 of 10). Client `Cargo.toml`/lock
+`1.23.0` → **`1.27.11`**; **server + plugin unchanged**. The client release that
+turns the R1–R9 register/roles server surfaces into the role-gated BPO
+dashboard views.
+
+### Release notes
+
+**Improvements**
+
+- New **Clients** panel, role-gated: a `client-auditor` gets their own
+  single-client dashboard (read-only, domain-scoped), and `bpo-ops`/admin get
+  the all-clients operations board (register + connector status + review-queue
+  depth).
+
+### Engineering record
+
+`role.rs` gains `ConsoleView` + `console_view()` (pure): `client-auditor` →
+`ClientAdmin`, `bpo-ops` + the full-control roles (`admin`/`solo`/`controller`)
+→ `BpoOps`, nothing else (no roles / agent / staff) → `Undefined` (the existing
+panel gating governs). `main.rs` adds `Route::Clients {}` gated into both the
+desktop rail and mobile tab bar only when `console_view` resolves, plus a
+palette entry + keyword registration (palette coverage test 14 → 15 targets).
+`panels/console.rs` implements the two panels; `client_admin` is the honest
+single-tenant-per-client poster — it renders only the clients granted by the
+client-side allowlist (`api::client_auditor_domains`, the token mirror of the
+server `client_authorized_domains` seam) and has NO client switcher, while the
+server R9 row filter is the backstop (defense-in-depth, with
+`filter_granted` as the pure re-filter — `Some([])` renders nothing,
+deny-by-default). `bpo_ops` is read-only: `/clients` register + `/connectors`
+status + `/proposals` pending depth. i18n (`nav_clients` + `console_*` keys in
+en; de/fr/es/nl fall back). Tests: client 119 → **122** passed (+
+`client_admin_view_never_renders_foreign_clients`, `connector_state_maps_to_color`,
+and the `console_view` preset pins); clippy `-D warnings` + fmt clean; release
+wasm 5.1 MB (budget 7 MB). Honest ceilings: the console is read-only UI over
+the shipped API — no new server surface (the full client-admin Overview/Data/
+Rights/Audit panels named in the plan reduce to the register overview here; the
+rest are the existing panels the server gates per-role); `client-auditor` tokens
+are operator-issued (scopes → client domain); the OS-keyring/bearer token
+provenance is unchanged. See
+`IMPLEMENTATION_PLAN_v1.27.11_Console.md`.
+
+---
 
 ### Server — "Roles (hardening)"
 

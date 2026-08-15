@@ -284,6 +284,12 @@ enum Route {
     /// v1.20.9 M1–M2: Agent Memory Register — read-only provenance ledger.
     #[route("/register")]
     Register {},
+    /// v1.27.11 "Console": the BPO dashboard views. `client-auditor` renders
+    /// its own single-client dashboard; `bpo-ops`/admin renders the all-clients
+    /// board. Role-gated in the shell nav + inside the panel (defense-in-depth;
+    /// the server enforces the register rows either way).
+    #[route("/clients")]
+    Clients {},
     #[end_layout]
     #[route("/:..segments")]
     NotFound { segments: Vec<String> },
@@ -950,6 +956,7 @@ fn AppShell() -> Element {
     let nav_system = t("nav_system");
     let nav_ops = t("nav_ops");
     let nav_register = t("nav_register");
+    let nav_clients = t("nav_clients");
     let review_title = t("review_title");
     let sign_out = t("sign_out");
     let loopback = t("loopback");
@@ -960,6 +967,11 @@ fn AppShell() -> Element {
     // v1.23.0 M3 "Roles": the resolved role names gate which nav panels render
     // (defense-in-depth — the server still enforces the underlying endpoints).
     let nav_roles = api().roles();
+    // v1.27.11 "Console": which BPO dashboard view this principal gets. The
+    // Clients route is only reachable from the nav when a console posture is
+    // resolved (`client-auditor` → their own dashboard; `bpo-ops`/admin → the
+    // all-clients board). The panel also checks it internally.
+    let console_view = crate::role::console_view(&nav_roles);
 
     // v1.16.7 M5: cmd/ctrl+K toggles the command palette. Handled on the shell
     // root (focused by default when the app has focus); the palette's own input
@@ -1015,6 +1027,9 @@ fn AppShell() -> Element {
                     NavLink { to: Route::System {}, "{nav_system}" }
                     NavLink { to: Route::Ops {}, "{nav_ops}" }
                     NavLink { to: Route::Register {}, "{nav_register}" }
+                    if console_view != crate::role::ConsoleView::Undefined {
+                        NavLink { to: Route::Clients {}, "{nav_clients}" }
+                    }
                 }
                 div { class: "border-t border-border p-3",
                 div { class: "flex items-center gap-2 text-sm",
@@ -1070,6 +1085,9 @@ fn AppShell() -> Element {
                 TabLink { to: Route::System {}, "{nav_system}" }
                 TabLink { to: Route::Ops {}, "{nav_ops}" }
                 TabLink { to: Route::Register {}, "{nav_register}" }
+                if console_view != crate::role::ConsoleView::Undefined {
+                    TabLink { to: Route::Clients {}, "{nav_clients}" }
+                }
             }
             div { class: "flex min-w-0 flex-1 flex-col",
                 // Slim top bar: connection + pending summary + prefs.
@@ -1288,6 +1306,14 @@ fn command_keywords(c: &Command) -> &'static [&'static str] {
             "who",
             "ownership",
         ],
+        Command::Navigate(Route::Clients {}) => &[
+            "clients",
+            "console",
+            "bpo",
+            "dashboard",
+            "auditor",
+            "register",
+        ],
         Command::SignOut => &["signout", "sign out", "logout", "exit"],
         Command::Lookup(Lookup::Proposal(_)) => &["proposal", "propose", "approve"],
         Command::Lookup(Lookup::Chunk(_)) => &["chunk", "memory", "get"],
@@ -1324,6 +1350,7 @@ fn palette_commands(configured: bool) -> Vec<Command> {
         Command::Navigate(Route::System {}),
         Command::Navigate(Route::Ops {}),
         Command::Navigate(Route::Register {}),
+        Command::Navigate(Route::Clients {}),
     ];
     if configured {
         v.push(Command::SignOut);
@@ -1416,6 +1443,7 @@ fn command_label(c: &Command) -> &'static str {
         Command::Navigate(Route::System {}) => "System",
         Command::Navigate(Route::Ops {}) => "Operations",
         Command::Navigate(Route::Register {}) => "Agent Memory Register",
+        Command::Navigate(Route::Clients {}) => "Clients (BPO console)",
         Command::SignOut => "Sign out",
         Command::Lookup(Lookup::Proposal(_)) => "Open proposal",
         Command::Lookup(Lookup::Chunk(_)) => "Open chunk",
@@ -1908,6 +1936,10 @@ fn Ops() -> Element {
 fn Register() -> Element {
     register::panel()
 }
+#[component]
+fn Clients() -> Element {
+    panels::console::panel()
+}
 
 #[component]
 fn NotFound(segments: Vec<String>) -> Element {
@@ -2128,8 +2160,8 @@ mod tests {
             .filter(|c| matches!(c, Command::Navigate(_)))
             .count();
         assert_eq!(
-            count, 14,
-            "the fourteen nav targets (Overview→Health + Ops/Data/UMP/System + Register)"
+            count, 15,
+            "the fifteen nav targets (Overview→Health + Ops/Data/UMP/System + Register + Clients)"
         );
         assert!(configured.iter().any(|c| matches!(c, Command::SignOut)));
         let anonymous = palette_commands(false);
@@ -2186,6 +2218,7 @@ mod tests {
             Route::System {},
             Route::Ops {},
             Route::Register {},
+            Route::Clients {},
         ] {
             assert!(nav.contains(&r), "palette missing Navigate for {r:?}");
         }
