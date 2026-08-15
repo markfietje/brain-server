@@ -1314,9 +1314,23 @@ paths:
           name: supersedes
           schema: { type: integer }
           description: Expire an existing chunk via resolve_supersession in the same tx.
+        - in: query
+          name: digest
+          schema: { type: string }
+          description: >
+            v1.27.12 "ReviewArmour": the `content_digest` the reviewer was
+            shown (returned by GET /proposals). When present, the server
+            recomputes it from the current row and returns 409 if the content
+            drifted since display — the approval binds to the bytes that were
+            actually rendered. Absent = legacy quick-approve/offline-replay
+            (no binding).
       responses:
         "200":
           description: Proposal approved and promoted to a knowledge row
+        "409":
+          description: >
+            Proposal content changed since it was displayed (content_digest
+            mismatch) — reload and re-approve.
   /proposals/{id}/reject:
     post:
       summary: Reject a proposal — creates nothing (v1.14.0 M1)
@@ -3492,6 +3506,25 @@ components:
             rerank_score: { type: number, nullable: true }
             rerank_truncated: { type: boolean }
             prf_expanded: { type: boolean }
+        ingest_kind:
+          type: string
+          nullable: true
+          description: >
+            v1.27.12 "Provenance": the stored ingest kind of the row
+            (memory/markdown/structured/manual/vault/connector). Absent when
+            unset. Label only — never a ranking or trust assertion.
+        memory_kind:
+          type: string
+          nullable: true
+          description: "v1.27.12 \"Provenance\": the stored node_kind memory-kind (fact/procedure/step/decision/episodic). Label only."
+        lawful_basis:
+          type: string
+          nullable: true
+          description: "v1.27.12 \"Provenance\": the stored lawful basis (Art 5/6 posture) when declared. Label only."
+        region:
+          type: string
+          nullable: true
+          description: "v1.27.12 \"Provenance\": the stored data-residency region stamp. Label only."
     Chunk:
       type: object
       properties:

@@ -1114,7 +1114,7 @@ pub fn detail(proposal_id: i64) -> Element {
                             p { class: "text-sm text-warn", "conflicts with chunk #{c} — approve to supersede" }
                         }
                     }
-                    div { class: "card-footer", DetailActions { api, proposal_id } }
+                    div { class: "card-footer", DetailActions { api, proposal_id, digest: p.content_digest.clone() } }
                 }
             },
             None => rsx! {
@@ -1131,14 +1131,18 @@ pub fn detail(proposal_id: i64) -> Element {
 /// returns to the queue (the item is gone); on failure it shows the reason
 /// inline rather than silently dropping.
 #[component]
-fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
+fn DetailActions(api: Signal<ApiClient>, proposal_id: i64, digest: String) -> Element {
     let writes = (use_context::<UiState>().writes_enabled)();
     let state = use_signal(String::new);
     let nav = navigator();
     let approve = move |_| {
         let mut state = state;
+        let digest = digest.clone();
         spawn(async move {
-            match api().approve_proposal(proposal_id, None, None).await {
+            match api()
+                .approve_proposal(proposal_id, None, Some(&digest))
+                .await
+            {
                 Ok(_) => {
                     nav.replace(Route::Review {});
                 }
