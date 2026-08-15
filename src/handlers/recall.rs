@@ -444,7 +444,11 @@ pub(crate) async fn run_recall(
     // v1.23.0 "Roles": a JWT principal with a `roles` claim is scoped by its
     // role bundles (narrowed access_scopes + an owner predicate for
     // self/reports). No roles → the v1.14 scope path above applies unchanged.
+    // The gate (resolved once, below) also feeds the v1.27.7 "Qa" scope-violation
+    // detection so it does not re-resolve it for every recall.
+    let mut role_restricted = false;
     if let Some(gate) = crate::handlers::gate::role_retrieval_gate(principal, &state.pool) {
+        role_restricted = gate.owner_in.is_some();
         crate::handlers::gate::apply_role_gate(&mut base_filters, &gate);
     }
     // v1.17.1 "Govern" M2: when per-kind retention is enabled, carry the policy
@@ -604,21 +608,19 @@ pub(crate) async fn run_recall(
     // v1.27.7 "Qa": a role-restricted agent that searched beyond the global
     // perimeter domain crossed a client border — a security event on the
     // established Auth/Denied channel. Best-effort (never fails the recall).
-    if let Some(gate) = crate::handlers::gate::role_retrieval_gate(principal, &state.pool) {
-        if gate.owner_in.is_some() && crate::qa::scope_violation(true, &domains_searched) {
-            if let Ok(conn) = state.pool.get() {
-                crate::audit::record(
-                    &conn,
-                    crate::audit::AuditKind::Auth,
-                    "api",
-                    "scope_violation",
-                    crate::audit::AuditStatus::Denied,
-                    &format!(
-                        "agent={} domains={domains_searched:?}",
-                        principal_label(principal)
-                    ),
-                );
-            }
+    if crate::qa::scope_violation(role_restricted, &domains_searched) {
+        if let Ok(conn) = state.pool.get() {
+            crate::audit::record(
+                &conn,
+                crate::audit::AuditKind::Auth,
+                "api",
+                "scope_violation",
+                crate::audit::AuditStatus::Denied,
+                &format!(
+                    "agent={} domains={domains_searched:?}",
+                    principal_label(principal)
+                ),
+            );
         }
     }
 
