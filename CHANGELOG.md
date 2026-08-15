@@ -58,7 +58,66 @@ rest read.
 
 ---
 
-## [1.27.2] — 2026-08-15
+## [1.27.3] — 2026-08-15
+
+### Server — "Dpa" (per-client sub-processor DPA terms)
+
+Release 3 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.2 →
+**1.27.3**; schema unchanged (`1.27.0` — the nullable `dpa_terms` column shipped
+in R1); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- **Per-client DPA terms** — `POST /clients/{name}/dpa` stores the Art 28
+  sub-processor terms (retention-on-termination, deletion timeline, audit
+  rights, breach-notification timeline, onward-transfer restriction,
+  sub-sub-processor list) on a client; `GET /clients/{name}/dpa` reads them
+  back (`null` until set). This is the evidence a client's controller checks
+  before authorizing the BPO. All six fields are free-text, required, and
+  bounded (`<= 2000` chars; a blank field is `400 dpa_field_invalid`). Admin +
+  audited on write; unknown-client 404 on both routes. `brain client dpa
+  get|set <name>` drives both.
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `src/clients.rs`: `DpaTerms` struct (six `String` fields, `Default` +
+  `serde`), `validate_dpa_terms` (trust boundary — terms ride out to a
+  controller unredacted, so nothing goes out blank/oversize; deterministic
+  field order, one error naming the field), `set_dpa_terms` (scoped `WHERE
+  name = ?` UPDATE returning the affected-row count → handler 404 without a
+  second query), and `dpa_terms_of` (`None`-preserving JSON read). `Client`
+  gains `#[serde(skip_serializing_if = "Option::is_none")] dpa_terms` parsed in
+  the one row mapper; `CLIENT_SELECT` adds the column. `src/handlers/clients.rs`
+  gains `set_client_dpa` (Admin + `AuditKind::Client`, detail `dpa_terms_set`) +
+  `get_client_dpa` (distinguishes unknown-client 404 from unset `null`).
+  `src/bin/brain.rs` extends `cmd_client` with `dpa get|set` (the `cmd_client_add`
+  HTTP-shape model; `set` requires all six `--` fields). Routed + route-coverage
+  + route-authz guard tables + openapi.yaml (`DpaTerms` schema, two paths) in
+  `src/main.rs`.
+- Panic/unsafe sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]` in the
+  new code; no new tables or schema change; no new dependency.
+- Tests: server bin **600** / 6 ignored (+3 — `dpa_terms_round_trip_and_list`,
+  `validate_dpa_terms_rejects_blank_and_too_long`,
+  `set_dpa_terms_unknown_client_returns_zero`); lib 105 unchanged; clippy
+  `-D warnings` (default + bench + otel) + fmt clean; `brain` release build
+  clean.
+- Honest ceilings: terms are **config + evidence**, name-checked by a human —
+  not a signed contract and not enforcement; `sub_sub_processor_list` is a
+  bounded text field (normalized sub-processor identity is v2.x); the
+  termination *behavior* (read by R6) is a later release — nothing here
+  auto-enforces retention-on-termination.
+
+---
 
 ### Server — "Onboard" (the operator client wizard)
 
