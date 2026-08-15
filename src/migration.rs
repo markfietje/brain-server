@@ -1219,6 +1219,48 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.25.0 "PH-Compliant" M1: breach-notification workflow ────────
+    // The DPO-opened incident ledger + its append-only event log (the M2
+    // "one genuinely new primitive"). Lives in every domain file (the shared
+    // migration) like legal_holds; the breach handler operates on the `global`
+    // pool — an incident is operator data, not domain-scoped memory. The
+    // tamper-evident *record* is the audit chain (kind='breach') this handler
+    // appends to on every event; these tables are the DPO's readable ledger.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS breaches (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope              TEXT NOT NULL,
+            description        TEXT NOT NULL,
+            severity           TEXT NOT NULL,
+            discovered_at      INTEGER NOT NULL,
+            affected_estimate  INTEGER,
+            jurisdictions      TEXT NOT NULL DEFAULT '[]',
+            status             TEXT NOT NULL DEFAULT 'open',
+            opened_by          TEXT NOT NULL,
+            opened_at          INTEGER NOT NULL,
+            closed_by          TEXT,
+            closed_at          INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS breach_events (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            breach_id     INTEGER NOT NULL,
+            event_type    TEXT NOT NULL,
+            jurisdiction  TEXT,
+            body          TEXT NOT NULL,
+            noted_by      TEXT NOT NULL,
+            created_at    INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_breach_events_breach
+         ON breach_events(breach_id, id)",
+        [],
+    )?;
+
     // ── v1.22.0 "Regulated" M3: region pin (data residency) ───────────
     // `knowledge.region` is stamped at INSERT by the trigger below (all current
     // + future ingest paths, incl. connector/UMP/import, with zero per-site
@@ -1288,8 +1330,8 @@ pub fn run_migration_with_store_dim(
 
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.23.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.23.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.25.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.25.0';",
         [],
     )?;
 

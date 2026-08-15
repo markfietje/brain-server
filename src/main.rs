@@ -55,6 +55,7 @@ use brain_server::migration::run_migration_with_store_dim;
 use brain_server::register_sqlite_vec::register_sqlite_vec;
 mod alert;
 mod auth;
+mod breach;
 mod chunker;
 mod config;
 mod connector;
@@ -67,6 +68,7 @@ mod hygiene;
 mod integrity;
 mod legal_hold;
 mod linker;
+mod ph;
 mod procedural;
 mod search;
 mod temporal;
@@ -1450,6 +1452,14 @@ fn health_body(
         "otel": {
             "enabled": crate::config::otel_enabled(),
             "endpoint": crate::config::otel_endpoint(),
+        },
+        // v1.25.0 "PH-Compliant" (M1/DPO): the named Data Protection Officer
+        // contact (from BRAIN_DPO_CONTACT) surfaced on the public health
+        // probe + the privacy notice. `null` when unset — the posture never
+        // invents a contact. A data-subject / breach event needs a named
+        // channel, and this proves the deployment configured one.
+        "compliance": {
+            "dpo_contact": crate::config::dpo_contact(),
         },
         // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
         // memory-safety posture at a glance. `unsafe_blocks` is the
@@ -4673,6 +4683,16 @@ async fn main_inner() -> Result<()> {
             post(handlers::holds::release_legal_hold),
         )
         .route("/legal-holds", get(handlers::holds::list_legal_holds))
+        // v1.25.0 "PH-Compliant" M2: the breach-notification workflow. Human-
+        // opened by the DPO role; every event is hash-chained into the audit.
+        .route("/breach", post(handlers::breaches::post_breach))
+        .route(
+            "/breach/{id}/event",
+            post(handlers::breaches::post_breach_event),
+        )
+        .route("/breach/{id}/close", post(handlers::breaches::close_breach))
+        .route("/breaches", get(handlers::breaches::list_breaches))
+        .route("/breaches/{id}", get(handlers::breaches::get_breach))
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -8046,6 +8066,9 @@ Final paragraph after the rule.";
             "refresh_chains",
             // v1.22.0 Regulated
             "legal_holds",
+            // v1.25.0 PH-Compliant: the breach-notification ledger.
+            "breaches",
+            "breach_events",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -8232,10 +8255,11 @@ Final paragraph after the rule.";
         // v1.21.0 for the profiles + domain_profiles tables (the preset system).
         // v1.22.0 for the legal_holds table + knowledge.region.
         // v1.23.0 for the roles table (the named scope/action bundles).
+        // v1.25.0 for the breaches + breach_events tables (the breach workflow).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_23_0),
-            "schema_version must be recorded as 1.23.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_25_0),
+            "schema_version must be recorded as 1.25.0 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -9425,6 +9449,12 @@ Final paragraph after the rule.";
             "/legal-hold",
             "/legal-hold/{id}/release",
             "/legal-holds",
+            // v1.25.0 PH-Compliant: the breach-notification workflow.
+            "/breach",
+            "/breach/{id}/event",
+            "/breach/{id}/close",
+            "/breaches",
+            "/breaches/{id}",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10348,6 +10378,12 @@ Final paragraph after the rule.";
             ("/legal-hold", "Admin"),
             ("/legal-hold/{id}/release", "Admin"),
             ("/legal-holds", "Admin"),
+            // v1.25.0 PH-Compliant: breach workflow is a DPO surface.
+            ("/breach", "Admin"),
+            ("/breach/{id}/event", "Admin"),
+            ("/breach/{id}/close", "Admin"),
+            ("/breaches", "Admin"),
+            ("/breaches/{id}", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
@@ -10464,6 +10500,7 @@ Final paragraph after the rule.";
                     "observe" => include_str!("handlers/observe.rs"),
                     "govern" => include_str!("handlers/govern.rs"),
                     "holds" => include_str!("handlers/holds.rs"),
+                    "breaches" => include_str!("handlers/breaches.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
                     "roles" => include_str!("handlers/roles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),
@@ -10963,6 +11000,73 @@ Final paragraph after the rule.";
         assert_eq!(integrity["chain_ok"], true);
         assert!(integrity.contains_key("last_checked_at"));
         assert!(integrity.contains_key("chain_head"));
+    }
+
+    /// v1.25.0 "PH-Compliant" verification 6: `/health` surfaces the configured
+    /// DPO contact (from `BRAIN_DPO_CONTACT`) and is `null` (never invented)
+    /// when unset.
+    #[test]
+    fn health_surfaces_dpo_contact() {
+        let body_with = |env: Option<&str>| {
+            let prev = std::env::var("BRAIN_DPO_CONTACT").ok();
+            match env {
+                Some(v) => std::env::set_var("BRAIN_DPO_CONTACT", v),
+                None => std::env::remove_var("BRAIN_DPO_CONTACT"),
+            }
+            let body = health_body(
+                100,
+                1000,
+                1,
+                1,
+                serde_json::json!({}),
+                Some(serde_json::json!({})),
+                serde_json::json!({}),
+            );
+            match prev {
+                Some(v) => std::env::set_var("BRAIN_DPO_CONTACT", v),
+                None => std::env::remove_var("BRAIN_DPO_CONTACT"),
+            }
+            body
+        };
+
+        let contact = body_with(Some("dpo@example.ph"));
+        assert_eq!(contact["compliance"]["dpo_contact"], "dpo@example.ph");
+        let none = body_with(None);
+        assert!(
+            none["compliance"]["dpo_contact"].is_null(),
+            "a missing contact degrades to null, never invented"
+        );
+    }
+
+    /// v1.25.0 "PH-Compliant" verification 3: every breach event is hash-chained
+    /// into the existing audit (kind `breach`) and the chain stays verifiable.
+    #[test]
+    fn breach_chain_verified() {
+        let db = test_db();
+        let a = audit::record(
+            &db,
+            audit::AuditKind::Breach,
+            "api",
+            "breach_open:1",
+            audit::AuditStatus::Ok,
+            "ph npc notified",
+        );
+        let b = audit::record(
+            &db,
+            audit::AuditKind::Breach,
+            "api",
+            "breach_event:1",
+            audit::AuditStatus::Ok,
+            "eu authority",
+        );
+        assert!(a.is_some() && b.is_some(), "both breach rows recorded");
+        assert!(
+            audit::verify_chain(&db),
+            "breach events keep the chain intact"
+        );
+        let rows = audit::recent(&db, Some("breach"), 10).expect("recent");
+        assert_eq!(rows.len(), 2, "both rows filtered by kind=breach");
+        assert_eq!(rows[0].kind, "breach");
     }
 
     /// v1.17.3 "UMP" M2: the batch wire path end-to-end. A multi-record

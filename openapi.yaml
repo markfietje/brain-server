@@ -1516,6 +1516,76 @@ paths:
       responses:
         "200":
           description: The hold registry
+  /breach:
+    post:
+      summary: Open a breach-notification incident (v1.25.0 M2)
+      operationId: postBreach
+      description: >
+        Human-opened by the DPO role (or admin capability). Body:
+        `{scope, description, severity, discovered_at?, affected_estimate?,
+        jurisdictions?}`. `jurisdictions` are country codes (e.g. `ph`, `eu`)
+        that drive the per-jurisdiction notification deadlines from
+        `discovered_at`. DPO/admin + audited (kind 'breach'). Automated
+        detection is a v2.x concern — this is the manual record.
+      responses:
+        "200":
+          description: The incident id + its computed notification deadlines
+        "400":
+          description: Invalid scope/description/severity/jurisdictions
+        "403":
+          description: The principal holds no dpo/admin role
+  /breach/{id}/event:
+    post:
+      summary: Append a notification/assessment/note to a breach (v1.25.0 M2)
+      operationId: postBreachEvent
+      description: >
+        `{event_type: notification|assessment|note, jurisdiction?, body}`.
+        Append-only; a closed breach refuses new events (409). DPO/admin +
+        audited — every event is also hash-chained into the audit.
+      responses:
+        "200":
+          description: The event was appended
+        "400":
+          description: Invalid event_type or an empty/oversized body
+        "404":
+          description: No breach with this id
+        "409":
+          description: The breach is closed
+  /breach/{id}/close:
+    post:
+      summary: Close a breach incident (v1.25.0 M2)
+      operationId: closeBreach
+      description: >
+        The explicit close (never auto). Closing an already-closed breach is a
+        no-op; the id must exist (404). DPO/admin + audited.
+      responses:
+        "200":
+          description: The breach was closed
+        "404":
+          description: No breach with this id
+  /breaches:
+    get:
+      summary: The breach incident registry (v1.25.0 M2)
+      operationId: listBreaches
+      description: >
+        Every incident, newest-first, bounded (`?limit=`, default 100). The
+        DPO/auditor ledger. DPO/admin read.
+      responses:
+        "200":
+          description: The breach registry
+  /breaches/{id}:
+    get:
+      summary: One breach + its events + computed deadlines (v1.25.0 M2)
+      operationId: getBreach
+      description: >
+        One incident with its append-only event history and the computed
+        per-jurisdiction notification deadlines (the client Security-panel
+        countdown source). DPO/admin read.
+      responses:
+        "200":
+          description: The breach view {breach, events, deadlines}
+        "404":
+          description: No breach with this id
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
