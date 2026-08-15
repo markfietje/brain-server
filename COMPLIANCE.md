@@ -390,3 +390,67 @@ The UMP binding's §5 obligations mapped onto the existing controls:
 | Auditability (§9) | `/ump/audit` + `/ump/audit/verify` alias the existing SHA-256 hash-chained log; `capabilities.audit: true` |
 | Change-feed privacy | `/ump/subscribe` carries `{kind,id}` only — event bodies never leave the DB (documented §3.8 posture) |
 | Injection-resistant rehydration (§5.3) | Verify-before-emit + scope-filter-before-ranking on the server; client obligations documented in `SECURITY.md` §UMP (bodies are data, never commands) |
+
+## 10. Regulated-Sector Compliance Pack (v1.22.0)
+
+> **v1.22.0 "Regulated" (2026-08-15):** the *enforcement* behind the v1.21.0
+> policy fields. Each subsection is a **documented posture** mapping the
+> shipped controls to a regulated buyer's evidence need — it is **not a
+> certification**, and certification remains the operator's own external audit.
+
+### 10.1 HIPAA (45 CFR Part 164 — Security Rule + §164.502(g))
+The health-memory use case trails whether a fact applies to a subject, can be
+provably isolated to it, and is built on a strict-mode masking layer for PHI.
+
+| HIPAA requirement | brain-server evidence (v1.22) |
+|---|---|
+| Access controls (§164.312(a)(1)) | JWT/JWS + OIDC/JWKS + opaque bearer; per-route AuthZ matrix (handler-entry gates, test-pinned); record-level `access_scope` (v1.14) is the min-necessary filter |
+| Audit controls (§164.312(b)) | Append-only SHA-256 hash-chained audit (§3) of every ingest/approve/erase; read-events via `BRAIN_AUDIT_READ_EVENTS`; `/audit/verify` chain-ok |
+| Integrity (§164.312(c)(1)) | Supersede-not-delete + per-row content hash + UMP §2.8 signature verify-on-read (§9) |
+| Transmission security (§164.312(e)(1)) | Loopback-first (data physically never leaves the host); TLS is the operator's reverse-proxy layer |
+| Minimum necessary (§164.502(b)) | `access_scope` + PII read-path redaction (`redact_content` for non-admin); `GET /proposals` review before any write promotes |
+| PHI tokenization | v1.14.2 strict masking writes one-way `[redacted:*]` placeholders, not raw PHI, at the write boundary |
+| Storage limitation / retention | per-domain + per-kind TTL policy (v1.21 profiles) now **reportable**: `GET /retention/report` is the Art 5(1)(e)/HIPAA retention-schedule evidence (kind → ttl_days → count → 30d-expiring) |
+| Breach deferral / litigation hold | `legal_holds` freezes a chunk against every erasure path (decay skip, `/purge` + `/dsar` `409 legal_hold_active`) until released — the WORM-lite posture for a pending matter |
+| Business Associate note | BAA is a contractual layer between the covered entity and the operator; brain-server provides the technical-file evidence the BAA's compliance annex refers to. |
+
+### 10.2 SOX (17 CFR §229 / PCAOB AS 2201)
+SOX centers audit integrity, retention, and anti-anti-fraud controls over the
+financial reporting process; the memory store's role is to evidence *what was
+known, when, and who changed it* without loss or silent alteration.
+
+| SOX control theme | brain-server evidence |
+|---|---|
+| Immutable audit trail | Append-only SHA-256 hash-chained audit (§3); a tampered chain fails `/audit/verify` |
+| No silent alteration | Supersede-not-delete: a revised record becomes a new revision and the old one is retired (`valid_to`), never overwritten |
+| Records preservation | Retention classes (v1.21) + `GET /retention/report` (v1.22) prove the schedule; legal hold freezes records against erasure during an investigation |
+| Erasure refusal (litigation hold) | `/purge` + `/dsar` refuse a held id with `409 legal_hold_active` + the hold reasons; release is explicit (`POST /legal-hold/{id}/release`), never automatic |
+| Access for auditors | Admin-scoped `/audit`, `/legal-holds`, `/retention/report` endpoints; the certificate lists deferred-erasures (`held_ids[]` + reasons) so a matter is answerable |
+
+### 10.3 FedRAMP / FISMA (NIST 800-53 control posture)
+A posture against the *control families* a federal buyer would interrogate,
+mapped to the shipped, test-pinned evidence. Single-tenant, loopback-bound:
+the boundary, encryption, and monitoring layers the operator positions.
+
+| NIST 800-53 family | brain-server evidence |
+|---|---|
+| AC (Access Control) | JWT/OIDC/JWKS + opaque bearer; per-route AuthZ matrix; record-level `access_scope` (v1.14) |
+| AU (Audit & Accountability) | Hash-chained audit (§3), `/audit/verify`, `/metrics` continuous-monitoring feed, replayable `/recall/{id}/trace` (v1.15) |
+| SC-28 (Protection at Rest) | No application-level encryption at rest — full-disk encryption is the operator's layer (explicitly documented, not assumed) |
+| SC-7 (Boundary Protection) | Loopback-first binding (data physically never leaves the host); the network boundary + TLS terminate at the operator's reverse proxy |
+| SI-12 (Information Handling) | Retention classes + `GET /retention/report` (v1.22) demonstrate storage-limitation; DSAR locate→purge→certificate (§4) is the deletion path |
+| IR (Incident Response) | The hash-chained audit + tombstones supply the forensic evidence an IR plan consumes; legal hold preserves evidence during a response |
+
+### 10.4 The new v1.22 controls (across the maps)
+- **Legal hold** (`legal_holds`, §10.1/§10.2): a frozen id is absent from the
+  `/decayed` registry, refused by `/purge` + `/dsar` (`409 legal_hold_active` +
+  reasons), and deferred (with reasons) on a DSAR certificate — the legal-
+  defensibility artifact for litigation/regulatory hold across every sector.
+- **Retention reporting** (`GET /retention/report`, §10.1/§10.3): the
+  storage-limitation proof regulators ask for, per domain × kind → ttl_days →
+  count → 30d-expiring.
+- **Region pin** (`BRAIN_REGION`): the residency stamp proves *where data
+  lived* (is a built-in DSAR-certificate field: e.g. `eu-west-1`,
+  `ph-manila`), the evidence a residency clause or a jurisdiction map (§6.3)
+  points at. A stamp is never rewritten, so history is preserved across a
+  region change.
