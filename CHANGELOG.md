@@ -19,6 +19,94 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.22.0] — 2026-08-15
+
+### Server — "Regulated" (legal hold + retention classes + region pin)
+
+Server-only `Cargo.toml`/lock 1.21.0 → 1.22.0; client + plugin unchanged.
+The **enforcement** behind the v1.21.0 policy fields, for the regulated
+buyer (finance/government/litigation): legal hold, retention reporting,
+region pin — plus the compliance-pack posture docs. Small, bounded, real;
+no new governance fields, no background worker. See
+`IMPLEMENTATION_PLAN_v1.22.0_Regulated.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- None in this release.
+
+**Improvements**
+
+- **Legal hold** — freeze any chunk against every erasure path (decay
+  skip, `/purge` and DSAR refusal) with an explicit reason; a held id stays
+  frozen until the hold is explicitly released, and multiple concurrent
+  holds are allowed. A DSAR that hits a held id defers that erasure and lists
+  the id + reason on the certificate, so a subject is told *why*.
+- **Retention reporting** — `GET /retention/report`: a per domain × kind →
+  TTL → count → expiring-in-30-days table, the storage-limitation evidence
+  HIPAA/SOX/FedRAMP reviewers ask for.
+- **Region pin** — `BRAIN_REGION` stamps every chunk, `/export`, and the
+  DSAR certificate with where the data lived (`eu-west-1`, `ph-manila`, …),
+  the data-residency provenance a residency clause points at. A stamp is
+  never rewritten, so history is preserved across a region change.
+- **Compliance pack** — HIPAA, SOX, and FedRAMP/FISMA posture maps appended
+  to `COMPLIANCE.md` (§10), mapping the shipped controls to each framework.
+
+**Security fixes**
+
+- A legally held id is now **frozen against erasure**: `/purge` and DSAR
+  refuse it (`409 legal_hold_active` with the hold reasons) and it never
+  appears in the decay review as "safe to purge".
+
+### Engineering record
+
+- **M1 — legal hold** (`src/legal_hold.rs` + `src/handlers/holds.rs` +
+  migration). New `legal_holds` table `(id PK, knowledge_id, reason,
+  held_by, held_at, released_at)` lives in every domain DB so enforcement
+  runs in the same pool/tx as the purge it gates; a partial index serves
+  only active (unreleased) holds. `POST /legal-hold` (ids + reason, bounded
+  by `MAX_HOLD_IDS`), `POST /legal-hold/{id}/release` (404 on unknown /
+  already-released), `GET /legal-holds` (filterable, Admin) — every action
+  audited. Enforcement: `page_decayed` filters held ids out of `/decayed`;
+  `purge` returns `409 legal_hold_active` (+ the per-id reasons) via the new
+  `HandlerError::conflict_with`; `run_dsar_pool` locates held targets,
+  **defers** (never purges) them, and lists `{id, reasons}` on the
+  certificate's `held_ids[]`. Multiple concurrent holds are supported; an id
+  is frozen until EVERY hold on it is explicitly released (never auto).
+- **M2 — retention report** (`handlers::govern::retention_report`). Reads
+  the effective per-kind policy (server defaults + persisted overrides; a
+  bound profile's retained kinds are honored) and joins it against each
+  domain's rows: kind → ttl_days → count → count expiring within 30d.
+  Reportable policy, not auto-delete (human purges; holds block even that).
+- **M3 — region pin** (`storage_layout::region`/`region_from` +
+  `knowledge.region` column + an `AFTER INSERT` trigger). `BRAIN_REGION`
+  (lowercase alnum+hyphen label, 1..=63, fail-closed on anything else) is
+  stamped at INSERT by a trigger (all ingest paths, zero per-site churn),
+  backfilled onto legacy NULL rows once, and never rewritten (a region
+  change preserves where pre-existing rows lived; the trigger re-points to
+  stamp new rows). Surfaced on every chunk + `/export` + the DSAR
+  certificate + bundle.
+- **M4 — compliance pack** (`COMPLIANCE.md` §10): HIPAA control map
+  (access/audit/integrity/min-necessary/PHI tokenization/retention/hold),
+  SOX (immutable audit, supersede-not-delete, records preservation, erasure
+  refusal), FedRAMP/FISMA posture against NIST 800-53 families. Posture, not
+  certification.
+- **Tests** — main bin 554 → **556** passed / 6 ignored (incl.
+  `legal_hold_freezes_erasure_and_dsar_defers`, `retention_report_matches_policy`),
+  lib 86 → **87** (+ `region_from` resolver). The migration contract test now
+  pins **schema_version 1.22.0** and the route-authz audit learned the `holds`
+  module. Clippy `-D warnings` + fmt clean. The new integration test is
+  written idiomatically (`Result<_, Box<dyn Error>>` + `?`, no bare
+  `unwrap()` — only `.expect()` with a message and safe `unwrap_or`/`filter_map`).
+- **Honest ceilings** — legal hold is per-id manual (no e-discovery
+  search-to-hold yet); region is a stamp, not routing (multi-region is v2.x);
+  retention classes *report* TTL coverage but don't auto-enforce (decay marks,
+  the human purges, legal hold blocks even that); no certification — the
+  compliance pack documents a posture, the external audit certifies.
+
+---
+
 ## [1.21.0] — 2026-08-15
 
 ### Server + client — "Profiles" (presets + the use-case onboarding wizard)
