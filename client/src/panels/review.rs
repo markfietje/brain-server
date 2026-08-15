@@ -420,6 +420,22 @@ pub fn panel() -> Element {
     let _ = tick(); // re-render the countdowns on each clock bump
     let now = crate::time_budget::now_unix();
 
+    // v1.27.12 "ReviewArmour": snapshot the displayed-bytes fingerprint per id.
+    // decide/batch read it and pass it back on approve so the server binds the
+    // decision to exactly the bytes this panel rendered. A `use_signal` handle
+    // (Copy) so both `move` closures capture it without a borrow conflict; set
+    // only when the list actually changes to avoid a render loop.
+    let mut digests = use_signal(HashMap::<i64, String>::new);
+    {
+        let m: HashMap<i64, String> = ordered
+            .iter()
+            .map(|p| (p.id, p.content_digest.clone()))
+            .collect();
+        if *digests.read() != m {
+            digests.set(m);
+        }
+    }
+
     // M2.1: publish the pending count so the AppShell badge reflects reality.
     // `use_effect` runs after render; writes the signal the top bar reads.
     use_effect(move || {
@@ -452,7 +468,10 @@ pub fn panel() -> Element {
                 let res = if reject {
                     api.reject_proposal(id, reason.as_deref()).await.map(|_| 0)
                 } else {
-                    api.approve_proposal(id, None).await.map(|r| r.chunk_id)
+                    let d = digests().get(&id).cloned();
+                    api.approve_proposal(id, None, d.as_deref())
+                        .await
+                        .map(|r| r.chunk_id)
                 };
                 let action = if reject {
                     crate::queue::QueuedAction::Reject {
@@ -481,7 +500,8 @@ pub fn panel() -> Element {
             let res = if reject {
                 api.reject_proposal(id, None).await.map(|_| 0)
             } else {
-                api.approve_proposal(id, supersedes)
+                let d = digests().get(&id).cloned();
+                api.approve_proposal(id, supersedes, d.as_deref())
                     .await
                     .map(|r| r.chunk_id)
             };
@@ -1118,7 +1138,7 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64) -> Element {
     let approve = move |_| {
         let mut state = state;
         spawn(async move {
-            match api().approve_proposal(proposal_id, None).await {
+            match api().approve_proposal(proposal_id, None, None).await {
                 Ok(_) => {
                     nav.replace(Route::Review {});
                 }
@@ -1303,6 +1323,7 @@ mod tests {
             id: 7,
             kind: "fact".into(),
             content: "x".into(),
+            content_digest: String::new(),
             source: None,
             source_prompt: None,
             screen_verdict: None,
@@ -1331,6 +1352,7 @@ mod tests {
                 id,
                 kind: "fact".into(),
                 content: "c".into(),
+                content_digest: String::new(),
                 source: None,
                 source_prompt: None,
                 screen_verdict: None,
@@ -1377,6 +1399,7 @@ mod tests {
                 id,
                 kind: "fact".into(),
                 content: "c".into(),
+                content_digest: String::new(),
                 source: None,
                 source_prompt: None,
                 screen_verdict: verdict.map(|s| s.to_string()),
@@ -1429,6 +1452,7 @@ mod tests {
                 id,
                 kind: "fact".into(),
                 content: "c".into(),
+                content_digest: String::new(),
                 source: None,
                 source_prompt: None,
                 screen_verdict: None,

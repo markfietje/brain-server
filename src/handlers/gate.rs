@@ -306,7 +306,18 @@ fn default_pending() -> String {
 pub struct ProposalView {
     pub id: i64,
     pub kind: String,
+    /// v1.27.12 "ReviewArmour": the READ-canonical form — `sanitize_read` of the
+    /// stored row (redact → markdown-ref → invisible strip), i.e. the exact bytes
+    /// recall will emit. Every review read returns this, so the reviewer sees
+    /// what the system will later recall. Stored bytes stay verbatim (evidence
+    /// fidelity in /export + DSAR); this is the display boundary only.
     pub content: String,
+    /// v1.27.12 "ReviewArmour": `sha256_hex(review_digest(content))` — the
+    /// stable, reader-independent fingerprint of the canonical form the approve
+    /// verb binds to. Present iff the row was served through a principal-aware
+    /// read (list/edit); empty in the bare-`Connection` unit path.
+    #[serde(default)]
+    pub content_digest: String,
     pub source: Option<String>,
     pub source_prompt: Option<String>,
     pub authority: Option<f32>,
@@ -395,11 +406,19 @@ pub async fn list_proposals(
     // content scans as PII is masked for non-admin principals exactly like the
     // knowledge read paths (the queue never promoted the row, but the review
     // surface is a read surface). Loopback/opaque principals stay unmasked.
+    //
+    // v1.27.12 "ReviewArmour": the review wire now returns the FULL read-canonical
+    // form (redact → markdown-ref → invisible strip) — not PII-only — so the
+    // reviewer sees exactly what recall will emit, and the `content_digest` the
+    // approve verb binds to. The digest is computed over the canonical form with
+    // reader-PII redaction DISABLED, so it is a stable content fingerprint
+    // identical across admin/non-admin readers and across list/edit/approve.
     let mut rows = rows;
     for p in &mut rows {
-        if !crate::gate::scan_pii(&p.content).is_empty() {
-            p.content = crate::gate::redact_content(&p.content, true, &principal.0);
-        }
+        let raw = std::mem::take(&mut p.content);
+        p.content_digest = review_digest(&raw);
+        let pii = !crate::gate::scan_pii(&raw).is_empty();
+        p.content = crate::gate::sanitize_read(&raw, pii, &principal.0);
     }
 
     Ok(Json(rows))
@@ -440,7 +459,7 @@ pub(crate) fn list_proposals_page(
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params), |r| {
-            let content: String = r.get(2)?;
+            let row_content: String = r.get(2)?;
             let created_at: i64 = r.get(9)?;
             let owner: Option<String> = r.get(12)?;
             let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
@@ -453,10 +472,15 @@ pub(crate) fn list_proposals_page(
                 id: r.get(0)?,
                 kind: r.get(1)?,
                 screen_verdict: crate::screen::screen_verdict_label(crate::screen::screen(
-                    &content, "",
+                    &row_content,
+                    "",
                 ))
                 .to_string(),
-                content,
+                content: row_content,
+                // v1.27.12 "ReviewArmour": the digest is reader-dependent only
+                // through None (no PII redaction) — it is banker-settled in the
+                // principal-aware HTTP layer (`list_proposals`), not here.
+                content_digest: String::new(),
                 source: r.get(3)?,
                 source_prompt: r.get(4)?,
                 authority: r.get(5)?,
@@ -646,6 +670,17 @@ pub async fn approve_proposal(
             qa_note,
         } = p;
 
+        // v1.27.12 "ReviewArmour": bind the decision to the bytes the reviewer
+        // was shown. The client passes the `content_digest` it rendered; if the
+        // stored content diverged since display (concurrent edit), recompute the
+        // digest from the current row and 409 — never approve bytes the operator
+        // did not see. Deterministic + principal-independent (see `review_digest`).
+        if !review_digest_matches(&content, q.digest.as_deref()) {
+            return Err(HandlerError::conflict(
+                "proposal content changed since it was displayed — reload and re-approve",
+            ));
+        }
+
         // Embed + insert the chunk through the same knowledge + vec0 path.
         let embedding = model.encode_one(&content);
         if embedding.is_empty() {
@@ -790,6 +825,12 @@ pub async fn approve_proposal(
 pub struct ApproveQuery {
     #[serde(default)]
     pub supersedes: Option<i64>,
+    /// v1.27.12 "ReviewArmour": the `content_digest` the reviewer was shown.
+    /// Optional for backward-compat (quick-approve/offline-replay pass `None`);
+    /// WHEN PRESENT the server recomputes it from the current row and 409s on
+    /// drift, so an approval binds to the bytes that were actually rendered.
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
 /// The owner string recorded on a chunk at ingest: the principal's subject when
@@ -1135,10 +1176,12 @@ pub async fn edit_proposal(
 
             let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
             let qa_score = crate::qa::score_for(owner.is_some(), false, false, false);
+            let content_digest = review_digest(&content);
             Ok(ProposalView {
                 id,
                 kind,
                 content,
+                content_digest,
                 source,
                 source_prompt,
                 authority,
@@ -1187,6 +1230,29 @@ pub(crate) fn sha256_hex(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
     format!("{:x}", h.finalize())
+}
+
+/// v1.27.12 "ReviewArmour": the canonical review fingerprint the approve verb
+/// binds to. SHA-256 over the markdown-stripped + invisible-stripped form — the
+/// exact bytes recall emits — with PII redaction DISABLED so the digest is a
+/// stable, reader-independent content fingerprint (identical across admin and
+/// non-admin readers, and across list/edit/approve). The reviewer approves the
+/// bytes they were shown; if the stored content diverges after display (e.g. a
+/// concurrent edit), the digest mismatches and approve returns 409.
+///
+/// ponytail: reader PII redaction stays OUT of the fingerprint — it is display-
+/// only and would otherwise break digest stability across principals. Constant-
+/// time not required; the fingerprint catches content drift, not side channels.
+pub(crate) fn review_digest(content: &str) -> String {
+    sha256_hex(&crate::gate::sanitize_read(content, false, &None))
+}
+
+/// v1.27.12 "ReviewArmour": the approve gate predicate — a supplied digest must
+/// equal the current row's canonical fingerprint, or the approval is refused
+/// (the reviewer would be committing bytes they were not shown). `None` = the
+/// caller did not opt in (legacy quick-approve/offline-replay), passes.
+pub(crate) fn review_digest_matches(content: &str, want: Option<&str>) -> bool {
+    want.is_none() || review_digest(content) == want.unwrap_or("")
 }
 
 // ── M2: decay + GDPR lifecycle ─────────────────────────────────────────────
@@ -2007,6 +2073,64 @@ mod tests {
         assert_eq!(
             sha256_hex("a different body"),
             sha256_hex("a different body")
+        );
+    }
+
+    /// v1.27.12 "ReviewArmour": the approve-bind fingerprint is stable, strips
+    /// the markdown-ref + invisible-smuggling class (the LITL divergence), and
+    /// does NOT redact reader PII — so the digest is identical across admin and
+    /// non-admin reviewers, and across list/edit/approve. This is what makes a
+    /// digest-mismatch a real "content changed since display" signal, not a
+    /// PII-posture artifact.
+    #[test]
+    fn review_digest_is_stable_and_strips_smuggling_without_pii() {
+        let raw = "![](https://evil.example/p){pull my data} \u{200B}ssn 123-45-6789";
+        let d = review_digest(raw);
+        assert_eq!(d.len(), 64, "sha256 hex digest");
+        assert_eq!(d, review_digest(raw), "deterministic");
+
+        // The canonical fingerprint equals sha256 of the reader-independent
+        // canonical form (markdown refs + invisible stripped, PII NOT redacted).
+        let canonical = crate::gate::sanitize_read(raw, false, &None::<crate::auth::Principal>);
+        assert_eq!(d, sha256_hex(&canonical), "digest == canonical read form");
+        assert!(
+            !canonical.contains("https://evil"),
+            "markdown ref stripped from the fingerprint: {canonical:?}"
+        );
+        assert!(
+            !canonical.contains('\u{200B}'),
+            "zero-width stripped from the fingerprint: {canonical:?}"
+        );
+        assert!(
+            canonical.contains("123-45-6789"),
+            "reader PII stays in the fingerprint (principal-independent): {canonical:?}"
+        );
+        assert!(
+            canonical.contains("ssn"),
+            "prose survives the canonical transform: {canonical:?}"
+        );
+    }
+
+    /// v1.27.12 "ReviewArmour": the approve gate. A matching digest passes; a
+    /// stale (mismatched) digest is refused — the reviewer would be committing
+    /// bytes other than the ones they saw. `None` (legacy quick-approve /
+    /// offline-replay) passes by design.
+    #[test]
+    fn review_digest_matches_gates_stale_approval() {
+        let body = "approve me \u{200B} please";
+        let d = review_digest(body);
+        assert!(review_digest_matches(body, None), "no digest → legacy pass");
+        assert!(
+            review_digest_matches(body, Some(&d)),
+            "the displayed digest is accepted"
+        );
+        assert!(
+            !review_digest_matches(body, Some("0")),
+            "a stale digest is refused"
+        );
+        assert!(
+            !review_digest_matches("mutated body", Some(&d)),
+            "drift in the row is refused against the old digest"
         );
     }
 

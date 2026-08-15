@@ -476,16 +476,29 @@ impl ApiClient {
         ))
         .await
     }
-    /// POST /proposals/{id}/approve[?supersedes=N]
+    /// POST /proposals/{id}/approve[?supersedes=N][&digest={content_digest}]
+    /// v1.27.12 "ReviewArmour": pass the `content_digest` the caller rendered so
+    /// the server binds the decision to the displayed bytes. `None`
+    /// (quick-approve/offline-replay) skips the binding — the server enforces
+    /// only when a digest is present.
     pub async fn approve_proposal(
         &self,
         id: i64,
         supersedes: Option<i64>,
+        digest: Option<&str>,
     ) -> Result<ApproveResult, ApiError> {
-        let path = match supersedes {
-            Some(s) => format!("/proposals/{id}/approve?supersedes={s}"),
-            None => format!("/proposals/{id}/approve"),
-        };
+        let mut path = format!("/proposals/{id}/approve");
+        if let Some(s) = supersedes {
+            path.push_str(&format!("?supersedes={s}"));
+        }
+        if let Some(d) = digest {
+            path.push_str(if supersedes.is_some() {
+                "&digest="
+            } else {
+                "?digest="
+            });
+            path.push_str(&url_encode(d));
+        }
         self.post_empty(&path).await
     }
     /// POST /proposals/{id}/reject[?reason=…] — v1.16.0 M3: optional reason
@@ -1207,6 +1220,12 @@ pub struct Proposal {
     pub id: i64,
     pub kind: String,
     pub content: String,
+    /// v1.27.12 "ReviewArmour": the stable fingerprint of the displayed bytes.
+    /// The approve verb passes it back so the server binds the decision to what
+    /// was actually rendered (`storage.rs` review path). `#[serde(default)]` so a
+    /// cache/stale payload degrades to `None` (server enforces only when present).
+    #[serde(default)]
+    pub content_digest: String,
     #[serde(default)]
     pub source: Option<String>,
     /// v1.20.1 "Shield" M2: the caller-provided prompt that fed this capture,

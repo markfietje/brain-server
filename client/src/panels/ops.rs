@@ -221,7 +221,7 @@ pub fn panel() -> Element {
             let res: Result<(), crate::api::ApiError> = if reject {
                 api.reject_proposal(id, None).await.map(|_| ())
             } else {
-                api.approve_proposal(id, None).await.map(|_| ())
+                api.approve_proposal(id, None, None).await.map(|_| ())
             };
             if let Err(e) = res {
                 if crate::queue::is_offline(&e) {
@@ -411,6 +411,7 @@ mod tests {
             id,
             kind: "memory".into(),
             content: "c".into(),
+            content_digest: String::new(),
             source: None,
             source_prompt: None,
             screen_verdict: None,

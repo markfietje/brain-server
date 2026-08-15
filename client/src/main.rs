@@ -430,9 +430,10 @@ fn app() -> Element {
             for action in queue::take_all() {
                 use queue::QueuedAction::*;
                 let res = match &action {
-                    Approve { id, supersedes } => {
-                        api.approve_proposal(*id, *supersedes).await.map(|_| ())
-                    }
+                    Approve { id, supersedes } => api
+                        .approve_proposal(*id, *supersedes, None)
+                        .await
+                        .map(|_| ()),
                     Reject { id, reason } => api
                         .reject_proposal(*id, reason.as_deref())
                         .await

@@ -232,7 +232,7 @@ pub fn panel() -> Element {
             let _ = if reject {
                 api().reject_proposal(id, None).await.map(|_| ())
             } else {
-                api().approve_proposal(id, None).await.map(|_| ())
+                api().approve_proposal(id, None, None).await.map(|_| ())
             };
             refresh += 1;
         });
