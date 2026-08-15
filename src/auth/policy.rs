@@ -140,6 +140,29 @@ pub fn is_authorized(principal: &Principal, action: Action, team: &str, domain: 
         .any(|s| s.grants(action, &team_lc, &domain_lc))
 }
 
+/// v1.27.9 "Roles": the client-domain allowlist seam. A `client-auditor`
+/// principal (a client's compliance login) is granted exactly the client
+/// domains its scopes name — the non-wildcard `domain` of each scope is the
+/// allowlist key (e.g. scope `admin:ops/acme-us` → client-domain `acme-us`).
+/// `None` = unrestricted: not a client-auditor, or the opaque/loopback
+/// back-compat superuser. `Some(&[])` = a client-auditor with no granted
+/// client-domain sees nothing. The operator binds the auditor's JWT `scopes`
+/// to that client's domain; the register (not this key) remains the source of
+/// truth for which client-domain maps to which row.
+pub fn client_authorized_domains(principal: &Option<Principal>) -> Option<Vec<String>> {
+    let p = principal.as_ref()?;
+    if !p.roles.iter().any(|r| r == "client-auditor") {
+        return None;
+    }
+    Some(
+        p.scopes
+            .iter()
+            .map(|s| s.domain.clone())
+            .filter(|d| d != "*")
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

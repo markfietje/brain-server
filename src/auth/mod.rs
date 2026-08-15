@@ -54,7 +54,7 @@ pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
 #[allow(unused_imports)]
 pub use jwt::{AuthError, Claims, TokenType, VerifyingKey, ALLOWED_ALGS};
 #[allow(unused_imports)]
-pub use policy::{is_authorized, Action, Principal, Scope};
+pub use policy::{client_authorized_domains, is_authorized, Action, Principal, Scope};
 #[allow(unused_imports)]
 pub use revocation::{purge_expired, revoke, revoke_chain, RevocationCache};
 

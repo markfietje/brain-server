@@ -8330,14 +8330,23 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(bindings, 0, "no domain is bound to a profile by default");
 
-        // v1.23.0 "Roles": the roles table exists and the 10 ship-with roles
+        // v1.23.0 "Roles": the roles table exists and the 12 ship-with roles
         // are seeded (INSERT OR IGNORE — a re-migration never overwrites an
         // operator edit). The `solo` SMB role carries every action (the
         // simplest default).
         let roles_seeded: i64 = db
             .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(roles_seeded, 10, "the 10 ship-with roles are seeded");
+        assert_eq!(roles_seeded, 12, "the 12 ship-with roles are seeded");
+        // v1.27.9 "Roles": the BPO client postures are among them.
+        let auditor: String = db
+            .query_row(
+                "SELECT json FROM roles WHERE name = 'client-auditor'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(auditor.contains("\"can\":[\"read\"]"));
         let solo: String = db
             .query_row("SELECT json FROM roles WHERE name = 'solo'", [], |r| {
                 r.get(0)
@@ -10468,6 +10477,9 @@ Final paragraph after the rule.";
             ("/transfers/{id}/tia", "Admin"),
             ("/transfers/{id}/dpa", "Admin"),
             // v1.27.1 Clients: the BPO operating register (Admin, audited).
+            // v1.27.9 Roles: /clients + /clients/{name} stay Admin at the path
+            // gate; a client-auditor principal gets a row-level domain filter
+            // (the handler still enforces authorize — defense-in-depth).
             ("/clients", "Admin"),
             ("/clients/{name}", "Admin"),
             ("/clients/{name}/dpa", "Admin"),

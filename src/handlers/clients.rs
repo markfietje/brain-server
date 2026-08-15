@@ -77,13 +77,23 @@ pub async fn register_client(
     Ok(Json(serde_json::json!({ "name": req.name })))
 }
 
-/// `GET /clients` — the full register, ordered by name. Admin read.
+/// `GET /clients` — the registered clients, ordered by name. Admin read for
+/// every principal EXCEPT a `client-auditor`, whose view is a row-level filter
+/// to exactly its granted client-domain(s) (parent verification #7) — the
+/// server enforces `authorize` on the path too (defense-in-depth).
 pub async fn list_clients(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let granted = crate::auth::client_authorized_domains(&principal.0);
+    match &granted {
+        Some(g) if !g.is_empty() => {
+            super::authorize(&principal.0, crate::auth::Action::Read, "", &g[0])?
+        }
+        Some(_) => return Err(HandlerError::not_found("client not found")),
+        None => super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?,
+    }
     let pool_for = pool.clone();
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
@@ -97,31 +107,52 @@ pub async fn list_clients(
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    let rows = match granted {
+        Some(g) => rows
+            .into_iter()
+            .filter(|row| {
+                row["domain"]
+                    .as_str()
+                    .is_some_and(|d| g.iter().any(|granted| granted == d))
+            })
+            .collect(),
+        None => rows,
+    };
     Ok(Json(serde_json::json!({ "clients": rows })))
 }
 
 /// `GET /clients/{name}` — resolve one client. Admin read; 404 when absent.
+/// For a `client-auditor`, the specific client is denied (404, no existence
+/// leak) unless its domain is in the principal's granted set.
 pub async fn get_client(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    if crate::auth::client_authorized_domains(&principal.0).is_none() {
+        super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    }
     let pool_for = pool.clone();
-    let value =
-        tokio::task::spawn_blocking(move || -> Result<Option<serde_json::Value>, HandlerError> {
+    let key = name.trim().to_ascii_lowercase();
+    let value = tokio::task::spawn_blocking(
+        move || -> Result<Option<crate::clients::Client>, HandlerError> {
             let conn = pool_for
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            Ok(crate::clients::by_name(&conn, &name)?
-                .map(|c| serde_json::to_value(c).unwrap_or_default()))
-        })
-        .await
-        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
-    Ok(Json(value.ok_or_else(|| {
-        HandlerError::not_found("client not found")
-    })?))
+            crate::clients::by_name(&conn, &key)
+        },
+    )
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    let client = value.ok_or_else(|| HandlerError::not_found("client not found"))?;
+    if let Some(granted) = crate::auth::client_authorized_domains(&principal.0) {
+        if !granted.iter().any(|d| d == &client.domain) {
+            return Err(HandlerError::not_found("client not found"));
+        }
+        super::authorize(&principal.0, crate::auth::Action::Read, "", &client.domain)?;
+    }
+    Ok(Json(serde_json::to_value(client).unwrap_or_default()))
 }
 
 /// `POST /clients/{name}/dsar` body. `action` is the shared DSAR vocab
@@ -1213,5 +1244,80 @@ mod tests {
         assert_eq!(resp.len(), 1, "only the managed agent's proposal surfaces");
         assert_eq!(resp[0].owner.as_deref(), Some("agent-1"));
         assert!(resp[0].qa_score > 0, "qa list carries a score");
+    }
+
+    #[tokio::test]
+    async fn client_auditor_sees_only_their_domain() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "acme", "acme-us", "us");
+        register_client(&state, "beta", "beta-eu", "eu");
+
+        let auditor = || {
+            OptPrincipal(Some(crate::auth::Principal {
+                sub: "compliance@acme".to_string(),
+                tenant: "ops".to_string(),
+                scopes: vec![crate::auth::Scope::parse("admin:ops/acme-us").unwrap()],
+                jti: "a".to_string(),
+                roles: vec!["client-auditor".to_string()],
+                manages: vec![],
+            }))
+        };
+        let list = list_clients(State(state.clone()), auditor())
+            .await
+            .expect("auditor list runs");
+        let names: Vec<&str> = list["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["acme"],
+            "only the granted client-domain surfaces"
+        );
+
+        let denied = get_client(State(state.clone()), auditor(), Path("beta".to_string()))
+            .await
+            .expect_err("beta is not the auditor's client");
+        assert_eq!(denied.status, StatusCode::NOT_FOUND);
+
+        let ops = OptPrincipal(Some(crate::auth::Principal {
+            sub: "ops".to_string(),
+            tenant: "ops".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:ops/*").unwrap()],
+            jti: "b".to_string(),
+            roles: vec!["bpo-ops".to_string()],
+            manages: vec![],
+        }));
+        let all = list_clients(State(state.clone()), ops)
+            .await
+            .expect("bpo-ops list runs");
+        let names: Vec<&str> = all["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["acme", "beta"], "bpo-ops sees every client");
+    }
+
+    #[tokio::test]
+    async fn client_auditor_can_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let auditor = OptPrincipal(Some(crate::auth::Principal {
+            sub: "compliance@acme".to_string(),
+            tenant: "ops".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:ops/acme-us").unwrap()],
+            jti: "a".to_string(),
+            roles: vec!["client-auditor".to_string()],
+            manages: vec![],
+        }));
+        let err = crate::handlers::authorize_role(&auditor.0, &state.pool, "admin")
+            .expect_err("client-auditor cannot admin");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(crate::handlers::authorize_role(&auditor.0, &state.pool, "read").is_ok());
     }
 }
