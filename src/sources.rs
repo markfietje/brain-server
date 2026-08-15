@@ -470,6 +470,49 @@ mod tests {
     }
 
     #[test]
+    fn slack_reconcile_sweeps_deleted_channel_and_spares_other_kinds() {
+        // v1.24.0 Connectors M3: removing a channel from the allowed list
+        // retires that channel's sources via a kind-scoped reconcile — a Slack
+        // reconcile never touches a CRM source (kind-scoping is per-connector).
+        let mut c = db();
+        let tx = c.transaction().unwrap();
+        let dropped = upsert_source(&tx, "slack://sales/1700000000.1", "slack", None).unwrap();
+        let kept = upsert_source(&tx, "slack://sales/1700000000.2", "slack", None).unwrap();
+        let crm = upsert_source(&tx, "crm://acme/opp-1", "crm", None).unwrap();
+        for sid in [dropped, kept, crm] {
+            let rid = match upsert_revision(&tx, sid, "r1", None, 1, 10).unwrap() {
+                RevisionOutcome::Created { id, .. } => id,
+                _ => panic!(),
+            };
+            let cid = chunk(&tx, "x");
+            link_chunks(&tx, sid, rid, &[cid]).unwrap();
+        }
+
+        // The channel was removed → only "kept" is in the live set.
+        let live: std::collections::HashSet<String> = ["slack://sales/1700000000.2".to_string()]
+            .into_iter()
+            .collect();
+        let report = reconcile(&tx, "slack", &live).unwrap();
+
+        assert_eq!(report.deleted_sources, 1, "dropped channel retired");
+        assert_eq!(report.deleted_chunks, 1, "its chunk swept");
+        assert_eq!(
+            report.orphan_uris,
+            vec!["slack://sales/1700000000.1".to_string()]
+        );
+
+        // kept + the CRM source survive a slack reconcile.
+        let count_active: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM sources WHERE state = ?1 AND id IN (?2, ?3)",
+                params![STATE_ACTIVE, kept, crm],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_active, 2);
+    }
+
+    #[test]
     fn delete_source_sweeps_chunks_and_tombstones() {
         let mut c = db();
         let tx = c.transaction().unwrap();
