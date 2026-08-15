@@ -19,6 +19,87 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.24.0] — 2026-08-15
+
+### Server — "Connectors" (vertical tool integrations, profile-gated)
+
+Server `Cargo.toml`/lock 1.23.0 → 1.24.0; client + plugin unchanged. The
+supervised connector pipeline (v0.9.6 Bridge: backfill + reconcile + cursor +
+source/revision linkage) gains the **vertical-configuration lever** and the
+**shared translate template** the twelve USE_CASES.md audiences need — CRM,
+Slack, Jira/Linear, and the read-only HRIS/EHR records — on the same template
+as the existing GitHub connector. No new pipeline; each connector is a
+translate+ingest module gated by a profile's `connectors_allowed` (v1.21.0).
+Reconcile, never auto-sync; read into memory, never write-back. See
+`IMPLEMENTATION_PLAN_v1.24.0_Connectors.md`.
+
+### Release notes
+
+**Improvements**
+
+- **Profile-gated connector registry** — `POST /connectors/register` (Admin,
+  audited) validates a connector kind against the shipped vocabulary and
+  refuses with `403 connector_not_in_profile` any kind a domain's bound
+  profile does not grant. A `health-hipaa` domain can register `ehr-readonly`
+  but not `slack`; a `sales-team` domain registers any `crm-*`. An unbound
+  domain keeps the no-constraint posture.
+- **Shared connector translate template** — CRM opportunities, Slack
+  messages, Jira/Linear issues, and read-only HRIS/EHR records translate to
+  markdown docs carrying a stable source URI (`crm://`, `slack://`, `jira://`)
+  that links into the existing source/revision model and feeds the
+  kind-scoped `/sources/reconcile`. Read-only PII records (HRIS/EHR) default
+  to `private` access scope; every record still flows through the injection
+  screen, so a poisoned record quarantines rather than reaching memory.
+- **CLI vocabulary-aware messages** — `brain connect` / `brain sync` and
+  `brain connector-status` now recognise the full v1.24 kind set and point
+  operators at the register route instead of stale "v0.9.7+" text.
+
+**Security fixes**
+
+- Connector registration is now enforced server-side against the domain's
+  profile before a connector can advertise for that domain.
+
+**Bug fixes**
+
+- None in this release.
+
+### Engineering record
+
+- **M1 — registry + profile gating.** `src/connector/kind.rs` pins the shipped
+  vocabulary (`CONNECTOR_KINDS`), `is_connector_kind()`, and `family()`;
+  `src/profile.rs` adds `Profile::connector_allowed()` — the pure gate
+  (`connectors_allowed` absent → allow; explicit empty → deny-all, the
+  air-gap posture; otherwise exact match or bare-family grant for `a-b` sub-
+  kinds). `src/handlers/connectors.rs` gains the `POST /connectors/register`
+  Admin+audited route; wired into the router, the route-authz guard table, and
+  openapi.yaml. **M2 — the translate template.** `src/connector/pipeline.rs`
+  (`ConnectorDoc`, `connector_source_kind`, `live_uris`, plus `translate_*`
+  for crm/slack/issue/structured-fact) is the pure core every connector feeds;
+  source/revision linkage and kind-scoped reconcile reuse the existing
+  `sources` layer. **M3 — supervised.** Kind-scoped reconcile sweep + the
+  injection screen applied to translated content. **M4 — CLI** message tuning.
+- **Tests** (server bin 569 → 571 passed / 6 ignored; lib 95 → 105 passed):
+  `kind` vocabulary/unknown-reject/family; `Profile::connector_allowed`
+  gating (hipaa/sales/air-gap); `pipeline` translate + source-kind + live-uri
+  linkage (the `crm_backfill_links_source_and_revision` contract);
+  `slack_reconcile_sweeps_deleted_channel_and_spares_other_kinds` (kind-scoped
+  sweep); `connector_translated_record_quarantines_on_injection_suspect`
+  (poisoned connector content quarantines, clean passes). Route-coverage +
+  route-authz audit green with the new route. Clippy `-D warnings` + fmt clean.
+- **Honest ceilings** — connectors are **supervised backfill + reconcile**, not
+  real-time streaming (that is v2.x); the per-source transport (paged fetch,
+  auth refresh, rate limits) needs per-connector handling and the GitHub
+  connector remains the only runnable backfill binary — the other kinds ship
+  in the registry + translate template but have no network client yet, so
+  this release is the foundation, not the full ten-source sync. Read-only into
+  memory; brain-server never mutates Salesforce/Jira/Slack. The client Health
+  panel still reads `/connectors` (now with `last_sync`); its connector-status
+  card is unchanged. Schema stays 1.23.0 — M1 adds no DDL (the `connectors`
+  table already carried `kind TEXT`); the server Cargo bump is release
+  alignment only, independent of the shared contract.
+
+---
+
 ## [1.23.0] — 2026-08-15
 
 ### Client — "Roles" (operator console renders what your role can act on)
