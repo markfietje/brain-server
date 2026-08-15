@@ -940,13 +940,6 @@ impl ApiClient {
             .map(|a| a.iter().filter_map(ClientRow::from_value).collect())
             .unwrap_or_default())
     }
-    /// v1.27.11 "Console": GET /clients/{name} — resolve one register row.
-    pub async fn client_by_name(&self, name: &str) -> Result<ClientRow, ApiError> {
-        let v: serde_json::Value = self
-            .get_json(&format!("/clients/{}", url_encode(name)))
-            .await?;
-        Ok(ClientRow::from_value(&v).unwrap_or_default())
-    }
 }
 // --- v1.16.5 "Secure" helpers ------------------------------------------------
 
@@ -1000,11 +993,14 @@ pub fn scope_client_domains(scope: Option<&str>) -> Vec<String> {
         .unwrap_or("")
         .split_whitespace()
         .filter_map(|grant| {
-            let domain = grant.rsplit('/').next()?;
+            // Require the `action:team/domain` shape (like the server Scope::parse)
+            // so a malformed grant with no '/' is dropped, not treated as a domain.
+            let (_action, domain) = grant.split_once('/')?;
+            let domain = domain.to_ascii_lowercase();
             if domain == "*" || domain == "global" {
                 None
             } else {
-                Some(domain.to_string())
+                Some(domain)
             }
         })
         .collect()
@@ -2344,6 +2340,23 @@ mod tests {
         assert_eq!(url_encode("a b"), "a%20b");
         assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
         assert_eq!(url_encode("a#b"), "a%23b");
+    }
+    /// v1.27.11 "Console": the client mirror of the server
+    /// `client_authorized_domains` filter — never yields the wildcard or the
+    /// operator `global` root, and lowercases so a mixed-case operator grant
+    /// still matches the lowercase register (congruent with the server).
+    #[test]
+    fn scope_client_domains_is_deny_by_default_and_never_global() {
+        // Full grant list: concrete + wildcard + global + mixed-case.
+        let g = scope_client_domains(Some(
+            "read:ops/acme-us read:ops/* admin:ops/global admin:ops/BETA-EU failed",
+        ));
+        assert_eq!(g, vec!["acme-us".to_string(), "beta-eu".to_string()]);
+        // Only wildcard/global → nothing (min-necessary wedge never widens).
+        assert!(scope_client_domains(Some("admin:*/* read:ops/global")).is_empty());
+        // Absent/malformed scope → nothing (deny-by-default).
+        assert!(scope_client_domains(None).is_empty());
+        assert!(scope_client_domains(Some("")).is_empty());
     }
     /// v1.16.0 M2.1: principal accessor + is_configured.
     #[test]
