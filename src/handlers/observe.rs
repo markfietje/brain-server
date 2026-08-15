@@ -76,6 +76,17 @@ pub struct DsarRequest {
     pub action: String,
     #[serde(default)]
     pub dry_run: bool,
+    /// v1.26.0 "Cross-Border" M2: the subject's jurisdiction (country code,
+    /// e.g. `eu`, `us`). Absent → the legacy generic Art 17 window/rights
+    /// surface. When set, the response carries the jurisdiction's curated
+    /// rights + its deadline (GDPR 1 month, CCPA 45 days, PH reasonable, ...).
+    #[serde(default)]
+    pub jurisdiction: Option<String>,
+    /// v1.26.0 "Cross-Border" M2: the mechanism (e.g. `scc-eu-2021`) recorded
+    /// on the deletion certificate — the per-law proof of compliance. Free-text
+    /// so the operator records exactly what they signed.
+    #[serde(default)]
+    pub mechanism: Option<String>,
 }
 
 fn default_dsar_action() -> String {
@@ -104,6 +115,14 @@ pub struct DsarResponse {
     /// (`created_at + window`) — the client clock's source of truth. `0` in a
     /// dry-run preview (no ledger row, no deadline).
     pub deadline: i64,
+    /// v1.26.0 "Cross-Border" M2: the subject's jurisdiction (when provided).
+    /// Absent for the generic surface / a dry-run preview.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jurisdiction: Option<String>,
+    /// v1.26.0 "Cross-Border" M2: the jurisdiction's applicable subject rights
+    /// (the DSAR response lists them so the operator acts per the subject's
+    /// law). Empty when no jurisdiction was given.
+    pub rights: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +175,29 @@ pub async fn post_dsar(
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let action = req.action.clone();
     let action_did_purge = matches!(action.as_str(), "purge" | "both");
+
+    // v1.26.0 "Cross-Border" M2: normalize the subject's jurisdiction.
+    let jurisdiction = match req.jurisdiction.clone() {
+        Some(j) => {
+            let j = j.trim().to_ascii_lowercase();
+            if !crate::transfers::is_jurisdiction_code(&j) {
+                return Err(HandlerError::bad_request(
+                    "jurisdiction_invalid",
+                    "jurisdiction must be a short lowercase country code",
+                ));
+            }
+            Some(j)
+        }
+        None => None,
+    };
+    let rights: Vec<&'static str> = jurisdiction
+        .as_deref()
+        .and_then(crate::transfers::jurisdiction_rule)
+        .map(|r| r.rights.to_vec())
+        .unwrap_or_default();
+    let mechanism = req.mechanism.clone();
+    let jur_for_cert = jurisdiction.clone();
+    let mech_for_cert = mechanism.clone();
 
     // v1.20.24 "Sweep" (cross-domain erasure): a DSAR must cover every
     // registered domain, not just the global pool. In multi-db mode each
@@ -300,6 +342,10 @@ pub async fn post_dsar(
             // residency stamp that proves where the data lived.
             "region": brain_server::storage_layout::region(),
             "held_ids": held,
+            // v1.26.0 M2: the per-law proof — the subject's jurisdiction + the
+            // mechanism the operator recorded (Art 46 safeguard).
+            "jurisdiction": jur_for_cert,
+            "mechanism": mech_for_cert,
             "tombstone_root": tombstone_root,
             "certified_at": certified_at,
             "chain_head": chain_head,
@@ -335,6 +381,8 @@ pub async fn post_dsar(
             status: "preview",
             created_at: 0,
             deadline: 0,
+            jurisdiction: None,
+            rights: Vec::new(),
             certificate: None,
             footprint: Some(fp.clone()),
         }));
@@ -362,7 +410,12 @@ pub async fn post_dsar(
         subject,
         status: "completed",
         created_at,
-        deadline: dsar_deadline(created_at),
+        deadline: jurisdiction
+            .as_deref()
+            .map(|j| crate::transfers::dsar_deadline_for(created_at, j))
+            .unwrap_or_else(|| dsar_deadline(created_at)),
+        jurisdiction,
+        rights,
         certificate: Some(cert),
         footprint: None,
     }))
@@ -713,7 +766,7 @@ fn build_export_bundle(
     let mut stmt = tx
         .prepare(
             "SELECT id, content, node_kind, assertion_kind, confidence,
-                    owner, observed_at, valid_from, valid_to
+                    owner, observed_at, valid_from, valid_to, lawful_basis, purpose
              FROM knowledge WHERE id IN (?1)",
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -730,6 +783,10 @@ fn build_export_bundle(
                     "observed_at": row.get::<_, Option<String>>(6)?,
                     "valid_from": row.get::<_, Option<String>>(7)?,
                     "valid_to": row.get::<_, Option<String>>(8)?,
+                    // v1.26.0 "Cross-Border" M3: the lawful-basis + purpose
+                    // tags surfaced on the export/DSAR bundle (Art 5/6 evidence).
+                    "lawful_basis": row.get::<_, Option<String>>(9)?,
+                    "purpose": row.get::<_, Option<String>>(10)?,
                 }))
             })
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1194,7 +1251,9 @@ mod tests {
                 owner TEXT,
                 observed_at TEXT,
                 valid_from TEXT,
-                valid_to TEXT
+                valid_to TEXT,
+                lawful_basis TEXT,
+                purpose TEXT
              );
              CREATE TABLE evidence_links (
                 kind TEXT,

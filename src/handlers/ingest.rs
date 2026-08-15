@@ -105,6 +105,10 @@ pub struct IngestRequest {
     /// Absent/blank on a scrape ingest → the record is quarantined (fail-closed).
     #[serde(default)]
     pub lawful_basis: Option<String>,
+    /// v1.26.0 "Cross-Border" M3: the purpose-limitation label (TEXT) stored
+    /// on the record (Art 5(1)(b) purpose evidence, alongside `lawful_basis`).
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
 /// v1.17.1 "Govern" M4: `?format=ump` accepts a UMP envelope instead of the
@@ -270,6 +274,7 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
         ump_meta: Some(serde_json::to_string(&meta).unwrap_or_default()),
         source: None,       // UMP provenance carries no scrape source
         lawful_basis: None, // a UMP record declares lawful basis separately
+        purpose: row["purpose"].as_str().map(|s| s.to_string()),
     };
     Ok((req, meta))
 }
@@ -491,6 +496,12 @@ pub(crate) async fn ingest_one(
         req.memory_kind.as_deref(),
     )?;
     req.access_scope = access_scope;
+    // v1.26.0 "Cross-Border" M3: whether this domain's bound profile is a
+    // strict-posture one — the flag that marks a record with no documented
+    // lawful_basis (purpose-limitation + data-minimization evidence).
+    let strict_domain = profile
+        .as_ref()
+        .is_some_and(brain_server::profile::Profile::pii_strict);
     // Resolve the owner label before the closure (the reference can't cross
     // the spawn_blocking boundary).
     let owner = super::gate::principal_to_owner(principal);
@@ -536,6 +547,7 @@ pub(crate) async fn ingest_one(
                 domain: Some(domain_label),
                 entities_added: Some(0),
                 relations_added: Some(0),
+                compliance: None,
             });
         }
 
@@ -551,10 +563,10 @@ pub(crate) async fn ingest_one(
         tx.execute(
             "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner, \
                 node_kind, assertion_kind, confidence, access_scope, expires_at, valid_from, \
-                valid_to, observed_at, ump_id, ump_meta) \
+                valid_to, observed_at, ump_id, ump_meta, lawful_basis, purpose) \
              VALUES (?1, ?2, 'structured', ?3, ?4, ?5, ?6, COALESCE(?7, 'fact'), \
                 COALESCE(?8, 'stated'), COALESCE(?9, 1.0), COALESCE(?10, 'private'), \
-                ?11, ?12, ?13, ?14, ?15, ?16)",
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             rusqlite::params![
                 &title_for_store,
                 &content,
@@ -571,6 +583,9 @@ pub(crate) async fn ingest_one(
                 req.observed_at.as_deref(),
                 ump_id.as_deref(),
                 req.ump_meta.as_deref(),
+                // v1.26.0 M3: the lawful-basis + purpose tags (Art 5/6 evidence).
+                req.lawful_basis.as_deref(),
+                req.purpose.as_deref(),
             ],
         )
         .map_err(|e| HandlerError::internal(format!("insert knowledge failed: {e}")))?;
@@ -676,6 +691,14 @@ pub(crate) async fn ingest_one(
             domain: Some(domain_label),
             entities_added: Some(entities_added),
             relations_added: Some(relations_added),
+            // v1.26.0 M3: a strict-posture domain storing a record with no
+            // lawful_basis is flagged (the purpose-limitation evidence). Only
+            // present when flagged (additive; absent otherwise).
+            compliance: crate::transfers::lawful_basis_flag(
+                strict_domain,
+                req.lawful_basis.as_deref(),
+            )
+            .then_some(serde_json::json!({ "lawful_basis_missing": true })),
         })
     })
     .await

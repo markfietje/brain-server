@@ -37,6 +37,7 @@ pub mod recall;
 pub mod roles;
 pub mod sources;
 pub mod suggest;
+pub mod transfers;
 pub mod ump;
 pub mod ump_ops;
 pub mod verify;
@@ -182,6 +183,11 @@ pub struct IngestResponse {
     pub entities_added: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations_added: Option<u32>,
+    /// v1.26.0 "Cross-Border" M3: a strict-posture domain storing a record
+    /// with no documented lawful_basis is flagged here (purpose-limitation
+    /// evidence). Absent when not flagged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compliance: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
