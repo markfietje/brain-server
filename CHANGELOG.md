@@ -19,6 +19,106 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.26.0] — 2026-08-15
+
+### Server — "Cross-Border" (multi-jurisdiction client evidence, PH BPO)
+
+Server `Cargo.toml`/lock 1.25.0 → 1.26.0; client + plugin unchanged. An
+**evidence + tagging** release (no new enforcement) for a Philippines BPO
+serving US/UK/EU/AU/SG/CA clients: the BPO is a sub-processor and must satisfy
+RA 10173 **and** the client country's law (GDPR Art 46 SCCs + TIA, UK IDTA, US
+DPF/HIPAA, AU APPs, SG PDPA, CA PIPEDA). This release ships the **cross-border
+transfer register** (Art 30 + Art 46), the **per-jurisdiction DSAR deadline +
+rights** surface (GDPR 30d / CCPA 45d / PH "reasonable"), the **lawful-basis +
+purpose tagging** flag (Art 5/6 evidence), and the **TIA (Schrems II) + DPA
+(Art 28) evidence templates** — all layered on the v1.25 breach/preference/
+region primitives.
+
+### Release notes
+
+**Improvements**
+
+- **Cross-border transfer register** — `POST /transfers` records a cross-
+  border data flow (`dataset`, `origin_jurisdiction`, `destination_jurisdiction`,
+  `mechanism`, `counterparty`, `lawful_basis?`, `purpose`, `signed_at?`,
+  `expires_at?`), `GET /transfers` lists it newest-first with exact-match
+  filters (`mechanism` / `jurisdiction` / `dataset`). `mechanism` is validated
+  against the registered safeguards (`scc-eu-2021`, `uk-idta`, `dpf-us`, `cbpr`,
+  `bcr`, `adequacy`). Writes are Admin + audited (`kind: "transfer"`, hash-
+  chained). This is the Art 30 processing-activities + Art 46 transfer-safeguard
+  evidence a client's regulator asks for.
+- **Per-jurisdiction DSAR deadlines + rights** — `POST /dsar` now accepts a
+  `jurisdiction` (country code); when set, the response + deletion certificate
+  carry the subject's law (GDPR 1 month, UK GDPR 30 days, CCPA/CPRA 45 days, AU
+  APPs / SG PDPA / CA PIPEDA 30 days, PH RA 10173 "reasonable" → the operator
+  window) and the jurisdiction's applicable subject rights, so the operator
+  acts per the subject's law. Missing jurisdiction keeps the legacy generic
+  window.
+- **Lawful-basis + purpose tagging** — `POST /ingest` accepts a `purpose`
+  label (alongside the v1.25 `lawful_basis`); both are stored on the record and
+  surfaced on the `/export` + DSAR bundle. A strict-posture domain storing a
+  record with no documented `lawful_basis` flags it in the ingest response
+  (`compliance.lawful_basis_missing` — data-minimization + purpose-limitation
+  evidence per NPC 2024-04 + Art 5/6).
+- **TIA + DPA templates** — `GET /transfers/{id}/tia` pre-fills the Schrems II
+  Transfer Impact Assessment (transfer, destination law, destination-surveillance
+  posture, supplementary-measures + sign-off prompts) and `GET /transfers/{id}/dpa`
+  pre-fills the Art 28 sub-processor terms (role, retention, deletion-on-
+  termination, audit rights, breach-notification, onward-transfer restriction).
+  Both are **evidence artifacts** a human (DPO/legal) reviews + signs — nothing
+  renders legal judgment.
+
+**Bug fixes**
+
+- None in this release (v1.25.0 features unchanged).
+
+**Security fixes**
+
+- None in this release (no new auth or crypto paths).
+
+### Engineering record
+
+- **M1** `src/transfers.rs::register` + the `transfers` table in every domain
+  DB (additive, schema → 1.26.0, guarded by the schema-contract test) +
+  `src/handlers/transfers.rs` (`POST`/`GET /transfers`); validated `MECHANISMS`
+  + free-text-supported `is_jurisdiction_code` (any short lowercase code, so a
+  future law adds without a release).
+- **M2** `JurisdictionRule` — a curated, code-versioned table (`JURISDICTIONS`:
+  eu/uk/us/au/sg/ca/ph → law + deadline_days + rights). `dsar_deadline_for` is
+  pure (the law's fixed days, else PH/"reasonable" → the operator
+  `BRAIN_DSAR_WINDOW_DAYS`); wired into `handlers/observe.rs` for the deadline,
+  certificate `jurisdiction`/`mechanism` fields, and the response `rights` list.
+- **M3** `IngestRequest.purpose` + `knowledge.lawful_basis/purpose` columns +
+  `idx_knowledge_purpose`; `lawful_basis_flag(strict_domain, basis)` is pure and
+  surfaced as `compliance.lawful_basis_missing` on strict-posture ingests.
+- **M4** `tia_from` + `dpa_fields` — the pre-filled, reviewed-not-rendered
+  artifacts; `SurveillancePosture` table (`destination_posture`) gives the
+  §46(2)/Schrems II prompt its destination-surveillance context.
+- **Wiring**  4 routes (`/transfers`, `/transfers/{id}/tia`,
+  `/transfers/{id}/dpa`) in the router + route-coverage + route-authz guard
+  tables + `openapi.yaml`. `AuditKind::Transfer`.
+- **Tests** — server bin **582 → 591** / 6 ignored; lib 105 unchanged. New:
+  `transfer_register_records_every_cross_border_flow` (register/list/filter +
+  TIA/DPA render), `dsar_deadline_matches_jurisdiction` (30/45/reasonable/
+  unknown), `jurisdiction_rights_surface_are_curated`,
+  `lawful_basis_strict_flagged_only_when_missing_in_strict_domain` (deep model),
+  `tia_prefilled_from_register_and_posture`, `breach_scope_covers_register_
+  jurisdictions` (register ↔ breach-vocabulary integration),
+  `validate_register_bounds_fields`, `transfer_list_is_newest_first_and_bounded`,
+  and the `dpa_fields_resolve_any_row_by_id` regression (a by-id lookup — the
+  initial draft resolved only the newest row; fixed). Clippy `-D warnings`
+  (default + bench + otel) + fmt clean; route-coverage + route-authz audit
+  green.
+- **Honest ceilings** — this is **evidence + tagging**, not enforcement: the
+  operator still ships data; nothing gates a transfer on the registered
+  mechanism (blocking policies are v2.x), the jurisdiction rules + surveillance
+  postures are a curated snapshot **a human DPO/legal re-checks** (law evolves;
+  the artifacts are pre-filled, not signed), PH "reasonable" uses the operator
+  window, and each client's own *controller* obligations stay with the client —
+  the BPO/brain-server remain processor/sub-processor.
+
+---
+
 ## [1.25.0] — 2026-08-15
 
 ### Server — "PH-Compliant" (Philippines home-jurisdiction posture)
