@@ -58,6 +58,73 @@ rest read.
 
 ---
 
+## [1.27.4] — 2026-08-15
+
+### Server — "Dsar" (per-client jurisdiction-aware DSAR)
+
+Release 4 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.3 →
+**1.27.4**; schema unchanged (`1.27.0`); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- **Per-client DSAR** — `POST /clients/{name}/dsar` runs a subject erasure
+  scoped to a single client's isolation domain, stamped with **that client's**
+  jurisdiction, deadline, rights, and transfer mechanism — the "erase Client
+  Beta's data on contract end" building block R6's termination composes. The
+  client's `domain` + `jurisdiction` resolve from the register (404 unknown
+  client, 409 archived), then the shared DSAR core locates → exports → purges
+  within that one domain pool and emits a certificate carrying the client's
+  jurisdiction + mechanism (advisory, from the client's transfer register).
+  `action` = purge | export | both (default purge); `dry_run` previews the
+  would-be footprint write-free. Admin + audited (kind 'client').
+  `brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]`
+  drives it.
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `src/handlers/observe.rs`: the one shared seam `run_dsar_subject` composes a
+  single domain-pool DSAR into a full `DsarResponse` (certificate or dry-run
+  footprint), jurisdiction-stamped — authorize `dsar_export`, run
+  `run_dsar_pool` (no new purge path: locate/purge/export/certificate/
+  legal-hold deferral all live there), audit on the global pool (the hash chain
+  is the registry of record) while the ledger row lives in the run's domain,
+  backfill the certificate, compute the law's deadline + rights. The inline
+  `POST /dsar` subject/action validation is extracted into
+  `normalize_dsar_subject` (used by both — one trust boundary, behavior-
+  preserving, pin test `dsar_dry_run_footprint_counts_and_writes_nothing`
+  stays green). `src/handlers/clients.rs` gains `client_dsar` (Admin +
+  audited) + `ClientDsarRequest`; it resolves the client row + its transfer
+  mechanism (`transfers::list` by the client's jurisdiction, `None` when none)
+  then delegates. `src/bin/brain.rs` extends `cmd_client` with `dsar`.
+  Routed + route-coverage + route-authz guard tables + openapi.yaml path in
+  `src/main.rs`.
+- Panic/unsafe sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]` in the
+  new code; no new tables or schema change; no new dependency.
+- Tests: server bin **602** / 6 ignored (+2 — the handler pair
+  `per_client_dsar_scoped_to_domain` (beta-eu purged, acme-us untouched;
+  EU 30-day deadline + `objection` right) and
+  `per_client_dsar_unknown_or_archived_client_rejected` (404/409 before any
+  pool work)); lib 105 unchanged; route + authz + openapi audits green; clippy
+  `-D warnings` (default + bench + otel) + fmt clean; `brain` release build
+  clean.
+- Honest ceilings: this is subject-erasure composition, **not** a whole-domain
+  wipe (blanket domain erase is R6 termination); mechanism is advisory metadata
+  (not gating — per-client holds are R5); the audit anchor is the server's
+  global chain while the ledger row + certificate live in the client's domain
+  pool.
+
+---
+
 ## [1.27.3] — 2026-08-15
 
 ### Server — "Dpa" (per-client sub-processor DPA terms)
