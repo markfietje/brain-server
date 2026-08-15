@@ -507,6 +507,12 @@ mod tests {
         app_state_with(dir, true, 4)
     }
 
+    // The shared static embedder is loaded once and reused across tests: many
+    // parallel tests each building a fresh model2vec instance raced on huggingface's
+    // file-based cache lock ("Lock acquisition failed") under a cold CI cache.
+    static TEST_EMBEDDER: std::sync::OnceLock<Arc<dyn brain_server::embed::Embedder>> =
+        std::sync::OnceLock::new();
+
     fn app_state_with(dir: &tempfile::TempDir, multi_db: bool, max_size: u32) -> Arc<AppState> {
         brain_server::register_sqlite_vec::register_sqlite_vec();
         let path = dir.path().join("brain.db");
@@ -520,9 +526,14 @@ mod tests {
             crate::config::DB_MMAP_SIZE_MIB,
         )
         .expect("migration");
-        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
-            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
-        );
+        let model: Arc<dyn brain_server::embed::Embedder> = TEST_EMBEDDER
+            .get_or_init(|| {
+                Arc::new(
+                    brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID)
+                        .expect("model"),
+                )
+            })
+            .clone();
         Arc::new(AppState {
             model,
             registry: DomainRegistry::new(pool.clone(), &path, multi_db),
