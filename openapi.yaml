@@ -1386,6 +1386,24 @@ paths:
                   critical_secs:
                     type: integer
                     description: SLA critical band (secs of remaining life), mirroring ALERT_CRITICAL_SECS.
+                  owner:
+                    type: string
+                    nullable: true
+                    description: >-
+                      v1.27.8: the agent whose interaction produced the candidate;
+                      `null` for loopback/opaque (unowned) writes. Keys the
+                      supervisor's owner scope (R1 role `manages`).
+                  qa_note:
+                    type: string
+                    nullable: true
+                    description: >-
+                      v1.27.8: the supervisor's coaching note (set via the coach
+                      verb); `null` until coached.
+                  qa_score:
+                    type: integer
+                    description: >-
+                      v1.27.8: the R7 QA scorecard composed from the proposal's
+                      owner + trace signals (0..100, advisory, never gates approve).
         "400":
           description: Empty/too-long content, injection reject, or expired proposal
         "409":
@@ -1874,6 +1892,75 @@ paths:
           description: The principal is not admin
         "404":
           description: No client with this name
+        "409":
+          description: Client is not active (archived)
+  /clients/{name}/proposals:
+    get:
+      summary: The supervisor QA queue for a client (v1.27.8)
+      operationId: clientProposals
+      description: >
+        The client's pending review items, owner-scoped to the supervisor's
+        `manages` set (R1 role; empty manages = the whole queue), each with its
+        R7 `qa_score`. Same `ProposalView` shape as `GET /proposals`. Admin.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          description: Client name (lowercase, domain-safe).
+          schema: { type: string }
+      responses:
+        "200":
+          description: The owner-scoped proposal page with QA scores
+        "403":
+          description: The principal is not admin
+        "404":
+          description: No client with this name
+        "409":
+          description: Client is not active (archived)
+  /clients/{name}/proposals/{id}/coach:
+    post:
+      summary: Supervisor coaching on a QA review item (v1.27.8)
+      operationId: coachProposal
+      description: >
+        Set/clear the `qa_note` (+ advisory `flagged`) on a proposal in the
+        client's domain. Never gates approval — a flag + note a human decides
+        on. The audit detail carries only the id + flagged flag (the note may
+        contain feedback; never stored raw in the audit). Admin + audited.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          description: Client name (lowercase, domain-safe).
+          schema: { type: string }
+        - in: path
+          name: id
+          required: true
+          description: Proposal id in the client's domain.
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                flagged:
+                  type: boolean
+                  default: false
+                  description: Advisory QA flag.
+                note:
+                  type: string
+                  nullable: true
+                  description: The coaching note (default/`null` clears it).
+      responses:
+        "200":
+          description: '{proposal_id, client, flagged, status: coached}'
+        "400":
+          description: Invalid request
+        "403":
+          description: The principal is not admin
+        "404":
+          description: No client with this name, or no proposal with this id
         "409":
           description: Client is not active (archived)
   /retention/report:

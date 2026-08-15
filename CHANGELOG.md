@@ -19,6 +19,51 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.8] — 2026-08-15
+
+### Server — "QaQueue"
+
+Release 8 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.7 →
+**1.27.8**; schema → **1.27.8**; client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- Supervisor QA queue — every agent interaction that wrote memory now surfaces
+  in the supervisor's per-client review queue, tagged with its agent `owner`,
+  its R7 QA `qa_score`, and audited as the action happened.
+- Coaching — a supervisor can attach (or clear) a coaching `note` (+ advisory
+  flag) on any review item, so QA feedback is recorded without blocking
+  approval.
+
+### Engineering record
+
+The R7 QA core is wired into the review surface. Additive migration:
+`proposals.owner` + `proposals.qa_note` (schema → 1.27.8), the first DDL since
+R1. `ingest_proposal` attributes the candidate to the acting agent
+(`principal_to_owner`; the audit actor is now the principal label); the
+`ProposalView` gains `owner`/`qa_note`/`qa_score`. `src/qa.rs::score_for`
+composes the R7 `scorecard` purely over the read shapes — an absent trace
+degrades `cited` to the neutral corner (never NaN; proposals are not
+recall-trace-linked in schema, so `has_trace` stays false). `owner_in_filtered`
+narrows a page to the supervisor's `manages` set (R1 role; empty = whole
+queue). `POST /clients/{name}/proposals/{id}/coach` (Admin, audited —
+the note is hashed at rest) + `GET /clients/{name}/proposals` (the
+owner-scoped QA queue), wired into the router + route-coverage + route-authz
+guard tables + openapi.yaml. `brain client qa list|coach` are the supervisor
+verbs. `approve_proposal` carries the note into the promoted chunk's `origin`.
+
+Tests: server bin **617** passed / 6 ignored (incl. the 3 new wiring tests:
+owner + scorecard round-trip, the `manages` owner filter, coach note + audit +
+404); lib `qa` module tests; clippy `-D warnings` + fmt clean; schema,
+route-coverage, route-authz + openapi guard audits green. Honest ceilings:
+coaching is a flag + note a human decides on (never auto-discipline), it never
+gates approval, and the queue is the review surface (no separate interactions
+table). See `IMPLEMENTATION_PLAN_v1.27.8_QaQueue.md`.
+
+---
+
 ## [1.27.7] — 2026-08-15
 
 ### Server — "Qa" (agent-QA core)
