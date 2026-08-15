@@ -105,18 +105,22 @@ Release 4 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.3 →
   stays green). `src/handlers/clients.rs` gains `client_dsar` (Admin +
   audited) + `ClientDsarRequest`; it resolves the client row + its transfer
   mechanism (`transfers::list` by the client's jurisdiction, `None` when none)
-  then delegates. `src/bin/brain.rs` extends `cmd_client` with `dsar`.
+  then delegates. The certificate JSON shape is shared via `certificate_json`
+  (both `post_dsar`'s cross-pool aggregate and `run_dsar_subject`'s single run
+  build the identical contract). `src/bin/brain.rs` extends `cmd_client` with
+  `dsar`.
   Routed + route-coverage + route-authz guard tables + openapi.yaml path in
   `src/main.rs`.
 - Panic/unsafe sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]` in the
   new code; no new tables or schema change; no new dependency.
-- Tests: server bin **602** / 6 ignored (+2 — the handler pair
-  `per_client_dsar_scoped_to_domain` (beta-eu purged, acme-us untouched;
-  EU 30-day deadline + `objection` right) and
+- Tests: server bin **603** / 6 ignored (+3 — `per_client_dsar_scoped_to_domain`
+  (beta-eu purged, acme-us untouched; EU 30-day deadline + `objection` right),
   `per_client_dsar_unknown_or_archived_client_rejected` (404/409 before any
-  pool work)); lib 105 unchanged; route + authz + openapi audits green; clippy
-  `-D warnings` (default + bench + otel) + fmt clean; `brain` release build
-  clean.
+  pool work), `per_client_dsar_shim_single_pool_no_deadlock` (a single shared
+  pool at `max_size(1)` completes — the audit conn is scoped/released before
+  the ledger backfill so shim mode never double-acquires)); lib 105 unchanged;
+  route + authz + openapi audits green; clippy `-D warnings` (default + bench +
+  otel) + fmt clean; `brain` release build clean.
 - Honest ceilings: this is subject-erasure composition, **not** a whole-domain
   wipe (blanket domain erase is R6 termination); mechanism is advisory metadata
   (not gating — per-client holds are R5); the audit anchor is the server's
