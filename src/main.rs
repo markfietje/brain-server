@@ -4722,6 +4722,16 @@ async fn main_inner() -> Result<()> {
         .route("/clients/{name}/dsar", post(handlers::clients::client_dsar))
         .route("/clients/{name}/hold", post(handlers::clients::client_hold))
         .route("/clients/{name}/end", post(handlers::clients::client_end))
+        // v1.27.8 "QaQueue": the supervisor QA surface — owner-scoped queue
+        // list + audited coaching (read + write are Admin like every client op).
+        .route(
+            "/clients/{name}/proposals",
+            get(handlers::clients::client_proposals),
+        )
+        .route(
+            "/clients/{name}/proposals/{id}/coach",
+            post(handlers::clients::coach_proposal),
+        )
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -8291,10 +8301,11 @@ Final paragraph after the rule.";
         // v1.25.0 for the breaches + breach_events tables (the breach workflow).
         // v1.26.0 for the transfers table + knowledge.lawful_basis/purpose.
         // v1.27.1 for the clients table (the BPO operating register).
+        // v1.27.8 for the proposals.owner + proposals.qa_note columns (QaQueue).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_0),
-            "schema_version must be recorded as 1.27.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_8),
+            "schema_version must be recorded as 1.27.8 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -8347,6 +8358,24 @@ Final paragraph after the rule.";
             .unwrap_or(0)
             > 0;
         assert!(has_edited_at, "proposals.edited_at column must exist");
+
+        // v1.27.8 "QaQueue": the review queue's agent provenance + coaching note
+        // columns exist (the QA surface reads/writes them; an additive-regression
+        // here silently breaks owner scoping + the coach verb).
+        for col in ["owner", "qa_note"] {
+            let present: bool = db
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name=?1",
+                    params![col],
+                    |r| r.get::<_, i32>(0),
+                )
+                .unwrap_or(0)
+                > 0;
+            assert!(
+                present,
+                "proposals.{col} column must exist after migration (v1.27.8)"
+            );
+        }
 
         // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
         // Append-only by construction; this is the smallest check that fails
@@ -9501,6 +9530,9 @@ Final paragraph after the rule.";
             "/clients/{name}/dsar",
             "/clients/{name}/hold",
             "/clients/{name}/end",
+            // v1.27.8 "QaQueue": the supervisor QA surface.
+            "/clients/{name}/proposals",
+            "/clients/{name}/proposals/{id}/coach",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10442,6 +10474,8 @@ Final paragraph after the rule.";
             ("/clients/{name}/dsar", "Admin"),
             ("/clients/{name}/hold", "Admin"),
             ("/clients/{name}/end", "Admin"),
+            ("/clients/{name}/proposals", "Admin"),
+            ("/clients/{name}/proposals/{id}/coach", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),

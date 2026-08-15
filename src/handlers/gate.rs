@@ -33,7 +33,7 @@ use crate::AppState;
 
 /// Max proposals returned per review page. Bounded so a runaway queue can't
 /// unbounded a response.
-const MAX_PROPOSALS: usize = 200;
+pub(crate) const MAX_PROPOSALS: usize = 200;
 /// Max ids accepted by a single `/purge` call. Explicit-only deletion must be
 /// deliberate; a huge batch is a footgun.
 const MAX_PURGE_IDS: usize = 1000;
@@ -150,6 +150,10 @@ pub async fn ingest_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
     let model = Arc::clone(&state.model);
     let content_for_task = content.clone();
+    // v1.27.8 "QaQueue": attribute the candidate to the acting agent so the
+    // supervisor's QA queue can scope by owner. `None` (loopback/opaque) →
+    // unowned, the legacy default.
+    let owner = principal_to_owner(&principal.0);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<ProposalResponse, HandlerError> {
         let conn = pool
@@ -172,8 +176,8 @@ pub async fn ingest_proposal(
         let id: i64 = conn
             .query_row(
                 "INSERT INTO proposals(kind, content, source, authority, observed_at,
-                                   novelty, conflict_with, salience, created_at, source_prompt)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                   novelty, conflict_with, salience, created_at, source_prompt, owner)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              RETURNING id",
                 rusqlite::params![
                     req.kind,
@@ -187,7 +191,8 @@ pub async fn ingest_proposal(
                     now,
                     req.source_prompt
                         .as_deref()
-                        .map(crate::gate::screen_source_prompt)
+                        .map(crate::gate::screen_source_prompt),
+                    owner,
                 ],
                 |r| r.get(0),
             )
@@ -196,7 +201,7 @@ pub async fn ingest_proposal(
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Ingest,
-            "api",
+            owner.as_deref().unwrap_or("api"),
             &format!("proposal:{id}"),
             crate::audit::AuditStatus::Ok,
             "proposal_pending",
@@ -332,6 +337,19 @@ pub struct ProposalView {
     /// calibration signal. The column was written since v1.14.0 but never read.
     #[serde(default)]
     pub decided_at: Option<i64>,
+    /// v1.27.8 "QaQueue": the agent whose interaction produced the candidate.
+    /// `None` for loopback/opaque (unowned) writes. Keys the supervisor's owner
+    /// scope (R1 role `manages`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// v1.27.8 "QaQueue": the supervisor's coaching note (set via the coach
+    /// verb). `None` until coached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa_note: Option<String>,
+    /// v1.27.8 "QaQueue": the R7 QA scorecard composed from the proposal's
+    /// owner + trace signals. Advisory (never gates approve).
+    #[serde(default)]
+    pub qa_score: i64,
 }
 
 /// v1.20.15 "Clock": the review deadline + SLA bands, shared by every
@@ -401,7 +419,7 @@ pub(crate) fn list_proposals_page(
 ) -> Result<Vec<ProposalView>, HandlerError> {
     const COLS: &str =
         "id, kind, content, source, source_prompt, authority, novelty, conflict_with,
-                        salience, created_at, edited_at, decided_at";
+                        salience, created_at, edited_at, decided_at, owner, qa_note";
     let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since {
         Some(s) => (
             &format!(
@@ -424,7 +442,13 @@ pub(crate) fn list_proposals_page(
         .query_map(rusqlite::params_from_iter(params), |r| {
             let content: String = r.get(2)?;
             let created_at: i64 = r.get(9)?;
+            let owner: Option<String> = r.get(12)?;
             let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
+            // v1.27.8 "QaQueue": compose the QA scorecard. Proposals are not
+            // recall-trace-linked in schema, so `has_trace` stays false — the
+            // absent-trace neutral corner (never NaN). `in_scope` = the candidate
+            // is agent-owned (the supervisor QA surface) vs an unowned loopback.
+            let qa_score = crate::qa::score_for(owner.is_some(), false, false, false);
             Ok(ProposalView {
                 id: r.get(0)?,
                 kind: r.get(1)?,
@@ -445,12 +469,31 @@ pub(crate) fn list_proposals_page(
                 warn_secs,
                 critical_secs,
                 decided_at: r.get(11)?,
+                owner,
+                qa_note: r.get(13)?,
+                qa_score,
             })
         })
         .map_err(|e| HandlerError::internal(e.to_string()))?
         .filter_map(|r| r.ok())
         .collect::<Vec<_>>();
     Ok(rows)
+}
+
+/// v1.27.8 "QaQueue": narrow a proposal page to the owners a supervisor
+/// manages (R1 role `owner IN manages`). Empty `manages` → the whole page
+/// (an admin who manages no agents sees the unrestricted queue).
+pub(crate) fn owner_in_filtered(rows: Vec<ProposalView>, manages: &[String]) -> Vec<ProposalView> {
+    if manages.is_empty() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|p| {
+            p.owner
+                .as_deref()
+                .is_some_and(|o| manages.iter().any(|m| m == o))
+        })
+        .collect()
 }
 
 /// v1.20.1 "Shield" M2 TTL: if the proposal is older than
@@ -568,10 +611,11 @@ pub async fn approve_proposal(
             authority: Option<f32>,
             observed_at: Option<i64>,
             created_at: i64,
+            qa_note: Option<String>,
         }
         let p: Option<ProposalRow> = tx
             .query_row(
-                "SELECT kind, content, source, authority, observed_at, created_at
+                "SELECT kind, content, source, authority, observed_at, created_at, qa_note
                  FROM proposals WHERE id = ?1 AND status = 'pending'",
                 rusqlite::params![id],
                 |r| {
@@ -582,6 +626,7 @@ pub async fn approve_proposal(
                         authority: r.get(3)?,
                         observed_at: r.get(4)?,
                         created_at: r.get(5)?,
+                        qa_note: r.get(6)?,
                     })
                 },
             )
@@ -591,14 +636,15 @@ pub async fn approve_proposal(
                 "no pending proposal with id {id}"
             )));
         };
-        let (kind, content, source, authority, observed_at, _created_at) = (
-            p.kind,
-            p.content,
-            p.source,
-            p.authority,
-            p.observed_at,
-            p.created_at,
-        );
+        let ProposalRow {
+            kind,
+            content,
+            source,
+            authority,
+            observed_at,
+            created_at: _,
+            qa_note,
+        } = p;
 
         // Embed + insert the chunk through the same knowledge + vec0 path.
         let embedding = model.encode_one(&content);
@@ -629,6 +675,14 @@ pub async fn approve_proposal(
             crate::screen::ScreenResult::Quarantine | crate::screen::ScreenResult::Reject
         ) as i64;
 
+        // v1.27.8 "QaQueue": carry the supervisor's coaching note into the
+        // promoted chunk's provenance (`origin`) so the coaching survives
+        // approval as audit-grade evidence on the chunk itself.
+        let mut origin = crate::gate::origin_for_source(Some(&source_kind)).to_string();
+        if let Some(note) = qa_note.as_deref() {
+            origin = format!("{origin}\ncoach:{note}");
+        }
+
         tx.execute(
             "INSERT INTO knowledge(content, title, source, content_hash, authority,
                                    observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged)
@@ -644,7 +698,7 @@ pub async fn approve_proposal(
                 assertion,
                 confidence,
                 principal_to_owner(&principal.0),
-                crate::gate::origin_for_source(Some(&source_kind)),
+                origin,
                 flagged,
             ],
         )
@@ -994,10 +1048,12 @@ pub async fn edit_proposal(
                 source_prompt: Option<String>,
                 authority: Option<f32>,
                 created_at: i64,
+                owner: Option<String>,
+                qa_note: Option<String>,
             }
             let p: Option<Row> = tx
                 .query_row(
-                    "SELECT kind, content, source, source_prompt, authority, created_at
+                    "SELECT kind, content, source, source_prompt, authority, created_at, owner, qa_note
                      FROM proposals WHERE id = ?1 AND status = 'pending'",
                     rusqlite::params![id],
                     |r| {
@@ -1008,6 +1064,8 @@ pub async fn edit_proposal(
                             source_prompt: r.get(3)?,
                             authority: r.get(4)?,
                             created_at: r.get(5)?,
+                            owner: r.get(6)?,
+                            qa_note: r.get(7)?,
                         })
                     },
                 )
@@ -1024,6 +1082,8 @@ pub async fn edit_proposal(
                 source_prompt,
                 authority,
                 created_at,
+                owner,
+                qa_note,
             } = p;
 
             // Re-score the edited content deterministically (the ingest path).
@@ -1074,6 +1134,7 @@ pub async fn edit_proposal(
             );
 
             let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
+            let qa_score = crate::qa::score_for(owner.is_some(), false, false, false);
             Ok(ProposalView {
                 id,
                 kind,
@@ -1091,6 +1152,9 @@ pub async fn edit_proposal(
                 warn_secs,
                 critical_secs,
                 decided_at: None,
+                owner,
+                qa_note,
+                qa_score,
             })
         })
         .await
@@ -1958,6 +2022,65 @@ mod tests {
             manages: vec![],
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
+    }
+
+    /// v1.27.8 "QaQueue": an ingested proposal records its agent `owner`, and
+    /// `list_proposals_page` returns it alongside a `qa_score` — in-scope
+    /// (owned) gets the absent-trace neutral corner, unowned degrades to
+    /// out-of-scope. The supervisor page filter (R1 `manages`) keeps only
+    /// owned rows.
+    #[test]
+    fn proposal_owner_and_scorecard_round_trip() {
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        let now = chrono::Utc::now().timestamp();
+        let owned: i64 = conn
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+                 VALUES ('fact', 'agent body', 0.9, 0.5, ?1, 'agent-1') RETURNING id",
+                [now],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let unowned: i64 = conn
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at)
+                 VALUES ('fact', 'unowned body', 0.9, 0.5, ?1) RETURNING id",
+                [now],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        let pending = list_proposals_page(&conn, "pending", MAX_PROPOSALS, None).expect("pending");
+        let owned_v = pending
+            .iter()
+            .find(|v| v.id == owned)
+            .expect("owned present");
+        assert_eq!(owned_v.owner.as_deref(), Some("agent-1"));
+        assert_eq!(
+            owned_v.qa_score, 90,
+            "owned + absent trace = cited-neutral in-scope"
+        );
+        assert!(owned_v.qa_note.is_none());
+        let unowned_v = pending
+            .iter()
+            .find(|v| v.id == unowned)
+            .expect("unowned present");
+        assert_eq!(unowned_v.owner, None);
+        assert_eq!(
+            unowned_v.qa_score, 40,
+            "unowned = out-of-scope neutral corner"
+        );
+
+        let manages = vec!["agent-1".to_string()];
+        assert!(
+            owner_in_filtered(Vec::new(), &[]).is_empty(),
+            "empty manages → whole queue (short-circuit, keeps rows)"
+        );
+        let scoped = owner_in_filtered(pending, &manages);
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].id, owned, "outside-manages proposal excluded");
     }
 
     /// v1.20.19 "Vault": the `/export` read-side round-trip for the never-built

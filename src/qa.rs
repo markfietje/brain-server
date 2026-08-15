@@ -2,10 +2,18 @@ pub fn scope_violation(restricted: bool, domains: &[String]) -> bool {
     restricted && domains.iter().any(|d| d != "global")
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn scorecard(in_scope: bool, cited: bool, confident: bool) -> i64 {
     let base = if in_scope { 50 } else { 0 };
     base + if cited { 30 } else { 0 } + if confident { 20 } else { 10 }
+}
+
+/// v1.27.8 "QaQueue": compose the R7 scorecard from a proposal's trace signals
+/// (pure over the read shapes). An absent trace degrades `cited` to neutral —
+/// a proposal with no linked recall-trace is never penalized for being
+/// uncited. `in_scope` = the proposal's `owner` falls under the supervisor's
+/// `manages` set (R1 role).
+pub(crate) fn score_for(in_scope: bool, cited: bool, confident: bool, has_trace: bool) -> i64 {
+    scorecard(in_scope, cited || !has_trace, confident)
 }
 
 #[cfg(test)]
@@ -47,5 +55,13 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn score_for_absent_trace_is_cited_neutral_not_nan() {
+        assert_eq!(score_for(false, false, false, false), 40);
+        assert_eq!(score_for(true, false, false, false), 90);
+        assert_eq!(score_for(true, true, true, true), 100);
+        assert_eq!(score_for(false, true, true, true), 50);
     }
 }

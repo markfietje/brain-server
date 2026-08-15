@@ -235,6 +235,141 @@ pub async fn client_hold(
     super::holds::post_legal_hold_for_domain(state, principal, &domain, req.ids, req.reason).await
 }
 
+/// `POST /clients/{name}/proposals/{id}/coach` body. `note` is the supervisor's
+/// coaching note; `flagged` is an advisory flag. Both optional.
+#[derive(Debug, Deserialize)]
+pub struct CoachRequest {
+    #[serde(default)]
+    pub flagged: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `POST /clients/{name}/proposals/{id}/coach` — supervisor coaching on a QA
+/// review item in THAT client's domain: set/clear the `qa_note` (the review
+/// queue carries it). Never gates approval — it is a flag + note a human
+/// decides on. Admin + audited. 404 unknown client or proposal; 409 archived.
+pub async fn coach_proposal(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path((name, id)): Path<(String, i64)>,
+    Json(req): Json<CoachRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    let pool_for = pool.clone();
+    let key = name.trim().to_ascii_lowercase();
+    let key_for = key.clone();
+    let (domain, status) =
+        tokio::task::spawn_blocking(move || -> Result<(String, String), HandlerError> {
+            let conn = pool_for
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let c = crate::clients::by_name(&conn, &key_for)?
+                .ok_or_else(|| HandlerError::not_found("client not found"))?;
+            Ok((c.domain, c.status))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    if status != "active" {
+        return Err(HandlerError::conflict("client not active (archived)"));
+    }
+    let domain_pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+    let note = req.note;
+    let flagged = req.flagged;
+    let key_for2 = key.clone();
+    let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
+        let conn = domain_pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let n = conn
+            .execute(
+                "UPDATE proposals SET qa_note = ?1 WHERE id = ?2",
+                rusqlite::params![note, id],
+            )
+            .map_err(|e| HandlerError::internal(format!("coach update failed: {e}")))?;
+        if n > 0 {
+            // The note content is never stored raw in the audit — only the id +
+            // flagged flag (the note may contain feedback).
+            crate::audit::record(
+                &conn,
+                AuditKind::Client,
+                "api",
+                &format!("client:{key_for2}:coach:{id}:{flagged}"),
+                AuditStatus::Ok,
+                "coach",
+            );
+        }
+        Ok(n)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    if updated == 0 {
+        return Err(HandlerError::not_found(format!(
+            "no proposal with id {id} in client {name}"
+        )));
+    }
+    Ok(Json(serde_json::json!({
+        "proposal_id": id,
+        "client": key,
+        "flagged": flagged,
+        "status": "coached",
+    })))
+}
+
+/// `GET /clients/{name}/proposals` — the supervisor QA queue for a client:
+/// the client's pending review items, owner-scoped to the supervisor's
+/// `manages` set (R1 role; empty manages = the whole queue), each with its
+/// `qa_score`. Admin. 404 unknown client; 409 archived.
+pub async fn client_proposals(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<crate::handlers::gate::ProposalView>>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    let pool_for = pool.clone();
+    let key = name.trim().to_ascii_lowercase();
+    let key_for = key.clone();
+    let (domain, status) =
+        tokio::task::spawn_blocking(move || -> Result<(String, String), HandlerError> {
+            let conn = pool_for
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let c = crate::clients::by_name(&conn, &key_for)?
+                .ok_or_else(|| HandlerError::not_found("client not found"))?;
+            Ok((c.domain, c.status))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    if status != "active" {
+        return Err(HandlerError::conflict("client not active (archived)"));
+    }
+    let domain_pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+    let manages = principal
+        .0
+        .as_ref()
+        .map(|p| p.manages.clone())
+        .unwrap_or_default();
+    let rows = tokio::task::spawn_blocking(
+        move || -> Result<Vec<crate::handlers::gate::ProposalView>, HandlerError> {
+            let conn = domain_pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let page = crate::handlers::gate::list_proposals_page(
+                &conn,
+                "pending",
+                crate::handlers::gate::MAX_PROPOSALS,
+                None,
+            )?;
+            Ok(crate::handlers::gate::owner_in_filtered(page, &manages))
+        },
+    )
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    Ok(Json(rows))
+}
+
 /// `POST /clients/{name}/end` body. `purge` (optional) overrides the DPA
 /// `retention_on_termination` (absent → follow the terms); `dataset` is the
 /// tombstone/audit reason tag.
@@ -971,5 +1106,112 @@ mod tests {
         ));
         let err = err.expect_err("unknown client 404s");
         assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn coach_attaches_note_and_audits() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "beta", "beta-eu", "eu");
+        let did: i64 = state
+            .registry
+            .pool_for("beta-eu")
+            .unwrap()
+            .get()
+            .unwrap()
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+                 VALUES ('fact', 'body', 0.9, 0.5, 0, 'agent-1') RETURNING id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        let resp = coach_proposal(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path(("beta".to_string(), did)),
+            Json(CoachRequest {
+                flagged: true,
+                note: Some("follow up".to_string()),
+            }),
+        )
+        .await
+        .expect("coach runs");
+        assert_eq!(resp["flagged"], true);
+        assert_eq!(resp["status"], "coached");
+
+        let note: Option<String> = state
+            .registry
+            .pool_for("beta-eu")
+            .unwrap()
+            .get()
+            .unwrap()
+            .query_row("SELECT qa_note FROM proposals WHERE id = ?1", [did], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(note.as_deref(), Some("follow up"));
+
+        let audited: i64 = state
+            .registry
+            .pool_for("beta-eu")
+            .unwrap()
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'client'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(audited >= 1, "coach is audited");
+
+        let err = coach_proposal(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path(("beta".to_string(), 99_999)),
+            Json(CoachRequest {
+                flagged: false,
+                note: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, StatusCode::NOT_FOUND, "unknown proposal 404s");
+    }
+
+    #[tokio::test]
+    async fn qa_review_queue_surfaces_agent_interactions() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "beta", "beta-eu", "eu");
+        let conn = state.registry.pool_for("beta-eu").unwrap().get().unwrap();
+        for (i, owner) in ["agent-1", "other-agent"].iter().enumerate() {
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+                 VALUES ('fact', ?1, 0.9, 0.5, ?2, ?3)",
+                rusqlite::params![format!("body {i}"), i as i64, owner],
+            )
+            .unwrap();
+        }
+        let sup = crate::auth::Principal {
+            sub: "super@beta".to_string(),
+            tenant: "beta".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:beta/*").unwrap()],
+            jti: "t".to_string(),
+            roles: vec![],
+            manages: vec!["agent-1".to_string()],
+        };
+        let resp = client_proposals(
+            State(state.clone()),
+            OptPrincipal(Some(sup)),
+            Path("beta".to_string()),
+        )
+        .await
+        .expect("qa list runs");
+        assert_eq!(resp.len(), 1, "only the managed agent's proposal surfaces");
+        assert_eq!(resp[0].owner.as_deref(), Some("agent-1"));
+        assert!(resp[0].qa_score > 0, "qa list carries a score");
     }
 }

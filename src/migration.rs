@@ -1404,10 +1404,28 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // v1.27.8 "QaQueue": the review queue gains agent provenance + coaching.
+    // `owner` = the agent whose interaction produced the candidate; `qa_note` =
+    // the supervisor's coaching note (attached by the coach verb). Additive +
+    // nullable — existing rows keep owner NULL / no note.
+    for (col, def) in [("owner", "TEXT"), ("qa_note", "TEXT")] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE proposals ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.8')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.8';",
         [],
     )?;
 

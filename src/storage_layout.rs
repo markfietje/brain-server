@@ -70,6 +70,9 @@ pub const SCHEMA_VERSION_V1_25_0: &str = "1.25.0";
 pub const SCHEMA_VERSION_V1_26_0: &str = "1.26.0";
 /// v1.27.1 "Clients": the BPO operating `clients` register (global-operator rows).
 pub const SCHEMA_VERSION_V1_27_0: &str = "1.27.0";
+/// v1.27.8 "QaQueue": `proposals.owner` + `proposals.qa_note` (agent provenance
+/// + supervisor coaching on the review queue).
+pub const SCHEMA_VERSION_V1_27_8: &str = "1.27.8";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
