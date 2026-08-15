@@ -1683,6 +1683,40 @@ paths:
           description: The client row
         "404":
           description: No client with this name
+  /clients/{name}/dpa:
+    get:
+      summary: Read a client's Art 28 DPA terms (v1.27.3)
+      operationId: getClientDpa
+      description: >
+        The stored sub-processor DPA terms for a client, or `null` when set
+        never. The evidence a client's controller checks. Admin read.
+      responses:
+        "200":
+          description: The DPA terms object, or null
+        "404":
+          description: No client with this name
+    post:
+      summary: Set a client's Art 28 DPA terms (v1.27.3)
+      operationId: setClientDpa
+      description: >
+        Persist the sub-processor DPA terms for a client. Body is the DpaTerms
+        object; every field must be non-blank and <= 2000 chars
+        (`400 dpa_field_invalid`). Admin + audited (kind 'client').
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DpaTerms'
+      responses:
+        "200":
+          description: The updated client name
+        "400":
+          description: A DPA field is blank or too long
+        "403":
+          description: The principal is not admin
+        "404":
+          description: No client with this name
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
@@ -2859,6 +2893,27 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    DpaTerms:
+      type: object
+      description: >
+        v1.27.3 — Art 28 sub-processor DPA terms: the evidence a client's
+        controller checks before authorizing the BPO. All free-text + bounded
+        (each <= 2000 chars, never blank). Config the operator fills — not a
+        signed contract.
+      required:
+        - retention_on_termination
+        - deletion_timeline
+        - audit_rights
+        - breach_notification_timeline
+        - onward_transfer_restriction
+        - sub_sub_processor_list
+      properties:
+        retention_on_termination: { type: string, description: e.g. purge, return }
+        deletion_timeline: { type: string, description: e.g. within 30 days of end }
+        audit_rights: { type: string, description: e.g. annual + on request }
+        breach_notification_timeline: { type: string, description: e.g. within 72h }
+        onward_transfer_restriction: { type: string, description: e.g. no onward transfer }
+        sub_sub_processor_list: { type: string, description: comma list of names }
     Profile:
       type: object
       description: >

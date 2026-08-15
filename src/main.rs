@@ -4710,6 +4710,14 @@ async fn main_inner() -> Result<()> {
         .route("/clients", post(handlers::clients::register_client))
         .route("/clients", get(handlers::clients::list_clients))
         .route("/clients/{name}", get(handlers::clients::get_client))
+        .route(
+            "/clients/{name}/dpa",
+            post(handlers::clients::set_client_dpa),
+        )
+        .route(
+            "/clients/{name}/dpa",
+            get(handlers::clients::get_client_dpa),
+        )
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -9485,6 +9493,7 @@ Final paragraph after the rule.";
             // v1.27.1 Clients: the BPO operating register.
             "/clients",
             "/clients/{name}",
+            "/clients/{name}/dpa",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10422,6 +10431,7 @@ Final paragraph after the rule.";
             // v1.27.1 Clients: the BPO operating register (Admin, audited).
             ("/clients", "Admin"),
             ("/clients/{name}", "Admin"),
+            ("/clients/{name}/dpa", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
