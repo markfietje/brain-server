@@ -191,7 +191,49 @@ pub async fn client_dsar(
     Ok(Json(resp))
 }
 
-/// `POST /clients/{name}/dpa` — set Art 28 sub-processor terms (the evidence a
+/// `POST /clients/{name}/hold` body: the ids to freeze in the client's domain
+/// and the human citation (`reason`). `reason` is required non-blank (the
+/// shared hold validator enforces it); the field defaults so a body without it
+/// still deserializes and the validator returns the precise `reason_empty`
+/// error.
+#[derive(Debug, Deserialize)]
+pub struct ClientHoldRequest {
+    pub ids: Vec<i64>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `POST /clients/{name}/hold` — place a legal hold on ids in THAT client's
+/// domain, never another's. Composes the shared per-domain hold write
+/// (`handlers::holds::post_legal_hold_for_domain`) — no second hold
+/// implementation. Admin + audited. 404 unknown client, 409 archived, before
+/// any pool work.
+pub async fn client_hold(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(name): Path<String>,
+    Json(req): Json<ClientHoldRequest>,
+) -> Result<Json<super::holds::HoldResponse>, HandlerError> {
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    let pool_for = pool.clone();
+    let key = name.trim().to_ascii_lowercase();
+    let (domain, status) =
+        tokio::task::spawn_blocking(move || -> Result<(String, String), HandlerError> {
+            let conn = pool_for
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let c = crate::clients::by_name(&conn, &key)?
+                .ok_or_else(|| HandlerError::not_found("client not found"))?;
+            Ok((c.domain, c.status))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    if status != "active" {
+        return Err(HandlerError::conflict("client not active (archived)"));
+    }
+    super::holds::post_legal_hold_for_domain(state, principal, &domain, req.ids, req.reason).await
+}
 /// client's controller checks). Admin + audited. 404 when the client is
 /// unknown (via the update's affected-row count, no second query).
 pub async fn set_client_dpa(
@@ -425,6 +467,110 @@ mod tests {
                 subject: "s".to_string(),
                 action: "purge".to_string(),
                 dry_run: true,
+            }),
+        )
+        .await
+        .expect_err("archived client 409s");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn legal_hold_per_client_isolates_domains() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "beta", "beta-eu", "eu");
+        register_client(&state, "acme", "acme-us", "us");
+        let id_beta = {
+            let pool = state.registry.pool_for("beta-eu").unwrap();
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO knowledge(content, content_hash, owner) VALUES ('data','h','alice')",
+                [],
+            )
+            .expect("seed beta row");
+            conn.query_row("SELECT MAX(id) FROM knowledge", [], |r| r.get(0))
+                .unwrap()
+        };
+        let id_acme = {
+            let pool = state.registry.pool_for("acme-us").unwrap();
+            let conn = pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO knowledge(content, content_hash, owner) VALUES ('data','h','alice')",
+                [],
+            )
+            .expect("seed acme row");
+            conn.query_row("SELECT MAX(id) FROM knowledge", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            id_beta, id_acme,
+            "identical autoincrement ids across domains"
+        );
+
+        let resp = client_hold(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("acme".to_string()),
+            Json(ClientHoldRequest {
+                ids: vec![id_acme],
+                reason: "case 2026-118".to_string(),
+            }),
+        )
+        .await
+        .expect("hold lands on acme's domain");
+        assert_eq!(resp.held, 1);
+
+        let acme_held = {
+            let conn = state.registry.pool_for("acme-us").unwrap().get().unwrap();
+            crate::legal_hold::active_hold_ids(&conn).unwrap()
+        };
+        assert!(acme_held.contains(&id_acme), "acme's id is held in acme-us");
+        let beta_held = {
+            let conn = state.registry.pool_for("beta-eu").unwrap().get().unwrap();
+            crate::legal_hold::active_hold_ids(&conn).unwrap()
+        };
+        assert!(
+            !beta_held.contains(&id_beta),
+            "beta's identical-id row is NOT held (isolation)"
+        );
+        assert!(
+            acme_held != beta_held,
+            "the held sets must differ across domains"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_hold_unknown_or_archived_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let body = Json(ClientHoldRequest {
+            ids: vec![1],
+            reason: "case".to_string(),
+        });
+        let err = client_hold(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("nope".to_string()),
+            body,
+        )
+        .await
+        .expect_err("unknown client 404s");
+        assert_eq!(err.status, StatusCode::NOT_FOUND);
+
+        register_client(&state, "beta", "beta-eu", "eu");
+        state
+            .pool
+            .get()
+            .unwrap()
+            .execute("UPDATE clients SET status='archived' WHERE name='beta'", [])
+            .expect("archive");
+        let err = client_hold(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path("beta".to_string()),
+            Json(ClientHoldRequest {
+                ids: vec![1],
+                reason: "case".to_string(),
             }),
         )
         .await

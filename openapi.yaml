@@ -1786,6 +1786,48 @@ paths:
           description: No client with this name
         "409":
           description: Client is not active (archived)
+  /clients/{name}/hold:
+    post:
+      summary: Legal hold a client's ids (v1.27.5)
+      operationId: clientHold
+      description: >
+        Place a legal hold on knowledge ids in THAT client's domain, never
+        another's. Composes the shared per-domain hold write; the hold freezes
+        the ids against decay, /purge, and DSAR deferral until explicitly
+        released. `reason` is a required non-blank citation (case number,
+        ticket, regulation). Resolves the client's domain from the register.
+        Admin + audited (kind 'client').
+      parameters:
+        - in: path
+          name: name
+          required: true
+          description: Client name (lowercase, domain-safe).
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items: { type: integer }
+                  description: Knowledge ids to freeze (1..=1000, all must exist in the client's domain).
+                reason:
+                  type: string
+                  description: Non-blank legal citation (max 500 chars).
+      responses:
+        "200":
+          description: "{held, hold_ids} — one hold row id per frozen id."
+        "400":
+          description: Empty ids, unknown id, or blank/overlong reason
+        "403":
+          description: The principal is not admin
+        "404":
+          description: No client with this name
+        "409":
+          description: Client is not active (archived)
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
