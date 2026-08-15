@@ -15,6 +15,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | GET | `/health`, `/health/db`, `/ready` | Liveness + capacity + hardening |
 | GET | `/stats`, `/version` | Counts, model, version |
 | GET | `/openapi.yaml` | Full API contract |
+| POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | POST | `/ingest/memory` | Structured memory ingest |
 | POST | `/ingest/markdown` | Markdown ingest + graph extraction |
 | POST | `/ingest` | Structured ingest (explicit entities/relations) |
@@ -24,6 +25,10 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | GET | `/recall/{trace_id}/trace` | Recall-trace replay (decision-path evidence) |
 | POST | `/verify` | Span verification — is a claim supported by a chunk's text? |
+| POST | `/reindex` | Rebuild indexes |
+| GET | `/metrics` | Prometheus metrics (auth-gated) |
+| GET | `/events` | SSE broadcast of memory events |
+| POST | `/webhooks/{kind}` · `/webhooks/gh` | Webhook delivery receiver (HMAC-verified) |
 
 ---
 
@@ -46,7 +51,9 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
   (`-"..."`), and exact code paths.
 - **Filters** — `source`/`sources` (ingest kind), `since` (ISO timestamp),
   `domain`, `min_relevance`, `include_decayed`.
-- **Provenance** — per-retriever ranks, fused score, expansion terms.
+- **Provenance** — per-retriever ranks, fused score, expansion terms, and
+  per-hit `source` / `node_kind` / `lawful_basis` / `region` tags (present when
+  stored; absorbed into the `RecallHit` wire shape, v1.27.12).
 - **Abstention** — returns `{decision: "low_confidence", hits: []}` rather than
   top-1 garbage when quality is too low.
 
@@ -66,13 +73,24 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/ingest/proposal` · `/proposals/{id}/approve[?supersedes=N]` · `/reject` | Human-in-the-loop write-back (v1.14) |
-| GET | `/proposals?status=` · `/decayed` | Approval queue + decayed review |
+| POST | `/ingest/proposal` · `/proposals/{id}/approve[?supersedes=N][&digest=...]` · `/reject` · `/proposals/{id}/edit` | Human-in-the-loop write-back (v1.14). Since v1.27.12 `approve` accepts an optional `digest` (SHA-256 of the read-canonical review form, as served by `GET /proposals`); any drift → `409` — the approval binds to the bytes the reviewer saw |
+| GET | `/proposals?status=` · `/decayed` | Approval queue + decayed review. Each row is a `ProposalView` (`content` = read-canonical form, `content_digest` = SHA-256 the approve verb binds to, v1.27.12) |
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation, supersession, undo |
 | POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + false-positive metric |
 | POST | `/verify` | Claim span verification |
 | POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization / decision rules |
 | POST | `/procedure` · GET `/procedure/{id}/steps` | Ordered procedures |
+
+---
+
+## Profiles, roles & connectors (policy)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/profiles` · GET/POST `/profiles/{name}` | Preset system (v1.21): fetch/upsert a typed knob bundle |
+| GET | `/roles` · GET/POST `/roles/{name}` | Role postures + capability sets (v1.23) |
+| GET | `/connectors` | Registered connector registry (v1.24) |
+| POST | `/connectors/register` | Validate + register a connector against the domain's profile gate (v1.24) |
 
 ---
 
@@ -82,14 +100,30 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 |---|---|---|
 | GET | `/export` | Portable JSON export |
 | POST | `/purge` | Hard, audited deletion by id or owner |
+| DELETE | `/memory/{id}` | Hard, audited deletion of one chunk (human-only erasure; the agent tool was removed v1.20.25) |
 | POST | `/dsar` | Locate → export → purge → deletion certificate (supports `dry_run` footprint preview) |
 | GET | `/dsar` | DSAR ledger (admin, newest-first, per-row deadline) |
 | GET | `/tombstones?subject=&since=` | Deletion registry |
 | GET | `/dsar/{id}/certificate` | Re-fetch certificate + live chain check |
 | GET | `/audit` · `/audit/verify` | Append-only audit log + chain integrity |
 | GET | `/quarantine` · `/quarantine/{id}/release` · `/delete` | Injection review |
-| GET | `/retention` · POST `/retention` · GET `/art30` | Per-kind retention policy + Art 30 record |
+| GET | `/retention` · POST `/retention` · GET `/art30` · GET `/retention/report` | Per-kind retention policy + Art 30 record + per-domain×kind retention report |
 | GET | `/snapshot/status` | Point-in-time snapshot state |
+
+---
+
+## Domains & routing
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/domains` | Create a domain pool (200 = existed, 201 = created; body `{domain}`) |
+| GET | `/domains` | List known domains (single global pool when multi-db is off) |
+| DELETE | `/domains/{name}?confirm=<name>` | Delete a domain + all its data (echo-confirm guard, `global` protected) |
+| POST | `/domains/{name}/vacuum` | `VACUUM` one domain pool (returns `{name, vacuumed: true}`) |
+| GET | `/domains/{name}/export` | Consistent SQLite snapshot download (`VACUUM INTO`, `attachment; filename="brain-<name>.db"`) |
+| POST | `/domains/{name}/import` | Restore a snapshot into a NEW domain (raw bytes body; 201 `{name, imported: true, bytes}`) |
+| POST | `/domains/recompute` | One-shot centroid recompute sweep over every domain (`{recomputed: [[domain, n], …]}`) |
+| POST | `/domains/move` | Move chunks to another domain |
 
 ---
 
@@ -103,6 +137,39 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | GET | `/ump/memory/{id}` | Read one record with on-read integrity re-verification |
 | GET | `/ump/subscribe` | SSE broadcast of memory events |
 | POST | `/ump/audit` · GET `/ump/audit/verify` | UMP-scoped audit row family + chain verification |
+
+---
+
+## Legal hold & breach (v1.22 / v1.25)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/legal-hold` · `/legal-hold/{id}/release` · GET `/legal-holds` | Per-domain legal holds; held ids are frozen (purge/DSAR defer) |
+| POST | `/breach` · `/breach/{id}/event` · `/breach/{id}/close` | Breach-notification workflow (open / append event / close) |
+| GET | `/breaches` · `/breaches/{id}` | Breach register + detail |
+
+---
+
+## Cross-border transfers (v1.26)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/transfers` · GET `/transfers` | Register / list cross-border transfers (validated mechanism + jurisdiction) |
+| GET | `/transfers/{id}/tia` | Transfer-impact assessment (Schrems II, pre-filled evidence) |
+| GET | `/transfers/{id}/dpa` | Data-processing agreement (Art 28, pre-filled evidence) |
+
+---
+
+## Clients register (v1.27 BPO)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/clients` · GET `/clients` | Register / list clients (one domain per client) |
+| GET | `/clients/{name}` | Client detail (client-auditor: row-filtered to granted domains) |
+| POST | `/clients/{name}/dsar` | Per-client jurisdiction-aware DSAR + certificate |
+| POST | `/clients/{name}/hold` | Per-client legal hold (resolves the client's domain) |
+| POST | `/clients/{name}/end` | Termination: purge-or-return + archive + certificate |
+| GET | `/clients/{name}/proposals` · POST `/clients/{name}/proposals/{id}/coach` | Supervisor QA queue (same `ProposalView` shape as `/proposals`) + coaching note (v1.27.8, Admin) |
 
 ---
 
@@ -125,7 +192,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 
 ---
 
-## Clients
+## Tooling clients
 
 - **`brain` CLI** — status, query, get, explain, ingest-dir, reconcile, retention,
   domains, ump, backup/restore, key management, and more (see
