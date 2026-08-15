@@ -19,6 +19,39 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.10] — 2026-08-15
+
+### Server — "Roles (hardening)"
+
+Release 9.1 follow-up. Server `Cargo.toml`/lock 1.27.9 → **1.27.10**; schema
+unchanged (**1.27.8**); client + plugin unchanged. The deep-review pass over
+v1.27.9.
+
+### Release notes
+
+**Improvements**
+
+- Hardened the `client-auditor` grant: the operator `global` root domain is
+  never a valid auditor target (the min-necessary wedge cannot widen to the
+  operator pool), and the `/clients` list filter is now type-safe over the
+  register rows.
+
+### Engineering record
+
+Three refinements to the v1.27.9 seam, behavior-preserving for the shipped
+path: `auth::client_authorized_domains` excludes `global` (in addition to `*`)
+from an auditor's allowlist; `list_clients` filters the typed
+`Vec<crate::clients::Client>` before serialization (stringly-typed serde-key
+filtering removed, less allocation) and returns an empty list (not 404) for a
+misconfigured zero-grant auditor — still deny-by-default; `get_client` computes
+the allowlist once instead of twice. Tests: server bin 619 → **620** / 6
+ignored (added `client_auditor_with_no_granted_domain_sees_nothing`), lib 105
+(+ preset-level `can == ["read"]` wedge pins for `client-auditor` + `bpo-ops`);
+clippy `-D warnings` + fmt clean; CI green. Honest ceiling unchanged — a read-
+time row filter on one register, not multi-tenancy (v2.0 Cortex).
+
+---
+
 ## [1.27.9] — 2026-08-15
 
 ### Server — "Roles"
