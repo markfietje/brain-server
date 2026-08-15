@@ -19,6 +19,44 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.7] — 2026-08-15
+
+### Server — "Qa" (agent-QA core)
+
+Release 7 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.6 →
+**1.27.7**; schema unchanged (`1.27.0`); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- Scope-violation detection — a role-restricted agent (R1 roles narrowed its
+  retrieval) that recalls across a client/perimeter border is now logged as a
+  security event on the existing Auth/Denied audit channel, so the attempt has
+  an audit record even though the WHERE clause already prevented the data
+  returning.
+- Deterministic QA scorecard — a small pure 0..100 map (`scope` × `cite` ×
+  confidence) that is the building block for the automated review-queue signal.
+
+### Engineering record
+
+Two pure functions + one call site, no schema/table/route change. `src/qa.rs`
+(`scope_violation`, `scorecard`) is a dependency-free module (bin-side like
+`gate.rs`); `run_recall` wires scope-violation detection into the point where
+`domains_searched` is available and the role gate was applied. Reuses
+`AuditKind::Auth` + `Denied` — the established security channel (the `ump_ops`
+precedent) — so no audit-kind/test-lattice churn. The detection is
+observational only: it never changes recall results. `scorecard` is marked
+`#[allow(dead_code)]` until R8's queue renders it.
+
+Tests: server bin **613** passed / 6 ignored (includes the 3 new `qa` tests);
+clippy `-D warnings` + fmt clean (default, `bench`, and `bench,otel`). Honest
+ceilings: this is QA *core*, not the queue — nothing surfaces the scorecard
+yet (R8); the detection is best-effort audit, not enforcement. See
+`IMPLEMENTATION_PLAN_v1.27.7_Qa.md`.
+
+---
+
 ## [1.27.6] — 2026-08-15
 
 ### Server — "Terminate" (per-client contract-end)

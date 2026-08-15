@@ -601,6 +601,27 @@ pub(crate) async fn run_recall(
     domains_searched.sort();
     domains_searched.dedup();
 
+    // v1.27.7 "Qa": a role-restricted agent that searched beyond the global
+    // perimeter domain crossed a client border — a security event on the
+    // established Auth/Denied channel. Best-effort (never fails the recall).
+    if let Some(gate) = crate::handlers::gate::role_retrieval_gate(principal, &state.pool) {
+        if gate.owner_in.is_some() && crate::qa::scope_violation(true, &domains_searched) {
+            if let Ok(conn) = state.pool.get() {
+                crate::audit::record(
+                    &conn,
+                    crate::audit::AuditKind::Auth,
+                    "api",
+                    "scope_violation",
+                    crate::audit::AuditStatus::Denied,
+                    &format!(
+                        "agent={} domains={domains_searched:?}",
+                        principal_label(principal)
+                    ),
+                );
+            }
+        }
+    }
+
     // v1.15.0 "Observe" M1/M2: emit a read event into the hash-chained audit
     // (opt-in: on in JWT mode, off in loopback, overridable via
     // BRAIN_AUDIT_READ_EVENTS + BRAIN_AUDIT_READ_SAMPLE_RATE). The trace id is
