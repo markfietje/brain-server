@@ -332,6 +332,18 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
         "exec",
         r#"{"name":"exec","description":"Executive: read-only dashboards across the team, no write or destructive actions","scopes":["private","domain","team"],"owner_filter":"reports","can":["read"],"panels_default":["overview","health","security"],"panels_hidden":["audit","data","subjects"],"tools_allowed":["ump.recall"]}"#,
     ),
+    // v1.27.9 "Roles": the BPO client postures. A client-auditor is READ-ONLY
+    // on ONE client domain (its compliance login — `can` has only "read", the
+    // min-necessary wedge); a bpo-ops is the all-clients operations read. Both
+    // INSERT OR IGNORE so operator edits survive a re-migration.
+    (
+        "client-auditor",
+        r#"{"name":"client-auditor","description":"A client's compliance team: read-only view of exactly one client domain","scopes":["private","domain","team"],"owner_filter":"all","can":["read"],"panels_default":["overview","health"],"panels_hidden":null,"tools_allowed":["ump.recall","ump.get"]}"#,
+    ),
+    (
+        "bpo-ops",
+        r#"{"name":"bpo-ops","description":"BPO operations: read-only capacity/connector/queue/breach board across all clients","scopes":["private","domain","team"],"owner_filter":"all","can":["read"],"panels_default":["overview","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall"]}"#,
+    ),
 ];
 
 /// The parsed view of the ship-with roles (`PRESETS_RAW`), used by tests.
@@ -367,7 +379,7 @@ mod tests {
     #[test]
     fn all_presets_parse_and_validate() {
         let all = presets();
-        assert_eq!(all.len(), PRESETS_RAW.len(), "10 ship-with roles");
+        assert_eq!(all.len(), PRESETS_RAW.len(), "12 ship-with roles");
         for r in &all {
             validate(r).unwrap_or_else(|e| panic!("role {} invalid: {e}", r.name));
         }
