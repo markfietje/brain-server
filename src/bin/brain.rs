@@ -1635,11 +1635,52 @@ fn cmd_client(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()) {
         Some("add") => cmd_client_add(&args[1..]),
         Some("dpa") => cmd_client_dpa(&args[1..]),
+        Some("dsar") => cmd_client_dsar(&args[1..]),
         _ => Err(
-            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S"
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]"
                 .into(),
         ),
     }
+}
+
+fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args);
+    let name = require_positional(&positionals, "name")?;
+    let subject = positionals
+        .get(1)
+        .ok_or_else(|| "missing required argument: subject".to_string())?;
+    let action = flags
+        .get("action")
+        .and_then(|o| o.clone())
+        .unwrap_or_else(|| "purge".to_string());
+    let dry_run = flags
+        .get("dry-run")
+        .and_then(|o| o.clone())
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    let body = serde_json::json!({
+        "subject": subject,
+        "action": action,
+        "dry_run": dry_run,
+    });
+    let path = format!("/clients/{name}/dsar");
+    let resp = post(
+        &base_url(),
+        &path,
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("{}", resp.body);
+    Ok(())
 }
 
 fn cmd_client_dpa(args: &[String]) -> Result<(), String> {
