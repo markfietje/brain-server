@@ -386,6 +386,12 @@ mod tests {
         // The 'solo' SMB role is the simplest default: every action.
         let solo = all.iter().find(|r| r.name == "solo").unwrap();
         assert!(solo.can("approve") && solo.can("purge") && solo.can("dsar_export"));
+        // v1.27.9 "Roles": the BPO client postures. A client-auditor is the
+        // read-only wedge (can == ["read"]); bpo-ops is read-only too.
+        let auditor = all.iter().find(|r| r.name == "client-auditor").unwrap();
+        assert_eq!(auditor.can, vec!["read"], "client-auditor is read-only");
+        let ops = all.iter().find(|r| r.name == "bpo-ops").unwrap();
+        assert_eq!(ops.can, vec!["read"], "bpo-ops is read-only");
     }
 
     #[test]

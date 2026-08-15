@@ -146,9 +146,11 @@ pub fn is_authorized(principal: &Principal, action: Action, team: &str, domain: 
 /// allowlist key (e.g. scope `admin:ops/acme-us` → client-domain `acme-us`).
 /// `None` = unrestricted: not a client-auditor, or the opaque/loopback
 /// back-compat superuser. `Some(&[])` = a client-auditor with no granted
-/// client-domain sees nothing. The operator binds the auditor's JWT `scopes`
-/// to that client's domain; the register (not this key) remains the source of
-/// truth for which client-domain maps to which row.
+/// client-domain sees nothing (deny-by-default). The operator's `global` root
+/// is never a valid auditor grant (the min-necessary wedge never widens to the
+/// operator pool). The operator binds the auditor's JWT `scopes` to that
+/// client's domain; the register (not this key) remains the source of truth
+/// for which client-domain maps to which row.
 pub fn client_authorized_domains(principal: &Option<Principal>) -> Option<Vec<String>> {
     let p = principal.as_ref()?;
     if !p.roles.iter().any(|r| r == "client-auditor") {
@@ -158,7 +160,7 @@ pub fn client_authorized_domains(principal: &Option<Principal>) -> Option<Vec<St
         p.scopes
             .iter()
             .map(|s| s.domain.clone())
-            .filter(|d| d != "*")
+            .filter(|d| d != "*" && d != "global")
             .collect(),
     )
 }

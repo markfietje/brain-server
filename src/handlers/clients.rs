@@ -91,33 +91,31 @@ pub async fn list_clients(
         Some(g) if !g.is_empty() => {
             super::authorize(&principal.0, crate::auth::Action::Read, "", &g[0])?
         }
-        Some(_) => return Err(HandlerError::not_found("client not found")),
         None => super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?,
+        _ => {}
     }
     let pool_for = pool.clone();
-    let rows =
-        tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
+    let rows = tokio::task::spawn_blocking(
+        move || -> Result<Vec<crate::clients::Client>, HandlerError> {
             let conn = pool_for
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            Ok(crate::clients::list(&conn)?
-                .into_iter()
-                .map(|c| serde_json::to_value(c).unwrap_or_default())
-                .collect())
-        })
-        .await
-        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
-    let rows = match granted {
+            crate::clients::list(&conn)
+        },
+    )
+    .await
+    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    let rows: Vec<crate::clients::Client> = match granted {
         Some(g) => rows
             .into_iter()
-            .filter(|row| {
-                row["domain"]
-                    .as_str()
-                    .is_some_and(|d| g.iter().any(|granted| granted == d))
-            })
+            .filter(|c| g.iter().any(|d| d == &c.domain))
             .collect(),
         None => rows,
     };
+    let rows: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|c| serde_json::to_value(c).unwrap_or_default())
+        .collect();
     Ok(Json(serde_json::json!({ "clients": rows })))
 }
 
@@ -130,7 +128,8 @@ pub async fn get_client(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    if crate::auth::client_authorized_domains(&principal.0).is_none() {
+    let granted = crate::auth::client_authorized_domains(&principal.0);
+    if granted.is_none() {
         super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     }
     let pool_for = pool.clone();
@@ -146,8 +145,8 @@ pub async fn get_client(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     let client = value.ok_or_else(|| HandlerError::not_found("client not found"))?;
-    if let Some(granted) = crate::auth::client_authorized_domains(&principal.0) {
-        if !granted.iter().any(|d| d == &client.domain) {
+    if let Some(g) = granted {
+        if !g.iter().any(|d| d == &client.domain) {
             return Err(HandlerError::not_found("client not found"));
         }
         super::authorize(&principal.0, crate::auth::Action::Read, "", &client.domain)?;
@@ -1319,5 +1318,34 @@ mod tests {
             .expect_err("client-auditor cannot admin");
         assert_eq!(err.status, StatusCode::FORBIDDEN);
         assert!(crate::handlers::authorize_role(&auditor.0, &state.pool, "read").is_ok());
+    }
+
+    #[tokio::test]
+    async fn client_auditor_with_no_granted_domain_sees_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        register_client(&state, "acme", "acme-us", "us");
+        let auditor = || {
+            OptPrincipal(Some(crate::auth::Principal {
+                sub: "c".to_string(),
+                tenant: "ops".to_string(),
+                scopes: vec![],
+                jti: "a".to_string(),
+                roles: vec!["client-auditor".to_string()],
+                manages: vec![],
+            }))
+        };
+        let list = list_clients(State(state.clone()), auditor())
+            .await
+            .expect("empty-grant auditor list runs");
+        assert_eq!(
+            list["clients"].as_array().unwrap().len(),
+            0,
+            "deny-by-default: no granted client-domain sees nothing"
+        );
+        let denied = get_client(State(state.clone()), auditor(), Path("acme".to_string()))
+            .await
+            .expect_err("no granted domain denies the lookup");
+        assert_eq!(denied.status, StatusCode::NOT_FOUND);
     }
 }
