@@ -1717,6 +1717,75 @@ paths:
           description: The principal is not admin
         "404":
           description: No client with this name
+  /clients/{name}/dsar:
+    post:
+      summary: Per-client jurisdiction-aware DSAR (v1.27.4)
+      operationId: clientDsar
+      description: >
+        A subject erasure scoped to a single client's domain, stamped with that
+        client's jurisdiction, deadline, rights, and transfer mechanism. The
+        "erase Client Beta's data on contract end" building block. Resolves the
+        client's domain + jurisdiction from the register and delegates to the
+        shared DSAR run (no new purge logic). `action` = purge | export | both
+        (default purge); `dry_run` previews the would-be footprint write-free.
+        Admin + audited (kind 'client').
+      parameters:
+        - in: path
+          name: name
+          required: true
+          description: Client name (lowercase, domain-safe).
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                subject:
+                  type: string
+                  description: Owner/principal being actioned (max 2000 chars).
+                action:
+                  type: string
+                  enum: [purge, export, both]
+                  default: purge
+                dry_run:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: >
+            A DsarResponse: the ledger row id, the client's jurisdiction +
+            deadline (per its law) + rights, and a deletion certificate stamped
+            with the client's jurisdiction + mechanism (or a footprint when
+            dry-run).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  subject: { type: string }
+                  status: { type: string, enum: [completed, preview] }
+                  created_at: { type: integer }
+                  deadline: { type: integer }
+                  jurisdiction: { type: string, nullable: true }
+                  rights:
+                    type: array
+                    items: { type: string }
+                  certificate:
+                    type: object
+                    description: Subject/action/certificate (absent on dry-run).
+                  footprint:
+                    $ref: "#/components/schemas/Footprint"
+        "400":
+          description: Empty/overlong subject or invalid action
+        "403":
+          description: The principal is not admin / lacks the dsar_export role
+        "404":
+          description: No client with this name
+        "409":
+          description: Client is not active (archived)
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)

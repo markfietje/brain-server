@@ -4718,6 +4718,7 @@ async fn main_inner() -> Result<()> {
             "/clients/{name}/dpa",
             get(handlers::clients::get_client_dpa),
         )
+        .route("/clients/{name}/dsar", post(handlers::clients::client_dsar))
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -9494,6 +9495,7 @@ Final paragraph after the rule.";
             "/clients",
             "/clients/{name}",
             "/clients/{name}/dpa",
+            "/clients/{name}/dsar",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10432,6 +10434,7 @@ Final paragraph after the rule.";
             ("/clients", "Admin"),
             ("/clients/{name}", "Admin"),
             ("/clients/{name}/dpa", "Admin"),
+            ("/clients/{name}/dsar", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
