@@ -598,6 +598,12 @@ paths:
       responses:
         "200":
           description: Source retired
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"deleted": true, "source_id": 13}
+                description: 'true when the source existed and was retired; false when the id was already gone'
         "404":
           description: No such source
   /connectors:
@@ -655,6 +661,12 @@ paths:
       responses:
         "200":
           description: Webhook accepted/enqueued (or duplicate)
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"status": "enqueued"}
+                description: '"enqueued" when the payload was queued for the connector worker; "duplicate" when a byte-identical payload for the same connector is already queued (idempotent replay)'
         "401":
           description: Signature verification failed
   /consolidate/propose:
@@ -1301,6 +1313,12 @@ paths:
       responses:
         "200":
           description: Proposals in the queue
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProposalView"
   /proposals/{id}/approve:
     post:
       summary: Approve a proposal — promote to memory in one tx (v1.14.0 M1)
@@ -1327,6 +1345,12 @@ paths:
       responses:
         "200":
           description: Proposal approved and promoted to a knowledge row
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"proposal_id": 42, "chunk_id": 317, "status": "approved", "superseded": null}
+                description: 'superseded = the chunk id expired via resolve_supersession in the same tx, or null when none was requested'
         "409":
           description: >
             Proposal content changed since it was displayed (content_digest
@@ -1343,6 +1367,12 @@ paths:
       responses:
         "200":
           description: Proposal rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"proposal_id": 42, "status": "rejected"}
+                description: 'creates nothing — the proposal row is marked rejected and the audit chain records the decision'
   /proposals/{id}/edit:
     post:
       summary: Edit a pending proposal's content and re-score it (v1.20.14 M1)
@@ -1447,6 +1477,14 @@ paths:
       responses:
         "200":
           description: Decayed chunks
+          content:
+            application/json:
+              schema:
+                type: array
+                description: 'reason: per_chunk (the row''s own expires_at elapsed) or kind_policy (the kind-level retention default elapsed)'
+                items:
+                  type: object
+                  example: {"id": 317, "content_hash": "9f2c…", "expires_at": 1753000000, "effective_expiry": 1753000000, "memory_kind": "chunk", "reason": "per_chunk"}
   /retention:
     get:
       summary: Current per-kind retention policy (v1.17.1 M2)
@@ -1458,6 +1496,11 @@ paths:
       responses:
         "200":
           description: Retention policy
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"enabled": true, "policy": {"chunk": 30, "procedure": 180}, "counts": {"chunk": 430}, "projection": "kind-default expiry is derived from each chunk''s created_at at query time"}
     post:
       summary: Override the per-kind retention policy (v1.17.1 M2)
       operationId: retentionPost
@@ -1481,6 +1524,12 @@ paths:
       responses:
         "200":
           description: Policy updated
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"updated": 1, "set": {"chunk": 30, "procedure": 180}}
+                description: 'set = the per-kind ttl_days map now in force (empty when retention is disabled)'
   /art30:
     get:
       summary: Art 30 records-of-processing register (v1.17.1 M5)
@@ -1493,6 +1542,12 @@ paths:
       responses:
         "200":
           description: The Art 30 register
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"art30": {"register_name": "brain-server records of processing activities", "controller": "<operator>", "categories_of_data": [{"category": "chunk", "count": 430, "purpose": "chunk memory retrieved into decision context"}], "retention": {"chunk": 30}, "recipients": [{"name": "connector:github:acme/repo", "purpose": "external data source ingestion", "legal_basis": "legitimate interest / contract"}], "transfer_legal_bases": [{"transfer": "Art 19 webhook", "legal_basis": "not configured"}], "dsar_history": [{"action": "purge", "status": "completed", "count": 1}], "lifecycle": {"live": 410, "superseded": 12, "tombstoned": 8}, "provenance_fields": ["source", "assertion_kind", "confidence"]}}
+                description: 'generated_at (RFC3339) is also present; categories = live rows by memory_kind; recipients derive from configured webhooks + registered connectors'
   /snapshot/status:
     get:
       summary: Snapshot self-check panel (v1.17.1 M7)
@@ -1505,6 +1560,12 @@ paths:
       responses:
         "200":
           description: Per-snapshot status
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"db": "/Users/me/.openclaw/workspace/brain.db", "snapshot_count": 1, "all_ok": true, "snapshots": [{"file": "brain.db.snapshot-2026-08-10.bak", "exists": true, "size_bytes": 1048576, "mode_0600": true, "integrity_check": true, "audit_chain_ok": true, "ok": true}]}
+                description: 'ok = exists && mode_0600 && integrity_check && audit_chain_ok; a tampered snapshot reports its failure, never a crash'
   /legal-hold:
     post:
       summary: Freeze knowledge ids against erasure (v1.22.0 M1)
@@ -1518,6 +1579,12 @@ paths:
       responses:
         "200":
           description: The hold ids created
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"held": 2, "hold_ids": [10, 11]}
+                description: 'all-or-nothing: any unknown knowledge id rejects the whole request (400 unknown_ids)'
         "400":
           description: Empty/oversized ids or a blank/oversized reason
         "409":
@@ -1534,6 +1601,12 @@ paths:
       responses:
         "200":
           description: The released hold
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"released": true, "hold": {"id": 3, "knowledge_id": 10, "reason": "litigation hold", "held_by": "alice", "held_at": 1753000000, "released_at": 1753086400}, "note": "the knowledge id stays frozen while any other active hold on it remains"}
+                description: 'released_at is null while the hold is active'
         "404":
           description: No legal hold with this id
   /legal-holds:
@@ -1548,6 +1621,12 @@ paths:
       responses:
         "200":
           description: The hold registry
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"holds": [{"domain": "global", "hold": {"id": 3, "knowledge_id": 10, "reason": "litigation hold", "held_by": "alice", "held_at": 1753000000, "released_at": null}}], "total": 1}
+                description: 'hold ids are per-DB AUTOINCREMENT — the domain tag disambiguates; total counts before the limit clamp'
   /breach:
     post:
       summary: Open a breach-notification incident (v1.25.0 M2)
@@ -1562,6 +1641,12 @@ paths:
       responses:
         "200":
           description: The incident id + its computed notification deadlines
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"breach_id": 1, "deadlines": [{"jurisdiction": "ph", "audience": "NPC", "hours": 72, "deadline": 1753000000}]}
+                description: 'deadlines = notification_deadlines from the affected jurisdictions + discovered_at (per-law hours)'
         "400":
           description: Invalid scope/description/severity/jurisdictions
         "403":
@@ -1577,6 +1662,12 @@ paths:
       responses:
         "200":
           description: The event was appended
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"appended": true, "breach_id": 1}
+                description: 'appended to the incident''s append-only event log; appending to a closed breach → 409'
         "400":
           description: Invalid event_type or an empty/oversized body
         "404":
@@ -1593,6 +1684,12 @@ paths:
       responses:
         "200":
           description: The breach was closed
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"closed": true, "breach_id": 1, "closed_at": 1753086400}
+                description: 'no further events may be appended once closed'
         "404":
           description: No breach with this id
   /breaches:
@@ -1605,6 +1702,12 @@ paths:
       responses:
         "200":
           description: The breach registry
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"breaches": [{"id": 1, "scope": "customer-support", "description": "unencrypted backup exposed", "severity": "high", "discovered_at": 1753000000, "affected_estimate": 12, "jurisdictions": ["ph", "eu"], "status": "open", "opened_by": "dpo", "opened_at": 1753000100, "closed_by": null, "closed_at": null}]}
+                description: 'status: open | closed; severity from the fixed SEVERITIES vocabulary'
   /breaches/{id}:
     get:
       summary: One breach + its events + computed deadlines (v1.25.0 M2)
@@ -1616,6 +1719,12 @@ paths:
       responses:
         "200":
           description: The breach view {breach, events, deadlines}
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"id": 1, "scope": "customer-support", "description": "unencrypted backup exposed", "severity": "high", "discovered_at": 1753000000, "affected_estimate": 12, "jurisdictions": ["ph", "eu"], "status": "open", "opened_by": "dpo", "opened_at": 1753000100, "closed_by": null, "closed_at": null, "events": [{"id": 1, "event_type": "assessment", "jurisdiction": "ph", "body": "NPC notified", "noted_by": "dpo", "created_at": 1753000200}], "deadlines": [{"jurisdiction": "ph", "audience": "NPC", "hours": 72, "deadline": 1753007200}]}
+                description: 'the breach fields are flattened; deadlines are computed like POST /breach'
         "404":
           description: No breach with this id
   /transfers:
@@ -1633,6 +1742,12 @@ paths:
       responses:
         "200":
           description: The transfer id + recorded mechanism
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"id": 7, "mechanism": "scc-eu-2021"}
+                description: 'lawful_basis/purpose per Art 30 + 46 evidence; a transfer expiring before its signing time is rejected (400)'
         "400":
           description: Invalid dataset/jurisdiction/mechanism/counterparty/purpose/lawful_basis or invalid timestamp bounds (non-negative epoch; expires_at not before signed_at)
         "403":
@@ -1647,6 +1762,12 @@ paths:
       responses:
         "200":
           description: {transfers: [...]}
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"transfers": [{"id": 7, "dataset": "support-tickets", "origin_jurisdiction": "ph", "destination_jurisdiction": "eu", "mechanism": "scc-eu-2021", "counterparty": "acme-eu", "lawful_basis": "contract", "purpose": "ticket escalation", "signed_at": 1753000000, "expires_at": 1784536000}]}
+                description: 'lawful_basis is null when never recorded — a NULL serializes as null, never an empty string'
   /transfers/{id}/tia:
     get:
       summary: Transfer Impact Assessment template (v1.26.0 M4)
@@ -1659,6 +1780,12 @@ paths:
       responses:
         "200":
           description: The pre-filled TIA template
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"transfer": {"id": 7, "dataset": "support-tickets", "origin_jurisdiction": "ph", "destination_jurisdiction": "eu", "mechanism": "scc-eu-2021", "counterparty": "acme-eu", "lawful_basis": "contract", "purpose": "ticket escalation", "signed_at": 1753000000, "expires_at": 1784536000}, "destination_law": "EU GDPR", "destination_posture": {"jurisdiction": "eu", "note": "…curated surveillance note…"}, "sections": [{"key": "transfer", "title": "Transfer to be assessed", "prompt": "Dataset support-tickets from ph to eu …"}]}
+                description: 'an EVIDENCE ARTIFACT a human DPO/legal reviews + signs — nothing renders legal judgment; destination_posture is null when the destination has no curated posture'
         "404":
           description: No transfer with this id
   /transfers/{id}/dpa:
@@ -1674,6 +1801,12 @@ paths:
       responses:
         "200":
           description: The pre-filled DPA fields
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"counterparty": "acme-eu", "dataset": "support-tickets", "mechanism": "scc-eu-2021", "role": "processor/sub-processor", "retention": "per the domain retention policy; erased on termination", "deletion_on_termination": true, "audit_rights": "documented + exercised on request", "breach_notification": "within the affected jurisdictions statutory windows (see /breaches)", "onward_transfers": "per the registered mechanism (scc-eu-2021) — no onward transfer without the controller authorization", "lawful_basis": "contract", "purpose": "ticket escalation"}
+                description: 'pre-filled evidence the controller reviews before authorizing the sub-processor'
         "404":
           description: No transfer with this id
   /clients:
@@ -1690,6 +1823,12 @@ paths:
       responses:
         "200":
           description: The registered client name
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"name": "acme-us"}
+                description: 'the name is normalized (trimmed, lowercased) before registration; creating a client for a missing/archived domain is still allowed (identity register only)'
         "400":
           description: Invalid name/domain/jurisdiction
         "403":
@@ -1704,6 +1843,12 @@ paths:
       responses:
         "200":
           description: {clients: [...]}
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"clients": [{"name": "acme-us", "domain": "acme-us", "jurisdiction": "us", "profile": null, "dpa_terms": null, "status": "active", "created_at": 1753000000, "archived_at": null}]}
+                description: 'a client-auditor sees only the clients whose domain is in their granted set; every other principal sees the full register'
   /clients/{name}:
     get:
       summary: Resolve one client (v1.27.1)
@@ -1713,6 +1858,12 @@ paths:
       responses:
         "200":
           description: The client row
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"name": "acme-us", "domain": "acme-us", "jurisdiction": "us", "profile": null, "dpa_terms": {"retention_on_termination": "purge, return", "deletion_timeline": "within 30 days of end", "audit_rights": "annual + on request", "breach_notification_timeline": "within 72h", "onward_transfer_restriction": "no onward transfer", "sub_sub_processor_list": ""}, "status": "active", "created_at": 1753000000, "archived_at": null}
+                description: '404 for an unknown name; for a client-auditor the specific client is 404 (no existence leak) unless its domain is granted'
         "404":
           description: No client with this name
   /clients/{name}/dpa:
@@ -1725,6 +1876,12 @@ paths:
       responses:
         "200":
           description: The DPA terms object, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"retention_on_termination": "purge, return", "deletion_timeline": "within 30 days of end", "audit_rights": "annual + on request", "breach_notification_timeline": "within 72h", "onward_transfer_restriction": "no onward transfer", "sub_sub_processor_list": ""}
+                description: 'raw DpaTerms object on success (all six keys); JSON null when the client has no recorded terms'
         "404":
           description: No client with this name
     post:
@@ -1743,6 +1900,12 @@ paths:
       responses:
         "200":
           description: The updated client name
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"name": "acme-us"}
+                description: 'all six DpaTerms fields are required; 404 when the client does not exist, 409 when archived'
         "400":
           description: A DPA field is blank or too long
         "403":
@@ -1852,6 +2015,12 @@ paths:
       responses:
         "200":
           description: "{held, hold_ids} — one hold row id per frozen id."
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"held": 2, "hold_ids": [10, 11]}
+                description: 'identical shape to POST /legal-hold — the hold lands in the client''s own domain pool (per-client isolation); 404 unknown client, 409 archived'
         "400":
           description: Empty ids, unknown id, or blank/overlong reason
         "403":
@@ -1925,6 +2094,12 @@ paths:
       responses:
         "200":
           description: The owner-scoped proposal page with QA scores
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"proposals": [{"id": 12, "kind": "chunk", "content_digest": "sha256:…", "source": "manual", "authority": 0.9, "novelty": 0.4, "salience": 0.7, "created_at": 1753000000, "screen_verdict": "clean", "decided_at": null}], "total": 1}
+                description: 'the client''s pending review queue, owner-scoped to the supervisor''s manages set; 403 for non-admin supervisors'
         "403":
           description: The principal is not admin
         "404":
@@ -1969,6 +2144,12 @@ paths:
       responses:
         "200":
           description: '{proposal_id, client, flagged, status: coached}'
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"proposal_id": 12, "client": "acme-us", "flagged": true, "status": "coached"}
+                description: 'flagged = whether the deterministic injection screen would flag the content (provenance; the human''s decision is final)'
         "400":
           description: Invalid request
         "403":
@@ -1991,6 +2172,12 @@ paths:
       responses:
         "200":
           description: The retention schedule table
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"window_days": 30, "generated_at": "2026-08-15T12:00:00Z", "rows": [{"domain": "global", "kind": "chunk", "ttl_days": 30, "count": 430, "expiring_30d": 12}], "projection": "effective expiry = explicit expires_at, else created_at + ttl_days"}
+                description: 'the Art 5(1)(e) storage-limitation + HIPAA/SOX retention-schedule evidence; reports coverage, does not auto-enforce'
   /ump/capabilities:
     get:
       summary: UMP 1.0 negotiation handshake (v1.17.3 M2)
@@ -2002,6 +2189,12 @@ paths:
       responses:
         "200":
           description: Capabilities document
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"server": {"name": "brain-server", "version": "1.27.12"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                description: 'conformance = L3 when an operator signing key is configured, L2 otherwise'
   /ump/remember:
     post:
       summary: Store a memory record (v1.17.3 M2, UMP §3.3)
@@ -2014,6 +2207,12 @@ paths:
       responses:
         "200":
           description: "{id, result}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"id": 42, "result": "created"}
+                description: 'result: created | merged | rejected (a byte-identical proposal merges); 400 invalid_record / signature_invalid / forbidden_scope'
         "400":
           description: invalid_record / signature_invalid / forbidden_scope
   /ump/memory/{id}:
@@ -2032,6 +2231,12 @@ paths:
       responses:
         "200":
           description: "{record}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"record": {"ump": "1.0", "id": "urn:ump:brain-server:42", "body": {"text": "…"}, "scope": {"owner": "alice"}, "time": {"created_at": "2026-08-15T12:00:00Z"}, "integrity": {"content_hash": "sha256:…"}}}
+                description: 'the record is re-verified on read; a row whose stored integrity fails verification is treated as absent; other owners'' rows are §2.7-redacted'
         "404":
           description: not_found
   /ump/recall:
@@ -2049,6 +2254,12 @@ paths:
       responses:
         "200":
           description: "{results: [...]}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"results": [{"record": {"ump": "1.0", "id": "urn:ump:brain-server:42", "body": {"text": "…"}, "scope": {"owner": "alice"}}, "signals": {"similarity": 0.9, "recency": 1.0, "salience": 0.4, "scope_match": 1.0, "provenance_depth": 0.3}, "score": 0.87}]}
+                description: 'record + the five standard signals + the fused score; clamped to max_recall'
   /ump/revise:
     post:
       summary: Patch a record (v1.17.3 M2, UMP §3.5)
@@ -2062,6 +2273,12 @@ paths:
       responses:
         "200":
           description: "{id, supersedes: [old_id]}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"id": 43, "supersedes": [42]}
+                description: 'the patched record id + the superseded old revision id(s); default recall returns the new revision'
   /ump/forget:
     post:
       summary: Delete or soft-delete a record (v1.17.3 M2, UMP §3.4)
@@ -2074,6 +2291,12 @@ paths:
       responses:
         "200":
           description: "{result: tombstoned}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"result": "tombstoned"}
+                description: 'hard:false flags the row + tombstone + audit; hard:true runs the v1.14 purge erase path'
         "404":
           description: not_found
   /ump/feedback:
@@ -2088,6 +2311,12 @@ paths:
       responses:
         "200":
           description: "{result: recorded}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"result": "recorded"}
+                description: 'feedback mapped to the suggest-feedback last-wins upsert (followed → accept, rest → dismiss)'
         "400":
           description: feedback_invalid
   /ump/subscribe:
@@ -2102,6 +2331,10 @@ paths:
       responses:
         "200":
           description: "text/event-stream"
+          content:
+            text/event-stream:
+              schema:
+                type: string
   /ump/audit:
     post:
       summary: Reference audit facility (v1.17.3 M2, UMP §9)
@@ -2112,6 +2345,12 @@ paths:
       responses:
         "200":
           description: "{rows: [...], count: n}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"rows": [{"id": 900, "ts": "2026-08-15T12:00:00Z", "kind": "auth", "actor": "dpo", "target_hash": "sha256:…", "status": "Ok", "detail_hash": "sha256:…", "tenant_id": "global"}], "count": 1}
+                description: 'tenant-scoped: a non-superuser admin sees only their tenant; limit defaults to 100, clamped to MAX_MULTI_GET'
   /ump/audit/verify:
     get:
       summary: Fresh full-chain verification (v1.17.3 M2, UMP §9)
@@ -2122,6 +2361,12 @@ paths:
       responses:
         "200":
           description: "{ok: bool}"
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"ok": true}
+                description: 'authoritative full scan of the audit hash chain'
   /.well-known/ump.json:
     get:
       summary: UMP discovery document (v1.17.3 M2)
@@ -2132,6 +2377,12 @@ paths:
       responses:
         "200":
           description: Capabilities document
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"server": {"name": "brain-server", "version": "1.27.12"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                description: 'identical payload to /ump/capabilities, mounted on the public well-known surface'
   /events:
     get:
       summary: Operator alert feed (v1.20.8 M1, SSE)
@@ -2152,6 +2403,10 @@ paths:
       responses:
         "200":
           description: "text/event-stream"
+          content:
+            text/event-stream:
+              schema:
+                type: string
   /export:
     get:
       summary: Portable JSON export for data portability (v1.14.0 M2)
@@ -2228,6 +2483,12 @@ paths:
       responses:
         "200":
           description: Number of chunks purged
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"purged": 2}
+                description: 'the number of chunks hard-deleted (ids or owner form); legal-hold frozen ids are refused with 409 legal_hold_active'
   /recall/{trace_id}/trace:
     get:
       summary: Replay a recorded recall decision path (v1.15.0 M2)
@@ -2248,6 +2509,12 @@ paths:
       responses:
         "200":
           description: The stored trace JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"query_hash": "sha256:…", "decision": "Ok", "domains_searched": ["global"], "scope": ["private"], "actor": "dpo", "hits": [{"id": 317, "score": 0.87, "assertion_kind": "stated", "source": "manual", "relevance": "high", "decayed": false}]}
+                description: 'query_hash is a bounded hash of the query — never raw query text (a recall query can be personal data)'
         "404":
           description: No trace for this id
   /dsar:
@@ -2385,6 +2652,12 @@ paths:
       responses:
         "200":
           description: Tombstone rows (bounded at 1000)
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"tombstones": [{"knowledge_id": 317, "content_hash": "sha256:…", "purged_at": 1753000000, "reason": "owner:alice@example.com", "origin_id": null}]}
+                description: 'hash-only, append-only rows; reason is owner:<subject> for roots or derived (scoped via origin_id); bounded at 1000'
   /dsar/{id}/certificate:
     get:
       summary: Re-fetch a deletion certificate (v1.15.0 M3)
@@ -2402,6 +2675,12 @@ paths:
       responses:
         "200":
           description: Certificate + live chain verification
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"certificate": {"subject": "alice@example.com", "action": "both", "found_count": 3, "purged_ids": [317, 318], "region": "<residency stamp>", "held_ids": [], "jurisdiction": "eu", "mechanism": "scc-eu-2021", "tombstone_root": 900, "certified_at": "2026-08-15T12:00:00Z", "chain_head": "sha256:…"}, "chain_verifies": true}
+                description: 'held_ids lists {id, reasons} for legal-hold-deferred targets (never purged); 404 for an unknown id or another tenant''s certificate'
         "404":
           description: No DSAR request with this id
   /ingest:
@@ -2506,6 +2785,12 @@ paths:
       responses:
         "200":
           description: Unverified response shape
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"deleted": true}
+                description: 'true when the knowledge row existed and was erased (vec0 + FTS + graph + tombstone in one tx); false when the id was already gone'
   /domains:
     get:
       summary: List domains with per-domain counts
@@ -2548,8 +2833,20 @@ paths:
       responses:
         "200":
           description: Domain already existed
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"name": "acme-eu", "created": false, "multi_db": true}
+                description: '200 when the domain already existed; 201 when newly created — same body shape'
         "201":
           description: Domain created
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"name": "acme-eu", "created": true, "multi_db": true}
+                description: '201 when newly created; 200 when it already existed — same body shape'
         "400": { $ref: "#/components/responses/BadRequest" }
   /domains/{name}:
     delete:
@@ -2591,6 +2888,12 @@ paths:
       responses:
         "200":
           description: Vacuumed
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"name": "acme-eu", "vacuumed": true}
+                description: 'VACUUM run on the domain pool (full snapshot write; the connection tracker quiesced first)'
   /domains/{name}/export:
     get:
       summary: Stream a consistent snapshot of the domain's .db file
@@ -2956,7 +3259,9 @@ paths:
       operationId: authLogout
       responses:
         "204":
-          description: Logged out (or no principal present — same response)
+          description: The access token was revoked (reason=logout) — no body. A request without a principal returns 401 instead.
+        "401":
+          description: No principal present — nothing to revoke
   /auth/revoke:
     post:
       summary: Operator/admin revoke a specific token by jti (v1.2 AuthN)
@@ -3908,3 +4213,4 @@ components:
         team: { type: string, description: Team id or `*` }
         domain: { type: string, description: Domain id or `*` }
       required: [action, team, domain]
+
