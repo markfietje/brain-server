@@ -527,19 +527,25 @@ pub(crate) async fn run_dsar_subject(
         let ledger_id = run
             .ledger_id
             .ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
-        let global_conn = state_for
-            .pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        crate::audit::record(
-            &global_conn,
-            crate::audit::AuditKind::Client,
-            "api",
-            &format!("client-dsar:{subject}"),
-            crate::audit::AuditStatus::Ok,
-            "dsar",
-        );
-        let chain_head = crate::audit::chain_head(&global_conn);
+        // Audit + chain anchor on the global pool (the registry of record).
+        // Scoped so the conn is dropped before the domain conn is acquired
+        // below — in shim mode both resolve to the SAME r2d2 pool, so holding
+        // both at once could exceed a `max_size(1)` pool and deadlock.
+        let chain_head = {
+            let g = state_for
+                .pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            crate::audit::record(
+                &g,
+                crate::audit::AuditKind::Client,
+                "api",
+                &format!("client-dsar:{subject}"),
+                crate::audit::AuditStatus::Ok,
+                "dsar",
+            );
+            crate::audit::chain_head(&g)
+        };
         let certified_at = chrono::Utc::now().to_rfc3339();
         let certificate = certificate_json(
             &subject,
