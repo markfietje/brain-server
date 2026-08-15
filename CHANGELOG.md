@@ -19,6 +19,48 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.26.3] — 2026-08-15
+
+### Server — "Cross-Border" fourth pass
+
+Server `Cargo.toml`/lock 1.26.2 → 1.26.3; client + plugin unchanged. The
+pass-4/5 validator + evidence-fidelity follow-up of v1.26.2.
+
+### Release notes
+
+**Improvements**
+
+- **No backwards-dated agreements** — `POST /transfers` rejects
+  `expires_at < signed_at` (`400 transfer_timestamp_invalid`): an evidence
+  register must not accept an instrument expiring before it was signed.
+- **Trimmed certificate mechanism** — the DSAR deletion certificate's
+  `mechanism` is whitespace-trimmed like the jurisdiction field beside it
+  (still free-text — the operator's exact label, without stray whitespace in
+  an evidence artifact).
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `validate_register` gains the signed/expiry ordering check (+2 assertions:
+  `expires < signed` rejected, `signed == expiry` accepted); the DSAR
+  certificate `mech_for_cert` is `map(|m| m.trim().to_string())`. openapi 400
+  description updated. Panic/unsafe sweep re-verified: zero `unwrap()`/
+  `unsafe` outside `#[cfg(test)]` in the new modules; pedantic/perf/complexity
+  lint scan of the new modules clean.
+- Tests: server bin **592** / 6 ignored; lib 105; otel-gate 594 / 6 ignored;
+  clippy `-D warnings` (default + bench + otel) + fmt clean; route-coverage +
+  route-authz + schema-contract + openapi-coverage audits green; client wasm
+  untouched.
+
+---
+
 ## [1.26.2] — 2026-08-15
 
 ### Server — "Cross-Border" third pass
