@@ -166,6 +166,28 @@ impl Profile {
     pub fn pii_strict(&self) -> bool {
         self.pii_mode.as_deref() == Some("strict")
     }
+
+    /// v1.24.0 "Connectors": does this profile permit the connector `kind` for
+    /// its bound domain? The vertical-configuration lever — a profile's
+    /// `connectors_allowed` (v1.21.0) gates registration. A family-prefixed
+    /// sub-kind (`crm-salesforce`) is granted by its bare family entry (`crm`),
+    /// so the sales-team preset's `crm` permits every `crm-*` connector.
+    ///
+    /// Semantics mirror the validate() contract:
+    /// - `None` (field absent) = no constraint → everything allowed.
+    /// - `Some([])` (explicit empty, e.g. gov-fedramp air-gap) = allow nothing.
+    /// - otherwise: exact match, or the bare family matches a `a-b` sub-kind.
+    pub fn connector_allowed(&self, kind: &str) -> bool {
+        let Some(list) = &self.connectors_allowed else {
+            return true;
+        };
+        if list.is_empty() {
+            return false;
+        }
+        let fam = crate::connector::kind::family(kind);
+        list.iter()
+            .any(|a| a == kind || (a == fam && kind.contains('-')))
+    }
 }
 
 // ── persistence (the `profiles` + `domain_profiles` tables, global DB) ─────
@@ -421,6 +443,37 @@ mod tests {
         let want_conn: Vec<String> = ["ehr-readonly"].iter().map(|s| s.to_string()).collect();
         assert_eq!(p.connectors_allowed.as_ref(), Some(&want_conn));
         assert_eq!(p.legal_hold_default, Some(false));
+    }
+
+    #[test]
+    fn connector_allowed_gates_by_family_and_exact() {
+        let ps = super::presets();
+        let by_name = |n: &str| ps.iter().find(|p| p.name == n).unwrap();
+
+        // health-hipaa allows only ehr-readonly: slack refused, ehr granted.
+        let hipaa = by_name("health-hipaa");
+        assert!(
+            !hipaa.connector_allowed("slack"),
+            "slack must be refused by health-hipaa"
+        );
+        assert!(
+            hipaa.connector_allowed("ehr-readonly"),
+            "ehr-readonly must be allowed by health-hipaa"
+        );
+
+        // sales-team allows `crm` (bare family) → every crm-* sub-kind granted.
+        let sales = by_name("sales-team");
+        assert!(sales.connector_allowed("crm-salesforce"));
+        assert!(sales.connector_allowed("crm-hubspot"));
+        assert!(!sales.connector_allowed("slack"));
+
+        // air-gap (empty list) allows nothing; absent field allows all.
+        let airgap = by_name("gov-fedramp");
+        assert!(!airgap.connector_allowed("github"));
+        assert!(!airgap.connector_allowed("ehr-readonly"));
+        let mut open: Profile = sales.clone();
+        open.connectors_allowed = None;
+        assert!(open.connector_allowed("slack"));
     }
 
     #[test]

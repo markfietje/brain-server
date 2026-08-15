@@ -616,6 +616,31 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ConnectorRow'
+  /connectors/register:
+    post:
+      summary: Register (or reactivate) a connector instance for a domain
+      operationId: registerConnector
+      description: >-
+        Admin + audited. Validates the kind against the shipped vocabulary, then
+        enforces the domain's bound profile `connectors_allowed`: a kind the
+        profile does not grant is refused with 403 connector_not_in_profile. The
+        default domain is 'global'; an unbound domain is the no-constraint
+        posture (registration allowed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterConnectorRequest'
+      responses:
+        "200":
+          description: Registered (or reactivated) connector instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterConnectorResponse'
+        "403":
+          description: The kind is not permitted by the domain's bound profile
   /webhooks/{kind}:
     post:
       summary: Verified webhook receiver (v0.9.7 Guard)
@@ -3098,6 +3123,23 @@ components:
         last_sync_at: { type: string, nullable: true }
         last_error: { type: string, nullable: true }
       required: [id, kind, instance, state]
+    RegisterConnectorRequest:
+      type: object
+      description: v1.24.0 connector registration (profile-gated).
+      properties:
+        kind: { type: string, description: A shipped connector kind (e.g. 'crm-salesforce'). }
+        instance: { type: string, description: Disambiguator within the kind (1..=128 chars). }
+        domain: { type: string, default: global, description: Domain whose bound profile gates the kind. }
+        config_json: { type: string, default: '{}', description: Opaque connector config, stored verbatim (never logged). }
+      required: [kind, instance]
+    RegisterConnectorResponse:
+      type: object
+      properties:
+        id: { type: integer }
+        kind: { type: string }
+        instance: { type: string }
+        domain: { type: string }
+      required: [id, kind, instance, domain]
     AuditRow:
       type: object
       description: A single audit event (v0.9.7 Guard). Contains only hashes — no raw content or secrets.

@@ -4681,6 +4681,9 @@ async fn main_inner() -> Result<()> {
         // v0.9.6 Bridge: connector registry. `GET /connectors` lists every
         // registered connector instance across all kinds.
         .route("/connectors", get(handlers::connectors::list))
+        // v1.24.0 Connectors M1: register a connector instance, gated by the
+        // domain's bound profile `connectors_allowed` (Admin, audited).
+        .route("/connectors/register", post(handlers::connectors::register))
         // v1.5.0 "Epistemic" M5: deterministic span verification. Given a
         // claim + chunk_id, returns whether the claim is supported by the
         // chunk's text. Pure lexical match — no embeddings, no LLM.
@@ -9427,6 +9430,8 @@ Final paragraph after the rule.";
             "/sources/{id}",
             // v0.9.6 Bridge
             "/connectors",
+            // v1.24.0 Connectors M1: profile-gated registration (Admin).
+            "/connectors/register",
             // v1.5.0 Epistemic
             "/verify",
             // v1.9.0 Suggest
@@ -10347,6 +10352,7 @@ Final paragraph after the rule.";
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
             ("/connectors", "Read"),
+            ("/connectors/register", "Admin"),
             ("/verify", "Read"),
             ("/suggest", "Read"),
             ("/suggest/feedback", "Write"),
