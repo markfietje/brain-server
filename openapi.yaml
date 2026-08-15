@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.20.29
-  x-api-version: "1.20.29"
+  version: 1.21.0
+  x-api-version: "1.21.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -2051,6 +2051,132 @@ paths:
                   bytes: { type: integer }
         "400": { $ref: "#/components/responses/BadRequest" }
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
+  /profiles:
+    get:
+      summary: List profiles (v1.21.0 Profiles)
+      operationId: listProfiles
+      description: >
+        Every profile: the 12 ship-with presets (seeded at migration, editable)
+        plus operator-created clones. Read-gated. Consumed by the onboarding
+        wizard and `brain setup`.
+      responses:
+        "200":
+          description: The profile list, name-ordered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items: { $ref: "#/components/schemas/Profile" }
+  /profiles/{name}:
+    get:
+      summary: Get one profile
+      operationId: getProfile
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      summary: Create or edit a profile (Admin, audited)
+      operationId: upsertProfile
+      description: >
+        The path is the name (a body `name` field is ignored). Absent fields
+        mean "don't set that knob". Editing a seeded preset overwrites it;
+        operator edits survive re-migrations (INSERT OR IGNORE seeding).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileUpsert" }
+      responses:
+        "200":
+          description: The stored profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /domains/{name}/profile:
+    get:
+      summary: The domain's bound profile + effective knobs
+      operationId: getDomainProfile
+      description: >
+        The Health-panel transparency view. `profile`/`knobs` are null when
+        unbound (server defaults — the pre-v1.21 posture).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The binding + knobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  profile: { type: string, nullable: true }
+                  knobs:
+                    type: object
+                    nullable: true
+                    description: The profile's knob block; null when unbound.
+                  effective:
+                    type: object
+                    properties:
+                      retention_days:
+                        type: object
+                        nullable: true
+                        additionalProperties: { type: integer }
+                        description: What recall will apply for this domain (null = the server-wide policy governs).
+    post:
+      summary: Bind (or unbind) a domain's profile (Admin, audited)
+      operationId: bindDomainProfile
+      description: >
+        `{"profile": "health-hipaa"}` binds; `{"profile": null}` unbinds
+        (the back-compat escape hatch). Takes effect at the next request — no
+        restart, no re-ingest; the profile sets defaults, existing rows are
+        untouched (the row always wins).
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile: { type: string, nullable: true }
+      responses:
+        "200":
+          description: The new binding
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  profile: { type: string, nullable: true }
+                  status: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
   /domains/move:
     post:
       summary: Bulk-relabel chunks into a target domain (v1.13.0 Route)
@@ -2369,7 +2495,57 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
+    NotFound:
+      description: The named resource (profile, domain, chunk…) does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    Profile:
+      type: object
+      description: >
+        v1.21.0 — a typed bundle of existing knob defaults bound to a domain.
+        Absent fields mean "this profile does not touch that knob". The
+        profile sets defaults; an explicit row value always wins.
+      properties:
+        name: { type: string }
+        description: { type: string, description: Display-only one-liner for the wizard/Health panel. }
+        default_access_scope:
+          type: string
+          enum: [private, domain, team]
+        pii_mode:
+          type: string
+          enum: [off, standard, strict]
+          description: strict = write-time one-way masking (email/phone/card placeholders stored; no vault, no recovery).
+        retention:
+          type: object
+          description: Per-memory_kind days; JSON null for a kind = no decay. The map REPLACES the server-wide policy for the bound domain; absent = server-wide policy applies.
+          additionalProperties:
+            type: integer
+            nullable: true
+        audit_level:
+          type: string
+          enum: [minimal, standard, verbose]
+          description: Drives /recall read-event auditing when BRAIN_AUDIT_READ_EVENTS is unset.
+        kinds: { type: array, items: { type: string }, description: Allowed memory_kind vocabulary; an out-of-vocabulary ingest is 422. }
+        connectors_allowed: { type: array, items: { type: string }, description: Stored + surfaced only in v1.21 (enforcement lands with the v1.24 connector work). }
+        legal_hold_default: { type: boolean, description: Stored flag; enforcement is v1.22.0 "Regulated". }
+    ProfileUpsert:
+      type: object
+      description: POST /profiles/{name} body — a Profile minus the name (the path is the name).
+      properties:
+        description: { type: string }
+        default_access_scope: { type: string, enum: [private, domain, team] }
+        pii_mode: { type: string, enum: [off, standard, strict] }
+        retention:
+          type: object
+          additionalProperties:
+            type: integer
+            nullable: true
+        audit_level: { type: string, enum: [minimal, standard, verbose] }
+        kinds: { type: array, items: { type: string } }
+        connectors_allowed: { type: array, items: { type: string } }
+        legal_hold_default: { type: boolean }
     Footprint:
       type: object
       description: >

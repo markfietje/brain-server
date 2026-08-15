@@ -661,15 +661,28 @@ pub fn brain_trust_proxy() -> bool {
 /// opaque personal use** (noise + the personal-use contract). Read events are
 /// hash-only (chunk id + scores + decision; never content) and never change
 /// the primary action — best-effort by construction.
+///
+/// v1.21.0 "Profiles": the unset case is now domain-aware — a bound
+/// profile's `audit_level` decides before the JWT/loopback default does (see
+/// `profile::audit_read_events_for`). This fn stays for the unbound surfaces
+/// (`/search`, `/get`, `/multi-get`) and as the layer under the profile.
 pub fn audit_read_events(principal_is_jwt: bool) -> bool {
+    audit_read_events_explicit().unwrap_or(principal_is_jwt)
+}
+
+/// v1.21.0 "Profiles": the explicit `BRAIN_AUDIT_READ_EVENTS` override as a
+/// tri-state (`None` = unset, deployer left the decision to the posture /
+/// the bound profile). Extracted so the recall path can layer
+/// env → profile → default without re-reading the env string twice.
+pub fn audit_read_events_explicit() -> Option<bool> {
     match std::env::var("BRAIN_AUDIT_READ_EVENTS")
         .map(|v| v.trim().to_lowercase())
         .ok()
         .as_deref()
     {
-        Some("on" | "true" | "1" | "yes") => true,
-        Some("off" | "false" | "0" | "no") => false,
-        _ => principal_is_jwt, // unset: JWT on, loopback off
+        Some("on" | "true" | "1" | "yes") => Some(true),
+        Some("off" | "false" | "0" | "no") => Some(false),
+        _ => None,
     }
 }
 

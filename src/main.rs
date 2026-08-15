@@ -4640,6 +4640,21 @@ async fn main_inner() -> Result<()> {
             "/domains/{name}/import",
             post(handlers::domains::import_domain),
         )
+        // v1.21.0 "Profiles" M4: the preset API. Reads are Read-gated; writes
+        // (profile upsert + domain binding) are Admin + audited. Dual-method
+        // paths register GET first then POST (the /retention precedent) so the
+        // authz source-scan lands on the Admin POST as the conservative check.
+        .route("/profiles", get(handlers::profiles::list_profiles))
+        .route("/profiles/{name}", get(handlers::profiles::get_profile))
+        .route("/profiles/{name}", post(handlers::profiles::upsert_profile))
+        .route(
+            "/domains/{name}/profile",
+            get(handlers::profiles::domain_profile_get),
+        )
+        .route(
+            "/domains/{name}/profile",
+            post(handlers::profiles::domain_profile_bind),
+        )
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -8187,12 +8202,35 @@ Final paragraph after the rule.";
         // v1.20.1 for the proposals.source_prompt column;
         // v1.20.14 for the proposals.edited_at column;
         // v1.20.18 for the idx_tombstones_reason_purged index;
-        // v1.20.19 for the pii_map table drop.
+        // v1.20.19 for the pii_map table drop;
+        // v1.21.0 for the profiles + domain_profiles tables (the preset system).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_20_19),
-            "schema_version must be recorded as 1.20.19 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_21_0),
+            "schema_version must be recorded as 1.21.0 after migration"
         );
+
+        // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
+        // presets are seeded (INSERT OR IGNORE — a re-migration never
+        // overwrites an operator edit).
+        let seeded: i64 = db
+            .query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seeded, 12, "the 12 ship-with presets are seeded");
+        let hipaa: String = db
+            .query_row(
+                "SELECT json FROM profiles WHERE name = 'health-hipaa'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(hipaa.contains("\"pii_mode\":\"strict\""));
+        // The binding table starts empty (no domain is bound by default —
+        // the back-compat invariant).
+        let bindings: i64 = db
+            .query_row("SELECT COUNT(*) FROM domain_profiles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bindings, 0, "no domain is bound to a profile by default");
 
         // v1.20.14 "Steer": the pending-proposal edit marker column exists.
         // The review badge + read-time view key off it; a missing column here
@@ -9331,6 +9369,10 @@ Final paragraph after the rule.";
             "/domains/move",
             // v1.13.0 M4: one-shot recompute sweep.
             "/domains/recompute",
+            // v1.21.0 Profiles: the preset API + the domain binding.
+            "/profiles",
+            "/profiles/{name}",
+            "/domains/{name}/profile",
             "/sources/reconcile",
             "/sources/{id}",
             // v0.9.6 Bridge
@@ -10085,6 +10127,12 @@ Final paragraph after the rule.";
             ("/domains/{name}/import", "Admin"),
             ("/domains/move", "Admin"),
             ("/domains/recompute", "Admin"),
+            // v1.21.0 Profiles: reads are Read; upsert + bind are Admin (the
+            // POST on /profiles/{name} shares its path with a Read GET, so
+            // Admin is the conservative check — the /retention precedent).
+            ("/profiles", "Read"),
+            ("/profiles/{name}", "Admin"),
+            ("/domains/{name}/profile", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
             ("/connectors", "Read"),
@@ -10198,6 +10246,7 @@ Final paragraph after the rule.";
                     "gate" => include_str!("handlers/gate.rs"),
                     "observe" => include_str!("handlers/observe.rs"),
                     "govern" => include_str!("handlers/govern.rs"),
+                    "profiles" => include_str!("handlers/profiles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),
                     "alert" => include_str!("alert.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
@@ -10866,6 +10915,253 @@ Final paragraph after the rule.";
         let results = v["results"].as_array().expect("results");
         assert_eq!(results[0]["status"], "created", "{v}");
         assert_eq!(results[1]["status"], "created", "{v}");
+    }
+
+    /// v1.21.0 "Profiles" — the plan's verification 1–4 end-to-end through
+    /// the real handlers on a migrated DB: (1) a health-hipaa-bound domain
+    /// ingests an email and stores ONLY the placeholder (strict write-time
+    /// masking) with the profile's access-scope default; (2) an explicit
+    /// `ttl_days` survives (the row wins over the profile's episodic 90);
+    /// (3) the wizard's bind flow lands the binding + effective knobs;
+    /// (4) an unbound domain is byte-identical to pre-v1.21 (raw content,
+    /// column-default scope, scan-based pii flag). `#[ignore]` — loads
+    /// model2vec (same precedent as `ump_batch_ingest_round_trip`); run with
+    /// `--ignored` before release.
+    #[tokio::test]
+    #[ignore]
+    async fn profiles_end_to_end_wizard_and_ingest() {
+        use axum::body::to_bytes;
+        use axum::http::Request;
+        use tempfile::NamedTempFile;
+        use tower::ServiceExt;
+
+        register_sqlite_vec();
+        let tmp = NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+        );
+        let state = Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+        let app = axum::Router::new()
+            .route("/ingest", axum::routing::post(handlers::ingest::ingest))
+            .route(
+                "/profiles",
+                axum::routing::get(handlers::profiles::list_profiles),
+            )
+            .route(
+                "/domains/{name}/profile",
+                axum::routing::get(handlers::profiles::domain_profile_get)
+                    .post(handlers::profiles::domain_profile_bind),
+            )
+            .with_state(state.clone());
+
+        async fn req(
+            app: &axum::Router,
+            method: &str,
+            uri: &str,
+            body: serde_json::Value,
+        ) -> (axum::http::StatusCode, serde_json::Value) {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+            let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, v)
+        }
+
+        // The wizard's pick list: 12 seeded presets, health-hipaa among them.
+        let (status, v) = req(&app, "GET", "/profiles", serde_json::json!({})).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(v["profiles"].as_array().map(Vec::len), Some(12));
+
+        // ── (3) the wizard bind: domain → health-hipaa ──────────────────
+        let (status, v) = req(
+            &app,
+            "POST",
+            "/domains/clinic/profile",
+            serde_json::json!({ "profile": "health-hipaa" }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "bind: {v}");
+        assert_eq!(v["profile"], "health-hipaa");
+        // The transparency view carries the effective knobs.
+        let (status, v) = req(
+            &app,
+            "GET",
+            "/domains/clinic/profile",
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(v["profile"], "health-hipaa");
+        assert_eq!(v["knobs"]["pii_mode"], "strict");
+        assert_eq!(v["effective"]["retention_days"]["episodic"], 90);
+
+        // ── (1) strict masking + scope default on ingest ───────────────
+        let (status, v) = req(
+            &app,
+            "POST",
+            "/ingest",
+            serde_json::json!({
+                "title": "Patient follow-up",
+                "content": "Email dave@example.com or call 5551234567 about the refill",
+                "domain": "clinic"
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "ingest: {v}");
+        assert_eq!(v["status"], "created");
+        let id = v["id"].as_i64().expect("id");
+        {
+            let conn = state.pool.get().unwrap();
+            let (content, scope, pii): (String, String, i64) = conn
+                .query_row(
+                    "SELECT content, access_scope, pii FROM knowledge WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert!(
+                !content.contains("dave@example.com"),
+                "raw email must never be stored"
+            );
+            assert!(content.contains("[redacted:email]"), "{content}");
+            assert!(content.contains("[redacted:phone]"), "{content}");
+            assert_eq!(scope, "private", "profile default applied");
+            assert_eq!(pii, 0, "masked content carries no scanable PII");
+        }
+
+        // ── (2) the row wins: explicit ttl_days into a call-center domain ─
+        let (_, v) = req(
+            &app,
+            "POST",
+            "/domains/support/profile",
+            serde_json::json!({ "profile": "call-center" }),
+        )
+        .await;
+        assert_eq!(v["profile"], "call-center");
+        let before = chrono::Utc::now().timestamp();
+        let (status, v) = req(
+            &app,
+            "POST",
+            "/ingest",
+            serde_json::json!({
+                "title": "Call notes",
+                "content": "Caller asked about the invoice and the refund window",
+                "domain": "support",
+                "memory_kind": "episodic",
+                "ttl_days": 30
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "ingest: {v}");
+        let id2 = v["id"].as_i64().expect("id");
+        {
+            let conn = state.pool.get().unwrap();
+            let (expires, kind): (Option<i64>, String) = conn
+                .query_row(
+                    "SELECT expires_at, node_kind FROM knowledge WHERE id = ?1",
+                    [id2],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(kind, "episodic");
+            let e = expires.expect("ttl_days converted");
+            assert!(
+                (before + 30 * 86_400..=before + 31 * 86_400).contains(&e),
+                "explicit ttl 30d wins over the profile's episodic 90 (got {e})"
+            );
+            // The profile's episodic 90 is what an UNTAGGED row would get at
+            // query time — not a stored value (retention stays query-time).
+            let profile = brain_server::profile::profile_for_domain(&conn, "support")
+                .unwrap()
+                .expect("bound");
+            assert_eq!(profile.retention_map().unwrap()["episodic"], 90);
+        }
+
+        // The kind vocabulary is enforced on the wire (call-center allows
+        // fact/episodic/procedure — not 'step').
+        let (status, v) = req(
+            &app,
+            "POST",
+            "/ingest",
+            serde_json::json!({
+                "title": "Bad kind",
+                "content": "A step-by-step runbook",
+                "domain": "support",
+                "memory_kind": "step"
+            }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "kind gate: {v}"
+        );
+        assert_eq!(v["error"]["code"], "kind_not_allowed");
+
+        // ── (4) an unbound domain is byte-identical to pre-v1.21 ───────
+        let (status, v) = req(
+            &app,
+            "POST",
+            "/ingest",
+            serde_json::json!({
+                "title": "Plain",
+                "content": "Mail bob@example.com about the thing",
+                "domain": "plain"
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{v}");
+        let id3 = v["id"].as_i64().expect("id");
+        {
+            let conn = state.pool.get().unwrap();
+            let (content, scope, pii): (String, String, i64) = conn
+                .query_row(
+                    "SELECT content, access_scope, pii FROM knowledge WHERE id = ?1",
+                    [id3],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                content, "Mail bob@example.com about the thing",
+                "unbound domain: NO write-time masking"
+            );
+            assert_eq!(scope, "private", "column default (not a profile)");
+            assert_eq!(pii, 1, "scan-based pii flag, exactly as v1.14");
+        }
     }
 
     /// v1.20.1 "Shield" M1: the shared `/ingest` write core (plain + single-

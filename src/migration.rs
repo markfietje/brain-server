@@ -1165,10 +1165,40 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.21.0 "Profiles": the preset system ─────────────────────────
+    // `profiles` holds the JSON bundles (the 12 seeded presets + operator
+    // clones); `domain_profiles` binds a domain to one profile (the plan's
+    // `domain.profile` FK — there is no `domains` table, domains are labels,
+    // so the binding is its own keyed row). Read at request time; no new
+    // columns anywhere. Seeding is INSERT OR IGNORE so operator edits to a
+    // preset survive re-migrations (only a missing preset is re-inserted).
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS profiles (
+            name       TEXT PRIMARY KEY,
+            json       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS domain_profiles (
+            domain    TEXT PRIMARY KEY,
+            profile   TEXT NOT NULL REFERENCES profiles(name),
+            bound_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+         );",
+        [],
+    )?;
+    for (name, json) in crate::profile::PRESETS_RAW {
+        db.execute(
+            "INSERT OR IGNORE INTO profiles(name, json) VALUES (?1, ?2)",
+            rusqlite::params![name, json],
+        )?;
+    }
+
     // Bumped once per release that changes this function.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.20.19')
-         ON CONFLICT(key) DO UPDATE SET value = '1.20.19';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.21.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.21.0';",
         [],
     )?;
 

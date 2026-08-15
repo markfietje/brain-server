@@ -81,6 +81,11 @@ pub struct IngestRequest {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// v1.21.0 "Profiles": friendly retention — days from now (only honored
+    /// when `expires_at` is absent; an explicit absolute always wins).
+    /// Bounded 1..=36500 (the `POST /retention` bound).
+    #[serde(default)]
+    pub ttl_days: Option<i64>,
     #[serde(default)]
     pub access_scope: Option<String>,
     #[serde(default)]
@@ -248,6 +253,7 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
         assertion_kind: row["assertion_kind"].as_str().map(|s| s.to_string()),
         confidence: row["confidence"].as_f64(),
         expires_at: row["expires_at"].as_i64(),
+        ttl_days: None, // UMP records carry absolute expiry (lifecycle.decay)
         access_scope: row["access_scope"].as_str().map(|s| s.to_string()),
         observed_at: row["observed_at"].as_str().map(|s| s.to_string()),
         valid_from: row["valid_from"].as_str().map(|s| s.to_string()),
@@ -262,7 +268,7 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
 pub(crate) async fn ingest_one(
     state: &Arc<AppState>,
     principal: &Option<crate::auth::Principal>,
-    req: IngestRequest,
+    mut req: IngestRequest,
 ) -> Result<IngestResponse, HandlerError> {
     // v0.9.9: refuse new writes when over the capacity envelope (HTTP 507).
     // Read routes do not call this guard; an over-capacity brain still answers.
@@ -327,6 +333,11 @@ pub(crate) async fn ingest_one(
             serde_json::json!({ "max": MAX_RELATIONS }),
         ));
     }
+
+    // v1.21.0 "Profiles": `ttl_days` is the friendly retention field (days
+    // from now). It only applies when `expires_at` is absent — an explicit
+    // absolute expiry always wins (the row-wins invariant).
+    req.expires_at = ttl_days_to_expires(req.expires_at, req.ttl_days)?;
 
     // Forced domain (auto-route when omitted; v1.0.0)
     let forced_domain: Option<String> = match &req.domain {
@@ -441,6 +452,28 @@ pub(crate) async fn ingest_one(
     let pool = state.registry.pool_for(&domain_label).map_err(|e| {
         HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
     })?;
+
+    // v1.21.0 "Profiles" M1: apply the bound domain profile's ingest
+    // defaults (the pure core is `apply_profile_ingest` — unit-tested there).
+    // A domain with no bound profile skips straight through (byte-identical
+    // pre-v1.21 behavior). An unreadable bound profile fails CLOSED — a
+    // strict-posture domain must not silently ingest raw PII.
+    let profile = {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        brain_server::profile::profile_for_domain(&conn, &domain_label)
+            .map_err(HandlerError::internal)?
+    };
+    let (title_for_store, content, access_scope) = apply_profile_ingest(
+        profile.as_ref(),
+        title_for_store,
+        content,
+        req.access_scope.clone(),
+        req.memory_kind.as_deref(),
+    )?;
+    req.access_scope = access_scope;
     // Resolve the owner label before the closure (the reference can't cross
     // the spawn_blocking boundary).
     let owner = super::gate::principal_to_owner(principal);
@@ -643,6 +676,77 @@ pub(crate) async fn ingest_one(
     Ok(result)
 }
 
+/// v1.21.0 "Profiles": `ttl_days` (days-from-now) → absolute `expires_at`.
+/// Only applies when `expires_at` is absent — the row-wins invariant. Pure
+/// (the `now` is injected by the caller; `ingest_one` passes Utc::now).
+pub(crate) fn ttl_days_to_expires(
+    expires_at: Option<i64>,
+    ttl_days: Option<i64>,
+) -> Result<Option<i64>, HandlerError> {
+    match (expires_at, ttl_days) {
+        (Some(e), _) => Ok(Some(e)),
+        (None, None) => Ok(None),
+        (None, Some(days)) => {
+            if !(1..=36500).contains(&days) {
+                return Err(HandlerError::bad_request(
+                    "ttl_days_invalid",
+                    "ttl_days must be an integer in [1, 36500]",
+                ));
+            }
+            Ok(Some(chrono::Utc::now().timestamp() + days * 86_400))
+        }
+    }
+}
+
+/// v1.21.0 "Profiles" M1: the pure ingest-defaults core. The invariant: the
+/// profile sets DEFAULTS, the row wins —
+///   - `pii_mode: strict` masks title + content at the write boundary
+///     (one-way, the existing `[redacted:*]` maskers; no vault);
+///   - `default_access_scope` only fills an ABSENT access_scope;
+///   - `kinds` is a constraint: the effective kind (explicit, else the 'fact'
+///     column default) must be in the vocabulary, else 400 `kind_not_allowed`.
+///
+/// No profile → everything passes through unchanged.
+///
+/// ponytail: ceiling — when called from `ingest_one` the mask runs after
+/// auto-routing, so the quantized vec0 embedding + caller-declared entity
+/// names derive from the raw text (neither practically invertible; entities
+/// were always stored verbatim). The HITL /ingest/proposal flow keeps its
+/// v1.14 posture (binding the gate flow is v1.22 work).
+pub(crate) fn apply_profile_ingest(
+    profile: Option<&brain_server::profile::Profile>,
+    title: String,
+    content: String,
+    access_scope: Option<String>,
+    memory_kind: Option<&str>,
+) -> Result<(String, String, Option<String>), HandlerError> {
+    let Some(p) = profile else {
+        return Ok((title, content, access_scope));
+    };
+    let (title, content) = if p.pii_strict() {
+        (
+            crate::gate::screen_source_prompt(&title),
+            crate::gate::screen_source_prompt(&content),
+        )
+    } else {
+        (title, content)
+    };
+    let access_scope = access_scope.or_else(|| p.default_access_scope.clone());
+    if let Some(kinds) = &p.kinds {
+        let effective = memory_kind.unwrap_or("fact");
+        if !kinds.iter().any(|k| k == effective) {
+            return Err(HandlerError::bad_request(
+                "kind_not_allowed",
+                format!(
+                    "memory_kind '{effective}' is not in profile '{}''s allowed kinds",
+                    p.name
+                ),
+            ));
+        }
+    }
+    Ok((title, content, access_scope))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,5 +807,135 @@ mod tests {
     fn lower_ump_rejects_malformed_records() {
         assert!(lower_ump(&serde_json::json!({"ump": "1.0"})).is_err());
         assert!(lower_ump(&serde_json::json!({"ump": "1.0", "body": {"text": 42}})).is_err());
+    }
+
+    /// v1.21.0 "Profiles" verification #1 (pure seam): a strict-posture
+    /// profile masks PII at the write boundary — the email/phone/card NEVER
+    /// reach the store, only the deterministic placeholders (the v1.20.19
+    /// "no vault" posture: one-way, no recovery map).
+    #[test]
+    fn profile_sets_ingest_defaults_strict_masks_and_scope_fills() {
+        let p = brain_server::profile::Profile {
+            name: "health-hipaa".into(),
+            pii_mode: Some("strict".into()),
+            default_access_scope: Some("private".into()),
+            ..Default::default()
+        };
+        let (title, content, scope) = apply_profile_ingest(
+            Some(&p),
+            "Patient follow-up".into(),
+            "Email dave@example.com or call +1 (555) 123-4567".into(),
+            None,
+            None,
+        )
+        .expect("applies");
+        assert!(
+            !content.contains("dave@example.com"),
+            "raw email never stored"
+        );
+        assert!(content.contains("[redacted:email]"), "{content}");
+        assert!(content.contains("[redacted:phone]"), "{content}");
+        assert!(
+            !title.contains("dave"),
+            "title masked too when it carries PII"
+        );
+        assert_eq!(
+            scope.as_deref(),
+            Some("private"),
+            "absent scope gets the default"
+        );
+
+        // The row always wins: an explicit scope survives the profile default.
+        let (_, _, scope) = apply_profile_ingest(
+            Some(&p),
+            "t".into(),
+            "c".into(),
+            Some("team".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(scope.as_deref(), Some("team"));
+    }
+
+    /// v1.21.0 "Profiles": no bound profile → byte-identical passthrough
+    /// (verification #4, pure half — the HTTP half is the ignored e2e test).
+    #[test]
+    fn no_profile_preserves_current_behavior_pure() {
+        let (t, c, s) =
+            apply_profile_ingest(None, "t".into(), "c".into(), Some("domain".into()), None)
+                .unwrap();
+        assert_eq!(
+            (t.as_str(), c.as_str(), s.as_deref()),
+            ("t", "c", Some("domain"))
+        );
+        // non-strict pii_mode leaves content alone (read-time redaction is the
+        // v1.14 seam and stays untouched).
+        let std = brain_server::profile::Profile {
+            name: "call-center".into(),
+            pii_mode: Some("standard".into()),
+            ..Default::default()
+        };
+        let (_, c2, _) = apply_profile_ingest(
+            Some(&std),
+            "t".into(),
+            "mail bob@example.com".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            c2, "mail bob@example.com",
+            "standard mode does not mask at write"
+        );
+    }
+
+    /// v1.21.0 "Profiles": the kind vocabulary is a constraint — the
+    /// effective kind (explicit, else 'fact') must be in the list.
+    #[test]
+    fn kind_vocabulary_rejects_out_of_list_kinds() {
+        let p = brain_server::profile::Profile {
+            name: "call-center".into(),
+            kinds: Some(vec!["fact".into(), "episodic".into()]),
+            ..Default::default()
+        };
+        assert!(
+            apply_profile_ingest(Some(&p), "t".into(), "c".into(), None, Some("episodic")).is_ok()
+        );
+        // The column default 'fact' is in the list.
+        assert!(apply_profile_ingest(Some(&p), "t".into(), "c".into(), None, None).is_ok());
+        let err =
+            apply_profile_ingest(Some(&p), "t".into(), "c".into(), None, Some("step")).unwrap_err();
+        assert_eq!(err.inner.code, "kind_not_allowed");
+        // An empty list allows nothing (a lockdown posture).
+        let sealed = brain_server::profile::Profile {
+            name: "sealed".into(),
+            kinds: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(apply_profile_ingest(Some(&sealed), "t".into(), "c".into(), None, None).is_err());
+    }
+
+    /// v1.21.0 "Profiles" verification #2 (pure seam): an explicit `ttl_days`
+    /// becomes the row's absolute expiry — and an explicit `expires_at` always
+    /// wins over a later ttl_days (the row-wins invariant).
+    #[test]
+    fn ttl_days_converts_and_explicit_expires_wins() {
+        let before = chrono::Utc::now().timestamp();
+        let e = ttl_days_to_expires(None, Some(30))
+            .unwrap()
+            .expect("converted");
+        let after = chrono::Utc::now().timestamp();
+        assert!(
+            e >= before + 30 * 86_400 && e <= after + 30 * 86_400,
+            "ttl 30 → now+30d (got {e}, window {before}..{after})"
+        );
+        assert_eq!(
+            ttl_days_to_expires(Some(123), Some(30)).unwrap(),
+            Some(123),
+            "explicit expires_at wins over ttl_days"
+        );
+        assert_eq!(ttl_days_to_expires(None, None).unwrap(), None);
+        assert!(ttl_days_to_expires(None, Some(0)).is_err());
+        assert!(ttl_days_to_expires(None, Some(99_999)).is_err());
     }
 }

@@ -447,6 +447,23 @@ pub(crate) async fn run_recall(
     if crate::config::brain_retention_enabled() {
         base_filters.retention_days = crate::config::retention_kind_days().into_iter().collect();
     }
+    // v1.21.0 "Profiles": a bound profile's retention block REPLACES the
+    // server-wide policy for that domain (explicit nulls remove a kind's
+    // decay; an empty block = no kind decay at all). One read, before the
+    // search closure; an exhausted pool degrades to the server-wide policy
+    // (transient, availability-first). The map also carries the audit_level
+    // for the read-event decision below.
+    let bound_profiles = match state.pool.get() {
+        Ok(conn) => brain_server::profile::domain_profiles(&conn).unwrap_or_default(),
+        Err(_) => std::collections::HashMap::new(),
+    };
+    let profile_retention: std::collections::HashMap<String, Vec<(String, i64)>> = bound_profiles
+        .iter()
+        .filter_map(|(d, p)| {
+            p.retention_map()
+                .map(|m| (d.clone(), m.into_iter().collect::<Vec<_>>()))
+        })
+        .collect();
     // v1.15.0 "Observe" M1: capture the access-scope decision for the read-event
     // trace before the filters are moved into the search closure.
     let applied_scopes = base_filters.access_scopes.clone();
@@ -482,6 +499,12 @@ pub(crate) async fn run_recall(
                 f.domain = None;
             } else {
                 f.domain = Some(domain.clone());
+            }
+            // v1.21.0 "Profiles": the bound profile's retention map is THE
+            // policy for this domain (replaces the server-wide map; an empty
+            // map = no kind decay — the smb-simple posture).
+            if let Some(days) = profile_retention.get(domain) {
+                f.retention_days = days.clone();
             }
             if let Ok((mut rs, t)) =
                 crate::perform_search_with_prf(pool, &*model, query.clone(), k, &f)
@@ -577,7 +600,16 @@ pub(crate) async fn run_recall(
     // BRAIN_AUDIT_READ_EVENTS + BRAIN_AUDIT_READ_SAMPLE_RATE). The trace id is
     // surfaced in the response only when `?trace=true`. Best-effort — a failure
     // here must never fail the recall the caller asked for.
-    let trace_id = if crate::config::audit_read_events(principal.is_some()) {
+    // v1.21.0 "Profiles": when the env is unset, the primary domain's bound
+    // profile decides (verbose on / minimal off / standard = JWT posture);
+    // `/search`, `/get`, `/multi-get` keep the global env posture (ceiling —
+    // they are not the decision-path read).
+    let audit_on = brain_server::profile::audit_read_events_for(
+        crate::config::audit_read_events_explicit(),
+        bound_profiles.get(&primary_domain),
+        principal.is_some(),
+    );
+    let trace_id = if audit_on {
         let rate = crate::config::audit_read_sample_rate();
         let sampled = rate >= 1.0 || rand::thread_rng().gen_range(0.0..1.0) < rate;
         if !sampled {

@@ -64,3 +64,8 @@ pub mod strip_invisible;
 // lib so `bench` consumes it without a #[path] include, same pattern as
 // `eval`/`capacity`. `AppState` rewiring is the gated follow-up.
 pub mod embed;
+
+// v1.21.0 "Profiles": the preset bundle type + persistence + the 12
+// ship-with presets. Lives in the lib because `migration` (lib) seeds the
+// presets at first boot and the `brain` CLI renders them for `brain setup`.
+pub mod profile;

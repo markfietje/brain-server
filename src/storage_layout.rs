@@ -51,6 +51,11 @@ pub const SCHEMA_VERSION_V1_20_18: &str = "1.20.18";
 /// v1.20.19 "Vault" drops the never-written `pii_map` table (PII control is
 /// deterministic output redaction, not a placeholder vault).
 pub const SCHEMA_VERSION_V1_20_19: &str = "1.20.19";
+/// v1.21.0 "Profiles" schema: new `profiles` + `domain_profiles` tables (the
+/// preset bundles + the domain→profile binding). Additive; the 12 presets are
+/// seeded INSERT OR IGNORE (operator edits survive re-migrations). No column
+/// changes anywhere.
+pub const SCHEMA_VERSION_V1_21_0: &str = "1.21.0";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

@@ -1116,6 +1116,27 @@ pub async fn list_decayed(
     } else {
         std::collections::BTreeMap::new()
     };
+    // v1.21.0 "Profiles": a bound domain's retention block replaces the
+    // server-wide policy for ITS rows (nulls remove decay). The Rust filter
+    // (page_decayed) resolves per row via its domain; the SQL superset uses
+    // the union of kinds with the least-restrictive cutoff across the
+    // server-wide + every profile policy, so the superset property holds
+    // under any per-domain replacement.
+    let per_domain = match state.pool.get() {
+        Ok(conn) => brain_server::profile::domain_profiles(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
+            .collect::<std::collections::HashMap<String, std::collections::BTreeMap<String, i64>>>(
+            ),
+        Err(_) => std::collections::HashMap::new(),
+    };
+    let mut sql_policy = retention_days.clone();
+    for m in per_domain.values() {
+        for (k, v) in m {
+            sql_policy.insert(k.clone(), *v);
+        }
+    }
 
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
@@ -1132,7 +1153,7 @@ pub async fn list_decayed(
             // chronologically lexicographic; served by
             // `idx_knowledge_kind_created`). ponytail: the exact filter still
             // lives in `page_decayed` — the SQL never decides a row's fate.
-            let (sql, params) = decayed_superset_sql(now, &retention_days);
+            let (sql, params) = decayed_superset_sql(now, &sql_policy);
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1148,13 +1169,21 @@ pub async fn list_decayed(
                             r.get::<_, Option<i64>>(2)?,
                             r.get::<_, String>(3)?,
                             r.get::<_, i64>(4)?,
+                            r.get::<_, String>(5)?,
                         ))
                     },
                 )
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .filter_map(|r| r.ok())
                 .collect::<Vec<DecayedRow>>();
-            Ok(page_decayed(&rows, now, &retention_days, offset, limit))
+            Ok(page_decayed(
+                &rows,
+                now,
+                &retention_days,
+                &per_domain,
+                offset,
+                limit,
+            ))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -1180,7 +1209,7 @@ fn decayed_superset_sql(
 ) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let mut sql = String::from(
         "SELECT id, content_hash, expires_at, node_kind, \
-                unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')) \
+                unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')), domain \
          FROM knowledge WHERE expires_at IS NOT NULL AND expires_at < ?1",
     );
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now)];
@@ -1217,23 +1246,30 @@ pub struct DecayedQuery {
     offset: Option<i64>,
 }
 
-/// A loaded `/decayed` row: (id, content_hash, expires_at, node_kind, created_at_unix).
-type DecayedRow = (i64, Option<String>, Option<i64>, String, i64);
+/// A loaded `/decayed` row: (id, content_hash, expires_at, node_kind,
+/// created_at_unix, domain) — v1.21.0 adds the domain so the Rust filter can
+/// resolve the per-domain profile policy.
+type DecayedRow = (i64, Option<String>, Option<i64>, String, i64, String);
 
 /// Pure core of `/decayed`: from the loaded `ORDER BY id` rows, keep the
 /// expired ones (Rust-side [`crate::gate::effective_expiry`] — not an
 /// expressible SQL predicate) and page them. Stable across the Rust filter.
+/// v1.21.0: a row whose domain has a bound profile with a retention block is
+/// judged by THAT map (replacing the server-wide policy); other rows keep the
+/// server-wide policy.
 fn page_decayed(
     rows: &[DecayedRow],
     now: i64,
     retention_days: &std::collections::BTreeMap<String, i64>,
+    per_domain: &std::collections::HashMap<String, std::collections::BTreeMap<String, i64>>,
     offset: i64,
     limit: i64,
 ) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
-    for (id, content_hash, expires_at, kind, created_unix) in rows {
+    for (id, content_hash, expires_at, kind, created_unix, domain) in rows {
+        let policy = per_domain.get(domain).unwrap_or(retention_days);
         let effective =
-            crate::gate::effective_expiry(*expires_at, Some(*created_unix), kind, retention_days);
+            crate::gate::effective_expiry(*expires_at, Some(*created_unix), kind, policy);
         if effective.is_some_and(|e| e < now) {
             out.push(serde_json::json!({
                 "id": id,
@@ -1909,24 +1945,99 @@ mod tests {
     fn page_decayed_respects_limit_and_offset() {
         // Three expired rows (expires_at in the past); no kind policy.
         let rows: Vec<DecayedRow> = vec![
-            (1, None, Some(100), "fact".to_string(), 50),
-            (2, None, Some(100), "fact".to_string(), 50),
-            (3, None, Some(100), "fact".to_string(), 50),
+            (
+                1,
+                None,
+                Some(100),
+                "fact".to_string(),
+                50,
+                "global".to_string(),
+            ),
+            (
+                2,
+                None,
+                Some(100),
+                "fact".to_string(),
+                50,
+                "global".to_string(),
+            ),
+            (
+                3,
+                None,
+                Some(100),
+                "fact".to_string(),
+                50,
+                "global".to_string(),
+            ),
         ];
         let retention = std::collections::BTreeMap::new();
+        let per_domain = std::collections::HashMap::new();
         let now = 1000;
 
-        let first = page_decayed(&rows, now, &retention, 0, 2);
+        let first = page_decayed(&rows, now, &retention, &per_domain, 0, 2);
         assert_eq!(first.len(), 2, "first page honors the limit");
         assert_eq!(first[0]["id"], 1);
         assert_eq!(first[1]["id"], 2);
 
-        let next = page_decayed(&rows, now, &retention, 2, 2);
+        let next = page_decayed(&rows, now, &retention, &per_domain, 2, 2);
         assert_eq!(next.len(), 1, "offset pages the remainder");
         assert_eq!(next[0]["id"], 3);
 
         // A page past the end yields nothing (stable, not an error).
-        assert!(page_decayed(&rows, now, &retention, 99, 2).is_empty());
+        assert!(page_decayed(&rows, now, &retention, &per_domain, 99, 2).is_empty());
+    }
+
+    /// v1.21.0 "Profiles": a row in a bound domain is judged by THAT profile's
+    /// retention map (replacing the server-wide policy); unbound rows keep the
+    /// server-wide policy. An empty profile map = no kind decay at all.
+    #[test]
+    fn page_decayed_judges_bound_domains_by_their_profile() {
+        // Two identical 400-day-old episodic rows, one in a call-center domain
+        // (episodic: 90 — expired) and one in a domain bound to an empty map
+        // (no decay — alive despite the server-wide episodic default).
+        let now = chrono::Utc::now().timestamp();
+        let created = now - 400 * 86_400;
+        let rows: Vec<DecayedRow> = vec![
+            (
+                1,
+                None,
+                None,
+                "episodic".to_string(),
+                created,
+                "support".to_string(),
+            ),
+            (
+                2,
+                None,
+                None,
+                "episodic".to_string(),
+                created,
+                "simple".to_string(),
+            ),
+            (
+                3,
+                None,
+                None,
+                "episodic".to_string(),
+                created,
+                "global".to_string(),
+            ),
+        ];
+        let server_wide = std::collections::BTreeMap::from([("episodic".to_string(), 30)]);
+        let per_domain = std::collections::HashMap::from([
+            (
+                "support".to_string(),
+                std::collections::BTreeMap::from([("episodic".to_string(), 90)]),
+            ),
+            ("simple".to_string(), std::collections::BTreeMap::new()),
+        ]);
+        let out = page_decayed(&rows, now, &server_wide, &per_domain, 0, 100);
+        let ids: Vec<i64> = out.iter().filter_map(|v| v["id"].as_i64()).collect();
+        // 1: created+90d elapsed → expired (the profile EXTENDED life past the
+        //    server-wide 30d — and the row is now past even 90d).
+        // 2: empty profile map → no kind decay → alive.
+        // 3: unbound → server-wide 30d → expired.
+        assert_eq!(ids, vec![1, 3]);
     }
 
     /// v1.20.24 "Sweep" (G5): the SQL WHERE is a superset of the Rust-side
@@ -1949,7 +2060,8 @@ mod tests {
                 content_hash TEXT,
                 expires_at INTEGER,
                 node_kind TEXT DEFAULT 'chunk',
-                created_at TEXT
+                created_at TEXT,
+                domain TEXT DEFAULT 'global'
              )",
             [],
         )
@@ -1980,11 +2092,13 @@ mod tests {
             .flatten()
             .collect();
 
-        // Rust-side truth: run the exact filter over the full table.
+        // Rust-side truth: run the exact filter over the full table (the SQL
+        // superset policy = the server-wide map; no per-domain bindings in
+        // this fixture — the domain-aware path is covered by its own test).
         let all: Vec<DecayedRow> = conn
             .prepare(
                 "SELECT id, content_hash, expires_at, node_kind, \
-                        unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')) \
+                        unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')), domain \
                  FROM knowledge ORDER BY id",
             )
             .unwrap()
@@ -1995,21 +2109,29 @@ mod tests {
                     r.get::<_, Option<i64>>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, i64>(4)?,
+                    r.get::<_, String>(5)?,
                 ))
             })
             .unwrap()
             .flatten()
             .collect();
+        let empty_per_domain = std::collections::HashMap::new();
         let rust_expired: std::collections::BTreeSet<i64> =
-            page_decayed(&all, now, &retention, 0, i64::MAX)
+            page_decayed(&all, now, &retention, &empty_per_domain, 0, i64::MAX)
                 .iter()
                 .filter_map(|v| v["id"].as_i64())
                 .collect();
-        let rust_visible: std::collections::BTreeSet<i64> =
-            page_decayed(&all, now, &std::collections::BTreeMap::new(), 0, i64::MAX)
-                .iter()
-                .filter_map(|v| v["id"].as_i64())
-                .collect();
+        let rust_visible: std::collections::BTreeSet<i64> = page_decayed(
+            &all,
+            now,
+            &std::collections::BTreeMap::new(),
+            &empty_per_domain,
+            0,
+            i64::MAX,
+        )
+        .iter()
+        .filter_map(|v| v["id"].as_i64())
+        .collect();
 
         assert!(
             !rust_expired.is_empty(),

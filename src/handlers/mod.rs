@@ -30,6 +30,7 @@ pub mod govern;
 pub mod ingest;
 pub mod observe;
 pub mod procedure;
+pub mod profiles;
 pub mod recall;
 pub mod sources;
 pub mod suggest;
