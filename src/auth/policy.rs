@@ -281,7 +281,10 @@ mod tests {
     #[test]
     fn client_authorized_domains_is_restricted_only_for_client_auditor() {
         let p = auditor(&[], &["admin:ops/acme-us"]);
-        assert!(client_authorized_domains(&p).is_none(), "non-auditor: unrestricted");
+        assert!(
+            client_authorized_domains(&p).is_none(),
+            "non-auditor: unrestricted"
+        );
         assert!(
             client_authorized_domains(&None).is_none(),
             "no principal (loopback/opaque): unrestricted"
@@ -305,10 +308,19 @@ mod tests {
     fn client_authorized_domains_lists_only_concrete_non_global_domains() {
         let p = auditor(
             &["client-auditor"],
-            &["read:ops/acme-us", "read:ops/*", "admin:ops/global", "write:ops/beta-eu"],
+            &[
+                "read:ops/acme-us",
+                "read:ops/*",
+                "admin:ops/global",
+                "write:ops/beta-eu",
+            ],
         );
         let got = client_authorized_domains(&p).unwrap();
-        assert_eq!(got, vec!["acme-us", "beta-eu"], "only concrete, non-global domains");
+        assert_eq!(
+            got,
+            vec!["acme-us", "beta-eu"],
+            "only concrete, non-global domains"
+        );
         assert!(!got.iter().any(|d| d == "*" || d == "global"));
     }
 }
