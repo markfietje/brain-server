@@ -266,4 +266,49 @@ mod tests {
         assert!(is_authorized(&p, Action::Read, "team-alpha", "any"));
         assert!(!is_authorized(&p, Action::Read, "team-beta", "any"));
     }
+
+    fn auditor(roles: &[&str], scopes: &[&str]) -> Option<Principal> {
+        Some(Principal {
+            sub: "audit".to_string(),
+            tenant: "global".to_string(),
+            scopes: scopes.iter().filter_map(|s| Scope::parse(s)).collect(),
+            jti: String::new(),
+            roles: roles.iter().map(|s| s.to_string()).collect(),
+            manages: vec![],
+        })
+    }
+
+    #[test]
+    fn client_authorized_domains_is_restricted_only_for_client_auditor() {
+        let p = auditor(&[], &["admin:ops/acme-us"]);
+        assert!(client_authorized_domains(&p).is_none(), "non-auditor: unrestricted");
+        assert!(
+            client_authorized_domains(&None).is_none(),
+            "no principal (loopback/opaque): unrestricted"
+        );
+    }
+
+    #[test]
+    fn client_authorized_domains_deny_by_default_when_only_wildcard_or_global() {
+        // A client-auditor with only the operator's wildcard/global scopes gets
+        // Some(&[]) -> sees nothing. The min-necessary wedge never widens to the
+        // operator pool. ponytail: covers the no-global/no-wildcard invariant.
+        let p = auditor(&["client-auditor"], &["admin:*/*", "read:ops/global"]);
+        assert_eq!(
+            client_authorized_domains(&p),
+            Some(vec![]),
+            "wildcard + global grant no client domain (deny-by-default)"
+        );
+    }
+
+    #[test]
+    fn client_authorized_domains_lists_only_concrete_non_global_domains() {
+        let p = auditor(
+            &["client-auditor"],
+            &["read:ops/acme-us", "read:ops/*", "admin:ops/global", "write:ops/beta-eu"],
+        );
+        let got = client_authorized_domains(&p).unwrap();
+        assert_eq!(got, vec!["acme-us", "beta-eu"], "only concrete, non-global domains");
+        assert!(!got.iter().any(|d| d == "*" || d == "global"));
+    }
 }
