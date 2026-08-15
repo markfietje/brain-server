@@ -72,6 +72,7 @@ mod ph;
 mod procedural;
 mod search;
 mod temporal;
+mod transfers;
 // v1.20.3 "Classify" (G5): the two-layer injection screen seam.
 mod screen;
 mod sources;
@@ -4693,6 +4694,14 @@ async fn main_inner() -> Result<()> {
         .route("/breach/{id}/close", post(handlers::breaches::close_breach))
         .route("/breaches", get(handlers::breaches::list_breaches))
         .route("/breaches/{id}", get(handlers::breaches::get_breach))
+        // v1.26.0 "Cross-Border" M1/M4: the cross-border transfer register +
+        // the TIA/DPA evidence artifacts. Writes are Admin + audited; the
+        // register + templates are the Art 30/46 + Schrems II evidence a
+        // client's regulator asks for (a human DPO/legal reviews + signs them).
+        .route("/transfers", post(handlers::transfers::register_transfer))
+        .route("/transfers", get(handlers::transfers::list_transfers))
+        .route("/transfers/{id}/tia", get(handlers::transfers::get_tia))
+        .route("/transfers/{id}/dpa", get(handlers::transfers::get_dpa))
         // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
@@ -8069,6 +8078,8 @@ Final paragraph after the rule.";
             // v1.25.0 PH-Compliant: the breach-notification ledger.
             "breaches",
             "breach_events",
+            // v1.26.0 Cross-Border: the transfer register (Art 30/46 evidence).
+            "transfers",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -8256,10 +8267,11 @@ Final paragraph after the rule.";
         // v1.22.0 for the legal_holds table + knowledge.region.
         // v1.23.0 for the roles table (the named scope/action bundles).
         // v1.25.0 for the breaches + breach_events tables (the breach workflow).
+        // v1.26.0 for the transfers table + knowledge.lawful_basis/purpose.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_25_0),
-            "schema_version must be recorded as 1.25.0 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_26_0),
+            "schema_version must be recorded as 1.26.0 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -9455,6 +9467,10 @@ Final paragraph after the rule.";
             "/breach/{id}/close",
             "/breaches",
             "/breaches/{id}",
+            // v1.26.0 Cross-Border: the transfer register + TIA/DPA artifacts.
+            "/transfers",
+            "/transfers/{id}/tia",
+            "/transfers/{id}/dpa",
             "/retention/report",
             "/sources/reconcile",
             "/sources/{id}",
@@ -10384,6 +10400,11 @@ Final paragraph after the rule.";
             ("/breach/{id}/close", "Admin"),
             ("/breaches", "Admin"),
             ("/breaches/{id}", "Admin"),
+            // v1.26.0 Cross-Border: the transfer register + TIA/DPA artifacts
+            // are operator evidence surfaces (Admin).
+            ("/transfers", "Admin"),
+            ("/transfers/{id}/tia", "Admin"),
+            ("/transfers/{id}/dpa", "Admin"),
             ("/retention/report", "Admin"),
             ("/sources/reconcile", "Write"),
             ("/sources/{id}", "Write"),
@@ -10501,6 +10522,7 @@ Final paragraph after the rule.";
                     "govern" => include_str!("handlers/govern.rs"),
                     "holds" => include_str!("handlers/holds.rs"),
                     "breaches" => include_str!("handlers/breaches.rs"),
+                    "transfers" => include_str!("handlers/transfers.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
                     "roles" => include_str!("handlers/roles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),

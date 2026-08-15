@@ -1586,6 +1586,64 @@ paths:
           description: The breach view {breach, events, deadlines}
         "404":
           description: No breach with this id
+  /transfers:
+    post:
+      summary: Record a cross-border transfer (v1.26.0 M1)
+      operationId: registerTransfer
+      description: >
+        The Art 30 processing-activities + Art 46 transfer-safeguard evidence.
+        Body: `{dataset, origin_jurisdiction, destination_jurisdiction,
+        mechanism, counterparty, lawful_basis?, purpose, signed_at?,
+        expires_at?}`. `mechanism` must be one of the registered mechanisms
+        (scc-eu-2021 | uk-idta | dpf-us | cbpr | bcr | adequacy). Admin +
+        audited (kind 'transfer'). These rows + the TIA/DPA artifacts are what
+        a client's regulator audit asks for.
+      responses:
+        "200":
+          description: The transfer id + recorded mechanism
+        "400":
+          description: Invalid dataset/jurisdiction/mechanism/counterparty/purpose
+        "403":
+          description: The principal is not admin
+    get:
+      summary: List the cross-border transfer register (v1.26.0 M1)
+      operationId: listTransfers
+      description: >
+        The transfer register, newest-first, bounded (limit, default 100).
+        Optional exact-match filters: `mechanism`, `jurisdiction` (matches
+        origin OR destination), `dataset`. Admin read.
+      responses:
+        "200":
+          description: {transfers: [...]}
+  /transfers/{id}/tia:
+    get:
+      summary: Transfer Impact Assessment template (v1.26.0 M4)
+      operationId: getTia
+      description: >
+        The Schrems II Transfer Impact Assessment, pre-filled from the register
+        row + the destination jurisdiction's curated law + surveillance
+        posture. An evidence artifact a human (DPO/legal) reviews + signs — it
+        does not render legal judgment. Admin read.
+      responses:
+        "200":
+          description: The pre-filled TIA template
+        "404":
+          description: No transfer with this id
+  /transfers/{id}/dpa:
+    get:
+      summary: Data Processing Agreement fields (v1.26.0 M4)
+      operationId: getDpa
+      description: >
+        The DPA (Art 28 sub-processor terms) fields, pre-filled from the
+        transfer row + mechanism defaults (retention, deletion-on-termination,
+        audit rights, breach-notification timeline, onward-transfer
+        restrictions) — the evidence a client's controller demands before
+        authorizing the sub-processor. Admin read.
+      responses:
+        "200":
+          description: The pre-filled DPA fields
+        "404":
+          description: No transfer with this id
   /retention/report:
     get:
       summary: Per-domain × per-kind retention schedule (v1.22.0 M2)
