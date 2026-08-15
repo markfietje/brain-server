@@ -19,6 +19,67 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.5] — 2026-08-15
+
+### Server — "Holds" (per-client legal-hold isolation)
+
+Release 5 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.4 →
+**1.27.5**; schema unchanged (`1.27.0`); client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- **Per-client legal hold** — `POST /clients/{name}/hold` freezes knowledge ids
+  in **that client's** isolation domain, never another's — the proof + the
+  ergonomics the v1.22 holds already promised (each domain's `legal_holds`
+  table keys its own ids). The client's `domain` resolves from the register
+  (404 unknown client, 409 archived, before any pool work), then the shared
+  per-domain hold write freezes each id against decay, `/purge` (`409
+  legal_hold_active`) and DSAR deferral (certificate `held_ids`) until
+  explicitly released. Admin + audited (kind 'client').
+  `brain client hold add <name> <id> ... --reason R` places holds; `brain
+  client hold list <name>` shows a client's holds.
+
+**Bug fixes**
+
+- None in this release.
+
+**Security fixes**
+
+- None in this release.
+
+### Engineering record
+
+- `src/handlers/holds.rs` extracts `post_legal_hold`'s body into the one
+  shared `post_legal_hold_for_domain(state, principal, domain, ids, reason)`;
+  the `/legal-hold` route (with `global` / its `?domain=`) and the new
+  `/clients/{name}/hold` both compose it — no second hold implementation.
+  `src/handlers/clients.rs` gains `client_hold` + `ClientHoldRequest`; it
+  authorizes Admin, resolves the client row + status, then delegates
+  (fail-closed existence check inside the per-domain tx, ids bounded by the
+  shared `MAX_HOLD_IDS`, all-or-nothing). The authz-gate delegation scan learns
+  `post_legal_hold_for_domain(` (the `run_recall`/`ingest_one` seam). Body
+  `reason` is required non-blank (the shared `legal_hold::validate`); `ids`
+  must exist in the client's domain.
+  Routed + route-coverage + route-authz guard tables + openapi.yaml path in
+  `src/main.rs`. `src/bin/brain.rs` extends `cmd_client` with `hold add|list`.
+- Panic/unsafe sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]` in the
+  new code; no new tables or schema change; no new dependency; client + plugin
+  untouched (server-only release).
+- Tests: server bin **605** / 6 ignored (+2 —
+  `legal_hold_per_client_isolates_domains` (identical autoincrement ids across
+  acme-us + beta-eu — acme's held, beta's identical-id row free; the
+  `active_hold_ids` sets differ), `client_hold_unknown_or_archived_rejected`
+  (404 unknown / 409 archived before any pool work)); lib 105 unchanged; route
+  + authz + openapi audits green; clippy `-D warnings` (default + bench) + fmt
+  clean; `brain` release build clean.
+- Honest ceilings: this is proof + ergonomics, not new hold semantics — a hold
+  stays per-domain, keyed by that domain's ids; archiving a client does NOT
+  auto-release holds (R6 termination); recall/DSAR hold behavior unchanged.
+
+---
+
 ## [1.27.0] — 2026-08-15
 
 ### Server — "BPO Ops" (series root, staggered)
