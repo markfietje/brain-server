@@ -209,7 +209,9 @@ usage:
   brain retention get
   brain retention set <kind> <days>
   brain setup [domain] [--profile NAME] [--yes]
-  brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]
+brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]
+  brain client dpa get <name>
+  brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S
   brain snapshot-status
   brain eval [--floor r5=0.85 r10=0.9]
   brain procedure <title> [--step "title: content" ...] [--domain D]
@@ -1632,8 +1634,75 @@ fn cmd_ump(args: &[String]) -> Result<(), String> {
 fn cmd_client(args: &[String]) -> Result<(), String> {
     match args.first().map(|s| s.as_str()) {
         Some("add") => cmd_client_add(&args[1..]),
+        Some("dpa") => cmd_client_dpa(&args[1..]),
         _ => Err(
-            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]"
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S"
+                .into(),
+        ),
+    }
+}
+
+fn cmd_client_dpa(args: &[String]) -> Result<(), String> {
+    let cmd = args
+        .first()
+        .map(|s| s.as_str())
+        .ok_or_else(|| {
+            "usage: brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S"
+                .to_string()
+        })?;
+    let (positionals, flags) = parse_flags(&args[1..]);
+    let name = require_positional(&positionals, "name")?;
+    let path = format!("/clients/{name}/dpa");
+    match cmd {
+        "get" => {
+            let resp = get(&base_url(), &path, &[], auth_token().as_deref())?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            println!("{}", resp.body);
+            Ok(())
+        }
+        "set" => {
+            let mappings = [
+                ("retention", "retention_on_termination"),
+                ("deletion", "deletion_timeline"),
+                ("audit", "audit_rights"),
+                ("breach", "breach_notification_timeline"),
+                ("onward", "onward_transfer_restriction"),
+                ("sub-sub", "sub_sub_processor_list"),
+            ];
+            let mut body = serde_json::json!({});
+            for (flag, field) in mappings {
+                let v = flags
+                    .get(flag)
+                    .and_then(|o| o.clone())
+                    .ok_or_else(|| format!("missing required argument: --{flag} VALUE"))?;
+                body[field] = serde_json::json!(v);
+            }
+            let resp = post(
+                &base_url(),
+                &path,
+                &[],
+                "application/json",
+                &body.to_string(),
+                auth_token().as_deref(),
+            )?;
+            if resp.status != 200 {
+                return Err(format!(
+                    "server returned status {}: {}",
+                    resp.status,
+                    truncate(&resp.body, 200)
+                ));
+            }
+            println!("dpa terms set for '{name}'");
+            Ok(())
+        }
+        _ => Err(
+            "usage: brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S"
                 .into(),
         ),
     }
