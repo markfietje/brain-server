@@ -497,8 +497,12 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
         let score = h.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
         // v1.20.24 "Sweep": recalled text is agent-facing — strip the same
         // invisible-Unicode class the server screen + client strip.
-        let title = brain_server::strip_invisible::strip_invisible(
-            &json_str(h, "title").unwrap_or_else(|| "(untitled)".into()),
+        // v1.27.14 "Fencepost2" (M5/F-63): + markdown-ref strip + control chars
+        // (parity with the MCP `tool_result_payload` seam).
+        let title = brain_server::fence::strip_markdown_refs(
+            &brain_server::strip_invisible::strip_invisible(
+                &json_str(h, "title").unwrap_or_else(|| "(untitled)".into()),
+            ),
         );
         let source = h
             .get("source")
@@ -510,6 +514,7 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
             .and_then(|x| x.as_str())
             .map(|s| s.replace('\n', " "))
             .map(|s| brain_server::strip_invisible::strip_invisible(&s))
+            .map(|s| brain_server::fence::strip_markdown_refs(&s))
             .unwrap_or_default();
 
         println!(
@@ -566,9 +571,10 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
     let v: serde_json::Value = serde_json::from_str(&resp.body)
         .map_err(|e| format!("non-JSON response (status {}): {e}", resp.status))?;
 
-    let title = brain_server::strip_invisible::strip_invisible(
-        &json_str(&v, "title").unwrap_or_else(|| "(untitled)".into()),
-    );
+    let title =
+        brain_server::fence::strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
+            &json_str(&v, "title").unwrap_or_else(|| "(untitled)".into()),
+        ));
     let source = json_str(&v, "source").unwrap_or_default();
     let heading = json_str(&v, "heading_path").unwrap_or_default();
     let line_start = v.get("line_start").and_then(|x| x.as_i64());
@@ -596,8 +602,11 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
     println!("  {:-<60}", "");
     // v1.20.24 "Sweep": the CLI is an agent-facing surface — strip the same
     // invisible-Unicode class the server screen + client strip.
-    let content = brain_server::strip_invisible::strip_invisible(
-        &json_str(&v, "content").unwrap_or_default(),
+    // v1.27.14 "Fencepost2" (M5/F-63): + markdown-ref + control-char parity.
+    let content = brain_server::strip_invisible::strip_control_chars(
+        &brain_server::fence::strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
+            &json_str(&v, "content").unwrap_or_default(),
+        )),
     );
     println!("{content}");
     Ok(())
