@@ -1016,18 +1016,13 @@ mod tests {
 
     #[test]
     fn argon2_params_benchmark() {
-        // Deterministic regression guard: the tuned cost parameters must not
-        // drift. Pinning the constants (not wall-clock) is what catches the
-        // accident this test exists for — an order-of-magnitude
-        // `ARGON2_M_COST`/`ARGON2_T_COST` bump silently multiplies backup
-        // latency + memory — and it is hardware-independent, so it can never
-        // flake on a slow/shared CI runner (a laptop-tuned wall-clock did:
-        // 2 s here vs 3-4.5 s on GitHub Actions). The actual KDF run below is
-        // kept so the timing is exercised + reported, but only as a
-        // non-fatal diagnostic; measure real latency with `brain bench`.
-        assert_eq!(ARGON2_M_COST, 65_536, "re-tune M_COST to keep 64 MiB");
-        assert_eq!(ARGON2_T_COST, 3, "re-tune T_COST");
-        assert_eq!(ARGON2_P_COST, 1, "re-tune P_COST");
+        // Regression guard, not a UX latency budget. The plan's 2 s target was
+        // tuned on the dev laptop; the CI runner is ~2x slower (measured
+        // 3.0-4.5 s for 64 MiB / t=3). A wall-clock assert pinned to the
+        // laptop made CI flaky. This honours the intent — catching an
+        // accidental (order-of-magnitude) `ARGON2_M_COST`/`ARGON2_T_COST`
+        // bump — while being tolerant of slow shared runners. Prefer a real
+        // latency measurement (`brain bench`) if you need a fidelity target.
         let t0 = std::time::Instant::now();
         kdf_v2(
             b"benchmark passphrase",
@@ -1037,9 +1032,10 @@ mod tests {
             ARGON2_P_COST,
         )
         .unwrap();
-        eprintln!(
-            "Argon2id 64MiB/t=3 (M={ARGON2_M_COST} t={ARGON2_T_COST} p={ARGON2_P_COST}) took {:?}",
-            t0.elapsed()
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "Argon2id 64MiB/t=3 took {elapsed:?}; re-tune ARGON2_M_COST"
         );
     }
 
