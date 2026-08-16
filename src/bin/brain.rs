@@ -228,7 +228,7 @@ brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]
                                              only github has a runnable binary)
   brain sync [github] [--config PATH]
   brain connector-status
-  brain backup <out-path> [--passphrase-file PATH]
+  brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]
   brain restore <in-path> [--passphrase-file PATH]
   brain key generate [--kid ID] [--alg RS256] [--dir PATH]
   brain key list [--dir PATH]
@@ -2711,17 +2711,27 @@ fn resolve_passphrase(
     std::fs::read(&path).map_err(|e| format!("cannot read passphrase file {path}: {e}"))
 }
 
-/// `brain backup <out-path> [--passphrase-file PATH]`
+/// `brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]`
 fn cmd_backup(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args);
-    let out = positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| "usage: brain backup <out-path> [--passphrase-file PATH]".to_string())?;
+    let out = positionals.first().cloned().ok_or_else(|| {
+        "usage: brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]".to_string()
+    })?;
     let pass = resolve_passphrase(&flags)?;
+    let format = match flags.get("format").and_then(|o| o.clone()).as_deref() {
+        None | Some("v2") => brain_server::backup::BackupFormat::V2,
+        Some("v1") => brain_server::backup::BackupFormat::V1,
+        Some(v) => return Err(format!("unknown backup format {v:?} (use v1 or v2)")),
+    };
     let db = default_db_path();
-    brain_server::backup::backup(&db, Path::new(&out), &pass)
-        .map_err(|e| format!("backup failed: {e:#}"))?;
+    brain_server::backup::backup_with_config_dir_and_format(
+        &db,
+        Path::new(&out),
+        &pass,
+        None,
+        format,
+    )
+    .map_err(|e| format!("backup failed: {e:#}"))?;
     println!("backup written: {out} (+ {out}.sha256 checksum)");
     Ok(())
 }
