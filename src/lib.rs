@@ -59,6 +59,12 @@ pub mod register_sqlite_vec;
 // `screen.rs` re-exports these so `crate::screen::*` paths stay unchanged.
 pub mod strip_invisible;
 
+// The shared untrusted-fence primitives (v1.27.14 "Fencepost2" M3.7): the
+// sentinel constants + the markdown-ref strip the MCP binary and CLI wrap
+// agent-bound text with. `src/gate.rs` re-exports `strip_markdown_refs` so
+// the server surface keeps its existing call path (single definition).
+pub mod fence;
+
 // The embedding abstraction (v1.28 "Caliber" M2): the trait + the static
 // (default) backend + the feature-gated neural (BGE-M3) backend. Lives in the
 // lib so `bench` consumes it without a #[path] include, same pattern as
