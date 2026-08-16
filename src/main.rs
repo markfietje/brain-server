@@ -10829,6 +10829,64 @@ Final paragraph after the rule.";
         .expect("cryptographic verification still passes; revocation is the gate");
     }
 
+    /// v1.27.19 "Scrub" (F-54): a denylist write failure must surface as a 500
+    /// `revoke_failed` — the operator must never believe a token dead when the
+    /// revocation did not land. A pool whose file manager points into a
+    /// nonexistent directory fails every `pool.get()`.
+    #[tokio::test]
+    async fn revoke_reports_failure() {
+        use axum::extract::{Json, State};
+        use axum::http::StatusCode;
+
+        crate::register_sqlite_vec();
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let gone = tmp.path().join("no-such-dir");
+        let mgr = SqliteConnectionManager::file(gone.join("db.sqlite"));
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .max_size(1)
+            .min_idle(Some(0))
+            .build(mgr)
+            .expect("pool builds lazily — no connection until get()");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+        );
+        let state = Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+        let err = handlers::auth::revoke_handler(
+            State(state),
+            handlers::auth::OptPrincipal(None),
+            Json(handlers::auth::RevokeRequest {
+                jti: "jti-dead".into(),
+                iss: "https://brain.test/".into(),
+                reason: "operator test".into(),
+                expires_at: None,
+            }),
+        )
+        .await
+        .expect_err("a pool that cannot connect must fail the revoke");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.code, "revoke_failed");
+    }
+
     /// AuthZ: a principal with team-alpha scopes cannot authorize team-beta.
     /// This is the DoD's cross-tenant 403 test.
     #[test]

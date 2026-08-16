@@ -191,14 +191,20 @@ pub async fn refresh(
 /// `POST /auth/logout`. Adds the request's access-token `jti` to the denylist.
 /// The access token comes from the `Authorization: Bearer` header (verified by
 /// the middleware before this handler runs, so the principal is authenticated).
-pub async fn logout(State(s): State<Arc<AppState>>, principal: OptPrincipal) -> StatusCode {
+pub async fn logout(
+    State(s): State<Arc<AppState>>,
+    principal: OptPrincipal,
+) -> Result<StatusCode, AuthHandlerError> {
     let Some(p) = principal.0 else {
-        return StatusCode::UNAUTHORIZED;
+        return Ok(StatusCode::UNAUTHORIZED);
     };
     let pool = s.pool.clone();
     let cache = s.revocation_cache.clone();
     let issuer = s.jwt_issuer.clone();
-    let _ = tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
+    // v1.27.19 "Scrub" (F-54): a failed denylist write must surface. An
+    // operator logging out believes the token is dead; if the INSERT failed
+    // the token would live its full 15 min with that lie in the client.
+    tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
         let conn = pool.get().map_err(|e| {
             rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
         })?;
@@ -214,8 +220,10 @@ pub async fn logout(State(s): State<Arc<AppState>>, principal: OptPrincipal) -> 
         cache.invalidate(&p.jti, &issuer);
         Ok(())
     })
-    .await;
-    StatusCode::NO_CONTENT
+    .await
+    .map_err(|_| AuthHandlerError::internal())?
+    .map_err(|_| AuthHandlerError::revoke_failed("logout denylist write failed"))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /auth/revoke` (operator). Body: `{ jti, iss, reason }`. Requires
@@ -251,7 +259,9 @@ pub async fn revoke_handler(
     let jti = req.jti.clone();
     let iss = req.iss.clone();
     let reason = req.reason.clone();
-    let _ = tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
+    // v1.27.19 "Scrub" (F-54): was 204-always — a failed denylist INSERT told
+    // the operator the token was dead when it wasn't. Now 500 `revoke_failed`.
+    tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
         let conn = pool.get().map_err(|e| {
             rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
         })?;
@@ -259,7 +269,9 @@ pub async fn revoke_handler(
         cache.invalidate(&jti, &iss);
         Ok(())
     })
-    .await;
+    .await
+    .map_err(|_| AuthHandlerError::internal())?
+    .map_err(|_| AuthHandlerError::revoke_failed("revocation denylist write failed"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -380,6 +392,16 @@ impl AuthHandlerError {
             status: StatusCode::FORBIDDEN,
             code: "forbidden",
             message: msg,
+        }
+    }
+
+    /// v1.27.19 "Scrub" (F-54): the revocation denylist write failed — an
+    /// operator must never believe a token dead when it isn't.
+    pub fn revoke_failed(msg: &str) -> Self {
+        AuthHandlerError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "revoke_failed",
+            message: msg.to_string(),
         }
     }
 }
