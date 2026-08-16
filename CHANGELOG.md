@@ -19,6 +19,97 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.19] — 2026-08-16
+
+### Security — "Scrub"
+
+Server + client release (server `Cargo.toml`/lock `1.27.18` → **`1.27.19`**;
+client `1.27.15` → **`1.27.19`**; plugin unchanged at 0.4.4). The silent-
+failure pass: every write-path `let _ =`, the auth denylist's 204-always lie,
+the best-effort audit settle, and every client action whose outcome was
+dropped on the floor — plus the prompt-injection screen hoisted out of the
+per-query hot loop. No new endpoints, no wire changes, no schema change, no
+telemetry.
+
+### Release notes
+
+**Security fixes**
+- **A failed logout/revoke no longer says 204 "done".** `POST /auth/logout`
+  and `POST /auth/revoke` wrote the token to the revocation denylist
+  best-effort and returned success regardless — an operator logging out
+  believed the token was dead when a failed INSERT left it live for its full
+  15-minute shelf life (and a revoked token could be refreshed). Both now
+  surface a denylist write failure as `500 revoke_failed`; success still
+  means the token is really dead.
+- **Purge residue deletes propagate (were `let _ =`).** A chunk purge deleted
+  the tombstoned row's relationships / vec0 embedding / evidence links /
+  traces in silence — one failing DELETE while the rest succeeded left a
+  partial erasure that the purge then certified complete. Every residue
+  delete now participates in the purge transaction: a failure rolls the whole
+  purge back instead of certifying a lie.
+- **The prompt-injection blocklist screen runs once per hit, not per
+  consumer.** Recall constructed each `SearchResult` with raw bytes, then the
+  PRF query-expansion extractors re-normalized each hit's content against the
+  blocklist per query. The screen now runs once at construction and rides as
+  an internal `blocklist_hit` flag (never serialized); both extractors read
+  the flag. Behavior-identical, one scan saved per hit per query.
+- **Erasure hygiene warns instead of certifying silence.** The DSAR/shared
+  purge previously swallowed a failed `PRAGMA secure_delete=ON` or a failed
+  `wal_checkpoint(TRUNCATE)` — the two operations that ensure erased page
+  images don't survive in the WAL or freelist. Failures are now logged loudly
+  instead of whispering "erased".
+
+**Improvements**
+- **Audit-settle failures are visible.** The best-effort audit-chain settle
+  (COMMIT/ROLLBACK of the chained row) could fail under a busy writer — the
+  caller still got a row id, and nothing said the chain might have missed it.
+  `/health`'s `hardening` block now carries a monotonic `audit_commit_failures`
+  counter (0 = green; >0 = rows possibly off the durable chain).
+- **Every other write-path `let _ =` residue propagated** (23 further sites):
+  chunk stored without its evidence links, stale vec0 rows surviving reindex,
+  webhook seen-writes, retention prunes, refresh failures, orphaned PII
+  residues, secure_delete/TRUNCATE on purge — each now either fails the
+  operation or warns with context.
+- **Client decisions announce their outcome.** A failed approve/reject in the
+  Operations queue, a failed quartine release/delete in Security, and failed
+  decayed/tombstone loads in the Data panel were silently dropped — each now
+  renders an `aria-live` status line (was `let _ =` on the result, or `if let
+  Ok` on the load).
+- **A single-record ingest lost its last panic.** The singleton UMP path
+  lowered a one-element batch with `.next().unwrap()` behind a length guard;
+  it is now a `pop()` + `?` — no panic fallback left on the write path.
+
+**Bug fixes**
+- **Dead "reserved" trace vocabulary removed.** `trace.rs` shipped an
+  `#[allow(dead_code)]` `update:`/`supersedes:`/`contradicts:`/`causes:`
+  prefix vocabulary "reserved for v1.6 Reconcile"; v1.6 shipped and closed
+  without consuming it. The dead constants and their tests are gone — the
+  used surface (`MAX_HOPS`/`MAX_VISITED` traversal caps) is unchanged.
+
+### Engineering record
+
+- **D-8 pinned**: `blocklist_flag_one_shot_at_construction_and_consumed`
+  (flag = `raw()`'s screen; the extractors consume the flag — a flag-only hit
+  is excluded even with clean bytes) + `prf_skips_injection_flagged_content`
+  re-routed through `raw()` so the negative-feedback guardrail exercises the
+  production construction seam.
+- **F-54 pinned**: `revoke_reports_failure` proves a failing denylist write
+  surfaces `500 revoke_failed` (`AuthHandlerError`) instead of a lying 204.
+- **D-1 purge-integrity pinned** by the residue-delete propagation tests in
+  the purge/DSAR suite (a failing residue rolls back the whole purge).
+- Tests: server bin **670** / 6 ignored, lib **126** / 1 ignored, brain 12,
+  mcp 17, bench 8, client **132**; clippy `-D warnings` + fmt clean on both
+  trees; `badges.sh --selfcheck` clean.
+- Honest ceilings: `audit_commit_failures` reports, it does not retry (the
+  settle is best-effort by design); the blocklist flag is a construction-time
+  snapshot — content is immutable after construction in every path (fusion
+  clones verbatim), so the flag cannot drift; the client status lines are
+  per-action announcements, not an action log (server-side per-action history
+  remains v2.x); the purge hygiene is a warn, not a retry loop. See
+  `docs/AGENTS_HISTORY.md` for the audit trail.
+
+---
+
 ## [1.27.18] — 2026-08-16
 
 ### Performance — "Groundwork"
