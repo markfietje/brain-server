@@ -190,12 +190,15 @@ pub async fn suggest(
             // v1.20.24 "Sweep": PII read-projection uniformity — the same
             // `redact_content` gate /recall applies, now on /suggest
             // (loopback/opaque principals stay unmasked by design).
+            // v1.27.14 "Fencepost2" (M3.3): upgrade to the full read seam over
+            // title + content (not content-only redaction) — the same
+            // bidi/ZW/markdown-ref boundary the other read surfaces use.
             Ok(results
                 .into_iter()
                 .map(|r| SuggestionHit {
                     id: r.id,
-                    title: r.title,
-                    content: crate::gate::redact_content(&r.content, r.pii, &principal.0),
+                    title: crate::gate::sanitize_read_opt(r.title, r.pii, &principal.0),
+                    content: crate::gate::sanitize_read(&r.content, r.pii, &principal.0),
                     score: r.score,
                     domain: domain_label.clone(),
                     provenance: SuggestionProvenance {

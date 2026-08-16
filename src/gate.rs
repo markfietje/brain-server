@@ -359,65 +359,11 @@ pub fn redact_content(
 /// host-contract territory, out of scope for a deterministic strip. Runs BEFORE
 /// `strip_invisible` so a bidi-wrapped `]` can't defeat the bracket scan after
 /// invisible stripping.
-pub fn strip_markdown_refs(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0usize;
-    while i < bytes.len() {
-        // Image construct: `![label](url)` → `[label]` (drop the `!` and the
-        // `(url)`; brackets stay so the result is plain text, not itself a link).
-        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            if let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i + 1) {
-                out.push('[');
-                out.push_str(&s[label_start..label_end]);
-                out.push(']');
-                i = url_close + 1;
-                continue;
-            }
-        }
-        // Link construct: `[label](url)` → `label` (drop the brackets and url).
-        if bytes[i] == b'[' {
-            if let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i) {
-                out.push_str(&s[label_start..label_end]);
-                i = url_close + 1;
-                continue;
-            }
-        }
-        // Default: pass the char through byte-for-byte (advance on a char
-        // boundary — a byte-wise `i += 1` would desync on multibyte input).
-        let ch = s[i..].chars().next().expect("non-empty slice");
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-/// From an opening `[` at `open_bracket`, look for the complete link construct
-/// `[label](url)`. Returns `(label_start, label_end, url_close)` byte offsets:
-/// `label_start..label_end` is the inner label (exclusive of the brackets),
-/// `url_close` is the index of the closing `)`. Returns `None` unless a `]` is
-/// immediately followed by `(` and a matching `)` exists — the caller then
-/// emits the `[` verbatim and continues. All delimiters are ASCII, so every
-/// offset returned lands on a char boundary and the label slice is valid UTF-8.
-fn scan_link_construct(bytes: &[u8], open_bracket: usize) -> Option<(usize, usize, usize)> {
-    debug_assert_eq!(bytes[open_bracket], b'[');
-    let label_start = open_bracket + 1;
-    // First `]` after the opening `[` (CommonMark: the bracket contents cannot
-    // themselves contain an unescaped `]`).
-    let label_end_rel = bytes[label_start..].iter().position(|&b| b == b']')?;
-    let label_end = label_start + label_end_rel;
-    // `]` must be IMMEDIATELY followed by `(` — allowing whitespace would
-    // false-positive on prose like `[note] (see ref 5)`.
-    let paren_open = label_end + 1;
-    if paren_open >= bytes.len() || bytes[paren_open] != b'(' {
-        return None;
-    }
-    // First `)` after the opening `(` (nested parens in a url are not handled;
-    // the trailing fragment is harmless — the remote ref is already dropped).
-    let url_start = paren_open + 1;
-    let url_close_rel = bytes[url_start..].iter().position(|&b| b == b')')?;
-    Some((label_start, label_end, url_start + url_close_rel))
-}
+///
+/// v1.27.14 "Fencepost2" (M3.7): moved to the shared lib `fence` module (re-export
+/// here) so the MCP binary + CLI use the same single definition. Behavior
+/// unchanged; `sanitize_read` still routes through this exact function.
+pub use brain_server::fence::strip_markdown_refs;
 
 /// v1.20.25 "Consolidate": the read-path output seam. Applies PII redaction
 /// (when the row is PII-flagged and the principal holds no `pii:read`) AND the
@@ -445,6 +391,15 @@ pub fn sanitize_read_opt(
     principal: &Option<crate::auth::Principal>,
 ) -> Option<String> {
     v.map(|s| sanitize_read(&s, pii, principal))
+}
+
+/// v1.27.14 "Fencepost2" (M3.1): the single read boundary for stored text. Every
+/// field of every response that carries stored content goes through this —
+/// recall, search, get, quarantine, proposals, suggest, UMP, export previews.
+/// Named alias of [`sanitize_read`] so the wiring meta-test (`stored_text_fields_
+/// pass_the_read_seam`) has one symbol to require at every serialization site.
+pub fn sanitize_stored(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
+    sanitize_read(s, pii, principal)
 }
 
 /// v1.20.1 "Shield" M2(b): PII-screen a reviewer-facing `source_prompt` before

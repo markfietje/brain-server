@@ -419,6 +419,12 @@ pub async fn list_proposals(
         p.content_digest = review_digest(&raw);
         let pii = !crate::gate::scan_pii(&raw).is_empty();
         p.content = crate::gate::sanitize_read(&raw, pii, &principal.0);
+        // v1.27.14 "Fencepost2" (M3.5): source_prompt (provenance) + qa_note
+        // (reviewer note) are reviewer-facing stored text — run them through
+        // the same read seam. F-16 caution: these are NOT what feeds
+        // `review_digest` (that stays content-only, digest stable).
+        p.source_prompt = crate::gate::sanitize_read_opt(p.source_prompt.take(), pii, &principal.0);
+        p.qa_note = crate::gate::sanitize_read_opt(p.qa_note.take(), pii, &principal.0);
     }
 
     Ok(Json(rows))
@@ -1202,6 +1208,17 @@ pub async fn edit_proposal(
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+
+    // v1.27.14 "Fencepost2" (M3.5): the edit response is a reviewer-facing view
+    // — run source_prompt/qa_note through the read seam (like list_proposals).
+    // F-16 caution: content_digest was already computed on the raw content and
+    // is left untouched.
+    if let Ok(mut v) = res {
+        let pii = !crate::gate::scan_pii(&v.content).is_empty();
+        v.source_prompt = crate::gate::sanitize_read_opt(v.source_prompt.take(), pii, &principal.0);
+        v.qa_note = crate::gate::sanitize_read_opt(v.qa_note.take(), pii, &principal.0);
+        return Ok(Json(v));
+    }
 
     #[cfg(feature = "otel")]
     {

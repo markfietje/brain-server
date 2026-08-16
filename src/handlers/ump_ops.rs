@@ -218,6 +218,29 @@ async fn stored_ump_id(pool: &crate::Pool, id: i64) -> Result<String, HandlerErr
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
 }
 
+/// v1.27.14 "Fencepost2" (M3.2): sanitize a knowledge row's stored-text fields
+/// (content, title, source) for the *interactive* UMP read surface — the same
+/// read boundary the HTTP recall/search surface applies. The export path
+/// (`render_ump` in gate.rs) deliberately stays byte-faithful (DSAR
+/// portability), so this helper is only used by `/ump/memory/{id}` +
+/// `/ump/recall`. It mutates a CLONE of the row, then `emit_record` hashes the
+/// sanitized text — so the emitted record's `integrity.content_hash` stays
+/// self-consistent and `verify_record` still passes (§2.8/§5.3 unaffected).
+fn sanitize_ump_row_for_read(row: Value) -> Value {
+    let mut row = row;
+    let none: Option<crate::auth::Principal> = None;
+    if let Some(content) = row["content"].as_str() {
+        row["content"] = json!(crate::gate::sanitize_stored(content, false, &none));
+    }
+    if let Some(title) = row["title"].as_str() {
+        row["title"] = json!(crate::gate::sanitize_stored(title, false, &none));
+    }
+    if let Some(source) = row["source"].as_str() {
+        row["source"] = json!(crate::gate::sanitize_stored(source, false, &none));
+    }
+    row
+}
+
 /// `GET /ump/memory/{id}` — one record by numeric row id OR `urn:ump:…`
 /// content-addressed id (the form `/ump/remember` returns and peers send),
 /// integrity-verified on read (§5.3); a row whose stored integrity no longer
@@ -247,14 +270,22 @@ pub async fn get_memory(
         };
         let meta = UmpMeta::parse(row["ump_meta"].as_str());
         // §2.7: a principal sees other owners' rows redacted (mirrors export).
-        let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
+        // Owned copy: `sanitize_ump_row_for_read(row)` moves `row` below.
+        let row_owner: Option<String> = row["owner"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| meta.owner.clone());
         let redact = owner.is_some()
             && row_owner
+                .as_deref()
                 .map(|o| Some(o) != owner.as_deref())
                 .unwrap_or(true);
         let superseded = superseded_by_for(&conn, rid)?;
+        // v1.27.14 "Fencepost2" (M3.2): interactive read → sanitize a clone of
+        // the row before emit, so bidi/ZW/markdown-ref never reach the LLM
+        // boundary. `emit_record` hashes the sanitized text (self-consistent).
         let rec = ump::emit_record(
-            &row,
+            &sanitize_ump_row_for_read(row),
             "global",
             &json!([]),
             &serde_json::Value::Array(relations_for_chunk(&conn, rid)?),
@@ -404,14 +435,20 @@ pub async fn recall(
                 continue;
             };
             let meta = UmpMeta::parse(row["ump_meta"].as_str());
-            let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
+            // Owned copy: `sanitize_ump_row_for_read(row)` moves `row` below, so
+            // the owner comparison must not borrow it (F-10 read sanitization).
+            let row_owner: Option<String> = row["owner"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| meta.owner.clone());
             let redact = owner.is_some()
                 && row_owner
+                    .as_deref()
                     .map(|o| Some(o) != owner.as_deref())
                     .unwrap_or(true);
             let superseded = superseded_by_for(&conn, r.id)?;
             let record = ump::emit_record(
-                &row,
+                &sanitize_ump_row_for_read(row),
                 domain,
                 &json!([]),
                 &serde_json::Value::Array(relations_for_chunk(&conn, r.id)?),
@@ -432,7 +469,7 @@ pub async fn recall(
                 "recency": if crate::gate::is_decayed(r.expires_at, now_unix) { 0.0 } else { 1.0 },
                 "salience": r.confidence.unwrap_or(0.0),
                 "scope_match": match &scope_owner {
-                    Some(want) => f32::from(row_owner == Some(want.as_str())),
+                    Some(want) => f32::from(row_owner.as_deref() == Some(want.as_str())),
                     None => 1.0,
                 },
                 "provenance_depth": r.evidence.as_ref().map(|e| e.links.len() as u32).unwrap_or(0),

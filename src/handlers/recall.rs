@@ -798,7 +798,7 @@ fn results_to_hits(
     let now_unix = chrono::Utc::now().timestamp();
     results
         .into_iter()
-        .map(|(r, domain)| {
+        .map(|(mut r, domain)| {
             // v1.20.25: every text field the chunk emits goes through the read
             // seam — PII redaction + invisible-Unicode strip — not just `content`.
             let pii = r.pii;
@@ -834,8 +834,11 @@ fn results_to_hits(
                 decayed: include_decayed.then(|| crate::gate::is_decayed(r.expires_at, now_unix)),
                 ingest_kind: r.ingest_kind,
                 memory_kind: r.memory_kind,
-                lawful_basis: r.lawful_basis,
-                region: r.region,
+                // v1.27.14 "Fencepost2" (M3.5): provenance labels are stored text
+                // (lawful_basis is free-form; region is regex-validated but the
+                // read seam is the uniform control) — run through sanitize.
+                lawful_basis: crate::gate::sanitize_read_opt(r.lawful_basis.take(), pii, principal),
+                region: crate::gate::sanitize_read_opt(r.region.take(), pii, principal),
             }
         })
         .collect()

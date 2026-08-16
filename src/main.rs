@@ -943,8 +943,23 @@ async fn search(
                 // v1.20.24 "Sweep": PII read-projection uniformity — the same
                 // `redact_content` gate /recall applies, now on the legacy
                 // search surface (loopback/opaque principals stay unmasked).
+                // v1.27.14 "Fencepost2" (M3.3): upgrade the search surface from
+                // content-only redaction to the full read seam over every stored
+                // text field (content, title, snippet, evidence.text/heading) —
+                // the same bidi/ZW/markdown-ref boundary `/recall` uses.
                 for r in &mut results {
-                    r.content = crate::gate::redact_content(&r.content, r.pii, &principal.0);
+                    r.content = crate::gate::sanitize_read(&r.content, r.pii, &principal.0);
+                    r.title = crate::gate::sanitize_read_opt(r.title.take(), r.pii, &principal.0);
+                    r.snippet =
+                        crate::gate::sanitize_read_opt(r.snippet.take(), r.pii, &principal.0);
+                    if let Some(mut ev) = r.evidence.take() {
+                        ev.text = crate::gate::sanitize_read(&ev.text, r.pii, &principal.0);
+                        if let Some(h) = ev.heading_path {
+                            ev.heading_path =
+                                crate::gate::sanitize_read_opt(Some(h), r.pii, &principal.0);
+                        }
+                        r.evidence = Some(ev);
+                    }
                 }
 
                 // v1.15.0 "Observe" M1: read-event audit for search reads
@@ -2999,6 +3014,11 @@ async fn list_quarantined(
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let limit = p.limit.unwrap_or(100).clamp(1, config::MAX_MULTI_GET);
     let pool = state.pool.clone();
+    // v1.27.14 "Fencepost2" (M3.4): the /quarantine list is the reviewer-facing
+    // surface for flagged content — exactly where bidi smuggling is most
+    // dangerous. Run title/source through the read seam. The principal is
+    // copied in (loopback/opaque stay unmasked like every read surface).
+    let principal_for_rows = principal.0.clone();
     let rows = task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let mut stmt = conn
@@ -3009,10 +3029,12 @@ async fn list_quarantined(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let out = stmt
             .query_map(params![limit as i64], |r| {
+                let title = r.get::<_, Option<String>>(1)?;
+                let source = r.get::<_, Option<String>>(2)?;
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
-                    "title": r.get::<_, Option<String>>(1)?,
-                    "source": r.get::<_, Option<String>>(2)?,
+                    "title": crate::gate::sanitize_read_opt(title, true, &principal_for_rows),
+                    "source": crate::gate::sanitize_read_opt(source, true, &principal_for_rows),
                     "content_hash": r.get::<_, Option<String>>(3)?,
                     "created_at": r.get::<_, Option<String>>(4)?,
                 }))
@@ -10774,6 +10796,51 @@ Final paragraph after the rule.";
             assert!(
                 body.contains("screen::screen("),
                 "`{handler}` does not route through the injection screen"
+            );
+        }
+    }
+
+    /// v1.27.14 "Fencepost2" (M3.6): every stored-content read surface passes
+    /// through the single read seam (`sanitize_read(_opt)`/`sanitize_stored`).
+    /// Mirrors the `authz_gates`/`screen` source-scan style: a hand-maintained
+    /// site table of the response-forming functions that carry stored text,
+    /// each required to reference the seam somewhere in its body. A new read
+    /// path that emits stored content without the seam fails here — this is the
+    /// test the audit's six stragglers (F-17/F-18/F-19/F-21) would have caught.
+    /// The interactive UMP reads sanitize a CLONE of the row before emit (so
+    /// integrity stays self-consistent), hence the `sanitize_ump_row_for_read`
+    /// helper is the required symbol there rather than an inline seam call.
+    #[test]
+    fn stored_text_fields_pass_the_read_seam() {
+        let main_src = include_str!("main.rs");
+        let gate_src = include_str!("handlers/gate.rs");
+        let suggest_src = include_str!("handlers/suggest.rs");
+        let recall_src = include_str!("handlers/recall.rs");
+        let ump_src = include_str!("handlers/ump_ops.rs");
+        // (source, handler/helper name, the seam call it must reference).
+        // The seam names deliberately pair with the response field each site
+        // emits; the assert is a substring check on the handler body.
+        let sites: &[(&str, &str, &str)] = &[
+            // F-18: legacy /search emits content/title/snippet/evidence.
+            (main_src, "search", "sanitize_read"),
+            // F-18: /suggest emits title + content.
+            (suggest_src, "suggest", "sanitize_read"),
+            // F-17: /quarantine list is the reviewer boundary for flagged rows.
+            (main_src, "list_quarantined", "sanitize_read_opt"),
+            // F-19: proposals carry source_prompt + qa_note (reviewer-facing).
+            (gate_src, "list_proposals", "sanitize_read_opt"),
+            (gate_src, "edit_proposal", "sanitize_read_opt"),
+            // F-21: recall metadata provenance labels are stored text.
+            (recall_src, "results_to_hits", "sanitize_read_opt"),
+            // F-10: interactive UMP reads sanitize a clone before emit_record.
+            (ump_src, "sanitize_ump_row_for_read", "sanitize_stored"),
+        ];
+        for (src, name, seam) in sites {
+            let body = handler_body(src, name)
+                .unwrap_or_else(|| panic!("`fn {name}` not found in source map"));
+            assert!(
+                body.contains(seam),
+                "`{name}` emits stored text without the read seam ({seam}) — F-17/F-18/F-19/F-21/F-10 regression"
             );
         }
     }
