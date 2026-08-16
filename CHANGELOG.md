@@ -19,6 +19,99 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.18] — 2026-08-16
+
+### Performance — "Groundwork"
+
+Server-only release (server `Cargo.toml`/lock `1.27.17` → **`1.27.18`**; client
++ plugin unchanged at 1.27.15 / 0.4.4). The read-path cost pass: PRF term
+expansion, evidence enrichment, the search filter plumbing, and the release
+binary itself get their honest perf treatment — and the audit that motivated
+them surfaced that the FTS-vocabulary PRF weighting (shipped v0.9.1) **never
+actually ran**: the bundled SQLite's `fts5vocab` instance table exposes
+`(term, doc, col, offset)` — one row per occurrence — while the query
+referenced the pre-3.40 `cnt`/`rowid` columns, so every call silently errored
+into the unweighted fallback. That is now fixed and pinned by tests. No new
+endpoints, no wire changes, no telemetry.
+
+### Release notes
+
+**Improvements**
+- **PRF corpus weighting now really runs.** The recall query-expansion path
+  extracts terms via the FTS5 vocabulary — corpus document-frequency weighting
+  was the design since v0.9.1, but the vocab query never executed against the
+  bundled SQLite (wrong column names), degrading every expansion to the
+  unweighted fallback. The queries now target the real schema, the df
+  round-trip is capped (`MAX_DF_TERMS`, adversarial-vocab bound), and the
+  expanded term lists are pinned by tests. Because the weighting now applies,
+  expansion output CHANGES versus 1.27.17 (corpus-idf re-ranking) — recall
+  eval rows will shift.
+- **Release binary tuned for speed** (`opt-level` "z" → 2; LTO/strip/
+  codegen-units unchanged). The server is an in-process vector store, not a
+  download; "z" traded measurable recall-latency headroom for binary size.
+- **Evidence enrichment batched** (one links lookup per result set, was one
+  probe + one query per hit) — and the batched query's placeholder-pair bug
+  (one of two `IN` groups never bound → silent empty links) is fixed and
+  regression-pinned.
+- **Read-seam fast path**: `sanitize_read_cow` returns the input borrowed —
+  zero copies — when every transform is provably a no-op (clean rows dominate).
+- **Search filters become `Arc`** (cheap clones across per-domain recall
+  loops), and a process-local `VEC0_READY` flag replaces the per-query
+  "does vec0 exist" probe.
+- **`/domains/{name}/import` dial 1 GiB** (was capped by the global 1 MiB
+  limit — the route's dedicated layer now sits before the global one; every
+  other route keeps the 1 MiB cap).
+
+**Bug fixes**
+- **`/ingest/memory` could store an oversized entry or silently report
+  "Empty content" for invalid UTF-8.** Both now hard-reject: per-entry content
+  over `MAX_CONTENT` → `400 entry_too_large` (all-or-nothing, before any
+  write), non-UTF-8 body → `400 invalid_utf8`. Every legacy wire shape is
+  unchanged.
+- **Entity-mention dedup was quadratic** (O(m²) containment scan per
+  sentence); now a linear running-scan with the old result pinned as a test
+  oracle on randomized fixtures.
+- **The retention read-gate used `strftime('%s', …)` TEXT math**; the exact
+  same predicate now uses `unixepoch(COALESCE(…))` — value-identical (pinned
+  SQL-side) and index-friendly.
+
+**Security fixes**
+- **Connection-tracker slot leak on ingest timeout.** An `/ingest/memory`
+  that exceeded the 60 s bound (and panics) kept its single-connection slot
+  until the next sweep; the slot is now an RAII guard released on every exit.
+- **Reserved index slots vacuumed**: `idx_knowledge_domain`,
+  `idx_knowledge_owner`, `idx_knowledge_title_heading` added (domain delete,
+  DSAR subject resolution, proposal write-gate dedup); `idx_tombstones_kid`,
+  `idx_entities_name`, `idx_evidence_links_from` dropped (each a strict
+  duplicate of a UNIQUE autoindex or newer sibling). Schema → **1.27.18**.
+
+### Engineering record
+
+- **The E-1 finding, documented**: `prf_df_matches_legacy_corpus_scan` +
+  `prf_vocab_schema_is_occurrence_shaped` freeze the real
+  `(term, doc, col, offset)` schema and pin the new queries' output to the
+  mathematically-intended legacy semantics; `test_prf_extract_terms_fts_weights_corpus`
+  now asserts the stemmed vocab shapes ("microbiom"/"inflamm") it quietly
+  couldn't before.
+- **F-44 layer-order meta-test**: `layer_semantics::import_route_accepts_large_body`
+  + `other_routes_still_capped_at_1mib` rebuild the PRODUCTION two-limit
+  structure so an ordering regression fails locally.
+- **F-46 pinned**: `push_gate_filters_emits_unixepoch_kind_defaults` (SQL
+  clause) + `retention_filter_equality_unixepoch_vs_strftime` (SQLite-side
+  value equality incl. the sentinel epoch).
+- **F-53 pinned**: `tracker_entry_releases_on_drop_and_panic` +
+  `ingest_timeout_releases_tracker_slot`.
+- Tests: server bin **673** / 6 ignored, lib **125** / 1 ignored, brain 12,
+  mcp 17, bench 8; clippy `-D warnings` + fmt clean.
+- Honest ceilings: `MAX_DF_TERMS` only binds on adversarial vocabularies
+  (the escape hatch stays the pure fallback); F-45 is a pre-write rejection,
+  not a new bound on the legacy 200-shell; the revoked-at schema defaults
+  keep their TEXT `strftime` form (value-consistent single format); schema
+  bumps once (the 1.27.18 migration drops three indexes on the first boot
+  after upgrade). See `docs/AGENTS_HISTORY.md` for the audit trail.
+
+---
+
 ## [1.27.17] — 2026-08-16
 
 ### Security — "Strongbox"

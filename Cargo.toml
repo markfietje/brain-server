@@ -246,11 +246,14 @@ path = "src/bin/brain-connector-gh.rs"
 required-features = ["connector-github"]
 
 [profile.release]
-opt-level = "z"
+# v1.28.5 "Groundwork" (M6): opt-level "z" (size-minimal) → 2 (speed) — the
+# release binary is now an in-process vector store; the bench binary measures
+# the sha we ship. Client wasm budget is unaffected (separate workspace node).
+opt-level = 2
 lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
 
 [profile.release.package."*"]
-opt-level = "z"
+opt-level = 2
