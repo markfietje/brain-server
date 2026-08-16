@@ -8,6 +8,7 @@
 //! Every mutation is operator-driven; nothing decays or deletes autonomously.
 
 use crate::api::ApiClient;
+use crate::confirm::ConfirmDestructive;
 use crate::panels::{use_document_title, PageTitle};
 use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
 use dioxus::prelude::*;
@@ -44,6 +45,15 @@ pub fn panel() -> Element {
     let mut purge_ids = use_signal(String::new);
     let mut purge_owner = use_signal(String::new);
     let mut status = use_signal(|| None::<Result<String, String>>);
+    // v1.28.1 M4 (F-12): the inline footprint-preview gate. The purge button
+    // stays inert until the operator has RENDERED the preview card for the
+    // CURRENT input — seeing and erasing are separated, and an edit invalidates
+    // the preview (the snapshot must still equal the live input).
+    let mut purge_preview = use_signal(|| None::<(String, String)>);
+
+    let run_purge_preview = move |_| {
+        purge_preview.set(Some((purge_ids(), purge_owner())));
+    };
 
     // Retention
     let mut retention = use_signal(|| None::<crate::api::RetentionStatus>);
@@ -101,9 +111,11 @@ pub fn panel() -> Element {
                 Err(e) if crate::queue::is_offline(&e) => {
                     // v1.20.0 M3: unreachable backend → queue the purge for
                     // replay instead of failing the operator's request.
+                    // v1.28.1 M4: the persisted payload carries only the ids
+                    // + a stamp — no owner text in site-local storage.
                     crate::queue::enqueue(crate::queue::QueuedAction::Purge {
                         chunk_ids: ids.clone(),
-                        owner: Some(owner.clone()),
+                        queued_at: crate::queue::now_ts(),
                     });
                     status.set(Some(Ok(crate::i18n::t("data_purged_queued"))));
                 }
@@ -215,6 +227,21 @@ pub fn panel() -> Element {
         .map(|t| (t.knowledge_id, t.reason.clone().unwrap_or_default()))
         .collect();
 
+    // v1.28.1 M4 (F-12): purge-preview gate locals — computed once per render.
+    // `preview_fresh` = a preview card has been rendered for the CURRENT ids +
+    // owner input; the purge confirm stays frozen until it holds.
+    let purge_snap = purge_preview();
+    let purge_preview_ids = purge_snap
+        .as_ref()
+        .map(|(ids, _)| crate::panels::data::parse_purge_ids(ids).len())
+        .unwrap_or(0);
+    let preview_fresh = purge_snap
+        .as_ref()
+        .map(|(ids, owner)| {
+            crate::panels::data::purge_preview_fresh(&purge_ids(), &purge_owner(), ids, owner)
+        })
+        .unwrap_or(false);
+
     rsx! {
         PageTitle { {crate::i18n::t("data_title")} }
         p { class: "text-sm text-muted-foreground mb-4", {crate::i18n::t("data_sub")} }
@@ -240,11 +267,47 @@ pub fn panel() -> Element {
                     oninput: move |e| purge_owner.set(e.value()),
                     placeholder: "user@example.com",
                 }
+                // v1.28.1 M4 (F-12): the inline footprint preview — rendered
+                // BEFORE the purge can arm. The card snapshots the input at
+                // preview time; an edit after the preview leaves the snapshot
+                // stale, so the purge button stays frozen (`preview_fresh`).
                 button {
-                    class: "btn btn-destructive",
+                    class: "btn btn-outline btn-sm",
                     disabled: !writes,
-                    onclick: run_purge,
-                    "{purged_lbl}"
+                    onclick: run_purge_preview,
+                    {crate::i18n::t("data_purge_preview")}
+                }
+                if purge_snap.is_some() {
+                    div { class: "card border-dashed",
+                        div { class: "card-body space-y-1",
+                            p { class: "text-sm text-muted-foreground",
+                                {crate::i18n::t("data_purge_preview_note")} }
+                            dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm",
+                                dt { class: "text-muted-foreground", "Chunk ids" }
+                                dd { class: "font-mono tabular", "{purge_preview_ids}" }
+                                dt { class: "text-muted-foreground", "Owner" }
+                                dd { class: "font-mono tabular",
+                                    "{purge_snap.as_ref().unwrap().1}" }
+                            }
+                            if !preview_fresh {
+                                p { class: "text-xs text-warn", {crate::i18n::t("data_purge_preview_stale")} }
+                            }
+                        }
+                    }
+                }
+                div { class: "flex items-center gap-3",
+                    ConfirmDestructive {
+                        label: purged_lbl.clone(),
+                        note: crate::i18n::t("purge_irreversible"),
+                        small: false,
+                        blocked: !preview_fresh,
+                        blocked_hint: Some(crate::i18n::t("data_purge_need_preview")),
+                        disabled: !writes,
+                        on_confirm: run_purge,
+                    }
+                    if purge_preview().is_none() {
+                        span { class: "text-xs text-ink-faint", {crate::i18n::t("data_purge_hint")} }
+                    }
                 }
             }
         }
@@ -370,6 +433,30 @@ pub fn panel() -> Element {
     }
 }
 
+/// v1.28.1 M4 (F-12) pure: parse the purge ids input exactly as `run_purge`
+/// does (space/comma/newline separated; silently ignores unparseable tokens —
+/// same contract the old raw-click button had).
+pub fn parse_purge_ids(input: &str) -> Vec<i64> {
+    input
+        .split([' ', ',', '\n'])
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|s| s.trim().parse().ok())
+        .collect()
+}
+
+/// v1.28.1 M4 (F-12) pure: is the rendered purge preview still current? The
+/// preview card snapshots the ids/owner input at render time; an edit since
+/// then leaves the snapshot stale and the destructive confirm must freeze
+/// until a fresh preview is rendered.
+pub fn purge_preview_fresh(
+    input_ids: &str,
+    input_owner: &str,
+    snap_ids: &str,
+    snap_owner: &str,
+) -> bool {
+    input_ids == snap_ids && input_owner == snap_owner
+}
+
 /// v1.20.22 M2.2: the "what expires next" pure core — sorts by expiry, caps at
 /// 10, and skips already-expired rows (the server excludes them anyway; the
 /// boundary lives here so a near-expiry row renders with its countdown label).
@@ -387,6 +474,32 @@ mod tests {
             memory_kind: "fact".into(),
             reason: "kind_policy".into(),
         }
+    }
+
+    // ── v1.28.1 "Holdall" M4 (F-12): purge requires a confirmed preview ──
+
+    #[test]
+    fn purge_requires_confirmed_preview() {
+        // The parse contract matches the purge path's own split.
+        assert_eq!(parse_purge_ids("1, 2 3\n4"), vec![1, 2, 3, 4]);
+        assert!(parse_purge_ids("abc, 12").is_empty() || parse_purge_ids("abc, 12") == vec![12]);
+
+        // Fresh preview: snapshot equals the current input → confirm allowed.
+        assert!(purge_preview_fresh("1,2", "o@c", "1,2", "o@c"));
+        // ANY edit since the preview (ids OR owner) freezes the confirm.
+        assert!(!purge_preview_fresh("1,2", "o@c", "1,2", "o@b"));
+        assert!(!purge_preview_fresh("1,3", "o@c", "1,2", "o@c"));
+        // No preview at all → frozen (the gate the button's blocked flag reads).
+        assert!(!purge_preview_fresh("1,2", "o@c", "", ""));
+
+        // The shared component gate: armed + fresh + enabled → fire; armed but
+        // stale preview → confirm stays impossible until a fresh card renders.
+        assert!(crate::confirm::confirm_allowed(true, false, false));
+        assert!(!crate::confirm::confirm_allowed(true, true, false));
+        assert!(!crate::confirm::confirm_allowed(false, false, false));
+        // Unarmed + blocked → the button is inert (arm_allowed false).
+        assert!(!crate::confirm::arm_allowed(false, true, false));
+        assert!(crate::confirm::arm_allowed(false, false, false));
     }
 
     #[test]

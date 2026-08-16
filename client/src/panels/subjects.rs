@@ -75,6 +75,17 @@ pub fn panel() -> Element {
     let mut prev_subject = use_signal(String::new);
     let mut prev = use_signal(|| None::<Result<Footprint, String>>);
     let mut prev_busy = use_signal(|| false);
+    // v1.28.1 M4 (F-12): the two-step purge gate. The erasing hand is armed
+    // only after the footprint for the CURRENT subject has rendered; the
+    // confirm button below stays frozen otherwise (`purge_preview_ready`).
+    let mut pending_purge = use_signal(|| None::<String>);
+    // The ready-state MUST be computed outside the rsx (branches hold nodes
+    // only); recomputed every render, so a subject edit re-freezes.
+    let pending_ui = pending_purge().map(|s| {
+        let ready =
+            crate::panels::subjects::purge_preview_ready(&s, &subject(), &prev_subject(), &prev());
+        (s, ready)
+    });
     // v1.20.22 M2.1: the DSAR request ledger + its Art 17 countdown. A single
     // ~30s on-load ticker (the ops.rs idiom) re-renders every countdown from a
     // fresh `now_unix()` — the honest near-real-time approximation.
@@ -143,11 +154,68 @@ pub fn panel() -> Element {
                         onclick: move |_| async move {
                             let s = subject().trim().to_string();
                             if s.is_empty() { result.set(Some(DsarOutcome::Failed("enter a subject first".into()))); return; }
-                            busy.set(true);
-                            result.set(Some(run_dsar(api(), s, "both").await));
-                            busy.set(false);
+                            if crate::panels::subjects::purge_preview_ready(
+                                &s, &s, &prev_subject(), &prev()
+                            ) {
+                                // Step 2 already rendered for THIS subject →
+                                // the erasure may proceed.
+                                busy.set(true);
+                                result.set(Some(run_dsar(api(), s, "both").await));
+                                busy.set(false);
+                                pending_purge.set(None);
+                            } else {
+                                // Step 1: render the footprint for the current
+                                // subject first (the confirm card then arms).
+                                prev_subject.set(s.clone());
+                                prev_busy.set(true);
+                                let out = match api().dsar_preview(&s).await {
+                                    Ok(fp) => Ok(fp),
+                                    Err(e) => Err(format!("preview failed: {e}")),
+                                };
+                                prev.set(Some(out));
+                                prev_busy.set(false);
+                                pending_purge.set(Some(s));
+                            }
                         },
                         "Locate, export & purge"
+                    }
+                }
+                // v1.28.1 M4: the confirm card — renders after step 1 and stays
+                // frozen until the CAREFULLY previewed footprint is on screen.
+                // `pending_ui` is precomputed (rsx branches hold nodes, not
+                // statements) and re-arms each render: editing the subject
+                // input after arming freezes the confirm (`ready` goes false).
+                if let Some((pending, ready)) = pending_ui.clone() {
+                    div { class: "card mt-2 border-danger/40",
+                        div { class: "card-body space-y-2",
+                            p { class: "text-sm text-danger", {crate::i18n::t("dsar_purge_confirm_title")} }
+                            match &*prev.read() {
+                                Some(Ok(fp)) => rsx! { FootprintCard { fp: fp.clone() } },
+                                _ => rsx! { p { class: "text-sm text-warn", {crate::i18n::t("dsar_purge_need_preview")} } },
+                            }
+                            div { class: "flex items-center gap-2",
+                                button {
+                                    class: "btn btn-outline btn-sm",
+                                    disabled: busy(),
+                                    onclick: move |_| pending_purge.set(None),
+                                    "Cancel"
+                                }
+                                button {
+                                    class: "btn btn-destructive btn-sm",
+                                    disabled: busy() || !writes || !ready,
+                                    onclick: move |_| {
+                                        let s = pending.clone();
+                                        spawn(async move {
+                                            busy.set(true);
+                                            result.set(Some(run_dsar(api(), s, "both").await));
+                                            busy.set(false);
+                                            pending_purge.set(None);
+                                        });
+                                    },
+                                    {crate::i18n::t("dsar_purge_confirm")}
+                                }
+                            }
+                        }
                     }
                 }
                 if busy() {
@@ -353,6 +421,20 @@ fn CertificateCard(result: DsarResult) -> Element {
     }
 }
 
+/// v1.28.1 M4 (F-12) pure: may the erasure confirm fire? Three conditions:
+/// the armed subject matches the CURRENT input (an edit after arming freezes
+/// the confirm), the preview on screen is for that same subject, and the
+/// preview actually succeeded. The confirm button reads this every render.
+pub fn purge_preview_ready(
+    pending: &str,
+    subject_input: &str,
+    prev_subject: &str,
+    prev: &Option<Result<Footprint, String>>,
+) -> bool {
+    let s = subject_input.trim();
+    pending.trim() == s && prev_subject.trim() == s && matches!(prev, Some(Ok(_)))
+}
+
 /// Run one DSAR action against the server, returning the typed result.
 /// Confirmation-first: every field derives from the actual server response;
 /// the chain badge is the chain STILL holding (live re-verify), not cert-time.
@@ -360,9 +442,12 @@ fn CertificateCard(result: DsarResult) -> Element {
 async fn run_dsar(api: ApiClient, subject: String, action: &'static str) -> DsarOutcome {
     let resp = match api.dsar(&subject, action).await {
         Err(e) if crate::queue::is_offline(&e) => {
+            // v1.28.1 M4: the queue persists only the subject's SHA-256 hash —
+            // the raw email never touches site-local storage; replay re-prompts.
             crate::queue::enqueue(crate::queue::QueuedAction::Dsar {
-                subject: subject.clone(),
+                subject_hash: crate::queue::digest(&subject),
                 action: action.to_string(),
+                queued_at: crate::queue::now_ts(),
             });
             return DsarOutcome::Queued;
         }
@@ -403,6 +488,35 @@ mod tests {
         let (cls, txt) = chain_badge(false);
         assert_eq!(cls, "text-danger");
         assert!(txt.contains("TAMPERED"));
+    }
+
+    /// v1.28.1 M4 (F-12): the two-step purge — the confirm stays frozen until
+    /// the footprint for the CURRENT subject has rendered.
+    #[test]
+    fn dsar_purge_two_step_with_fresh_preview() {
+        let fp = Some(Ok(Footprint {
+            roots: 1,
+            derived: 0,
+            export_rows: 1,
+            tombstones: 0,
+            dsar_rows: 0,
+            dry_run: true,
+        }));
+        let none = None;
+        // Step 2 armed: pending == input == previewed subject, preview Ok.
+        assert!(purge_preview_ready("alice@x", "alice@x", "alice@x", &fp));
+        // Preview on screen for a DIFFERENT subject → frozen.
+        assert!(!purge_preview_ready("alice@x", "alice@x", "bob@y", &fp));
+        // Subject edited after arming → frozen until re-previewed.
+        assert!(!purge_preview_ready("alice@x", "alice@z", "alice@x", &fp));
+        // No preview, or a failed preview → frozen.
+        assert!(!purge_preview_ready("alice@x", "alice@x", "alice@x", &none));
+        assert!(!purge_preview_ready(
+            "alice@x",
+            "alice@x",
+            "alice@x",
+            &Some(Err("preview failed: down".into()))
+        ));
     }
 
     /// The certificate card fields read straight off the server JSON (typed).

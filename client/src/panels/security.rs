@@ -5,6 +5,7 @@
 //! unauthenticated-memory-access class.
 
 use crate::api::{ApiClient, AuditRow};
+use crate::confirm::ConfirmDestructive;
 use crate::panels::{use_document_title, PageTitle};
 use crate::UiState;
 use dioxus::prelude::*;
@@ -106,14 +107,27 @@ pub fn panel() -> Element {
                                         } },
                                         "Release"
                                     }
-                                    button {
-                                        class: "btn btn-destructive btn-sm",
+                                    // v1.28.1 M4 (F-35): the hard delete routes
+                                    // through the SAME two-step confirm the
+                                    // palette uses for destructive runs —
+                                    // one deliberate second click.
+                                    ConfirmDestructive {
+                                        label: "Delete".to_string(),
+                                        note: crate::i18n::t("quarantine_delete_irreversible"),
+                                        blocked: false,
                                         disabled: !writes,
-                                        onclick: { let mut refresh = refresh; let id = row.id; move |_| async move {
-                                            let _ = api().quarantine_action(id, "delete").await;
-                                            refresh += 1;
-                                        } },
-                                        "Delete"
+                                        small: true,
+                                        on_confirm: {
+                                            let id = row.id;
+                                            move |_| {
+                                                let id = id;
+                                                let mut refresh = refresh;
+                                                spawn(async move {
+                                                    let _ = api().quarantine_action(id, "delete").await;
+                                                    refresh += 1;
+                                                });
+                                            }
+                                        },
                                     }
                                 }
                             }
@@ -200,5 +214,22 @@ mod tests {
         let failures = auth_failures(&rows);
         let ids: Vec<i64> = failures.iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![1, 4]);
+    }
+
+    /// v1.28.1 M4 (F-35): the quarantine hard-delete goes through the shared
+    /// two-step confirm — a single click can never delete (arm ≠ fire), and a
+    /// disabled gate blocks even the first click. The same gate the palette
+    /// applies to destructive Run actions (`destructive_action`).
+    #[test]
+    fn quarantine_delete_confirms() {
+        // First click arms, nothing fires: the Component renders confirm
+        // only once armed — the pure core's contract, pinned here.
+        assert!(crate::confirm::arm_allowed(false, false, false));
+        assert!(!crate::confirm::confirm_allowed(false, false, false));
+        // Armed + enabled → the confirm fires.
+        assert!(crate::confirm::confirm_allowed(true, false, false));
+        // The writes gate (conn/chain) freezes both steps.
+        assert!(!crate::confirm::arm_allowed(false, false, true));
+        assert!(!crate::confirm::confirm_allowed(true, false, true));
     }
 }

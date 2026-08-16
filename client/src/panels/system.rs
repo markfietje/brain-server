@@ -11,6 +11,7 @@
 //! pattern).
 
 use crate::api::ApiClient;
+use crate::confirm::ConfirmDestructive;
 use crate::panels::{use_document_title, PageTitle};
 use dioxus::prelude::*;
 
@@ -217,11 +218,17 @@ pub fn panel() -> Element {
                     p { class: "text-muted-foreground", "…" }
                 }
                 div { class: "mt-3 flex items-center gap-2",
-                    button {
-                        class: "btn btn-primary",
+                    // v1.28.1 M4 (F-35): reindex rebuilds the vector store — the same
+                    // two-step confirm the palette gives destructive runs
+                    // (`destructive_action(RunAction::Reindex)`), so the raw
+                    // snapshot-card button can no longer fire one-click.
+                    ConfirmDestructive {
+                        label: reindex_lbl.clone(),
+                        note: crate::i18n::t("reindex_irreversible"),
+                        small: false,
+                        blocked: false,
                         disabled: !writes,
-                        onclick: run_reindex,
-                        "{reindex_lbl}"
+                        on_confirm: move |_| run_reindex(()),
                     }
                     if let Some(r) = reindex_r() {
                         span { class: "text-xs text-muted-foreground",
@@ -323,5 +330,28 @@ pub fn panel() -> Element {
                 None => rsx! { span { class: "text-muted-foreground", "…" } },
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v1.28.1 M4 (F-35) tests — the reindex confirm matches the palette gate.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    /// Reindex is destructive on EVERY surface: the command palette's
+    /// `destructive_action` predicate (main.rs) AND the snapshots card's
+    /// two-step confirm share the invariant that a single click cannot fire
+    /// the rebuild. The panel button routes through the shared component;
+    /// the palette keeps its own keyboard gate. Both answer the same question
+    /// from the same pure core.
+    #[test]
+    fn reindex_button_confirms_like_palette() {
+        // Palette parity: destructive_action(Reindex) is the selection gate.
+        assert!(crate::destructive_action(&crate::RunAction::Reindex));
+        // Component parity: arm ≠ fire, and the writes gate freezes both.
+        assert!(crate::confirm::arm_allowed(false, false, false));
+        assert!(!crate::confirm::confirm_allowed(false, false, false));
+        assert!(crate::confirm::confirm_allowed(true, false, false));
+        assert!(!crate::confirm::arm_allowed(false, true, false));
     }
 }

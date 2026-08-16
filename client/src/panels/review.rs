@@ -476,12 +476,13 @@ pub fn panel() -> Element {
                 let action = if reject {
                     crate::queue::QueuedAction::Reject {
                         id,
-                        reason: reason.clone(),
+                        queued_at: crate::queue::now_ts(),
                     }
                 } else {
                     crate::queue::QueuedAction::Approve {
                         id,
                         supersedes: None,
+                        queued_at: crate::queue::now_ts(),
                     }
                 };
                 outcomes.write().insert(id, settle(res, action));
@@ -506,9 +507,16 @@ pub fn panel() -> Element {
                     .map(|r| r.chunk_id)
             };
             let action = if reject {
-                crate::queue::QueuedAction::Reject { id, reason: None }
+                crate::queue::QueuedAction::Reject {
+                    id,
+                    queued_at: crate::queue::now_ts(),
+                }
             } else {
-                crate::queue::QueuedAction::Approve { id, supersedes }
+                crate::queue::QueuedAction::Approve {
+                    id,
+                    supersedes,
+                    queued_at: crate::queue::now_ts(),
+                }
             };
             outcomes.write().insert(id, settle(res, action));
             selected.write().remove(&id);
@@ -901,7 +909,7 @@ fn RejectEditor(
                                         res,
                                         crate::queue::QueuedAction::Reject {
                                             id,
-                                            reason: reason_opt,
+                                            queued_at: crate::queue::now_ts(),
                                         },
                                     ),
                                 );
@@ -1150,6 +1158,7 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64, digest: String) -> El
                     crate::queue::enqueue(crate::queue::QueuedAction::Approve {
                         id: proposal_id,
                         supersedes: None,
+                        queued_at: crate::queue::now_ts(),
                     });
                     state.set("queued — will replay when the connection returns".to_string());
                 }
@@ -1167,7 +1176,7 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64, digest: String) -> El
                 Err(e) if crate::queue::is_offline(&e) => {
                     crate::queue::enqueue(crate::queue::QueuedAction::Reject {
                         id: proposal_id,
-                        reason: None,
+                        queued_at: crate::queue::now_ts(),
                     });
                     state.set("queued — will replay when the connection returns".to_string());
                 }

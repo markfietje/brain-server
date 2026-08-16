@@ -24,6 +24,9 @@ use panels::{
 // The serde round-trip tests pin them; not dead, just waiting.
 #[allow(dead_code)]
 mod api;
+// v1.28.1 M4: the shared two-step confirm for destructive buttons (purge,
+// DSAR erasure, quarantine delete, reindex) — see the module.
+mod confirm;
 // v1.23.0 M3 "Roles": client-side role capability + panel-visibility helpers
 // (defense-in-depth UI only — the server enforces). See the module.
 mod role;
@@ -34,6 +37,9 @@ mod panels;
 // v1.20.0 M3: the offline-tolerance action queue (queue + replay, not full
 // offline) — see the module for the idempotency + persistence rules.
 mod queue;
+// v1.28.1 M4: the destructive-replay review banner (parked Purge/DSAR
+// actions behind an explicit per-item Replay/Skip decision).
+mod replay;
 // v1.16.6 M2: the secure-token storage seam (OS keyring on non-web, no-op on
 // web). save/load (connect + auto-reconnect) and delete (v1.16.7 M7.1 logout)
 // each have a caller in every cfg variant, so no `allow(dead_code)`.
@@ -416,8 +422,12 @@ fn app() -> Element {
     // v1.20.0 M3 — replay the offline queue when the connection returns.
     // The effect subscribes to conn + queue length, so it fires on the
     // amber→green transition and on every queue change. No in-flight guard
-    // needed: `take_all` drains, so an overlapping run has nothing to take
-    // (and a settled action is never re-fired — `replay_applied`).
+    // needed: `take_replayable` drains, so an overlapping run has nothing to
+    // take (and a settled action is never re-fired — `replay_applied`).
+    //
+    // v1.28.1 M4 (F-34): ONLY the non-destructive actions auto-replay.
+    // Destructive ones stay parked in the queue and surface in the review
+    // banner (`replay.rs`) — an irreversible op never fires without a human.
     let replay_ui = ui;
     use_effect(move || {
         let connected = (replay_ui.conn)() == Conn::Connected;
@@ -425,24 +435,22 @@ fn app() -> Element {
         if !(connected && queued) {
             return;
         }
+        let auto = queue::take_replayable();
+        if auto.is_empty() {
+            return;
+        }
         spawn(async move {
             let api = api();
-            for action in queue::take_all() {
+            for action in auto {
                 use queue::QueuedAction::*;
                 let res = match &action {
-                    Approve { id, supersedes } => api
+                    Approve { id, supersedes, .. } => api
                         .approve_proposal(*id, *supersedes, None)
                         .await
                         .map(|_| ()),
-                    Reject { id, reason } => api
-                        .reject_proposal(*id, reason.as_deref())
-                        .await
-                        .map(|_| ()),
-                    Edit { id, content } => api.edit_proposal(*id, content).await.map(|_| ()),
-                    Purge { chunk_ids, owner } => {
-                        api.purge(chunk_ids, owner.as_deref()).await.map(|_| ())
-                    }
-                    Dsar { subject, action: a } => api.dsar(subject, a).await.map(|_| ()),
+                    Reject { id, .. } => api.reject_proposal(*id, None).await.map(|_| ()),
+                    Edit { id, content, .. } => api.edit_proposal(*id, content).await.map(|_| ()),
+                    Purge { .. } | Dsar { .. } => Ok(()), // never auto-fired
                 };
                 if !queue::replay_applied(&res) {
                     queue::enqueue(action); // stay queued for the next recovery
@@ -974,6 +982,16 @@ fn AppShell() -> Element {
     // all-clients board). The panel also checks it internally.
     let console_view = crate::role::console_view(&nav_roles);
 
+    // v1.28.1 M4 (F-34): the parked destructive actions — shown as a review
+    // banner while the connection is up (the reconnect window in which they
+    // could auto-fire). The banner's decisions write the queue directly.
+    let parked = {
+        let q = queue::queue();
+        let qr = q.read();
+        crate::queue::parked(&qr)
+    };
+    let parked_shown = conn == Conn::Connected && !parked.is_empty();
+
     // v1.16.7 M5: cmd/ctrl+K toggles the command palette. Handled on the shell
     // root (focused by default when the app has focus); the palette's own input
     // captures its keys while open.
@@ -1171,6 +1189,14 @@ fn AppShell() -> Element {
                         span { class: "text-xs text-muted-foreground tabular", "{p}" }
                     }
                 }
+                if parked_shown {
+                    div { class: "px-4 pt-3",
+                        crate::replay::ReplayReview {
+                            items: parked.clone(),
+                            on_update: crate::queue::replace_parked,
+                        }
+                    }
+                }
                 div { class: "flex flex-1",
                     main { class: "flex-1 p-6", Outlet::<Route> {} }
                     // M2.2: the context drawer (right). Esc closes; ARIA dialog.
@@ -1246,7 +1272,7 @@ enum Lookup {
 /// constructors come with the v1.17.7/v1.17.8 action rows.
 #[allow(dead_code)]
 #[derive(Clone, PartialEq)]
-enum RunAction {
+pub(crate) enum RunAction {
     ExportAudit,
     ExportUmp,
     Reindex,
@@ -1420,7 +1446,7 @@ fn remember_recent(recent: &[String], id: &str) -> Vec<String> {
 
 /// v1.17.6 M1.2 pure: is this Run action destructive (danger token + a second
 /// Enter to confirm)?
-fn destructive_action(a: &RunAction) -> bool {
+pub(crate) fn destructive_action(a: &RunAction) -> bool {
     matches!(a, RunAction::Reindex)
 }
 

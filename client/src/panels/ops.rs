@@ -226,11 +226,15 @@ pub fn panel() -> Element {
             if let Err(e) = res {
                 if crate::queue::is_offline(&e) {
                     crate::queue::enqueue(if reject {
-                        crate::queue::QueuedAction::Reject { id, reason: None }
+                        crate::queue::QueuedAction::Reject {
+                            id,
+                            queued_at: crate::queue::now_ts(),
+                        }
                     } else {
                         crate::queue::QueuedAction::Approve {
                             id,
                             supersedes: None,
+                            queued_at: crate::queue::now_ts(),
                         }
                     });
                 }
