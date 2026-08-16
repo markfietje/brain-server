@@ -342,14 +342,16 @@ pub(crate) async fn ingest_one(
         );
 
     // v1.27.16 "Drawbridge" (M4/F-33): trust labels are not client-asserted.
-    // `memory_kind` must be a real kind (the same strict round-trip the
-    // proposal path now enforces — an unknown value must not silently store
-    // as `fact`), and a client-asserted `confidence` must be a real
-    // probability. Hard-reject on day one: no silent clamping (a clamped lie
-    // hides the liar), and these fields feed the salience + authority
-    // surfaces. Errors carry the allowed vocabulary/probability bounds.
+    // A DIRECT client assert (HTTP `/ingest`, `/proposals` — `ump_meta` is
+    // None) must be a real kind, the same strict round-trip the proposal path
+    // now enforces — an unknown value must not silently store as `fact`. The
+    // lowered UMP path (`ump_meta` present) deliberately DOES carry UMP kinds
+    // with no brain-column equivalent (`working`/`identity`/`semantic`, and
+    // `procedural` for a stored step) — those are preserved in `ump_meta.kind`
+    // and must not be rejected (that would break UMP revise/re-import, the
+    // §3.5/§6 round-trip seam). `confidence` is a probability on BOTH paths.
     if let Some(kind) = req.memory_kind.as_deref() {
-        if !crate::procedural::MemoryKind::is_strict_valid(kind) {
+        if req.ump_meta.is_none() && !crate::procedural::MemoryKind::is_strict_valid(kind) {
             return Err(HandlerError::bad_request_with(
                 "invalid_memory_kind",
                 "memory_kind must be one of: fact, procedure, step, decision, episodic",

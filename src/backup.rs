@@ -1016,8 +1016,18 @@ mod tests {
 
     #[test]
     fn argon2_params_benchmark() {
-        // Soft assert: 64 MiB / t=3 must stay under 2 s per the plan's tuning
-        // target (a laptop backup completes without a perceptible stall).
+        // Deterministic regression guard: the tuned cost parameters must not
+        // drift. Pinning the constants (not wall-clock) is what catches the
+        // accident this test exists for — an order-of-magnitude
+        // `ARGON2_M_COST`/`ARGON2_T_COST` bump silently multiplies backup
+        // latency + memory — and it is hardware-independent, so it can never
+        // flake on a slow/shared CI runner (a laptop-tuned wall-clock did:
+        // 2 s here vs 3-4.5 s on GitHub Actions). The actual KDF run below is
+        // kept so the timing is exercised + reported, but only as a
+        // non-fatal diagnostic; measure real latency with `brain bench`.
+        assert_eq!(ARGON2_M_COST, 65_536, "re-tune M_COST to keep 64 MiB");
+        assert_eq!(ARGON2_T_COST, 3, "re-tune T_COST");
+        assert_eq!(ARGON2_P_COST, 1, "re-tune P_COST");
         let t0 = std::time::Instant::now();
         kdf_v2(
             b"benchmark passphrase",
@@ -1027,10 +1037,9 @@ mod tests {
             ARGON2_P_COST,
         )
         .unwrap();
-        let elapsed = t0.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "Argon2id 64MiB/t=3 took {elapsed:?}; re-tune ARGON2_M_COST"
+        eprintln!(
+            "Argon2id 64MiB/t=3 (M={ARGON2_M_COST} t={ARGON2_T_COST} p={ARGON2_P_COST}) took {:?}",
+            t0.elapsed()
         );
     }
 
