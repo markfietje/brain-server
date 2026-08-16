@@ -131,11 +131,12 @@ impl QueryDoc {
                 lex: if lex.is_empty() { None } else { Some(lex) },
                 embedding_query,
                 intent: self.intent.filter(|s| !s.trim().is_empty()),
-                sources: self
-                    .sources
-                    .into_iter()
-                    .filter(|s| !s.trim().is_empty())
-                    .collect(),
+                sources: std::sync::Arc::new(
+                    self.sources
+                        .into_iter()
+                        .filter(|s| !s.trim().is_empty())
+                        .collect(),
+                ),
                 source: self.source.filter(|s| !s.trim().is_empty()),
                 source_leg: None,
                 since,
@@ -153,7 +154,7 @@ impl QueryDoc {
                 min_relevance: None,
                 access_scopes: None,
                 owner_in: None,
-                retention_days: Vec::new(),
+                retention_days: std::sync::Arc::new(Vec::new()),
             },
         ))
     }
@@ -490,7 +491,7 @@ mod tests {
             ..Default::default()
         };
         let (_, f) = d.into_filters().unwrap();
-        assert_eq!(f.sources, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(f.sources.as_ref(), &vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

@@ -14,8 +14,10 @@ use crate::search::query::LegFilter;
 use anyhow::{Context, Result};
 use brain_server::embed::Embedder;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, ToSql};
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use zerocopy::IntoBytes;
 
@@ -27,6 +29,12 @@ const SEARCH_BATCH_SIZE: usize = 500;
 /// RRF (Reciprocal Rank Fusion) constant. Standard value k=60; robust across
 /// corpora without learned weights.
 pub const RRF_K: usize = 60;
+
+/// v1.28.5 "Groundwork" (E-1): cap on the terms whose corpus df is fetched in
+/// the PRF step-2 round-trip. Well above any realistic candidate set (the
+/// output takes `max_terms` ≤ 50 leaders); keeps the `term IN (…)` probe list
+/// safely inside SQLite's 32766-host-parameter limit on adversarial vocabs.
+pub const MAX_DF_TERMS: usize = 4096;
 /// Over-fetch depth for hybrid fusion: each retriever (vec + FTS5) returns up
 /// to this many candidates, then RRF merges and caps at the requested `k`.
 pub const RRF_OVERFETCH: usize = 20;
@@ -343,7 +351,7 @@ impl SearchResult {
              LEFT JOIN source_revisions sr ON k.revision_id = sr.id
              WHERE k.id IN ({placeholders})"
         );
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let params: Vec<&dyn rusqlite::ToSql> =
             ids.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params.as_slice(), |row| {
@@ -397,36 +405,50 @@ impl SearchResult {
                 },
             );
         }
+        // v1.28.5 "Groundwork" (E-4): one batched evidence-links lookup for the
+        // whole hit set (was one sqlite_master probe + one query per hit).
+        let links_by_chunk = evidence_links_batch_for(conn, &ids).unwrap_or_default();
         for res in results.iter_mut() {
             // Recompute the verbatim window at the bounded size for a consistent
             // `text`, then derive highlight ranges from snippet_q within it.
-            let mut snap = SearchResult {
-                id: res.id,
-                score: 0.0,
-                title: None,
-                content: std::mem::take(&mut res.content),
-                source: None,
-                provenance: Provenance::default(),
-                flagged: false,
-                untrusted: true,
-                snippet: None,
-                evidence: None,
-                observed_at: None,
-                authority: None,
-                assertion_kind: None,
-                confidence: None,
-                expires_at: None,
-                pii: false,
-                ingest_kind: None,
-                memory_kind: None,
-                lawful_basis: None,
-                region: None,
+            // v1.28.5 "Groundwork" (D-4): when the caller already attached a
+            // snippet for this query, reuse it — identical by construction
+            // (same content + same snippet_q inputs to `with_snippet`) — and
+            // skip the second lowercase scan + window rebuild.
+            let (text, highlights) = if let Some(pre) = &res.snippet {
+                let text = pre.clone();
+                let highlights = highlight_ranges(&text, snippet_q);
+                (text, highlights)
+            } else {
+                let mut snap = SearchResult {
+                    id: res.id,
+                    score: 0.0,
+                    title: None,
+                    content: std::mem::take(&mut res.content),
+                    source: None,
+                    provenance: Provenance::default(),
+                    flagged: false,
+                    untrusted: true,
+                    snippet: None,
+                    evidence: None,
+                    observed_at: None,
+                    authority: None,
+                    assertion_kind: None,
+                    confidence: None,
+                    expires_at: None,
+                    pii: false,
+                    ingest_kind: None,
+                    memory_kind: None,
+                    lawful_basis: None,
+                    region: None,
+                };
+                snap.with_snippet(snippet_q);
+                let text = snap.snippet.clone().unwrap_or_default();
+                // Restore content (enrich must not consume it from the caller).
+                res.content = snap.content;
+                let highlights = highlight_ranges(&text, snippet_q);
+                (text, highlights)
             };
-            snap.with_snippet(snippet_q);
-            let text = snap.snippet.clone().unwrap_or_default();
-            // Restore content (enrich must not consume it from the caller).
-            res.content = snap.content;
-            let highlights = highlight_ranges(&text, snippet_q);
             if let Some(m) = meta.get(&res.id) {
                 // Derive lifecycle: a chunk whose source or revision has been
                 // deleted/tombstoned is `Superseded`; otherwise `Current` (the
@@ -443,7 +465,9 @@ impl SearchResult {
                     None
                 };
                 // v0.9.8 M2.2: load typed links this chunk participates in.
-                let links = evidence_links_for(conn, res.id).unwrap_or_default();
+                // v1.28.5 "Groundwork" (E-4): from the one batched lookup
+                // (was one sqlite_master probe + one query per hit).
+                let links = links_by_chunk.get(&res.id).cloned().unwrap_or_default();
                 res.evidence = Some(Evidence {
                     text: text.clone(),
                     line_start: m.line_start,
@@ -476,10 +500,19 @@ impl SearchResult {
 }
 
 /// v0.9.8 M2.2: load the typed evidence links a chunk participates in, in
-/// either direction (`from_chunk = id` OR `to_chunk = id`). One indexed query;
-/// empty vec when none or when the `evidence_links` table does not yet exist
-/// (graceful on pre-v0.9.8 DBs). `to_chunk` is always the *other* endpoint.
-fn evidence_links_for(conn: &Connection, chunk_id: i64) -> Result<Vec<EvidenceLinkRef>> {
+/// either direction (`from_chunk = id` OR `to_chunk = id`).
+/// v1.28.5 "Groundwork" (E-4): one batched lookup for all hits in a result
+/// set (was one sqlite_master probe + one query per hit). Returns a bucket
+/// per requested id; missing ids are absent from the map (the caller treats
+/// them as "no links"). `to_chunk` is always the *other* endpoint.
+fn evidence_links_batch_for(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<EvidenceLinkRef>>> {
+    let mut buckets: HashMap<i64, Vec<EvidenceLinkRef>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(buckets);
+    }
     // Guard: the table may be absent on a DB that hasn't run the v0.9.8
     // migration yet (older live DBs). `sqlite_master` check is cheap and keeps
     // enrichment non-fatal.
@@ -492,19 +525,48 @@ fn evidence_links_for(conn: &Connection, chunk_id: i64) -> Result<Vec<EvidenceLi
         .unwrap_or(0)
         > 0;
     if !exists {
-        return Ok(Vec::new());
+        return Ok(buckets);
     }
-    let mut stmt = conn.prepare(
-        "SELECT CASE WHEN from_chunk = ?1 THEN to_chunk ELSE from_chunk END, kind \
-         FROM evidence_links WHERE from_chunk = ?1 OR to_chunk = ?1",
-    )?;
-    let rows = stmt.query_map(params![chunk_id], |row| {
-        Ok(EvidenceLinkRef {
-            to_chunk: row.get(0)?,
-            kind: row.get(1)?,
-        })
+    for chunk_id in ids {
+        buckets.insert(*chunk_id, Vec::new());
+    }
+    let ph = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT from_chunk, to_chunk, kind FROM evidence_links \
+         WHERE from_chunk IN ({ph}) OR to_chunk IN ({ph})"
+    );
+    // Two placeholder groups — the ids bind once per group.
+    let value_refs: Vec<&dyn ToSql> = ids
+        .iter()
+        .chain(ids.iter())
+        .map(|v| v as &dyn ToSql)
+        .collect();
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(value_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+        ))
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    for row in rows {
+        let Ok((from, to, kind)) = row else { continue };
+        if let Some(b) = buckets.get_mut(&from) {
+            b.push(EvidenceLinkRef {
+                to_chunk: to,
+                kind: kind.clone(),
+            });
+        }
+        if let Some(b) = buckets.get_mut(&to) {
+            b.push(EvidenceLinkRef {
+                to_chunk: from,
+                kind: kind.clone(),
+            });
+        }
+    }
+    Ok(buckets)
 }
 
 /// Byte-offset `[start, end)` ranges within `text` of query-term matches.
@@ -545,7 +607,9 @@ pub struct SearchFilters {
     /// post-fusion on the `SearchSource` tag, never as SQL.
     pub source_leg: Option<LegFilter>,
     /// Multi-source OR scope (v0.9.5 M1). Empty = unrestricted.
-    pub sources: Vec<String>,
+    /// v1.28.5 "Groundwork" (E-7): `Arc` — every hit-enrich callback may touch
+    /// this; clones of the filter bundle are cell-cheap.
+    pub sources: Arc<Vec<String>>,
     /// Validated ISO-8601 timestamp (RFC3339 or `YYYY-MM-DD HH:MM:SS`); rows
     /// with `created_at > since` are returned. Invalid values are rejected by
     /// [`normalize_since`] rather than silently compared as opaque strings.
@@ -614,20 +678,23 @@ pub struct SearchFilters {
     /// `Some` (list of allowed scopes from the principal) is applied as a
     /// deny-by-default `WHERE access_scope ∈ allowed`. `None` (loopback/
     /// opaque) = no scope restriction (trusts localhost).
-    pub access_scopes: Option<Vec<String>>,
+    /// v1.28.5 "Groundwork" (E-7): `Arc` for cell-cheap filter clones.
+    pub access_scopes: Option<Arc<Vec<String>>>,
     /// v1.23.0 "Roles": record-owner filter (self/reports), JWT + roles mode
     /// only. `Some` (list of `owner` values) is applied as `WHERE k.owner IN
     /// (…)`. `None` (no role, or `all`/`admin` owner_filter) = no owner
     /// restriction. Deny-by-default: a `reports` role with an empty `manages`
     /// claim gets `Some(vec![])` → reads nothing.
-    pub owner_in: Option<Vec<String>>,
+    /// v1.28.5 "Groundwork" (E-7): `Arc` for cell-cheap filter clones.
+    pub owner_in: Option<Arc<Vec<String>>>,
     /// v1.17.1 "Govern" M2: per-kind retention policy (`kind -> days`) used to
     /// derive a kind-default `expires_at` for chunks with none. Applied at query
     /// time: when `include_decayed` is false, a chunk whose *effective* expiry
     /// (own `expires_at`, else kind-default from `created_at`) is in the past is
     /// excluded, exactly like a per-chunk `expires_at`. Empty = no kind policy
     /// (the v1.14-only behavior).
-    pub retention_days: Vec<(String, i64)>,
+    /// v1.28.5 "Groundwork" (E-7): `Arc` for cell-cheap filter clones.
+    pub retention_days: Arc<Vec<(String, i64)>>,
 }
 
 impl Default for SearchFilters {
@@ -635,7 +702,7 @@ impl Default for SearchFilters {
         Self {
             source: None,
             source_leg: None,
-            sources: Vec::new(),
+            sources: Arc::new(Vec::new()),
             since: None,
             domain: None,
             lex: None,
@@ -654,7 +721,7 @@ impl Default for SearchFilters {
             min_relevance: None,
             access_scopes: None,
             owner_in: None,
-            retention_days: Vec::new(),
+            retention_days: Arc::new(Vec::new()),
         }
     }
 }
@@ -1030,32 +1097,36 @@ pub fn prf_extract_terms_fts(
         })
         .collect();
 
-    // Per-term: sum of in-doc counts (within the selected hits) and corpus doc
-    // frequency (from the vocab table aggregated across ALL docs).
-    let sql = format!(
-        "WITH selected AS (
-             SELECT term, SUM(cnt) AS local_cnt
-             FROM knowledge_fts_vocab
-             WHERE col = 'content'
-               AND rowid IN ({placeholders})
-             GROUP BY term
-         ),
-         corpus AS (
-             SELECT term, COUNT(DISTINCT rowid) AS df
-             FROM knowledge_fts_vocab
-             WHERE col = 'content'
-             GROUP BY term
-         )
-         SELECT s.term, s.local_cnt, c.df
-         FROM selected s
-         JOIN corpus c ON c.term = s.term"
+    // v1.28.5 "Groundwork" (E-1): two narrow vocab queries instead of one
+    // corpus-wide scan. The pre-E-1 query materialized `corpus` as a full
+    // `GROUP BY term` over the ENTIRE vocab table, then JOINed the selected
+    // terms into it — the df side cost grew with the corpus, not with the
+    // query. Now: (1) per-term counts restricted to the selected hit docs
+    // (one narrow probe), then (2) a df round-trip for ONLY the locally-
+    // selected terms (`term = ?` is the fts5vocab term-indexed constraint —
+    // estimatedCost 100 vs 1,000,000 full scan), capped at `MAX_DF_TERMS`
+    // leaders by descending local count (the cap binds only on adversarial
+    // vocab sizes; the output takes `max_terms` ≤ 50 leaders).
+    //
+    // REAL-SCHEMA NOTE (2026-08-16, found by `prf_df_matches_legacy_corpus_scan`):
+    // the bundled SQLite 3.53.2 fts5vocab 'instance' table exposes
+    // `(term, doc, col, offset)` — one row per OCCURRENCE (`offset`), not the
+    // pre-3.40 `(term, col, rowid, cnt)` aggregate shape. The pre-E-1 query
+    // referenced `cnt`/`rowid`, so every PRF call silently errored into the
+    // pure-DF fallback; the corpus-df weighting never actually ran. The E-1
+    // queries here use the real columns: per-term occurrence counts
+    // (`COUNT(*)`, the old `SUM(cnt)` analog) and `COUNT(DISTINCT doc)` (the
+    // old `COUNT(DISTINCT rowid)` df). Semantics: byte-identical to the
+    // mathematically-intended pre-E-1 query.
+
+    // Step 1: local counts within the selected hits.
+    let local_sql = format!(
+        "SELECT term, COUNT(*) AS local_cnt \
+         FROM knowledge_fts_vocab \
+         WHERE col = 'content' AND doc IN ({placeholders}) \
+         GROUP BY term"
     );
-
-    let total_docs: f64 = conn
-        .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(1) as f64;
-
-    let mut stmt = match conn.prepare(&sql) {
+    let mut stmt = match conn.prepare_cached(&local_sql) {
         Ok(s) => s,
         Err(e) => {
             tracing::debug!("PRF FTS5 vocab query failed ({e}); falling back to DF");
@@ -1068,10 +1139,7 @@ pub fn prf_extract_terms_fts(
     }
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let rows = match stmt.query_map(param_refs.as_slice(), |row| {
-        let term: String = row.get(0)?;
-        let local_cnt: i64 = row.get(1)?;
-        let df: i64 = row.get(2)?;
-        Ok((term, local_cnt, df))
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     }) {
         Ok(r) => r,
         Err(e) => {
@@ -1079,10 +1147,54 @@ pub fn prf_extract_terms_fts(
             return prf_extract_terms(hits, original_query, max_terms);
         }
     };
+    let mut selected: Vec<(String, i64)> = rows.flatten().collect();
+    if selected.is_empty() {
+        return prf_extract_terms(hits, original_query, max_terms);
+    }
+    // df round-trip is bounded to the local-count leaders.
+    selected.sort_by_key(|(_, cnt)| std::cmp::Reverse(*cnt));
+    selected.truncate(MAX_DF_TERMS);
+
+    // Step 2: corpus document frequency for exactly those terms. `term IN (…)`
+    // on the fts5vocab instance table uses the term-EQ index — a probe per
+    // term, never a corpus table scan.
+    let df_ph: String = std::iter::repeat_n("?", selected.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let df_sql = format!(
+        "SELECT term, COUNT(DISTINCT doc) AS df \
+         FROM knowledge_fts_vocab \
+         WHERE col = 'content' AND term IN ({df_ph}) \
+         GROUP BY term"
+    );
+    let mut df_stmt = match conn.prepare_cached(&df_sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!("PRF FTS5 vocab df query failed ({e}); falling back to DF");
+            return prf_extract_terms(hits, original_query, max_terms);
+        }
+    };
+    let df_refs: Vec<&dyn rusqlite::ToSql> = selected
+        .iter()
+        .map(|(t, _)| t as &dyn rusqlite::ToSql)
+        .collect();
+    let df_rows = match df_stmt.query_map(df_refs.as_slice(), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("PRF FTS5 vocab df read failed ({e}); falling back to DF");
+            return prf_extract_terms(hits, original_query, max_terms);
+        }
+    };
+    let df_map: HashMap<String, i64> = df_rows.flatten().collect();
+
+    let total_docs: f64 = conn
+        .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(1) as f64;
 
     let mut weighted: Vec<(String, f64)> = Vec::new();
-    for row in rows.flatten() {
-        let (term, local_cnt, df) = row;
+    for (term, local_cnt) in selected {
         let t = term.to_lowercase();
         if t.len() < 3 || t.len() > 30 {
             continue;
@@ -1090,6 +1202,10 @@ pub fn prf_extract_terms_fts(
         if stopwords.contains(t.as_str()) || query_terms.contains(&t) {
             continue;
         }
+        // df comes from the term-bounded round-trip; a selected term is always
+        // present in the vocab, so `.unwrap_or(1)` only guards a corner the
+        // tables cannot actually produce.
+        let df = df_map.get(&t).copied().unwrap_or(1);
         let idf = (1.0 + total_docs / df.max(1) as f64).ln();
         weighted.push((t, local_cnt as f64 * idf));
     }
@@ -1196,9 +1312,11 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// rescue, so the `prf_expanded` flag is NOT set here — see
 /// [`fuse_prf_passes`]). Deterministic: dedup by id, per-pass RRF
 /// contributions `1/(k+rank)` summed, original-pass order wins ties.
+/// v1.28.5 "Groundwork" (E-11): by-value lists — each call site owns its
+/// passes and hands them over (was `&[SearchResult]` + per-item `clone()`).
 fn fuse_pass_lists(
-    pass1: &[SearchResult],
-    pass2: &[SearchResult],
+    pass1: Vec<SearchResult>,
+    pass2: Vec<SearchResult>,
     k: usize,
     limit: usize,
 ) -> Vec<SearchResult> {
@@ -1210,7 +1328,7 @@ fn fuse_pass_lists(
     let mut seen: HashSet<i64> = HashSet::new();
     let mut fused: Vec<SearchResult> = Vec::with_capacity(pass1.len() + pass2.len());
     // Original-query pass listed first so its metadata/order wins ties.
-    for r in pass1.iter().chain(pass2.iter()) {
+    for r in pass1.into_iter().chain(pass2) {
         if !seen.insert(r.id) {
             continue;
         }
@@ -1238,9 +1356,10 @@ fn fuse_pass_lists(
 
 /// Two-pass RRF fuse for PRF expansion: identical to [`fuse_pass_lists`] plus
 /// the `prf_expanded` provenance flag (the second pass WAS query-expanded).
+/// v1.28.5 "Groundwork" (E-11): by-value, like the fuse it delegates to.
 pub fn fuse_prf_passes(
-    pass1: &[SearchResult],
-    pass2: &[SearchResult],
+    pass1: Vec<SearchResult>,
+    pass2: Vec<SearchResult>,
     k: usize,
     limit: usize,
 ) -> Vec<SearchResult> {
@@ -1287,7 +1406,7 @@ fn push_gate_filters(
             let kinds: Vec<String> = filters
                 .retention_days
                 .iter()
-                .map(|_| "k.node_kind = ? AND strftime('%s', COALESCE(k.created_at, '1970-01-01 00:00:00')) + ? * 86400 < ?".to_string())
+                .map(|_| "k.node_kind = ? AND unixepoch(COALESCE(k.created_at, '1970-01-01 00:00:00')) + ? * 86400 < ?".to_string())
                 .collect();
             sql.push_str(" AND (");
             sql.push_str("k.expires_at IS NOT NULL AND k.expires_at >= ?");
@@ -1295,7 +1414,7 @@ fn push_gate_filters(
             sql.push_str(&kinds.join(" OR "));
             sql.push_str(")) )");
             params_vec.push(Box::new(filters.now_unix));
-            for (kind, days) in &filters.retention_days {
+            for (kind, days) in filters.retention_days.iter() {
                 params_vec.push(Box::new(kind.clone()));
                 params_vec.push(Box::new(*days));
                 params_vec.push(Box::new(filters.now_unix));
@@ -1317,7 +1436,7 @@ fn push_gate_filters(
                 .collect::<Vec<_>>()
                 .join(",");
             sql.push_str(&format!(" AND k.access_scope IN ({ph})"));
-            for s in scopes {
+            for s in scopes.iter() {
                 params_vec.push(Box::new(s.clone()));
             }
         }
@@ -1332,7 +1451,7 @@ fn push_gate_filters(
                 .collect::<Vec<_>>()
                 .join(",");
             sql.push_str(&format!(" AND k.owner IN ({ph})"));
-            for o in owners {
+            for o in owners.iter() {
                 params_vec.push(Box::new(o.clone()));
             }
         }
@@ -1362,7 +1481,7 @@ pub fn vec0_knn(
             .collect::<Vec<_>>()
             .join(",");
         sql.push_str(&format!(" AND v.source IN ({ph})"));
-        for s in &filters.sources {
+        for s in filters.sources.iter() {
             params_vec.push(Box::new(s.clone()));
         }
     } else if let Some(src) = &filters.source {
@@ -1429,7 +1548,7 @@ pub fn vec0_knn(
     push_gate_filters(&mut sql, &mut params_vec, filters);
     sql.push_str(" ORDER BY v.distance");
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let results = stmt
         .query_map(param_refs.as_slice(), |row| {
@@ -1479,7 +1598,7 @@ fn fts_search(
             .collect::<Vec<_>>()
             .join(",");
         sql.push_str(&format!(" AND k.source IN ({ph})"));
-        for s in &filters.sources {
+        for s in filters.sources.iter() {
             params_vec.push(Box::new(s.clone()));
         }
     } else if let Some(src) = &filters.source {
@@ -1529,7 +1648,7 @@ fn fts_search(
     sql.push_str(" ORDER BY score LIMIT ?");
     params_vec.push(Box::new(k as i64));
 
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     let results: Vec<SearchResult> = stmt
         .query_map(param_refs.as_slice(), |row| {
@@ -1568,7 +1687,7 @@ fn perform_search_legacy(
     let mut results: Vec<SearchResult> = Vec::with_capacity(k * 2);
     let mut offset = 0;
     while offset < total_count as usize {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT k.id, k.title, k.content, e.vector
              FROM knowledge k JOIN embeddings e ON k.id = e.knowledge_id
              LIMIT ? OFFSET ?",
@@ -1703,13 +1822,26 @@ pub fn perform_search_traced(
             let vh = scope.spawn(move || -> Result<(Vec<SearchResult>, f32)> {
                 let conn = vec_pool.get().context("DB connection failed (vector)")?;
                 let t_vec = Instant::now();
-                let vec_count: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
-                    .unwrap_or(0);
-                let res = if vec_count == 0 {
+                // v1.28.5 "Groundwork" (E-8): the per-query `COUNT(*) FROM
+                // vec_knowledge` probe is replaced by the process-local flag the
+                // migration path stamps (every pooled conn's DB was migrated
+                // in-process). On the impossible "flag set, table absent" case
+                // (e.g. `migrate_down_0_9_0` rehearsal) the error falls back to
+                // the legacy scan and clears the flag.
+                let res = if !brain_server::migration::VEC0_READY
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
                     perform_search_legacy(&conn, &vq, overfetch)
                 } else {
-                    vec0_knn(&conn, &vq, overfetch, &vfilters)
+                    match vec0_knn(&conn, &vq, overfetch, &vfilters) {
+                        Ok(r) => Ok(r),
+                        Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
+                            brain_server::migration::VEC0_READY
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                            perform_search_legacy(&conn, &vq, overfetch)
+                        }
+                        Err(e) => Err(e),
+                    }
                 }?;
                 Ok((res, t_vec.elapsed().as_secs_f32() * 1000.0))
             });
@@ -1958,7 +2090,7 @@ pub fn perform_search_with_prf(
                     &mut tel,
                 )?;
                 tel.graph_rescued = true;
-                let fused = fuse_pass_lists(&p1, &pass2, RRF_K, window);
+                let fused = fuse_pass_lists(p1, pass2, RRF_K, window);
                 (fused, RetrievalStrategy::HybridGraph)
             } else {
                 (p1, RetrievalStrategy::Hybrid)
@@ -1987,7 +2119,7 @@ pub fn perform_search_with_prf(
                     &mut tel,
                 )?;
                 // Deterministic fusion protecting original-query matches.
-                let fused = fuse_prf_passes(&pass1, &pass2, RRF_K, window);
+                let fused = fuse_prf_passes(pass1, pass2, RRF_K, window);
                 (fused, RetrievalStrategy::HybridPrf)
             }
         }

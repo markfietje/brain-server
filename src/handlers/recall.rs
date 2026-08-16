@@ -454,7 +454,8 @@ pub(crate) async fn run_recall(
         }
         base_filters.min_relevance = Some(t.clone());
     }
-    base_filters.access_scopes = crate::handlers::gate::scope_filter(principal);
+    base_filters.access_scopes =
+        crate::handlers::gate::scope_filter(principal).map(std::sync::Arc::new);
     // v1.23.0 "Roles": a JWT principal with a `roles` claim is scoped by its
     // role bundles (narrowed access_scopes + an owner predicate for
     // self/reports). No roles → the v1.14 scope path above applies unchanged.
@@ -469,7 +470,8 @@ pub(crate) async fn run_recall(
     // into the retriever so chunks whose kind-default expiry has elapsed are
     // excluded from default recall exactly like an explicit `expires_at`.
     if crate::config::brain_retention_enabled() {
-        base_filters.retention_days = crate::config::retention_kind_days().into_iter().collect();
+        base_filters.retention_days =
+            std::sync::Arc::new(crate::config::retention_kind_days().into_iter().collect());
     }
     // v1.21.0 "Profiles": a bound profile's retention block REPLACES the
     // server-wide policy for that domain (explicit nulls remove a kind's
@@ -528,7 +530,7 @@ pub(crate) async fn run_recall(
             // policy for this domain (replaces the server-wide map; an empty
             // map = no kind decay — the smb-simple posture).
             if let Some(days) = profile_retention.get(domain) {
-                f.retention_days = days.clone();
+                f.retention_days = std::sync::Arc::new(days.clone());
             }
             if let Ok((mut rs, t)) =
                 crate::perform_search_with_prf(pool, &*model, query.clone(), k, &f)
@@ -668,7 +670,7 @@ pub(crate) async fn run_recall(
                         "query_hash": crate::audit::hash(&trace_query),
                         "decision": format!("{:?}", decision),
                         "domains_searched": domains_searched,
-                        "scope": applied_scopes,
+                        "scope": applied_scopes.as_deref(),
                         "actor": principal_label(principal),
                         "hits": tagged.iter().map(|(r, _)| serde_json::json!({
                             "id": r.id,
@@ -817,7 +819,7 @@ fn results_to_hits(
             // seam — PII redaction + invisible-Unicode strip — not just `content`.
             let pii = r.pii;
             let evidence = r.evidence.map(|mut e| {
-                e.text = crate::gate::sanitize_read(&e.text, pii, principal);
+                e.text = crate::gate::sanitize_read_cow(&e.text, pii, principal).into_owned();
                 e.heading_path = crate::gate::sanitize_read_opt(e.heading_path, pii, principal);
                 e
             });
@@ -829,7 +831,7 @@ fn results_to_hits(
             RecallHit {
                 id: r.id,
                 title: crate::gate::sanitize_read_opt(r.title, pii, principal),
-                content: crate::gate::sanitize_read(&r.content, pii, principal),
+                content: crate::gate::sanitize_read_cow(&r.content, pii, principal).into_owned(),
                 score: r.score,
                 domain: Some(domain),
                 source: Some(map_source(r.source)),

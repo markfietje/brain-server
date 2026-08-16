@@ -337,7 +337,7 @@ fn fuse_prf_passes_preserves_original_exact_match() {
         sr(99, 0.95, "expansion drifted result"),
         sr(7, 0.4, "exact match for original query"),
     ];
-    let fused = fuse_prf_passes(&pass1, &pass2, RRF_K, 5);
+    let fused = fuse_prf_passes(pass1, pass2, RRF_K, 5);
     // Doc 7 must still appear (its original-query signal is preserved), and the
     // fusion must not silently drop it because pass2 ranked it low.
     assert!(fused.iter().any(|r| r.id == 7));
@@ -585,9 +585,9 @@ fn should_attempt_graph_rescue_matrix() {
 fn graph_rescue_fuse_does_not_mark_prf_expanded() {
     let p1 = vec![sr(1, 0.9, "a"), sr(2, 0.7, "b")];
     let p2 = vec![sr(3, 1.0, "c"), sr(2, 0.5, "b")];
-    let fused = fuse_pass_lists(&p1, &p2, RRF_K, 10);
+    let fused = fuse_pass_lists(p1.clone(), p2.clone(), RRF_K, 10);
     assert!(fused.iter().all(|r| !r.provenance.prf_expanded));
-    let prf_fused = fuse_prf_passes(&p1, &p2, RRF_K, 10);
+    let prf_fused = fuse_prf_passes(p1, p2, RRF_K, 10);
     assert!(prf_fused.iter().all(|r| r.provenance.prf_expanded));
     let ids: Vec<i64> = fused.iter().map(|r| r.id).collect();
     let prf_ids: Vec<i64> = prf_fused.iter().map(|r| r.id).collect();
@@ -607,7 +607,7 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
         include_decayed: false,
         now_unix: 42,
         memory_kind: Some("episodic".into()),
-        access_scopes: Some(vec!["private".into(), "domain".into()]),
+        access_scopes: Some(std::sync::Arc::new(vec!["private".into(), "domain".into()])),
         ..Default::default()
     };
     push_gate_filters(&mut sql, &mut params, &filters);
@@ -625,8 +625,8 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
     let mut sql_roled = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
     let mut p_roled: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let f_roled = SearchFilters {
-        access_scopes: Some(vec!["private".into(), "team".into()]),
-        owner_in: Some(vec!["ana".into(), "chris".into()]),
+        access_scopes: Some(std::sync::Arc::new(vec!["private".into(), "team".into()])),
+        owner_in: Some(std::sync::Arc::new(vec!["ana".into(), "chris".into()])),
         ..Default::default()
     };
     push_gate_filters(&mut sql_roled, &mut p_roled, &f_roled);
@@ -671,7 +671,10 @@ fn push_gate_filters_emits_per_kind_retention_disjunction() {
     let filters = SearchFilters {
         include_decayed: false,
         now_unix: 1000,
-        retention_days: vec![("fact".to_string(), 365), ("episodic".to_string(), 30)],
+        retention_days: std::sync::Arc::new(vec![
+            ("fact".to_string(), 365),
+            ("episodic".to_string(), 30),
+        ]),
         ..Default::default()
     };
     push_gate_filters(&mut sql, &mut params, &filters);
@@ -694,4 +697,32 @@ fn push_gate_filters_emits_per_kind_retention_disjunction() {
     );
     // 1 (now for the expires_at leg) + 2 kinds * 3 (kind, days, now).
     assert_eq!(params.len(), 7, "now + per-kind (kind, days, now) x2");
+}
+
+/// v1.27.18 "Groundwork" (F-46): the kind-default expiry is timestamp math in
+/// SQL — `unixepoch(COALESCE(created_at,…))`, identical to the String-based
+/// `strftime('%s', …)` it replaced but index-friendly and TEXT-immune. The
+/// equality is pinned SQL-side by `retention_filter_equality_unixepoch_vs_strftime`
+/// (main.rs); here we pin the emitted clause so the cutover cannot silently
+/// regress to the legacy form.
+#[test]
+fn push_gate_filters_emits_unixepoch_kind_defaults() {
+    use super::{push_gate_filters, SearchFilters};
+    let mut sql = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let filters = SearchFilters {
+        include_decayed: false,
+        now_unix: 1000,
+        retention_days: std::sync::Arc::new(vec![("fact".to_string(), 365)]),
+        ..Default::default()
+    };
+    push_gate_filters(&mut sql, &mut params, &filters);
+    assert!(
+        sql.contains("unixepoch(COALESCE(k.created_at, '1970-01-01 00:00:00'))"),
+        "kind-default expiry must use unixepoch (F-46), got: {sql}"
+    );
+    assert!(
+        !sql.contains("strftime"),
+        "the legacy strftime('%s', …) form must not be emitted"
+    );
 }
