@@ -286,7 +286,7 @@ fn expand_to_chunks(
     // top_n, itself small). Aggregate each entity's PPR onto its chunks.
     let mut chunk_score: HashMap<i64, f64> = HashMap::new();
     for (entity_id, ppr) in ranked {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT knowledge_id FROM relationships \
              WHERE (from_entity_id = ?1 OR to_entity_id = ?1) \
                AND knowledge_id IS NOT NULL",
@@ -317,7 +317,7 @@ pub fn graph_retrieve(
     include_flagged: bool,
 ) -> Result<Vec<crate::search::SearchResult>> {
     // 1. Load the entity vocabulary (name → id) for query→seed linking.
-    let mut stmt = conn.prepare("SELECT id, name FROM entities")?;
+    let mut stmt = conn.prepare_cached("SELECT id, name FROM entities")?;
     let entities: Vec<(i64, String)> = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(|r| r.ok())
@@ -332,7 +332,7 @@ pub fn graph_retrieve(
     //    `relation_type` so each pair's evidence count is scaled by
     //    [`type_base_weight`] before summing — taxonomy edges contribute
     //    a tenth of semantic ones. Bounded by SQLite's own row limit.
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT from_entity_id, to_entity_id, relation_type, COUNT(DISTINCT knowledge_id) \
          FROM relationships \
          WHERE knowledge_id IS NOT NULL \
@@ -389,7 +389,7 @@ pub fn graph_retrieve(
            AND k.valid_to IS NULL \
            AND {flag_clause}"
     );
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let mut loaded: HashMap<i64, (Option<String>, String)> = HashMap::new();
     for row in stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?))

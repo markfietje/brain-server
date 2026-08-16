@@ -140,7 +140,7 @@ pub fn resolve_supersession(
 /// (derived_from chains are operator-created and short). Ship the one check
 /// that surfaces an otherwise-invisible operator action; defer the rest.
 pub fn find_unresolved_contradictions(conn: &Connection) -> Result<Vec<(i64, i64)>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT el.from_chunk, el.to_chunk
          FROM evidence_links el
          WHERE el.kind = ?1
@@ -191,7 +191,7 @@ pub struct StaleSource {
 /// caller runs this on-demand via `/consolidate/propose`, never in the hot
 /// path. Upgrade path: cache the result with a TTL if stat cost matters.
 pub fn find_stale_sources(conn: &Connection) -> Result<Vec<StaleSource>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT s.id, s.uri, s.kind, COUNT(k.id) AS chunk_count
          FROM sources s
          LEFT JOIN knowledge k ON k.source_id = s.id
@@ -256,7 +256,7 @@ pub fn find_near_duplicates(
     // error is bounded and the 0.95 threshold tolerates it. The KNN query
     // below re-quantizes via vec_quantize_int8 (same pattern as /recall).
     // Skip chunks already expired via valid_to (being forgotten, not consolidated).
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT k.id, v.embedding_int8
          FROM knowledge k
          JOIN vec_knowledge v ON v.knowledge_id = k.id
@@ -273,6 +273,17 @@ pub fn find_near_duplicates(
         .collect();
     drop(stmt);
 
+    // v1.28.5 "Groundwork" (E-10): the KNN statement is hoisted out of the
+    // per-chunk loop (was re-prepared once per chunk scanned).
+    let mut knn = conn.prepare_cached(
+        "SELECT v.knowledge_id, v.distance
+         FROM vec_knowledge v
+         WHERE v.embedding_int8 MATCH vec_quantize_int8(?1, 'unit')
+           AND v.k = 2
+           AND v.knowledge_id != ?2
+         ORDER BY v.distance",
+    )?;
+
     let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
     let mut pairs: Vec<NearDupPair> = Vec::new();
     for (id, emb) in &rows {
@@ -283,14 +294,6 @@ pub fn find_near_duplicates(
         // SQLite function provided by sqlite-vec (called in-SQL); ?1 binds the
         // raw Vec<f32> query embedding, which the function quantizes. This is
         // the same pattern vec0_knn uses (search/mod.rs:1064).
-        let mut knn = conn.prepare(
-            "SELECT v.knowledge_id, v.distance
-             FROM vec_knowledge v
-             WHERE v.embedding_int8 MATCH vec_quantize_int8(?1, 'unit')
-               AND v.k = 2
-               AND v.knowledge_id != ?2
-             ORDER BY v.distance",
-        )?;
         // Bind the embedding as raw bytes (4 bytes per f32) — same pattern as
         // vec0_knn (search/mod.rs:1073). vec_quantize_int8 is the sqlite-vec
         // SQLite function that quantizes the raw f32 input in-SQL.
@@ -396,7 +399,7 @@ pub fn undo_supersession(tx: &Transaction<'_>, old_chunk: i64) -> Result<usize> 
 /// what (if anything) to do — this function only reports.
 pub fn find_exact_duplicates(conn: &Connection) -> Result<Vec<Vec<i64>>> {
     let hashes: Vec<String> = {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT content_hash FROM knowledge
              WHERE content_hash IS NOT NULL
              GROUP BY content_hash HAVING COUNT(*) > 1",
@@ -452,7 +455,7 @@ pub fn find_subject_conflicts(conn: &Connection) -> Result<Vec<ConflictPair>> {
                          SELECT 1 FROM evidence_links el
                          WHERE el.to_chunk = k.id AND el.kind = 'supersedes'
                      )";
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare_cached(sql)?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
