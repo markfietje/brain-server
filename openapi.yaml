@@ -170,6 +170,12 @@ paths:
     post:
       summary: Add a single text chunk
       operationId: addChunk
+      description: >
+        Legacy write path. v1.27.16 "Drawbridge" (M4.3): `source` is a closed
+        vocabulary for JWT-authenticated (agent) principals — a trust label,
+        not a free-form field. `manual` is EXCLUDED from the token-authenticated
+        set (it marks human authorship via `origin:human`); the loopback/
+        operator default stays `manual`.
       requestBody:
         required: true
         content:
@@ -180,7 +186,15 @@ paths:
               properties:
                 text: { type: string }
                 title: { type: string }
-                source: { type: string, default: manual }
+                source:
+                  type: string
+                  default: manual
+                  description: >
+                    Loopback/operator: any value (`manual` default).
+                    JWT principals: one of
+                    memory|markdown|structured|vault|github|crm|slack|email|jira|linear|notion|hris|ehr
+                    (the connector family kinds); anything else is a 400
+                    `invalid_source` with the allowed list.
       responses:
         "200":
           description: Add result
@@ -2193,7 +2207,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"server": {"name": "brain-server", "version": "1.27.14"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                example: {"server": {"name": "brain-server", "version": "1.27.16"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
                 description: 'conformance = L3 when an operator signing key is configured, L2 otherwise'
   /ump/remember:
     post:
@@ -2381,7 +2395,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"server": {"name": "brain-server", "version": "1.27.14"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                example: {"server": {"name": "brain-server", "version": "1.27.16"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
                 description: 'identical payload to /ump/capabilities, mounted on the public well-known surface'
   /events:
     get:
@@ -2745,6 +2759,24 @@ paths:
                   description: >
                     v1.26.0 — the purpose-limitation label (Art 5/6 + NPC
                     2024-04 evidence) attached to the record.
+                memory_kind:
+                  type: string
+                  enum: [fact, procedure, step, decision, episodic]
+                  description: >
+                    v1.27.16 "Drawbridge" (M4/F-33) — the write-boundary kind
+                    label. A strict round-trip validation rejects unknown or
+                    mixed-case values with 400 `invalid_memory_kind` (no silent
+                    fallback to `fact`).
+                confidence:
+                  type: number
+                  format: float
+                  minimum: 0
+                  maximum: 1
+                  description: >
+                    v1.27.16 "Drawbridge" (M4/F-33) — a client-asserted
+                    probability. Values outside 0.0..=1.0 are rejected with 400
+                    `invalid_confidence` (never silently clamped — a clamped
+                    lie hides the liar).
               required: [title, content]
       responses:
         "200":
@@ -2818,7 +2850,11 @@ paths:
       operationId: createDomain
       description: >
         Idempotent. Returns 201 if the domain was newly created (file opened +
-        migration run), 200 if it already existed.
+        migration run), 200 if it already existed. v1.27.16 "Drawbridge"
+        (M5/F-41): POST is the ONE creation path — registration is
+        cap-bounded (`BRAIN_MAX_DOMAIN_DBS`, default 256) and a probeable
+        read can never create a file (an unregistered name resolves 404
+        `domain_unknown` on GET-style routes).
       requestBody:
         required: true
         content:
@@ -2848,6 +2884,15 @@ paths:
                 example: {"name": "acme-eu", "created": true, "multi_db": true}
                 description: '201 when newly created; 200 when it already existed — same body shape'
         "400": { $ref: "#/components/responses/BadRequest" }
+        "507":
+          description: >
+            v1.27.16 (M5/F-41) — `insufficient_storage`: the registration cap
+            (`BRAIN_MAX_DOMAIN_DBS`, default 256) is exhausted. A domain must
+            be freed (remove its per-domain files) or the cap raised.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
   /domains/{name}:
     delete:
       summary: Delete a domain and all its data
@@ -3253,15 +3298,17 @@ paths:
       summary: Revoke the request's access token (v1.2 AuthN)
       description: >
         Adds the request's access-token `jti` to the `(jti, iss)` denylist with
-        `reason='logout'`. Reads the `Principal` injected by the JWT middleware
-        on the original access-token request. Returns 204 regardless of whether
-        a principal was present (no information leakage on unauthenticated calls).
+        `reason='logout'`. v1.27.16 "Drawbridge" (M3.4): sits BEHIND the bearer
+        middleware — the presented access token is verified first (a public
+        logout could only ever "succeed" at revoking nothing, so an
+        unauthenticated call gets a middleware 401). Reads the `Principal`
+        injected by the JWT middleware on the verified access-token request.
       operationId: authLogout
       responses:
         "204":
-          description: The access token was revoked (reason=logout) — no body. A request without a principal returns 401 instead.
+          description: The access token was revoked (reason=logout) — no body. A request without a verified bearer returns 401 instead.
         "401":
-          description: No principal present — nothing to revoke
+          description: No valid bearer was presented — nothing to revoke
   /auth/revoke:
     post:
       summary: Operator/admin revoke a specific token by jti (v1.2 AuthN)
@@ -3453,7 +3500,11 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
     NotFound:
-      description: The named resource (profile, domain, chunk…) does not exist
+      description: >
+        The named resource (profile, domain, chunk…) does not exist.
+        v1.27.16 "Drawbridge" (M5/F-41): an unregistered domain (multi-db mode)
+        carries the `domain_unknown` code — deliberately probe-blind, the same
+        shape as an empty-but-real domain, and no read ever creates the file.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }

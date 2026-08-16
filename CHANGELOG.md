@@ -19,6 +19,133 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.16] — 2026-08-16
+
+### Security — "Drawbridge"
+
+Server-only release (server `Cargo.toml`/lock `1.27.15` → **`1.27.16`**;
+client + plugin unchanged at 1.27.15 / 0.4.4). The fail-closed pass over the
+**identity + read** surfaces the audit itemized: auth degrades closed instead
+of open, trust labels are closed vocabularies at the write boundary, the
+multi-db domain registry gains a registration cap (a probeable API can no
+longer create files), and JWT-principal reads honor the domain label on every
+by-id / search / graph seam. No new endpoints, no new columns, no telemetry.
+
+### Release notes
+
+**Security fixes**
+- **Auth degrades closed, never open.** A poisoned token-store lock was an
+  empty set → "auth disabled" → allow-all; it is now fail-closed
+  `500 auth_store_unavailable`. A configured-but-empty token store (file or
+  env set, zero tokens) denied everything; it now returns 401 instead of
+  reading as "no auth". The JWT revocation check (v1.2.0) skipped itself on
+  ANY pool/SQL error (`if let Ok(conn)` + `unwrap_or(false)`); any store
+  failure now denies. The role-retrieval gate (v1.23.0) degraded to "no
+  narrowing" (read everything) on a pool/role-store error; it now degrades to
+  the empty permit (read nothing) with a `warn!`. `/auth/logout` is no longer
+  a public route: the presented access token is verified by the middleware
+  first — an unauthenticated "logout" could only ever succeed at revoking
+  nothing.
+- **The multi-db domain registry is now registered-only and capped.** In
+  `BRAIN_MULTI_DB=true`, `pool_for` NEVER opens a file for an unregistered
+  name (previously any probeable read created `brain-<name>.db` lazily —
+  unbounded disk fill). `POST /domains` is the one creation path, bounded by
+  `BRAIN_MAX_DOMAIN_DBS` (default 256; 507 `insufficient_storage` beyond it);
+  every resolution read of an unknown name returns the probe-blind 404
+  `domain_unknown` (indistinguishable from an empty-but-real domain). The
+  clients-register boot seed keeps client domains resolvable if their file
+  vanished between boots (recreated on first access, still cap-bounded).
+- **JWT principals are domain-scoped on reads.** `/search` now authorizes
+  against the domain it actually queries (was always `global`). `/get/{id}`
+  and `/multi-get` bind the header's `X-Brain-Domain` label in SQL — an id
+  can never cross domains in shim mode — re-authorize on the row's own
+  domain, and run the same record gate (v1.14 scopes + v1.23 roles) recall
+  enforces; foreign rows read as 404 / are dropped, never loud. Recall
+  federation and graph traversal drop foreign-domain targets before any
+  search runs; shim-mode graph edges scope by their chunk's provenance label
+  (an unlinked edge is invisible to scoped readers).
+- **Trust labels are closed vocabularies at the write boundary.** `/ingest`
+  rejects an unknown/mixed-case `memory_kind` (400 `invalid_memory_kind` —
+  no silent fallback to `fact`) and a `confidence` outside `0.0..=1.0` (400
+  `invalid_confidence` — no silent clamping, a clamped lie hides the liar);
+  the proposal path (`/proposals`) enforces the same strict kind round-trip.
+  A JWT (agent) principal on `/add` may only use the closed `source`
+  vocabulary (ingest kinds + connector family kinds) — `manual`, the
+  `origin:human` marker, is excluded so a token-authenticated agent cannot
+  forge human authorship. The UMP L3 operator signing key now fails closed to
+  L2 on a group/world-readable seed file (same 0600 enforcement the other
+  secrets get).
+- **The per-IP rate limiter actually was not per-IP.** The serve wiring never
+  injected the peer `SocketAddr` extension, so every client shared ONE
+  "unknown" bucket — a global rate limit in practice. The server now serves
+  with `into_make_service_with_connect_info`, buckets are keyed by remote
+  address (production-behavior pinned by a source-inspection test), and the
+  bounded key set (`RATE_LIMIT_MAX_KEYS`) evicts the oldest 25% rather than
+  growing unbounded.
+
+**Improvements**
+
+None.
+
+**Bug fixes**
+
+None.
+
+### Engineering record
+
+- **M1 (F-04/F-05/F-06) — the domain read-gate.** `handlers::can_read_domain`
+  / `authorize_read_domain` (pure scope predicate, `read:team/*` =
+  read-everywhere; loopback/opaque unchanged superuser); `resolve_domain_pool`
+  flattened onto `map_domain_error`; `gate::RecordReadGate` (+
+  `record_read_gate`) = the composite (access_scopes, owner_in) pair; SQL
+  domain predicate + row-domain re-auth on `/get/{id}` + `/multi-get`;
+  `targets.retain(can_read_domain)` on recall federation + `traverse_graph`
+  (explicit forced domains stay loudly 403); `graph_domain_scope` +
+  `entity_relations`/`relations_for`/traverse `?domain` clauses in shim mode.
+- **M2 (F-07) — per-IP rate limiting.** `into_make_service_with_connect_info
+  ::<SocketAddr>`; source-pin test that the wiring survives; bounded
+  `RateLimiter` key set + eviction tests.
+- **M3 — fail-closed identity.** M3.1/F-26 `auth::TokenRead`
+  (NotConfigured|Active|ReadFailed) + configured-but-empty denies; M3.2/F-27
+  `role_retrieval_gate` empty-permit degradation (+ `AND 1 = 0` predicate
+  guards for empty sets — SQLite has no `IN ()`); M3.3/F-28 revocation check
+  fails closed on store errors; M3.4/F-13 `/auth/logout` behind the bearer
+  middleware; M3.5/F-25 UMP operator-key seed refuses wide modes.
+- **M4 (F-33) — write-boundary trust labels.** `MemoryKind::is_strict_valid`
+  (round-trip) in the proposal + ingest gates; `confidence` ∈ 0.0..=1.0;
+  M4.3 `/add` closed `source` vocabulary for JWT principals
+  (`ADD_SOURCES_FOR_JWT`; `manual` excluded).
+- **M5 (F-41) — the domain-registration cap.** `MAX_DOMAIN_DBS` = 256
+  (`BRAIN_MAX_DOMAIN_DBS` override), `DomainRegistry::register` (the ONE
+  creation path) / `seed_registered` (boot-time, no eager pools) / registered
+  `pool_for` (refuses `Unknown`, never creates); clients-table boot seed;
+  `map_domain_error` seam: 400 `domain_invalid` / 404 `domain_unknown` / 507
+  `insufficient_storage` / 500 internal. All `pool_for` call sites and test
+  helpers migrated to `register`.
+- **Contract:** openapi.yaml — `/auth/logout` described behind the bearer
+  middleware; `/add` `source` vocabulary; `/ingest` `memory_kind` +
+  `confidence` fields + 400 codes; `POST /domains` 507; NotFound note on
+  `domain_unknown`. The `x-api-version` stamp stays `"1.21.0"` (no wire-shape
+  change; the runtime header follows `CARGO_PKG_VERSION`).
+- Tests: server bin **659** passed / 6 ignored (was 643 — +16, all in the new
+  M1–M5 suites), lib **113** / 1 ignored, mcp 17, brain 12, bench 5; client
+  131 untouched. clippy `-D warnings` + fmt clean; `badges.sh --selfcheck`
+  clean. UMP conformance drops to **L2** when the operator key is refused for
+  wide modes (by design, fails closed).
+- Honest ceilings: the record gate + domain predicates are read-time
+  enforcement over stored rows — a row's `domain`/`scope`/`owner` are still
+  honored as written (a write that stores a wrong label is out of scope);
+  the graph edge scope keys on the chunk link, so an edge whose
+  `knowledge_id` is NULL has no domain atom and is invisible to scoped
+  readers (loopback/opaque see it); the capacity cap bounds multi-db
+  registrations — shim mode shares one file and is untouched by it;
+  fail-closed degradation means a role-store outage denies retrieval (the
+  empty permit) rather than serving all rows — availability-first operators
+  should monitor for the `warn!`. Code-block safety, quarantine, and fence
+  integrity surfaces unchanged from v1.27.15.
+
+---
+
 ## [1.27.15] — 2026-08-16
 
 ### Minor — "Holdall"
