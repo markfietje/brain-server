@@ -256,6 +256,12 @@ pub struct SearchResult {
     /// Internal provenance label; never serialized.
     #[serde(skip)]
     pub region: Option<String>,
+    /// v1.27.19 "Scrub" (D-8): one-shot screen of `content` against the
+    /// prompt-injection blocklist, computed at construction (`raw`) — the PRF
+    /// extractors consume this instead of re-normalizing every hit. Internal;
+    /// never serialized.
+    #[serde(skip)]
+    pub blocklist_hit: bool,
 }
 
 fn provenance_is_empty(p: &Provenance) -> bool {
@@ -270,7 +276,10 @@ fn provenance_is_empty(p: &Provenance) -> bool {
 
 impl SearchResult {
     /// Minimal constructor for a raw retriever hit (no provenance yet).
+    /// v1.27.19 "Scrub" (D-8): the blocklist screen runs here — once per hit,
+    /// not per consumer.
     pub(crate) fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
+        let blocklist_hit = crate::contains_suspicious_pattern(&content);
         Self {
             id,
             score,
@@ -292,6 +301,7 @@ impl SearchResult {
             memory_kind: None,
             lawful_basis: None,
             region: None,
+            blocklist_hit,
         }
     }
 
@@ -441,6 +451,8 @@ impl SearchResult {
                     memory_kind: None,
                     lawful_basis: None,
                     region: None,
+                    // Same content as `res` (moved for the snippet pass).
+                    blocklist_hit: res.blocklist_hit,
                 };
                 snap.with_snippet(snippet_q);
                 let text = snap.snippet.clone().unwrap_or_default();
@@ -938,6 +950,9 @@ pub fn rrf_fuse(
             memory_kind: r.memory_kind.clone(),
             lawful_basis: r.lawful_basis.clone(),
             region: r.region.clone(),
+            // Content cloned verbatim from the candidate — the flag computed
+            // at the candidate's `raw()` construction holds for the fused row.
+            blocklist_hit: r.blocklist_hit,
         });
     }
 
@@ -1018,8 +1033,9 @@ pub fn prf_extract_terms(
     let mut tf: HashMap<String, usize> = HashMap::new();
     for hit in hits {
         // Negative-feedback: never mine expansion terms from quarantined
-        // (`flagged`) or prompt-injection-like content.
-        if hit.flagged || crate::contains_suspicious_pattern(&hit.content) {
+        // (`flagged`) or blocklist-tripping content (v1.27.19 D-8: the screen
+        // ran once at construction; the flag is read here).
+        if hit.flagged || hit.blocklist_hit {
             continue;
         }
         let mut seen_in_doc = HashSet::new();
@@ -1069,10 +1085,12 @@ pub fn prf_extract_terms_fts(
 ) -> Vec<String> {
     use std::collections::HashSet;
 
-    // Collect rowids of safe (non-flagged, non-injection) hits only.
+    // Collect rowids of safe (non-flagged, non-blocklist) hits only.
+    // v1.27.19 "Scrub" (D-8): the blocklist screen ran once at construction;
+    // the flag is read here instead of re-normalizing every hit.
     let safe_ids: Vec<i64> = hits
         .iter()
-        .filter(|h| !h.flagged && !crate::contains_suspicious_pattern(&h.content))
+        .filter(|h| !h.flagged && !h.blocklist_hit)
         .map(|h| h.id)
         .collect();
     if safe_ids.is_empty() {
