@@ -421,7 +421,7 @@ pub async fn list_proposals(
         let raw = std::mem::take(&mut p.content);
         p.content_digest = review_digest(&raw);
         let pii = !crate::gate::scan_pii(&raw).is_empty();
-        p.content = crate::gate::sanitize_read(&raw, pii, &principal.0);
+        p.content = crate::gate::sanitize_read_cow(&raw, pii, &principal.0).into_owned();
         // v1.27.14 "Fencepost2" (M3.5): source_prompt (provenance) + qa_note
         // (reviewer note) are reviewer-facing stored text — run them through
         // the same read seam. F-16 caution: these are NOT what feeds
@@ -1010,9 +1010,9 @@ pub fn apply_role_gate(
     gate: &brain_server::role::RetrievalGate,
 ) {
     if let Some(s) = &gate.access_scopes {
-        filters.access_scopes = Some(s.clone());
+        filters.access_scopes = Some(std::sync::Arc::new(s.clone()));
     }
-    filters.owner_in = gate.owner_in.clone();
+    filters.owner_in = gate.owner_in.clone().map(std::sync::Arc::new);
 }
 
 /// `POST /proposals/{id}/reject` — mark rejected + decided_at. Kept in the

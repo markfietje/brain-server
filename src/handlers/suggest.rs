@@ -198,7 +198,8 @@ pub async fn suggest(
                 .map(|r| SuggestionHit {
                     id: r.id,
                     title: crate::gate::sanitize_read_opt(r.title, r.pii, &principal.0),
-                    content: crate::gate::sanitize_read(&r.content, r.pii, &principal.0),
+                    content: crate::gate::sanitize_read_cow(&r.content, r.pii, &principal.0)
+                        .into_owned(),
                     score: r.score,
                     domain: domain_label.clone(),
                     provenance: SuggestionProvenance {

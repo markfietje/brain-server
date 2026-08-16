@@ -384,13 +384,38 @@ pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Princip
     )))
 }
 
+/// v1.28.5 "Groundwork" (E-12): borrow-preserving variant of [`sanitize_read`].
+/// Returns the input unchanged — zero copies — when every transform is provably
+/// a no-op: no PII layer active, no `[` byte (the markdown-ref strip can only
+/// fire on a construct that contains one), and no invisible chars. Only when a
+/// transform can actually fire does it allocate (and then it IS
+/// [`sanitize_read`], byte-identical). The stored-text read paths that emit
+/// large content/evidence fields get the borrowed fast path on the common
+/// clean row.
+pub fn sanitize_read_cow<'a>(
+    s: &'a str,
+    pii: bool,
+    principal: &Option<crate::auth::Principal>,
+) -> std::borrow::Cow<'a, str> {
+    if pii && !has_pii_read(principal) {
+        // Masking is regex-driven; there is no cheap no-match proof, so the
+        // masked path materializes (plain sanitize_read, unchanged semantics).
+        return std::borrow::Cow::Owned(sanitize_read(s, pii, principal));
+    }
+    if !s.as_bytes().contains(&b'[') && !s.chars().any(brain_server::strip_invisible::is_invisible)
+    {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    std::borrow::Cow::Owned(sanitize_read(s, pii, principal))
+}
+
 /// [`sanitize_read`] for an optional field (title / snippet / heading_path).
 pub fn sanitize_read_opt(
     v: Option<String>,
     pii: bool,
     principal: &Option<crate::auth::Principal>,
 ) -> Option<String> {
-    v.map(|s| sanitize_read(&s, pii, principal))
+    v.map(|s| sanitize_read_cow(&s, pii, principal).into_owned())
 }
 
 /// v1.27.14 "Fencepost2" (M3.1): the single read boundary for stored text. Every
@@ -399,7 +424,7 @@ pub fn sanitize_read_opt(
 /// Named alias of [`sanitize_read`] so the wiring meta-test (`stored_text_fields_
 /// pass_the_read_seam`) has one symbol to require at every serialization site.
 pub fn sanitize_stored(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    sanitize_read(s, pii, principal)
+    sanitize_read_cow(s, pii, principal).into_owned()
 }
 
 /// v1.20.1 "Shield" M2(b): PII-screen a reviewer-facing `source_prompt` before
