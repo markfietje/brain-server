@@ -19,6 +19,95 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.15] — 2026-08-16
+
+### Minor — "Holdall"
+
+Server + client release (server `Cargo.toml`/lock `1.27.14` →
+**`1.27.15`**; client `Cargo.toml`/lock `1.27.13` → **`1.27.15`**; plugin
+unchanged at 0.4.4). Two independent lines: the **server** closes the remaining
+legal-hold erasure gaps (the fence becomes universal and the erase trails
+carry deletion evidence), and the **client** re-works the offline destruction
+queue so an irreversible action can never auto-fire on reconnect.
+
+### Release notes
+
+**Improvements**
+- The legal-hold fence (v1.22.0) now guards **every** erasure path, not just
+  `/purge` and DSAR: `DELETE /memory/{id}`, `DELETE /sources/{id}`,
+  `/sources/reconcile` sweeps, `DELETE /quarantine/{id}` and
+  `DELETE /domains/{name}` all refuse with the same `409 legal_hold_active`
+  envelope while any target chunk is under an active hold — all-or-nothing,
+  inside the same transaction as the delete. The known audit exploit (hold a
+  chunk, then retire its source with `{"live": []}`) is closed at the
+  preflight.
+- The deletion registry now carries the same SHA-256 content digest on
+  single-chunk memory deletes that `/purge` writes — every erase trail records
+  identical deletion evidence.
+- Deleting a domain no longer erases its audit chain: the domain's audit
+  segment is exported to `<data>/archives/<domain>-audit-<date>.ndjson`
+  (0600) before the rows go, the in-file `audit_events` survive, and a
+  `domain_deleted` event is appended to the surviving chain.
+- Strict-posture domains erase with teeth: DSAR purges and memory deletes run
+  `PRAGMA secure_delete=ON` + a `wal_checkpoint(TRUNCATE)` after commit, and
+  the deletion certificate discloses the honest remanence posture verbatim —
+  `secure_delete+checkpoint (backup files excepted)` for a strict domain, the
+  disclosed logical posture otherwise. Best-effort profile lookup: an
+  unreadable/missing bind never fails closed into a lie.
+- Hold release now carries the DPO/admin dual gate (the same seam a breach
+  close uses), and the Art-30 transfer-register row lands atomically with its
+  audit row (SAVEPOINT inside the write tx).
+- A fenced code block can no longer produce a single oversized chunk: the
+  chunker now hard-caps code blocks at 8× the regular cap and splits any
+  over-limit block at newline boundaries, re-opening the fence with the same
+  info string on every continuation piece.
+- (Client) a queued Purge/DSAR action **never auto-replays** on reconnect:
+  destructive actions park in the offline queue and surface as an explicit
+  review banner with their queue write time, per-row dismiss, and a
+  "keep + clear" decision. The offline envelope stores an anonymous SHA-256
+  `subject_hash` — the raw subject never persists — and replay re-prompts for
+  it.
+- (Client) destruction confirmation is now a shared two-step component behind
+  a preview gate: the DSAR wipe confirms only while a fresh footprint preview
+  is on screen, and editing the subject input after arming re-freezes the
+  confirm.
+
+### Engineering record
+
+- **Holdall M1 (F-02):** `legal_hold::refuse_if_held` — one guard, one
+  envelope. Wired into `forget.rs`, `sources.rs`/`handlers/sources.rs`,
+  `main.rs` (`AppError::Conflict` → 409 on the legacy quarantine path),
+  `handlers/domains.rs` (domain-wide hold preflight).
+- **M1.3:** memory-delete tombstones gain `content_hash`; **M1.4:**
+  `export_audit_segment` + `audit_events` preserved + `domain_deleted` event.
+- **M2/M2.1/M2.2 (F-24):** `secured_remanence` threaded through
+  `run_dsar_pool`/`run_dsar_subject` + the forget path; `physical_purge`
+  certificate field disclosed.
+- **M3 (F-51):** hold-release DPO gate reuses `require_dpo_role`
+  (pub(crate)); transfer Art-30 row + audit atomic via SAVEPOINT.
+- **M5 (F-52):** `MAX_CODE_CHUNK_BYTES` (8× normal) + `split_oversized_code`.
+- **Client M4:** `queue.rs` split/replay rework (parked subset, `queued_at`,
+  `subject_hash`, `take_replayable`), `replay.rs` restored-queue row
+  component + banner, shared `confirm.rs::ConfirmDestructive`, DSAR preview
+  gate in `subjects.rs`, quarantine/system/data wipe confirms, `sha2` dep
+  (hand-rolled hex, +~30 KB wasm).
+- Tests: server bin **643** passed / 6 ignored (default + `--features bench`;
+  otel **645** / 6), lib **113** / 1 ignored, mcp 17, brain 12, bench 5;
+  client **131**; `badges.sh --selfcheck` clean (**809 passed**, UMP L3);
+  clippy `-D warnings` (default, bench, otel), fmt clean, `cargo audit`
+  clean (2 pre-existing allowed advisories), release build + wasm release
+  (5.24 MB < 7 MB budget) clean.
+- Honest ceilings: the hold fence guards chunk rows — source/domain deletion
+  preflights via chunk membership, so a source with no held chunk still
+  deletes; `secure_delete`/WAL-truncate are best-effort hygiene (a checkpoint
+  failure never fails the erasure, and the certificate discloses — it cannot
+  guarantee — remanence; backup files are excepted); the client banner is a
+  UI surface, the parked queue is the enforcement; offline replay success is
+  detected via the same idempotency shapes as the approval queue
+  (replay_applied).
+
+---
+
 ## [1.27.14] — 2026-08-16
 
 ### Patch — "Fencepost2"
