@@ -68,13 +68,6 @@ impl MemoryKind {
         let s = s.trim();
         !s.is_empty() && Self::from_str(s).as_str() == s
     }
-    /// Default for new chunks that don't specify a kind. Reserved for the
-    /// migration's column default + any future caller that needs the literal;
-    /// kept public so the contract has one source of truth for the default.
-    #[allow(dead_code)]
-    pub const fn default_str() -> &'static str {
-        "fact"
-    }
 }
 
 /// All valid category labels (used by `/classify` to advertise the taxonomy).
