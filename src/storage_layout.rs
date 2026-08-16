@@ -73,6 +73,11 @@ pub const SCHEMA_VERSION_V1_27_0: &str = "1.27.0";
 /// v1.27.8 "QaQueue": `proposals.owner` + `proposals.qa_note` (agent provenance
 /// + supervisor coaching on the review queue).
 pub const SCHEMA_VERSION_V1_27_8: &str = "1.27.8";
+/// v1.27.18 "Groundwork": `idx_knowledge_domain`/`idx_knowledge_owner`/
+/// `idx_knowledge_title_heading` added; `idx_tombstones_kid`,
+/// `idx_entities_name`, `idx_evidence_links_from` dropped (superseded by
+/// stricter indexes / autoindexes).
+pub const SCHEMA_VERSION_V1_27_18: &str = "1.27.18";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

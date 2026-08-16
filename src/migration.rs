@@ -11,9 +11,21 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{info, warn};
 use xxhash_rust::xxh3::xxh3_64;
 use zerocopy::IntoBytes;
+
+/// v1.28.5 "Groundwork" (E-8): process-local truth that `vec_knowledge` exists
+/// in every DB this process has migrated. Set by [`run_migration_with_store_dim`],
+/// cleared by [`migrate_down_0_9_0`]. The search hot path reads this instead of
+/// probing the vec0 table per query (`SELECT COUNT(*) FROM vec_knowledge`); the
+/// probe's only real job was detecting a pre-vec0 DB, and every pooled
+/// connection in this process belongs to a DB that was migrated in-process
+/// (boot for the shim DB, pool-open for per-domain files). On the impossible
+/// case of "flag set but table absent" the search path clears it and falls back
+/// to the legacy cosine scan (see `perform_search_traced`).
+pub static VEC0_READY: AtomicBool = AtomicBool::new(false);
 
 pub fn run_migration(db: &mut Connection, mmap_mib: i64) -> Result<()> {
     // The historical default: every pre-v1.28 DB is 512-d (potion-retrieval-32M
@@ -415,6 +427,10 @@ pub fn run_migration_with_store_dim(
         )?;
         info!("vec_knowledge rebuilt; backfill will repopulate from embeddings");
     }
+
+    // v1.28.5 "Groundwork" (E-8): both paths above leave vec0 existing — stamp
+    // the search-path flag so the per-query existence probe disappears.
+    VEC0_READY.store(true, Ordering::Relaxed);
 
     // ── Backfill: migrate existing JSON vectors → vec0 ─────────────────
     // Only runs if the legacy `embeddings` table has rows that haven't been
@@ -1422,10 +1438,30 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // v1.27.18 "Groundwork" (E-5): serve the queried columns, drop the dead.
+    // Adds: `domain` (domain delete + full-domain scans), `owner` (DSAR subject
+    // resolution — the regulated hot path), `(title, heading_path)` (the
+    // per-proposal write-gate dedup). Drops (write-cost only, query-equivalent
+    // via a UNIQUE autoindex or a newer sibling index): the pre-v0.9.6
+    // `idx_tombstones_kid` (superseded by `idx_tombstones_kid_v2`),
+    // `idx_entities_name` (duplicated by the `entities.name` UNIQUE
+    // COLLATE NOCASE autoindex), and `idx_evidence_links_from` (a left-prefix
+    // of the `evidence_links.from_chunk, to_chunk, kind` UNIQUE constraint).
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge(domain);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_owner ON knowledge(owner);
+         CREATE INDEX IF NOT EXISTS idx_knowledge_title_heading
+             ON knowledge(title, heading_path);
+         DROP INDEX IF EXISTS idx_tombstones_kid;
+         DROP INDEX IF EXISTS idx_entities_name;
+         DROP INDEX IF EXISTS idx_evidence_links_from;",
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.27.18 "Groundwork" (M3): indexes added/dropped → 1.27.18.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.8')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.8';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.18')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.18';",
         [],
     )?;
 
@@ -1507,6 +1543,8 @@ pub fn migrate_down_0_9_0(db: &mut Connection) -> Result<()> {
          DROP TRIGGER IF EXISTS knowledge_au;
          DELETE FROM schema_meta WHERE key = 'vec_metric';",
     )?;
+    // E-8: the vec0 store is gone — the search path must probe again.
+    VEC0_READY.store(false, Ordering::Relaxed);
     info!("migrate_down_0_9_0: dropped vec0 + FTS5 structures; embeddings table preserved");
     Ok(())
 }
