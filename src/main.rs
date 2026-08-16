@@ -171,6 +171,31 @@ impl ConnectionTracker {
     }
 }
 
+/// v1.28.5 "Groundwork" (F-53): RAII guard for a [`ConnectionTracker`] slot.
+/// The release used to live at the end of each defer-less closure — a
+/// short-circuit `return` inside `spawn_blocking` (or the 60 s timeout
+/// dropping the task mid-flight) leaked the slot until the watchdog noticed.
+/// Drop fires on EVERY exit path — early `return`, `?`, panic, timeout drop —
+/// so the capacity guard the tracker implements can never be silently
+/// bypassed by an in-flight closure.
+pub struct TrackerEntry {
+    id: usize,
+    tracker: std::sync::Arc<ConnectionTracker>,
+}
+
+impl TrackerEntry {
+    pub fn new(tracker: std::sync::Arc<ConnectionTracker>, location: &str) -> Self {
+        let id = tracker.track(location);
+        Self { id, tracker }
+    }
+}
+
+impl Drop for TrackerEntry {
+    fn drop(&mut self) {
+        self.tracker.release(self.id);
+    }
+}
+
 struct RateLimiter {
     requests: Mutex<HashMap<String, Vec<Instant>>>,
     max_requests: usize,
@@ -1004,12 +1029,14 @@ async fn search(
                 // text field (content, title, snippet, evidence.text/heading) —
                 // the same bidi/ZW/markdown-ref boundary `/recall` uses.
                 for r in &mut results {
-                    r.content = crate::gate::sanitize_read(&r.content, r.pii, &principal.0);
+                    r.content = crate::gate::sanitize_read_cow(&r.content, r.pii, &principal.0)
+                        .into_owned();
                     r.title = crate::gate::sanitize_read_opt(r.title.take(), r.pii, &principal.0);
                     r.snippet =
                         crate::gate::sanitize_read_opt(r.snippet.take(), r.pii, &principal.0);
                     if let Some(mut ev) = r.evidence.take() {
-                        ev.text = crate::gate::sanitize_read(&ev.text, r.pii, &principal.0);
+                        ev.text = crate::gate::sanitize_read_cow(&ev.text, r.pii, &principal.0)
+                            .into_owned();
                         if let Some(h) = ev.heading_path {
                             ev.heading_path =
                                 crate::gate::sanitize_read_opt(Some(h), r.pii, &principal.0);
@@ -1058,7 +1085,7 @@ async fn search(
                             "vec": p.vec,
                             "hyde": p.hyde,
                             "intent": filters.intent,
-                            "sources": filters.sources,
+                            "sources": filters.sources.as_ref(),
                             "source": filters.source,
                             "domain": filters.domain,
                             "since": filters.since,
@@ -1078,7 +1105,7 @@ async fn search(
                                 "vec": p.vec,
                                 "hyde": p.hyde,
                                 "intent": filters.intent,
-                                "sources": filters.sources,
+                                "sources": filters.sources.as_ref(),
                                 "embedding_query": tel.embedding_query,
                                 "note": "results omitted: explain payload exceeded size cap",
                             }
@@ -1101,40 +1128,70 @@ async fn ingest_memory(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     body: Body,
-) -> Json<serde_json::Value> {
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    // v1.28.5 "Groundwork" (F-45): the legacy always-200 JSON-error shell gains
+    // two real 4xx rejections for entries that would previously be silently
+    // stored or mis-reported; every existing wire shape is unchanged.
+    fn error_json(
+        status: &str,
+        message: &str,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({ "success": false, "status": status, "message": message })),
+        )
+    }
     // v1.11.0 "Associate" (audit G1): AuthZ write gate. Legacy shape — see
     // `/add`. `None` principal (no JWT) = superuser.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
     {
-        return Json(serde_json::json!({
-            "success": false,
-            "status": "error",
-            "message": e.inner.message
-        }));
+        return error_json("error", &e.inner.message);
     }
     let content = match to_bytes(body, MAX_REQUEST_SIZE).await {
-        Ok(b) => String::from_utf8(b.to_vec())
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        Err(_) => String::new(),
+        Ok(b) => match String::from_utf8(b.to_vec()) {
+            // F-45: invalid UTF-8 no longer collapses to "Empty content" —
+            // it is rejected up front.
+            Ok(utf8) => utf8,
+            Err(_) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "success": false,
+                        "status": "error",
+                        "code": "invalid_utf8",
+                        "message": "request body is not valid UTF-8"
+                    })),
+                );
+            }
+        },
+        // F-45: an over-cap body (the request alone exceeds MAX_REQUEST_SIZE)
+        // is a size rejection, not "empty content".
+        Err(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "success": false,
+                    "status": "error",
+                    "code": "entry_too_large",
+                    "message": format!(
+                        "request body too large (limit {} bytes)",
+                        MAX_REQUEST_SIZE
+                    )
+                })),
+            );
+        }
     };
 
+    let content = content.trim().to_string();
     if content.is_empty() {
-        return Json(
-            serde_json::json!({ "success": false, "status": "error", "message": "Empty content" }),
-        );
+        return error_json("error", "Empty content");
     }
 
     // v0.9.9: capacity guard. `/ingest/memory` returns the legacy JSON shape;
     // the primary `/ingest` path returns a proper 507.
     if let Err(AppError::InsufficientStorage(msg)) = guard_capacity(&s) {
-        return Json(serde_json::json!({
-            "success": false,
-            "status": "error",
-            "message": msg
-        }));
+        return error_json("error", &msg);
     }
 
     let model = Arc::clone(&s.model);
@@ -1143,21 +1200,36 @@ async fn ingest_memory(
     // v1.17.1: record the creating principal (see add_chunk).
     let owner = crate::handlers::gate::principal_to_owner(&principal.0);
 
-    let ingest_future = task::spawn_blocking(move || {
-        let conn_id = tracker.track("ingest_memory");
+    // v1.28.5 "Groundwork" (F-45): the two rejections the closure can raise
+    // before any write happens. Everything else keeps the legacy wire shape.
+    #[derive(Debug)]
+    enum MemoryReject {
+        EntryTooLarge { len: usize },
+    }
+
+    let ingest_future = task::spawn_blocking(move || -> Result<AddResponse, MemoryReject> {
+        // F-53: RAII — the slot releases on EVERY exit (return, panic, or the
+        // 60 s timeout dropping this task), not just the explicit paths.
+        let _tracker_entry = TrackerEntry::new(tracker, "ingest_memory");
         let entries = parse_memory_content(&content);
 
+        // F-45: per-entry content cap, the same MAX_CONTENT bound `/ingest`
+        // and `/add` enforce. All-or-nothing: one oversized entry rejects the
+        // whole request with a 400 before any write.
+        if let Some(len) = entries
+            .iter()
+            .find_map(|(t, _)| (t.len() > crate::handlers::MAX_CONTENT).then_some(t.len()))
+        {
+            return Err(MemoryReject::EntryTooLarge { len });
+        }
+
         if entries.is_empty() {
-            tracker.release(conn_id);
-            return AddResponse::error("No valid entries found");
+            return Ok(AddResponse::error("No valid entries found"));
         }
 
         let mut conn = match pool.get() {
             Ok(c) => c,
-            Err(e) => {
-                tracker.release(conn_id);
-                return AddResponse::error(format!("DB connection failed: {}", e));
-            }
+            Err(e) => return Ok(AddResponse::error(format!("DB connection failed: {}", e))),
         };
 
         let mut added = 0;
@@ -1309,8 +1381,8 @@ async fn ingest_memory(
             }
         }
 
-        tracker.release(conn_id);
-        AddResponse {
+        // F-53: no explicit release — `_tracker_entry` drops on every exit.
+        Ok(AddResponse {
             success: true,
             status: "completed".to_string(),
             chunk_id: chunk_ids.first().copied(),
@@ -1322,33 +1394,57 @@ async fn ingest_memory(
             } else {
                 None
             },
-        }
+        })
     });
 
     match timeout(StdDuration::from_secs(60), ingest_future).await {
-        Ok(Ok(resp)) => {
+        Ok(Ok(Ok(resp))) => {
             let added = resp.entries_added.unwrap_or(0);
             let status = if added == 0 { "unchanged" } else { "success" };
-            Json(serde_json::json!({
-                "status": status,
-                // v1.13.3 "SourceFix" M3: real first inserted rowid (null when
-                // nothing was added). `entry_id` is the deprecated alias.
-                "chunk_id": resp.chunk_id,
-                "chunk_ids": resp.chunk_ids,
-                "entries_added": added,
-                "duplicates_skipped": resp.duplicates_skipped.unwrap_or(0),
-                "entry_id": resp.chunk_id,
-                "similarity_score": 1.0
-            }))
+            (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": status,
+                    // v1.13.3 "SourceFix" M3: real first inserted rowid (null when
+                    // nothing was added). `entry_id` is the deprecated alias.
+                    "chunk_id": resp.chunk_id,
+                    "chunk_ids": resp.chunk_ids,
+                    "entries_added": added,
+                    "duplicates_skipped": resp.duplicates_skipped.unwrap_or(0),
+                    "entry_id": resp.chunk_id,
+                    "similarity_score": 1.0
+                })),
+            )
         }
-        Ok(Err(e)) => Json(serde_json::json!({ "status": "error", "error": e.to_string() })),
+        Ok(Ok(Err(MemoryReject::EntryTooLarge { len }))) => (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "status": "error",
+                "code": "entry_too_large",
+                "message": format!(
+                    "memory entry too large ({} chars; limit {})",
+                    len,
+                    crate::handlers::MAX_CONTENT
+                )
+            })),
+        ),
+        Ok(Err(_)) => (
+            axum::http::StatusCode::OK,
+            Json(serde_json::json!({ "status": "error", "error": "internal error" })),
+        ),
         Err(_) => {
-            eprintln!("⚠️ ingest_memory timed out after 60s - connection potentially leaked!");
-            eprintln!(
-                "📊 Active tracked connections: {}",
-                s.connection_tracker.count()
-            );
-            Json(serde_json::json!({ "status": "error", "error": "Ingest timed out" }))
+            // F-53: the timed-out clone is dropped here — `_tracker_entry`'s
+            // Drop has ALREADY released the slot (the closure itself exits
+            // when the task is dropped), so no leak remains to report.
+            // spawn_blocking tasks cannot be cancelled mid-flight (honest
+            // ceiling: the task keeps running to completion) — but the guard
+            // slot it holds is freed at its exit, closing the tracker leak.
+            eprintln!("⚠️ ingest_memory timed out after 60s - task dropped");
+            (
+                axum::http::StatusCode::OK,
+                Json(serde_json::json!({ "status": "error", "error": "Ingest timed out" })),
+            )
         }
     }
 }
@@ -4888,6 +4984,20 @@ async fn main_inner() -> Result<()> {
         db_path: db_path.clone(),
     });
 
+    // v1.28.5 "Groundwork" (F-44): the import route gets its OWN body-limit
+    // layer — 1 GiB, matching the handler's `to_bytes` cap. Tower-http
+    // semantics: a router-level `RequestBodyLimitLayer` is applied eagerly to
+    // the routes present at `.layer()` time, so the 1 MiB shared limit below
+    // must be applied BEFORE the merge — otherwise the outer 1 MiB layer would
+    // pre-empt the import cap (Tower-http pitfall: an outer limit can never be
+    // raised by an inner one) and real DB imports would be uncapturable.
+    let import_router = Router::new()
+        .route(
+            "/domains/{name}/import",
+            post(handlers::domains::import_domain),
+        )
+        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024)); // 1 GiB
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/health/db", get(health_db))
@@ -4964,10 +5074,6 @@ async fn main_inner() -> Result<()> {
         .route(
             "/domains/{name}/export",
             get(handlers::domains::export_domain),
-        )
-        .route(
-            "/domains/{name}/import",
-            post(handlers::domains::import_domain),
         )
         // v1.21.0 "Profiles" M4: the preset API. Reads are Read-gated; writes
         // (profile upsert + domain binding) are Admin + audited. Dual-method
@@ -5192,6 +5298,11 @@ async fn main_inner() -> Result<()> {
         )
         // Inner layers (closest to handler)
         .layer(RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE))
+        // v1.28.5 "Groundwork" (F-44): merge the 1 GiB import router AFTER the
+        // shared 1 MiB limit so the shared cap never wraps the import route
+        // (see the import_router comment above). All shared layers below
+        // (auth, JWT, rate limit, timeout, trace) still cover it.
+        .merge(import_router)
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             StdDuration::from_secs(30),
@@ -7434,13 +7545,20 @@ mod tests {
         ];
 
         let terms = crate::search::prf_extract_terms_fts(&db, &hits, "gut health", 5);
+        // v1.27.18 "Groundwork" (E-1): this assertion now sees the REAL vocab
+        // path. Pre-E-1 it pinned the SILENT FALLBACK: the bundled SQLite
+        // 3.53.2 fts5vocab 'instance' table exposes `(term, doc, col, offset)` —
+        // one row per OCCURRENCE — while the pre-E-1 query referenced the
+        // pre-3.40 `cnt`/`rowid` columns, so every call errored into the
+        // unstemmed pure-DF path. The vocabulary terms are porter-stemmed
+        // ("microbiome" → "microbiom"), which is the honest expectation here.
         assert!(
-            terms.contains(&"microbiome".to_string()),
-            "FTS-weighted PRF should surface 'microbiome': {terms:?}"
+            terms.contains(&"microbiom".to_string()),
+            "FTS-weighted PRF should surface stemmed 'microbiom': {terms:?}"
         );
         assert!(
-            terms.contains(&"inflammation".to_string()),
-            "FTS-weighted PRF should surface 'inflammation': {terms:?}"
+            terms.contains(&"inflamm".to_string()),
+            "FTS-weighted PRF should surface stemmed 'inflamm': {terms:?}"
         );
         assert!(!terms.iter().any(|t| t == "gut" || t == "health"));
     }
@@ -8748,11 +8866,12 @@ Final paragraph after the rule.";
         // v1.25.0 for the breaches + breach_events tables (the breach workflow).
         // v1.26.0 for the transfers table + knowledge.lawful_basis/purpose.
         // v1.27.1 for the clients table (the BPO operating register).
-        // v1.27.8 for the proposals.owner + proposals.qa_note columns (QaQueue).
+        // v1.27.8 for the proposals.owner + proposals.qa_note columns (QaQueue);
+        // v1.27.18 for the index add/drop pass (Groundwork).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_8),
-            "schema_version must be recorded as 1.27.8 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_18),
+            "schema_version must be recorded as 1.27.18 after migration"
         );
 
         // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
@@ -13547,5 +13666,494 @@ Final paragraph after the rule.";
                 _ => format!("%{:02X}", c as u32),
             })
             .collect()
+    }
+
+    // ── v1.27.18 "Groundwork" tests ──────────────────────────────────────
+
+    /// A state whose `db_path` points at a real migrated DB file: the
+    /// F-45 ingest handlers read the db file's metadata in the capacity guard.
+    fn groundwork_state(tmp: &tempfile::NamedTempFile) -> Arc<AppState> {
+        crate::register_sqlite_vec();
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+        );
+        Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        })
+    }
+
+    // ── F-53: the connection-tracker slot is RAII — released on Drop, on
+    // panic unwind, and when the ingest timeout drops the worker task ─────
+
+    #[test]
+    fn tracker_entry_releases_on_drop_and_panic() {
+        let t: std::sync::Arc<ConnectionTracker> = std::sync::Arc::new(ConnectionTracker::new());
+        assert_eq!(t.count(), 0);
+        {
+            let _e = TrackerEntry::new(t.clone(), "test-drop");
+            assert_eq!(t.count(), 1, "entry holds a slot while alive");
+        }
+        assert_eq!(t.count(), 0, "Drop releases the slot");
+
+        let tp = t.clone();
+        let h = std::thread::spawn(move || {
+            let _e = TrackerEntry::new(tp, "test-panic");
+            panic!("boom");
+        });
+        let _ = h.join();
+        assert_eq!(t.count(), 0, "panic unwind releases the slot");
+    }
+
+    #[tokio::test]
+    async fn ingest_timeout_releases_tracker_slot() {
+        let t: std::sync::Arc<ConnectionTracker> = std::sync::Arc::new(ConnectionTracker::new());
+        let t2 = t.clone();
+        let fut = tokio::task::spawn_blocking(move || {
+            let _e = TrackerEntry::new(t2, "ingest-timeout");
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            42u8
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), fut)
+                .await
+                .is_err(),
+            "timed out while the worker is still in flight"
+        );
+        // spawn_blocking cannot be cancelled mid-flight — the task runs to
+        // completion — but the slot must be released at ITS exit, not leaked
+        // until a watchdog sweep (the pre-F-53 behavior).
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(
+            t.count(),
+            0,
+            "the timed-out worker's slot is released at exit, not leaked"
+        );
+    }
+
+    // ── F-44: layer semantics — the import dial bypasses the 1 MiB global
+    // cap (1 GiB), every OTHER route keeps the 1 MiB cap ───────────────────
+
+    mod layer_semantics {
+        use super::*;
+        use axum::body::to_bytes as body_to_bytes;
+        use axum::http::Request;
+        use axum::routing::post;
+        use tower::ServiceExt;
+
+        // The production import dial: `/domains/{name}/import` bodies run to
+        // 1 GiB (domap `limit` semantics); the global cap is 1 MiB. This
+        // module rebuilds the PRODUCTION layer ORDER (the two-limit structure
+        // from `build_router`) so a regression in the ordering fails here.
+        const IMPORT_DIAL_LIMIT: usize = 1024 * 1024 * 1024;
+
+        async fn import_stub(
+            State(_s): State<()>,
+            body: axum::body::Body,
+        ) -> axum::response::Response {
+            match body_to_bytes(body, IMPORT_DIAL_LIMIT).await {
+                Ok(b) => axum::response::Response::new(axum::body::Body::from(format!(
+                    "got:{}",
+                    b.len()
+                ))),
+                Err(_) => axum::response::Response::builder()
+                    .status(413)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            }
+        }
+        async fn small_stub() -> &'static str {
+            "ok"
+        }
+
+        fn layered() -> axum::Router<()> {
+            axum::Router::new()
+                .route("/domains/{name}/import", post(import_stub))
+                .layer(tower_http::limit::RequestBodyLimitLayer::new(
+                    IMPORT_DIAL_LIMIT,
+                ))
+                .merge(axum::Router::new().route("/other", post(small_stub)).layer(
+                    tower_http::limit::RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE),
+                ))
+        }
+
+        #[tokio::test]
+        async fn import_route_accepts_large_body() {
+            let resp = layered()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/domains/acme/import")
+                        .header("content-type", "application/octet-stream")
+                        .body(axum::body::Body::from(vec![b'x'; 2 * 1024 * 1024]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "the import dial must NOT be pre-empted by the 1 MiB global layer"
+            );
+            let body = body_to_bytes(resp.into_body(), IMPORT_DIAL_LIMIT)
+                .await
+                .unwrap();
+            assert_eq!(body, "got:2097152");
+        }
+
+        #[tokio::test]
+        async fn other_routes_still_capped_at_1mib() {
+            let resp = layered()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/other")
+                        // Real uploads carry Content-Length; the limit layer
+                        // rejects on the header before the handler runs.
+                        .header("content-length", (2 * 1024 * 1024).to_string())
+                        .body(axum::body::Body::from(vec![b'x'; 2 * 1024 * 1024]))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                "the 1 MiB global cap still applies to every other route"
+            );
+        }
+    }
+
+    // ── F-45: /ingest/memory's two real 4xx rejections ───────────────────
+
+    #[tokio::test]
+    async fn ingest_memory_rejects_oversized_entry() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = groundwork_state(&tmp);
+        let entry = "x".repeat(crate::handlers::MAX_CONTENT + 1000);
+        let body = format!("## oversized\n{entry}").into_bytes();
+        assert!(
+            body.len() < config::MAX_REQUEST_SIZE,
+            "test body must pass the request cap to exercise the per-entry cap"
+        );
+        let (status, json) = ingest_memory(
+            axum::extract::State(state),
+            handlers::auth::OptPrincipal(None),
+            axum::body::Body::from(body),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(json.0["code"], "entry_too_large");
+    }
+
+    #[tokio::test]
+    async fn ingest_memory_rejects_invalid_utf8() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = groundwork_state(&tmp);
+        let body: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x80, 0xc3];
+        let (status, json) = ingest_memory(
+            axum::extract::State(state),
+            handlers::auth::OptPrincipal(None),
+            axum::body::Body::from(body),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(json.0["code"], "invalid_utf8");
+    }
+
+    // ── E-1: the PRF df round-trip must be byte-identical to the
+    // mathematically-intended legacy query (the reference oracle), on any
+    // corpus below the MAX_DF_TERMS cap ───────────────────────────────────
+
+    /// Reference oracle: the pre-E-1 production implementation AS INTENDED —
+    /// the instance-vocab semantics pre-SQLite-3.40 (`cnt` = occurrences,
+    /// `rowid` = doc). The bundled 3.53.2 exposes one row per occurrence
+    /// (`(term, doc, col, offset)`), so the oracle re-expresses the same math
+    /// on the real columns: `COUNT(*)` for the old `SUM(cnt)` and
+    /// `COUNT(DISTINCT doc)` for the old `COUNT(DISTINCT rowid)`. Frozen here
+    /// so the E-1 rewrite is provably output-equivalent to the intended
+    /// query on bounded corpora.
+    fn prf_df_legacy_oracle(
+        conn: &Connection,
+        hits: &[crate::search::SearchResult],
+        original_query: &str,
+        max_terms: usize,
+    ) -> Vec<String> {
+        use std::collections::HashSet;
+        const STOPWORDS: &[&str] = &[
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+            "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must",
+            "can", "this", "that", "these", "those", "i", "you", "he", "she", "it", "we", "they",
+            "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by", "from", "up",
+            "about", "into", "through", "during", "before", "after", "above", "below", "not", "no",
+            "as", "if", "than", "then", "so", "such", "also", "just", "very", "too", "more",
+            "most",
+        ];
+        let safe_ids: Vec<i64> = hits.iter().filter(|h| !h.flagged).map(|h| h.id).collect();
+        let query_terms: HashSet<String> = original_query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .collect();
+        let stopwords: HashSet<&str> = STOPWORDS.iter().copied().collect();
+        let placeholders: String = (0..safe_ids.len())
+            .map(|i| {
+                if i + 1 == safe_ids.len() {
+                    format!("?{}", i + 1)
+                } else {
+                    format!("?{}, ", i + 1)
+                }
+            })
+            .collect();
+        let sql = format!(
+            "WITH selected AS (
+                 SELECT term, COUNT(*) AS local_cnt
+                 FROM knowledge_fts_vocab
+                 WHERE col = 'content' AND doc IN ({placeholders})
+                 GROUP BY term
+             ),
+             corpus AS (
+                 SELECT term, COUNT(DISTINCT doc) AS df
+                 FROM knowledge_fts_vocab
+                 WHERE col = 'content'
+                 GROUP BY term
+             )
+             SELECT s.term, s.local_cnt, c.df
+             FROM selected s
+             JOIN corpus c ON c.term = s.term"
+        );
+        let total_docs: f64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(1) as f64;
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(safe_ids.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap();
+        let mut weighted: Vec<(String, f64)> = Vec::new();
+        for (term, local_cnt, df) in rows.flatten() {
+            let t = term.to_lowercase();
+            if t.len() < 3 || t.len() > 30 {
+                continue;
+            }
+            if stopwords.contains(t.as_str()) || query_terms.contains(&t) {
+                continue;
+            }
+            let idf = (1.0 + total_docs / df.max(1) as f64).ln();
+            weighted.push((t, local_cnt as f64 * idf));
+        }
+        if weighted.is_empty() {
+            return Vec::new();
+        }
+        weighted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        weighted
+            .into_iter()
+            .take(max_terms)
+            .map(|(w, _)| w)
+            .collect()
+    }
+
+    fn seed_prf_docs(db: &Connection, docs: &[&str]) -> Vec<crate::search::SearchResult> {
+        for (i, content) in docs.iter().enumerate() {
+            db.execute(
+                "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)
+                 VALUES(?1, ?2, 'memory', ?3, 't', 'model')",
+                rusqlite::params![content, format!("doc-{i}"), format!("ch-{i}")],
+            )
+            .unwrap();
+        }
+        (1..=docs.len() as i64)
+            .map(|id| crate::search::SearchResult {
+                id,
+                content: docs[id as usize - 1].to_string(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prf_df_matches_legacy_corpus_scan() {
+        let db = test_db();
+        let docs = [
+            "the quick brown fox jumps over the lazy dog",
+            "quick quick brown rabbit rabbit",
+            "the lazy dog sleeps under the fox den",
+        ];
+        let hits = seed_prf_docs(&db, &docs);
+        // Independent df spot-check: the corpus df the production query
+        // computes must match a raw COUNT(DISTINCT doc) per term.
+        let fox_df: i64 = db
+            .query_row(
+                "SELECT COUNT(DISTINCT doc) FROM knowledge_fts_vocab
+                 WHERE col = 'content' AND term = 'fox'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fox_df, 2, "fox appears in 2 of the 3 docs");
+        for (query, max_terms) in [
+            ("quick fox", 5usize),
+            ("fox", 3),
+            ("the dog", 10),
+            ("lazy", 4),
+        ] {
+            let fts = crate::search::prf_extract_terms_fts(&db, &hits, query, max_terms);
+            let legacy = prf_df_legacy_oracle(&db, &hits, query, max_terms);
+            assert_eq!(
+                fts, legacy,
+                "E-1 df round-trip must not change PRF output for {query:?}"
+            );
+            for t in &fts {
+                assert!(t.len() >= 3 && t.len() <= 30, "length guard: {t}");
+                assert!(
+                    !query.split_whitespace().any(|q| q.to_lowercase() == *t),
+                    "query term must not leak into expansion: {t}"
+                );
+            }
+        }
+        // The empty-window edge: no safe hits → both paths return the pure
+        // fallback unchanged.
+        let empty = Vec::<crate::search::SearchResult>::new();
+        let fts = crate::search::prf_extract_terms_fts(&db, &empty, "fox", 5);
+        assert!(fts.is_empty() || fts == crate::search::prf_extract_terms(&empty, "fox", 5));
+    }
+
+    /// The bundled fts5vocab 'instance' schema is occurrence-shaped —
+    /// `(term, doc, col, offset)` — NOT the pre-3.40 `(term, col, rowid, cnt)`
+    /// aggregate shape the pre-E-1 PRF query was written against. Pinned so a
+    /// future SQLite upgrade changing vocab columns fails this test loudly
+    /// instead of silently degrading PRF into the pure-DF fallback.
+    #[test]
+    fn prf_vocab_schema_is_occurrence_shaped() {
+        let db = test_db();
+        let cols: Vec<String> = db
+            .prepare("PRAGMA table_info(knowledge_fts_vocab)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            cols,
+            ["term", "doc", "col", "offset"],
+            "fts5vocab instance schema drifted: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn prf_absent_terms_degrade_gracefully() {
+        // Query terms matching no hit content → the local probe returns
+        // nothing → the function returns the pure-DF fallback, never a
+        // partial selection from a mismatched window.
+        let db = test_db();
+        let docs = ["alpha beta gamma delta"];
+        let hits = seed_prf_docs(&db, &docs);
+        let fts = crate::search::prf_extract_terms_fts(&db, &hits, "unknown extra", 5);
+        let pure = crate::search::prf_extract_terms(&hits, "unknown extra", 5);
+        assert_eq!(fts, pure, "absent vocab → identical fallback");
+        assert!(!fts.is_empty(), "fallback still mines the window");
+    }
+
+    // ── M3/E-5: the index contract after migration ───────────────────────
+
+    #[test]
+    fn groundwork_indexes_present_and_superfluous_dropped() {
+        let db = test_db();
+        let names: Vec<String> = db
+            .prepare("SELECT name FROM sqlite_master WHERE type IN ('index','table')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for want in [
+            "idx_knowledge_domain",
+            "idx_knowledge_owner",
+            "idx_knowledge_title_heading",
+        ] {
+            assert!(names.iter().any(|n| n == want), "{want} must be present");
+        }
+        for gone in [
+            "idx_tombstones_kid",
+            "idx_entities_name",
+            "idx_evidence_links_from",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == gone),
+                "{gone} must be dropped as superfluous"
+            );
+        }
+        // The compound filter is actually served by one of the new indexes.
+        let plan: String = db
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM knowledge
+                 WHERE domain = 'x' AND owner = 'y' AND title = 't' AND heading_path = 'h'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(
+            plan.contains("idx_knowledge_domain")
+                || plan.contains("idx_knowledge_owner")
+                || plan.contains("idx_knowledge_title_heading"),
+            "compound filter served by a new index (plan: {plan})"
+        );
+    }
+
+    // ── F-46: unixepoch == strftime('%s') on the retained-format samples ─
+
+    #[test]
+    fn retention_filter_equality_unixepoch_vs_strftime() {
+        let db = test_db();
+        for ts in [
+            "2024-01-01 00:00:00",
+            "2023-06-15 12:30:45",
+            "1970-01-01 00:00:00",
+            "2026-08-16 23:59:59",
+        ] {
+            let u: i64 = db
+                .query_row("SELECT unixepoch(?)", [ts], |r| r.get(0))
+                .unwrap();
+            let s: i64 = db
+                .query_row("SELECT CAST(strftime('%s', ?) AS INTEGER)", [ts], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(u, s, "unixepoch == strftime %s for {ts}");
+        }
+        // Absent timestamps collapse to the same sentinel epoch in both forms.
+        let u: i64 = db
+            .query_row(
+                "SELECT unixepoch(COALESCE(NULL, '1970-01-01 00:00:00'))",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(u, 0, "NULL created_at → sentinel epoch 0");
     }
 }
