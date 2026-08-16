@@ -570,6 +570,9 @@ pub enum AppError {
     /// main.rs write handlers use `AppError`, so the JWT AuthZ gate needs a
     /// 403 channel here (the modern `HandlerError` paths already have one).
     Forbidden(String),
+    /// v1.28.1 "Holdall": HTTP 409 — an erasure refused by an active legal
+    /// hold (the quarantine delete path runs on the legacy `AppError` type).
+    Conflict(String),
     Internal(String),
 }
 
@@ -584,6 +587,7 @@ impl axum::response::IntoResponse for AppError {
             AppError::NotFound(s) => (StatusCode::NOT_FOUND, s.to_string()),
             AppError::InsufficientStorage(s) => (StatusCode::INSUFFICIENT_STORAGE, s),
             AppError::Forbidden(s) => (StatusCode::FORBIDDEN, s),
+            AppError::Conflict(s) => (StatusCode::CONFLICT, s),
             AppError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal error".to_string(),
@@ -3136,6 +3140,10 @@ async fn delete_quarantine(
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Internal(e.to_string()))?;
+        // v1.28.1 "Holdall" M1 (F-02): a held chunk refuses any erasure,
+        // including the quarantine delete path (a held id can be flagged).
+        crate::legal_hold::refuse_if_held(&tx, &[id])
+            .map_err(|e| AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message)))?;
         // vec0 has no FK cascade — clean the index entry explicitly.
         let _ = tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -6177,6 +6185,85 @@ mod tests {
             review_hits.iter().any(|r| r.id == flagged_id),
             "flagged row must be included when include_flagged=true"
         );
+    }
+
+    /// v1.28.1 "Holdall" M1 (F-02): the quarantine delete path is an erasure
+    /// path — a held chunk must refuse `POST /quarantine/{id}/delete` with the
+    /// same 409 shape, and the row must survive until holds are released.
+    #[tokio::test]
+    async fn quarantine_delete_refuses_held_id() {
+        use axum::extract::{Path, State};
+
+        crate::register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+        );
+        let state = Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+        state
+            .pool
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO knowledge(content, source, content_hash, flagged)
+                 VALUES ('flagged under litigation', 'test', 'qhold', 1)",
+                [],
+            )
+            .unwrap();
+        let id: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT MAX(id) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        {
+            let mut conn = state.pool.get().unwrap();
+            let tx = conn.transaction().unwrap();
+            crate::legal_hold::insert_holds(&tx, &[id], "litigation 2026-118", Some("dpo"), 60)
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let err = delete_quarantine(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Path(id),
+        )
+        .await
+        .expect_err("a held quarantine chunk must refuse deletion");
+        assert!(matches!(err, AppError::Conflict(_)), "409-class refusal");
+        let free: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM knowledge WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(free, 1, "the held row survives quarantine delete");
     }
 
     #[test]

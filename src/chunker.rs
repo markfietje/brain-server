@@ -38,6 +38,17 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 /// multibyte UTF-8 sequences are always preserved.
 const MAX_CHUNK_BYTES: usize = 1000;
 
+/// v1.28.1 "Holdall" M5 (F-52): the hard cap on code blocks. Code blocks are
+/// exempt from `MAX_CHUNK_BYTES` "to stay intact" — but that lets a single
+/// fenced block up to the 1 MB content cap become ONE giant chunk. Blocks
+/// over this cap are split at newline boundaries; fenced pieces re-open the
+/// fence with a continuation marker (the same opener line) and only the final
+/// piece carries the original closer, so every piece is a standalone valid
+/// fenced block that concatenates back to the source. `8 * MAX_CHUNK_BYTES`
+/// keeps genuinely monolithic artifacts adjacent via the heading path while
+/// bounding the chunk.
+const MAX_CODE_CHUNK_BYTES: usize = 8 * MAX_CHUNK_BYTES;
+
 /// A structure-aware chunk of a Markdown document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
@@ -178,6 +189,92 @@ pub fn chunk_markdown(content: &str) -> Vec<Chunk> {
         &mut chunks,
     );
     chunks
+        .into_iter()
+        .flat_map(|c| {
+            if c.text.len() > MAX_CODE_CHUNK_BYTES {
+                split_oversized_code(c)
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+/// v1.28.1 "Holdall" M5 (F-52): split a single chunk that exceeds the hard
+/// cap at newline boundaries. Only code blocks (fenced or ≥4-space indented)
+/// and single-event prose runs can reach this size — normal prose flushes at
+/// every event boundary. Fenced blocks are re-opened with the same opener
+/// line (the continuation marker) and each piece closes with the original
+/// closer, so every piece is a standalone block and the pieces concatenate
+/// back to the source. Indented code / prose need no synthesis: cutting at a
+/// newline leaves every piece a valid verbatim block.
+fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
+    let text: &str = &chunk.text;
+    let is_fenced = text.starts_with("```") || text.starts_with("~~~");
+    let all_lines: Vec<&str> = text.split('\n').collect();
+    let (opener, closer, body): (Option<&str>, Option<&str>, &[&str]) = if is_fenced {
+        (
+            all_lines.first().copied(),
+            all_lines.last().copied(),
+            &all_lines[1..all_lines.len().saturating_sub(1)],
+        )
+    } else {
+        (None, None, &all_lines[..])
+    };
+
+    // Greedy newline-boundary pack of the body lines into ≤ cap pieces.
+    let mut raw: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_bytes = 0usize;
+    for line in body {
+        let add = line.len() + 1;
+        if cur_bytes + add > MAX_CODE_CHUNK_BYTES {
+            if !cur.is_empty() {
+                raw.push(std::mem::take(&mut cur));
+            }
+            cur_bytes = 0;
+        }
+        // Degenerate: one single line longer than the cap. The newline-
+        // boundary rule has no boundary to respect — split by byte (char-
+        // boundary-safe) and keep the parts as their own one-line pieces.
+        if add > MAX_CODE_CHUNK_BYTES {
+            let mut rest = *line;
+            while !rest.is_empty() {
+                let cut = rest.floor_char_boundary(MAX_CODE_CHUNK_BYTES.min(rest.len()));
+                raw.push(rest[..cut].to_string());
+                rest = &rest[cut..];
+            }
+            continue;
+        }
+        cur.push_str(line);
+        cur.push('\n');
+        cur_bytes += add;
+    }
+    if !cur.is_empty() {
+        raw.push(cur);
+    }
+    if raw.is_empty() {
+        raw.push(String::new());
+    }
+
+    let mut out = Vec::with_capacity(raw.len());
+    let mut next_line = chunk.line_start;
+    for piece in raw {
+        let piece_text = match (opener, closer) {
+            (Some(op), Some(cl)) => format!("{op}\n{piece}{cl}"),
+            _ => piece,
+        };
+        let body_lines = piece_text.matches('\n').count().max(1);
+        let line_end = next_line + body_lines - 1;
+        out.push(Chunk {
+            text: piece_text,
+            heading_path: chunk.heading_path.clone(),
+            line_start: next_line,
+            line_end,
+        });
+        next_line = line_end + 1;
+    }
+    out
 }
 
 /// Extend the chunk's byte range to cover `[start, end)`. Idempotent on
@@ -407,6 +504,152 @@ mod tests {
             2,
             "fence must not be split mid-block"
         );
+    }
+
+    // ── v1.28.1 "Holdall" M5 (F-52): code blocks were exempt from
+    // `MAX_CHUNK_BYTES` "to stay intact", so a single fenced block up to the
+    // 1 MB content cap became ONE giant chunk. The hard cap
+    // (`MAX_CODE_CHUNK_BYTES = 8 * MAX_CHUNK_BYTES`) splits oversized blocks
+    // at newline boundaries, re-opening the fence with a continuation marker.
+
+    #[test]
+    fn oversized_code_block_is_split_with_continuation() {
+        // 40 lines ≈ 40 × 51 bytes ≈ 2000+ per... build a body well over the
+        // 8 KB cap: 40 lines of ~60 B = ~2400; use 240 lines ≈ 14 KB.
+        let code_line = "let config = Config::builder().with_feature(\"all\").build()?;";
+        let body: String = std::iter::repeat_with(|| code_line)
+            .take(240)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let md = format!("# Big\n\n```rust\n{body}\n```\n\nTail.\n");
+        let chunks = chunk_markdown(&md);
+        let split: Vec<&Chunk> = chunks
+            .iter()
+            .filter(|c| c.text.contains("let config"))
+            .collect();
+        assert!(
+            split.len() >= 2,
+            "the oversized fence must split: {} pieces",
+            split.len()
+        );
+        // Every piece stays under the hard cap (+the fence overhead).
+        for c in &split {
+            assert!(
+                c.text.len() <= MAX_CODE_CHUNK_BYTES + 32,
+                "piece exceeds the hard cap: {} bytes",
+                c.text.len()
+            );
+        }
+        // Continuation: every piece is a complete standalone fenced block —
+        // opener + closer — and every piece after the first re-opens the
+        // fence with the SAME info string (continuation marker).
+        for c in &split {
+            assert!(
+                c.text.starts_with("```rust"),
+                "continuation opener: {:?}",
+                &c.text[..8]
+            );
+            assert!(c.text.ends_with("```"), "every piece closes its fence");
+        }
+        // No content line is lost or duplicated: the body lines all survive
+        // in order across the pieces.
+        let joined: String = split
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let times = |s: &str, needle: &str| s.matches(needle).count();
+        assert_eq!(
+            times(&joined, code_line),
+            240,
+            "every source code line survives exactly once"
+        );
+        // Line spans are contiguous across the split pieces.
+        for w in split.windows(2) {
+            assert_eq!(
+                w[0].line_end + 1,
+                w[1].line_start,
+                "pieces stay adjacent: {:?}",
+                (
+                    w[0].line_start,
+                    w[0].line_end,
+                    w[1].line_start,
+                    w[1].line_end
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn normal_code_blocks_unchanged() {
+        // A fenced block over `MAX_CHUNK_BYTES` but under the hard cap stays
+        // ONE intact chunk — the F-52 carve-out only triggers past 8 KB.
+        let body: String = std::iter::repeat_with(|| "let intact = true;")
+            .take(120)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let md = format!("```rust\n{body}\n```\n");
+        let chunks = chunk_markdown(&md);
+        assert_eq!(chunks.len(), 1, "a ~1.8 KB fence stays one chunk");
+        assert_eq!(
+            chunks[0].text.matches("```").count(),
+            2,
+            "both fences intact, byte-sliced verbatim"
+        );
+    }
+
+    #[test]
+    fn no_chunk_exceeds_hard_cap() {
+        // Property: over a spread of generated markdown — fenced blocks of
+        // varying sizes/content and indented code — NO chunk exceeds the hard
+        // cap, and non-fenced pieces stay verbatim substrings of the source.
+        let mut bodies: Vec<String> = Vec::new();
+        let mut seed: u64 = 0xdeadbeefcafe;
+        let mut rng = || {
+            seed ^= seed >> 12;
+            seed ^= seed << 25;
+            seed ^= seed >> 27;
+            seed.wrapping_mul(0x2545F4914F6CDD1D)
+        };
+        let glyphs = ["x", "•", "💡", "café", "let k = 🏋️;"];
+        for _ in 0..24 {
+            let n = 100 + (rng() % 900) as usize;
+            let mut b = String::new();
+            for _ in 0..n {
+                match rng() % 3 {
+                    0 => b.push_str(glyphs[(rng() as usize) % glyphs.len()]),
+                    1 => b.push_str("word "),
+                    _ => b.push('\n'),
+                }
+            }
+            bodies.push(b);
+        }
+        for b in &bodies {
+            for md in [
+                format!("```rust\n{b}\n```\n"),
+                format!("intro\n\n```\n{b}\n```\n\noutro\n"),
+                format!("    {b}\n"),
+            ] {
+                for c in chunk_markdown(&md) {
+                    assert!(
+                        c.text.len() <= MAX_CODE_CHUNK_BYTES + 32,
+                        "chunk exceeds the hard cap ({} bytes): {:?}",
+                        c.text.len(),
+                        &c.text[..c.text.len().min(64)]
+                    );
+                }
+            }
+        }
+        // Non-fenced inputs keep the verbatim-substring invariant (no
+        // synthesis off the fenced path).
+        let prose: String = "word ".repeat(9000);
+        for c in chunk_markdown(&prose) {
+            assert!(prose.contains(&c.text), "prose pieces stay verbatim");
+            assert!(
+                c.text.len() <= MAX_CODE_CHUNK_BYTES + 32,
+                "over-long prose is bounded too"
+            );
+        }
     }
 
     #[test]

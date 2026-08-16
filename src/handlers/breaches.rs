@@ -28,7 +28,7 @@ fn can_act_on_breach(roles: &[brain_server::role::Role]) -> bool {
     roles.iter().any(|r| r.name == "dpo" || r.can("admin"))
 }
 
-fn require_dpo_role(
+pub(crate) fn require_dpo_role(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
 ) -> Result<(), HandlerError> {

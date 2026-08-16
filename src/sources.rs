@@ -185,19 +185,32 @@ pub struct ReconcileReport {
 ///
 /// Never deletes blindly across kinds — only `kind`-scoped sources are touched,
 /// so reconciling a vault never retire a manual memory.
+/// Active sources of `kind` absent from `live_uris` — exactly the set a
+/// reconcile WOULD retire. The reconcile handler preflights this set against
+/// legal holds (v1.28.1 M1.2: a held chunk refuses the whole sweep with 409),
+/// and `reconcile` itself re-uses it so both sites share one query.
+pub fn orphaned_sources(
+    tx: &Transaction<'_>,
+    kind: &str,
+    live_uris: &std::collections::HashSet<String>,
+) -> Result<Vec<(i64, String)>> {
+    let mut stmt =
+        tx.prepare("SELECT id, uri FROM sources WHERE kind = ?1 AND state = 'active'")?;
+    let rows = stmt.query_map(params![kind], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    Ok(rows
+        .filter_map(|r| r.ok())
+        .filter(|(_, uri)| !live_uris.contains(uri))
+        .collect())
+}
+
 pub fn reconcile(
     tx: &Transaction<'_>,
     kind: &str,
     live_uris: &std::collections::HashSet<String>,
 ) -> Result<ReconcileReport> {
-    let indexed: Vec<(i64, String)> = {
-        let mut stmt =
-            tx.prepare("SELECT id, uri FROM sources WHERE kind = ?1 AND state = 'active'")?;
-        let rows = stmt.query_map(params![kind], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
+    let indexed = orphaned_sources(tx, kind, live_uris)?;
 
     let mut report = ReconcileReport::default();
     for (sid, uri) in &indexed {
@@ -217,6 +230,14 @@ pub fn reconcile(
         report.deleted_sources += 1;
     }
     Ok(report)
+}
+
+/// Chunk ids belonging to `source_id`. Shared by the erasure guard so a held
+/// chunk can be refused/deferred before the sweep deletes it.
+pub fn chunk_ids_for_source(tx: &Transaction<'_>, source_id: i64) -> Result<Vec<i64>> {
+    let mut stmt = tx.prepare("SELECT id FROM knowledge WHERE source_id = ?1")?;
+    let rows = stmt.query_map(params![source_id], |r| r.get::<_, i64>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// Delete a single source by id (plan M2 explicit delete). Sweeps chunks and
@@ -245,25 +266,50 @@ pub fn delete_source(tx: &Transaction<'_>, source_id: i64) -> Result<bool> {
 
 /// Remove every chunk belonging to `source_id` from retrieval: vec0 rows, FTS
 /// rows (via the knowledge_ad trigger), and the knowledge rows themselves.
-/// Returns the number of chunks swept. The source/revision audit rows are
-/// retained by the caller.
+/// v1.28.1 "Holdall" M1 (F-02): a chunk under an active legal hold is DEFERRED
+/// (skipped, never deleted) — reconcile retires the source but the frozen chunk
+/// survives, matching the `/purge` hold fence. Returns the number of chunks
+/// actually swept (held chunks are not counted).
 fn sweep_source_chunks(tx: &Transaction<'_>, source_id: i64) -> Result<usize> {
-    let ids: Vec<i64> = {
-        let mut stmt = tx.prepare("SELECT id FROM knowledge WHERE source_id = ?1")?;
-        let rows = stmt.query_map(params![source_id], |r| r.get::<_, i64>(0))?;
-        rows.filter_map(|r| r.ok()).collect()
+    let ids = chunk_ids_for_source(tx, source_id)?;
+    // Active holds are tiny + partial-index-served; a missing legal_holds table
+    // (a unit-test schema) means no holds.
+    let held = match crate::legal_hold::active_hold_ids(tx) {
+        Ok(h) => h,
+        Err(e) if e.inner.code == "internal_error" && is_missing_table(&e.inner.message) => {
+            std::collections::HashSet::new()
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "legal hold check failed: {}",
+                e.inner.message
+            ))
+        }
     };
-    for id in &ids {
+    // Rust-side free set — the same hold fence the old inline
+    // `NOT IN (SELECT … FROM legal_holds)` subquery enforced, without
+    // referencing `legal_holds` (a unit-test schema lacks the table, and the
+    // fallback above only guards the `active_hold_ids` call).
+    let free: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|id| !held.contains(id))
+        .collect();
+    for id in &free {
         let _ = tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             params![id],
         );
     }
-    let n = tx.execute(
-        "DELETE FROM knowledge WHERE source_id = ?1",
-        params![source_id],
-    )?;
+    let mut n = 0usize;
+    for id in &free {
+        n += tx.execute("DELETE FROM knowledge WHERE id = ?1", params![id])?;
+    }
     Ok(n)
+}
+
+fn is_missing_table(msg: &str) -> bool {
+    msg.contains("no such table")
 }
 
 /// Extension trait so `query_row(...).optional()` works without importing the

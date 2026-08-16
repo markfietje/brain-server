@@ -68,6 +68,7 @@ pub async fn register_transfer(
     // `mechanism_label` is read AFTER the closure — the closure consumes the
     // `mechanism` clone, so keep a fresh one for the audit + response.
     let mechanism_label = req.mechanism.clone();
+    let mech_for_closure = mechanism_label.clone();
     let id = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
         let mut conn = pool_for
             .get()
@@ -87,6 +88,23 @@ pub async fn register_transfer(
             req.signed_at,
             req.expires_at,
         )?;
+        // v1.28.1 "Holdall" M3 (F-51): the Art-30 audit row lands INSIDE the
+        // write transaction (nested via SAVEPOINT) so the register row and its
+        // audit are atomic — a crash between commit and audit can no longer
+        // leave an unmirrored register entry. Best-effort (record swallows its
+        // own errors) like every audit call site, so a broken audit row never
+        // rolls back the register write.
+        let _ = crate::audit::record(
+            &tx,
+            AuditKind::Transfer,
+            "api",
+            &format!("transfer_register:{id}"),
+            AuditStatus::Ok,
+            &format!(
+                "{}:{}->{}:{mechanism_label}",
+                dataset_for, origin, destination
+            ),
+        );
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
         Ok(id)
@@ -95,21 +113,8 @@ pub async fn register_transfer(
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
     let id: i64 = id?;
 
-    if let Ok(conn) = pool.get() {
-        crate::audit::record(
-            &conn,
-            AuditKind::Transfer,
-            "api",
-            &format!("transfer_register:{id}"),
-            AuditStatus::Ok,
-            &format!(
-                "{}:{}->{}:{mechanism_label}",
-                req.dataset, req.origin_jurisdiction, req.destination_jurisdiction
-            ),
-        );
-    }
     Ok(Json(
-        serde_json::json!({ "id": id, "mechanism": mechanism_label }),
+        serde_json::json!({ "id": id, "mechanism": mech_for_closure }),
     ))
 }
 

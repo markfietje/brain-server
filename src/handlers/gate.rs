@@ -1529,6 +1529,18 @@ pub async fn purge(
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        // v1.28.1 "Holdall" M2.1 (F-24): a strict-posture domain erases with
+        // `secure_delete=ON` (freed page images overwritten) + a WAL TRUNCATE
+        // checkpoint after commit — the same hygiene the DSAR pool path runs.
+        // Best-effort profile lookup: an unreadable/missing bind falls back to
+        // fast logical deletes (remanence disclosed in docs), never a lie.
+        let strict = brain_server::profile::profile_for_domain(&conn, "global")
+            .ok()
+            .flatten()
+            .is_some_and(|p| p.pii_strict());
+        if strict {
+            let _ = conn.execute_batch("PRAGMA secure_delete=ON;");
+        }
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1571,6 +1583,12 @@ pub async fn purge(
         let purged = purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+        // v1.28.1 M2.1: TRUNCATE the WAL so the erased page images do not
+        // linger there. Best-effort — a checkpoint failure must not fail an
+        // otherwise-successful erasure.
+        if strict {
+            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        }
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Reconcile,

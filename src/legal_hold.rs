@@ -127,6 +127,27 @@ pub(crate) fn active_hold_ids(conn: &rusqlite::Connection) -> Result<HashSet<i64
     Ok(rows.flatten().collect())
 }
 
+/// v1.28.1 "Holdall" M1 (F-02): refuse an erasure when ANY target id has an
+/// active hold. Runs inside the caller's write transaction (before the first
+/// DELETE), so every erasure path — `/purge`, DSAR, `DELETE /memory/{id}`, the
+/// source sweeps, quarantine delete, domain delete — is frozen by the same
+/// guard. Emits the exact `409 legal_hold_active` shape `/purge` already
+/// produces, so clients see one envelope.
+pub(crate) fn refuse_if_held(
+    tx: &rusqlite::Transaction<'_>,
+    ids: &[i64],
+) -> Result<(), HandlerError> {
+    let held = active_reasons(tx, ids)?;
+    if !held.is_empty() {
+        return Err(HandlerError::conflict_with(
+            "legal_hold_active",
+            "one or more ids are under legal hold",
+            serde_json::json!({ "held": held }),
+        ));
+    }
+    Ok(())
+}
+
 /// Release hold `id` (explicit action, never auto). Returns the hold row when
 /// it exists (with its pre-release active state), else None → 404.
 pub(crate) fn release(

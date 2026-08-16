@@ -87,6 +87,21 @@ pub async fn reconcile(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
+        // v1.28.1 "Holdall" M1 (F-02): preflight the to-be-swept set inside the
+        // same tx — if ANY chunk a reconcile would retire is under an active
+        // legal hold, the whole sweep refuses with 409 (the audit exploit:
+        // hold a chunk, then `{"live": []}` must not erase it). All-or-nothing,
+        // matching `/purge` hold semantics; the operator releases or scopes.
+        let to_retire = crate::sources::orphaned_sources(&tx, &kind_for_db, &live)
+            .map_err(|e| HandlerError::internal(format!("reconcile plan failed: {e}")))?;
+        let mut sweep_ids: Vec<i64> = Vec::new();
+        for (sid, _uri) in &to_retire {
+            sweep_ids.extend(
+                crate::sources::chunk_ids_for_source(&tx, *sid)
+                    .map_err(|e| HandlerError::internal(format!("collect chunks failed: {e}")))?,
+            );
+        }
+        crate::legal_hold::refuse_if_held(&tx, &sweep_ids)?;
         let report = crate::sources::reconcile(&tx, &kind_for_db, &live)
             .map_err(|e| HandlerError::internal(format!("reconcile failed: {e}")))?;
         tx.commit()
@@ -133,6 +148,12 @@ pub async fn delete_source(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
+        // v1.28.1 "Holdall" M1 (F-02): a source with any active-held chunk
+        // refuses deletion (all-or-nothing, matching `/purge`). The operator
+        // must release every hold first.
+        let chunk_ids = crate::sources::chunk_ids_for_source(&tx, id)
+            .map_err(|e| HandlerError::internal(format!("collect chunks failed: {e}")))?;
+        crate::legal_hold::refuse_if_held(&tx, &chunk_ids)?;
         // Surface the URI for the tombstone audit before the source row is
         // marked deleted — same provenance rationale as `forget`'s tombstone.
         let _uri: Option<String> = tx

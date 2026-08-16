@@ -245,6 +245,8 @@ pub async fn delete_domain(
         HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
     })?;
     let name_for_response = name.clone();
+    let name_for_audit = name.clone();
+    let root = state.db_path.parent().map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
         let mut conn = pool
@@ -255,10 +257,48 @@ pub async fn delete_domain(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
+        // v1.28.1 "Holdall" M1 (F-02): a domain holding any actively-held chunk
+        // refuses deletion entirely (all-or-nothing). The operator must release
+        // every hold or scope the delete before the domain can go.
+        {
+            let ids: Vec<i64> = if multi_db {
+                let mut stmt = tx
+                    .prepare("SELECT id FROM knowledge")
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |r| r.get::<_, i64>(0))
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                rows.filter_map(|r| r.ok()).collect()
+            } else {
+                let mut stmt = tx
+                    .prepare("SELECT id FROM knowledge WHERE domain = ?1")
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![name], |r| r.get::<_, i64>(0))
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            crate::legal_hold::refuse_if_held(&tx, &ids)?;
+        }
         if multi_db {
+            // v1.28.1 "Holdall" M1.4 (F-02): export the domain's audit segment
+            // before erasure so the chain survives as an operator-reviewable
+            // artifact, then preserve it in the live file too (never unlink).
+            export_audit_segment(
+                &tx,
+                &name,
+                if let Some(r) = &root {
+                    r.as_path()
+                } else {
+                    std::path::Path::new(".")
+                },
+            )
+            .map_err(|e| HandlerError::internal(format!("archive domain audit: {e}")))?;
             // Multi-db: the pool IS this domain's own DB. Every table in it is
             // scoped to this domain — clear them all. Order respects FKs:
             // evidence_links → relationships → knowledge (FK target) → rest.
+            // `audit_events` is deliberately NOT deleted: the immutible chain
+            // must survive a domain delete (F-02).
             tx.execute_batch(
                 "DELETE FROM evidence_links;
                  DELETE FROM relationships;
@@ -270,7 +310,6 @@ pub async fn delete_domain(
                  DELETE FROM connector_checkpoints;
                  DELETE FROM webhook_seen;
                  DELETE FROM webhook_queue;
-                 DELETE FROM audit_events;
                  DELETE FROM domain_centroids;
                  DELETE FROM knowledge_fts;
                  DELETE FROM vec_knowledge;",
@@ -332,6 +371,16 @@ pub async fn delete_domain(
         }
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
+        // v1.28.1 M1.4: record the deletion on the surviving chain (the global
+        // chain in shim mode; the domain's own preserved chain in multi-db).
+        let _ = crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Reconcile,
+            "operator",
+            &name_for_audit,
+            crate::audit::AuditStatus::Ok,
+            "domain_deleted",
+        );
         // VACUUM must run outside any transaction. Best-effort: failure here
         // means the file isn't defragmented but the data is gone.
         let _ = conn.execute_batch("VACUUM;");
@@ -726,11 +775,65 @@ pub(crate) fn relabel_chunks(
     Ok((changed, from_domains))
 }
 
+/// v1.28.1 M1.4: stream a domain's audit segment to `<layout>/archives/<domain>-audit-<date>.ndjson`
+/// (0600) before its rows are erased, so the deletion registry survives as an
+/// operator-reviewable artifact. The path is derived from the data root the
+/// handler threads in (`state.db_path`'s parent — the same root
+/// `StorageLayout::detect()` resolves in production, without the env
+/// dependence that would race tests). Only meaningful in multi-db mode (the
+/// whole file is the domain's); shim-mode audit is global.
+fn export_audit_segment(
+    tx: &rusqlite::Transaction<'_>,
+    domain: &str,
+    root: &std::path::Path,
+) -> Result<std::path::PathBuf, anyhow::Error> {
+    let archives = root.join("archives");
+    std::fs::create_dir_all(&archives)?;
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = archives.join(format!("{domain}-audit-{epoch}.ndjson"));
+    let mut stmt = tx.prepare(
+        "SELECT id, ts, kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash
+           FROM audit_events ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        // NULLable columns read as Option — the chain's FIRST row has a NULL
+        // prev_hash (and pre-v1.1 rows NULL actors); a bare String read would
+        // drop it at the flatten boundary. Nulls serialize as JSON null.
+        Ok(serde_json::json!({
+            "id": r.get::<_, i64>(0)?,
+            "ts": r.get::<_, String>(1)?,
+            "kind": r.get::<_, String>(2)?,
+            "actor": r.get::<_, Option<String>>(3)?,
+            "target_hash": r.get::<_, Option<String>>(4)?,
+            "status": r.get::<_, Option<String>>(5)?,
+            "detail_hash": r.get::<_, Option<String>>(6)?,
+            "tenant_id": r.get::<_, Option<String>>(7)?,
+            "prev_hash": r.get::<_, Option<String>>(8)?,
+        }))
+    })?;
+    use std::io::Write;
+    let mut out = std::fs::File::create(&path)?;
+    // 0600 explicitly — `File::create` honors the process umask (this is a
+    // deletion-judgment artifact an operator reviews; same posture as the
+    // auth-token rotate path).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        out.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    for row in rows.flatten() {
+        writeln!(out, "{row}")?;
+    }
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The shim-mode delete must NOT touch the global audit log or other
     /// domains' centroids. This is the critical-correctness bug caught in the
     /// second-pass review: an earlier draft did `DELETE FROM audit_events`
     /// (no WHERE clause) which would have wiped the immutable audit trail when

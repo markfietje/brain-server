@@ -232,7 +232,7 @@ pub async fn post_dsar(
             if idx == global_idx {
                 continue;
             }
-            let run = run_dsar_pool(pool, &subject, &action, dry_run, now, false, None)?;
+            let run = run_dsar_pool(pool, name, &subject, &action, dry_run, now, false, None)?;
             if !dry_run {
                 cross_ids.extend(run.purged_ids.iter().copied());
                 if let Some(b) = &run.bundle {
@@ -257,6 +257,7 @@ pub async fn post_dsar(
         //    own tx, as v1.20.17 M5 requires).
         let global_run = run_dsar_pool(
             &pools[global_idx].1,
+            "global",
             &subject,
             &action,
             dry_run,
@@ -329,6 +330,9 @@ pub async fn post_dsar(
             tombstone_root,
             &certified_at,
             chain_head,
+            runs.last()
+                .map(|r| r.remanence.as_str())
+                .unwrap_or("logical (secure_delete off; WAL/freelist/backup copies may persist)"),
         );
         let ledger_id =
             ledger_id.ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
@@ -446,6 +450,9 @@ fn normalize_dsar_subject(subject: &str, action: &str) -> Result<String, Handler
 /// `run_dsar_subject` (a single pool) so the audit-visible contract lives in
 /// one place. `purged_ids`/`held`/`tombstone_root` are the run(s)' erased sets;
 /// jurisdiction/mechanism are the request's per-law stamp (advisory).
+/// v1.28.1 "Holdall" M2.2: the honest physical-purge posture to disclose on the
+/// deletion certificate. Defaults to the disclosed logical posture when no run
+/// carried a stricter one (a strict domain's certificate states secure_delete).
 #[allow(clippy::too_many_arguments)]
 fn certificate_json(
     subject: &str,
@@ -458,6 +465,7 @@ fn certificate_json(
     tombstone_root: Option<i64>,
     certified_at: &str,
     chain_head: Option<String>,
+    remanence: &str,
 ) -> String {
     serde_json::json!({
         "subject": subject,
@@ -471,6 +479,7 @@ fn certificate_json(
         "tombstone_root": tombstone_root,
         "certified_at": certified_at,
         "chain_head": chain_head,
+        "physical_purge": remanence,
     })
     .to_string()
 }
@@ -488,6 +497,7 @@ pub(crate) async fn run_dsar_subject(
     state: Arc<AppState>,
     principal: OptPrincipal,
     pool: crate::Pool,
+    domain: &str,
     subject: &str,
     action: &str,
     dry_run: bool,
@@ -498,6 +508,7 @@ pub(crate) async fn run_dsar_subject(
     let subject = subject.to_string();
     let action = action.to_string();
     let mech_for_cert = mechanism.map(|m| m.trim().to_string());
+    let domain_for = domain.to_string();
     let state_for = state.clone();
     tokio::task::spawn_blocking(move || -> Result<DsarResponse, HandlerError> {
         let subject = normalize_dsar_subject(&subject, &action)?;
@@ -507,7 +518,16 @@ pub(crate) async fn run_dsar_subject(
             .and_then(crate::transfers::jurisdiction_rule)
             .map(|r| r.rights.to_vec())
             .unwrap_or_default();
-        let run = run_dsar_pool(&pool, &subject, &action, dry_run, now, true, None)?;
+        let run = run_dsar_pool(
+            &pool,
+            &domain_for,
+            &subject,
+            &action,
+            dry_run,
+            now,
+            true,
+            None,
+        )?;
         if dry_run {
             return Ok(DsarResponse {
                 id: 0,
@@ -562,6 +582,7 @@ pub(crate) async fn run_dsar_subject(
             run.tombstone_root,
             &certified_at,
             chain_head,
+            &run.remanence,
         );
         let conn = pool
             .get()
@@ -1027,6 +1048,10 @@ struct DsarPoolRun {
     /// `Some(ledger row id)` when this pool wrote the ledger row (global).
     ledger_id: Option<i64>,
     tombstone_root: Option<i64>,
+    /// v1.28.1 "Holdall" M2 (F-24): the honest physical-purge posture for this
+    /// domain (secure_delete+checkpoint for a strict profile, else the disclosed
+    /// logical posture). Surfaced verbatim on the deletion certificate.
+    remanence: String,
 }
 
 /// Run locate + [dry-run preview | purge + ledger] for ONE domain pool.
@@ -1035,8 +1060,10 @@ struct DsarPoolRun {
 /// (the global run's own bundle is digested in shim mode — byte-identical to
 /// v1.20.23). All-or-nothing per pool: the purge + ledger row commit in the
 /// same tx (v1.20.17 M5).
+#[allow(clippy::too_many_arguments)] // 8 run fields; a struct would add ceremony to the single-erasure path
 fn run_dsar_pool(
     pool: &crate::Pool,
+    domain: &str,
     subject: &str,
     action: &str,
     dry_run: bool,
@@ -1047,6 +1074,23 @@ fn run_dsar_pool(
     let mut conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    // v1.28.1 "Holdall" M2.1 (F-24): a strict-posture domain erases with
+    // `secure_delete=ON` (freed page images overwritten) + a WAL TRUNCATE
+    // checkpoint after commit, so the certificate's erasure claim has teeth.
+    // Best-effort profile lookup: an unreadable/missing bind defaults to the
+    // disclosed logical posture (nothing ever fails closed into a lie).
+    let strict = brain_server::profile::profile_for_domain(&conn, domain)
+        .ok()
+        .flatten()
+        .is_some_and(|p| p.pii_strict());
+    let remanence = if strict {
+        "secure_delete+checkpoint (backup files excepted)".to_string()
+    } else {
+        "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
+    };
+    if strict && !dry_run && matches!(action, "purge" | "both") {
+        let _ = conn.execute_batch("PRAGMA secure_delete=ON;");
+    }
     let tx = conn
         .transaction()
         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1098,6 +1142,7 @@ fn run_dsar_pool(
             bundle: None,
             ledger_id: None,
             tombstone_root: None,
+            remanence,
         });
     }
 
@@ -1207,6 +1252,12 @@ fn run_dsar_pool(
     }
     tx.commit()
         .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+    // v1.28.1 M2.1: TRUNCATE the WAL so a just-erased subject's page images do
+    // not linger there (reuse the integrity.rs import pattern). Best-effort —
+    // a checkpoint failure must not fail an otherwise-successful erasure.
+    if !dry_run && matches!(action, "purge" | "both") {
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    }
 
     Ok(DsarPoolRun {
         roots: roots.len(),
@@ -1219,6 +1270,7 @@ fn run_dsar_pool(
         bundle: export_bundle,
         ledger_id,
         tombstone_root: roots.first().copied(),
+        remanence,
     })
 }
 
@@ -1589,15 +1641,25 @@ mod tests {
         }
 
         // Handler order: non-global pools first (local txs, no ledger)...
-        let health_run = run_dsar_pool(&health, subject, "both", false, now, false, None).unwrap();
+        let health_run =
+            run_dsar_pool(&health, "global", subject, "both", false, now, false, None).unwrap();
         assert!(!health_run.purged_ids.is_empty(), "health pool erased");
         assert_eq!(health_run.ledger_id, None, "non-global pool never ledgers");
         // ...then global, with the cross-domain aggregate hash.
         let aggregate = crate::handlers::gate::sha256_hex(
             &serde_json::json!({"subject": subject, "domains": ["health"]}).to_string(),
         );
-        let global_run =
-            run_dsar_pool(&global, subject, "both", false, now, true, Some(&aggregate)).unwrap();
+        let global_run = run_dsar_pool(
+            &global,
+            "global",
+            subject,
+            "both",
+            false,
+            now,
+            true,
+            Some(&aggregate),
+        )
+        .unwrap();
         assert!(!global_run.purged_ids.is_empty(), "global pool erased");
         assert!(
             global_run.ledger_id.is_some(),
@@ -1697,7 +1759,7 @@ mod tests {
         drop(conn);
 
         let now = chrono::Utc::now().timestamp();
-        let run = run_dsar_pool(&pool, subject, "both", false, now, true, None).unwrap();
+        let run = run_dsar_pool(&pool, "global", subject, "both", false, now, true, None).unwrap();
         assert!(!run.purged_ids.is_empty(), "subject root erased");
 
         let conn = pool.get().unwrap();
