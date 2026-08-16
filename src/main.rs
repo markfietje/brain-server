@@ -1578,6 +1578,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                 backup,
                 capacity,
                 integrity,
+                crate::audit::audit_commit_failures(),
             ))
         }
         _ => Json(
@@ -1590,6 +1591,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// regression test can pin the top-level key set — `/health` must never leak
 /// memory content or PII (CVE-2026-29787 class: unauthenticated health-endpoint
 /// information disclosure).
+#[allow(clippy::too_many_arguments)] // 8 health fields; a struct would add ceremony to the single call site
 fn health_body(
     used_mb: u64,
     total_mb: u64,
@@ -1598,6 +1600,7 @@ fn health_body(
     backup: serde_json::Value,
     capacity: Option<serde_json::Value>,
     integrity: serde_json::Value,
+    audit_commit_failures: usize,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "status": "ok",
@@ -1647,10 +1650,15 @@ fn health_body(
         // audited count (each has a SAFETY comment); `panics_caught`
         // comes from CatchPanicLayer (would be >0 only if a handler
         // panicked and was caught).
+        // v1.27.19 "Scrub" (D-2): `audit_commit_failures` — monotonic count of
+        // best-effort audit-chain settles that could not COMMIT/ROLLBACK since
+        // process start. Zero is the green state; >0 means a row the caller
+        // believes is on the durable chain may not be. Read-only, no secrets.
         "hardening": {
             "unsafe_blocks": 1, // single shared lib call (register_sqlite_vec), no transmute
             "panics_caught": 0,
             "memory_leaks_detected": 0,
+            "audit_commit_failures": audit_commit_failures,
             // v1.20.3 "Classify" (G5): whether the layer-2 injection classifier
             // is loaded. Mirrors `screen::screen_classifier_loaded()`; lets ops
             // confirm the opt-in model is actually active.
@@ -12406,6 +12414,7 @@ Final paragraph after the rule.";
             snapshot_json,
             Some(serde_json::json!({ "max_docs": 100_000 })),
             serde_json::json!({ "chain_ok": true, "last_checked_at": 0, "chain_head": "" }),
+            7,
         );
         let obj = body.as_object().expect("health body is an object");
         for key in obj.keys() {
@@ -12419,6 +12428,10 @@ Final paragraph after the rule.";
         assert!(obj.contains_key("version"));
         assert!(obj.contains_key("hardening"));
         assert!(obj.contains_key("capacity"));
+        // v1.27.19 "Scrub" (D-2): the settle-failure counter is part of the
+        // hardening block; the value passed in is echoed untouched.
+        let hardening = obj["hardening"].as_object().expect("hardening object");
+        assert_eq!(hardening["audit_commit_failures"], 7);
         // v1.20.4 "Replay" (G6): webhook posture is exposed for ops. The flag is
         // read from env, so this test only pins that the object is present with
         // the known default (legacy scheme, 300s window).
@@ -12452,6 +12465,7 @@ Final paragraph after the rule.";
                 serde_json::json!({}),
                 Some(serde_json::json!({})),
                 serde_json::json!({}),
+                0,
             );
             match prev {
                 Some(v) => std::env::set_var("BRAIN_DPO_CONTACT", v),

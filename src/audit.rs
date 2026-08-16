@@ -36,6 +36,7 @@
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tracing::error;
 
 /// Audit event categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,13 +255,37 @@ pub fn record_tenant(
         // doesn't leave a dangling tip. Rolling back a SAVEPOINT does NOT
         // touch the caller's outer transaction; rolling back a top-level
         // IMMEDIATE tx only undoes this best-effort audit row.
-        let _ = conn.execute(if inserted { end_stmt } else { rollback_stmt }, []);
+        //
+        // v1.27.19 "Scrub" (D-2): a failure to settle the tx is never silent —
+        // a row the caller believes is on the durable chain may be stuck in
+        // the air. Log at error level (visible in the operator log) and bump
+        // the `audit_chain_commit_failures` counter surfaced on `/health`.
+        if let Err(e) = conn.execute(if inserted { end_stmt } else { rollback_stmt }, []) {
+            record_commit_failure(&e);
+        }
         if !inserted && !autocommit {
             // ROLLBACK TO keeps the savepoint open; release it to clean up.
             let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
         }
     }
     (id >= 0).then_some(id)
+}
+
+/// Settle-failure counter: the audit chain's "the row may not be durable"
+/// signal. Incremented by [`record_tenant`] when the COMMIT/ROLLBACK of a
+/// best-effort audit row fails; read by `/health` so the absence is visible
+/// to operators, not just the log.
+static COMMIT_FAILURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn record_commit_failure(e: &rusqlite::Error) {
+    COMMIT_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    error!("audit chain tx settle failed — the audit row may not be durable: {e}");
+}
+
+/// Number of failed audit-tx settles since process start (see
+/// [`record_tenant`]). Monotonic; surfaced on the gated `/health` body.
+pub fn audit_commit_failures() -> usize {
+    COMMIT_FAILURES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Decoded prior-row fields needed to compute the chain link for the next row.
@@ -950,6 +975,63 @@ mod tests {
             verify_chain(&db),
             "chain holds when audit ran inside a caller tx"
         );
+    }
+
+    /// v1.27.19 "Scrub" (D-2): a failed COMMIT/ROLLBACK settle of a best-effort
+    /// audit row bumps `audit_commit_failures()` (surfaced on `/health`) and
+    /// logs at error level — the row may not be durable and that must be
+    /// visible, not silent. Forced here for real: a second connection holds a
+    /// SHARED lock (plain BEGIN) while this connection's COMMIT needs EXCLUSIVE;
+    /// with `busy_timeout=0` the settle fails with SQLITE_BUSY — no waiting.
+    #[test]
+    fn audit_commit_failure_alerts() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let path = tmp.path();
+        let holder = Connection::open(path).expect("holder conn");
+        let writer = Connection::open(path).expect("writer conn");
+        writer
+            .execute_batch(
+                "CREATE TABLE audit_events(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                    kind TEXT NOT NULL,
+                    actor TEXT,
+                    target_hash TEXT,
+                    status TEXT,
+                    detail_hash TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT 'global',
+                    prev_hash TEXT);
+                 PRAGMA busy_timeout=0;",
+            )
+            .expect("writer schema");
+        // Holder takes a read tx and reads (acquiring the SHARED lock) — COMMIT on
+        // the writer then cannot get the EXCLUSIVE lock it needs.
+        holder.execute_batch("BEGIN;").expect("holder read tx");
+        holder
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .expect("holder read acquires SHARED");
+
+        let before = audit_commit_failures();
+        record_tenant(
+            &writer,
+            AuditKind::Ingest,
+            "api",
+            "subject",
+            AuditStatus::Ok,
+            "d",
+            "team-a",
+        );
+        assert_eq!(
+            audit_commit_failures(),
+            before + 1,
+            "a failed settle must bump the /health counter"
+        );
+        assert!(audit_commit_failures() > before, "monotonic counter");
+        // The caller-facing contract still holds: a failed settle returns a row
+        // id (best-effort), never panics, never corrupts.
+        holder.execute_batch("ROLLBACK;").expect("release holder");
     }
 
     #[test]
