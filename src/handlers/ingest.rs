@@ -341,6 +341,34 @@ pub(crate) async fn ingest_one(
             crate::ph::ScrapePosture::Quarantine
         );
 
+    // v1.27.16 "Drawbridge" (M4/F-33): trust labels are not client-asserted.
+    // `memory_kind` must be a real kind (the same strict round-trip the
+    // proposal path now enforces — an unknown value must not silently store
+    // as `fact`), and a client-asserted `confidence` must be a real
+    // probability. Hard-reject on day one: no silent clamping (a clamped lie
+    // hides the liar), and these fields feed the salience + authority
+    // surfaces. Errors carry the allowed vocabulary/probability bounds.
+    if let Some(kind) = req.memory_kind.as_deref() {
+        if !crate::procedural::MemoryKind::is_strict_valid(kind) {
+            return Err(HandlerError::bad_request_with(
+                "invalid_memory_kind",
+                "memory_kind must be one of: fact, procedure, step, decision, episodic",
+                serde_json::json!({
+                    "allowed": ["fact", "procedure", "step", "decision", "episodic"]
+                }),
+            ));
+        }
+    }
+    if let Some(c) = req.confidence {
+        if !(0.0..=1.0).contains(&c) {
+            return Err(HandlerError::bad_request_with(
+                "invalid_confidence",
+                "confidence must be within 0.0..=1.0",
+                serde_json::json!({ "min": 0.0, "max": 1.0 }),
+            ));
+        }
+    }
+
     if req.entities.len() > MAX_ENTITIES {
         return Err(HandlerError::bad_request_with(
             "too_many_entities",
@@ -471,9 +499,12 @@ pub(crate) async fn ingest_one(
         crate::domain_router::route_domain_label(&forced_domain, &embedding, &centroids)
     };
     // Resolve the domain's pool via the registry (shim mode → global pool).
-    let pool = state.registry.pool_for(&domain_label).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-    })?;
+    // v1.27.16 (M5/F-41): registered-only in multi-db — an unregistered label
+    // 404s (`domain_unknown`); creation happens only in `POST /domains`.
+    let pool = state
+        .registry
+        .pool_for(&domain_label)
+        .map_err(super::map_domain_error)?;
 
     // v1.21.0 "Profiles" M1: apply the bound domain profile's ingest
     // defaults (the pure core is `apply_profile_ingest` — unit-tested there).

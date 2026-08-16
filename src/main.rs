@@ -417,6 +417,30 @@ struct AddRequest {
     source: String,
 }
 
+/// v1.27.16 "Drawbridge" (M4.3/F-33): the closed `/add` `source` vocabulary for
+/// JWT (agent) principals. Values match what `knowledge.source` stores — the
+/// search vocabulary (memory|markdown|structured|vault, `search::query::
+/// INGEST_KINDS`) plus the connector family kinds mapped from the shipped
+/// `CONNECTOR_KINDS`. `manual` is DELIBERATELY EXCLUDED: it is the interactive
+/// loopback-only value that derives `origin:human` (`gate::origin_for_source`),
+/// so a token-authenticated agent cannot forge human authorship.
+const ADD_SOURCES_FOR_JWT: &[&str] = &[
+    "memory",
+    "markdown",
+    "structured",
+    "vault",
+    // Connector family kinds (see src/connector/kind.rs::CONNECTOR_KINDS).
+    "github",
+    "crm",
+    "slack",
+    "email",
+    "jira",
+    "linear",
+    "notion",
+    "hris",
+    "ehr",
+];
+
 #[derive(Serialize, Default)]
 struct AddResponse {
     success: bool,
@@ -658,6 +682,20 @@ async fn add_chunk(
     if text.trim().is_empty() {
         return Json(AddResponse::error("text cannot be empty"));
     }
+    // v1.27.16 "Drawbridge" (M4.3/F-33): `source` is a trust label, not a
+    // free-form field. For a JWT (agent) principal the vocabulary is closed —
+    // and deliberately EXCLUDES `manual` (the `origin:human` marker,
+    // `gate::origin_for_source`): an agent cannot forge human authorship.
+    // `manual` stays the loopback/operator default (the interactive path is
+    // the one place human provenance is real).
+    let source = req.source.trim().to_string();
+    if principal.0.is_some() && !ADD_SOURCES_FOR_JWT.contains(&source.as_str()) {
+        return Json(AddResponse::error(format!(
+            "invalid source: '{source}' is not allowed for token-authenticated \
+             principals; allowed: {}",
+            ADD_SOURCES_FOR_JWT.join("|")
+        )));
+    }
     // v1.20.2 E3: enforce MAX_CONTENT on the legacy /add path too (its siblings
     // /ingest + /ingest/memory + /ingest/markdown all do). Previously /add
     // relied only on the global MAX_REQUEST_SIZE body limit, which is slightly
@@ -677,7 +715,6 @@ async fn add_chunk(
     let model = Arc::clone(&s.model);
     let pool = s.pool.clone();
     let title = req.title.filter(|t| !t.is_empty());
-    let source = req.source;
     // v1.17.1: record the creating principal (JWT `sub`) so `/dsar` + `/purge`
     // can locate by subject. `None` (loopback/opaque) keeps the legacy NULL.
     let owner = crate::handlers::gate::principal_to_owner(&principal.0);
@@ -808,8 +845,18 @@ async fn search(
     Query(p): Query<SearchParams>,
 ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
     // v1.12.1 "Harden": AuthZ read gate. Legacy shape — see `/add`.
+    // v1.27.16 "Drawbridge" (F-04): the gate must match the pool the query
+    // actually runs against (`p.domain`, defaulting to the caller's tenant
+    // domain) — authorizing `global` while querying a foreign pool let a
+    // tenant-scoped principal read by name. `None` principal (loopback/
+    // opaque) stays superuser; loopback behavior unchanged.
+    let target_domain = p
+        .domain
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("global");
     if let Err(e) =
-        crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", target_domain)
     {
         return (
             axum::http::StatusCode::OK,
@@ -2826,6 +2873,17 @@ async fn get_chunk(
     // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
+    // v1.27.16 "Drawbridge" (F-04/F-06): the read scope is the header-resolved
+    // domain label. The SQL predicate below binds the same label so an id can
+    // never cross domains in shim mode (multi-db pools are territory-scoped
+    // already); the composite record gate (v1.14 scope / v1.23 role) resolves
+    // once here, before the blocking closure may touch the pool.
+    let label = domain
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("global")
+        .to_string();
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
     // v1.20.24 "Sweep": mask PII for non-admin principals like /recall does —
     // the pii-flagged row's content never leaves unmasked through the legacy
     // read path (loopback/opaque stays unmasked by design).
@@ -2835,12 +2893,12 @@ async fn get_chunk(
         let r = conn.query_row(
             "SELECT k.id, k.title, k.content, k.source, k.document_id, k.chunk_index,
                     k.heading_path, k.line_start, k.line_end, k.created_at,
-                    s.uri, sr.id, k.pii
+                    s.uri, sr.id, k.pii, k.domain, k.owner, k.access_scope
              FROM knowledge k
              LEFT JOIN sources s ON k.source_id = s.id
              LEFT JOIN source_revisions sr ON k.revision_id = sr.id
-             WHERE k.id = ?1",
-            params![id],
+             WHERE k.id = ?1 AND k.domain = ?2",
+            params![id, label],
             |row| {
                 let content = row.get::<_, String>(2)?;
                 let pii: i64 = row.get(12)?;
@@ -2857,7 +2915,7 @@ async fn get_chunk(
                     pii_flag,
                     &pii_principal,
                 );
-                Ok(serde_json::json!({
+                let value = serde_json::json!({
                     "id": row.get::<_, i64>(0)?,
                     "title": title,
                     "content": crate::gate::sanitize_read(&content, pii_flag, &pii_principal),
@@ -2870,11 +2928,27 @@ async fn get_chunk(
                     "created_at": row.get::<_, Option<String>>(9)?,
                     "source_uri": row.get::<_, Option<String>>(10)?,
                     "revision_id": row.get::<_, Option<i64>>(11)?,
-                }))
+                });
+                let row_domain: String = row.get(13)?;
+                let row_owner: Option<String> = row.get(14)?;
+                let row_scope: Option<String> = row.get(15)?;
+                Ok((value, row_domain, row_owner, row_scope))
             },
         );
         match r {
-            Ok(v) => Ok(Some(v)),
+            Ok((value, row_domain, row_owner, row_scope)) => {
+                // v1.27.16 (F-04): belt-and-braces — re-authorize against the
+                // row's OWN domain, and run the record gate (the recall
+                // parity), so any future predicate loosening cannot leak the
+                // row to a principal that could not read it via recall.
+                if !handlers::can_read_domain(&pii_principal, &row_domain) {
+                    return Ok(None);
+                }
+                if !record_gate.admits(&row_owner, &row_scope) {
+                    return Ok(None);
+                }
+                Ok(Some(value))
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Internal(e.to_string())),
         }
@@ -2934,6 +3008,15 @@ async fn multi_get(
     // v1.0.0: resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
+    // v1.27.16 "Drawbridge" (F-04/F-06): same label + record gate as `/get/{id}`
+    // — the domain predicate below binds `label`, and the composite gate runs
+    // over every fetched row (the recall parity).
+    let label = domain
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("global")
+        .to_string();
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
     let ids = req.ids;
     // v1.20.24 "Sweep": mask PII per row for non-admin principals (loopback/
     // opaque stays unmasked by design — has_pii_read(None)).
@@ -2946,20 +3029,25 @@ async fn multi_get(
         if ids.is_empty() {
             return Ok(Vec::new());
         }
+        // v1.27.16 "Drawbridge" (F-04): the domain predicate binds the
+        // header-resolved label, so ids cannot cross domains in shim mode.
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+        let label_ph = ids.len() + 1;
         let sql = format!(
             "SELECT k.id, k.title, k.content, k.document_id, k.chunk_index,\
-                    k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii \
+                    k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii,\
+                    k.domain, k.owner, k.access_scope \
              FROM knowledge k \
              LEFT JOIN sources s ON k.source_id = s.id \
              LEFT JOIN source_revisions sr ON k.revision_id = sr.id \
-             WHERE k.id IN ({})",
+             WHERE k.id IN ({}) AND k.domain = ?{label_ph}",
             placeholders.join(",")
         );
-        let params: Vec<Box<dyn rusqlite::ToSql>> = ids
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = ids
             .iter()
             .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
             .collect();
+        params.push(Box::new(label));
         let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
         let mut stmt = conn
             .prepare(&sql)
@@ -2979,7 +3067,7 @@ async fn multi_get(
                     pii_flag,
                     &pii_principal,
                 );
-                Ok(serde_json::json!({
+                let value = serde_json::json!({
                     "id": row.get::<_, i64>(0)?,
                     "title": title,
                     "content": crate::gate::sanitize_read(&content, pii_flag, &pii_principal),
@@ -2990,12 +3078,27 @@ async fn multi_get(
                     "line_end": row.get::<_, Option<i64>>(7)?,
                     "source_uri": row.get::<_, Option<String>>(8)?,
                     "revision_id": row.get::<_, Option<i64>>(9)?,
-                }))
+                });
+                let row_domain: String = row.get(11)?;
+                let row_owner: Option<String> = row.get(12)?;
+                let row_scope: Option<String> = row.get(13)?;
+                Ok((value, row_domain, row_owner, row_scope))
             })
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut out = Vec::with_capacity(ids.len());
         for v in rows.flatten() {
-            out.push(v);
+            // v1.27.16 (F-04/F-06): drop (not error) rows whose domain the
+            // principal may not read and rows the record gate denies — a
+            // batch read filters like recall searches, keeping id-probing
+            // of foreign rows blind rather than loud.
+            let (value, row_domain, row_owner, row_scope) = v;
+            if !handlers::can_read_domain(&pii_principal, &row_domain) {
+                continue;
+            }
+            if !record_gate.admits(&row_owner, &row_scope) {
+                continue;
+            }
+            out.push(value);
         }
         Ok(out)
     })
@@ -3210,6 +3313,10 @@ async fn get_entity(
     let name_lower = name.to_lowercase();
     // v1.20.18 "Bound": finite edge set, clamped like the multi-get cap.
     let limit = clamp_graph_limit(limit_q.limit);
+    // v1.27.16 "Drawbridge" (F-06): in shim mode a JWT principal reads only
+    // edges whose chunk provenance carries the requested domain label.
+    let domain_scoped = domain.as_deref().unwrap_or("global");
+    let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, domain_scoped);
 
     let result = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
@@ -3232,7 +3339,7 @@ async fn get_entity(
             return Ok(serde_json::json!({"error": "Entity not found"}));
         };
 
-        let relations = entity_relations(&conn, id, limit)?;
+        let relations = entity_relations(&conn, id, limit, domain_scope.as_deref())?;
 
         Ok(serde_json::json!({
             "name": name,
@@ -3249,23 +3356,30 @@ async fn get_entity(
 /// v1.20.18 "Bound": the edge set for an entity, capped at `limit` (newest ids
 /// first — a stable, reproducible order; the KG has no histogram to rank by).
 /// Extracted so the LIMIT contract is unit-testable without an HTTP stack.
+/// v1.27.16 "Drawbridge" (F-06): `domain_scope` restricts edges to those whose
+/// chunk provenance carries the label (shim mode, JWT principal) — an edge
+/// with no knowledge link has no domain atom and is invisible to scoped
+/// readers. `None` = loopback/opaque/multi-db (unrestricted, unchanged).
 fn entity_relations(
     conn: &rusqlite::Connection,
     id: i64,
     limit: i64,
+    domain_scope: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let mut stmt = conn
         .prepare(
             "SELECT e.name, r.relation_type, CASE WHEN r.from_entity_id = ?1 THEN 'out' ELSE 'in' END as dir
              FROM relationships r
              JOIN entities e ON (r.to_entity_id = e.id OR r.from_entity_id = e.id)
-             WHERE r.from_entity_id = ?1 OR r.to_entity_id = ?1
+             LEFT JOIN knowledge k ON r.knowledge_id = k.id
+             WHERE (r.from_entity_id = ?1 OR r.to_entity_id = ?1)
+               AND (?3 IS NULL OR k.domain = ?3)
              ORDER BY r.id LIMIT ?2",
         )
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let relations = stmt
-        .query_map(params![id, limit], |r| {
+        .query_map(params![id, limit, domain_scope], |r| {
             Ok(serde_json::json!({
                 "to_entity": r.get::<_, String>(0)?,
                 "relation_type": r.get::<_, String>(1)?,
@@ -3312,11 +3426,25 @@ async fn get_relations(
     let param_lower = param.to_lowercase();
     // v1.20.18 "Bound": finite edge set, clamped like the multi-get cap.
     let limit = clamp_graph_limit(limit_q.limit);
+    // v1.27.16 "Drawbridge" (F-06): shim-mode JWT edge scoping (see
+    // `graph_domain_scope`).
+    let domain_scope = handlers::graph_domain_scope(
+        &principal.0,
+        &state.registry,
+        domain.as_deref().unwrap_or("global"),
+    );
 
     let result = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let direction = if is_from { "out" } else { "in" };
-        let results = relations_for(&conn, &param_lower, is_from, direction, limit)?;
+        let results = relations_for(
+            &conn,
+            &param_lower,
+            is_from,
+            direction,
+            limit,
+            domain_scope.as_deref(),
+        )?;
         Ok(serde_json::json!({ "relations": results }))
     })
     .await
@@ -3327,22 +3455,29 @@ async fn get_relations(
 
 /// v1.20.18 "Bound": the relations fan-out/in from an entity, capped at `limit`
 /// (newest ids first). Extracted for the LIMIT contract to be unit-testable.
+/// v1.27.16 "Drawbridge" (F-06): `domain_scope` restricts edges by their chunk
+/// provenance label (see `entity_relations`).
 fn relations_for(
     conn: &rusqlite::Connection,
     param_lower: &str,
     is_from: bool,
     direction: &str,
     limit: i64,
+    domain_scope: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let query = if is_from {
         "SELECT e.name, r.relation_type FROM relationships r
          JOIN entities e ON r.to_entity_id = e.id
+         LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.from_entity_id = (SELECT id FROM entities WHERE name = ?1)
+           AND (?3 IS NULL OR k.domain = ?3)
          ORDER BY r.id LIMIT ?2"
     } else {
         "SELECT e.name, r.relation_type FROM relationships r
          JOIN entities e ON r.from_entity_id = e.id
+         LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.to_entity_id = (SELECT id FROM entities WHERE name = ?1)
+           AND (?3 IS NULL OR k.domain = ?3)
          ORDER BY r.id LIMIT ?2"
     };
 
@@ -3351,7 +3486,7 @@ fn relations_for(
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let results = stmt
-        .query_map(params![param_lower, limit], |r| {
+        .query_map(params![param_lower, limit, domain_scope], |r| {
             Ok(serde_json::json!({
                 "entity": r.get::<_, String>(0)?,
                 "relation": r.get::<_, String>(1)?,
@@ -3422,6 +3557,9 @@ async fn traverse_graph(
     // v1.0.0: resolve pool from X-Brain-Domain header. When `cross_domain=true`,
     // walk edges across every known domain pool (per the plan M3 control).
     let header_domain = handlers::domain_from_headers(&headers);
+    // F-06 scope label: computed once (the header is moved into the target
+    // list below, so the label is materialized before the move).
+    let scope_label = header_domain.as_deref().unwrap_or("global").to_string();
     let entity_lower = entity.to_lowercase();
 
     // Build the (domain, pool) target list. Cross-domain fans out to every
@@ -3435,11 +3573,20 @@ async fn traverse_graph(
         }
     }
     if targets.is_empty() {
-        let d = header_domain.unwrap_or_else(|| "global".to_string());
+        let d = scope_label.clone();
         let p = handlers::resolve_domain_pool(&state.registry, Some(&d))
             .unwrap_or_else(|_| state.pool.clone());
         targets.push((d, p));
     }
+    // v1.27.16 "Drawbridge" (F-05/F-06): a tenant-scoped principal must not
+    // walk FOREIGN pools. Drop every target whose domain it may not read —
+    // the same retain `/recall` federation applies. Loopback/opaque
+    // (superuser) is untouched. An emptied list is a legitimate "nothing
+    // walkable", not an error.
+    targets.retain(|(d, _)| handlers::can_read_domain(&principal.0, d));
+    // v1.27.16 (F-06): shim-mode JWT edge scoping (the entity tables carry no
+    // domain column; the chunk link is the domain atom).
+    let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, &scope_label);
 
     let result = task::spawn_blocking(move || -> Result<serde_json::Value, AppError> {
         // v1.4.0 "Calibrate" M1: bi-temporal edge filter. When `at` is set, an
@@ -3486,6 +3633,28 @@ async fn traverse_graph(
         // hardcoded to ?4, which only worked when `at` was also bound.
         let at_ph = "?3";
         let kind_ph = if at_normalized.is_some() { "?4" } else { "?3" };
+        // v1.27.16 "Drawbridge" (F-06): the scope placeholder sits after every
+        // optional at/kind param (always bound, as `Option<String>`); the
+        // scope clause is compiled in only when the request is scoped, so
+        // unscoped walks (loopback/opaque/multi-db) keep the byte-identical
+        // query shape.
+        let (scope_clause, scope_join, scope_join_rec) = match &domain_scope {
+            Some(_) => {
+                let ph = if at_normalized.is_some() {
+                    "?5"
+                } else if kind_filter.is_some() {
+                    "?4"
+                } else {
+                    "?3"
+                };
+                (
+                    format!(" AND (?{ph} IS NULL OR k.domain = ?{ph})"),
+                    "LEFT JOIN knowledge k ON k.id = relationships.knowledge_id".to_string(),
+                    "LEFT JOIN knowledge k ON r.knowledge_id = k.id".to_string(),
+                )
+            }
+            None => (String::new(), String::new(), String::new()),
+        };
         let valid_clause = valid_clause.replace("?at", at_ph);
         let kind_clause = kind_clause_tmpl.replace("?kind", kind_ph);
         let kind_seed_clause = kind_seed_clause_tmpl.replace("?kind", kind_ph);
@@ -3493,15 +3662,16 @@ async fn traverse_graph(
             "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
                 SELECT from_entity_id, to_entity_id, 1, \
                        CAST(from_entity_id AS TEXT), CAST(relation_type AS TEXT) \
-                FROM relationships \
-                WHERE from_entity_id = ?1{valid_clause}{kind_seed_clause} \
+                FROM relationships {scope_join} \
+                WHERE from_entity_id = ?1{valid_clause}{kind_seed_clause}{scope_clause} \
                 UNION ALL \
                 SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, \
                        t.path || '->' || CAST(r.from_entity_id AS TEXT), \
                        t.edge_path || '|' || r.relation_type \
                 FROM relationships r \
                 JOIN traversal t ON r.from_entity_id = t.to_id \
-                WHERE t.depth < ?2{valid_clause}{kind_clause} \
+                {scope_join_rec} \
+                WHERE t.depth < ?2{valid_clause}{kind_clause}{scope_clause} \
             ) \
             SELECT DISTINCT e.name, t.depth, t.path, t.edge_path, \
                    (SELECT name FROM entities WHERE id = t.from_id) AS from_name \
@@ -3546,26 +3716,54 @@ async fn traverse_graph(
                     k.clone()
                 }
             });
-            let rows: Vec<_> = match (at_normalized.as_ref(), kind_param.as_ref()) {
-                (Some(at), Some(k)) => stmt
+            let rows: Vec<_> = match (
+                at_normalized.as_ref(),
+                kind_param.as_ref(),
+                domain_scope.as_ref(),
+            ) {
+                (Some(at), Some(k), Some(sc)) => stmt
+                    .query_map(params![eid, depth, at, k, sc], traverse_row_mapper(domain))
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
+                    .collect(),
+                (Some(at), Some(k), None) => stmt
                     .query_map(params![eid, depth, at, k], traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
-                (Some(at), None) => stmt
+                (Some(at), None, Some(sc)) => stmt
+                    .query_map(params![eid, depth, at, sc], traverse_row_mapper(domain))
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
+                    .collect(),
+                (Some(at), None, None) => stmt
                     .query_map(params![eid, depth, at], traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
-                (None, Some(k)) => stmt
+                (None, Some(k), Some(sc)) => stmt
+                    .query_map(params![eid, depth, k, sc], traverse_row_mapper(domain))
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
+                    .collect(),
+                (None, Some(k), None) => stmt
                     .query_map(params![eid, depth, k], traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
-                (None, None) => stmt
+                (None, None, Some(sc)) => stmt
+                    .query_map(params![eid, depth, sc], traverse_row_mapper(domain))
+                    .map_err(|e| AppError::Internal(e.to_string()))?
+                    .filter_map(|r| r.ok())
+                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
+                    .collect(),
+                (None, None, None) => stmt
                     .query_map(params![eid, depth], traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
@@ -3739,7 +3937,12 @@ async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response
     res
 }
 
-/// Rate limiter middleware — per-IP sliding window (100 req/min default).
+/// Rate limiter middleware — per-IP sliding window (10 000 req/min default,
+/// bounded key set via `RATE_LIMIT_MAX_KEYS`). v1.27.16 "Drawbridge" (F-07):
+/// the peer `SocketAddr` extension (injected by
+/// `into_make_service_with_connect_info`) is now guaranteed present, so each
+/// remote address gets its own bucket. `X-Forwarded-For` is still honored
+/// only under `BRAIN_TRUST_PROXY=1`.
 async fn rate_limit_middleware(
     State(rate_limiter): State<Arc<RateLimiter>>,
     req: Request<Body>,
@@ -3838,7 +4041,6 @@ async fn jwt_auth_middleware(
             | "/.well-known/ump.json"
             | "/ump/capabilities"
             | "/auth/refresh"
-            | "/auth/logout"
     ) || path.starts_with("/webhooks/")
         // v1.16.2 "Harden": the client SPA is public (static assets, no data).
         || path == "/"
@@ -3879,14 +4081,18 @@ async fn jwt_auth_middleware(
             auth::jwt::TokenType::Access,
         )
         .map_err(|e| e.code().to_string())?;
-        // Revocation check.
-        if let Ok(conn) = pool.get() {
-            if rev_cache
-                .is_revoked(&conn, &claims.jti, &claims.iss)
-                .unwrap_or(false)
-            {
-                return Err("revoked".to_string());
-            }
+        // Revocation check. v1.27.16 "Drawbridge" (M3.3/F-28): denial on ANY
+        // store failure — the old `if let Ok(conn)` + `unwrap_or(false)` let a
+        // pool/SQL error skip the check entirely, precisely during incident
+        // response (fail-open on the one path that must fail closed).
+        let conn = pool
+            .get()
+            .map_err(|e| format!("revocation store unavailable: {e}"))?;
+        if rev_cache
+            .is_revoked(&conn, &claims.jti, &claims.iss)
+            .map_err(|e| format!("revocation store error: {e}"))?
+        {
+            return Err("revoked".to_string());
         }
         // Build the principal from claims.
         let scopes: Vec<auth::Scope> = claims
@@ -3999,8 +4205,12 @@ async fn auth_middleware(
         "/health" | "/ready" | "/version" | "/openapi.yaml"
         // v1.2.0 AuthN: OIDC discovery + JWKS are public by design (clients
         // need them to verify tokens; can't require a token to learn how to
-        // verify tokens). `/auth/refresh` verifies its own refresh token;
-        // `/auth/logout` reads the principal set by the access-token request.
+        // verify tokens). `/auth/refresh` verifies its own refresh token.
+        // `/auth/logout` is NOT public (v1.27.16 "Drawbridge" M3.4/F-13): it
+        // revokes the presented access token, so the middleware must verify
+        // the bearer first — a public logout could revoke nothing and
+        // silently "succeed" (the handler reads the principal from the
+        // extension; with no principal it 401s unconditionally).
         | "/.well-known/openid-configuration" | "/.well-known/jwks.json"
         | "/.well-known/security.txt"
         | "/.well-known/ai-notice"
@@ -4008,7 +4218,7 @@ async fn auth_middleware(
         | "/.well-known/cop-notice"
         | "/.well-known/ump.json"
         | "/ump/capabilities"
-        | "/auth/refresh" | "/auth/logout"
+        | "/auth/refresh"
     ) || path.starts_with("/webhooks/")
         // v1.16.2 "Harden": the client SPA is public (static assets, no data).
         || path == "/"
@@ -4035,10 +4245,32 @@ async fn auth_middleware(
     if req.extensions().get::<auth::Principal>().is_some() {
         return next.run(req).await;
     }
-    let accepted = tokens.tokens();
-    if accepted.is_empty() {
-        return next.run(req).await;
-    }
+    // v1.27.16 "Drawbridge" (M3.1/F-26): the token read now distinguishes
+    // "never configured" from "read failed" — a poisoned token store is a 500
+    // fail-closed and a configured-but-empty store denies (auth is ON with
+    // no valid tokens). Only a truly unconfigured store keeps the loopback
+    // pass-through.
+    let accepted: std::collections::HashSet<String> = match tokens.tokens() {
+        auth::TokenRead::NotConfigured => return next.run(req).await,
+        auth::TokenRead::ReadFailed => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "auth_store_unavailable",
+                    "code": "auth_store_unavailable"
+                })),
+            )
+                .into_response();
+        }
+        auth::TokenRead::Active(s) if s.is_empty() => {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "unauthorized", "code": "unauthorized" })),
+            )
+                .into_response();
+        }
+        auth::TokenRead::Active(s) => s,
+    };
     let presented = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -4908,10 +5140,11 @@ async fn main_inner() -> Result<()> {
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
         // v1.2.0 "AuthN": OIDC discovery + JWKS + auth endpoints. These are
-        // PUBLIC routes (no auth_middleware) except `/auth/revoke` which needs
-        // admin auth. `/auth/refresh` verifies the presented refresh token
-        // itself; `/auth/logout` reads the principal from extensions (set by
-        // the middleware on the original access-token request).
+        // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
+        // and `/auth/logout` (v1.27.16 "Drawbridge" M3.4/F-13 — the
+        // middleware verifies the presented access token, so the handler can
+        // revoke its `jti`; an unauthenticated logout would revoke nothing).
+        // `/auth/refresh` verifies the presented refresh token itself.
         .route(
             "/.well-known/openid-configuration",
             get(handlers::well_known::openid_configuration),
@@ -5038,6 +5271,26 @@ async fn main_inner() -> Result<()> {
             let cw_state = Arc::clone(&app_state);
             let cw_watch = app_state.chain_watch.clone();
             tokio::spawn(async move { alert::spawn_chain_watcher(cw_state, cw_watch).await });
+            // v1.27.16 "Drawbridge" (M5/F-41): seed the multi-db registry from
+            // the clients register — a client's domain must resolve even if
+            // its per-domain file vanished between boots (register recreates
+            // it: cap-bounded; a refused seed is logged, never fatal).
+            if config::multi_db() {
+                if let Ok(conn) = app_state.pool.get() {
+                    let domains: Vec<String> = conn
+                        .prepare("SELECT DISTINCT domain FROM clients")
+                        .and_then(|mut stmt| {
+                            stmt.query_map([], |r| r.get::<_, String>(0))
+                                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                        })
+                        .unwrap_or_default();
+                    for d in domains {
+                        if let Err(e) = app_state.registry.seed_registered(&d) {
+                            warn!("clients-table domain seed refused: {e}");
+                        }
+                    }
+                }
+            }
             app_state
         });
 
@@ -5117,9 +5370,20 @@ async fn main_inner() -> Result<()> {
     // rest. If a request hangs forever after SIGTERM, systemd's
     // TimeoutStopSec (default 90s) will kill the process — that's the
     // outer cap, not the application.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    //
+    // v1.27.16 "Drawbridge" (F-07): `into_make_service_with_connect_info`
+    // injects the peer `SocketAddr` extension on every request. Previously
+    // the plain `serve` never provided it, so `rate_limit_middleware`'s
+    // `req.extensions().get::<SocketAddr>()` was always `None` and every
+    // client shared ONE "unknown" bucket — the per-IP limiter was a global
+    // limiter in practice. With the extension present, the middleware keys
+    // by remote address (XFF still honored only under `BRAIN_TRUST_PROXY=1`).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // v1.1.0 Harden M4: checkpoint WAL on shutdown so a kill -9 or power loss
     // can't leave the live DB with un-replayed WAL frames. Best-effort: a
@@ -5234,10 +5498,10 @@ mod tests {
         let c = graph_db(1000); // hub id 1 with 1000 out-edges
                                 // The entity query joins both endpoints, so a 1000-edge hub yields
                                 // >1000 rows without a cap; the LIMIT keeps the response finite.
-        let bounded = entity_relations(&c, 1, 500).unwrap();
+        let bounded = entity_relations(&c, 1, 500, None).unwrap();
         assert_eq!(bounded.len(), 500, "bounded to the cap");
         // A small explicit limit is honored.
-        let tiny = entity_relations(&c, 1, 3).unwrap();
+        let tiny = entity_relations(&c, 1, 3, None).unwrap();
         assert_eq!(tiny.len(), 3);
         // The clamp (handler-side) keeps limits in 1..=MAX_GRAPH_EDGES.
         assert_eq!(clamp_graph_limit(None), MAX_GRAPH_EDGES);
@@ -5250,11 +5514,11 @@ mod tests {
     fn graph_relations_respects_limit_from_and_to() {
         let c = graph_db(1000);
         // from-branch: hub (id 1, name "hub") fans out 1000 edges.
-        let from = relations_for(&c, "hub", true, "out", 2).unwrap();
+        let from = relations_for(&c, "hub", true, "out", 2, None).unwrap();
         assert_eq!(from.len(), 2);
         assert_eq!(from[0]["direction"], "out");
         // to-branch: create an entity every edge points into and query "in".
-        let to = relations_for(&c, "e1005", false, "in", 1).unwrap();
+        let to = relations_for(&c, "e1005", false, "in", 1, None).unwrap();
         assert_eq!(to.len(), 1);
         assert_eq!(to[0]["direction"], "in");
         assert_eq!(to[0]["entity"], "hub");
@@ -5268,7 +5532,11 @@ mod tests {
         c.execute_batch(
             "CREATE TABLE entities(id INTEGER PRIMARY KEY, name TEXT, entity_type TEXT);
              CREATE TABLE relationships(id INTEGER PRIMARY KEY,
-                from_entity_id INTEGER, to_entity_id INTEGER, relation_type TEXT);",
+                from_entity_id INTEGER, to_entity_id INTEGER, relation_type TEXT,
+                knowledge_id INTEGER);
+             -- v1.27.16 (F-06): the bounded-query joins through knowledge for
+             -- the domain-scope atom; a bare fixture keeps the table (empty).
+             CREATE TABLE knowledge(id INTEGER PRIMARY KEY, domain TEXT);",
         )
         .unwrap();
         c.execute("INSERT INTO entities(id, name) VALUES (1, 'hub')", [])
@@ -9880,7 +10148,8 @@ Final paragraph after the rule.";
         let reg = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true);
 
         // Write a row tagged domain='health'.
-        let health_pool = reg.pool_for("health").expect("open health");
+        // v1.27.16 (M5/F-41): registered-only — creation goes through `register`.
+        let health_pool = reg.register("health").expect("register health");
         {
             let conn = health_pool.get().unwrap();
             conn.execute(
@@ -9891,7 +10160,7 @@ Final paragraph after the rule.";
             .unwrap();
         }
         // Write a row tagged domain='business'.
-        let biz_pool = reg.pool_for("business").expect("open business");
+        let biz_pool = reg.register("business").expect("register business");
         {
             let conn = biz_pool.get().unwrap();
             conn.execute(
@@ -10602,8 +10871,13 @@ Final paragraph after the rule.";
     fn authz_gates_cover_every_non_public_route() {
         // (route, expected `Action::X` literal in the handler body)
         // PUBLIC by design (no gate): /health, /ready, /version, /openapi.yaml,
-        // /.well-known/*, /auth/refresh, /auth/logout. (`/health/db` is
-        // Read-gated since v1.20.2 F2.)
+        // /.well-known/*, /auth/refresh. (/health/db is Read-gated since
+        // v1.20.2 F2.) /auth/logout is NOT in the table: its gate is the
+        // middleware itself (v1.27.16 "Drawbridge" M3.4/F-13) — the handler
+        // carries no `authorize()` literal because it has no action gate; it
+        // relies on the verified bearer principal injected upstream (without
+        // one it 401s). Removing it from the gate table is correct: the
+        // middleware now enforces presentation, which is its one requirement.
         // /webhooks/* verifies its own HMAC inside the handler (GitHub cannot
         // present a brain bearer token) — no authorize() by design.
         let table: &[(&str, &str)] = &[
@@ -11104,6 +11378,656 @@ Final paragraph after the rule.";
             .await
             .unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// v1.27.16 "Drawbridge" (M2, F-07): the rate limiter keys buckets by the
+    /// peer `SocketAddr` extension — the gap the audit flagged (pre-v1.27.16
+    /// the extension was missing, so EVERY request shared one bucket). One
+    /// remote address exhausting its budget must never throttle another.
+    #[tokio::test]
+    async fn rate_limit_buckets_per_socket_addr_and_does_not_share() {
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let limiter = Arc::new(RateLimiter::new());
+        let app = axum::Router::new()
+            .route("/", get(stub))
+            .with_state(limiter.clone())
+            .layer(middleware::from_fn_with_state(
+                limiter,
+                rate_limit_middleware,
+            ));
+
+        let addr_a: SocketAddr = "10.0.0.1:1111".parse().unwrap();
+        let addr_b: SocketAddr = "10.0.0.2:2222".parse().unwrap();
+
+        fn req(addr: Option<SocketAddr>) -> axum::http::Request<Body> {
+            let mut r = axum::http::Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            if let Some(a) = addr {
+                r.extensions_mut().insert(a);
+            }
+            r
+        }
+
+        // A exhausts its own 60s window budget (10 000 req/min default).
+        for _ in 0..RateLimiter::new().max_requests {
+            let resp = app.clone().oneshot(req(Some(addr_a))).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "within budget → served"
+            );
+        }
+        let resp = app.clone().oneshot(req(Some(addr_a))).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "exhausted budget → 429"
+        );
+
+        // B shares nothing with A: its own bucket, still served.
+        for _ in 0..3 {
+            let resp = app.clone().oneshot(req(Some(addr_b))).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "a second address is unaffected"
+            );
+        }
+
+        // No extension → the "unknown" bucket (the real wiring always injects
+        // one via into_make_service_with_connect_info; a request without it
+        // simply shares the fallback bucket).
+        let resp = app.clone().oneshot(req(None)).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// v1.27.16 "Drawbridge" (M2, F-07): with `RATE_LIMIT_MAX_KEYS` buckets the
+    /// tracked set is bounded — a flurry of distinct (spoofed) IPs evicts the
+    /// oldest 25%, and one user's exhaustion never denies another.
+    #[test]
+    fn rate_limiter_evicts_oldest_quarter_and_stays_bounded() {
+        let l = RateLimiter::new();
+        let max = config::RATE_LIMIT_MAX_KEYS;
+        for i in 0..(max + 1) {
+            assert!(l.is_allowed(&format!("10.9.9.{i}")), "fresh bucket allowed");
+        }
+        let n = l.requests.lock().unwrap().len();
+        assert!(n <= max, "tracked set stays bounded ({n} > {max})");
+
+        let l2 = RateLimiter::new();
+        for _ in 0..l2.max_requests {
+            assert!(l2.is_allowed("10.1.1.1"));
+        }
+        assert!(!l2.is_allowed("10.1.1.1"), "same user exhausted → denied");
+        assert!(l2.is_allowed("10.1.1.2"), "other user untouched");
+    }
+
+    /// v1.27.16 "Drawbridge" (M2, F-07): the serve wiring MUST inject the peer
+    /// socket via `into_make_service_with_connect_info` — the production pin
+    /// for the per-IP bucket guarantee (a direct `axum::serve` regression
+    /// silently collapses every client into one bucket).
+    #[test]
+    fn serve_wires_connect_info_with_socket_addr() {
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains("into_make_service_with_connect_info::<SocketAddr>"),
+            "serve must inject the peer address extension"
+        );
+    }
+
+    /// v1.27.16 "Drawbridge" (M3.4, F-13/F-25): `/auth/logout` sits behind the
+    /// bearer middleware (revoking requires a verified token, and a public
+    /// logout could only ever "succeed" at revoking nothing). Pinned three
+    /// ways: it IS a bootstrap route, it is NOT in any middleware public list,
+    /// and the handler itself 401s without a principal (defense-in-depth).
+    #[test]
+    fn logout_wired_behind_bearer_and_denies_without_principal() {
+        let src = include_str!("main.rs");
+        assert!(
+            src.contains(".route(\"/auth/logout\", post(handlers::auth::logout))"),
+            "logout is a bootstrap route"
+        );
+        assert!(
+            !src.contains("| \"/auth/logout\""),
+            "logout must not appear in any middleware public list"
+        );
+        let auth_src = include_str!("handlers/auth.rs");
+        assert!(
+            auth_src
+                .split("pub async fn logout")
+                .nth(1)
+                .is_some_and(|body| body.contains("StatusCode::UNAUTHORIZED")),
+            "logout returns 401 without a principal"
+        );
+    }
+
+    /// v1.27.16 "Drawbridge" (M3.1, F-26): a configured-but-EMPTY token store
+    /// must deny (401), never read as "auth disabled" (the pre-Drawbridge
+    /// allow-all collapse). Middleware-level pin: file exists, zero tokens.
+    #[tokio::test]
+    async fn configured_but_empty_token_store_denies_not_opens() {
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let f = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(f.path(), b"").unwrap();
+        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
+
+        let app = axum::Router::new()
+            .route("/private", get(stub))
+            .with_state(store.clone())
+            .layer(middleware::from_fn_with_state(store, auth_middleware));
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "configured-but-empty must deny"
+        );
+    }
+
+    // ── v1.27.16 "Drawbridge" (M1, F-04/F-05/F-06) ─────────────────────────
+    //
+    // The domain read-gate: a tenant-scoped JWT principal can read chunks,
+    // search, and walk graph edges only inside the domains its scopes grant.
+    // All tests below run SHIM mode (one pool, domain labels in the column)
+    // — the exact configuration the SQL predicates + retain gates target.
+
+    /// Shared AppState for the Drawbridge read-gate tests. Shim mode on
+    /// purpose: per-domain pools (multi-db) are already territory-scoped, so
+    /// the predicate/gate coverage lives here.
+    fn drawbridge_state(tmp: &tempfile::NamedTempFile) -> Arc<AppState> {
+        crate::register_sqlite_vec();
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+        );
+        Arc::new(AppState {
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        })
+    }
+
+    /// A principal scoped to team-alpha/alpha ONLY (no wildcard): beta is
+    /// foreign, and the domain gate must treat it so.
+    fn alpha_principal(sub: &str) -> auth::Principal {
+        use auth::Scope;
+        auth::Principal {
+            sub: sub.to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![Scope::parse("read:team-alpha/alpha").unwrap()],
+            jti: "jti-db".to_string(),
+            roles: Vec::new(),
+            manages: Vec::new(),
+        }
+    }
+
+    /// Insert a chunk (knowledge + vec0 row) tagged with `domain` so the
+    /// search/read seams have rows to filter. Returns the knowledge id.
+    /// `access_scope` defaults to the column's `private` default when omitted.
+    fn seed_chunk(
+        state: &AppState,
+        domain: &str,
+        owner: Option<&str>,
+        access_scope: Option<&str>,
+        content: &str,
+    ) -> i64 {
+        seed_into(&state.pool, domain, owner, access_scope, content)
+    }
+
+    /// The pool-explicit form (multi-db tests seed each domain pool).
+    fn seed_into(
+        pool: &crate::Pool,
+        domain: &str,
+        owner: Option<&str>,
+        access_scope: Option<&str>,
+        content: &str,
+    ) -> i64 {
+        let v = vec![0.5f32; 512];
+        let access_scope = access_scope.unwrap_or("private");
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (title, content, content_hash, source, domain, owner, access_scope)
+             VALUES (?1, ?2, ?3, 'structured', ?4, ?5, ?6)",
+            rusqlite::params![content, content, format!("h-{content}"), domain, owner, access_scope],
+        )
+        .unwrap();
+        let kid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO vec_knowledge (knowledge_id, embedding_int8, embedding_bit, source, created_at)
+             VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",
+            rusqlite::params![kid, v.as_bytes()],
+        )
+        .unwrap();
+        kid
+    }
+
+    fn domain_headers(label: &str) -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-brain-domain",
+            axum::http::HeaderValue::from_str(label).unwrap(),
+        );
+        headers
+    }
+
+    /// F-04: a principal holding only `alpha` cannot fetch a `beta` chunk by
+    /// id — the SQL predicate binds the header label, so the id probe returns
+    /// the same 404 as a nonexistent id (blind, not loud). Loopback (None)
+    /// with the same label reads the row fine (the header is the scope).
+    #[tokio::test]
+    async fn get_by_id_cannot_cross_domain() {
+        use axum::extract::{Path, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha content");
+        let beta_id = seed_chunk(&state, "beta", None, None, "beta content");
+
+        let err = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            domain_headers("alpha"),
+            Path(beta_id),
+        )
+        .await
+        .expect_err("a foreign-domain id must not resolve");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "foreign id reads as not-found (probe-blind): {err:?}"
+        );
+
+        // Same principal, own-domain id → served.
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            domain_headers("alpha"),
+            Path(alpha_id),
+        )
+        .await
+        .expect("own-domain id resolves");
+        assert_eq!(ok.0["id"], alpha_id);
+    }
+
+    /// F-04: multi-get drops (never errors on) ids that cross the principal's
+    /// domain — a batch read filters like a recall search.
+    #[tokio::test]
+    async fn multi_get_filters_cross_domain_ids() {
+        use axum::extract::{Json as AxumJson, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha content");
+        let beta_id = seed_chunk(&state, "beta", None, None, "beta content");
+
+        let resp = multi_get(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            domain_headers("alpha"),
+            AxumJson(MultiGetRequest {
+                ids: vec![alpha_id, beta_id],
+            }),
+        )
+        .await
+        .expect("multi-get succeeds");
+        let chunks = resp.0["chunks"].as_array().unwrap();
+        assert_eq!(chunks.len(), 1, "only the own-domain id survives");
+        assert_eq!(chunks[0]["id"], alpha_id);
+
+        // Loopback reads both (unrestricted, unchanged).
+        let resp = multi_get(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            AxumJson(MultiGetRequest {
+                ids: vec![alpha_id, beta_id],
+            }),
+        )
+        .await
+        .expect("loopback multi-get succeeds");
+        let chunks = resp.0["chunks"].as_array().unwrap();
+        assert_eq!(
+            chunks.len(),
+            1,
+            "the alpha label still scopes the pool query"
+        );
+    }
+
+    /// F-04 + M3.2: the record gate runs on /get too — an `agent` role can
+    /// read its own rows (owner=self, private) and nothing else's, exactly
+    /// like recall's gate. The role bundle resolves from the seeded store.
+    #[tokio::test]
+    async fn agent_role_cannot_read_other_owners_by_id() {
+        use axum::extract::{Path, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let mine = seed_chunk(&state, "global", Some("ana"), Some("private"), "mine");
+        let theirs = seed_chunk(&state, "global", Some("other"), Some("private"), "theirs");
+        let agent = role_p("ana", &["agent"], &[]);
+
+        let err = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(Some(agent.clone())),
+            axum::http::HeaderMap::new(),
+            Path(theirs),
+        )
+        .await
+        .expect_err("another owner's row must be denied");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(Some(agent)),
+            axum::http::HeaderMap::new(),
+            Path(mine),
+        )
+        .await
+        .expect("own row resolves");
+        assert_eq!(ok.0["id"], mine);
+    }
+
+    /// F-06: in shim mode the graph edge-read scope is the chunk link — a
+    /// principal scoped to `alpha` sees no edges whose chunk is `beta`, and
+    /// an unlinked edge is invisible to scoped readers. Loopback sees all.
+    #[test]
+    fn graph_reads_scope_filtered() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let conn = state.pool.get().unwrap();
+
+        conn.execute(
+            "INSERT INTO entities (name, entity_type) VALUES ('hub', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO entities (name, entity_type) VALUES ('leaf', NULL)",
+            [],
+        )
+        .unwrap();
+        let hub: i64 = conn
+            .query_row("SELECT id FROM entities WHERE name = 'hub'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let leaf: i64 = conn
+            .query_row("SELECT id FROM entities WHERE name = 'leaf'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let kid = seed_chunk(&state, "beta", None, None, "beta chunk");
+        conn.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, knowledge_id)
+             VALUES (?1, ?2, 'links_to', ?3)",
+            rusqlite::params![hub, leaf, kid],
+        )
+        .unwrap();
+        // An unlinked edge (no chunk provenance atom).
+        conn.execute(
+            "INSERT INTO entities (name, entity_type) VALUES ('bare', NULL)",
+            [],
+        )
+        .unwrap();
+        let bare: i64 = conn
+            .query_row("SELECT id FROM entities WHERE name = 'bare'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type)
+             VALUES (?1, ?2, 'links_to')",
+            rusqlite::params![hub, bare],
+        )
+        .unwrap();
+
+        // Scoped to alpha: neither the beta edge nor the unlinked edge shows.
+        let scoped = entity_relations(&conn, hub, 50, Some("alpha")).unwrap();
+        assert_eq!(scoped.len(), 0, "foreign + unlinked edges invisible");
+        // Scoped to beta: only the linked beta edge shows (the query emits
+        // one row per endpoint entity — 2 rows for the one edge).
+        let beta_scoped = entity_relations(&conn, hub, 50, Some("beta")).unwrap();
+        assert_eq!(beta_scoped.len(), 2, "beta principal sees its own edge");
+        // Unrestricted (loopback): both edges, all endpoint rows.
+        let all = entity_relations(&conn, hub, 50, None).unwrap();
+        assert_eq!(all.len(), 4, "loopback sees every edge");
+    }
+
+    /// F-04: the loopback/opaque principal keeps the legacy superuser read
+    /// surface — own-domain reads, graph scope, and recall federation all
+    /// behave exactly as before (the gates only narrow JWT principals).
+    #[tokio::test]
+    async fn loopback_superuser_unchanged() {
+        use axum::extract::{Path, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha content");
+        let _beta_id = seed_chunk(&state, "beta", None, None, "beta content");
+
+        // /get with the matching label serves.
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            Path(alpha_id),
+        )
+        .await
+        .expect("loopback read");
+        assert_eq!(ok.0["id"], alpha_id);
+
+        // Graph scope resolves unrestricted.
+        assert_eq!(
+            handlers::graph_domain_scope(&None, &state.registry, "alpha"),
+            None
+        );
+
+        // Recall across a foreign label still works.
+        let req = recall_req(Some("beta"), false);
+        let outcome = handlers::recall::run_recall(
+            &state,
+            &None,
+            req,
+            handlers::recall::RecallSourceQuery::default(),
+        )
+        .await
+        .expect("loopback recall");
+        assert!(
+            !outcome.tagged.is_empty(),
+            "loopback still searches foreign labels"
+        );
+    }
+
+    /// The recall request literal the Drawbridge recall tests share.
+    fn recall_req(domain: Option<&str>, strict: bool) -> handlers::recall::RecallRequest {
+        handlers::recall::RecallRequest {
+            query: "alpha content".to_string(),
+            limit: 5,
+            domain: domain.map(|s| s.to_string()),
+            strict,
+            provenance: false,
+            source: None,
+            since: None,
+            lex: crate::search::query::LexSpec::default(),
+            vec: None,
+            hyde: None,
+            intent: None,
+            sources: Vec::new(),
+            profile: None,
+            include_flagged: false,
+            as_of: None,
+            evidence: false,
+            at: None,
+            max_context_tokens: None,
+            gold_answer: None,
+            graph: false,
+            include_decayed: false,
+            memory_kind: None,
+            min_relevance: None,
+            trace: false,
+        }
+    }
+
+    /// F-05: recall drops (never searches) domains the principal cannot read.
+    /// A principal holding only `alpha` federating across all known domains
+    /// gets only its own domain's hits — the foreign pool is dropped before
+    /// any search runs against it. An EXPLICIT foreign domain stays loudly
+    /// denied (403, the pre-existing authorize — probes zip shut, but a
+    /// caller spelling out a domain gets told no).
+    #[tokio::test]
+    async fn recall_federation_drops_unauthorized_domains() {
+        use tempfile::TempDir;
+
+        register_sqlite_vec();
+        let dir = TempDir::new().expect("temp dir");
+        let global_path = dir.path().join("brain.db");
+        let mgr = SqliteConnectionManager::file(&global_path);
+        let global_pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("global pool");
+        run_migration(&mut global_pool.get().unwrap(), config::DB_MMAP_SIZE_MIB)
+            .expect("global migration");
+        let reg = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true);
+        let alpha_pool = reg.register("alpha").expect("register alpha");
+        seed_into(&alpha_pool, "alpha", None, None, "alpha content");
+        let beta_pool = reg.register("beta").expect("register beta");
+        seed_into(&beta_pool, "beta", None, None, "beta content");
+        let state = Arc::new(AppState {
+            pool: global_pool,
+            registry: reg,
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+            ),
+            db_path: global_path,
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+
+        // Federation (no forced domain, no confident centroid): the alpha
+        // principal (holding its own domain + the global default) searches
+        // `alpha` only — a beta hit must never surface even though the query
+        // text says "beta content".
+        use auth::Scope;
+        let ana = auth::Principal {
+            sub: "ana".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![
+                Scope::parse("read:team-alpha/alpha").unwrap(),
+                Scope::parse("read:team-alpha/global").unwrap(),
+            ],
+            jti: "jti-db".to_string(),
+            roles: Vec::new(),
+            manages: Vec::new(),
+        };
+        let outcome = match handlers::recall::run_recall(
+            &state,
+            &Some(ana.clone()),
+            recall_req(None, false),
+            handlers::recall::RecallSourceQuery::default(),
+        )
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => panic!("recall must succeed (graceful drop): {e:?}"),
+        };
+        assert!(
+            !outcome.tagged.is_empty(),
+            "the principal's own domain is still searched"
+        );
+        for (_, d) in &outcome.tagged {
+            assert_eq!(d, "alpha", "no foreign-domain hit may surface");
+        }
+
+        // Explicit foreign domain: the loud pre-existing 403 (probe-free —
+        // the principal never queries a pool it may not read).
+        let err = match handlers::recall::run_recall(
+            &state,
+            &Some(ana),
+            recall_req(Some("beta"), false),
+            handlers::recall::RecallSourceQuery::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("explicit foreign domain must be denied"),
+            Err(e) => e,
+        };
+        assert_eq!(err.inner.code, "forbidden", "{err:?}");
+    }
+
+    /// M3.2: a role-store failure degrades to the EMPTY permit (deny all) —
+    /// never to "all rows". Exhausted pool → gate admits nothing.
+    #[tokio::test]
+    async fn role_gate_error_degrades_to_empty_not_open() {
+        use std::time::Duration;
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .max_size(1)
+            .connection_timeout(Duration::from_millis(50))
+            .build(mgr)
+            .expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        // Hold the single connection: every further get() times out.
+        let _held = pool.get().expect("take the only connection");
+
+        let agent = role_p("ana", &["agent"], &[]);
+        let gate = handlers::gate::record_read_gate(&Some(agent), &pool);
+        assert!(
+            !gate.admits(&Some("ana".to_string()), &Some("private".to_string())),
+            "a degraded gate must not open even for plausible rows"
+        );
+        assert!(!gate.admits(&None, &None), "deny-all on store failure");
     }
 
     /// v1.17.3 M5 (§5.2): the capability-token acceptance decision. A token

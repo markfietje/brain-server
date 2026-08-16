@@ -574,6 +574,14 @@ pub fn operator_signing_key() -> Option<(String, SigningKey)> {
         if !e.path().is_file() {
             return None;
         }
+        // v1.27.16 "Drawbridge" (M3.5/F-25): the seed is a signing secret —
+        // same 0600 owner-only enforcement the JWT keys / token file /
+        // webhook secret get. A group/world-readable seed would let any local
+        // user mint capability tokens; refuse it (fail closed to L2
+        // hash-only integrity).
+        if crate::auth::check_secret_permissions(&e.path()).is_err() {
+            return None;
+        }
         std::fs::read(e.path()).ok()
     })?;
     let bytes: [u8; 32] = seed.try_into().ok()?;

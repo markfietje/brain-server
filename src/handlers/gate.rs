@@ -140,10 +140,13 @@ pub async fn ingest_proposal(
             ));
         }
     }
-    if !crate::procedural::MemoryKind::from_str(&req.kind).is_valid_for_gate() {
+    // v1.27.16 "Drawbridge" (M4/F-33): strict kind validation — the raw-string
+    // round-trip, so unknown/mixed-case values (which `from_str` silently
+    // resolves to Fact) are rejected, not stored as a different kind.
+    if !crate::procedural::MemoryKind::is_strict_valid(&req.kind) {
         return Err(HandlerError::bad_request(
             "invalid_kind",
-            format!("unknown memory_kind '{}'", req.kind),
+            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic",
         ));
     }
 
@@ -878,9 +881,13 @@ pub fn scope_filter(p: &Option<crate::auth::Principal>) -> Option<Vec<String>> {
 /// carries a `roles` claim. `None` when the principal has no roles (the
 /// v1.14 `scope_filter` path applies unchanged). Otherwise resolves the role
 /// bundles and returns the narrowed `access_scopes` + the `owner_in` set
-/// (self/reports). A DB error or unreadable role degrades to the caller's
-/// no-roles behavior (transient, availability-first — the gate is additive,
-/// never a 500 on a busy pool).
+/// (self/reports).
+///
+/// v1.27.16 "Drawbridge" (M3.2, F-27): degradation is now fail-closed. A
+/// pool/role-store error returns the *empty permit* (matches nothing) with a
+/// `warn!` — never `None` (which the v1.14 caller reads as "no narrowing").
+/// The old availability-first fallback was a fail-open data gate: incident
+/// response is precisely when role enforcement must not wobble.
 pub fn role_retrieval_gate(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
@@ -889,13 +896,109 @@ pub fn role_retrieval_gate(
     if pr.roles.is_empty() {
         return None;
     }
-    let conn = pool.get().ok()?;
-    let roles = brain_server::role::resolve(&conn, &pr.roles).ok()?;
-    Some(brain_server::role::effective_filter(
-        &pr.sub,
-        &pr.manages,
-        &roles,
-    ))
+    let empty_permit = || brain_server::role::RetrievalGate {
+        access_scopes: Some(Vec::new()),
+        owner_in: Some(Vec::new()),
+    };
+    let sub = pr.sub.clone();
+    let manages = pr.manages.clone();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                sub = %sub,
+                error = %e,
+                "role retrieval gate: pool unavailable — degrading to empty permit (fail closed)"
+            );
+            return Some(empty_permit());
+        }
+    };
+    match brain_server::role::resolve(&conn, &pr.roles) {
+        Ok(roles) => Some(brain_server::role::effective_filter(&sub, &manages, &roles)),
+        Err(e) => {
+            tracing::warn!(
+                sub = %sub,
+                error = %e,
+                "role retrieval gate: role store error — degrading to empty permit (fail closed)"
+            );
+            Some(empty_permit())
+        }
+    }
+}
+
+/// v1.27.16 "Drawbridge" (F-06): the composite record-level read gate by-id
+/// read surfaces apply — the same (access_scopes, owner_in) pair `/recall`
+/// enforces via SQL, so a direct `/get/{id}`/`/multi-get` cannot bypass the
+/// v1.14 scope / v1.23 role boundary. `unrestricted` for loopback/opaque
+/// (omniscient, unchanged); `empty_permit` (matches nothing) on role-store
+/// failure — fail closed, never "all rows".
+#[derive(Debug, Clone)]
+pub struct RecordReadGate {
+    /// Allowed `access_scope` values; `Some` requires the row's scope in the
+    /// set (a NULL row scope is denied — the same SQL semantics /recall's
+    /// `k.access_scope IN (...)` applies).
+    pub access_scopes: Option<Vec<String>>,
+    /// Allowed `owner` values; `Some` requires the row's owner in the set.
+    pub owner_in: Option<Vec<String>>,
+}
+
+impl RecordReadGate {
+    /// No record-level narrowing (loopback/opaque, or an unrestricted role).
+    pub fn unrestricted() -> Self {
+        Self {
+            access_scopes: None,
+            owner_in: None,
+        }
+    }
+
+    /// The most-restrictive gate: matches nothing.
+    fn empty_permit() -> Self {
+        Self {
+            access_scopes: Some(Vec::new()),
+            owner_in: Some(Vec::new()),
+        }
+    }
+
+    /// Whether a stored row `(owner, access_scope)` passes the gate.
+    pub fn admits(&self, owner: &Option<String>, access_scope: &Option<String>) -> bool {
+        if let Some(sc) = &self.access_scopes {
+            if !access_scope.as_ref().is_some_and(|s| sc.contains(s)) {
+                return false;
+            }
+        }
+        if let Some(owns) = &self.owner_in {
+            if !owner.as_ref().is_some_and(|o| owns.contains(o)) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Resolve the composite record gate for a principal: the v1.23 role gate
+/// when it carries roles, else the v1.14 scope filter. Errors inside either
+/// degrade to the empty permit (fail closed — v1.27.16 M3.2).
+pub fn record_read_gate(
+    principal: &Option<crate::auth::Principal>,
+    pool: &crate::Pool,
+) -> RecordReadGate {
+    match principal {
+        None => RecordReadGate::unrestricted(),
+        Some(pr) if pr.roles.is_empty() => match scope_filter(principal) {
+            Some(sc) => RecordReadGate {
+                access_scopes: Some(sc),
+                owner_in: None,
+            },
+            None => RecordReadGate::unrestricted(),
+        },
+        Some(_) => match role_retrieval_gate(principal, pool) {
+            Some(g) => RecordReadGate {
+                access_scopes: g.access_scopes,
+                owner_in: g.owner_in,
+            },
+            None => RecordReadGate::empty_permit(),
+        },
+    }
 }
 
 /// Apply a resolved retrieval gate onto the search filter bundle. Only the

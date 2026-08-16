@@ -737,7 +737,8 @@ mod tests {
     }
 
     fn seed_subject(state: &AppState, domain: &str, owner: &str) {
-        let pool = state.registry.pool_for(domain).expect("domain pool");
+        // v1.27.16 (M5/F-41): registered-only; `register` is idempotent.
+        let pool = state.registry.register(domain).expect("domain pool");
         pool.get()
             .unwrap()
             .execute(
@@ -750,7 +751,7 @@ mod tests {
     fn count_knowledge(state: &AppState, domain: &str) -> i64 {
         state
             .registry
-            .pool_for(domain)
+            .register(domain)
             .unwrap()
             .get()
             .unwrap()
@@ -844,7 +845,7 @@ mod tests {
         register_client(&state, "beta", "beta-eu", "eu");
         register_client(&state, "acme", "acme-us", "us");
         let id_beta = {
-            let pool = state.registry.pool_for("beta-eu").unwrap();
+            let pool = state.registry.register("beta-eu").unwrap();
             let conn = pool.get().unwrap();
             conn.execute(
                 "INSERT INTO knowledge(content, content_hash, owner) VALUES ('data','h','alice')",
@@ -855,7 +856,7 @@ mod tests {
                 .unwrap()
         };
         let id_acme = {
-            let pool = state.registry.pool_for("acme-us").unwrap();
+            let pool = state.registry.register("acme-us").unwrap();
             let conn = pool.get().unwrap();
             conn.execute(
                 "INSERT INTO knowledge(content, content_hash, owner) VALUES ('data','h','alice')",
@@ -884,12 +885,12 @@ mod tests {
         assert_eq!(resp.held, 1);
 
         let acme_held = {
-            let conn = state.registry.pool_for("acme-us").unwrap().get().unwrap();
+            let conn = state.registry.register("acme-us").unwrap().get().unwrap();
             crate::legal_hold::active_hold_ids(&conn).unwrap()
         };
         assert!(acme_held.contains(&id_acme), "acme's id is held in acme-us");
         let beta_held = {
-            let conn = state.registry.pool_for("beta-eu").unwrap().get().unwrap();
+            let conn = state.registry.register("beta-eu").unwrap().get().unwrap();
             crate::legal_hold::active_hold_ids(&conn).unwrap()
         };
         assert!(
@@ -978,7 +979,7 @@ mod tests {
     }
 
     fn seed_rows(state: &AppState, domain: &str, n: i64) -> Vec<i64> {
-        let pool = state.registry.pool_for(domain).unwrap();
+        let pool = state.registry.register(domain).unwrap();
         let conn = pool.get().unwrap();
         let mut ids = Vec::new();
         for i in 0..n {
@@ -1079,7 +1080,7 @@ mod tests {
         let state = app_state(&dir);
         register_client(&state, "acme", "acme-us", "us");
         let ids = seed_rows(&state, "acme-us", 2);
-        let pool = state.registry.pool_for("acme-us").unwrap();
+        let pool = state.registry.register("acme-us").unwrap();
         let conn = pool.get().unwrap();
         conn.execute(
             "INSERT INTO legal_holds(knowledge_id, reason, held_by, held_at)
@@ -1146,7 +1147,7 @@ mod tests {
         register_client(&state, "beta", "beta-eu", "eu");
         let did: i64 = state
             .registry
-            .pool_for("beta-eu")
+            .register("beta-eu")
             .unwrap()
             .get()
             .unwrap()
@@ -1174,7 +1175,7 @@ mod tests {
 
         let note: Option<String> = state
             .registry
-            .pool_for("beta-eu")
+            .register("beta-eu")
             .unwrap()
             .get()
             .unwrap()
@@ -1186,7 +1187,7 @@ mod tests {
 
         let audited: i64 = state
             .registry
-            .pool_for("beta-eu")
+            .register("beta-eu")
             .unwrap()
             .get()
             .unwrap()
@@ -1217,7 +1218,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = app_state(&dir);
         register_client(&state, "beta", "beta-eu", "eu");
-        let conn = state.registry.pool_for("beta-eu").unwrap().get().unwrap();
+        let conn = state.registry.register("beta-eu").unwrap().get().unwrap();
         for (i, owner) in ["agent-1", "other-agent"].iter().enumerate() {
             conn.execute(
                 "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
@@ -1558,7 +1559,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = app_state(&dir);
         let ids = seed_rows(&state, "acme", 2);
-        hold(&state.registry.pool_for("acme").unwrap(), &[ids[0]]);
+        hold(&state.registry.register("acme").unwrap(), &[ids[0]]);
 
         use axum::extract::Query;
         let err = match crate::handlers::domains::delete_domain(
@@ -1629,7 +1630,7 @@ mod tests {
         let state = app_state(&dir);
         seed_rows(&state, "acme", 2);
         {
-            let conn = state.registry.pool_for("acme").unwrap().get().unwrap();
+            let conn = state.registry.register("acme").unwrap().get().unwrap();
             crate::audit::record(
                 &conn,
                 crate::audit::AuditKind::Ingest,
@@ -1704,7 +1705,7 @@ mod tests {
 
         let (count, target): (i64, String) = state
             .registry
-            .pool_for("acme")
+            .register("acme")
             .unwrap()
             .get()
             .unwrap()
@@ -1729,7 +1730,7 @@ mod tests {
         let state = app_state(&dir);
         seed_rows(&state, "acme", 1);
         {
-            let conn = state.registry.pool_for("acme").unwrap().get().unwrap();
+            let conn = state.registry.register("acme").unwrap().get().unwrap();
             for i in 0..3 {
                 crate::audit::record(
                     &conn,
@@ -1744,7 +1745,7 @@ mod tests {
 
         delete_domain_ok(&state, "acme").await;
 
-        let conn = state.registry.pool_for("acme").unwrap().get().unwrap();
+        let conn = state.registry.register("acme").unwrap().get().unwrap();
         let total: i64 = conn
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
             .unwrap();
@@ -1775,7 +1776,7 @@ mod tests {
         register_client(&state, "beta", "beta-eu", "eu");
         seed_subject(&state, "beta-eu", "alice@beta");
         {
-            let conn = state.registry.pool_for("beta-eu").unwrap().get().unwrap();
+            let conn = state.registry.register("beta-eu").unwrap().get().unwrap();
             let p = brain_server::profile::Profile {
                 name: "strict-holdall".into(),
                 pii_mode: Some("strict".into()),
@@ -1791,7 +1792,7 @@ mod tests {
         let strict = crate::handlers::observe::run_dsar_subject(
             state.clone(),
             OptPrincipal(None),
-            state.registry.pool_for("beta-eu").unwrap(),
+            state.registry.register("beta-eu").unwrap(),
             "beta-eu",
             "alice@beta",
             "purge",
@@ -1811,7 +1812,7 @@ mod tests {
         let logical = crate::handlers::observe::run_dsar_subject(
             state.clone(),
             OptPrincipal(None),
-            state.registry.pool_for("acme-us").unwrap(),
+            state.registry.register("acme-us").unwrap(),
             "acme-us",
             "bob@acme",
             "purge",

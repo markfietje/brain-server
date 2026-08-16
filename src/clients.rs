@@ -228,12 +228,14 @@ pub(crate) fn scaffold_and_register(
     profile: Option<&str>,
     now: i64,
 ) -> Result<(), HandlerError> {
-    registry.pool_for(domain).map_err(|e| {
-        HandlerError::bad_request(
-            "client_domain_invalid",
-            format!("cannot scaffold domain '{domain}': {e}"),
-        )
-    })?;
+    // Scaffold the client's domain before writing the row — `register` creates
+    // + migrates the domain DB (multi-db, cap-bounded — v1.27.16 "Drawbridge"
+    // M5/F-41) or touches the shared pool (shim). `validate_new_client` already
+    // rejected malformed names above, so the remaining failure modes surface
+    // as 404/507 via the shared mapping seam.
+    registry
+        .register(domain)
+        .map_err(crate::handlers::map_domain_error)?;
     let mut conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
@@ -400,11 +402,11 @@ mod tests {
             .unwrap();
         assert_eq!(bound, 1, "exactly one profile bind for the domain");
         drop(conn);
-        let domain_conn = reg.pool_for("acme").unwrap().get().unwrap();
+        let domain_conn = reg.register("acme").unwrap().get().unwrap();
         let knowledge: i64 = domain_conn
             .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(knowledge, 0, "client domain DB was scaffolded by pool_for");
+        assert_eq!(knowledge, 0, "client domain DB was scaffolded by register");
     }
 
     #[test]

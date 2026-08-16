@@ -59,19 +59,14 @@ impl MemoryKind {
             _ => MemoryKind::Fact,
         }
     }
-    /// All valid kinds for the write-back gate's `kind` field. Unlike
-    /// [`MemoryKind::from_str`] (which falls back to Fact on unknown input for
-    /// read-path forward-compat), the gate REJECTS unknown kinds at ingest —
-    /// a proposal must name a real memory kind, not silently degrade.
-    pub fn is_valid_for_gate(self) -> bool {
-        matches!(
-            self,
-            MemoryKind::Fact
-                | MemoryKind::Procedure
-                | MemoryKind::Step
-                | MemoryKind::Decision
-                | MemoryKind::Episodic
-        )
+    /// v1.27.16 "Drawbridge" (M4/F-33): the strict write-boundary validator. A
+    /// kind string is valid iff it round-trips through [`Self::from_str`] —
+    /// `from_str` falls back to `Fact` on any unknown/mixed-case input, which
+    /// must never be *silently accepted* at the write boundary (both the
+    /// proposal path and `/ingest` hard-reject with 400 instead).
+    pub fn is_strict_valid(s: &str) -> bool {
+        let s = s.trim();
+        !s.is_empty() && Self::from_str(s).as_str() == s
     }
     /// Default for new chunks that don't specify a kind. Reserved for the
     /// migration's column default + any future caller that needs the literal;

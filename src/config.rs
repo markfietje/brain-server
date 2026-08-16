@@ -15,6 +15,13 @@ pub const MAX_QUERY_LENGTH: usize = 2000;
 /// rate limiting needs a shared store (v2.1).
 pub const RATE_LIMIT_MAX_KEYS: usize = 10_000;
 
+/// v1.27.16 "Drawbridge" (M5/F-41): the maximum number of per-domain DB files a
+/// multi-db registry may register/create. The domain-creation surface is the
+/// ONLY file-creation path; every other name resolves `domain_unknown`, so
+/// this cap bounds disk-fill from a probeable API. Override with
+/// `BRAIN_MAX_DOMAIN_DBS`.
+pub const MAX_DOMAIN_DBS: usize = 256;
+
 /// v1.9.0 "Suggest": bounds for the opt-in `/suggest` surface. `k` is capped
 /// small because suggestions are supplementary context, not a replacement for
 /// `/recall`; `exclude` is capped so a caller can't OOM the NOT IN clause.
@@ -494,6 +501,15 @@ pub fn multi_db() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// v1.27.16 "Drawbridge" (M5/F-41): the per-domain DB registration cap.
+/// `BRAIN_MAX_DOMAIN_DBS` overrides [`MAX_DOMAIN_DBS`]; unparsable → default.
+pub fn max_domain_dbs() -> usize {
+    std::env::var("BRAIN_MAX_DOMAIN_DBS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(MAX_DOMAIN_DBS)
 }
 
 /// v1.9.0 "Suggest": whether the opt-in `/suggest` routes are live. Defaults

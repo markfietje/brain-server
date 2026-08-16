@@ -1307,21 +1307,34 @@ fn push_gate_filters(
         params_vec.push(Box::new(kind.clone()));
     }
     if let Some(scopes) = &filters.access_scopes {
-        let ph = std::iter::repeat_n("?", scopes.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        sql.push_str(&format!(" AND k.access_scope IN ({ph})"));
-        for s in scopes {
-            params_vec.push(Box::new(s.clone()));
+        if scopes.is_empty() {
+            // v1.27.16 "Drawbridge" (M3.2): the empty permit — a role gate that
+            // degraded fail-closed matches nothing (never `IN ()`, a syntax
+            // error in SQLite).
+            sql.push_str(" AND 1 = 0");
+        } else {
+            let ph = std::iter::repeat_n("?", scopes.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND k.access_scope IN ({ph})"));
+            for s in scopes {
+                params_vec.push(Box::new(s.clone()));
+            }
         }
     }
     if let Some(owners) = &filters.owner_in {
-        let ph = std::iter::repeat_n("?", owners.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        sql.push_str(&format!(" AND k.owner IN ({ph})"));
-        for o in owners {
-            params_vec.push(Box::new(o.clone()));
+        if owners.is_empty() {
+            // v1.27.16 "Drawbridge" (M3.2): empty-permit owner side — matches
+            // nothing (see access_scopes above).
+            sql.push_str(" AND 1 = 0");
+        } else {
+            let ph = std::iter::repeat_n("?", owners.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            sql.push_str(&format!(" AND k.owner IN ({ph})"));
+            for o in owners {
+                params_vec.push(Box::new(o.clone()));
+            }
         }
     }
 }

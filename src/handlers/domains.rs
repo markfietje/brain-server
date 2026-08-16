@@ -176,10 +176,13 @@ pub async fn create_domain(
     // v1.2.0 M3 AuthZ: write gate (creating a domain is a write). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", &name)?;
 
-    // Resolve the domain's pool — this creates the file in multi-db mode.
-    let pool = state.registry.pool_for(&name).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot create domain: {e}"))
-    })?;
+    // v1.27.16 "Drawbridge" (M5/F-41): registration is the ONE creation path —
+    // this is the only place a domain file comes into being (cap-bounded in
+    // multi-db; warm no-op over the shared pool in shim mode).
+    let pool = state
+        .registry
+        .register(&name)
+        .map_err(super::map_domain_error)?;
 
     let is_new = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {
         let conn = pool
@@ -241,9 +244,10 @@ pub async fn delete_domain(
     }
 
     let multi_db = state.registry.is_multi_db();
-    let pool = state.registry.pool_for(&name).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-    })?;
+    let pool = state
+        .registry
+        .pool_for(&name)
+        .map_err(super::map_domain_error)?;
     let name_for_response = name.clone();
     let name_for_audit = name.clone();
     let root = state.db_path.parent().map(ToOwned::to_owned);
@@ -412,9 +416,10 @@ pub async fn vacuum_domain(
     let name = normalize_domain(&name)?;
     // v1.2.0 M3 AuthZ: admin gate (maintenance op). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
-    let pool = state.registry.pool_for(&name).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-    })?;
+    let pool = state
+        .registry
+        .pool_for(&name)
+        .map_err(super::map_domain_error)?;
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
         let conn = pool
@@ -449,9 +454,10 @@ pub async fn export_domain(
     let name = normalize_domain(&name)?;
     // v1.2.0 M3 AuthZ: read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", &name)?;
-    let pool = state.registry.pool_for(&name).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-    })?;
+    let pool = state
+        .registry
+        .pool_for(&name)
+        .map_err(super::map_domain_error)?;
 
     let (bytes, filename) =
         tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), HandlerError> {
@@ -577,7 +583,9 @@ pub async fn import_domain(
     // Open the imported DB via the registry so migration runs and the pool
     // is cached. This is the validity check: if the bytes weren't a real
     // SQLite DB (despite the magic header), opening the pool will fail.
-    if let Err(e) = state.registry.pool_for(&name) {
+    // v1.27.16 (M5/F-41): `register` — an import is an admin-created resource
+    // (an unregistered name must not lazily create a file).
+    if let Err(e) = state.registry.register(&name) {
         // Clean up the bad import so the next attempt can succeed.
         let _ = std::fs::remove_file(&final_path);
         return Err(HandlerError::bad_request(
@@ -637,9 +645,10 @@ pub async fn move_domains(
     }
     let confirm = q.confirm.as_deref().unwrap_or("").trim().to_lowercase();
 
-    let pool = state.registry.pool_for(&to).map_err(|e| {
-        HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-    })?;
+    let pool = state
+        .registry
+        .pool_for(&to)
+        .map_err(super::map_domain_error)?;
     let to_c = to.clone();
     let ids = req.ids;
 

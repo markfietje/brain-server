@@ -282,9 +282,10 @@ pub(crate) async fn run_recall(
 
     match &forced_domain {
         Some(d) => {
-            let p = state.registry.pool_for(d).map_err(|e| {
-                HandlerError::bad_request("domain_invalid", format!("cannot resolve domain: {e}"))
-            })?;
+            let p = state
+                .registry
+                .pool_for(d)
+                .map_err(super::map_domain_error)?;
             targets.push((d.clone(), p));
         }
         None if !multi_db => {
@@ -313,12 +314,10 @@ pub(crate) async fn run_recall(
                     crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
                 routed = crate::domain_router::route(&qvec, &centroids);
                 for d in shim_routing_targets(routed.as_deref()) {
-                    let p = state.registry.pool_for(&d).map_err(|e| {
-                        HandlerError::bad_request(
-                            "domain_invalid",
-                            format!("cannot resolve domain: {e}"),
-                        )
-                    })?;
+                    let p = state
+                        .registry
+                        .pool_for(&d)
+                        .map_err(super::map_domain_error)?;
                     targets.push((d, p));
                 }
             }
@@ -334,12 +333,10 @@ pub(crate) async fn run_recall(
             routed = crate::domain_router::route(&qvec, &centroids);
             match &routed {
                 Some(d) => {
-                    let p = state.registry.pool_for(d).map_err(|e| {
-                        HandlerError::bad_request(
-                            "domain_invalid",
-                            format!("cannot resolve domain: {e}"),
-                        )
-                    })?;
+                    let p = state
+                        .registry
+                        .pool_for(d)
+                        .map_err(super::map_domain_error)?;
                     targets.push((d.clone(), p));
                 }
                 None => {
@@ -372,6 +369,23 @@ pub(crate) async fn run_recall(
                 }
             }
         }
+    }
+
+    // v1.27.16 "Drawbridge" (F-05): drop any target the principal may not
+    // read BEFORE a search runs against it. The domain-level authorize above
+    // covers the forced/explicit domain only; the federation + centroid
+    // branches collect every known domain, and a tenant-scoped principal must
+    // not query the pools of foreign domains (the domain label is the trust
+    // boundary). `None` principal (loopback/opaque) = superuser, unchanged.
+    targets.retain(|(d, _)| super::can_read_domain(principal, d));
+    if targets.is_empty() {
+        // Retain can empty targets for a scoped principal (e.g. forced global
+        // is filtered because the principal only holds other domains) — that
+        // is a legitimate "nothing to search" outcome, not an error.
+        tracing::debug!(
+            principal = ?principal.as_ref().map(|p| p.sub.as_str()),
+            "recall: all targets filtered by domain read-gate"
+        );
     }
 
     let k = req.limit as usize;

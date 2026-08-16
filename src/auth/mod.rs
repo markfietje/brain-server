@@ -110,6 +110,22 @@ pub struct TokenStore {
     file: Option<PathBuf>,
 }
 
+/// v1.27.16 "Drawbridge" (M3.1, F-26): the token-store read outcome. The old
+/// `tokens() -> HashSet` collapsed three worlds into one empty set — never
+/// configured, configured-but-empty, and *read failure* — and the middleware
+/// treated the empty set as "auth disabled" (allow-all). A poisoned lock must
+/// DENY, never read as "no auth".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenRead {
+    /// No token source ever resolved (env unset, no file) — the loopback
+    /// no-auth posture, unchanged.
+    NotConfigured,
+    /// The currently accepted token set (post-rotation snapshot).
+    Active(HashSet<String>),
+    /// The token store could not be read (poisoned lock) — deny.
+    ReadFailed,
+}
+
 #[derive(Default)]
 struct TokenState {
     tokens: HashSet<String>,
@@ -137,7 +153,18 @@ impl TokenStore {
         let mut state = TokenState::default();
         let initial = config::auth_tokens();
         state.tokens = initial.iter().cloned().collect();
-        state.initialized = true;
+        // v1.27.16 "Drawbridge" (M3.1): `initialized` now means "a token source
+        // is configured" — an explicit token file, an env token, or a resolved
+        // token set. Previously the flag meant "a load ran", so a store with
+        // zero tokens was indistinguishable from an unconfigured one. With a
+        // configured-but-empty store the middleware now DENIES; only a truly
+        // source-less store keeps the loopback posture.
+        let env_source = std::env::var("AUTH_TOKEN")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .is_some();
+        state.initialized = file.is_some() || env_source || !state.tokens.is_empty();
         if let Some(p) = &file {
             state.mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
         }
@@ -147,13 +174,17 @@ impl TokenStore {
         }
     }
 
-    /// Snapshot of the currently accepted tokens. Empty set = auth disabled
-    /// (when no source ever resolved a token). This is the hot-path call.
-    pub fn tokens(&self) -> HashSet<String> {
-        self.inner
-            .read()
-            .map(|s| s.tokens.clone())
-            .unwrap_or_default()
+    /// Snapshot of the currently accepted token set. `NotConfigured` when no
+    /// token source ever resolved (auth disabled — the middleware keeps its
+    /// loopback posture), `Active` with the set otherwise, `ReadFailed` when
+    /// the lock is poisoned (deny — never an allow-all empty set). This is
+    /// the hot-path call.
+    pub fn tokens(&self) -> TokenRead {
+        match self.inner.read() {
+            Ok(g) if !g.initialized => TokenRead::NotConfigured,
+            Ok(g) => TokenRead::Active(g.tokens.clone()),
+            Err(_) => TokenRead::ReadFailed,
+        }
     }
 
     /// True when the store is watching `AUTH_TOKEN_FILE` (so the rotation
@@ -275,7 +306,9 @@ mod tests {
     fn reload_picks_up_new_token() {
         let f = write_token_file("token-v1\n");
         let store = store_for(f.path().to_path_buf(), vec!["token-v1".to_string()]);
-        let initial = store.tokens();
+        let TokenRead::Active(initial) = store.tokens() else {
+            panic!("configured store must read Active");
+        };
         assert!(initial.contains("token-v1"));
 
         // Rewrite the file with a different token. Sleep >1s to guarantee mtime
@@ -288,7 +321,9 @@ mod tests {
             store.reload_if_changed_from(vec!["token-v2".to_string()]),
             "rotation must be detected"
         );
-        let after = store.tokens();
+        let TokenRead::Active(after) = store.tokens() else {
+            panic!("configured store must read Active");
+        };
         assert!(after.contains("token-v2"), "new token must be active");
         assert!(!after.contains("token-v1"), "old token must be gone");
     }
@@ -298,7 +333,10 @@ mod tests {
         let f = write_token_file("only-token\n");
         let path = f.path().to_path_buf();
         let store = store_for(path.clone(), vec!["only-token".to_string()]);
-        assert!(store.tokens().contains("only-token"));
+        let TokenRead::Active(first) = store.tokens() else {
+            panic!("configured store must read Active");
+        };
+        assert!(first.contains("only-token"));
 
         // Simulate deletion. Disown the temp file so its Drop doesn't panic.
         let _ = std::fs::remove_file(&path);
@@ -308,8 +346,11 @@ mod tests {
             !store.reload_if_changed_from(vec!["only-token".to_string()]),
             "deletion must NOT be reported as a rotation"
         );
+        let TokenRead::Active(cached) = store.tokens() else {
+            panic!("configured store must read Active");
+        };
         assert!(
-            store.tokens().contains("only-token"),
+            cached.contains("only-token"),
             "fail-safe: cached token must stay in effect after deletion"
         );
     }
@@ -325,7 +366,39 @@ mod tests {
             !store.reload_if_changed_from(vec![]),
             "empty load is not a rotation"
         );
-        assert!(store.tokens().contains("real-token"));
+        let TokenRead::Active(cached) = store.tokens() else {
+            panic!("configured store must read Active");
+        };
+        assert!(cached.contains("real-token"));
+    }
+
+    /// v1.27.16 "Drawbridge" (M3.1/F-26): a poisoned lock must read as
+    /// `ReadFailed` (deny at the middleware), never as an empty set
+    /// ("auth disabled" → allow-all).
+    #[test]
+    fn poisoned_token_store_reads_as_read_failed() {
+        let state = TokenState {
+            tokens: std::collections::HashSet::from(["only-token".to_string()]),
+            mtime: None,
+            initialized: true,
+        };
+        let inner = Arc::new(RwLock::new(state));
+        // Poison the lock from another thread: acquire the write guard and
+        // panic while holding it (join contains the child panic; the lock is
+        // poisoned for every subsequent reader).
+        let handle = {
+            let inner = inner.clone();
+            std::thread::spawn(move || {
+                let _guard = inner.write().expect("lock before panic");
+                panic!("poison the token lock");
+            })
+        };
+        let _ = handle.join();
+        let store = TokenStore {
+            inner,
+            file: Some(PathBuf::from("/nonexistent/token-file")),
+        };
+        assert_eq!(store.tokens(), TokenRead::ReadFailed);
     }
 
     /// v1.20.24 "Sweep" (G3): a secret file with group/world bits is refused —

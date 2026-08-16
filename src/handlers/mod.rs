@@ -429,6 +429,41 @@ pub fn authorize(
     }
 }
 
+/// v1.27.16 "Drawbridge" (F-04/05/06): read-access predicate for a *target*
+/// domain — distinct from `authorize`, which always checks the caller's
+/// own-domain posture. A principal may read `domain` iff some scope grants
+/// `read` there (`read:team/*` = read-everywhere). `None` principal
+/// (loopback/opaque) = superuser, unchanged. Pure predicate — the caller
+/// picks the error shape (403 vs 404 for id-probe blindness).
+pub fn can_read_domain(principal: &Option<crate::auth::Principal>, domain: &str) -> bool {
+    match principal {
+        None => true,
+        Some(p) => crate::auth::is_authorized(p, crate::auth::Action::Read, &p.tenant, domain),
+    }
+}
+
+/// The gate wrapper over [`can_read_domain`]: 403 with the standard
+/// HandlerError shape for the fan-out call sites (recall federation, graph
+/// traverse) that keep the authorize-style error.
+pub fn authorize_read_domain(
+    principal: &Option<crate::auth::Principal>,
+    domain: &str,
+) -> Result<(), HandlerError> {
+    if can_read_domain(principal, domain) {
+        Ok(())
+    } else {
+        let team = principal
+            .as_ref()
+            .map(|p| p.tenant.clone())
+            .unwrap_or_default();
+        Err(HandlerError::forbidden(
+            crate::auth::Action::Read,
+            &team,
+            domain,
+        ))
+    }
+}
+
 /// v1.23.0 "Roles": the action-gate layer on top of `authorize`. When the
 /// principal carries a `roles` claim, the requested `can`-capability must be
 /// in at least one resolved role's allowlist or the action is FORBIDDEN (403)
@@ -547,14 +582,58 @@ pub fn resolve_domain_pool(
     domain: Option<&str>,
 ) -> Result<crate::Pool, HandlerError> {
     let d = domain.filter(|s| !s.trim().is_empty()).unwrap_or("global");
-    registry.pool_for(d).map_err(|e| {
-        let known = registry.known_domains();
-        HandlerError::bad_request_with(
-            "domain_invalid",
-            format!("cannot resolve domain '{d}': {e}"),
-            serde_json::json!({ "known_domains": known }),
-        )
+    // v1.27.16 "Drawbridge" (M5/F-41): unregistered names (multi-db) map to
+    // 404 `domain_unknown` — probe-blind, no file ever created. The legacy
+    // `known_domains` detail list survives only for malformed names.
+    registry.pool_for(d).map_err(|e| match e {
+        crate::domain_registry::DomainRegistryError::Invalid(_) => {
+            let known = registry.known_domains();
+            HandlerError::bad_request_with(
+                "domain_invalid",
+                format!("cannot resolve domain '{d}': {e}"),
+                serde_json::json!({ "known_domains": known }),
+            )
+        }
+        other => map_domain_error(other),
     })
+}
+
+/// v1.27.16 "Drawbridge" (M5/F-41): 404 with the `domain_unknown` code — an
+/// unregistered domain name. Deliberately probe-blind: a never-registered name
+/// is indistinguishable from an empty-but-real domain, and no path ever
+/// creates a file for it (registered-only `pool_for`).
+pub fn domain_unknown(domain: &str) -> HandlerError {
+    HandlerError {
+        status: StatusCode::NOT_FOUND,
+        inner: ApiError::new(
+            "domain_unknown",
+            format!(
+                "unknown domain '{domain}' — register it with POST /domains \
+                 (multi-db mode opens registered domains only)"
+            ),
+        ),
+    }
+}
+
+/// v1.27.16 "Drawbridge" (M5/F-41): map a registry resolution error onto the
+/// wire shape — the single seam every `pool_for`/`register` call site uses:
+/// 404 `domain_unknown` for unregistered names, 400 `domain_invalid` for
+/// malformed names, 507 at the registration cap, 500 for open/migration/
+/// poisoned failures.
+pub fn map_domain_error(e: crate::domain_registry::DomainRegistryError) -> HandlerError {
+    match e {
+        crate::domain_registry::DomainRegistryError::Unknown(d) => domain_unknown(&d),
+        crate::domain_registry::DomainRegistryError::Invalid(d) => {
+            HandlerError::bad_request("domain_invalid", format!("invalid domain name: {d}"))
+        }
+        crate::domain_registry::DomainRegistryError::Capacity(n) => {
+            HandlerError::insufficient_storage(format!(
+                "domain DB registration cap ({n}) reached — remove unused per-domain \
+                 files or raise BRAIN_MAX_DOMAIN_DBS"
+            ))
+        }
+        other => HandlerError::internal(format!("cannot resolve domain pool: {other}")),
+    }
 }
 
 /// Extract domain from `X-Brain-Domain` header — used by GET handlers
@@ -565,6 +644,24 @@ pub fn domain_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_lowercase())
+}
+
+/// v1.27.16 "Drawbridge" (F-06): the graph edge-read scope. Entity tables carry
+/// no domain column, so in shim mode (one shared pool) the chunk link on a
+/// relationship is the domain atom: a JWT principal's graph reads restrict to
+/// edges whose `knowledge_id` chunk carries `label`; an unlinked edge is
+/// invisible to scoped readers. Loopback/opaque (omniscient, unchanged) and
+/// multi-db mode (the pool IS the domain's territory) pass `None`.
+pub fn graph_domain_scope(
+    principal: &Option<crate::auth::Principal>,
+    registry: &crate::domain_registry::DomainRegistry,
+    label: &str,
+) -> Option<String> {
+    if principal.is_some() && !registry.is_multi_db() {
+        Some(label.to_string())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
