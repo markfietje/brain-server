@@ -191,7 +191,13 @@ pub async fn ingest(
         };
 
     if lowered.len() == 1 {
-        let (req, _) = lowered.into_iter().next().unwrap()?;
+        // v1.27.19 "Scrub" (D-6): was `.next().unwrap()` — trivially safe after
+        // the len==1 guard, but express it without a panic fallback (the lint
+        // wall denies unwrap/expect in production).
+        let mut lowered = lowered;
+        let (req, _) = lowered.pop().ok_or_else(|| {
+            HandlerError::internal("single-element batch vanished before dispatch".to_string())
+        })??;
         let r = ingest_one(&_state, &principal.0, req).await?;
         return Ok(Json(serde_json::to_value(r).unwrap_or_default()));
     }
