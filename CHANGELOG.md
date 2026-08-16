@@ -19,6 +19,78 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.17] — 2026-08-16
+
+### Security — "Strongbox"
+
+Server-only release (server `Cargo.toml`/lock `1.27.16` → **`1.27.17`**;
+client + plugin unchanged at 1.27.15 / 0.4.4). The audit single-file-focus
+release: the **backup envelope** — the one at-rest file that holds the whole
+memory — gets a real key derivation + per-backup random keys, and the
+plaintext snapshot it writes mid-backup is born 0600, cleaned on failure, and
+never clobbers a live file. No new endpoints, no schema change, no telemetry.
+
+### Release notes
+
+**Security fixes**
+- **Per-backup random keys (was: deterministic nonce).** A v1 backup derived
+  its AES-GCM nonce from `SHA-256(passphrase || created_at)` — two backups
+  within the same second reused the identical nonce (catastrophic in GCM).
+  Backups now use argon2id key derivation with a random 16-byte salt and a
+  random 12-byte nonce sourced per backup from the RNG (new format; legacy
+  v1 files still restore).
+- **Argon2id key derivation (was: SHA-256).** v1 derived the 32-byte key with
+  a single SHA-256 of the passphrase — offline dictionary attacks at trivial
+  cost. New backups use argon2id (64 MiB / 3 passes / 1 lane, tuned to stay
+  under ~2 s on dev hardware).
+- **Plaintext snapshot is 0600 at birth (was: umask-dependent).** The
+  safety-snapshot / backup `VACUUM INTO` file was created with umask-derived
+  permissions and chmod'd only after success — a crash inside the window left
+  readable plaintext. Snapshot files are now created 0600 via `create_new`
+  (a pre-existing file at the path aborts, never overwrites) and are removed
+  on every failure path.
+- **Restore refuses to clobber the previous safety snapshot.** Restoring over
+  an existing target already preserved the pre-restore state as `<db>.bak`;
+  a second restore silently failed on that file with a cryptic SQL error. It
+  now fails-closed with a clear message before touching the disk.
+
+**Improvements**
+- `brain backup` gains `--format v1|v2` (default v2); restore and
+  `brain doctor --backup` auto-detect both formats.
+- Backup refuses to run while a stale `brain.bak` exists (a swapped/truncated
+  source DB was previously enshrined as the "safety snapshot").
+
+### Engineering record
+
+Milestone detail in `IMPLEMENTATION_PLAN_v1.27.17_Strongbox.md`. **M1** the
+envelope: `BSBK` magic + u16 version + u32 length-prefixed JSON header
+(`{"kdf":"argon2id","t":3,"m":65536,"p":1,"salt":…,"nonce":…,"created_at":…}`),
+header bytes authenticated as GCM AAD so a bit-flip of salt/nonce/params
+fails decryption; the KDF vocabulary is closed (only `argon2id` parses);
+restore verifies the passphrase by decryption (no stored-key comparison),
+so same-passphrase-any-header restores work; `decrypt_backup` is the single
+decrypt seam for both `restore` and `verify`; legacy v1 files route to the
+original decrypt path with a `warn!` (read compat forever). **M2** snapshot
+hygiene: `vacuum_into` (SQL-quote-escaped literal, unit-pinned),
+`create_private_file` (0600 + `create_new`), `SnapshotGuard` removes the
+plaintext snapshot on every error path (pinned by an unreadable
+config-dir failure injection). **M3** restore integrity: manifest xxh3 vs
+decrypted snapshot, done work against the decrypted bytes before the live DB
+is touched; `.bak` pre-existence both sides fails closed (F-17's
+stale-bak-enshrined trap closed). **M5** the `--format` flag routes through
+`backup_with_config_dir_and_format` (now `pub`). Tests: lib **124** / 1
+ignored (incl. **20** backup tests: roundtrip, same-second nonce
+uniqueness, v1 read-compat, tamper rejection, wrong passphrase, Argon2id
+< 2 s soft benchmark, 0600-at-birth, planted-path refusal, failure-guard
+cleanup, quote escaping, .bak clobber refusal); bin **659** / 6 ignored;
+brain 12, mcp 17, bench 5; clippy `-D warnings` + fmt clean. Live E2E smoke on
+a scratch DB: v2 backup → `doctor --backup` verify → restore (`.bak`
+0600) → v1 backup restores → wrong passphrase rejected on both `doctor` and
+`restore`. Honest ceilings: the passphrase remains the only secret (no
+KMS/rotation); the safety snapshot is the rollback path, not a journal —
+restoring twice requires moving the `.bak` (fail-closed by design);
+v1 files are never migrated in place. See `CHANGELOG.md` §[1.27.17].
+
 ## [1.27.16] — 2026-08-16
 
 ### Security — "Drawbridge"
