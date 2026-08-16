@@ -27,6 +27,9 @@ pub fn panel() -> Element {
     let writes = (ui.writes_enabled)();
     let refresh = use_signal(|| 0u32);
     let mut chain = use_signal(|| None::<Result<bool, String>>);
+    // v1.27.19 "Scrub" (D-7): last quarantine action outcome — a failed
+    // release/delete must be visible (the panel previously dropped it).
+    let status = use_signal(|| None::<Result<String, String>>);
 
     let quarantine = use_resource(move || {
         let api = api();
@@ -90,6 +93,14 @@ pub fn panel() -> Element {
             }
         }
         h2 { class: "mt-4 text-base font-semibold", "Quarantine ({q_count})" }
+        // v1.27.19 "Scrub" (D-7): last release/delete outcome, announced.
+        div { "role": "status", "aria-live": "polite", class: "text-sm",
+            match status() {
+                Some(Ok(m)) => rsx! { span { class: "text-ok", "{m}" } },
+                Some(Err(m)) => rsx! { span { class: "text-danger", "{m}" } },
+                None => rsx! {},
+            }
+        }
         match &*quarantine.read() {
             Some(Ok(q)) if !q.quarantined.is_empty() => rsx! {
                 ul { class: "mt-2 divide-y divide-border",
@@ -101,8 +112,14 @@ pub fn panel() -> Element {
                                     button {
                                         class: "btn btn-outline btn-sm",
                                         disabled: !writes,
-                                        onclick: { let mut refresh = refresh; let id = row.id; move |_| async move {
-                                            let _ = api().quarantine_action(id, "release").await;
+                                        onclick: { let mut refresh = refresh; let mut status = status; let id = row.id; move |_| async move {
+                                            // v1.27.19 "Scrub" (D-7): was
+                                            // `let _ =` — a failed release told
+                                            // the operator nothing.
+                                            match api().quarantine_action(id, "release").await {
+                                                Ok(_) => status.set(Some(Ok(crate::i18n::t("sec_released")))),
+                                                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
+                                            }
                                             refresh += 1;
                                         } },
                                         "Release"
@@ -122,8 +139,15 @@ pub fn panel() -> Element {
                                             move |_| {
                                                 let id = id;
                                                 let mut refresh = refresh;
+                                                let mut status = status;
                                                 spawn(async move {
-                                                    let _ = api().quarantine_action(id, "delete").await;
+                                                    // v1.27.19 "Scrub" (D-7):
+                                                    // was `let _ =` — a failed
+                                                    // delete was invisible.
+                                                    match api().quarantine_action(id, "delete").await {
+                                                        Ok(_) => status.set(Some(Ok(crate::i18n::t("sec_deleted")))),
+                                                        Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
+                                                    }
                                                     refresh += 1;
                                                 });
                                             }

@@ -65,14 +65,19 @@ pub fn panel() -> Element {
                 Ok(d) => domains.set(d.domains),
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
-            if let Ok(s) = api().snapshot_status().await {
-                snapshot.set(Some(s));
+            // v1.27.19 "Scrub" (D-7): was `if let Ok` — the panel silently
+            // stayed empty-stale on failure; now each secondary load is loud.
+            match api().snapshot_status().await {
+                Ok(s) => snapshot.set(Some(s)),
+                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
-            if let Ok(a) = api().art30().await {
-                art30.set(Some(a));
+            match api().art30().await {
+                Ok(a) => art30.set(Some(a)),
+                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
-            if let Ok(c) = api().connectors().await {
-                connectors.set(c.connectors);
+            match api().connectors().await {
+                Ok(c) => connectors.set(c.connectors),
+                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
         });
     };

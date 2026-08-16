@@ -77,11 +77,15 @@ pub fn panel() -> Element {
                 Ok(r) => retention.set(Some(r)),
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
-            if let Ok(d) = d {
-                decayed.set(d);
+            // v1.27.19 "Scrub" (D-7): was `if let Ok` — a failed decayed/
+            // tombstones load silently left the registries stale-empty.
+            match d {
+                Ok(d) => decayed.set(d),
+                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
-            if let Ok(t) = t {
-                tombstones.set(t.tombstones);
+            match t {
+                Ok(t) => tombstones.set(t.tombstones),
+                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
             loading.set(false);
             loaded.set(true);

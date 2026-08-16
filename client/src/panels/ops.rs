@@ -64,6 +64,18 @@ pub fn should_apply(seq: u64, last: &mut u64) -> bool {
     }
 }
 
+/// v1.27.19 "Scrub" (D-7): the decide outcome → the gate-strip status line.
+/// `None` (success) → nothing; offline network errors → the enqueue notice;
+/// anything else → the raw server error, which the console now renders
+/// instead of dropping. Pure so the surfacing rule is pinned by a test.
+pub fn decide_status(res: &Result<(), crate::api::ApiError>) -> Option<Result<String, String>> {
+    match res {
+        Ok(()) => None,
+        Err(e) if crate::queue::is_offline(e) => Some(Ok(crate::i18n::t("ops_queued_offline"))),
+        Err(e) => Some(Err(crate::api::error_message(e))),
+    }
+}
+
 pub fn gate_health(approved: u64, rejected: u64, expired: u64) -> GateHealth {
     if rejected > approved {
         GateHealth {
@@ -97,9 +109,12 @@ pub fn panel() -> Element {
     let ui = use_context::<crate::UiState>();
     let writes = (ui.writes_enabled)(); // read once; re-renders when it changes
     let refresh = use_signal(|| 0u32); // bump to refetch after a mutation
-                                       // M2: the live clock. A once-on-mount loop bumps `tick` every ~30s so every
-                                       // countdown re-renders from a fresh `now_unix()` — the honest near-real-
-                                       // time approximation (instant push is v1.20.8 "Signal").
+                                       // v1.27.19 "Scrub" (D-7): last action/load outcome, rendered in the gate
+                                       // strip — a failed decide/reject must be visible, not silently dropped.
+    let status = use_signal(|| None::<Result<String, String>>);
+    // M2: the live clock. A once-on-mount loop bumps `tick` every ~30s so every
+    // countdown re-renders from a fresh `now_unix()` — the honest near-real-
+    // time approximation (instant push is v1.20.8 "Signal").
     let tick = use_signal(|| 0u64);
     use_future(move || {
         let mut tick = tick;
@@ -217,14 +232,15 @@ pub fn panel() -> Element {
     let decide = move |id: i64, reject: bool| {
         let api = api();
         let mut refresh = refresh;
+        let mut status = status;
         spawn(async move {
             let res: Result<(), crate::api::ApiError> = if reject {
                 api.reject_proposal(id, None).await.map(|_| ())
             } else {
                 api.approve_proposal(id, None, None).await.map(|_| ())
             };
-            if let Err(e) = res {
-                if crate::queue::is_offline(&e) {
+            if let Err(ref e) = res {
+                if crate::queue::is_offline(e) {
                     crate::queue::enqueue(if reject {
                         crate::queue::QueuedAction::Reject {
                             id,
@@ -237,6 +253,12 @@ pub fn panel() -> Element {
                             queued_at: crate::queue::now_ts(),
                         }
                     });
+                }
+                // v1.27.19 "Scrub" (D-7): was dropped silently (only the
+                // offline branch surfaced anything). The non-offline failure
+                // now renders in the gate strip.
+                if let Some(s) = decide_status(&res) {
+                    status.set(Some(s));
                 }
             }
             refresh += 1;
@@ -269,6 +291,15 @@ pub fn panel() -> Element {
                 span { class: "badge badge-{gh.severity}", {crate::i18n::t(gh.label)} }
                 span { class: "text-xs text-muted-foreground tabular",
                     "A {a} · R {r}"
+                }
+                // v1.27.19 "Scrub" (D-7): the last decide/load outcome — the
+                // console must never show a success state after a failed write.
+                div { "role": "status", "aria-live": "polite", class: "text-sm",
+                    match status() {
+                        Some(Ok(m)) => rsx! { span { class: "text-ok", "{m}" } },
+                        Some(Err(m)) => rsx! { span { class: "text-danger", "{m}" } },
+                        None => rsx! {},
+                    }
                 }
             }
 
@@ -487,5 +518,27 @@ mod tests {
         assert!(should_apply(5, &mut last)); // next generation applies
         assert!(!should_apply(4, &mut last)); // older still dropped
         assert_eq!(last, 5);
+    }
+
+    /// v1.27.19 "Scrub" (D-7): a failed decide must surface an error status —
+    /// the panel never renders success after a failed write.
+    #[test]
+    fn panel_write_errors_are_visible() {
+        // Success → nothing to render.
+        assert_eq!(decide_status(&Ok(())), None);
+        // Any non-offline server error → the raw message, rendered as danger.
+        let err = crate::api::ApiError::Status(500, "denylist write failed".into());
+        let s = decide_status(&Err(err)).expect("server error must surface");
+        assert!(s.is_err(), "a server failure is an Err status line");
+        assert!(s.unwrap_err().contains("denylist write failed"));
+        // 401 maps to the human session message, still an Err status line.
+        let s = decide_status(&Err(crate::api::ApiError::Status(
+            401,
+            "unauthorized".into(),
+        )))
+        .expect("401 must surface");
+        assert!(s.is_err());
+        // Success after a queued write never renders danger.
+        assert_eq!(decide_status(&Ok(())), None);
     }
 }

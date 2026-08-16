@@ -225,15 +225,21 @@ pub fn panel() -> Element {
     // M2.4: one-click queue actions (mirrors the review panel's decide). The
     // `refresh += 1` happens inside the spawned task, so the closure only
     // copies the Copy signals into the future → it stays `Fn` + `Copy`.
+    // v1.27.19 "Scrub" (D-7): a failed decide is surfaced, never swallowed.
+    let action_err = use_signal(String::new);
     let decide = move |id: i64, reject: bool| {
         let api = api;
         let mut refresh = refresh;
+        let mut action_err = action_err;
         spawn(async move {
-            let _ = if reject {
+            let res: Result<(), crate::api::ApiError> = if reject {
                 api().reject_proposal(id, None).await.map(|_| ())
             } else {
                 api().approve_proposal(id, None, None).await.map(|_| ())
             };
+            if let Err(e) = res {
+                action_err.set(crate::api::error_message(&e));
+            }
             refresh += 1;
         });
     };

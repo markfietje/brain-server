@@ -7,6 +7,9 @@ review_title = Review queue
 recall_title = Recall inspector
 subjects_title = Subjects (DSAR)
 security_title = Security
+# v1.27.19 "Scrub" (D-7): quarantine action outcomes.
+sec_released = released from quarantine
+sec_deleted = deleted
 audit_title = Audit
 health_title = Health
 
@@ -268,6 +271,8 @@ nav_ops = Operations
 ops_title = Operationsops_sub = The live HITL work surface: pending queue, SLA clocks, and the flagged screen output.
 ops_queue = Live queue
 ops_queue_summary = pending
+# v1.27.19 "Scrub" (D-7): the offline-enqueue replay took over the action.
+ops_queued_offline = queued (offline) — will replay on reconnect
 ops_gate = Gate health
 ops_flagged = Flagged & quarantined
 ops_flagged_hint = Enter a probe query and Scan to surface screen-caught matches.
