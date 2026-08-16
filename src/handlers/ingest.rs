@@ -594,8 +594,10 @@ pub(crate) async fn ingest_one(
         // v1.20.1 "Shield" M1: under Quarantine policy, a chunk that trips the
         // injection screen is stored but flagged (excluded from retrieval) and
         // its KG edges are skipped so a quarantined plant can't pollute the
-        // graph. `flag_if_quarantined` returns true only when it flagged.
-        let quarantined = crate::flag_if_quarantined(&tx, id, quarantine_flagged);
+        // graph. `flag_if_quarantined` returns true only when it flagged. Fails
+        // closed (F-15): a quarantine that can't be recorded aborts the ingest.
+        let quarantined = crate::flag_if_quarantined(&tx, id, quarantine_flagged)
+            .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
 
         // vec0 (int8 + binary quantized). v0.9.0 DoD: vec0 is the sole vector
         // store; no raw f32 JSON is written to the legacy `embeddings` column.

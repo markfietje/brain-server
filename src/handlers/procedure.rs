@@ -179,7 +179,8 @@ pub async fn create(
         let root_id = tx.last_insert_rowid();
         // v1.20.2 B1: flag the root if the screen quarantined. Excluded from
         // recall via `WHERE flagged = 0`, KG edges skipped below.
-        let root_flagged = crate::flag_if_quarantined(&tx, root_id, root_quarantine);
+        let root_flagged = crate::flag_if_quarantined(&tx, root_id, root_quarantine)
+            .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
         // Embedding for the root (so /recall finds it). Reuses the same vec0
         // path as /ingest. ponytail: the model is in AppState but spawn_blocking
         // closes over pool, not state; we encode after the tx via a second
@@ -206,7 +207,11 @@ pub async fn create(
             // was computed per-step before the tx, so only the steps that
             // actually quarantined are flagged (a benign step in a quarantined
             // procedure stays clean).
-            let _ = crate::flag_if_quarantined(&tx, step_id, step_quarantine[idx]);
+            // occurrence in a quarantined
+            // procedure stays clean). Fails closed (F-15): a step that must be
+            // flagged but can't be is a stop-the-write condition.
+            crate::flag_if_quarantined(&tx, step_id, step_quarantine[idx])
+                .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
             // next_step edge with explicit ordering. Skipped for a quarantined
             // root so a flagged plant can't reach the graph even via a step.
             // The edge kind is 'next_step'; step_index carries the position.

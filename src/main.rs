@@ -763,7 +763,12 @@ async fn add_chunk(
 
             // v0.9.7 Guard: under Quarantine policy, flag the just-inserted row
             // (post-commit UPDATE) so it is stored but excluded from retrieval.
-            flag_if_quarantined(&conn, chunk_id, quarantine);
+            // v1.27.14 "Fencepost2" (M4): fail closed — a requested flag write
+            // that failed surfaces as an ingest error rather than silently
+            // leaving an injection hit cleanly retrievable.
+            if let Err(e) = flag_if_quarantined(&conn, chunk_id, quarantine) {
+                return AddResponse::error(format!("quarantine flag failed: {e}"));
+            }
 
             // v0.9.7 Guard: audit successful ingest (hash only, never raw text).
             audit::record(
@@ -1145,11 +1150,16 @@ async fn ingest_memory(
             // screen. Memory keeps its "trusted local write surface" contract —
             // never dropped, but injection-y content is flagged out of
             // retrieval. A `Quarantine` verdict flags the row; a `Reject`
-            // verdict still stores (per policy) but is not flaggable by
-            // `flag_if_quarantined` under `Reject` policy (pre-existing
-            // behavior, unchanged).
-            let quarantine = screen::screen(&text, title.as_deref().unwrap_or(""))
-                == screen::ScreenResult::Quarantine;
+            // verdict — stricter, still never dropped on this surface — also
+            // flags (F-14): an injection hit the classifier is *confident*
+            // about must at minimum be excluded from retrieval under the
+            // default Quarantine operational posture, not stored clean.
+            // (Explicit `Reject` policy still hard-rejects at the other
+            // ingest surfaces via the pre-insert branch — unchanged.)
+            let quarantine = matches!(
+                screen::screen(&text, title.as_deref().unwrap_or("")),
+                screen::ScreenResult::Quarantine | screen::ScreenResult::Reject
+            );
 
             let tx = match conn.transaction() {
                 Ok(t) => t,
@@ -1225,7 +1235,13 @@ async fn ingest_memory(
                 // injection-y content out of retrieval without dropping it).
                 // Runs inside the tx (Transaction derefs to Connection) so it
                 // commits atomically with the chunk.
-                flag_if_quarantined(&tx, chunk_id, quarantine);
+                // v1.27.14 "Fencepost2" (M4): fail closed — if the flag write
+                // fails, log and let the tx drop uncommitted (rollback), so an
+                // injection hit that MUST be flagged is never stored clean.
+                if flag_if_quarantined(&tx, chunk_id, quarantine).is_err() {
+                    eprintln!("⚠️ quarantine flag failed — rolling back chunk {chunk_id}");
+                    continue;
+                }
                 if tx.commit().is_ok() {
                     added += 1;
                     chunk_ids.push(chunk_id);
@@ -2067,7 +2083,7 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
 /// v0.9.7 Guard: under the default `Quarantine` injection policy, an ingested
 /// chunk that trips `contains_suspicious_pattern` is not rejected — it is stored
 /// with `flagged = 1` so retrieval excludes it until an operator reviews it.
-/// Returns `true` if the row was flagged (so callers can skip durable side
+/// Returns `Ok(true)` if the row was flagged (so callers can skip durable side
 /// effects like KG-edge creation for quarantined evidence).
 ///
 /// v1.20.3 (G5): the caller now passes an explicit `quarantine` flag produced
@@ -2076,15 +2092,24 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
 /// the blocklist in isolation — a layer-2 hit quarantines exactly like a
 /// layer-1 hit. Only acts under `Quarantine`; `Reject`/`Allow` are handled at
 /// the call site's pre-insert branch.
-pub(crate) fn flag_if_quarantined(conn: &Connection, id: i64, quarantine: bool) -> bool {
+///
+/// v1.27.14 "Fencepost2" (M4/F-15): returns `rusqlite::Result<bool>` and callers
+/// **fail closed** — an injection chunk that MUST be flagged is never stored
+/// clean if the flag write fails. The worst outcome (a confident injection hit
+/// retrievable with `flagged = 0`) is the one the writer refuses.
+pub(crate) fn flag_if_quarantined(
+    conn: &Connection,
+    id: i64,
+    quarantine: bool,
+) -> rusqlite::Result<bool> {
     if !quarantine || config::injection_policy() != config::InjectionPolicy::Quarantine {
-        return false;
+        return Ok(false);
     }
-    let _ = conn.execute(
+    conn.execute(
         "UPDATE knowledge SET flagged = 1 WHERE id = ?1",
         params![id],
-    );
-    true
+    )?;
+    Ok(true)
 }
 
 /// v0.9.7 Guard: keep quarantined prose out of the agent's rendered evidence by
@@ -6053,7 +6078,7 @@ mod tests {
         .unwrap();
         let id = db.last_insert_rowid();
 
-        let flagged = flag_if_quarantined(&db, id, true);
+        let flagged = flag_if_quarantined(&db, id, true).expect("flag write ok");
         assert!(
             flagged,
             "suspicious content must be flagged under Quarantine"
@@ -6075,7 +6100,7 @@ mod tests {
         )
         .unwrap();
         let clean_id = db.last_insert_rowid();
-        assert!(!flag_if_quarantined(&db, clean_id, false));
+        assert!(!flag_if_quarantined(&db, clean_id, false).expect("clean flag ok"));
         let clean: i64 = db
             .query_row(
                 "SELECT flagged FROM knowledge WHERE id = ?1",
@@ -6096,7 +6121,7 @@ mod tests {
         .unwrap();
         let reject_id = db.last_insert_rowid();
         assert!(
-            !flag_if_quarantined(&db, reject_id, true),
+            !flag_if_quarantined(&db, reject_id, true).expect("reject flag ok"),
             "helper is a no-op under Reject policy"
         );
         std::env::remove_var("INJECTION_POLICY");
