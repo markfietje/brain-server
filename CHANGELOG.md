@@ -19,6 +19,83 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.14] — 2026-08-16
+
+### Patch — "Fencepost2"
+
+Server + plugin patch release (server `Cargo.toml`/lock `1.27.13` →
+**`1.27.14`**; plugin `0.4.3` → **`0.4.4`**; client unchanged at 1.27.13).
+Landing the information-flow-integrity follow-up: the `untrusted` fence
+becomes a structural (not decorative) boundary on every LLM-facing seam, and
+the quarantine taint can no longer be lost or silently written.
+
+### Release notes
+
+**Bug fixes**
+- The plugin's block sanitizer stripped the fence sentinels *before* normalizing
+  whitespace, so a near-marker that a transform then synthesized (e.g. a
+  `CONTEXT`–`END` boundary with an NBSP/TAB/zero-width split) could forge the
+  fence close after it was already removed. The sentinel strip now runs last —
+  after every transform that can create or shorten a marker — and the invisible
+  class is stripped before whitespace collapse so `U+FEFF` is removed rather
+  than widened to a space.
+- The recall `snippet` field was the one detail value handed to the host without
+  passing through the block sanitizer; it now goes through the same boundary as
+  title and content.
+
+**Improvements**
+- Every stored-content read surface on the server (UMP reads, legacy `/search`,
+  `/quarantine` review list, recall/suggest metadata) now routes through a
+  single sanitize seam — the same bidi/zero-width/markdown-ref boundary the
+  recall path already used. A wiring meta-test pins the seam to every
+  response-forming site, so a future read path that emits stored text without
+  it fails the suite.
+- The MCP tool-result seam now wraps results in the same untrusted fence the
+  plugin uses, and strips control characters — an MCP host gets the structural
+  data/instruction boundary on the wire too. The `brain` CLI recall/get prints
+  gain the same strip parity.
+
+**Security fixes**
+- The quarantine flag write now **fails closed**: `flag_if_quarantined` returns
+  a `Result`, and every ingest path (structured, procedure, `/add`, `/ingest/
+  memory`) rolls back or errors rather than store an injection chunk with a
+  silently-missed flag. Separately, `/ingest/memory` now flags a `Reject`
+  verdict (stricter, never dropped) under the default quarantine posture — a
+  hit the classifier is confident about is excluded from retrieval, not stored
+  cleanly.
+
+### Engineering record
+
+- **Plugin (F-01):** `sanitizeForBlock` order changed from
+  strip-sentinels-first to strip-last; the `\s`-collapse now runs after the
+  `U+E0000–U+E007F`-inclusive invisible strip so `U+FEFF` (which JS `\s`
+  treats as whitespace) is removed, verified by a new near-marker forgery
+  suite (NBSP/TAB/VT/double-space/ZW/ZWNJ/FEFF × BEGIN/END). New regression
+  caught on the openclaw tree: FEFF widened to `"ig nore"`; now stripped to
+  `"ignore"`. All 142 extension tests pass.
+- **Server read-seam (M3):** `sanitize_read(_opt)`/`sanitize_stored` in
+  `src/gate.rs`; UMP reads sanitize a clone of the row (integrity stays
+  self-consistent); fixes the borrow-lifetime fallout of the owned `row_owner`
+  copy in `ump_ops.rs`.
+- **MCP/CLI (F-20/F-63):** shared `FENCE_BEGIN`/`END` + `strip_markdown_refs`
+  + `strip_control_chars` in the new `src/fence.rs`; `tool_result_payload`
+  wraps results, `format_response` + `brain` prints gain parity.
+- **Quarantine fail-closed (F-15):** `flag_if_quarantined` →
+  `rusqlite::Result<bool>` propagated through `handlers/ingest.rs`,
+  `handlers/procedure.rs`, and the `main.rs` `/add` + `/ingest/memory` paths.
+- Tests: server bin **627** passed / 6 ignored, lib **113** / 1 ignored, brain
+  12, mcp **17** (`--features bench`); client 124 unchanged; plugin **142**
+  extension tests (openclaw `vitest`); clippy `-D warnings` + fmt clean;
+  `badges.sh --selfcheck` clean; UMP L3.
+- Honest ceilings: the fence is transport-layer data/instruction separation,
+  not a CaMeL/FIDES capability lattice; the restore in `main.rs` rollback path
+  drops the uncommitted tx (chunk never stored) rather than re-flagring; the
+  `snippet` strip is a single point, not a re-run of the full screen; plugin
+  is validated via the openclaw `vitest` suite + `tsc`, the standalone runner
+  does not exist here.
+
+---
+
 ## [1.27.13] — 2026-08-16
 
 ### Patch — "Contract"
