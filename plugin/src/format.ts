@@ -125,37 +125,56 @@ export function normalizeRecallQuery(text: string, maxChars: number): string {
  * security boundary on its own (the fence + model discipline is): it keeps
  * injected text tidy, reduces prompt noise, and guarantees the fence
  * unforgeability invariant.
+ *
+ * v1.27.14 "Fencepost2" (F-01): the sentinel strip is no longer FIRST. It runs
+ * after every transform that can create/shorten whitespace or juxtapose words,
+ * so a near-marker (e.g. `CONTEXT\u00A0END`, `CONTEXT\tEND`, `CONTEXT\rEND`,
+ * `CONTEXT\u200BEND`, or a markdown-ref that shortens across the boundary)
+ * cannot be synthesized into an exact marker literal AFTER it was stripped.
+ * The ordering guarantee: the only operations after the final `stripSentinels`
+ * are `trim()` (removes leading/trailing whitespace — cannot create an
+ * interior match), so the unforgeability invariant holds.
  */
+function stripSentinels(s: string): string {
+  // split/join is literal-safe (no regex escaping); used at BOTH boundaries.
+  return s.split(UNTRUSTED_BEGIN).join("").split(UNTRUSTED_END).join("");
+}
+
 export function sanitizeForBlock(text: string): string {
-  return (
-    text
-      // v1.20.28 "Fencepost": strip any literal sentinel occurrences FIRST so a
-      // hit body cannot forge the untrusted-fence close (unforgeability
-      // invariant). split/join is safe for arbitrary literal strings — no regex
-      // escaping needed (`===`, `(`, `)` are regex-special).
-      .split(UNTRUSTED_BEGIN)
-      .join("")
-      .split(UNTRUSTED_END)
-      .join("")
-      // eslint-disable-next-line no-control-regex -- explicit C0/C1 class above
-      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, " ")
-      // v1.20.28: add the U+E0000–U+E007F Language Tag block (the one set the
-      // v1.20.24 regex omitted). Release B's server strip is the primary path;
-      // this is belt-and-braces defense-in-depth for when this code runs first.
-      // NOTE: the `u` flag is REQUIRED here — without it, `\uE0000` parses as
-      // `\uE000` + literal `0` (JS `\uXXXX` is BMP-only). `\u{...}` is the
-      // ES6 supplementary-plane form, and the `u` flag enables it. The flag is
-      // safe for the rest of the class: all other code points are BMP, and the
-      // range syntax is unchanged.
-      .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu, "")
-      // v1.20.28: markdown image/link ref strip — drop the URL, keep the text.
-      // `![alt](url)` → `[alt]`; `[text](url)` → `text`. Images first so the
-      // resulting `[alt]` (no trailing parens) isn't re-matched by the link pass.
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "[$1]")
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/\s+/g, " ")
-      .trim()
-  );
+  let out = text
+    // A. Invisible/zero-width class FIRST — must precede the whitespace
+    //    collapse below, because JS `\s` treats U+FEFF as whitespace and would
+    //    otherwise turn it into a literal space (`ig\uFEFFnore → "ig nore"`)
+    //    instead of removing it. Stripping this class can itself synthesize a
+    //    marker (`CONTEXT\u200B END` → `CONTEXT END`), so the sentinel strip
+    //    below (C) runs on the result — and the FINAL strip (F) is still last.
+    //    v1.20.28: includes the U+E0000–U+E007F Language Tag block (the one set
+    //    the v1.20.24 regex omitted). Release B's server strip is the primary
+    //    path; this is belt-and-braces defense-in-depth for when this code runs
+    //    first. The `u` flag is REQUIRED: without it `\uE0000` parses as
+    //    `\uE000` + literal `0` (JS `\uXXXX` is BMP-only); `\u{...}` is the
+    //    ES6 supplementary-plane form.
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu, "")
+    // B. Normalize: controls → space, collapse all whitespace (JS `\s` covers
+    //    TAB/NBSP/VT — the chars this release shows can forge a marker).
+    // eslint-disable-next-line no-control-regex -- explicit C0/C1 class above
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ");
+  // C. Strip sentinels on the normalized form (A or B may have synthesized a
+  //    marker from a near-marker).
+  out = stripSentinels(out);
+  // D. markdown image/link ref strip — skip URL, keep the text, and a ref that
+  //    shortens across the `|END` boundary can also synthesize a marker, so it
+  //    runs BEFORE the final strip. `![alt](url)` → `[alt]`; `[text](url)` →
+  //    `text`. Images first so the resulting `[alt]` (no parens) isn't
+  //    re-matched by the link pass.
+  out = out
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "[$1]")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ");
+  // F. FINAL strip — nothing after this can synthesize a marker (trim only
+  //    touches the ends), so the unforgeability invariant holds.
+  return stripSentinels(out).trim();
 }
 
 /** Extract the latest user turn text from the hook's messages array. */

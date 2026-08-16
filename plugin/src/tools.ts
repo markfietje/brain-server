@@ -90,7 +90,10 @@ function sanitizeHit(h: BrainRecallHitLike): SanitizedHit {
     ...(h.source !== undefined ? { source: h.source } : {}),
     ...(h.provenance !== undefined ? { provenance: h.provenance } : {}),
     ...(h.evidence !== undefined ? { evidence: h.evidence } : {}),
-    ...(h.snippet !== undefined ? { snippet: h.snippet } : {}),
+    // v1.27.14 "Fencepost2" (F-01): `snippet` carries the same smuggling class
+    // as title/content — run it through the shared block boundary too (it was
+    // the one field the detail seam passed raw).
+    ...(h.snippet !== undefined ? { snippet: sanitizeForBlock(h.snippet) } : {}),
     ...(h.untrusted !== undefined ? { untrusted: h.untrusted } : {}),
     ...(h.conflict !== undefined ? { conflict: h.conflict } : {}),
   };
