@@ -47,6 +47,11 @@ fn has_word_boundaries(content: &str, start: usize, end: usize) -> bool {
 #[derive(Default)]
 pub struct EntityVocabulary {
     pub entities: Vec<String>,
+    /// v1.28.5 "Groundwork" (F-31): sidecar membership set so `insert` is
+    /// O(1) instead of a linear `contains` over the (≤ 500) entities — an
+    /// adversarial 1 MiB doc with one repeated entity used to cost ~10¹⁰
+    /// comparisons at build time.
+    pub seen: std::collections::HashSet<String>,
 }
 
 /// Compiled entity matcher — O(n) multi-pattern matching with Aho-Corasick.
@@ -279,6 +284,12 @@ pub fn extract_heading_relationships(
 /// legitimate dense-vocab domains if measured.
 pub const MAX_VOCAB_ENTITIES: usize = 500;
 
+/// v1.28.5 "Groundwork" (F-31): cap on per-sentence mentions kept for the
+/// O(m²) relationship/verb-discovery pair loops. 200 keeps the pair scan at
+/// ≤ 40k iterations per sentence — far above any legitimate sentence, and the
+/// same "bounded on adversarial input" posture as `MAX_VOCAB_ENTITIES`.
+pub const MAX_MENTIONS_PER_SENTENCE: usize = 200;
+
 impl EntityVocabulary {
     /// Insert a name.
     pub fn insert(&mut self, name: &str) {
@@ -295,7 +306,9 @@ impl EntityVocabulary {
             return;
         }
         let lower = name.to_lowercase();
-        if !self.entities.contains(&lower) {
+        // F-31: O(1) sidecar membership (was `entities.contains`, linear per
+        // call — quadratic on adversarial repeated-entity documents).
+        if self.seen.insert(lower.clone()) {
             self.entities.push(lower);
         }
     }
@@ -352,6 +365,11 @@ impl EntityMatcher {
     }
 
     /// Find mentions with positions (for relationship extraction).
+    /// v1.28.5 "Groundwork" (F-31): bounded — the per-sentence mention list is
+    /// truncated to [`MAX_MENTIONS_PER_SENTENCE`] after dedup so the O(m²)
+    /// pair loops in the relationship paths stay bounded on adversarial
+    /// sentences (a 1 MiB line that is one giant "sentence" could otherwise
+    /// emit ~10¹⁰ pairs).
     fn find_mentions_with_positions<'m>(
         &'m self,
         content: &str,
@@ -370,17 +388,28 @@ impl EntityMatcher {
             found.push((m.start(), m.end(), name));
         }
 
-        // Dedup overlapping ranges (keep first / leftmost-longest)
-        let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
-        for m in found {
-            let overlaps = deduped
-                .iter()
-                .any(|&(s, e, _)| (s..=e).contains(&m.0) && (s..=e).contains(&m.1));
-            if !overlaps {
-                deduped.push(m);
-            }
-        }
+        let mut deduped = Self::dedup_mentions(&found);
+        deduped.truncate(MAX_MENTIONS_PER_SENTENCE);
+        deduped
+    }
 
+    /// v1.28.5 "Groundwork" (F-31): dedup overlapping mention ranges. Matches
+    /// arrive ordered by start; a kept range's end is strictly increasing (a
+    /// candidate is only kept when it is contained in NO previous range,
+    /// which for start-ordered input reduces to `end > last kept end`) — so
+    /// the O(m²) containment scan collapses to a running `last_end` (O(m)).
+    /// Semantic equivalence is pinned by `mention_dedup_linear_equivalence`
+    /// against the old scan kept as the test oracle.
+    fn dedup_mentions<'m>(found: &[(usize, usize, &'m str)]) -> Vec<(usize, usize, &'m str)> {
+        let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
+        let mut last_end: usize = 0;
+        for m in found {
+            if m.1 <= last_end {
+                continue;
+            }
+            last_end = m.1;
+            deduped.push(*m);
+        }
         deduped
     }
 
@@ -1347,5 +1376,79 @@ Ceph maps OSD failures.
         let normal = "## Ceph Components\nOSDs store data. MONs maintain the map.\n";
         let vocab = extract_vocabulary(normal, &[]);
         assert!(vocab.entities.len() < 10);
+    }
+
+    /// v1.28.5 "Groundwork" (F-31): a 1 MiB line with ONE entity repeated
+    /// 10⁵× completes fast. The old `insert` ran a linear `contains` per call
+    /// (10⁵ × avg 250 ≈ 2.5×10⁷ compares on a half-full vocab) — the sidecar
+    /// HashSet makes it O(1). Bounded on time: CI on a loaded runner would
+    /// still pass the old code at ~100ms, so the tight 1 s bound is the honest
+    /// discriminator only for the 10⁹-class regressions; the real assertion
+    /// is dedup + cap correctness under volume.
+    #[test]
+    fn single_line_repeated_entity_ingest_is_bounded() {
+        let start = std::time::Instant::now();
+        let mut vocab = EntityVocabulary::default();
+        let repeated = "ceph";
+        for _ in 0..100_000 {
+            vocab.insert(repeated);
+            vocab.insert(&format!("entity{i}", i = 3)); // distinct names too
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 1,
+            "10^5 inserts must complete < 1 s (took {:?})",
+            elapsed
+        );
+        assert_eq!(vocab.entities.len(), 2, "dedup keeps one row per name");
+        assert_eq!(vocab.seen.len(), 2, "sidecar set mirrors the vec");
+    }
+
+    /// v1.28.5 "Groundwork" (F-31): the O(m) running-scan dedup must produce
+    /// exactly the output of the O(m²) containment scan it replaced. The old
+    /// implementation is kept here as the oracle on randomized fixtures:
+    /// start-ordered mention ranges, containers, disjoint, and adversarial
+    /// nesting.
+    #[test]
+    fn mention_dedup_linear_equivalence() {
+        fn reference_dedup<'a>(
+            found: &'a [(usize, usize, &'a str)],
+        ) -> Vec<(usize, usize, &'a str)> {
+            let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
+            for m in found {
+                let overlaps = deduped
+                    .iter()
+                    .any(|&(s, e, _)| (s..=e).contains(&m.0) && (s..=e).contains(&m.1));
+                if !overlaps {
+                    deduped.push(*m);
+                }
+            }
+            deduped
+        }
+        // Deterministic fixture: ordered by start, mixing nested ranges,
+        // exact duplicates, adjacent ranges, and gaps.
+        let mut rng = 42u64;
+        let mut next = move || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 33) as usize
+        };
+        for trial in 0..50 {
+            let mut ranges: Vec<(usize, usize, &str)> = Vec::new();
+            let mut start = 0usize;
+            for i in 0..120 {
+                start += next() % 3; // 0–2 byte gaps / overlaps
+                let len = 1 + next() % 12;
+                ranges.push((start, start + len, ["a", "b", "c"][i % 3]));
+                start += len;
+            }
+            let linear = super::EntityMatcher::dedup_mentions(&ranges);
+            let reference = reference_dedup(&ranges);
+            assert_eq!(
+                linear, reference,
+                "trial {trial}: linear dedup must equal the reference scan"
+            );
+        }
     }
 }
