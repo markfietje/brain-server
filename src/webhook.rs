@@ -202,10 +202,13 @@ impl WebhookQueue {
         } else {
             // Record the delivery in the replay-window table so a post-drain
             // replay is still rejected until the window elapses.
-            let _ = conn.execute(
+            // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed seen-write would
+            // let a replay within the window double-deliver to the sink.
+            conn.execute(
                 "INSERT OR IGNORE INTO webhook_seen(delivery_hash) VALUES (?1)",
                 params![delivery_hash],
-            );
+            )
+            .map_err(|e| HandlerError::internal(format!("webhook seen-write: {e}")))?;
             EnqueueOutcome::Enqueued
         };
 
@@ -293,16 +296,15 @@ fn drain_one(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(String, St
     }
 }
 
-/// Spawn the background drain worker: every few seconds it pops the oldest
-/// verified delivery off the queue and processes it without mutating the index
-/// directly. The actual ingestion-on-webhook is v0.9.8; for v0.9.7 the worker
-/// drains + audits only.
+/// Spawn the background drain worker: every 2 s it pops the oldest verified
+/// delivery and records its drain as an audit row. The HTTP handler never
+/// mutates the index directly — it verifies + enqueues; this worker is the
+/// only queue consumer.
 ///
-/// ponytail: `process_webhook_event` is intentionally a no-op-ish stub — the
-/// GitHub issue index is already kept fresh by the `brain-connector-gh` binary
-/// pulling; webhooks are just a freshness signal. The key security property
-/// (no direct index mutation from an unverified/unbounded source) holds because
-/// the HTTP handler only verifies + enqueues.
+/// ponytail: `process_webhook_event` is not wired — the GitHub issue index is
+/// kept fresh by the `brain-connector-gh` binary pulling; webhooks are a
+/// freshness signal, and the security property (no direct index mutation from
+/// an unverified/unbounded source) holds because the handler only enqueues.
 pub fn spawn_drain_worker(pool: Pool) {
     tokio::spawn(async move {
         loop {
@@ -311,9 +313,12 @@ pub fn spawn_drain_worker(pool: Pool) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            while let Ok(Some((kind, event, payload_hash))) = drain_one(&conn) {
+            while let Ok(Some((kind, _event, payload_hash))) = drain_one(&conn) {
                 // v0.9.8: real ingestion. Today we only record that a verified,
-                // idempotent delivery was drained.
+                // idempotent delivery was drained; the event payload itself is
+                // intentionally not consumed (the index is kept fresh by the
+                // connector binaries pulling — the webhook is a freshness
+                // signal, never a write source).
                 audit::record(
                     &conn,
                     AuditKind::Webhook,
@@ -322,7 +327,6 @@ pub fn spawn_drain_worker(pool: Pool) {
                     AuditStatus::Ok,
                     "drained",
                 );
-                let _ = event;
             }
         }
     });
@@ -348,7 +352,10 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT NOT NULL, event TEXT NOT NULL,
                 delivery_hash TEXT NOT NULL UNIQUE, payload_hash TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP);",
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+             CREATE TABLE webhook_seen(
+                delivery_hash TEXT PRIMARY KEY,
+                seen_at TEXT DEFAULT CURRENT_TIMESTAMP);",
         )
         .unwrap();
         Arc::new(pool)

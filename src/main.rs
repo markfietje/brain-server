@@ -1304,11 +1304,19 @@ async fn ingest_memory(
             if chunk_id > 0 {
                 // v0.9.0: write to vec0 (int8 + binary quantized). DoD: no raw
                 // f32 JSON is written to the legacy `embeddings` column.
-                let _ = tx.execute(
-                    "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
-                     VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'memory', datetime('now'))",
-                    params![chunk_id, embedding.as_bytes()],
-                );
+                // v1.27.19 "Scrub" (D-1): propagate — a chunk stored without
+                // its vector is silently degraded (FTS-only retrieval with no
+                // embedding to fuse). The entry is skipped, never half-stored.
+                if tx
+                    .execute(
+                        "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                         VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'memory', datetime('now'))",
+                        params![chunk_id, embedding.as_bytes()],
+                    )
+                    .is_err()
+                {
+                    continue;
+                }
 
                 // v0.9.4: link this memory to its source + revision. Best-effort
                 // inside the tx — a failure here rolls back the whole entry (the
@@ -1333,23 +1341,39 @@ async fn ingest_memory(
                             sources::RevisionOutcome::Unchanged(id)
                             | sources::RevisionOutcome::Created { id, .. } => id,
                         };
-                        let _ = sources::link_chunks(
+                        // v1.27.19 "Scrub" (D-1): was `let _ =` + a comment
+                        // claiming failure "rolls back the whole entry" — it did
+                        // not (the tx committed regardless), so a failed link
+                        // stored a visible memory with no source linkage. Now a
+                        // linkage/evidence failure skips the entry for real (tx
+                        // drops uncommitted), matching the fail-soft style.
+                        if sources::link_chunks(
                             &tx,
                             source_id,
                             revision_id,
                             std::slice::from_ref(&chunk_id),
-                        );
+                        )
+                        .is_err()
+                        {
+                            eprintln!("⚠️ source link failed — rolling back chunk {chunk_id}");
+                            continue;
+                        }
                         // v0.9.8 M1.1: manual memories are observed == valid_from
                         // == now and remain current (valid_to NULL); highest
                         // authority (trusted local write surface).
-                        let _ = sources::stamp_evidence(
+                        if sources::stamp_evidence(
                             &tx,
                             chunk_id,
                             &chrono::Utc::now().to_rfc3339(),
                             None,
                             None,
                             sources::AUTHORITY_MANUAL,
-                        );
+                        )
+                        .is_err()
+                        {
+                            eprintln!("⚠️ evidence stamp failed — rolling back chunk {chunk_id}");
+                            continue;
+                        }
                     }
                 }
 
@@ -2496,21 +2520,27 @@ async fn ingest_markdown(
                     rows.filter_map(|r| r.ok()).collect()
                 };
                 for id in &stale_ids {
-                    let _ = tx.execute(
+                    // v1.27.19 "Scrub" (D-1): was `let _ =` — a stale vec0 row
+                    // would surface the old chunk in retrieval after the replace.
+                    tx.execute(
                         "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
                         params![id],
-                    );
+                    )
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
                 }
                 // Sweep relationships: both those still linked (previously
                 // stale_ids) AND orphans already NULLed by prior re-ingests.
-                let _ = tx.execute("DELETE FROM relationships WHERE knowledge_id IS NULL", []);
+                tx.execute("DELETE FROM relationships WHERE knowledge_id IS NULL", [])
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
                 for id in &stale_ids {
-                    let _ = tx.execute(
+                    tx.execute(
                         "DELETE FROM relationships WHERE knowledge_id = ?1",
                         params![id],
-                    );
+                    )
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
                 }
-                let _ = tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp]);
+                tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp])
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
             }
         }
         let r = write_markdown_ingest(
@@ -2552,7 +2582,10 @@ async fn ingest_markdown(
         let pool = state.pool.clone();
         let d = domain.clone();
         let did = document_id.clone();
-        let _ = task::spawn_blocking(move || -> Result<(), AppError> {
+        // v1.27.19 "Scrub" (D-1): was `let _ = ... .await;` — a failed post-commit
+        // domain move left chunks in "global" with no signal. Post-commit, so a
+        // rejection is dishonest; log instead.
+        match task::spawn_blocking(move || -> Result<(), AppError> {
             let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
             conn.execute(
                 "UPDATE knowledge SET domain = ?1 WHERE document_id = ?2 AND domain = 'global'",
@@ -2561,11 +2594,20 @@ async fn ingest_markdown(
             .map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(())
         })
-        .await;
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("⚠️ domain move failed for {document_id}: {e:?}"),
+            Err(join) => eprintln!("⚠️ domain move task failed for {document_id}: {join}"),
+        }
     }
 
     // Refresh the domain centroid so routing stays current.
-    let _ = domain_router::recompute_centroid(&state.pool, &domain, &state.pool);
+    // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed refresh silently left
+    // stale routing. Post-commit; log.
+    if let Err(e) = domain_router::recompute_centroid(&state.pool, &domain, &state.pool) {
+        eprintln!("⚠️ centroid refresh failed for domain {domain}: {e}");
+    }
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -2666,13 +2708,17 @@ fn write_markdown_ingest(
             rows.filter_map(|r| r.ok()).collect()
         };
         for id in &stale_ids {
-            let _ = tx.execute(
+            // v1.27.19 "Scrub" (D-1): was `let _ =` — a stale vec0 row would
+            // surface the old chunk in retrieval after the file changed.
+            tx.execute(
                 "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
                 params![id],
-            );
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         // FTS trigger + relationships FK SET NULL clean up the rest.
-        let _ = tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp]);
+        tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp])
+            .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
     for (idx, chunk) in chunks.iter().enumerate() {
@@ -2723,11 +2769,14 @@ fn write_markdown_ingest(
         inserted_ids.push(k_id);
 
         let emb = &embeddings[idx];
-        let _ = tx.execute(
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a chunk stored without its
+        // vector is silently degraded. Fail the batch; no half-stored chunks.
+        tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
              VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'markdown', datetime('now'))",
             params![k_id, emb.as_bytes()],
-        );
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
         inserted += 1;
     }
 
@@ -2844,9 +2893,12 @@ fn link_vault_source(
         // valid_from defaults to observed_at (no world-time beyond ingest time is
         // known for a vault file); authority is the vault kind's constant.
         let observed = chrono::Utc::now().to_rfc3339();
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a silently-missed evidence
+        // stamp left vault chunks with no temporal provenance. Fail the ingest;
+        // the caller reports it (matching link_chunks above).
         for cid in chunk_ids {
-            let _ =
-                sources::stamp_evidence(tx, *cid, &observed, None, None, sources::AUTHORITY_VAULT);
+            sources::stamp_evidence(tx, *cid, &observed, None, None, sources::AUTHORITY_VAULT)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
     }
     Ok(())
@@ -2878,17 +2930,19 @@ fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
             continue;
         }
         let tx = conn.unchecked_transaction()?;
-        let _ = tx.execute(
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed delete/insert here
+        // would silently lose the vector for `id` (FTS-only retrieval).
+        tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             params![id],
-        );
-        let _ = tx.execute(
+        )?;
+        tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
              SELECT ?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2),
                     COALESCE((SELECT source FROM knowledge WHERE id = ?1), 'manual'),
                     datetime('now')",
             params![id, v.as_bytes()],
-        );
+        )?;
         tx.commit()?;
         reembedded += 1;
     }
@@ -2930,17 +2984,19 @@ async fn reindex(
             // Replace the vec0 row (delete + re-insert, since vec0 has no UPSERT
             // for changed vectors). v0.9.0 DoD: vec0 is the sole vector store;
             // the legacy JSON `embeddings` column is no longer written.
-            let _ = tx.execute(
+            // v1.27.19 "Scrub" (D-1): was `let _ =`; propagate — a silently
+            // lost vector is a silent retrieval regression.
+            tx.execute(
                 "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
                 params![id],
-            );
-            let _ = tx.execute(
+            )?;
+            tx.execute(
                 "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
                  SELECT ?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2),
                         COALESCE((SELECT source FROM knowledge WHERE id = ?1), 'manual'),
                         datetime('now')",
                 params![id, v.as_bytes()],
-            );
+            )?;
             tx.commit()?;
             reembedded += 1;
         }
@@ -3352,10 +3408,13 @@ async fn delete_quarantine(
         crate::legal_hold::refuse_if_held(&tx, &[id])
             .map_err(|e| AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message)))?;
         // vec0 has no FK cascade — clean the index entry explicitly.
-        let _ = tx.execute(
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a lingering vec0 row would
+        // surface a deleted chunk's vector in retrieval.
+        tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             params![id],
-        );
+        )
+        .map_err(|e| AppError::Internal(e.to_string()))?;
         // Only delete if still flagged, so this endpoint can't purge live rows.
         let n = tx
             .execute(
@@ -4807,8 +4866,13 @@ async fn main_inner() -> Result<()> {
         loop {
             interval.tick().await;
             if let Ok(conn) = pool_for_health.get() {
-                let _ = conn.query_row("SELECT 1", [], |_| Ok(()));
-                debug!("Pool health check: OK");
+                // v1.27.19 "Scrub" (D-1): was `let _ =` — a failing probe only
+                // ever logged nothing (the OK branch logged).
+                if let Err(e) = conn.query_row("SELECT 1", [], |_| Ok(())) {
+                    warn!("pool health probe failed: {e}");
+                } else {
+                    debug!("Pool health check: OK");
+                }
             }
         }
     });
@@ -4977,7 +5041,12 @@ async fn main_inner() -> Result<()> {
                 interval.tick().await;
                 purge_cache.purge_negatives();
                 if let Ok(conn) = Connection::open(&purge_db_path) {
-                    let _ = auth::revocation::purge_expired(&conn);
+                    // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed purge is
+                    // fail-safe (stale denylist rows linger; tokens expire
+                    // sooner, never later) but must be visible.
+                    if let Err(e) = auth::revocation::purge_expired(&conn) {
+                        warn!("revocation purge failed: {e}");
+                    }
                 }
             }
         });

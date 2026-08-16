@@ -85,10 +85,14 @@ pub fn upsert_revision(
         .optional()?
     {
         // Refresh observed time on the source even on a no-op revision.
-        let _ = tx.execute(
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed refresh silently
+        // misleads the reconcile "last observed" display. Cosmetic: warn.
+        if let Err(e) = tx.execute(
             "UPDATE sources SET observed_at = CURRENT_TIMESTAMP WHERE id = ?1",
             params![source_id],
-        );
+        ) {
+            tracing::warn!("source observed_at refresh failed: {e}");
+        }
         return Ok(RevisionOutcome::Unchanged(id));
     }
 

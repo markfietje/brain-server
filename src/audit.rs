@@ -352,20 +352,30 @@ pub fn read_trace(conn: &Connection, audit_id: i64) -> Option<String> {
 /// acceptable for a multi-thousand-row audit log. A >1M-row log would want a
 /// periodic checkpoint instead (verify_chain already notes the same ceiling).
 pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i64> {
-    let cutoff: String = conn
-        .query_row(
-            "SELECT datetime('now', ?1)",
-            params![format!("-{retention_days} days")],
-            |r| r.get(0),
-        )
-        .ok()?;
-    let expired: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM audit_events WHERE ts < ?1",
-            params![cutoff],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
+    // v1.27.19 "Scrub" (D-1): was `.ok()?` — a silent skip hid the prune's
+    // failure from the only diagnostic seam (its caller). Warn instead.
+    let cutoff: String = match conn.query_row(
+        "SELECT datetime('now', ?1)",
+        params![format!("-{retention_days} days")],
+        |r| r.get(0),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("audit retention prune: cutoff query failed: {e}");
+            return None;
+        }
+    };
+    let expired: i64 = match conn.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE ts < ?1",
+        params![cutoff],
+        |r| r.get(0),
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("audit retention prune: count query failed: {e}");
+            return None;
+        }
+    };
     if expired == 0 {
         return Some(0);
     }

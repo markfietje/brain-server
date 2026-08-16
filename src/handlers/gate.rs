@@ -1642,7 +1642,11 @@ pub async fn purge(
             .flatten()
             .is_some_and(|p| p.pii_strict());
         if strict {
-            let _ = conn.execute_batch("PRAGMA secure_delete=ON;");
+            // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed secure_delete
+            // silently weakens the erasure guarantee claimed on the purge.
+            if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
+                tracing::warn!("secure_delete=ON failed for purge: {e}");
+            }
         }
         let tx = conn
             .transaction()
@@ -1690,7 +1694,11 @@ pub async fn purge(
         // linger there. Best-effort — a checkpoint failure must not fail an
         // otherwise-successful erasure.
         if strict {
-            let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+            // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed TRUNCATE leaves
+            // erased page images in the WAL; warn instead of certifying silence.
+            if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
+                tracing::warn!("wal_checkpoint(TRUNCATE) failed after purge: {e}");
+            }
         }
         crate::audit::record(
             &conn,
@@ -1763,29 +1771,38 @@ pub(crate) fn purge_chunk_ids(
         // relationships (and with them their PII-bearing entity names) survived
         // every purge. Now removed; entity-level cleanup runs in the post-loop
         // orphan sweep. vec0 rows are deleted by knowledge_id.
-        let _ = tx.execute(
+        // v1.27.19 "Scrub" (D-1): these residue DELETEs were `let _ =` — a single
+        // silent failure left relationships/vec/evidence/traces for a chunk the
+        // purge then tombstoned as erased (partial erasure certified complete).
+        // All now propagate: a residue failure rolls back the whole purge tx.
+        tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             rusqlite::params![id],
-        );
-        let _ = tx.execute(
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        tx.execute(
             "DELETE FROM relationships WHERE knowledge_id = ?1",
             rusqlite::params![id],
-        );
-        let _ = tx.execute(
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        tx.execute(
             "DELETE FROM evidence_links WHERE from_chunk = ?1 OR to_chunk = ?1",
             rusqlite::params![id],
-        );
-        let _ = tx.execute(
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        tx.execute(
             "DELETE FROM proposals WHERE conflict_with = ?1",
             rusqlite::params![id],
-        );
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
         // v1.16.1: cascade to recall_traces. The trace side table (read-event
         // replay artifact) embeds hit chunk ids in its JSON; a purged chunk
         // must not leave a trace that still "proves" it was returned. JSON1
         // is compiled into the bundled SQLite (rusqlite "bundled"), so the
-        // path filter is exact, not a LIKE. Best-effort: a trace with an
-        // unparseable JSON body is skipped rather than failing the purge.
-        let _ = tx.execute(
+        // path filter is exact, not a LIKE. A trace with an unparseable JSON
+        // body is skipped by the json_valid filter rather than failing the
+        // purge; only a genuine SQL error now propagates.
+        tx.execute(
             "DELETE FROM recall_traces WHERE audit_id IN (
                  SELECT rt.audit_id FROM recall_traces rt
                   WHERE json_valid(rt.trace_json)
@@ -1795,7 +1812,8 @@ pub(crate) fn purge_chunk_ids(
                     )
              )",
             rusqlite::params![id],
-        );
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
         let n = tx
             .execute("DELETE FROM knowledge WHERE id = ?1", rusqlite::params![id])
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1834,11 +1852,15 @@ pub(crate) fn purge_chunk_ids(
         if alive == 0 {
             // Clear any residual relationship rows first (FK-off safety; if FKs
             // are on the entity DELETE cascades them anyway).
-            let _ = tx.execute(
+            // v1.27.19 "Scrub" (D-1): was `let _ =` — an orphan PII-named entity
+            // surviving a purge is a partial erasure; propagate.
+            tx.execute(
                 "DELETE FROM relationships WHERE from_entity_id = ?1 OR to_entity_id = ?1",
                 rusqlite::params![e],
-            );
-            let _ = tx.execute("DELETE FROM entities WHERE id = ?1", rusqlite::params![e]);
+            )
+            .map_err(|err| HandlerError::internal(err.to_string()))?;
+            tx.execute("DELETE FROM entities WHERE id = ?1", rusqlite::params![e])
+                .map_err(|err| HandlerError::internal(err.to_string()))?;
         }
     }
 

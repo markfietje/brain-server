@@ -701,11 +701,14 @@ pub(crate) async fn run_recall(
                         &tenant,
                     );
                     if let Some(days) = crate::config::audit_read_retention_days() {
-                        let _ = crate::audit::prune_audit_retention(&conn, days);
+                        // No-op on failure — prunes are fail-safe (retention
+                        // lingers; it never false-deletes); the warning
+                        // is logged inside the helper.
+                        crate::audit::prune_audit_retention(&conn, days);
                     }
                     // v1.20.17 M1: piggyback the DSAR ledger retention on the
                     // same read-event prune cadence (no dedicated timer).
-                    let _ = crate::handlers::observe::purge_stale_dsar_ledger(
+                    crate::handlers::observe::purge_stale_dsar_ledger(
                         &conn,
                         crate::config::dsar_ledger_retention_days(),
                     );

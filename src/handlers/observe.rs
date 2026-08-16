@@ -866,11 +866,18 @@ pub(crate) fn purge_stale_dsar_ledger(conn: &rusqlite::Connection, retention_day
         return 0;
     }
     let now = chrono::Utc::now().timestamp();
-    conn.execute(
+    // v1.27.19 "Scrub" (D-1): was `.unwrap_or(0)` — a silent failure hid the
+    // prune; warn instead of pretending.
+    match conn.execute(
         "DELETE FROM dsar_requests WHERE status = 'completed' AND completed_at < ?1",
         rusqlite::params![now - (retention_days as i64) * 86400],
-    )
-    .unwrap_or(0) as i64
+    ) {
+        Ok(n) => n as i64,
+        Err(e) => {
+            tracing::warn!("DSAR ledger retention prune failed: {e}");
+            0
+        }
+    }
 }
 
 /// v1.15.0 "Observe" M3: Art 19 onward-notification. When
@@ -1089,7 +1096,11 @@ fn run_dsar_pool(
         "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
     };
     if strict && !dry_run && matches!(action, "purge" | "both") {
-        let _ = conn.execute_batch("PRAGMA secure_delete=ON;");
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed secure_delete
+        // weakens the remanence claim on the certificate; warn, don't certify.
+        if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
+            tracing::warn!("secure_delete=ON failed for DSAR purge: {e}");
+        }
     }
     let tx = conn
         .transaction()
@@ -1213,10 +1224,11 @@ fn run_dsar_pool(
     // future field that does embed personal data. Best-effort (short
     // common subjects over-match slightly; erasure-safe direction).
     if matches!(action, "purge" | "both") && !subject.is_empty() {
-        let _ = tx.execute(
+        tx.execute(
             "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
             rusqlite::params![format!("%{subject}%")],
-        );
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
         // v1.20.25: proposals hold raw candidate content with no owner column,
         // so a DSAR could never locate them and their plaintext (possibly PII
         // about the subject) survived a "complete" erasure. Sweep them by the
@@ -1225,10 +1237,13 @@ fn run_dsar_pool(
         // semantic owner join (proposals are operator-reviewed candidates, not
         // subject-attributed rows); the review-queue provenance for the subject
         // is intentionally erased with the memory per Art 17.
-        let _ = tx.execute(
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a silent failure would leave
+        // subject PII in a "complete" erasure; propagate (tx rolls back).
+        tx.execute(
             "DELETE FROM proposals WHERE content LIKE ?1",
             rusqlite::params![format!("%{subject}%")],
-        );
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
     }
 
     // 4. v1.20.17 M1: store the export's SHA-256 (v1.20.24 "Sweep": replacing
@@ -1256,7 +1271,11 @@ fn run_dsar_pool(
     // not linger there (reuse the integrity.rs import pattern). Best-effort —
     // a checkpoint failure must not fail an otherwise-successful erasure.
     if !dry_run && matches!(action, "purge" | "both") {
-        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed TRUNCATE leaves the
+        // erased subject's page images in the WAL; warn, never certify silence.
+        if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
+            tracing::warn!("wal_checkpoint(TRUNCATE) failed after DSAR purge: {e}");
+        }
     }
 
     Ok(DsarPoolRun {
