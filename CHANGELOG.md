@@ -63,6 +63,47 @@ control-char parity).
   swallowed instead of refused; `brain status` printed `-1` for absent
   counters; `brain client add` rendered flush-left in help.
 
+### Release notes
+
+**Improvements**
+- **Every label in the app now resolves through the translation layer.**
+  The five locale bundles (en/de/fr/es/nl) expose one identical key set, and
+  every render surface — main chrome, command palette, review queue, recall,
+  security, health, register, graph, subjects, ops, audit, data, system, ump,
+  ingest, procedures, consolidate, the shared confirm — resolves its labels
+  through `t()`/`t_fmt()` instead of hard-coded strings. A new source-scan
+  test gates future work so a raw string can't silently leak back into the
+  UI. The keyboard-shortcuts help also gained the missing `E` (edit) key.
+- **A hung backend can no longer spin a panel forever.** The client's shared
+  HTTP client carries the CLI's socket discipline (5s handshake / 15s total),
+  so a backend that stops answering surfaces as a network error instead of an
+  endlessly-loading panel. (The browser/wasm build keeps its own fetch
+  timeouts.)
+- **The CLI's `--json` envelope mode is here.** `query`, `explain`, `get`,
+  `ingest-dir`, `suggest`, `suggest-metrics`, `retention`, `snapshot-status`,
+  `connector-status`, `status`, and `eval` all emit a machine-parseable
+  `{"ok":…,"cmd":…,"data":…}` envelope with documented exit codes (0 ok ·
+  1 runtime · 2 usage).
+- **Flag parsing is honest.** Boolean flags (`--dry-run`, `--yes`, `--force`,
+  `--json`, …) never swallow the next token, so `ingest-dir --dry-run
+  ~/vault` finally works. Unknown flags exit 2 instead of being silently
+  swallowed, `--` ends flag parsing, and a bad value like `--k abc` exits 2
+  with a clear message instead of silently becoming 5. `ingest-dir` exits
+  non-zero when every file failed. `status` renders absent counters as `n/a`.
+- **`brain --help` cannot drift.** Help is generated from the same subcommand
+  table the dispatcher uses — the orphaned `brain client add` line is gone,
+  `brain token rotate` and `brain ump …` are now listed, and a
+  `flags:`/`exit codes:` section documents the contract. `brain suggest`
+  output also runs the same cleanup chain as recall/get.
+
+**Bug fixes**
+- `brain ingest-dir --dry-run <path>` previously swallowed the path as the
+  flag's value and ingested nothing.
+- `--k abc` silently coerced to `5`; unknown `--flag` values were swallowed
+  instead of refused.
+- `brain status` printed `-1` for absent counters.
+- `brain client add` rendered flush-left in help output.
+
 ### Engineering record
 
 Tests: server main bin **670** / 6 ignored (unchanged count — the CLI bin grew

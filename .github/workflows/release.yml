@@ -145,12 +145,13 @@ jobs:
         # The published body is USER-FACING, not the engineering log. Each
         # CHANGELOG section (v1.21.0+) carries a `### Release notes` block
         # written for users — Bug fixes / Improvements / Security fixes — and
-        # that block is what gets published. Older sections fall back to the
-        # intro paragraph. Either way, internal references (IMPLEMENTATION_PLAN
-        # files, USE_CASES.md, agent history) are stripped before publishing.
-        # Written outside dist/ so it isn't uploaded as an asset. The previous
-        # tag is the CHANGELOG heading after the current section, so no
-        # history fetch / tag walk is needed on the runner.
+        # that block is what gets published. Internal references
+        # (IMPLEMENTATION_PLAN files, USE_CASES.md, agent history) are
+        # stripped before publishing. The block is MANDATORY: a release that
+        # lacks it FAILS this step (no release is created) rather than shipping
+        # a degraded body — forgetting to write the notes is a blocking error,
+        # never a silent fallback. Written outside dist/ so it isn't uploaded
+        # as an asset.
         run: |
           set -e
           if [ -n "${{ inputs.version }}" ]; then
@@ -163,37 +164,38 @@ jobs:
           # (IMPLEMENTATION_PLAN_*, IMPLEMENTATION_ROADMAP_*, USE_CASES.md,
           # agent history).
           sanitize() { awk '!/IMPLEMENTATION_|USE_CASES\.md|docs\/AGENTS/ { sub(/[ \t]*See[ \t]*$/, ""); print }'; }
-          if awk -v ver="$version" '
+          if ! awk -v ver="$version" '
                 /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); next }
                 insec && /^### Release notes/ { found=1; exit }
                 END { exit found ? 0 : 1 }
               ' CHANGELOG.md; then
-            # The explicit user-facing block: the section heading + the
-            # `### Release notes` subsection, stopping at the next
-            # section/subsection heading. Skip everything above it (intro
-            # prose, engineering bullets).
-            awk -v ver="$version" '
-              /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); if (insec) print; next }
-              !insec { next }
-              /^### Release notes/ { notes=1; print ""; print; next }
-              !notes { next }
-              /^### / { exit }
-              { print }
-            ' CHANGELOG.md | sanitize > RELEASE_BODY.md
-          else
-            # Older section (no explicit block): the intro paragraph only.
-            awk -v ver="$version" '
-              /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); if (insec) print; next }
-              !insec { next }
-              /^#/ { next }
-              /^([-*+] |[0-9]+\. )/ { next }
-              /^$/ { if (out) exit; next }
-              { if (!out) { print ""; out=1 }; print }
-            ' CHANGELOG.md | sanitize > RELEASE_BODY.md
+            echo "::error::CHANGELOG.md section '## [$version]' is missing a '### Release notes' block — refusing to publish a release without user-facing notes. Add the block, then re-tag."
+            exit 1
           fi
-          # Previous release = the largest CHANGELOG version numerically
-          # below this one (heading order in the file is not strictly sorted
-          # and [Unreleased] headings must be skipped).
+          # The explicit user-facing block: the section heading + the
+          # `### Release notes` subsection, stopping at the next
+          # section/subsection heading. Skip everything above it (intro
+          # prose, engineering bullets).
+          awk -v ver="$version" '
+            /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); if (insec) print; next }
+            !insec { next }
+            /^### Release notes/ { notes=1; print ""; print; next }
+            !notes { next }
+            /^### / { exit }
+            { print }
+          ' CHANGELOG.md | sanitize > RELEASE_BODY.md
+          # Guard against an empty / bullet-free body (e.g. a `### Release
+          # notes` heading with nothing under it): shipping no notes would be
+          # worse than refusing. Only actual bullet lines count as content —
+          # the `## [version]` heading is always present and must not satisfy
+          # the check.
+          if [ "$(grep -c '^- ' RELEASE_BODY.md)" -lt 1 ]; then
+            echo "::error::CHANGELOG.md '### Release notes' block for $version produced no bullets. Add real notes, then re-tag."
+            exit 1
+          fi
+          # Previous release = the largest CHANGELOG version numerically below
+          # this one (heading order is not strictly sorted; [Unreleased] must
+          # be skipped).
           prev=""
           while IFS= read -r v; do
             if [ "$v" = "$version" ]; then break; fi
