@@ -109,61 +109,74 @@ fn dirs_home() -> PathBuf {
     PathBuf::from(".")
 }
 
+/// v1.27.20 M4 — the ONE subcommand table: consumed by both the dispatcher
+/// (name → run fn) and the help printer (name → usage line), so help can
+/// never drift from the dispatch set. `--json` marks the data commands whose
+/// output is a single machine envelope.
+struct Subcommand {
+    name: &'static str,
+    usage: &'static str,
+    run: fn(&[String]) -> Result<(), String>,
+    json: bool,
+}
+
+const SUBCOMMANDS: &[Subcommand] = &[
+    Subcommand { name: "query", json: true, run: cmd_query, usage: "brain query \"<q>\" [--k N] [--source S ...] [--phrase P ...]\n                 [--exclude E ...] [--code C ...] [--since ISO]\n                 [--intent I] [--profile P] [--graph] [--explain]" },
+    Subcommand { name: "explain", json: true, run: cmd_explain, usage: "brain explain \"<q>\" [--source S ...] [--since ISO]" },
+    Subcommand { name: "get", json: true, run: cmd_get, usage: "brain get <id>" },
+    Subcommand { name: "ingest-dir", json: true, run: cmd_ingest_dir, usage: "brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]" },
+    Subcommand { name: "reconcile", json: false, run: cmd_reconcile, usage: "brain reconcile <path> [--kind vault] [--dry-run]" },
+    Subcommand { name: "resolve", json: false, run: cmd_resolve, usage: "brain resolve <new_id> <old_id>" },
+    Subcommand { name: "domain-move", json: false, run: cmd_domain_move, usage: "brain domain-move <id> [<id> ...] --to <domain> [--confirm global]" },
+    Subcommand { name: "domains-recompute", json: false, run: cmd_domains_recompute, usage: "brain domains-recompute" },
+    Subcommand { name: "undo-resolve", json: false, run: cmd_undo_resolve, usage: "brain undo-resolve <old_id> [<old_id> ...]" },
+    Subcommand { name: "check-consistency", json: false, run: cmd_check_consistency, usage: "brain check-consistency" },
+    Subcommand { name: "source-delete", json: false, run: cmd_source_delete, usage: "brain source-delete <id>" },
+    Subcommand { name: "suggest", json: true, run: cmd_suggest, usage: "brain suggest \"<context>\" [--exclude id[,id...]] [--k N] [--domain D] [--session S]" },
+    Subcommand { name: "suggest-feedback", json: false, run: cmd_suggest_feedback, usage: "brain suggest-feedback <chunk_id> accept|dismiss [--reason \"...\"] [--session S]" },
+    Subcommand { name: "suggest-metrics", json: true, run: cmd_suggest_metrics, usage: "brain suggest-metrics [--session S] [--since DATE]" },
+    Subcommand { name: "retention", json: true, run: cmd_retention, usage: "brain retention get\n  brain retention set <kind> <days>" },
+    Subcommand { name: "setup", json: false, run: cmd_setup, usage: "brain setup [domain] [--profile NAME] [--yes]" },
+    Subcommand { name: "client", json: false, run: cmd_client, usage: "brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n  brain client dpa get <name>\n  brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n  brain client hold add <name> <id> [<id> ...] --reason R | list <name>" },
+    Subcommand { name: "snapshot-status", json: true, run: cmd_snapshot_status, usage: "brain snapshot-status" },
+    Subcommand { name: "eval", json: true, run: cmd_eval, usage: "brain eval [--floor r5=0.85 r10=0.9]" },
+    Subcommand { name: "procedure", json: false, run: cmd_procedure, usage: "brain procedure <title> [--step \"title: content\" ...] [--domain D]" },
+    Subcommand { name: "classify", json: false, run: cmd_classify, usage: "brain classify \"<text>\"" },
+    Subcommand { name: "evaluate", json: false, run: cmd_evaluate, usage: "brain evaluate <decision_id> --var name=value [--var name=value ...]" },
+    Subcommand { name: "connect", json: false, run: cmd_connect, usage: "brain connect github --app-id N --install-id N --key-file PATH \\\n                      --repo owner/repo [...] [--webhook-secret-file PATH]\n  brain connect --kind crm-salesforce ...   (vocabulary accepts the v1.24 set;\n                                             only github has a runnable binary)" },
+    Subcommand { name: "sync", json: false, run: cmd_sync, usage: "brain sync [github] [--config PATH]" },
+    Subcommand { name: "connector-status", json: true, run: cmd_connector_status, usage: "brain connector-status" },
+    Subcommand { name: "backup", json: false, run: cmd_backup, usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]" },
+    Subcommand { name: "restore", json: false, run: cmd_restore, usage: "brain restore <in-path> [--passphrase-file PATH]" },
+    Subcommand { name: "key", json: false, run: cmd_key, usage: "brain key generate [--kid ID] [--alg RS256] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]" },
+    Subcommand { name: "ump", json: false, run: cmd_ump, usage: "brain ump export [--format md|ump] [--out FILE]\n  brain ump import <file>\n  brain ump keygen [--dir PATH]" },
+    Subcommand { name: "token", json: false, run: cmd_token, usage: "brain token rotate" },
+    Subcommand { name: "bench", json: false, run: |_| cmd_bench(), usage: "brain bench" },
+    Subcommand { name: "status", json: true, run: |_| cmd_status(), usage: "brain status" },
+    Subcommand { name: "doctor", json: false, run: cmd_doctor, usage: "brain doctor [--backup <path> [--passphrase-file PATH]]" },
+];
+
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         print_usage();
         exit(0);
     }
+    // `--json` is a global mode: `brain --json recall "…"` or per-subcommand.
+    if args.iter().any(|a| a == "--json") {
+        JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+        args.retain(|a| a != "--json");
+        if args.is_empty() {
+            eprintln!("error: --json needs a subcommand");
+            print_usage();
+            exit(2);
+        }
+    }
     let cmd = args[0].as_str();
+    let _ = ENVELOPE_CMD.set(cmd.to_string());
     let rest = &args[1..];
 
     let result = match cmd {
-        "query" => cmd_query(rest),
-        "explain" => cmd_explain(rest),
-        "get" => cmd_get(rest),
-        "ingest-dir" => cmd_ingest_dir(rest),
-        "reconcile" => cmd_reconcile(rest),
-        "resolve" => cmd_resolve(rest),
-        "domain-move" => cmd_domain_move(rest),
-        "domains-recompute" => cmd_domains_recompute(rest),
-        "undo-resolve" => cmd_undo_resolve(rest),
-        "check-consistency" => cmd_check_consistency(rest),
-        "source-delete" => cmd_source_delete(rest),
-        // v1.9.0 "Suggest": opt-in anticipation surface.
-        "suggest" => cmd_suggest(rest),
-        "suggest-feedback" => cmd_suggest_feedback(rest),
-        "suggest-metrics" => cmd_suggest_metrics(rest),
-        // v1.17.1 "Govern": per-kind retention policy + snapshot self-check.
-        "retention" => cmd_retention(rest),
-        "snapshot-status" => cmd_snapshot_status(rest),
-        // v1.21.0 "Profiles": the use-case onboarding wizard.
-        "setup" => cmd_setup(rest),
-        // v1.17.3 "UMP": the §4.3 file binding.
-        "ump" => cmd_ump(rest),
-        // v1.27.2 "Onboard": the operator client wizard.
-        "client" => cmd_client(rest),
-        // v1.10.0 "Procedural": procedural memory + deterministic categorization.
-        "procedure" => cmd_procedure(rest),
-        "classify" => cmd_classify(rest),
-        "evaluate" => cmd_evaluate(rest),
-        "connect" => cmd_connect(rest),
-        "sync" => cmd_sync(rest),
-        "connector-status" => cmd_connector_status(rest),
-        "backup" => cmd_backup(rest),
-        "restore" => cmd_restore(rest),
-        // v1.2.0 AuthN: JWT signing key management. Local-file operations;
-        // no server roundtrip (the server picks up new keys via its own
-        // KeyStore reload, currently on restart — hot-reload is a follow-up).
-        "key" => cmd_key(rest),
-        // v1.27.12 "Rotate": rotate the shared static bearer so a leaked copy
-        // is retired (operator-in-the-loop; the server + file-reading consumers
-        // reload the new value within the rotation poll).
-        "token" => cmd_token(rest),
-        "bench" => cmd_bench(),
-        "eval" => cmd_eval(rest),
-        "status" => cmd_status(),
-        "doctor" => cmd_doctor(rest),
         "-h" | "--help" | "help" => {
             print_usage();
             Ok(())
@@ -172,113 +185,249 @@ fn main() {
             println!("brain {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        other => {
-            eprintln!("error: unknown subcommand '{other}'");
-            print_usage();
-            exit(2);
-        }
+        _ => match SUBCOMMANDS.iter().find(|sub| sub.name == cmd) {
+            Some(sub) => {
+                if json_mode() && !sub.json {
+                    eprintln!("error: --json is not supported for subcommand '{cmd}'");
+                    exit(2);
+                }
+                (sub.run)(rest)
+            }
+            None => {
+                eprintln!("error: unknown subcommand '{cmd}'");
+                print_usage();
+                exit(2);
+            }
+        },
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e}");
-        exit(1);
+        if json_mode() && !ENVELOPE_EMITTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            // The command did not emit its own fail envelope (a pre-parse
+            // error); main emits the generic one so stdout stays one object.
+            let cmd = ENVELOPE_CMD.get().map(|s| s.as_str()).unwrap_or("");
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": false,
+                    "cmd": cmd,
+                    "error": { "code": "error", "message": e }
+                })
+            );
+        }
+        if !json_mode() {
+            eprintln!("error: {e}");
+        }
+        let usage = LAST_ERR_IS_USAGE.swap(false, std::sync::atomic::Ordering::SeqCst);
+        exit(if usage { 2 } else { 1 });
     }
 }
 
 fn print_usage() {
-    // ponytail: raw string literal preserves the intended 2-space indentation.
-    // The previous version used `\n\` line continuations, which strip leading
-    // whitespace on the next line — so every subcommand rendered flush-left.
-    // `r#"..."#` (raw with hash-delimiters) lets the embedded `"` survive too.
-    println!(
-        r#"brain — client for brain-server (default {DEFAULT_URL}; override with BRAIN_URL)
+    let text = usage_text();
+    println!("{text}");
+}
 
-usage:
-  brain query "<q>" [--k N] [--source S ...] [--phrase P ...]
-                 [--exclude E ...] [--code C ...] [--since ISO]
-                 [--intent I] [--profile P] [--graph] [--explain]
-  brain explain "<q>" [--source S ...] [--since ISO]
-  brain get <id>
-  brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]
-  brain reconcile <path> [--kind vault] [--dry-run]
-  brain resolve <new_id> <old_id>
-  brain domain-move <id> [<id> ...] --to <domain> [--confirm global]
-  brain domains-recompute
-  brain undo-resolve <old_id> [<old_id> ...]
-  brain check-consistency
-  brain source-delete <id>
-  brain suggest "<context>" [--exclude id[,id...]] [--k N] [--domain D] [--session S]
-  brain suggest-feedback <chunk_id> accept|dismiss [--reason "..."] [--session S]
-  brain suggest-metrics [--session S] [--since DATE]
-  brain retention get
-  brain retention set <kind> <days>
-  brain setup [domain] [--profile NAME] [--yes]
-brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]
-  brain client dpa get <name>
-  brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S
-  brain client hold add <name> <id> [<id> ...] --reason R | list <name>
-  brain snapshot-status
-  brain eval [--floor r5=0.85 r10=0.9]
-  brain procedure <title> [--step "title: content" ...] [--domain D]
-  brain classify "<text>"
-  brain evaluate <decision_id> --var name=value [--var name=value ...]
-  brain connect github --app-id N --install-id N --key-file PATH \
-                      --repo owner/repo [...] [--webhook-secret-file PATH]
-  brain connect --kind crm-salesforce ...   (vocabulary accepts the v1.24 set;
-                                             only github has a runnable binary)
-  brain sync [github] [--config PATH]
-  brain connector-status
-  brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]
-  brain restore <in-path> [--passphrase-file PATH]
-  brain key generate [--kid ID] [--alg RS256] [--dir PATH]
-  brain key list [--dir PATH]
-  brain key prune [--dir PATH] [--keep N]
-  brain bench
-  brain status
-  brain doctor [--backup <path> [--passphrase-file PATH]]
-
-filters:
-  --source S   OR filter over ingest kind (memory | markdown | structured |
-               manual | vault); repeatable. Filters the `source` column, NOT
-               source URIs. Sent as the `sources` list to /recall.
-
-auth:
-  Reads BRAIN_TOKEN_FILE, then BRAIN_TOKEN, then
-  ~/.config/brain-server/auth-token (written by install-service.sh)."#
-    );
+/// The full help text, generated from the SUBCOMMANDS table — the dispatch
+/// set and the help can never drift.
+fn usage_text() -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "brain — client for brain-server (default {DEFAULT_URL}; override with BRAIN_URL)\n\n"
+    ));
+    out.push_str("usage:\n");
+    for sub in SUBCOMMANDS {
+        out.push_str(&format!("  {}\n", sub.usage));
+    }
+    out.push_str("\nflags:\n");
+    out.push_str("  --json     one machine envelope per call (data commands: query, explain,\n");
+    out.push_str("             get, ingest-dir, suggest, suggest-metrics, retention,\n");
+    out.push_str("             snapshot-status, connector-status, status, eval)\n");
+    out.push_str("  --dry-run  simulate, change nothing\n");
+    out.push_str("  --yes      auto-confirm prompts;   --force  override checks\n");
+    out.push_str("\nexit codes:\n");
+    out.push_str("  0  ok (or --help/--version)\n");
+    out.push_str("  1  runtime failure (server unreachable, ingest-dir all files failed, ...)\n");
+    out.push_str("  2  usage error (unknown subcommand/flag, bad integer value, --json on a\n");
+    out.push_str("     non-data subcommand)\n");
+    out.push_str("\nfilters:\n");
+    out.push_str("  --source S   OR filter over ingest kind (memory | markdown | structured |\n");
+    out.push_str("               manual | vault); repeatable. Filters the `source` column, NOT\n");
+    out.push_str("               source URIs. Sent as the `sources` list to /recall.\n");
+    out.push_str("\nauth:\n");
+    out.push_str("  Reads BRAIN_TOKEN_FILE, then BRAIN_TOKEN, then\n");
+    out.push_str("  ~/.config/brain-server/auth-token (written by install-service.sh).\n");
+    out
 }
 
 // ── argument helpers ──────────────────────────────────────────────────────
 
-/// Parse `--flag value` and `--flag=value` options from a slice, returning the
-/// remaining positional arguments and a map of flag -> value (None if flag has
-/// no `=` and is a boolean switch).
-fn parse_flags(
-    args: &[String],
-) -> (
-    Vec<String>,
-    std::collections::HashMap<String, Option<String>>,
-) {
+/// v1.27.20 M4 (F-37) — flag vocabulary discipline. Boolean flags NEVER
+/// consume the next token (a positional after `--dry-run` stayed swallowed —
+/// `brain ingest-dir --dry-run ~/vault` ate the vault); value flags come from
+/// the explicit list; `--flag=value` works for both; `--` ends flag parsing
+/// (paths starting with `-` survive); an unknown flag is a usage error (exit 2).
+type FlagMap = std::collections::HashMap<String, Option<String>>;
+
+fn parse_flags(args: &[String]) -> Result<(Vec<String>, FlagMap), String> {
     let mut positionals = Vec::new();
-    let mut flags = std::collections::HashMap::new();
+    let mut flags = FlagMap::new();
     let mut i = 0;
+    let mut after_double_dash = false;
     while i < args.len() {
         let a = &args[i];
-        if let Some(rest) = a.strip_prefix("--") {
-            if let Some((k, v)) = rest.split_once('=') {
-                flags.insert(k.to_string(), Some(v.to_string()));
-            } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                flags.insert(rest.to_string(), Some(args[i + 1].clone()));
-                i += 1;
-            } else {
-                flags.insert(rest.to_string(), None);
-            }
-        } else {
+        if after_double_dash || !a.starts_with('-') || a == "-" {
             positionals.push(a.clone());
+            i += 1;
+            continue;
+        }
+        if a == "--" {
+            after_double_dash = true;
+            i += 1;
+            continue;
+        }
+        let Some(rest) = a.strip_prefix("--") else {
+            // Single-dash option (e.g. `-r`): not in the vocabulary.
+            return usage_err(format!("unknown flag '{a}'"));
+        };
+        let (k, v) = match rest.split_once('=') {
+            Some((k, v)) => (k.to_string(), Some(v.to_string())),
+            None => (rest.to_string(), None),
+        };
+        if BOOL_FLAGS.contains(&k.as_str()) {
+            if v.is_some() {
+                return usage_err(format!("flag '--{k}' does not take a value"));
+            }
+            flags.insert(k, None);
+        } else if VALUE_FLAGS.contains(&k.as_str()) {
+            let v = match v {
+                Some(v) => Some(v),
+                None if i + 1 < args.len() && !args[i + 1].starts_with('-') => {
+                    i += 1;
+                    Some(args[i].clone())
+                }
+                None => None,
+            };
+            flags.insert(k, v);
+        } else {
+            return usage_err(format!("unknown flag '--{k}'"));
         }
         i += 1;
     }
-    (positionals, flags)
+    Ok((positionals, flags))
+}
+
+/// The boolean flag vocabulary — never take a value, never eat the next token.
+const BOOL_FLAGS: &[&str] = &[
+    "dry-run", "yes", "json", "force", "explain", "flag", "graph", "purge", "r", "replace",
+    "return", "help", "version",
+];
+
+/// The value flag vocabulary — the next non-dash token (or `=v`) is the value.
+const VALUE_FLAGS: &[&str] = &[
+    "action",
+    "alg",
+    "app-id",
+    "audit",
+    "backup",
+    "bin",
+    "breach",
+    "checkpoint",
+    "code",
+    "config",
+    "confirm",
+    "dataset",
+    "deletion",
+    "dir",
+    "domain",
+    "exclude",
+    "features",
+    "floor",
+    "format",
+    "install-id",
+    "instance",
+    "intent",
+    "jurisdiction",
+    "k",
+    "keep",
+    "key-file",
+    "kid",
+    "kind",
+    "note",
+    "onward",
+    "out",
+    "passphrase-file",
+    "phrase",
+    "profile",
+    "reason",
+    "repo",
+    "retention",
+    "session",
+    "since",
+    "source",
+    "step",
+    "sub-sub",
+    "to",
+    "var",
+    "webhook-secret-file",
+];
+
+/// Exit-code discipline: parse/flag misuse is a usage error (2), distinct from
+/// runtime failure (1). Markers are set by `usage_err` and read by `main`.
+static LAST_ERR_IS_USAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn usage_err<T>(msg: String) -> Result<T, String> {
+    LAST_ERR_IS_USAGE.store(true, std::sync::atomic::Ordering::SeqCst);
+    Err(msg)
+}
+
+/// Mark a runtime `Err(String)` as a usage error (exit 2) — the value-flag
+/// validation seam (`--k abc`, bad `--floor`, ...) used before `?`.
+fn usage(msg: String) -> String {
+    LAST_ERR_IS_USAGE.store(true, std::sync::atomic::Ordering::SeqCst);
+    msg
+}
+
+/// v1.27.20 M4 (F-37): `--json` envelope mode — every supported data command
+/// prints exactly one machine envelope instead of human lines.
+static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn json_mode() -> bool {
+    JSON_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Tracks whether the command already emitted its envelope; when it did,
+/// main's error handler stays silent (stdout keeps exactly one JSON object).
+static ENVELOPE_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ENVELOPE_CMD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Emit the `--json` success envelope. The command's typed data (the parsed
+/// server response / computed summary) rides in `data`.
+fn emit_json_ok(cmd: &str, data: serde_json::Value) -> Result<(), String> {
+    if !json_mode() {
+        return Ok(());
+    }
+    ENVELOPE_EMITTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    println!(
+        "{}",
+        serde_json::json!({ "ok": true, "cmd": cmd, "data": data })
+    );
+    Ok(())
+}
+
+/// Emit the `--json` failure envelope (`error.code` + `message`); the caller
+/// then returns the runtime Err (exit 1). The `code` distinguishes the
+/// documented per-command failure classes (e.g. `all_files_failed`).
+fn emit_json_err(cmd: &str, code: &str, message: &str) {
+    if json_mode() {
+        ENVELOPE_EMITTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": false,
+                "cmd": cmd,
+                "error": { "code": code, "message": message }
+            })
+        );
+    }
 }
 
 fn require_positional(positionals: &[String], name: &str) -> Result<String, String> {
@@ -328,15 +477,18 @@ fn build_query_doc(
     codes: &[String],
     sources: &[String],
     explain: bool,
-) -> String {
-    let k = flags.get("k").and_then(|o| o.as_ref());
+) -> Result<String, String> {
+    let k = flags.get("k").and_then(|o| o.clone());
     let since = flags.get("since").and_then(|o| o.clone());
     let intent = flags.get("intent").and_then(|o| o.clone());
     let profile = flags.get("profile").and_then(|o| o.clone());
 
     let mut body = serde_json::json!({ "query": q });
     if let Some(k) = k {
-        body["limit"] = serde_json::json!(k.parse::<u32>().unwrap_or(5));
+        let n: u32 = k
+            .parse()
+            .map_err(|_| usage(format!("--k must be an integer, got '{k}'")))?;
+        body["limit"] = serde_json::json!(n);
     }
     if !phrases.is_empty() || !excludes.is_empty() || !codes.is_empty() {
         let mut lex = serde_json::json!({});
@@ -376,11 +528,11 @@ fn build_query_doc(
         // `explain` maps to the unified prove nance/telemetry envelope on /recall.
         body["provenance"] = serde_json::json!(true);
     }
-    body.to_string()
+    Ok(body.to_string())
 }
 
 fn cmd_query(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let q = require_positional(&positionals, "query")?;
     let phrases = multi_flag(args, "phrase");
     let excludes = multi_flag(args, "exclude");
@@ -388,7 +540,7 @@ fn cmd_query(args: &[String]) -> Result<(), String> {
     let sources = multi_flag(args, "source");
     let explain = flags.contains_key("explain");
 
-    let body = build_query_doc(&q, &flags, &phrases, &excludes, &codes, &sources, explain);
+    let body = build_query_doc(&q, &flags, &phrases, &excludes, &codes, &sources, explain)?;
 
     let resp = post(
         &base_url(),
@@ -403,6 +555,9 @@ fn cmd_query(args: &[String]) -> Result<(), String> {
 
     if let Some(err) = value.get("error") {
         return Err(format!("server error: {err}"));
+    }
+    if json_mode() {
+        return emit_json_ok("query", value);
     }
 
     let hits = value
@@ -419,7 +574,7 @@ fn cmd_query(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_explain(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let q = require_positional(&positionals, "query")?;
     let sources = multi_flag(args, "source");
     let since = flags.get("since").and_then(|o| o.clone());
@@ -445,6 +600,9 @@ fn cmd_explain(args: &[String]) -> Result<(), String> {
 
     if let Some(err) = value.get("error") {
         return Err(format!("server error: {err}"));
+    }
+    if json_mode() {
+        return emit_json_ok("explain", value);
     }
     let hits = value
         .get("hits")
@@ -550,7 +708,7 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
 }
 
 fn cmd_get(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args);
+    let (positionals, _flags) = parse_flags(args)?;
     let id_str = require_positional(&positionals, "id")?;
     let id: i64 = id_str
         .parse()
@@ -570,6 +728,9 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
     }
     let v: serde_json::Value = serde_json::from_str(&resp.body)
         .map_err(|e| format!("non-JSON response (status {}): {e}", resp.status))?;
+    if json_mode() {
+        return emit_json_ok("get", v.clone());
+    }
 
     let title =
         brain_server::fence::strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
@@ -613,7 +774,7 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let path = require_positional(&positionals, "path")?;
     let dry_run = flags.contains_key("dry-run");
     let replace = flags.contains_key("replace") || flags.contains_key("r");
@@ -656,6 +817,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
 
     let mut ingested = 0;
     let mut skipped = 0;
+    let mut failed = 0;
     for f in &files {
         let rel = f.strip_prefix(root).unwrap_or(f);
         let ext = f
@@ -678,6 +840,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
         }
 
         if dry_run {
+            ingested += 1;
             let target = if is_markdown {
                 "/ingest/markdown"
             } else {
@@ -752,7 +915,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
                     ingested += 1;
                     println!("  ok   {} -> {}", rel.display(), summarize_ingest(&body));
                 } else {
-                    skipped += 1;
+                    failed += 1;
                     println!(
                         "  fail {} ({}): {}",
                         rel.display(),
@@ -762,13 +925,31 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
                 }
             }
             Err(e) => {
-                skipped += 1;
+                failed += 1;
                 println!("  error {}: {e}", rel.display());
             }
         }
     }
 
-    println!("\ningest-dir complete: {ingested} ingested, {skipped} skipped");
+    println!("\ningest-dir complete: {ingested} ingested, {skipped} skipped, {failed} failed");
+    if json_mode() {
+        return emit_json_ok(
+            "ingest-dir",
+            serde_json::json!({
+                "files": files.len(),
+                "ingested": ingested,
+                "skipped": skipped,
+                "failed": failed,
+                "dry_run": dry_run,
+            }),
+        );
+    }
+    if !files.is_empty() && ingested == 0 && failed > 0 {
+        let msg =
+            format!("every file failed: {failed} failed, {skipped} skipped, {ingested} ingested");
+        emit_json_err("ingest-dir", "all_files_failed", &msg);
+        return Err(msg);
+    }
     Ok(())
 }
 
@@ -785,7 +966,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
 /// invoke `brain reconcile <vault>` after `brain ingest-dir <vault>` on every
 /// sync. Live incremental reconcile needs the streaming-sync tier (P3+).
 fn cmd_reconcile(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let path = require_positional(&positionals, "path")?;
     let dry_run = flags.contains_key("dry-run");
     let kind = flags
@@ -900,7 +1081,7 @@ fn cmd_reconcile(args: &[String]) -> Result<(), String> {
 /// to `/consolidate/apply`; the server expires `old_id` (sets `valid_to=now`)
 /// atomically. The old chunk stays retrievable via `/recall?at=<past>`.
 fn cmd_resolve(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args);
+    let (positionals, _flags) = parse_flags(args)?;
     if positionals.len() < 2 {
         return Err("usage: brain resolve <new_id> <old_id>".into());
     }
@@ -953,7 +1134,7 @@ fn cmd_resolve(args: &[String]) -> Result<(), String> {
 /// content (and its embedding) untouched. Moving rows OUT of `global` needs
 /// `--confirm global` (typo-replay guard, mirror of `DELETE /domains/{name}`).
 fn cmd_domain_move(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     if positionals.is_empty() {
         return Err(
             "usage: brain domain-move <id> [<id> ...] --to <domain> [--confirm global]".into(),
@@ -1051,7 +1232,7 @@ fn cmd_domains_recompute(_args: &[String]) -> Result<(), String> {
 /// `valid_to` back to NULL + removes the `supersedes` link, restoring the
 /// chunk to current recall.
 fn cmd_undo_resolve(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args);
+    let (positionals, _flags) = parse_flags(args)?;
     if positionals.is_empty() {
         return Err("usage: brain undo-resolve <old_id> [<old_id> ...]".into());
     }
@@ -1172,7 +1353,7 @@ fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
 /// for one-off deletes (a vault file you want forgotten without rescanning
 /// the whole directory).
 fn cmd_source_delete(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args);
+    let (positionals, _flags) = parse_flags(args)?;
     let id_str = require_positional(&positionals, "id")?;
     let id: i64 = id_str
         .parse()
@@ -1201,7 +1382,7 @@ fn cmd_source_delete(args: &[String]) -> Result<(), String> {
 /// server never pushes. Each hit is tagged `reason: "anticipated"` so the
 /// consuming agent may ignore it.
 fn cmd_suggest(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let context = require_positional(&positionals, "context")?;
     if context.trim().is_empty() {
         return Err("context must be non-empty".into());
@@ -1264,6 +1445,9 @@ fn cmd_suggest(args: &[String]) -> Result<(), String> {
     }
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    if json_mode() {
+        return emit_json_ok("suggest", v);
+    }
     let hits = v["suggestions"].as_array().cloned().unwrap_or_default();
     if hits.is_empty() {
         println!(
@@ -1275,10 +1459,17 @@ fn cmd_suggest(args: &[String]) -> Result<(), String> {
     for h in &hits {
         let id = h["id"].as_i64().unwrap_or(0);
         let score = h["score"].as_f64().unwrap_or(0.0);
-        let title = h["title"].as_str().unwrap_or("");
-        let content = h["content"].as_str().unwrap_or("");
+        // v1.27.20 M4 (M4.5): strip parity with `print_hits`/`get` — a
+        // recalled payload cannot forge UI text or fence markers.
+        let strip = |s: &str| {
+            brain_server::fence::strip_markdown_refs(
+                &brain_server::strip_invisible::strip_invisible(s),
+            )
+        };
+        let title = strip(h["title"].as_str().unwrap_or(""));
+        let content = strip(h["content"].as_str().unwrap_or(""));
         println!("  [{id}] score={score:.3} {title}");
-        println!("        {}", truncate(content, 120));
+        println!("        {}", truncate(&content, 120));
     }
     let tel = &v["telemetry"];
     println!(
@@ -1296,7 +1487,7 @@ fn cmd_suggest(args: &[String]) -> Result<(), String> {
 /// never stored raw) and `--session`. The aggregate drives the false-positive
 /// metric surfaced by `brain suggest-metrics`.
 fn cmd_suggest_feedback(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     if positionals.len() < 2 {
         return Err("usage: brain suggest-feedback <chunk_id> accept|dismiss [--reason \"...\"] [--session S]".into());
     }
@@ -1347,7 +1538,7 @@ fn cmd_suggest_feedback(args: &[String]) -> Result<(), String> {
 /// This is the v1.9 roadmap exit criterion, made queryable. Optional
 /// `--session` / `--since` filter the window.
 fn cmd_suggest_metrics(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let mut query: Vec<(String, String)> = Vec::new();
     if let Some(s) = flags.get("session").and_then(|o| o.clone()) {
         query.push(("session".into(), s));
@@ -1373,6 +1564,9 @@ fn cmd_suggest_metrics(args: &[String]) -> Result<(), String> {
     }
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    if json_mode() {
+        return emit_json_ok("suggest-metrics", v);
+    }
     let total = v["total"].as_u64().unwrap_or(0);
     let accepts = v["accepts"].as_u64().unwrap_or(0);
     let dismisses = v["dismisses"].as_u64().unwrap_or(0);
@@ -1408,6 +1602,9 @@ fn cmd_retention(args: &[String]) -> Result<(), String> {
         }
         let v: serde_json::Value =
             serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+        if json_mode() {
+            return emit_json_ok("retention", v);
+        }
         println!(
             "per-kind retention policy (BRAIN_RETENTION_ENABLED={})",
             v["enabled"]
@@ -1452,6 +1649,9 @@ fn cmd_retention(args: &[String]) -> Result<(), String> {
         }
         let v: serde_json::Value =
             serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+        if json_mode() {
+            return emit_json_ok("retention", v);
+        }
         let updated = v["updated"].as_u64().unwrap_or(0);
         println!("retention policy updated: {updated} row(s) for {kind} -> {days} days");
         return Ok(());
@@ -1530,7 +1730,7 @@ fn read_line(prompt: &str) -> Result<String, String> {
 /// form (`--profile` + `--yes`) is the scriptable path. The profile sets
 /// DEFAULTS; an explicit row value always wins; existing rows are untouched.
 fn cmd_setup(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let domain = positionals
         .first()
         .cloned()
@@ -1664,7 +1864,7 @@ fn cmd_client_qa(args: &[String]) -> Result<(), String> {
     let cmd = args.first().map(|s| s.as_str()).ok_or_else(|| {
         "usage: brain client qa list <name> | coach <name> <id> --note N [--flag]".to_string()
     })?;
-    let (positionals, flags) = parse_flags(&args[1..]);
+    let (positionals, flags) = parse_flags(&args[1..])?;
     let name = require_positional(&positionals, "name")?;
     match cmd {
         "list" => {
@@ -1719,7 +1919,7 @@ fn cmd_client_hold(args: &[String]) -> Result<(), String> {
     let cmd = args.first().map(|s| s.as_str()).ok_or_else(|| {
         "usage: brain client hold add <name> <id> [<id> ...] --reason R | list <name>".to_string()
     })?;
-    let (positionals, flags) = parse_flags(&args[1..]);
+    let (positionals, flags) = parse_flags(&args[1..])?;
     let name = require_positional(&positionals, "name")?;
     match cmd {
         "add" => {
@@ -1803,7 +2003,7 @@ fn cmd_client_hold(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let name = require_positional(&positionals, "name")?;
     let subject = positionals
         .get(1)
@@ -1842,7 +2042,7 @@ fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_client_end(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let name = require_positional(&positionals, "name")?;
     let purge_opt: Option<bool> = if flags.contains_key("purge") && flags.contains_key("return") {
         return Err("cannot pass both --purge and --return".to_string());
@@ -1901,7 +2101,7 @@ fn cmd_client_dpa(args: &[String]) -> Result<(), String> {
             "usage: brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S"
                 .to_string()
         })?;
-    let (positionals, flags) = parse_flags(&args[1..]);
+    let (positionals, flags) = parse_flags(&args[1..])?;
     let name = require_positional(&positionals, "name")?;
     let path = format!("/clients/{name}/dpa");
     match cmd {
@@ -1960,7 +2160,7 @@ fn cmd_client_dpa(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_client_add(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let name = require_positional(&positionals, "name")?;
     let jurisdiction = flags
         .get("jurisdiction")
@@ -2065,7 +2265,7 @@ fn cmd_client_add(args: &[String]) -> Result<(), String> {
 /// `<dir>/operator.key` (0600) and prints the `did:key`. The server reads
 /// any seed file in `BRAIN_UMP_KEY_DIR` (default `~/.config/brain-server/ump/`).
 fn cmd_ump_keygen(args: &[String]) -> Result<String, String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let dir = flags
         .get("dir")
         .and_then(|o| o.clone())
@@ -2206,6 +2406,9 @@ fn cmd_snapshot_status(_args: &[String]) -> Result<(), String> {
     }
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    if json_mode() {
+        return emit_json_ok("snapshot-status", v);
+    }
     println!("snapshot self-check for {}", v["db"]);
     let mut all_ok = true;
     if let Some(snaps) = v["snapshots"].as_array() {
@@ -2240,7 +2443,7 @@ fn cmd_snapshot_status(_args: &[String]) -> Result<(), String> {
 /// (colon-separated); step order = flag order. The procedure root + steps are
 /// stored as `procedure`/`step`-kind chunks linked by `next_step` edges.
 fn cmd_procedure(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let title = require_positional(&positionals, "title")?;
     if title.trim().is_empty() {
         return Err("title must be non-empty".into());
@@ -2300,7 +2503,7 @@ fn cmd_procedure(args: &[String]) -> Result<(), String> {
 /// Returns the category + confidence + matched keywords. The premium Mem0
 /// feature, free and local.
 fn cmd_classify(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args);
+    let (positionals, _flags) = parse_flags(args)?;
     let text = require_positional(&positionals, "text")?;
     if text.trim().is_empty() {
         return Err("text must be non-empty".into());
@@ -2356,7 +2559,7 @@ fn cmd_classify(args: &[String]) -> Result<(), String> {
 /// branch (or default) + the citation chain. The consultant's reasoning core,
 /// deterministic + auditable.
 fn cmd_evaluate(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args);
+    let (positionals, _flags) = parse_flags(args)?;
     let id_str = require_positional(&positionals, "decision_id")?;
     let id: i64 = id_str
         .parse()
@@ -2430,7 +2633,7 @@ fn cmd_evaluate(args: &[String]) -> Result<(), String> {
 /// Adding a server route would be appropriate when connectors are managed
 /// remotely; v0.9.6 keeps the operator surface on the host that runs them.
 fn cmd_connect(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let kind = flags
         .get("kind")
         .and_then(|o| o.as_deref())
@@ -2594,7 +2797,7 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
 /// Long-running supervision (restart on crash, periodic schedule) lands with
 /// the server-side auto-start in v0.9.7+.
 fn cmd_sync(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let kind = flags
         .get("kind")
         .and_then(|o| o.as_deref())
@@ -2713,7 +2916,7 @@ fn resolve_passphrase(
 
 /// `brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]`
 fn cmd_backup(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let out = positionals.first().cloned().ok_or_else(|| {
         "usage: brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]".to_string()
     })?;
@@ -2738,7 +2941,7 @@ fn cmd_backup(args: &[String]) -> Result<(), String> {
 
 /// `brain restore <in-path> [--passphrase-file PATH]`
 fn cmd_restore(args: &[String]) -> Result<(), String> {
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     let in_path = positionals
         .first()
         .cloned()
@@ -2899,7 +3102,7 @@ fn cmd_key(args: &[String]) -> Result<(), String> {
 /// `brain key generate` — create a new RSA keypair, write to `<dir>/<kid>.pem`
 /// + `<dir>/<kid>.key` (0600). The kid defaults to a short timestamped id.
 fn cmd_key_generate(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let dir = key_dir(&flags);
     let kid = flags.get("kid").and_then(|o| o.clone()).unwrap_or_else(|| {
         let ts = std::time::SystemTime::now()
@@ -2952,7 +3155,7 @@ fn cmd_key_generate(args: &[String]) -> Result<(), String> {
 
 /// `brain key list` — list every key in the dir (kid, has-private, size).
 fn cmd_key_list(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let dir = key_dir(&flags);
     if !dir.exists() {
         println!("key dir {dir:?} does not exist (no keys configured)");
@@ -2990,7 +3193,7 @@ fn cmd_key_list(args: &[String]) -> Result<(), String> {
 /// verify-only keys). Used after rotation to drop keys whose tokens have all
 /// expired. Refuses to touch keys with a private half (those are still active).
 fn cmd_key_prune(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let dir = key_dir(&flags);
     let keep: usize = flags
         .get("keep")
@@ -3088,6 +3291,9 @@ fn cmd_connector_status(_args: &[String]) -> Result<(), String> {
     }
     let v: serde_json::Value = serde_json::from_str(&resp.body)
         .map_err(|e| format!("non-JSON /connectors response: {e}"))?;
+    if json_mode() {
+        return emit_json_ok("connector-status", v);
+    }
     let connectors = v
         .get("connectors")
         .and_then(|x| x.as_array())
@@ -3335,6 +3541,9 @@ fn cmd_status() -> Result<(), String> {
     }
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON stats response: {e}"))?;
+    if json_mode() {
+        return emit_json_ok("status", v);
+    }
     println!("brain-server status");
     println!(
         "  version : {}",
@@ -3343,28 +3552,40 @@ fn cmd_status() -> Result<(), String> {
     println!("  model   : {}", json_str(&v, "model").unwrap_or_default());
     println!(
         "  documents   : {}",
-        v.get("count").and_then(|x| x.as_i64()).unwrap_or(-1)
+        fmt_count(v.get("count").and_then(|x| x.as_i64()).unwrap_or(-1))
     );
     println!(
         "  embeddings  : {}",
-        v.get("embeddings").and_then(|x| x.as_i64()).unwrap_or(-1)
+        fmt_count(v.get("embeddings").and_then(|x| x.as_i64()).unwrap_or(-1))
     );
     println!(
         "  entities    : {}",
-        v.get("entities").and_then(|x| x.as_i64()).unwrap_or(-1)
+        fmt_count(v.get("entities").and_then(|x| x.as_i64()).unwrap_or(-1))
     );
     println!(
         "  relationships: {}",
-        v.get("relationships")
-            .and_then(|x| x.as_i64())
-            .unwrap_or(-1)
+        fmt_count(
+            v.get("relationships")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(-1)
+        )
     );
     Ok(())
 }
 
+/// v1.27.20 M4: `/stats` `-1` sentinels render as `n/a` — a missing field is
+/// not a count of minus one chunk.
+fn fmt_count(n: i64) -> String {
+    if n < 0 {
+        "n/a".to_string()
+    } else {
+        n.to_string()
+    }
+}
+
 fn cmd_doctor(args: &[String]) -> Result<(), String> {
     // `brain doctor --backup <path> [--passphrase-file PATH]` — verify-only mode.
-    let (positionals, flags) = parse_flags(args);
+    let (positionals, flags) = parse_flags(args)?;
     if let Some(backup_path) = flags
         .get("backup")
         .and_then(|o| o.clone())
@@ -3503,7 +3724,7 @@ fn cmd_bench() -> Result<(), String> {
 /// ships in the repo so the gate is reproducible on any machine with a live
 /// server; the operator's private judged corpus remains a separate step.
 fn cmd_eval(args: &[String]) -> Result<(), String> {
-    let (_positionals, flags) = parse_flags(args);
+    let (_positionals, flags) = parse_flags(args)?;
     let mut floors: Vec<(String, f32)> = Vec::new();
     for (k, v) in &flags {
         if let Some(name) = k.strip_prefix("floor") {
@@ -3524,6 +3745,16 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
         }
     }
     let ok = run_eval("/recall", &floors)?;
+    if json_mode() {
+        let floors_json: serde_json::Value = floors
+            .iter()
+            .map(|(m, v)| serde_json::json!({"metric": m, "floor": v}))
+            .collect();
+        return emit_json_ok(
+            "eval",
+            serde_json::json!({ "floors": floors_json, "breached": !ok }),
+        );
+    }
     if !ok {
         return Err("recall floor breached".into());
     }
@@ -3774,6 +4005,65 @@ mod tests {
         assert_eq!(results_to_doc_indices(&recall_body), vec![0]);
         assert_eq!(results_to_doc_indices(&search_body), vec![0]);
         assert_eq!(results_to_doc_indices(r#"{"hits":[]}"#), Vec::<i64>::new());
+    }
+
+    // ── v1.27.20 M4 (F-37): flag vocabulary + help truth ──────────────────
+
+    #[test]
+    fn boolean_flag_does_not_eat_positional() {
+        let (pos, flags) = parse_flags(&["--dry-run".into(), "~/vault".into()]).unwrap();
+        assert_eq!(pos, vec!["~/vault"]);
+        assert_eq!(flags.get("dry-run"), Some(&None));
+    }
+
+    #[test]
+    fn value_flag_takes_next_token_or_equals() {
+        let (pos, flags) = parse_flags(&["--k".into(), "5".into()]).unwrap();
+        assert!(pos.is_empty());
+        assert_eq!(flags.get("k").and_then(|o| o.clone()).unwrap(), "5");
+        let (_, flags2) = parse_flags(&["--k=7".into()]).unwrap();
+        assert_eq!(flags2.get("k").and_then(|o| o.clone()).unwrap(), "7");
+    }
+
+    #[test]
+    fn unknown_flag_errors_as_usage() {
+        assert!(parse_flags(&["--bogus".into()]).is_err());
+        assert!(LAST_ERR_IS_USAGE.swap(false, std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn boolean_flag_rejects_explicit_value() {
+        assert!(parse_flags(&["--dry-run=yes".into()]).is_err());
+    }
+
+    #[test]
+    fn double_dash_ends_flag_parsing() {
+        let (pos, flags) = parse_flags(&["--".into(), "--dry-run".into()]).unwrap();
+        assert_eq!(pos, vec!["--dry-run"]);
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn help_text_is_generated_from_the_dispatch_table() {
+        let text = usage_text();
+        for sub in SUBCOMMANDS {
+            assert!(
+                text.contains(&format!("  brain {}", sub.name)),
+                "help missing subcommand {}",
+                sub.name
+            );
+        }
+        // The pre-v1.27.20 flush-left survivor line is gone: every usage line
+        // is emitted uniformly with 2-space indent.
+        for line in text.lines() {
+            assert!(
+                !line.starts_with("brain ") || line.contains("brain — client"),
+                "flush-left usage line: {line}"
+            );
+        }
+        assert!(text.contains("--json"));
+        assert!(text.contains("exit codes:"));
+        assert!(!text.contains("all_files_failed"));
     }
 
     #[test]
