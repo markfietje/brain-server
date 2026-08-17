@@ -107,6 +107,26 @@ pub fn error_message(e: &ApiError) -> String {
         ApiError::Status(code, body) => format!("error {code}: {body}"),
     }
 }
+/// v1.27.20 "Console" (F-36): the shared HTTP client with the CLI's socket
+/// discipline — 5s handshake, 15s total. A hung backend (dead listener,
+/// firewalled port) surfaces as `ApiError::Network` within 15s instead of a
+/// panel spinning forever. ponytail: the wasm reqwest builder exposes neither
+/// `connect_timeout` nor `timeout` (browser fetch owns its own timeouts), so
+/// the discipline is native-only and wasm falls back to the plain client.
+fn build_http_client() -> reqwest::Client {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("reqwest client build fails only on invalid config; the 5s/15s pair is static")
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        reqwest::Client::new()
+    }
+}
 impl ApiClient {
     pub fn new(base: impl Into<String>, token: Option<String>) -> Self {
         Self::with_principal(base, token, None)
@@ -138,7 +158,7 @@ impl ApiClient {
                 refresh_lock: tokio::sync::Mutex::new(()),
             }),
             principal,
-            http: reqwest::Client::new(),
+            http: build_http_client(),
         }
     }
     /// v1.16.5 M1.4: connect in JWT-pair mode (access + refresh). Enables silent
@@ -157,7 +177,7 @@ impl ApiClient {
                 refresh_lock: tokio::sync::Mutex::new(()),
             }),
             principal,
-            http: reqwest::Client::new(),
+            http: build_http_client(),
         }
     }
     /// v1.16.5 M5.2: `true` when the current access token is a JWT within
@@ -3057,5 +3077,44 @@ mod tests {
         assert_eq!(dp2.profile, None);
         assert_eq!(dp2.knobs, None);
         assert_eq!(dp2.effective_retention, None);
+    }
+    /// F-36 (v1.27.20 "Console"): a backend that accepts the TCP handshake but
+    /// never responds must surface as `ApiError::Network` within the client
+    /// timeout, not hang the panel. A listener that never `accept()`s IS the
+    /// stall (the kernel completes the connect into the backlog; the request
+    /// then waits forever). The production 15s total timeout would slow the
+    /// suite, so this pins the *behavior* on a short client (300ms) built the
+    /// same way — if `build_http_client` ever drops the timeout, this goes red.
+    #[tokio::test]
+    async fn client_times_out_on_hung_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral port");
+        let port = listener.local_addr().expect("bound addr").port();
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .expect("test client");
+        let client = ApiClient {
+            base: format!("http://127.0.0.1:{port}"),
+            tokens: Arc::new(SharedTokens {
+                state: RwLock::new(TokenState {
+                    access: None,
+                    refresh: None,
+                }),
+                refresh_lock: tokio::sync::Mutex::new(()),
+            }),
+            principal: None,
+            http,
+        };
+        let start = std::time::Instant::now();
+        let res = client.get_raw("/hung").await;
+        assert!(
+            matches!(&res, Err(ApiError::Network(_))),
+            "expected a timeout error, got {res:?}"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "timeout did not bound the call: {}",
+            start.elapsed().as_millis()
+        );
     }
 }
