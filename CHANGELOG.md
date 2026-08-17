@@ -19,6 +19,72 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.20] — 2026-08-17
+
+### Improvements — "Console"
+
+Client + CLI release (server `Cargo.toml`/lock `1.27.19` → **`1.27.20`**;
+client `1.27.19` → **`1.27.20`**; plugin unchanged at 0.4.4). The operator
+surfaces meet the 2026 bar: honest i18n, honest states, machine-parseable
+CLI, and help that cannot drift. No server endpoints, no schema change, no
+telemetry. **M3 the i18n truth (F-38):** the five locale bundles now expose
+one identical key set (pinned by the parity wall), every render surface
+(main chrome, command palette, review queue, recall, security, health,
+register, graph, subjects, ops, audit, data, system, ump, ingest, procedures,
+consolidate, the shared confirm) resolves labels through `t()`/`t_fmt()` — a
+new `no_raw_strings_in_rsx` source-scan test gates future work with an
+explicit `// i18n-exempt: <reason>` escape; the keyboard-shortcuts label
+gained the missing `E` (edit) key. **F-36** the client's shared HTTP client
+carries the CLI's socket discipline (5s handshake / 15s total — a hung backend
+surfaces as `ApiError::Network` instead of a panel spinning forever); the
+builder methods are native-only, the wasm target keeps the plain client
+(browser fetch owns its own timeouts — verified by the client-gate wasm
+build). **M4 the CLI (F-37):** `--json` envelope
+mode (`{"ok":true,"cmd":…,"data":…}` / `{"ok":false,…,"error":{"code":…}}`)
+for every data command (query, explain, get, ingest-dir, suggest,
+suggest-metrics, retention, snapshot-status, connector-status, status, eval)
+with documented exit codes (0 ok · 1 runtime · 2 usage); the flag parser
+learns its vocabulary — boolean flags (`--dry-run`, `--yes`, `--force`,
+`--json`, …) never swallow the next token (`ingest-dir --dry-run ~/vault`
+finally works), unknown flags exit 2, `--` ends flag parsing, and `--k abc`
+exits 2 with "must be an integer" instead of silently becoming 5; `ingest-dir`
+exits non-zero when every file failed (code `all_files_failed`); `status`
+renders `-1` sentinels as `n/a`; help is generated from the one subcommand
+table the dispatcher uses (the flush-left `brain client add` survivor line is
+gone, `brain token rotate` + `brain ump …` were missing and are now listed,
+and a `flags:`/`exit codes:` section documents the contract); `brain suggest`
+output runs the same strip chain as recall/get (markdown-ref + invisible +
+control-char parity).
+
+### Bug fixes
+
+- `brain ingest-dir --dry-run <path>` treated the path as the flag's value and
+  ingested nothing; `--k abc` silently coerced to 5; unknown `--flag` was
+  swallowed instead of refused; `brain status` printed `-1` for absent
+  counters; `brain client add` rendered flush-left in help.
+
+### Engineering record
+
+Tests: server main bin **670** / 6 ignored (unchanged count — the CLI bin grew
+12 → **18** with the flag-vocabulary + help-truth tests); lib 126 / 1; client
+140 → **143** (+ the parity wall stays, + `no_raw_strings_in_rsx` and its
+scanner unit tests); clippy `-D warnings` + fmt clean on both trees; `brain
+--help` diff reviewed line-by-line (only the intended lines move); live smoke
+green: `ingest-dir --dry-run` 136 simulated, `--json query/status/
+snapshot-status/suggest-metrics/get` envelopes, `--k abc` exit 2, unknown
+subcommand/flag exit 2, `setup --json` refused with exit 2. Honest ceilings:
+`--json` covers the data commands — interactive flows (setup, client, token,
+key, backup/restore, doctor, reconcile, sync, connect) refuse it loudly
+(exit 2) rather than pretend; the flag vocabulary is a fixed list (a new flag
+must be added there + in help, both single-sourced); the `no_raw_strings_in_rsx`
+scan skips prop values (`placeholder:`) by design — the visible placeholders
+are keyed but the rule itself targets labels; modal focus-trapping, the
+digest display, deep-link states and the render-path fetch fix shipped with
+their tests in earlier v1.27.x work and are re-verified here. See
+`IMPLEMENTATION_PLAN_v1.27.20_Console.md`.
+
+---
+
 ## [1.27.19] — 2026-08-16
 
 ### Security — "Scrub"
