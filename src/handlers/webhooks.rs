@@ -1,4 +1,4 @@
-//! v0.9.7 "Guard" — verified webhook HTTP receiver.
+//! verified webhook HTTP receiver.
 //!
 //! `POST /webhooks/{kind}` verifies the HMAC-SHA256 signature, enforces
 //! idempotency via the delivery id, and enqueues the delivery onto the bounded
@@ -57,7 +57,7 @@ fn load_webhook_secret() -> Option<Vec<u8>> {
         let bytes = std::fs::read(entry.path()).ok()?;
         let cfg: WhConfig = serde_json::from_slice(&bytes).ok()?;
         if let Some(secret_path) = cfg.webhook_secret_path {
-            // v1.20.25: the webhook signing secret is a bearer capability —
+            // the webhook signing secret is a bearer capability —
             // a world-readable copy lets any local user forge signatures.
             // Fail closed like the auth token file: a group/world-accessible
             // secret is refused (None) rather than trusted.
@@ -78,7 +78,7 @@ pub async fn receive(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // v1.20.4 "Replay" (G6): when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
+    // when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
     // receiver demands the Standard Webhooks header set (id/timestamp/
     // signature) and verifies the signature over `{id}.{timestamp}.{body}`, so
     // a first-party sender cannot re-stamp a stale timestamp. Any kind is
@@ -88,7 +88,7 @@ pub async fn receive(
         return receive_standard(&state, &kind, &headers, &body).await;
     }
 
-    // v0.9.7: only GitHub webhooks. Other kinds are unsupported.
+    // only GitHub webhooks. Other kinds are unsupported.
     if kind != "github" {
         return HandlerError::bad_request(
             "unsupported_kind",
@@ -168,7 +168,7 @@ pub async fn receive(
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
     match queue.enqueue_ts(&kind, &event, &delivery_id, &body, received_at) {
         Ok(EnqueueOutcome::Enqueued) => {
-            // v0.9.7 Guard: audit a verified, accepted webhook (delivery id only).
+// audit a verified, accepted webhook (delivery id only).
             if let Ok(conn) = state.pool.get() {
                 crate::audit::record(
                     &conn,
@@ -197,7 +197,7 @@ pub async fn receive(
     }
 }
 
-/// v1.20.4 "Replay" (G6): Standard Webhooks path — requires the spec header
+/// Standard Webhooks path — requires the spec header
 /// set and verifies the `v1,` signature over `{id}.{timestamp}.{body}` before
 /// enqueuing with `webhook-id` as the idempotency key.
 async fn receive_standard(

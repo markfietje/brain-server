@@ -26,7 +26,7 @@ pub mod jwt;
 pub mod policy;
 pub mod revocation;
 
-/// v1.20.24 "Sweep" (fail-closed auth): a secret file is only acceptable when
+/// a secret file is only acceptable when
 /// owner-only (mode & 0o077 == 0). Returns an error message when the file
 /// exists with group/world bits (e.g. a hand-created 0644 token file). The
 /// server refuses to start rather than accept a leaked secret on disk.
@@ -110,7 +110,7 @@ pub struct TokenStore {
     file: Option<PathBuf>,
 }
 
-/// v1.27.16 "Drawbridge" (M3.1, F-26): the token-store read outcome. The old
+/// the token-store read outcome. The old
 /// `tokens() -> HashSet` collapsed three worlds into one empty set — never
 /// configured, configured-but-empty, and *read failure* — and the middleware
 /// treated the empty set as "auth disabled" (allow-all). A poisoned lock must
@@ -153,7 +153,7 @@ impl TokenStore {
         let mut state = TokenState::default();
         let initial = config::auth_tokens();
         state.tokens = initial.iter().cloned().collect();
-        // v1.27.16 "Drawbridge" (M3.1): `initialized` now means "a token source
+        // `initialized` now means "a token source
         // is configured" — an explicit token file, an env token, or a resolved
         // token set. Previously the flag meant "a load ran", so a store with
         // zero tokens was indistinguishable from an unconfigured one. With a
@@ -372,7 +372,7 @@ mod tests {
         assert!(cached.contains("real-token"));
     }
 
-    /// v1.27.16 "Drawbridge" (M3.1/F-26): a poisoned lock must read as
+/// a poisoned lock must read as
     /// `ReadFailed` (deny at the middleware), never as an empty set
     /// ("auth disabled" → allow-all).
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(store.tokens(), TokenRead::ReadFailed);
     }
 
-    /// v1.20.24 "Sweep" (G3): a secret file with group/world bits is refused —
+    /// a secret file with group/world bits is refused —
     /// the server fails closed rather than serve a leaked token. Owner-only
     /// (0600/0400) passes; a missing file errors (it cannot be validated).
     #[cfg(unix)]

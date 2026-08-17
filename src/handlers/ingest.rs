@@ -49,11 +49,11 @@ pub struct RelationInput {
     pub to: String,
     #[serde(rename = "type")]
     pub kind: String,
-    /// v1.4.0 "Calibrate" M1: optional explicit valid-at (ISO-8601). Overrides
+    /// optional explicit valid-at (ISO-8601). Overrides
     /// the deterministic extractor when the caller knows the fact's interval.
     #[serde(default)]
     pub valid_at: Option<String>,
-    /// v1.4.0 "Calibrate" M1: optional explicit invalid-at (ISO-8601).
+    /// optional explicit invalid-at (ISO-8601).
     #[serde(default)]
     pub invalid_at: Option<String>,
 }
@@ -67,7 +67,7 @@ pub struct IngestRequest {
     pub entities: Vec<EntityInput>,
     #[serde(default)]
     pub relations: Vec<RelationInput>,
-    /// v1.17.3 "UMP" M2: UMP-lowered overlays persisted onto the knowledge row
+    /// UMP-lowered overlays persisted onto the knowledge row
     /// (node_kind/assertion_kind/confidence/access_scope/expires_at/observed_at/
     /// valid_from/valid_to/ump_meta). Absent for legacy callers → column
     /// defaults/NULL — byte-identical behavior to v1.17.2. `ump_meta` is
@@ -81,7 +81,7 @@ pub struct IngestRequest {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub expires_at: Option<i64>,
-    /// v1.21.0 "Profiles": friendly retention — days from now (only honored
+    /// friendly retention — days from now (only honored
     /// when `expires_at` is absent; an explicit absolute always wins).
     /// Bounded 1..=36500 (the `POST /retention` bound).
     #[serde(default)]
@@ -96,22 +96,22 @@ pub struct IngestRequest {
     pub valid_to: Option<String>,
     #[serde(default)]
     pub ump_meta: Option<String>,
-    /// v1.25.0 "PH-Compliant" M3: an optional provenance source hint. Scraped
+    /// an optional provenance source hint. Scraped
     /// data (`scrape`/`scraped`/`crawler`) without a documented [`Self::lawful_basis`]
     /// is quarantined, not stored (the NPC 2026-01 scraping advisory posture).
     #[serde(default)]
     pub source: Option<String>,
-    /// v1.25.0 "PH-Compliant" M3: the documented lawful basis for scraped data.
+    /// the documented lawful basis for scraped data.
     /// Absent/blank on a scrape ingest → the record is quarantined (fail-closed).
     #[serde(default)]
     pub lawful_basis: Option<String>,
-    /// v1.26.0 "Cross-Border" M3: the purpose-limitation label (TEXT) stored
+    /// the purpose-limitation label (TEXT) stored
     /// on the record (Art 5(1)(b) purpose evidence, alongside `lawful_basis`).
     #[serde(default)]
     pub purpose: Option<String>,
 }
 
-/// v1.17.1 "Govern" M4: `?format=ump` accepts a UMP envelope instead of the
+/// `?format=ump` accepts a UMP envelope instead of the
 /// plain `IngestRequest` body (see `ingest`).
 #[derive(Debug, Deserialize)]
 pub struct IngestQuery {
@@ -191,7 +191,7 @@ pub async fn ingest(
         };
 
     if lowered.len() == 1 {
-        // v1.27.19 "Scrub" (D-6): was `.next().unwrap()` — trivially safe after
+// was `.next().unwrap()` — trivially safe after
         // the len==1 guard, but express it without a panic fallback (the lint
         // wall denies unwrap/expect in production).
         let mut lowered = lowered;
@@ -224,7 +224,7 @@ pub async fn ingest(
     ))
 }
 
-/// v1.17.3 M2: lower one UMP record into the ingest shape + the persisted UMP
+/// lower one UMP record into the ingest shape + the persisted UMP
 /// overlay. `memory_kind`/`assertion_kind`/`confidence`/`access_scope`/
 /// `expires_at`/times map onto the knowledge columns so a re-export loses
 /// nothing; [`crate::handlers::ump::UmpMeta`] carries the fields with no brain
@@ -292,7 +292,7 @@ pub(crate) async fn ingest_one(
     principal: &Option<crate::auth::Principal>,
     mut req: IngestRequest,
 ) -> Result<IngestResponse, HandlerError> {
-    // v0.9.9: refuse new writes when over the capacity envelope (HTTP 507).
+    // refuse new writes when over the capacity envelope (HTTP 507).
     // Read routes do not call this guard; an over-capacity brain still answers.
     super::guard_capacity(state)?;
 
@@ -326,7 +326,7 @@ pub(crate) async fn ingest_one(
         ));
     }
 
-    // v1.20.1 "Shield" M1: screen this shared write core exactly like its
+    // screen this shared write core exactly like its
     // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). v1.20.3 (G5):
     // the full two-layer screen (blocklist + optional classifier). `Reject`
     // keeps the HTTP-400; `Quarantine` (default) ingests then flags post-insert
@@ -340,14 +340,14 @@ pub(crate) async fn ingest_one(
         ));
     }
     let quarantine_flagged = screen_result == crate::screen::ScreenResult::Quarantine
-        // v1.25.0 "PH-Compliant" M3: scraped data without a documented lawful
+        // scraped data without a documented lawful
         // basis is quarantined (the NPC 2026-01 posture), never stored as memory.
         || matches!(
             crate::ph::scrape_posture(req.source.as_deref(), req.lawful_basis.as_deref()),
             crate::ph::ScrapePosture::Quarantine
         );
 
-    // v1.27.16 "Drawbridge" (M4/F-33): trust labels are not client-asserted.
+// trust labels are not client-asserted.
     // A DIRECT client assert (HTTP `/ingest`, `/proposals` — `ump_meta` is
     // None) must be a real kind, the same strict round-trip the proposal path
     // now enforces — an unknown value must not silently store as `fact`. The
@@ -392,7 +392,7 @@ pub(crate) async fn ingest_one(
         ));
     }
 
-    // v1.21.0 "Profiles": `ttl_days` is the friendly retention field (days
+    // `ttl_days` is the friendly retention field (days
     // from now). It only applies when `expires_at` is absent — an explicit
     // absolute expiry always wins (the row-wins invariant).
     req.expires_at = ttl_days_to_expires(req.expires_at, req.ttl_days)?;
@@ -402,7 +402,7 @@ pub(crate) async fn ingest_one(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
-    // v1.2.0 M3 AuthZ: write gate at handler entry, scoped to the actual
+// write gate at handler entry, scoped to the actual
     // target domain (forced, else "global"). Back-compat — `None` principal
     // (no JWT) is superuser.
     let gate_domain = forced_domain.as_deref().unwrap_or("global");
@@ -498,7 +498,7 @@ pub(crate) async fn ingest_one(
         return Err(HandlerError::internal("embedding produced no vector"));
     }
 
-    // v1.13.0 M2: auto-route when the caller omits a domain. The chunk
+    // auto-route when the caller omits a domain. The chunk
     // embedding is already computed above — reuse it against the stored
     // centroids. No confident centroid → fall back to `global` (the designed
     // safety net). Deterministic + zero extra embedding work.
@@ -507,14 +507,14 @@ pub(crate) async fn ingest_one(
         crate::domain_router::route_domain_label(&forced_domain, &embedding, &centroids)
     };
     // Resolve the domain's pool via the registry (shim mode → global pool).
-    // v1.27.16 (M5/F-41): registered-only in multi-db — an unregistered label
+// registered-only in multi-db — an unregistered label
     // 404s (`domain_unknown`); creation happens only in `POST /domains`.
     let pool = state
         .registry
         .pool_for(&domain_label)
         .map_err(super::map_domain_error)?;
 
-    // v1.21.0 "Profiles" M1: apply the bound domain profile's ingest
+    // apply the bound domain profile's ingest
     // defaults (the pure core is `apply_profile_ingest` — unit-tested there).
     // A domain with no bound profile skips straight through (byte-identical
     // pre-v1.21 behavior). An unreadable bound profile fails CLOSED — a
@@ -535,7 +535,7 @@ pub(crate) async fn ingest_one(
         req.memory_kind.as_deref(),
     )?;
     req.access_scope = access_scope;
-    // v1.26.0 "Cross-Border" M3: whether this domain's bound profile is a
+    // whether this domain's bound profile is a
     // strict-posture one — the flag that marks a record with no documented
     // lawful_basis (purpose-limitation + data-minimization evidence).
     let strict_domain = profile
@@ -590,7 +590,7 @@ pub(crate) async fn ingest_one(
             });
         }
 
-        // v1.17.3 "UMP": persist the UMP overlay onto the row. The
+        // persist the UMP overlay onto the row. The
         // content-addressed `ump_id` is COMPUTED here (domain \0 content —
         // §6.2 ids are derived, never trusted from a record), so re-imports
         // of the same content land on the same id and the unique index holds.
@@ -622,7 +622,7 @@ pub(crate) async fn ingest_one(
                 req.observed_at.as_deref(),
                 ump_id.as_deref(),
                 req.ump_meta.as_deref(),
-                // v1.26.0 M3: the lawful-basis + purpose tags (Art 5/6 evidence).
+                // the lawful-basis + purpose tags (Art 5/6 evidence).
                 req.lawful_basis.as_deref(),
                 req.purpose.as_deref(),
             ],
@@ -630,7 +630,7 @@ pub(crate) async fn ingest_one(
         .map_err(|e| HandlerError::internal(format!("insert knowledge failed: {e}")))?;
         let id: i64 = tx.last_insert_rowid();
 
-        // v1.20.1 "Shield" M1: under Quarantine policy, a chunk that trips the
+        // under Quarantine policy, a chunk that trips the
         // injection screen is stored but flagged (excluded from retrieval) and
         // its KG edges are skipped so a quarantined plant can't pollute the
         // graph. `flag_if_quarantined` returns true only when it flagged. Fails
@@ -662,7 +662,7 @@ pub(crate) async fn ingest_one(
             // `vitamin d3` is declared. Idempotent: INSERT OR IGNORE on existing
             // rows is a no-op; the SELECT then finds the row.
             //
-            // v1.4.0 "Calibrate" M1: populate bi-temporal valid_at/invalid_at.
+            // populate bi-temporal valid_at/invalid_at.
             // Caller-supplied explicit values win; otherwise run the deterministic
             // temporal extractor over the ingested content (best-effort, no LLM).
             // The extractor is pure; we run it once per relation keyed on content.
@@ -732,7 +732,7 @@ pub(crate) async fn ingest_one(
             domain: Some(domain_label),
             entities_added: Some(entities_added),
             relations_added: Some(relations_added),
-            // v1.26.0 M3: a strict-posture domain storing a record with no
+            // a strict-posture domain storing a record with no
             // lawful_basis is flagged (the purpose-limitation evidence). Only
             // present when flagged (additive; absent otherwise).
             compliance: crate::transfers::lawful_basis_flag(
@@ -757,7 +757,7 @@ pub(crate) async fn ingest_one(
     Ok(result)
 }
 
-/// v1.21.0 "Profiles": `ttl_days` (days-from-now) → absolute `expires_at`.
+/// `ttl_days` (days-from-now) → absolute `expires_at`.
 /// Only applies when `expires_at` is absent — the row-wins invariant. Pure
 /// (the `now` is injected by the caller; `ingest_one` passes Utc::now).
 pub(crate) fn ttl_days_to_expires(
@@ -779,7 +779,7 @@ pub(crate) fn ttl_days_to_expires(
     }
 }
 
-/// v1.21.0 "Profiles" M1: the pure ingest-defaults core. The invariant: the
+/// the pure ingest-defaults core. The invariant: the
 /// profile sets DEFAULTS, the row wins —
 ///   - `pii_mode: strict` masks title + content at the write boundary
 ///     (one-way, the existing `[redacted:*]` maskers; no vault);
@@ -890,7 +890,7 @@ mod tests {
         assert!(lower_ump(&serde_json::json!({"ump": "1.0", "body": {"text": 42}})).is_err());
     }
 
-    /// v1.21.0 "Profiles" verification #1 (pure seam): a strict-posture
+/// a strict-posture
     /// profile masks PII at the write boundary — the email/phone/card NEVER
     /// reach the store, only the deterministic placeholders (the v1.20.19
     /// "no vault" posture: one-way, no recovery map).
@@ -938,7 +938,7 @@ mod tests {
         assert_eq!(scope.as_deref(), Some("team"));
     }
 
-    /// v1.21.0 "Profiles": no bound profile → byte-identical passthrough
+    /// no bound profile → byte-identical passthrough
     /// (verification #4, pure half — the HTTP half is the ignored e2e test).
     #[test]
     fn no_profile_preserves_current_behavior_pure() {
@@ -970,7 +970,7 @@ mod tests {
         );
     }
 
-    /// v1.21.0 "Profiles": the kind vocabulary is a constraint — the
+    /// the kind vocabulary is a constraint — the
     /// effective kind (explicit, else 'fact') must be in the list.
     #[test]
     fn kind_vocabulary_rejects_out_of_list_kinds() {
@@ -996,7 +996,7 @@ mod tests {
         assert!(apply_profile_ingest(Some(&sealed), "t".into(), "c".into(), None, None).is_err());
     }
 
-    /// v1.21.0 "Profiles" verification #2 (pure seam): an explicit `ttl_days`
+/// an explicit `ttl_days`
     /// becomes the row's absolute expiry — and an explicit `expires_at` always
     /// wins over a later ttl_days (the row-wins invariant).
     #[test]

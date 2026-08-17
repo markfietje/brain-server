@@ -1,4 +1,4 @@
-//! Budgeted monotone submodular evidence packing (v1.4.0 "Calibrate" M2).
+//! Budgeted monotone submodular evidence packing.
 //!
 //! Replaces "top-k by score" with the July-2026 SOTA: jointly optimize
 //! **relevance**, **coverage**, **representativeness**, and **diversity** under

@@ -108,7 +108,7 @@ pub fn translate_issue(
     let source_uri = format!("github://{owner}/{repo}/issues/{number}");
 
     // Frontmatter: YAML-style, terminated by `---` on its own line.
-    // `vault::split_frontmatter` (v0.9.2) recognizes this shape.
+    // `vault::split_frontmatter` recognizes this shape.
     let mut fm = String::with_capacity(256);
     fm.push_str("---\n");
     fm.push_str("kind: github-issue\n");

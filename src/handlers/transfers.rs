@@ -1,4 +1,4 @@
-//! v1.26.0 "Cross-Border" M1/M4 — the cross-border transfer register + the
+//! the cross-border transfer register + the
 //! TIA/DPA evidence artifacts (HTTP surface).
 //!
 //! `POST /transfers` records a cross-border data flow (Art 30 + Art 46 evidence);
@@ -88,7 +88,7 @@ pub async fn register_transfer(
             req.signed_at,
             req.expires_at,
         )?;
-        // v1.28.1 "Holdall" M3 (F-51): the Art-30 audit row lands INSIDE the
+        // the Art-30 audit row lands INSIDE the
         // write transaction (nested via SAVEPOINT) so the register row and its
         // audit are atomic — a crash between commit and audit can no longer
         // leave an unmirrored register entry. Best-effort (record swallows its

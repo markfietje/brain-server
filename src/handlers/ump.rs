@@ -1,4 +1,4 @@
-//! v1.17.1 "Govern" M4 — Universal Memory Protocol (UMP) adapter.
+//! Universal Memory Protocol (UMP) adapter.
 //!
 //! A transform, not a new model: `GET /export?format=ump` re-renders the
 //! portable JSON as UMP records; `POST /ingest?format=ump` lowers UMP records
@@ -224,7 +224,7 @@ pub fn from_ump(record: &Value) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// v1.17.3 "UMP" M1 — the record engine (L3)
+// the record engine (L3)
 // ---------------------------------------------------------------------------
 
 /// The persisted per-row UMP overlay (`knowledge.ump_meta`, JSON). Only fields
@@ -574,7 +574,7 @@ pub fn operator_signing_key() -> Option<(String, SigningKey)> {
         if !e.path().is_file() {
             return None;
         }
-        // v1.27.16 "Drawbridge" (M3.5/F-25): the seed is a signing secret —
+// the seed is a signing secret —
         // same 0600 owner-only enforcement the JWT keys / token file /
         // webhook secret get. A group/world-readable seed would let any local
         // user mint capability tokens; refuse it (fail closed to L2
@@ -713,7 +713,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // v1.17.3 M1 — record engine
+// record engine
     // -----------------------------------------------------------------------
 
     /// M1: `emit_record` ids are content-addressed (§6.2 L2) — deterministic

@@ -1,4 +1,4 @@
-//! Deterministic temporal-marker extraction for bi-temporal edges (v1.4.0 M1).
+//! Deterministic temporal-marker extraction for bi-temporal edges.
 //!
 //! Graphiti's bi-temporal model (Context7-verified 2026-07-30 against
 //! getzep/graphiti:edges.py) attaches two *valid-time* timestamps to every edge:

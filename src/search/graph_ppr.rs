@@ -1,4 +1,4 @@
-//! v1.11.0 "Associate" — HippoRAG-2-style Personalized PageRank over the
+//! HippoRAG-2-style Personalized PageRank over the
 //! existing knowledge graph.
 //!
 //! Research basis (Context7-verified + verbatim source, 2026-08-02):
@@ -46,7 +46,7 @@ pub const MAX_PPR_ITER: usize = 50;
 #[allow(dead_code)] // ponytail: reserved for the DPR-passage-seed upgrade path.
 pub const PASSAGE_NODE_WEIGHT: f64 = 0.05;
 
-// ── v1.12.0 "Discern" noise-aware weights ─────────────────────────────────
+// ── noise-aware weights ─────────────────────────────────
 // Research basis (2026-08-03): GAAMA (arXiv:2603.27910) hub dampening
 // `w_ij · min(1, θ/deg(i))` per source node, θ = 50. The live corpus is 94%
 // `tagged_with` taxonomy edges with degree-73/101/150 mega-hubs; both
@@ -127,7 +127,7 @@ impl SparseGraph {
         self.id_to_idx.get(&id).copied()
     }
 
-    /// v1.12.0 "Discern": GAAMA-style hub dampening. Every directed half-edge
+    /// GAAMA-style hub dampening. Every directed half-edge
     /// weight is scaled by `min(1, θ/deg(i))` for its **source** vertex's
     /// degree (distinct-neighbor count) — a mega-hub spreads proportionally
     /// less mass per edge, so a 150-degree tag cloud can't wash PPR out.
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(r.source, Some(crate::search::SearchSource::Graph));
     }
 
-    // ── v1.12.0 "Discern" — noise-aware weights + hub dampening ─────────────
+    // ── — noise-aware weights + hub dampening ─────────────
 
     /// Plan verification #1: the taxonomy weight table contract.
     #[test]

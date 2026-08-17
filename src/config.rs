@@ -9,20 +9,20 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_REQUEST_SIZE: usize = 1024 * 1024;
 pub const MAX_QUERY_LENGTH: usize = 2000;
 
-/// v1.20.2 "Harden" D1: max distinct client-IP buckets the rate limiter tracks
+/// max distinct client-IP buckets the rate limiter tracks
 /// before evicting the oldest 25%. Bounds memory against an attacker cycling
 /// spoofed `X-Forwarded-For` values. ponytail: in-process LRU — multi-instance
 /// rate limiting needs a shared store (v2.1).
 pub const RATE_LIMIT_MAX_KEYS: usize = 10_000;
 
-/// v1.27.16 "Drawbridge" (M5/F-41): the maximum number of per-domain DB files a
+/// the maximum number of per-domain DB files a
 /// multi-db registry may register/create. The domain-creation surface is the
 /// ONLY file-creation path; every other name resolves `domain_unknown`, so
 /// this cap bounds disk-fill from a probeable API. Override with
 /// `BRAIN_MAX_DOMAIN_DBS`.
 pub const MAX_DOMAIN_DBS: usize = 256;
 
-/// v1.9.0 "Suggest": bounds for the opt-in `/suggest` surface. `k` is capped
+/// bounds for the opt-in `/suggest` surface. `k` is capped
 /// small because suggestions are supplementary context, not a replacement for
 /// `/recall`; `exclude` is capped so a caller can't OOM the NOT IN clause.
 pub const MAX_SUGGEST_K: u32 = 20;
@@ -36,45 +36,45 @@ pub const SNIPPET_CONTEXT_CHARS: usize = 60;
 pub const MAX_EXPLAIN_BYTES: usize = 64 * 1024;
 pub const MAX_MULTI_GET: usize = 1000;
 
-/// v1.20.18 "Bound": graph endpoints return a bounded edge set. The KG's clean
+/// graph endpoints return a bounded edge set. The KG's clean
 /// semantic edge set is far below this; the cap exists for the pathological
 /// mega-hub. Mirrors the `MAX_MULTI_GET` bound pattern (consts, not env limits).
 pub const MAX_GRAPH_EDGES: i64 = 500;
 
-/// v1.20.18 "Bound": `/decayed` returns a paged, bounded first page (default
+/// `/decayed` returns a paged, bounded first page (default
 /// 500, `?offset=` pages the rest). Matches the graph cap for operator review.
 pub const MAX_DECAYED: i64 = 500;
 
-/// v1.20.1 "Shield" M2: how long an auto-captured proposal can sit in the
+/// how long an auto-captured proposal can sit in the
 /// review queue before a human decides it. A stale prompt's context-loss makes
 /// the candidate unverifiable, so beyond this the queue refuses to act and the
 /// row is audited as expired. Default 7 days. `BRAIN_PROPOSAL_TTL_SECS` overrides.
 pub const DEFAULT_PROPOSAL_TTL_SECS: i64 = 7 * 24 * 3600;
 
-/// v1.20.8 "Signal": the four fixed alert kinds fed by the decision cores.
+/// the four fixed alert kinds fed by the decision cores.
 /// The `/events` SSE feed + `BRAIN_ALERT_WEBHOOK_URL` sink both speak these.
 pub const ALERT_KIND_PENDING: &str = "pending";
 pub const ALERT_KIND_EXPIRY: &str = "expiry";
 pub const ALERT_KIND_SCREEN: &str = "screen";
 pub const ALERT_KIND_CHAIN: &str = "chain";
 
-/// v1.20.8 "Signal": `GET /events` SSE broadcast buffer. Bounded — a slow
+/// `GET /events` SSE broadcast buffer. Bounded — a slow
 /// consumer drops missed events (broadcast lag semantics), never blocks the
 /// publish path (same posture as `UMP_EVENT_BUFFER`).
 pub const ALERT_EVENT_BUFFER: usize = 256;
 
-/// v1.20.8 "Signal": how often the expiry watcher scans pending proposals.
+/// how often the expiry watcher scans pending proposals.
 /// The tier clock is a watch, not a tick-per-event — a proposal only alerts
 /// as it crosses a boundary, so a coarse interval is honest.
 pub const ALERT_WATCH_INTERVAL_SECS: u64 = 30;
 
-/// v1.20.10 "Proof": default cadence for the integrity watcher's full-chain
+/// default cadence for the integrity watcher's full-chain
 /// check (`audit::verify_chain`). The chain is a tamper-evident log; a 60s
 /// watch makes a break a watched signal instead of a manual `/audit/verify`.
 /// Read via [`chain_check_secs`].
 pub const DEFAULT_CHAIN_CHECK_SECS: u64 = 60;
 
-/// v1.20.8 "Signal": SLA tier boundaries (seconds remaining), mirroring the
+/// SLA tier boundaries (seconds remaining), mirroring the
 /// client ops-clock budgets (`< 5 min` critical, `< 1 hr` warn). A proposal
 /// alerts once per boundary crossed, not on every scan.
 pub const ALERT_CRITICAL_SECS: i64 = 5 * 60;
@@ -82,7 +82,7 @@ pub const ALERT_WARN_SECS: i64 = 60 * 60;
 
 /// Optional alert webhook sink. When set, every alert is enqueued to the
 /// existing `webhook_queue` (kind='alert') AND POSTed to this URL via the
-/// Standard Webhooks handshake (v1.20.4). Fail-soft: a sink failure never
+/// Standard Webhooks handshake. Fail-soft: a sink failure never
 /// blocks the SSE publish path.
 pub fn alert_webhook_url() -> Option<String> {
     std::env::var("BRAIN_ALERT_WEBHOOK_URL")
@@ -109,14 +109,14 @@ pub fn proposal_ttl_secs() -> i64 {
         .unwrap_or(DEFAULT_PROPOSAL_TTL_SECS)
 }
 
-/// v1.20.22 "Clocks" M1.1: the GDPR Art 17/12 DSAR response window (days). How
+/// the GDPR Art 17/12 DSAR response window (days). How
 /// long after a request's `created_at` the erosive-erasure deadline lapses.
 /// This is a *commitment the ledger shows*, not an enforced bound — a
-/// reminder/notification channel is v2.x, and the ledger TTL (v1.20.17) is the
+/// reminder/notification channel is v2.x, and the ledger TTL is the
 /// only automatic bound.
 pub const DEFAULT_DSAR_WINDOW_DAYS: i64 = 30;
 
-/// v1.20.22 "Clocks" M1.1: the Art 17 erasure window in seconds.
+/// the Art 17 erasure window in seconds.
 /// `BRAIN_DSAR_WINDOW_DAYS` overrides the default (same env-resolution pattern
 /// as `BRAIN_PROPOSAL_TTL_SECS`).
 pub fn dsar_window_secs() -> i64 {
@@ -128,7 +128,7 @@ pub fn dsar_window_secs() -> i64 {
         .unwrap_or(DEFAULT_DSAR_WINDOW_DAYS * 86400)
 }
 
-/// v1.20.10 "Proof": integrity-watcher cadence (seconds). Reads
+/// integrity-watcher cadence (seconds). Reads
 /// `BRAIN_CHAIN_CHECK_SECS`, defaulting to [`DEFAULT_CHAIN_CHECK_SECS`].
 pub fn chain_check_secs() -> u64 {
     std::env::var("BRAIN_CHAIN_CHECK_SECS")
@@ -182,7 +182,7 @@ pub const PROFILE_DESKTOP: &str = "desktop";
 /// CORS policy in production. Dev origins (localhost:3000/8080) are allowed
 /// because they are loopback.
 ///
-/// Audit G4 (v1.11.0): `*` is never a valid CORS origin and is stripped from
+/// Audit G4: `*` is never a valid CORS origin and is stripped from
 /// whatever source the list came from. The layer exact-matches origin strings
 /// (see `build_app`), so a literal `*` entry would otherwise silently match
 /// nothing — a deployer who writes `CORS_ORIGINS=*` deserves an error, not a
@@ -245,7 +245,7 @@ pub fn cors_headers() -> String {
 // If a request hangs after SIGTERM, systemd's TimeoutStopSec (default 90s)
 // is the outer cap.
 
-// ── v0.9.7 "Guard" security constants ──────────────────────────────────
+// ── security constants ──────────────────────────────────
 
 /// When `BIND_HOST` fails to parse as an IP, refuse to bind instead of falling
 /// back to `0.0.0.0` (which would expose the server on all interfaces). An
@@ -257,7 +257,7 @@ pub const BIND_PUBLIC_OPT_IN: &str = "BIND_PUBLIC";
 /// skew / forged). GitHub sends `X-GitHub-Delivery` + `X-Hub-Signature-256`.
 pub const WEBHOOK_REPLAY_SECS: u64 = 300;
 
-/// v1.20.4 "Replay" (G6): when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
+/// when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
 /// webhook receiver requires the Standard Webhooks header set
 /// (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies the
 /// signature over `{id}.{timestamp}.{raw body}` (spec's canonical form), so a
@@ -301,7 +301,7 @@ pub fn injection_policy() -> InjectionPolicy {
     }
 }
 
-// ── v1.20.3 "Classify" M2 (G5): layer-2 classifier config ─────────────────────
+// ── layer-2 classifier config ─────────────────────
 
 /// Default reject threshold (score ≥ this → HTTP 400). Conservative: a false
 /// positive here costs a legit memory at the boundary, so `reject` sits above
@@ -364,7 +364,7 @@ pub fn brain_db_path() -> std::path::PathBuf {
         })
 }
 
-/// v1.16.2 "Harden" M1.1: directory of the built brain-client web assets
+/// directory of the built brain-client web assets
 /// (index.html + WASM + CSS). Served at `/app` by `tower_http::services::ServeDir`.
 /// Default is `client/dist` relative to CWD; override with `BRAIN_CLIENT_DIR`.
 /// If the dir doesn't exist, `/app` routes 404 and the API is unaffected.
@@ -374,12 +374,12 @@ pub fn client_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("client/dist"))
 }
 
-/// v1.17.3 "UMP" M2: `GET /ump/subscribe` SSE broadcast buffer. Bounded —
+/// `GET /ump/subscribe` SSE broadcast buffer. Bounded —
 /// a slow consumer drops missed events (broadcast lag semantics), never
 /// blocks the publish path.
 pub const UMP_EVENT_BUFFER: usize = 128;
 
-/// v1.17.3 "UMP" M2/M4: directory holding the operator Ed25519 signing key
+/// directory holding the operator Ed25519 signing key
 /// (raw 32-byte seed file, e.g. `operator.key`). `None` → L2 conformance
 /// (hash-only integrity); a key present → L3 (records signed + verified).
 pub fn ump_key_dir() -> std::path::PathBuf {
@@ -392,13 +392,13 @@ pub fn ump_key_dir() -> std::path::PathBuf {
         })
 }
 
-// ── v1.1.0 "Harden" M1.4: token rotation constants ───────────────────
+// ── token rotation constants ───────────────────
 // The token-store background task stats the file at this cadence and reloads
 // on mtime change. The auth check itself is hot-path, so it reads from the
 // cached set under a single RwLock — not from disk.
 pub const TOKEN_ROTATION_POLL_SECS: u64 = 5;
 
-/// v1.1.1: TTL for the `/metrics` audit-chain cache. `/metrics` is scraped
+/// TTL for the `/metrics` audit-chain cache. `/metrics` is scraped
 /// frequently (Prometheus default 15s); running a full O(n) chain scan on
 /// every scrape wastes CPU. `/audit/verify` stays authoritative (always scans);
 /// `/metrics` returns the cached result and refreshes when older than this.
@@ -415,7 +415,7 @@ pub const AUDIT_CHAIN_CACHE_TTL_SECS: u64 = 60;
 ///    token out of the process/launchd environment and off `launchctl print`.
 /// 2. `AUTH_TOKEN` — the raw env var. Kept for back-compat/dev convenience.
 ///
-/// v1.1.0 Harden: `auth_tokens()` here reads from disk on every call (so it
+/// `auth_tokens()` here reads from disk on every call (so it
 /// reflects rotation immediately when called directly). The server's hot path
 /// uses `auth::TokenStore` which caches this result + reloads on mtime change,
 /// audited + fail-safe against file deletion (see `auth.rs`).
@@ -459,7 +459,7 @@ pub fn auth_token_file() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// v1.20.24 "Sweep" (fail-closed auth): when `AUTH_TOKEN_FILE` is explicitly
+/// when `AUTH_TOKEN_FILE` is explicitly
 /// set but cannot yield tokens (missing, unreadable, or empty) AND no
 /// `AUTH_TOKEN` env fallback is configured, the server would otherwise start
 /// silently unauthenticated — the wrong failure direction. Returns the fatal
@@ -503,7 +503,7 @@ pub fn multi_db() -> bool {
         .unwrap_or(false)
 }
 
-/// v1.27.16 "Drawbridge" (M5/F-41): the per-domain DB registration cap.
+/// the per-domain DB registration cap.
 /// `BRAIN_MAX_DOMAIN_DBS` overrides [`MAX_DOMAIN_DBS`]; unparsable → default.
 pub fn max_domain_dbs() -> usize {
     std::env::var("BRAIN_MAX_DOMAIN_DBS")
@@ -512,7 +512,7 @@ pub fn max_domain_dbs() -> usize {
         .unwrap_or(MAX_DOMAIN_DBS)
 }
 
-/// v1.9.0 "Suggest": whether the opt-in `/suggest` routes are live. Defaults
+/// whether the opt-in `/suggest` routes are live. Defaults
 /// to `true` (the feature ships on); set `BRAIN_SUGGEST_ENABLED=false` to
 /// disable the surface entirely — the routes then return `501 Not Implemented`.
 /// This is the roadmap's "otherwise the feature is removed" kill switch: an
@@ -528,7 +528,7 @@ pub fn brain_suggest_enabled() -> bool {
     )
 }
 
-/// v1.12.0 "Discern": whether the complexity-gated graph rescue is live.
+/// whether the complexity-gated graph rescue is live.
 /// Defaults to `true` (the feature ships on); set `BRAIN_GRAPH_RESCUE_ENABLED
 /// =false` to restore exact v1.11.0 abstention behavior (a `ClarifyQuery`
 /// query always returns the empty `low_confidence` envelope). Same pattern as
@@ -544,7 +544,7 @@ pub fn brain_graph_rescue_enabled() -> bool {
     )
 }
 
-/// v1.15.0 M1 hotfix: whether automatic retrieval routing is live. Defaults to
+/// whether automatic retrieval routing is live. Defaults to
 /// `true` (the fix ships on); set `BRAIN_RECALL_ROUTING_ENABLED=false` to
 /// restore the exact pre-v1.15.0 shim behavior (recall searches the `global`
 /// pool only, no centroid routing). Same kill-switch pattern as
@@ -560,7 +560,7 @@ pub fn brain_recall_routing_enabled() -> bool {
     )
 }
 
-// ── v1.20.7 "Telemetry" (M1): OpenTelemetry export ─────────────────────────
+// ── OpenTelemetry export ─────────────────────────
 
 /// Whether OTLP trace export is live. Defaults to `false` (the exporter is
 /// feature-gated behind `--features otel`; this flag only decides whether the
@@ -586,7 +586,7 @@ pub fn otel_endpoint() -> String {
         .unwrap_or_else(|_| "http://127.0.0.1:4318/v1/traces".to_string())
 }
 
-// ── v1.17.1 "Govern" M2: per-kind retention ─────────────────────────────
+// ── per-kind retention ─────────────────────────────
 
 /// Default retention (days) per `memory_kind` for chunks with no explicit
 /// `expires_at`. v1.14 made per-chunk `expires_at` the decay primitive; M2 adds
@@ -640,7 +640,7 @@ pub fn retention_kind_days() -> std::collections::BTreeMap<String, i64> {
     map
 }
 
-/// v1.13.0 M4: minimum chunk count for a domain to keep a routing centroid.
+/// minimum chunk count for a domain to keep a routing centroid.
 /// Defaults to 1 (a 1-vector centroid is exact for that vector, so nothing is
 /// suppressed). A domain below this floor gets its centroid deleted so `route()`
 /// stops sending traffic to a near-empty bucket. `ponytail:` corpus-tuned, not
@@ -653,7 +653,7 @@ pub fn brain_domain_min_count() -> i64 {
         .max(1)
 }
 
-/// v1.20.2 "Harden" D1: only trust `X-Forwarded-For` when the operator has
+/// only trust `X-Forwarded-For` when the operator has
 /// explicitly told us we're behind a reversing proxy that sets it (and that
 /// the proxy overwrites any client-supplied value). Default `false` — direct
 /// connections use the socket address, defeating the per-request IP-spoofing
@@ -668,7 +668,7 @@ pub fn brain_trust_proxy() -> bool {
     )
 }
 
-// ── v1.15.0 "Observe": read-event audit + DSAR ─────────────────────────
+// ── read-event audit + DSAR ─────────────────────────
 
 /// Whether read events (`/recall`, `/search`, `/get`, `/multi-get`) are
 /// appended to the audit hash chain. `BRAIN_AUDIT_READ_EVENTS` explicit value
@@ -678,7 +678,7 @@ pub fn brain_trust_proxy() -> bool {
 /// hash-only (chunk id + scores + decision; never content) and never change
 /// the primary action — best-effort by construction.
 ///
-/// v1.21.0 "Profiles": the unset case is now domain-aware — a bound
+/// the unset case is now domain-aware — a bound
 /// profile's `audit_level` decides before the JWT/loopback default does (see
 /// `profile::audit_read_events_for`). This fn stays for the unbound surfaces
 /// (`/search`, `/get`, `/multi-get`) and as the layer under the profile.
@@ -686,7 +686,7 @@ pub fn audit_read_events(principal_is_jwt: bool) -> bool {
     audit_read_events_explicit().unwrap_or(principal_is_jwt)
 }
 
-/// v1.21.0 "Profiles": the explicit `BRAIN_AUDIT_READ_EVENTS` override as a
+/// the explicit `BRAIN_AUDIT_READ_EVENTS` override as a
 /// tri-state (`None` = unset, deployer left the decision to the posture /
 /// the bound profile). Extracted so the recall path can layer
 /// env → profile → default without re-reading the env string twice.
@@ -725,7 +725,7 @@ pub fn audit_read_retention_days() -> Option<u32> {
 }
 
 /// DSAR ledger retention window in days. Completed `dsar_requests` rows keep
-/// only the bundle hash + certificate after the purge (v1.20.17 M1); rows
+/// only the bundle hash + certificate after the purge; rows
 /// older than this window are deleted on the read-event prune cadence. Default
 /// 30; the GDPR needs the erasure record, not the bundle bytes forever.
 pub fn dsar_ledger_retention_days() -> u32 {
@@ -768,7 +768,7 @@ pub fn controller_name() -> String {
         .unwrap_or_else(|| "brain-server operator".to_string())
 }
 
-/// v1.25.0 "PH-Compliant" M1: the named **Data Protection Officer** contact.
+/// the named **Data Protection Officer** contact.
 /// A non-secret, operator-facing label (name/role/duty-officer email) surfaced
 /// on `/health` + the public privacy notice so a data-subject/breach event has
 /// a named channel. `None` when unset — the posture degrades to "no named
@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn sanitize_origins_drops_wildcard_and_empties() {
-        // Audit G4 (v1.11.0): `*` must never survive into the allow-list, and
+        // Audit G4: `*` must never survive into the allow-list, and
         // stray commas/whitespace produce no empty entries.
         assert_eq!(sanitize_origins("*"), "");
         assert_eq!(sanitize_origins("*,https://a.test"), "https://a.test");
@@ -897,7 +897,7 @@ mod tests {
         assert!(!is_loopback_origin("https://example.com"));
     }
 
-    /// v1.20.24 "Sweep" (G3): an explicitly configured but broken token file
+    /// an explicitly configured but broken token file
     /// is fatal ONLY when there is no AUTH_TOKEN env fallback — the ladder
     /// (file → env) must keep auth ON, and the no-file default stays off.
     /// Save/restore pattern as in capacity.rs (parallel-runner safe).

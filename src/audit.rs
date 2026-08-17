@@ -1,4 +1,4 @@
-//! v0.9.7 "Guard" — append-only audit events.
+//! append-only audit events.
 //!
 //! Every audit row stores **identifiers and hashes only** — never raw indexed
 //! content, token values, or secret-file contents. The `record` helper is a
@@ -8,7 +8,7 @@
 //! content is not offline-recoverable — the tail the v1.20.24 "Sweep" G6 left on
 //! the audit + trace paths).
 //!
-//! v1.1.0 "Harden":
+//! Security hardening columns:
 //! - `tenant_id` column (default 'global') enables per-tenant scoping at the
 //!   SQL layer (`WHERE tenant_id = ?`), so forgetting the param cannot leak
 //!   cross-tenant audit rows.
@@ -47,19 +47,19 @@ pub enum AuditKind {
     Reconcile,
     Backup,
     Connector,
-    /// v1.15.0 "Observe" M1: read-event kinds — a `/recall`, `/search`,
+    /// read-event kinds — a `/recall`, `/search`,
     /// `/get`, or `/multi-get` that injected memory into a decision path.
     /// Recorded only when the read-event audit is enabled (JWT mode default).
     Recall,
     Search,
     Get,
-    /// v1.25.0 "PH-Compliant" M2: breach workflow events (open/notification/
+    /// breach workflow events (open/notification/
     /// close) — the DPO incident ledger mirrors the hash chain.
     Breach,
-    /// v1.26.0 "Cross-Border" M1: transfer-register writes (Art 30/Art 46
+    /// transfer-register writes (Art 30/Art 46
     /// evidence) — every recorded cross-border flow is hash-chained.
     Transfer,
-    /// v1.27.1 "Clients": the BPO operating-register lifecycle (register, and
+    /// the BPO operating-register lifecycle (register, and
     /// later onboard/dpa/dsar/hold/termination writes) — every client-level
     /// action is hash-chained.
     Client,
@@ -256,7 +256,7 @@ pub fn record_tenant(
         // touch the caller's outer transaction; rolling back a top-level
         // IMMEDIATE tx only undoes this best-effort audit row.
         //
-        // v1.27.19 "Scrub" (D-2): a failure to settle the tx is never silent —
+// a failure to settle the tx is never silent —
         // a row the caller believes is on the durable chain may be stuck in
         // the air. Log at error level (visible in the operator log) and bump
         // the `audit_chain_commit_failures` counter surfaced on `/health`.
@@ -297,7 +297,7 @@ struct ChainTip {
     prev_hash: String,
 }
 
-/// v1.15.0 "Observe" M1/M2: record a read event AND persist its replayable
+/// record a read event AND persist its replayable
 /// decision-path trace. The audit row is hash-only (chunk ids + scores go into
 /// `detail_hash`; never content). The full trace detail (non-content decision
 /// metadata: ids, scores, ranks, decision, scope, principal, query) lives in
@@ -337,7 +337,7 @@ pub fn read_trace(conn: &Connection, audit_id: i64) -> Option<String> {
     .ok()
 }
 
-/// v1.15.0 "Observe" M1.3: bounded audit retention. Removes rows older than
+/// bounded audit retention. Removes rows older than
 /// `retention_days` and re-anchors the hash chain so the oldest surviving row
 /// becomes the new genesis. Called on read-event writes (only when
 /// `BRAIN_AUDIT_RETENTION_DAYS` is set), guarded so a steady-state pass with
@@ -352,7 +352,7 @@ pub fn read_trace(conn: &Connection, audit_id: i64) -> Option<String> {
 /// acceptable for a multi-thousand-row audit log. A >1M-row log would want a
 /// periodic checkpoint instead (verify_chain already notes the same ceiling).
 pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i64> {
-    // v1.27.19 "Scrub" (D-1): was `.ok()?` — a silent skip hid the prune's
+// was `.ok()?` — a silent skip hid the prune's
     // failure from the only diagnostic seam (its caller). Warn instead.
     let cutoff: String = match conn.query_row(
         "SELECT datetime('now', ?1)",
@@ -379,7 +379,7 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     if expired == 0 {
         return Some(0);
     }
-    // v1.20.2: IMMEDIATE (not the default DEFERRED that `unchecked_transaction`
+    // IMMEDIATE (not the default DEFERRED that `unchecked_transaction`
     // uses) so the re-anchor's read-then-rewrite of every survivor's prev_hash
     // is serialized against concurrent `record_tenant` writers. Without this,
     // a `record_tenant` INSERT sneaked between prune's SELECT and its first
@@ -459,7 +459,7 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
         );
         prev = new_prev;
     }
-    // v1.16.1: sweep orphaned trace artifacts. `recall_traces` is keyed by the
+    // sweep orphaned trace artifacts. `recall_traces` is keyed by the
     // audit row id with no FK; retention-pruned audit rows would otherwise
     // leave their replay traces behind forever. Delete any trace whose audit
     // row is gone. (The DSAR/purge cascade is handled in gate::purge_chunk_ids;
@@ -573,7 +573,7 @@ struct ChainWalkRow {
 }
 
 /// Read recent audit events (operator diagnostics only). Bounded by `limit`.
-/// v1.1.0: optional `tenant` filter — when `Some`, scoped to that tenant only
+/// optional `tenant` filter — when `Some`, scoped to that tenant only
 /// at the SQL layer so a forgotten app-level filter cannot leak cross-tenant.
 pub fn recent(
     conn: &Connection,
@@ -585,7 +585,7 @@ pub fn recent(
 
 /// Per-tenant variant of [`recent`]. `tenant = None` returns rows across all
 /// tenants (operator diagnostics); `Some(t)` enforces `WHERE tenant_id = ?`.
-/// v1.16.7 M4: `offset` is the pagination cursor (`ORDER BY id DESC LIMIT ? OFFSET ?`).
+/// `offset` is the pagination cursor (`ORDER BY id DESC LIMIT ? OFFSET ?`).
 pub fn recent_tenant(
     conn: &Connection,
     kind: Option<&str>,
@@ -726,7 +726,7 @@ mod tests {
         assert_eq!(all.len(), 1, "limit should cap to 1");
     }
 
-    /// v1.20.25: the audit/trace hash must be SHA-256 (64 hex) — the xxh3-64
+    /// the audit/trace hash must be SHA-256 (64 hex) — the xxh3-64
     /// fingerprint of low-entropy content (an SSN, name, short query) was
     /// offline-brute-forceable. A stored target_hash/detail_hash/query_hash
     /// derived from such a value must not be a fast non-crypto fingerprint.
@@ -987,7 +987,7 @@ mod tests {
         );
     }
 
-    /// v1.27.19 "Scrub" (D-2): a failed COMMIT/ROLLBACK settle of a best-effort
+/// a failed COMMIT/ROLLBACK settle of a best-effort
     /// audit row bumps `audit_commit_failures()` (surfaced on `/health`) and
     /// logs at error level — the row may not be durable and that must be
     /// visible, not silent. Forced here for real: a second connection holds a
@@ -1129,7 +1129,7 @@ mod tests {
         assert_eq!(all.len(), 2);
     }
 
-    /// v1.16.7 M4: pagination cursor. `limit`+`offset` pages the newest-first
+    /// pagination cursor. `limit`+`offset` pages the newest-first
     /// stream with no overlap and no dupes; an offset past the end is empty.
     #[test]
     fn recent_tenant_paginates_with_offset() {
@@ -1172,7 +1172,7 @@ mod tests {
             .is_empty());
     }
 
-    /// v1.20.2 C1 fix: concurrent autocommit `record_tenant` callers must not
+/// concurrent autocommit `record_tenant` callers must not
     /// fork the chain. Two pooled connections, a `Barrier` so both threads
     /// reach the audit call simultaneously, then verify the chain holds.
     /// Mirrors the proven `concurrent_refresh_serializes_exactly_one_winner`

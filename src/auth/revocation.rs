@@ -1,4 +1,4 @@
-//! Token revocation + refresh-chain reuse detection (v1.2.0 "AuthN" M2).
+//! Token revocation + refresh-chain reuse detection.
 //!
 //! Two tables, one cognitive model:
 //!   - `revoked_tokens` — the `(jti, iss)` denylist. Logout adds a row here;
@@ -286,7 +286,7 @@ pub fn rotate_chain(
 }
 
 /// Check + rotate atomically under `BEGIN IMMEDIATE`. The 2026-08-04 audit
-/// (v1.12.2 "Harden") found that `record_refresh_use` + `rotate_chain` as two
+/// found that `record_refresh_use` + `rotate_chain` as two
 /// separate steps had a check-then-act race: two concurrent presentations of
 /// the SAME refresh token could both read `current_jti == presented`, both
 /// pass, and both mint — silently defeating reuse detection for that token.

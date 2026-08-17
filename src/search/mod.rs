@@ -30,7 +30,7 @@ const SEARCH_BATCH_SIZE: usize = 500;
 /// corpora without learned weights.
 pub const RRF_K: usize = 60;
 
-/// v1.28.5 "Groundwork" (E-1): cap on the terms whose corpus df is fetched in
+/// cap on the terms whose corpus df is fetched in
 /// the PRF step-2 round-trip. Well above any realistic candidate set (the
 /// output takes `max_terms` ≤ 50 leaders); keeps the `term IN (…)` probe list
 /// safely inside SQLite's 32766-host-parameter limit on adversarial vocabs.
@@ -56,7 +56,7 @@ pub enum SearchSource {
 pub enum RetrievalStrategy {
     Hybrid,
     HybridPrf,
-    /// v1.12.0 "Discern": the estimator classified the query as low-confidence
+    /// the estimator classified the query as low-confidence
     /// and the graph leg was engaged as a second pass before abstention.
     HybridGraph,
 }
@@ -81,7 +81,7 @@ pub struct Provenance {
     pub vector_rank: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fts_rank: Option<usize>,
-    /// v1.11.0 "Associate": rank assigned by the graph-PPR retriever
+    /// rank assigned by the graph-PPR retriever
     /// (0 = best). `None` when the graph leg didn't retrieve the document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_rank: Option<usize>,
@@ -107,7 +107,7 @@ pub struct Provenance {
     pub prf_decision: Option<PrfDecision>,
 }
 
-/// v0.9.8 "Evidence" M1.3: lifecycle state of a returned chunk wrt. time.
+/// lifecycle state of a returned chunk wrt. time.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
@@ -122,7 +122,7 @@ pub enum Lifecycle {
     Superseded,
 }
 
-/// A typed link to another chunk (v0.9.8 M2.2). Rendered on `Evidence` when the
+/// A typed link to another chunk. Rendered on `Evidence` when the
 /// chunk participates in a provenance relationship.
 #[derive(Debug, Clone, Serialize)]
 pub struct EvidenceLinkRef {
@@ -160,25 +160,25 @@ pub struct Evidence {
     /// `[start, end)` byte ranges within `text` to highlight (query matches).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub highlights: Vec<[usize; 2]>,
-    /// v0.9.8 M1.3: when the fact became true in the world (file mtime, issue
+    /// when the fact became true in the world (file mtime, issue
     /// created_at, …). RFC3339; `None` for pre-v0.9.8 rows (treated as observed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<String>,
-    /// v0.9.8 M1.3: when the fact ceased to be true. `None` ⇒ still current.
+    /// when the fact ceased to be true. `None` ⇒ still current.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<String>,
-    /// v0.9.8 M1.3: when brain-server learned the fact (ingest/sync time).
+    /// when brain-server learned the fact (ingest/sync time).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_at: Option<String>,
-    /// v0.9.8 M2.4: source-authority tie-breaker (0..1). `None` for legacy rows
+    /// source-authority tie-breaker (0..1). `None` for legacy rows
     /// (treated as `AUTHORITY_VAULT` at read time). Never in `fused_score`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authority: Option<f32>,
-    /// v0.9.8 M1.3: current vs historical vs superseded. `Current` is the
+    /// current vs historical vs superseded. `Current` is the
     /// common case and is skipped on the wire to keep it small.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<Lifecycle>,
-    /// v0.9.8 M2.2: typed provenance links this chunk participates in.
+    /// typed provenance links this chunk participates in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<EvidenceLinkRef>,
     /// All retrieved content is untrusted evidence (OWASP LLM01:2025 — the
@@ -209,12 +209,12 @@ pub struct SearchResult {
     /// term match, or a leading window). Never claims text not present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
-    /// v0.9.8 M2.4: when brain-server learned this fact (ingest/sync time).
+    /// when brain-server learned this fact (ingest/sync time).
     /// Populated by the retrievers from `knowledge.observed_at`; used only for
     /// the deterministic freshness tie-break, never blended into `score`.
     #[serde(skip)]
     pub observed_at: Option<String>,
-    /// v0.9.8 M2.4: source-authority tie-breaker (0..1). `#[serde(skip)]` —
+    /// source-authority tie-breaker (0..1). `#[serde(skip)]` —
     /// it is a ranking hint, not part of the wire contract.
     #[serde(skip)]
     pub authority: Option<f32>,
@@ -222,41 +222,41 @@ pub struct SearchResult {
     /// by `enrich_evidence` after retrieval; absent if enrichment is skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
-    /// v1.14.0 "Gate" M3: `assertion_kind` (stated|observed|inferred) read from
+    /// `assertion_kind` (stated|observed|inferred) read from
     /// `knowledge.assertion_kind`. Ranking-neutral; surfaced so the caller can
     /// weigh a fact. `None` for legacy rows.
     #[serde(skip)]
     pub assertion_kind: Option<String>,
-    /// v1.14.0 "Gate" M3: deterministic stored confidence (0..1). Ranking-
+    /// deterministic stored confidence (0..1). Ranking-
     /// neutral; `None` for legacy rows.
     #[serde(skip)]
     pub confidence: Option<f32>,
-    /// v1.14.0 "Gate" M2: the chunk's `expires_at` (unix ts), used to compute
+    /// the chunk's `expires_at` (unix ts), used to compute
     /// the `decayed` flag at query time. `None` = no decay.
     #[serde(skip)]
     pub expires_at: Option<i64>,
-    /// v1.14.0 "Gate" M4: whether the chunk was PII-flagged at ingest. Never
+    /// whether the chunk was PII-flagged at ingest. Never
     /// serialized (drives read-path redaction only).
     #[serde(skip)]
     pub pii: bool,
-    /// v1.27.12 "Provenance": the `knowledge.source` ingest-kind (memory /
+    /// the `knowledge.source` ingest-kind (memory /
     /// markdown / structured / manual / vault / connector). Internal provenance
     /// label destined for the plugin; never serialized in `/recall` JSON.
     #[serde(skip)]
     pub ingest_kind: Option<String>,
-    /// v1.27.12 "Provenance": the `knowledge.node_kind` memory-kind (fact /
+    /// the `knowledge.node_kind` memory-kind (fact /
     /// procedure / ...). Internal provenance label; never serialized.
     #[serde(skip)]
     pub memory_kind: Option<String>,
-    /// v1.27.12 "Provenance": the `knowledge.lawful_basis` (may be NULL).
+    /// the `knowledge.lawful_basis` (may be NULL).
     /// Internal provenance label; never serialized.
     #[serde(skip)]
     pub lawful_basis: Option<String>,
-    /// v1.27.12 "Provenance": the `knowledge.region` data-residency stamp.
+    /// the `knowledge.region` data-residency stamp.
     /// Internal provenance label; never serialized.
     #[serde(skip)]
     pub region: Option<String>,
-    /// v1.27.19 "Scrub" (D-8): one-shot screen of `content` against the
+/// one-shot screen of `content` against the
     /// prompt-injection blocklist, computed at construction (`raw`) — the PRF
     /// extractors consume this instead of re-normalizing every hit. Internal;
     /// never serialized.
@@ -276,7 +276,7 @@ fn provenance_is_empty(p: &Provenance) -> bool {
 
 impl SearchResult {
     /// Minimal constructor for a raw retriever hit (no provenance yet).
-    /// v1.27.19 "Scrub" (D-8): the blocklist screen runs here — once per hit,
+/// the blocklist screen runs here — once per hit,
     /// not per consumer.
     pub(crate) fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
         let blocklist_hit = crate::contains_suspicious_pattern(&content);
@@ -415,13 +415,13 @@ impl SearchResult {
                 },
             );
         }
-        // v1.28.5 "Groundwork" (E-4): one batched evidence-links lookup for the
+// one batched evidence-links lookup for the
         // whole hit set (was one sqlite_master probe + one query per hit).
         let links_by_chunk = evidence_links_batch_for(conn, &ids).unwrap_or_default();
         for res in results.iter_mut() {
             // Recompute the verbatim window at the bounded size for a consistent
             // `text`, then derive highlight ranges from snippet_q within it.
-            // v1.28.5 "Groundwork" (D-4): when the caller already attached a
+// when the caller already attached a
             // snippet for this query, reuse it — identical by construction
             // (same content + same snippet_q inputs to `with_snippet`) — and
             // skip the second lowercase scan + window rebuild.
@@ -476,8 +476,8 @@ impl SearchResult {
                 } else {
                     None
                 };
-                // v0.9.8 M2.2: load typed links this chunk participates in.
-                // v1.28.5 "Groundwork" (E-4): from the one batched lookup
+                // load typed links this chunk participates in.
+// from the one batched lookup
                 // (was one sqlite_master probe + one query per hit).
                 let links = links_by_chunk.get(&res.id).cloned().unwrap_or_default();
                 res.evidence = Some(Evidence {
@@ -511,9 +511,9 @@ impl SearchResult {
     }
 }
 
-/// v0.9.8 M2.2: load the typed evidence links a chunk participates in, in
+/// load the typed evidence links a chunk participates in, in
 /// either direction (`from_chunk = id` OR `to_chunk = id`).
-/// v1.28.5 "Groundwork" (E-4): one batched lookup for all hits in a result
+/// one batched lookup for all hits in a result
 /// set (was one sqlite_master probe + one query per hit). Returns a bucket
 /// per requested id; missing ids are absent from the map (the caller treats
 /// them as "no links"). `to_chunk` is always the *other* endpoint.
@@ -613,13 +613,13 @@ pub struct SearchFilters {
     /// Deprecated single-source equality. Retained for the legacy
     /// `GET /search?source=` path; new callers use `sources` (OR scope).
     pub source: Option<String>,
-    /// v1.13.3 "SourceFix": parsed retrieval-leg restriction (`vector` | `fts` |
+    /// parsed retrieval-leg restriction (`vector` | `fts` |
     /// `graph`). `None` for ingest-kind filters and unrestricted queries. Set by
     /// the handler from [`crate::search::query::split_source_filter`]; applied
     /// post-fusion on the `SearchSource` tag, never as SQL.
     pub source_leg: Option<LegFilter>,
-    /// Multi-source OR scope (v0.9.5 M1). Empty = unrestricted.
-    /// v1.28.5 "Groundwork" (E-7): `Arc` — every hit-enrich callback may touch
+    /// Multi-source OR scope. Empty = unrestricted.
+/// `Arc` — every hit-enrich callback may touch
     /// this; clones of the filter bundle are cell-cheap.
     pub sources: Arc<Vec<String>>,
     /// Validated ISO-8601 timestamp (RFC3339 or `YYYY-MM-DD HH:MM:SS`); rows
@@ -638,74 +638,74 @@ pub struct SearchFilters {
     /// Free-form intent label, recorded for provenance/explainability. Full
     /// intent-aware reranking/expansion is a later phase.
     pub intent: Option<String>,
-    /// Retrieval profile hint (v0.9.5 M1). Passthrough only — no rerank
+    /// Retrieval profile hint. Passthrough only — no rerank
     /// plumbing consumes it yet.
     pub profile: Option<String>,
-    /// v0.9.7 "Guard": when `false` (default), retrieval excludes quarantined
+    /// when `false` (default), retrieval excludes quarantined
     /// (`flagged=1`) chunks so untrusted/prompt-injection content never reaches
     /// the agent. Set `true` only for operator review paths (`?include_flagged=1`).
     pub include_flagged: bool,
-    /// v0.9.8 "Evidence": point-in-time recall. When `Some`, retrieval returns
+    /// point-in-time recall. When `Some`, retrieval returns
     /// the revision of each source that was current *at* this RFC3339 instant
     /// (historical mode) — chunks whose revision was active at `as_of` and not
     /// yet superseded by a revision fetched strictly after `as_of` become
     /// visible. `None` (default) ⇒ only current evidence (existing behavior).
     pub as_of: Option<String>,
-    /// v0.9.8 "Evidence": include the full `Evidence` (time + lifecycle + links)
+    /// include the full `Evidence` (time + lifecycle + links)
     /// on every hit even when the caller did not request `provenance`. Purely a
     /// serialization switch on top of `enrich_evidence`.
     pub evidence: bool,
-    /// v0.9.8 "Evidence": deterministic freshness tie-break (M2.4). Within equal
+    /// deterministic freshness tie-break (M2.4). Within equal
     /// RRF-score buckets, prefer newer `observed_at` then higher `authority`.
     /// Never blended into `fused_score` (would distort lexical/vector semantics).
     pub freshness_tiebreak: bool,
-    /// v1.4.0 "Calibrate" M1: bi-temporal point-in-time filter (valid time, NOT
+    /// bi-temporal point-in-time filter (valid time, NOT
     /// transaction time). When `Some`, a chunk/edge is visible iff its
     /// valid-interval contains this instant:
     ///   (valid_from IS NULL OR valid_from <= at) AND (valid_to IS NULL OR valid_to > at)
     /// Distinct from `as_of` (revision/transaction-time point-in-time recall).
     /// Graphiti valid_at/invalid_at semantics (Context7-verified 2026-07-30).
     pub at: Option<String>,
-    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg
+    /// enable the graph-PPR retriever as a third RRF leg
     /// behind the existing vector + lexical fusion. Opt-in (the roadmap's
     /// no-default-cost guardrail): `false` = the graph leg never runs.
     pub graph: bool,
-    /// v1.14.0 "Gate" M2: when `false` (default), decayed chunks
+    /// when `false` (default), decayed chunks
     /// (`expires_at < now`) are excluded from retrieval; `true` returns them
     /// (operator review). Historical `?at=` is unaffected — decay and
     /// supersession compose. Applied as SQL, like `valid_to`.
     pub include_decayed: bool,
-    /// v1.14.0 "Gate" M2: the query-time instant (unix ts) used to evaluate
+    /// the query-time instant (unix ts) used to evaluate
     /// `expires_at`. Defaults to now; historical recall could pin it. Kept as a
     /// field so the retriever SQL is a pure function of the filters.
     pub now_unix: i64,
-    /// v1.14.0 "Gate" M3: `memory_kind` (fact/procedure/step/decision/episodic)
+    /// `memory_kind` (fact/procedure/step/decision/episodic)
     /// filter. `Some` restricts retrieval to that `knowledge.node_kind`.
     pub memory_kind: Option<String>,
-    /// v1.14.0 "Gate" M3: minimum relevance tier (`high`|`medium`|`low`).
+    /// minimum relevance tier (`high`|`medium`|`low`).
     /// `Some` drops lower-tier hits after fusion (the "stop poisoning the
     /// context window" filter), evaluated on the fused RRF score.
     pub min_relevance: Option<String>,
-    /// v1.14.0 "Gate" M4: record-level access-scope filter, JWT mode only.
+    /// record-level access-scope filter, JWT mode only.
     /// `Some` (list of allowed scopes from the principal) is applied as a
     /// deny-by-default `WHERE access_scope ∈ allowed`. `None` (loopback/
     /// opaque) = no scope restriction (trusts localhost).
-    /// v1.28.5 "Groundwork" (E-7): `Arc` for cell-cheap filter clones.
+/// `Arc` for cell-cheap filter clones.
     pub access_scopes: Option<Arc<Vec<String>>>,
-    /// v1.23.0 "Roles": record-owner filter (self/reports), JWT + roles mode
+    /// record-owner filter (self/reports), JWT + roles mode
     /// only. `Some` (list of `owner` values) is applied as `WHERE k.owner IN
     /// (…)`. `None` (no role, or `all`/`admin` owner_filter) = no owner
     /// restriction. Deny-by-default: a `reports` role with an empty `manages`
     /// claim gets `Some(vec![])` → reads nothing.
-    /// v1.28.5 "Groundwork" (E-7): `Arc` for cell-cheap filter clones.
+/// `Arc` for cell-cheap filter clones.
     pub owner_in: Option<Arc<Vec<String>>>,
-    /// v1.17.1 "Govern" M2: per-kind retention policy (`kind -> days`) used to
+    /// per-kind retention policy (`kind -> days`) used to
     /// derive a kind-default `expires_at` for chunks with none. Applied at query
     /// time: when `include_decayed` is false, a chunk whose *effective* expiry
     /// (own `expires_at`, else kind-default from `created_at`) is in the past is
     /// excluded, exactly like a per-chunk `expires_at`. Empty = no kind policy
     /// (the v1.14-only behavior).
-    /// v1.28.5 "Groundwork" (E-7): `Arc` for cell-cheap filter clones.
+/// `Arc` for cell-cheap filter clones.
     pub retention_days: Arc<Vec<(String, i64)>>,
 }
 
@@ -760,7 +760,7 @@ pub fn normalize_since(since: &str) -> Result<String> {
     if let Ok(dt) = NaiveDateTime::parse_from_str(since, "%Y-%m-%d %H:%M:%S") {
         return Ok(dt.format("%Y-%m-%d %H:%M:%S").to_string());
     }
-    // v1.4.0: bare date `YYYY-MM-DD` → midnight. Valid ISO-8601 date form.
+    // bare date `YYYY-MM-DD` → midnight. Valid ISO-8601 date form.
     if let Ok(d) = NaiveDate::parse_from_str(since, "%Y-%m-%d") {
         return Ok(d
             .and_hms_opt(0, 0, 0)
@@ -780,7 +780,7 @@ pub struct SearchTelemetry {
     pub embed_ms: f32,
     pub vector_ms: f32,
     pub fts_ms: f32,
-    /// v1.11.0 "Associate": graph-PPR retrieval latency. `0` when the graph
+    /// graph-PPR retrieval latency. `0` when the graph
     /// leg was disabled (`graph=false`).
     pub graph_ms: f32,
     pub fusion_ms: f32,
@@ -790,9 +790,9 @@ pub struct SearchTelemetry {
     pub vec_candidates: usize,
     /// FTS retrieval candidates before RRF.
     pub fts_candidates: usize,
-    /// v1.11.0: graph-PPR candidates before RRF.
+    /// graph-PPR candidates before RRF.
     pub graph_candidates: usize,
-    /// v1.12.0 "Discern": the graph leg was auto-engaged as a complexity-gated
+    /// the graph leg was auto-engaged as a complexity-gated
     /// rescue pass (the estimator said `ClarifyQuery` and the caller had not
     /// enabled `graph`). `false` on the normal path.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -815,14 +815,14 @@ pub struct SearchTelemetry {
     pub confidence: f32,
     /// Quality estimator recommendation.
     pub recommendation: Option<Recommendation>,
-    /// v1.4.0 "Calibrate" M2: tokens consumed by submodular packing. `None`
+    /// tokens consumed by submodular packing. `None`
     /// when packing was not requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packed_tokens: Option<usize>,
-    /// v1.4.0 "Calibrate" M2: candidate pool size considered by packing.
+    /// candidate pool size considered by packing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packing_candidates: Option<usize>,
-    /// v1.4.0 "Calibrate" M2: the paper's `answer_in_context` diagnostic — did
+    /// the paper's `answer_in_context` diagnostic — did
     /// the gold answer's tokens survive into the packed context? `None` when no
     /// gold answer was supplied.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -852,14 +852,14 @@ pub fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
 /// testable — operates only on the rank positions, never the raw scores
 /// (which are incomparable between cosine similarity and BM25).
 ///
-/// v1.11.0 "Associate": a third, optional graph-PPR list folds in with the
+/// a third, optional graph-PPR list folds in with the
 /// same formula. Pass `&[]` (or a graph-disabled empty list) for the
 /// legacy two-retriever behavior.
 ///
 /// Each input list MUST already be sorted best-first (rank 0 = strongest).
 /// Records per-retriever ranks and the fused score in each result's provenance.
 ///
-/// v1.13.3 "SourceFix": `leg` optionally restricts the fused output to one
+/// `leg` optionally restricts the fused output to one
 /// retrieval leg (`vector` | `fts` | `graph`), keyed on the `SearchSource` tag
 /// computed during fusion. `Both`-tagged hits survive every leg filter. Applied
 /// BEFORE truncation so the leg-restricted top-k is honest. `None` = unrestricted.
@@ -956,7 +956,7 @@ pub fn rrf_fuse(
         });
     }
 
-    // v1.13.3 "SourceFix": the retrieval-leg filter is a fusion concept. Apply
+    // the retrieval-leg filter is a fusion concept. Apply
     // it on the fused candidate list — keyed on the `SearchSource` tag just
     // computed — BEFORE truncation, so `source:"vector"` returns the top-k
     // vector hits, not "the vector hits that happened to survive into the top-k
@@ -975,7 +975,7 @@ pub fn rrf_fuse(
     fused
 }
 
-/// v1.13.3 "SourceFix": does a fused hit tagged `source` survive the requested
+/// does a fused hit tagged `source` survive the requested
 /// `leg`? `Both` (appeared in ≥2 legs) survives every leg filter; a single-leg
 /// tag survives only its own leg. Untagged hits (none post-fusion) are kept.
 fn leg_keeps(leg: LegFilter, source: Option<SearchSource>) -> bool {
@@ -1015,7 +1015,7 @@ const PRF_STOPWORDS: &[&str] = &[
 ///
 /// NOTE: this is the pure (DB-free) fallback used by unit tests and when no
 /// connection is available. The live path prefers [`prf_extract_terms_fts`],
-/// which weights terms via the FTS5 vocabulary table (v0.9.1 M4.1).
+/// which weights terms via the FTS5 vocabulary table.
 pub fn prf_extract_terms(
     hits: &[SearchResult],
     original_query: &str,
@@ -1086,7 +1086,7 @@ pub fn prf_extract_terms_fts(
     use std::collections::HashSet;
 
     // Collect rowids of safe (non-flagged, non-blocklist) hits only.
-    // v1.27.19 "Scrub" (D-8): the blocklist screen ran once at construction;
+// the blocklist screen ran once at construction;
     // the flag is read here instead of re-normalizing every hit.
     let safe_ids: Vec<i64> = hits
         .iter()
@@ -1115,7 +1115,7 @@ pub fn prf_extract_terms_fts(
         })
         .collect();
 
-    // v1.28.5 "Groundwork" (E-1): two narrow vocab queries instead of one
+// two narrow vocab queries instead of one
     // corpus-wide scan. The pre-E-1 query materialized `corpus` as a full
     // `GROUP BY term` over the ENTIRE vocab table, then JOINed the selected
     // terms into it — the df side cost grew with the corpus, not with the
@@ -1330,7 +1330,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// rescue, so the `prf_expanded` flag is NOT set here — see
 /// [`fuse_prf_passes`]). Deterministic: dedup by id, per-pass RRF
 /// contributions `1/(k+rank)` summed, original-pass order wins ties.
-/// v1.28.5 "Groundwork" (E-11): by-value lists — each call site owns its
+/// by-value lists — each call site owns its
 /// passes and hands them over (was `&[SearchResult]` + per-item `clone()`).
 fn fuse_pass_lists(
     pass1: Vec<SearchResult>,
@@ -1374,7 +1374,7 @@ fn fuse_pass_lists(
 
 /// Two-pass RRF fuse for PRF expansion: identical to [`fuse_pass_lists`] plus
 /// the `prf_expanded` provenance flag (the second pass WAS query-expanded).
-/// v1.28.5 "Groundwork" (E-11): by-value, like the fuse it delegates to.
+/// by-value, like the fuse it delegates to.
 pub fn fuse_prf_passes(
     pass1: Vec<SearchResult>,
     pass2: Vec<SearchResult>,
@@ -1388,7 +1388,7 @@ pub fn fuse_prf_passes(
     fused
 }
 
-/// v1.12.0 "Discern": complexity-gated graph activation (arXiv:2602.03578).
+/// complexity-gated graph activation (arXiv:2602.03578).
 /// The graph leg is auto-engaged ONLY when the calibrated estimator says the
 /// query is too weak to answer (`ClarifyQuery`) and the graph leg did not
 /// already run in pass 1 (`graph_enabled`). `enabled` is the
@@ -1403,7 +1403,7 @@ pub fn should_attempt_graph_rescue(
 
 // ── Vector + lexical retrieval ──────────────────────────────────────────────
 
-/// v1.14.0 "Gate": append the SQL for decay, memory_kind, and access-scope
+/// append the SQL for decay, memory_kind, and access-scope
 /// filters to a retriever query, pushing any bound params in order. Shared by
 /// both retrievers so the filters can never drift between vec0 and FTS. Pure
 /// SQL construction; params are appended in SQL-parameter order.
@@ -1417,7 +1417,7 @@ fn push_gate_filters(
             sql.push_str(" AND (k.expires_at IS NULL OR k.expires_at >= ?)");
             params_vec.push(Box::new(filters.now_unix));
         } else {
-            // v1.17.1 M2: exclude chunks whose *effective* expiry (own
+            // exclude chunks whose *effective* expiry (own
             // `expires_at`, else the kind-default derived from created_at) is
             // in the past. Dynamic per-kind disjunction — each kind with a
             // policy contributes `(node_kind = ?kind AND created_unix + days*86400 < ?now)`.
@@ -1445,7 +1445,7 @@ fn push_gate_filters(
     }
     if let Some(scopes) = &filters.access_scopes {
         if scopes.is_empty() {
-            // v1.27.16 "Drawbridge" (M3.2): the empty permit — a role gate that
+            // the empty permit — a role gate that
             // degraded fail-closed matches nothing (never `IN ()`, a syntax
             // error in SQLite).
             sql.push_str(" AND 1 = 0");
@@ -1461,7 +1461,7 @@ fn push_gate_filters(
     }
     if let Some(owners) = &filters.owner_in {
         if owners.is_empty() {
-            // v1.27.16 "Drawbridge" (M3.2): empty-permit owner side — matches
+            // empty-permit owner side — matches
             // nothing (see access_scopes above).
             sql.push_str(" AND 1 = 0");
         } else {
@@ -1514,14 +1514,14 @@ pub fn vec0_knn(
         sql.push_str(" AND v.created_at > ?");
         params_vec.push(Box::new(since.clone()));
     }
-    // v0.9.7 Guard: exclude quarantined rows from retrieval by default so
+// exclude quarantined rows from retrieval by default so
     // flagged/prompt-injection content never reaches the agent. Review paths
     // set `include_flagged = true`. Historical mode (as_of) still honors the
     // quarantine boundary unless the caller explicitly opts into flagged rows.
     if !filters.include_flagged {
         sql.push_str(" AND k.flagged = 0");
     }
-    // v0.9.8 "Evidence" M1.2: historical point-in-time recall. In historical
+    // historical point-in-time recall. In historical
     // mode we return chunks whose revision was active at `as_of` — i.e. the
     // chunk's revision_id points at a revision fetched at/before as_of AND not
     // yet superseded by a revision fetched strictly after as_of. The join to
@@ -1538,7 +1538,7 @@ pub fn vec0_knn(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
-    // v1.4.0 "Calibrate" M1 + v1.6.0 "Reconcile" fix: bi-temporal valid-time
+// bi-temporal valid-time
     // filter. Two modes:
     //   - `at` = None (default recall): exclude EXPIRED chunks only
     //     (valid_to IS NULL). v1.6.0 fix — before this, superseded chunks
@@ -1631,11 +1631,11 @@ fn fts_search(
         sql.push_str(" AND k.created_at > ?");
         params_vec.push(Box::new(since.clone()));
     }
-    // v0.9.7 Guard: exclude quarantined rows from lexical retrieval too.
+// exclude quarantined rows from lexical retrieval too.
     if !filters.include_flagged {
         sql.push_str(" AND k.flagged = 0");
     }
-    // v0.9.8 "Evidence" M1.2: historical point-in-time recall (see vec0_knn).
+    // historical point-in-time recall (see vec0_knn).
     if let Some(as_of) = &filters.as_of {
         sql.push_str(
             " AND sr.fetched_at <= ? AND NOT EXISTS (\
@@ -1648,7 +1648,7 @@ fn fts_search(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
-    // v1.4.0 + v1.6.0 fix: bi-temporal valid-time filter (see vec0_knn).
+// bi-temporal valid-time filter (see vec0_knn).
     match &filters.at {
         Some(at) => {
             sql.push_str(
@@ -1840,7 +1840,7 @@ pub fn perform_search_traced(
             let vh = scope.spawn(move || -> Result<(Vec<SearchResult>, f32)> {
                 let conn = vec_pool.get().context("DB connection failed (vector)")?;
                 let t_vec = Instant::now();
-                // v1.28.5 "Groundwork" (E-8): the per-query `COUNT(*) FROM
+// the per-query `COUNT(*) FROM
                 // vec_knowledge` probe is replaced by the process-local flag the
                 // migration path stamps (every pooled conn's DB was migrated
                 // in-process). On the impossible "flag set, table absent" case
@@ -1871,7 +1871,7 @@ pub fn perform_search_traced(
                 };
                 (res, t_fts.elapsed().as_secs_f32() * 1000.0)
             });
-            // v1.11.0 "Associate": graph-PPR retriever as a third RRF leg. Runs
+            // graph-PPR retriever as a third RRF leg. Runs
             // concurrently on its own pooled read connection (same pattern as the
             // vector/FTS stages) so the disabled path never pays for the graph.
             // Deterministic, zero-token, no embeddings.
@@ -1946,7 +1946,7 @@ pub fn perform_search_traced(
             filters.source_leg,
         )
     };
-    // v1.13.3 "SourceFix": the mixed-leg path is filtered inside `rrf_fuse`
+    // the mixed-leg path is filtered inside `rrf_fuse`
     // (before truncation). The single-leg fast paths above are tagged uniformly,
     // so this retain is a no-op there when the leg matches and empties it
     // otherwise — e.g. `source:"fts"` on a query where only the vector leg ran.
@@ -1961,7 +1961,7 @@ pub fn perform_search_traced(
         top.provenance.top_retrieval_mode = top.source;
     }
 
-    // v0.9.8 M2.4: deterministic freshness tie-break. Within equal fused-score
+    // deterministic freshness tie-break. Within equal fused-score
     // buckets, prefer newer `observed_at` then higher `authority`. This is a
     // post-fusion stable sort that NEVER reorders across distinct scores, so it
     // cannot distort lexical/vector retrieval semantics (plan forbids that).
@@ -2083,12 +2083,12 @@ pub fn perform_search_with_prf(
             (p1, RetrievalStrategy::Hybrid)
         }
         Recommendation::ClarifyQuery => {
-            // v1.12.0 "Discern": complexity-gated graph activation. The
+            // complexity-gated graph activation. The
             // calibrated estimator said this query is too weak to answer —
             // but the graph leg (the associative-memory retriever) never ran
             // (caller did not set `graph`). Run one bounded graph pass and
             // fuse; strictly additive — this path would otherwise return
-            // zero hits (v1.5.0 abstention), so any result is a rescue and
+            // zero hits, so any result is a rescue and
             // an empty result keeps the abstention contract intact.
             let mut p1 = pass1;
             p1.truncate(window);
@@ -2115,7 +2115,7 @@ pub fn perform_search_with_prf(
             }
         }
         Recommendation::RunPrf => {
-            // v0.9.1 M4.1: prefer FTS5-vocabulary-weighted term extraction
+            // prefer FTS5-vocabulary-weighted term extraction
             // (corpus-aware BM25-style signal). Falls back to the pure DF variant
             // when the vocab table is unavailable or the query errors.
             let expansion = match pool.get() {
@@ -2172,7 +2172,7 @@ pub fn perform_search_with_prf(
     Ok((candidates, tel))
 }
 
-// ── v0.9.5 M1 structured query document ─────────────────────────────────────
+// ── structured query document ─────────────────────────────────────
 pub mod query;
 
 // v1.28 "Caliber" M1: the profile-gated cross-encoder reranker. Feature-gated
@@ -2185,10 +2185,10 @@ pub mod rerank;
 // ── Retrieval quality estimation (QPP) ────────────────────────────────────
 pub mod quality;
 
-// ── v1.4.0 "Calibrate" M2: budgeted monotone submodular evidence packing ──
+// ── budgeted monotone submodular evidence packing ──
 pub mod packing;
 
-// ── v1.11.0 "Associate": deterministic PPR over the existing KG ──────────
+// ── deterministic PPR over the existing KG ──────────
 pub mod graph_ppr;
 
 #[cfg(test)]

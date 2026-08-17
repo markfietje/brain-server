@@ -2,7 +2,7 @@
 
 //! `brain-migrate-rehearse` — copy-and-verify migration rehearsal tool.
 //!
-//! v0.9.9 "Qualify" M2. Feature-gated (`--features migrate`). Runs the
+//! Feature-gated (`--features migrate`). Runs the
 //! legacy `brain.db` → candidate `global.db` cutover against a *copy* of the
 //! live DB so the v1.0.0 split can be rehearsed before it happens. The live
 //! runtime is never touched — every phase writes only to `dest` + sidecars.

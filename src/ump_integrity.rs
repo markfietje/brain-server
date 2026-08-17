@@ -1,4 +1,4 @@
-//! UMP 1.0 integrity + identity primitives (v1.17.3 "UMP Rollout").
+//! UMP 1.0 integrity + identity primitives.
 //!
 //! Pure functions only — no I/O, no storage. Everything the spec §2.8/§5.1/§5.2/
 //! §6.1/§6.2 need: RFC 4648 base32 (no padding), did:key base58btc (multicodec

@@ -1,4 +1,4 @@
-//! v1.26.0 "Cross-Border" — the multi-jurisdiction evidence layer for a PH BPO
+//! the multi-jurisdiction evidence layer for a PH BPO
 //! serving US/UK/EU/AU/SG/CA clients.
 //!
 //! Honest framing (mirrors the plan): a PH BPO is a sub-processor; it must
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn breach_scope_covers_register_jurisdictions() {
-        // Verification 6 (v1.25.0 integration): the register's jurisdiction
+        // Verification 6: the register's jurisdiction
         // vocabulary feeds the breach-workflow scoping — every affected
         // jurisdiction yields the ph::notification_deadlines rows it has a law
         // for, and a register-known code without a 72h rule (e.g. `us`) yields
@@ -788,7 +788,7 @@ mod tests {
             None
         )
         .is_err());
-        // v1.26.0 second pass: signed/expiry timestamps validated in the shared
+// signed/expiry timestamps validated in the shared
         // validator — the write path's single validation site.
         assert!(validate_register(
             "d",

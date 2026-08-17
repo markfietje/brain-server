@@ -62,7 +62,7 @@ pub async fn domains(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
 ) -> Result<Json<DomainsResponse>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ read gate. `None` (no JWT) = superuser.
+    // AuthZ read gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let multi_db = state.registry.is_multi_db();
     let pool = state.pool.clone();
@@ -173,10 +173,10 @@ pub async fn create_domain(
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&req.name)?;
-    // v1.2.0 M3 AuthZ: write gate (creating a domain is a write). `None` (no JWT) = superuser.
+// write gate (creating a domain is a write). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", &name)?;
 
-    // v1.27.16 "Drawbridge" (M5/F-41): registration is the ONE creation path —
+// registration is the ONE creation path —
     // this is the only place a domain file comes into being (cap-bounded in
     // multi-db; warm no-op over the shared pool in shim mode).
     let pool = state
@@ -223,7 +223,7 @@ pub async fn delete_domain(
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-    // v1.2.0 M3 AuthZ: admin gate (destructive lifecycle op). `None` (no JWT) = superuser.
+// admin gate (destructive lifecycle op). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
 
     if name == "global" {
@@ -261,7 +261,7 @@ pub async fn delete_domain(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
-        // v1.28.1 "Holdall" M1 (F-02): a domain holding any actively-held chunk
+        // a domain holding any actively-held chunk
         // refuses deletion entirely (all-or-nothing). The operator must release
         // every hold or scope the delete before the domain can go.
         {
@@ -285,7 +285,7 @@ pub async fn delete_domain(
             crate::legal_hold::refuse_if_held(&tx, &ids)?;
         }
         if multi_db {
-            // v1.28.1 "Holdall" M1.4 (F-02): export the domain's audit segment
+            // export the domain's audit segment
             // before erasure so the chain survives as an operator-reviewable
             // artifact, then preserve it in the live file too (never unlink).
             export_audit_segment(
@@ -375,7 +375,7 @@ pub async fn delete_domain(
         }
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
-        // v1.28.1 M1.4: record the deletion on the surviving chain (the global
+        // record the deletion on the surviving chain (the global
         // chain in shim mode; the domain's own preserved chain in multi-db).
         let _ = crate::audit::record(
             &conn,
@@ -414,7 +414,7 @@ pub async fn vacuum_domain(
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-    // v1.2.0 M3 AuthZ: admin gate (maintenance op). `None` (no JWT) = superuser.
+// admin gate (maintenance op). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
     let pool = state
         .registry
@@ -452,7 +452,7 @@ pub async fn export_domain(
 ) -> Result<Response, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-    // v1.2.0 M3 AuthZ: read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
+// read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", &name)?;
     let pool = state
         .registry
@@ -520,7 +520,7 @@ pub async fn import_domain(
     use super::normalize_domain;
     use axum::body::to_bytes;
     let name = normalize_domain(&name)?;
-    // v1.2.0 M3 AuthZ: admin gate (overwrites domain data). `None` (no JWT) = superuser.
+// admin gate (overwrites domain data). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
     if name == "global" {
         // Importing into `global` would overwrite the legacy live DB.
@@ -583,7 +583,7 @@ pub async fn import_domain(
     // Open the imported DB via the registry so migration runs and the pool
     // is cached. This is the validity check: if the bytes weren't a real
     // SQLite DB (despite the magic header), opening the pool will fail.
-    // v1.27.16 (M5/F-41): `register` — an import is an admin-created resource
+// `register` — an import is an admin-created resource
     // (an unregistered name must not lazily create a file).
     if let Err(e) = state.registry.register(&name) {
         // Clean up the bad import so the next attempt can succeed.
@@ -603,7 +603,7 @@ pub async fn import_domain(
 
 /// `POST /domains/move` — relabel chunks from one domain to another.
 ///
-/// v1.13.0 "Route" M3: the migration mechanism for fixing the 99%-in-`global`
+/// the migration mechanism for fixing the 99%-in-`global`
 /// corpus. Relabels `knowledge.domain` in ONE transaction (provenance fields
 /// `source`/`authority`/`observed_at` are untouched), then recomputes the
 /// centroids of every domain touched so routing sees the move. This is the
@@ -622,7 +622,7 @@ pub async fn move_domains(
 ) -> Result<Json<MoveDomainsResponse>, HandlerError> {
     use super::normalize_domain;
     let to = normalize_domain(&req.to)?;
-    // v1.13.0 M3 AuthZ: Admin gate (bulk relabel of memory).
+// Admin gate (bulk relabel of memory).
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &to)?;
     if to == "global" {
         return Err(HandlerError::bad_request(
@@ -692,7 +692,7 @@ pub async fn recompute_domains(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
 ) -> Result<Json<RecomputeResponse>, HandlerError> {
-    // v1.13.0 M4 AuthZ: Admin gate (operator sweep over all domains).
+// Admin gate (operator sweep over all domains).
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = state.pool.clone();
     let result =
@@ -784,7 +784,7 @@ pub(crate) fn relabel_chunks(
     Ok((changed, from_domains))
 }
 
-/// v1.28.1 M1.4: stream a domain's audit segment to `<layout>/archives/<domain>-audit-<date>.ndjson`
+/// stream a domain's audit segment to `<layout>/archives/<domain>-audit-<date>.ndjson`
 /// (0600) before its rows are erased, so the deletion registry survives as an
 /// operator-reviewable artifact. The path is derived from the data root the
 /// handler threads in (`state.db_path`'s parent — the same root
@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(business_rows, 2, "other domains' rows are intact");
     }
 
-    /// v1.13.0 M3: the relabel core moves only the requested ids into the target
+    /// the relabel core moves only the requested ids into the target
     /// domain, reports the distinct source domains, and leaves provenance
     /// fields (`source`/`authority`/`observed_at`) untouched. Draining rows OUT
     /// of the fallback bucket requires `?confirm=global`.
@@ -1026,7 +1026,7 @@ mod tests {
         );
     }
 
-    /// v1.13.0 M4: the one-shot sweep recomputes every known domain's centroid
+    /// the one-shot sweep recomputes every known domain's centroid
     /// from vec_knowledge and cleans a stale centroid for an emptied domain.
     /// Driven through the real vec0 + `recompute_all_centroids` path (a Pool is
     /// required, so this spins up a real pool on a temp file like the M1 tests).

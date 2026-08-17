@@ -1,4 +1,4 @@
-//! Capacity envelopes (v0.9.9 "Qualify").
+//! Capacity envelopes.
 //!
 //! A configuration that exceeds these is *unsupported*: brain-server refuses
 //! new ingests with HTTP 507 (Insufficient Storage) until the operator
@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-    // v1.3.0 Bedrock M6: classify() is monotonic — increasing docs/db/rss never
+// classify() is monotonic — increasing docs/db/rss never
     // improves the status.
     use proptest::prelude::*;
 

@@ -1,4 +1,4 @@
-//! v1.9.0 "Suggest" — opt-in, non-interrupting anticipation (light cut).
+//! opt-in, non-interrupting anticipation (light cut).
 //!
 //! Scoped to the evidence-gated v1.9 surface in
 //! `IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` §v1.9. NOT the
@@ -131,7 +131,7 @@ pub async fn suggest(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
-    // v1.2.0 M3 AuthZ: read gate — /suggest returns full chunk content, so it
+// read gate — /suggest returns full chunk content, so it
     // needs tenant/scope enforcement like any content-returning route (audit
     // S1). Scoped to the actual target domain. `None` (no JWT) = superuser.
     super::authorize(
@@ -187,10 +187,10 @@ pub async fn suggest(
                 results.retain(|r| !exclude.contains(&r.id));
             }
             results.truncate(k_for_task as usize);
-            // v1.20.24 "Sweep": PII read-projection uniformity — the same
+            // PII read-projection uniformity — the same
             // `redact_content` gate /recall applies, now on /suggest
             // (loopback/opaque principals stay unmasked by design).
-            // v1.27.14 "Fencepost2" (M3.3): upgrade to the full read seam over
+            // upgrade to the full read seam over
             // title + content (not content-only redaction) — the same
             // bidi/ZW/markdown-ref boundary the other read surfaces use.
             Ok(results
@@ -289,7 +289,7 @@ pub async fn feedback(
     principal: OptPrincipal,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+// write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     if !config::brain_suggest_enabled() {
         return Err(HandlerError::internal_with(
@@ -357,7 +357,7 @@ pub async fn feedback(
     Ok(Json(FeedbackResponse { status: "recorded" }))
 }
 
-/// v1.17.3 "UMP" M2: the suggest-feedback last-wins upsert extracted from the
+/// the suggest-feedback last-wins upsert extracted from the
 /// `/suggest/feedback` handler so the `/ump/feedback` binding shares it. The
 /// optional `ump_outcome` carries the granular UMP outcome (`followed`/
 /// `overridden`/`ignored`/`contradicted`) in its own column; the suggest path
@@ -469,7 +469,7 @@ pub async fn metrics(
     principal: OptPrincipal,
     axum::extract::Query(params): axum::extract::Query<MetricsParams>,
 ) -> Result<Json<MetricsResponse>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ read gate (matches the other /suggest surface).
+    // AuthZ read gate (matches the other /suggest surface).
     // `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     if !config::brain_suggest_enabled() {

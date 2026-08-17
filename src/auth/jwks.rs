@@ -394,7 +394,7 @@ mod tests {
 
     /// Write a keypair to the dir under `<kid>.pem` + `<kid>.key`. Returns
     /// the kid used. Mirrors what `brain key generate` will do — and the
-    /// v1.20.24 fail-closed contract: the private key file is written
+/// the private key file is written
     /// owner-only (0o600), as `install-service.sh` enforces in production.
     fn write_keypair(dir: &Path, kid: &str) -> RsaPrivateKey {
         use std::os::unix::fs::PermissionsExt;

@@ -1,4 +1,4 @@
-//! `POST /verify` — deterministic span verification (v1.5.0 "Epistemic" M5).
+//! `POST /verify` — deterministic span verification.
 //!
 //! Given a `claim` and a `chunk_id`, returns whether the claim is supported by
 //! the chunk's actual text via deterministic case-insensitive substring match.
@@ -57,7 +57,7 @@ pub async fn verify(
     headers: axum::http::HeaderMap,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // AuthZ read gate, scoped to the requested domain.
     // `None` (no JWT) = superuser.
     let domain = crate::handlers::domain_from_headers(&headers);
     super::authorize(
@@ -80,7 +80,7 @@ pub async fn verify(
         ));
     }
 
-    // v1.0.0: resolve pool from X-Brain-Domain header (same path as /get/{id}).
+    // resolve pool from X-Brain-Domain header (same path as /get/{id}).
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let chunk_id = req.chunk_id;

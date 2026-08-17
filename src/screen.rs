@@ -1,4 +1,4 @@
-//! v1.20.3 "Classify" (G5) — the two-layer injection screen.
+//! the two-layer injection screen.
 //!
 //! Layer 1 = the deterministic blocklist ([`crate::contains_suspicious_pattern`],
 //! always on). Layer 2 = an optional, feature-gated local ONNX classifier for
@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 
 use crate::config::{self, InjectionPolicy};
 
-// v1.20.24 "Sweep": the strip pair moved to the lib module (shared with the
+// the strip pair moved to the lib module (shared with the
 // MCP binary + `brain` CLI). Re-exported here so `crate::screen::*` paths are
 // unchanged.
 pub use brain_server::strip_invisible::{is_invisible, strip_invisible};
@@ -419,7 +419,7 @@ mod tests {
         );
     }
 
-    /// v1.24.0 "Connectors" M3: a poisoned connector record is exactly the
+    /// a poisoned connector record is exactly the
     /// content the shared screen sees at ingest — a translated Slack message
     /// carrying an instruction-override phrase quarantines (lands in the
     /// review queue, never in retrieval), not memory.
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(screen_verdict_label(ScreenResult::Reject), "quarantine");
     }
 
-    // v1.20.7 "Telemetry" (M1): the `screen` seam emits a `screen` span whose
+    // the `screen` seam emits a `screen` span whose
     // `verdict` field holds the label. Only compiled under `--features otel`
     // (the #[instrument] attrs are cfg-gated), so the default build carries no
     // tracing machinery. One small capturing-layer test proves the span

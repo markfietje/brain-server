@@ -1,4 +1,4 @@
-//! Retrieval-quality metrics (v1.4.0 "Calibrate" M5).
+//! Retrieval-quality metrics.
 //!
 //! Pure metric functions for the regression bench harness: precision@k, recall@k,
 //! MRR, NDCG, plus the paper's `answer_in_context` diagnostic. No I/O, no

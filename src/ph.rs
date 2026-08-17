@@ -1,4 +1,4 @@
-//! v1.25.0 "PH-Compliant" — the RA 10173 / NPC posture as pure decision logic.
+//! the RA 10173 / NPC posture as pure decision logic.
 //!
 //! Honest framing (mirrors `COMPLIANCE_PH.md`): the Philippines has no AI
 //! statute yet. AI is governed by RA 10173 (Data Privacy Act 2012) + NPC

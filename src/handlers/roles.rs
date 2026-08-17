@@ -1,4 +1,4 @@
-//! v1.23.0 "Roles" M4 — the role API.
+//! the role API.
 //!
 //! `GET /roles` (list, seeded presets + operator-defined), `GET
 //! /roles/{name}`, and `POST /roles/{name}` (define/clone/edit, Admin +

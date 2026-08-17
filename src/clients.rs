@@ -1,4 +1,4 @@
-//! v1.27.1 "Clients" — the BPO operating register: one row per operating
+//! the BPO operating register: one row per operating
 //! client (name, isolation domain, jurisdiction, bound profile, status),
 //! stored in the global DB like the `transfers` register it mirrors. This is
 //! the spine of the BPO arc — every later release (onboard, DPA, DSAR, holds,
@@ -206,7 +206,7 @@ pub(crate) fn list(conn: &Connection) -> Result<Vec<Client>, HandlerError> {
     Ok(rows.flatten().collect())
 }
 
-/// v1.27.2 "Onboard" composition seam, shared by the handler + CLI.
+/// Composition seam, shared by the handler + CLI.
 ///
 /// 1. Make the client's domain real (`registry.pool_for` — creates + migrates
 ///    in multi-db mode, touches the shared pool in shim; idempotent when the

@@ -1,4 +1,4 @@
-//! v1.17.1 "Govern" — retention lifecycle + compliance exports + snapshot checks.
+//! retention lifecycle + compliance exports + snapshot checks.
 //!
 //! M2 — per-kind retention policy: `GET /retention` (current policy + per-kind
 //! counts) and `POST /retention` (operator override, Admin + audited). The
@@ -176,10 +176,10 @@ pub async fn retention_post(
 }
 
 // ---------------------------------------------------------------------------
-// M6 — /retention/report (v1.22.0 "Regulated" M2)
+// M6 — /retention/report
 // ---------------------------------------------------------------------------
 
-/// v1.22.0 M2: the report window — rows whose effective expiry falls inside
+/// the report window — rows whose effective expiry falls inside
 /// the next `REPORT_WINDOW_DAYS` days are counted as "expiring soon".
 const REPORT_WINDOW_DAYS: i64 = 30;
 
@@ -264,7 +264,7 @@ fn retention_report_rows(
 /// ttl_days → row count → rows expiring in the next 30 days. Admin. This is
 /// the Art 5(1)(e) storage-limitation + HIPAA/SOX retention-schedule evidence
 /// the regulated presets (finance-sox 7yr, health-hipaa, call-center 90d) ship
-/// out of the box. A bound profile's retention block (v1.21.0) is the effective
+/// out of the box. A bound profile's retention block is the effective
 /// policy for its domain; other domains fall back to the server-wide policy.
 /// Reports TTL coverage; it does not auto-enforce (the human purges).
 pub async fn retention_report(
@@ -562,7 +562,7 @@ fn check_snapshot(p: &std::path::Path) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    /// v1.22.0 "Regulated" M2 — plan Verification 4: the retention report
+/// plan Verification 4: the retention report
     /// reflects the configured per-kind TTL + counts + the 30-day-expiring
     /// window. A kind with a policy reports expiring rows via created_at; a
     /// kind with no policy counts only explicit `expires_at`, and the schedule

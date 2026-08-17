@@ -1,4 +1,4 @@
-//! Storage layout abstraction (v0.9.9 "Qualify" M1.1).
+//! Storage layout abstraction.
 //!
 //! Every on-disk path brain-server touches, derived from one root. The point
 //! is to make the v1.0.0 multi-domain cutover addressable *before* it happens:
@@ -26,17 +26,17 @@ use rusqlite::Connection;
 /// the audit-chain columns (`tenant_id`, `prev_hash`) and the
 /// `idx_audit_tenant` index.
 pub const SCHEMA_VERSION_V1_10_0: &str = "1.10.0";
-/// v1.14.0 "Gate" schema: knowledge gains access_scope/assertion_kind/
+/// knowledge gains access_scope/assertion_kind/
 /// confidence/expires_at/pii/owner; new tombstones + proposals tables.
 /// Defaults preserve current behavior (no data loss, no re-ingest).
 pub const SCHEMA_VERSION_V1_14_0: &str = "1.14.0";
-/// v1.15.0 "Observe" schema: new recall_traces + dsar_requests tables;
+/// new recall_traces + dsar_requests tables;
 /// tombstones gains reason + origin_id. Additive, defaults preserved.
 pub const SCHEMA_VERSION_V1_15_0: &str = "1.15.0";
-/// v1.17.1 "Govern" schema: new retention_policy table (persisted per-kind
+/// new retention_policy table (persisted per-kind
 /// retention overrides). Additive, defaults preserved; empty = code defaults.
 pub const SCHEMA_VERSION_V1_17_1: &str = "1.17.1";
-/// v1.17.3 "UMP" schema: `knowledge.ump_id` (unique content-addressed UMP
+/// `knowledge.ump_id` (unique content-addressed UMP
 /// record id) + `knowledge.ump_meta` (UMP provenance/consent/lifecycle
 /// overlay) + `suggest_feedback.ump_outcome`. Additive, defaults preserved.
 /// v1.18.2 adds `knowledge.origin` (Art 50 model-vs-human marker).
@@ -51,29 +51,29 @@ pub const SCHEMA_VERSION_V1_20_18: &str = "1.20.18";
 /// v1.20.19 "Vault" drops the never-written `pii_map` table (PII control is
 /// deterministic output redaction, not a placeholder vault).
 pub const SCHEMA_VERSION_V1_20_19: &str = "1.20.19";
-/// v1.21.0 "Profiles" schema: new `profiles` + `domain_profiles` tables (the
+/// new `profiles` + `domain_profiles` tables (the
 /// preset bundles + the domain→profile binding). Additive; the 12 presets are
 /// seeded INSERT OR IGNORE (operator edits survive re-migrations). No column
 /// changes anywhere.
 pub const SCHEMA_VERSION_V1_21_0: &str = "1.21.0";
-/// v1.22.0 "Regulated" schema: new `legal_holds` table (freeze ids vs decay +
+/// new `legal_holds` table (freeze ids vs decay +
 /// purge + DSAR) + additive `knowledge.region` (residency stamp, backfilled
 /// NULLs only — a stamp is never overwritten, so a region change preserves
 /// where pre-existing rows lived).
 pub const SCHEMA_VERSION_V1_22_0: &str = "1.22.0";
-/// v1.23.0 "Roles" schema: new `roles` table (the named scope/action bundles,
+/// new `roles` table (the named scope/action bundles,
 /// 10 seeded presets). Additive; no column changes anywhere.
 pub const SCHEMA_VERSION_V1_23_0: &str = "1.23.0";
-/// v1.25.0 "PH-Compliant": the breach workflow tables.
+/// the breach workflow tables.
 pub const SCHEMA_VERSION_V1_25_0: &str = "1.25.0";
-/// v1.26.0 "Cross-Border": the transfers table + knowledge.lawful_basis/purpose.
+/// the transfers table + knowledge.lawful_basis/purpose.
 pub const SCHEMA_VERSION_V1_26_0: &str = "1.26.0";
-/// v1.27.1 "Clients": the BPO operating `clients` register (global-operator rows).
+/// the BPO operating `clients` register (global-operator rows).
 pub const SCHEMA_VERSION_V1_27_0: &str = "1.27.0";
-/// v1.27.8 "QaQueue": `proposals.owner` + `proposals.qa_note` (agent provenance
+/// `proposals.owner` + `proposals.qa_note` (agent provenance
 /// + supervisor coaching on the review queue).
 pub const SCHEMA_VERSION_V1_27_8: &str = "1.27.8";
-/// v1.27.18 "Groundwork": `idx_knowledge_domain`/`idx_knowledge_owner`/
+/// `idx_knowledge_domain`/`idx_knowledge_owner`/
 /// `idx_knowledge_title_heading` added; `idx_tombstones_kid`,
 /// `idx_entities_name`, `idx_evidence_links_from` dropped (superseded by
 /// stricter indexes / autoindexes).
@@ -100,7 +100,7 @@ pub fn schema_version(db: &Connection) -> Option<String> {
     .ok()
 }
 
-// ── v1.22.0 "Regulated" M3: region pin (data residency) ─────────────────────
+// ── region pin (data residency) ─────────────────────
 
 /// The residency stamp for this deployment, from `BRAIN_REGION` (e.g.
 /// `eu-west-1`, `ph-manila`). Unset/invalid → `None` (no stamp — pre-v1.22

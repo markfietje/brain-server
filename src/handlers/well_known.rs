@@ -1,4 +1,4 @@
-//! OIDC discovery + JWKS endpoints (v1.2.0 "AuthN" M4).
+//! OIDC discovery + JWKS endpoints.
 //!
 //! - `GET /.well-known/openid-configuration` — OIDC Discovery metadata (RFC 8414).
 //! - `GET /.well-known/jwks.json` — JWK Set (RFC 7517) for key distribution.
@@ -108,7 +108,7 @@ pub async fn ai_literacy() -> Response {
 }
 
 /// `GET /.well-known/cop-notice` (EU AI Act Code of Practice marker).
-/// Public/no-auth sibling of `ai-notice` (v1.16.7) + `ai-literacy` (v1.16.8).
+/// Public/no-auth sibling of `ai-notice` + `ai-literacy` (v1.16.8).
 /// Machine-readable self-attested conformity state the client's CoP icon lane
 /// renders; declarative only — this asserts posture, not certification.
 pub async fn cop_notice() -> Response {

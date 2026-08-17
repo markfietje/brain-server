@@ -1,4 +1,4 @@
-//! v0.9.6 Bridge — connector registry HTTP handlers.
+//! connector registry HTTP handlers.
 //!
 //! `GET /connectors` lists every registered connector instance across all
 //! kinds. The handler is a thin read of `crate::connector::list_connectors`;
@@ -22,7 +22,7 @@ pub struct ListConnectorsResponse {
     pub connectors: Vec<ConnectorRow>,
 }
 
-/// v1.24.0 "Connectors" M1: register (or reactivate) a connector instance for a
+/// register (or reactivate) a connector instance for a
 /// domain, gated by the domain's bound profile `connectors_allowed`. The
 /// default domain is `global`. `config_json` is stored verbatim (the connector
 /// reads it back); it is never logged.
@@ -56,7 +56,7 @@ pub async fn register(
 ) -> Result<Json<RegisterConnectorResponse>, HandlerError> {
     let domain = super::normalize_domain(req.domain.as_deref().unwrap_or("global"))?;
 
-    // v1.12.1 "Harden": AuthZ. Admin for registration (a connector is a write
+    // AuthZ. Admin for registration (a connector is a write
     // surface) — the same Admin gate sibling registrar routes use.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &domain)?;
 
@@ -135,7 +135,7 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
 ) -> Result<Json<ListConnectorsResponse>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ read gate. `None` (no JWT) = superuser.
+    // AuthZ read gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {

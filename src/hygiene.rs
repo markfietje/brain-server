@@ -1,4 +1,4 @@
-//! Ingest capture hygiene (v1.13.6 "Hygiene"): stop the server from silently
+//! Ingest capture hygiene: stop the server from silently
 //! storing model reasoning traces and foreign systems' synthesis prompts.
 //!
 //! Two pure, unit-tested transforms applied at the raw-text ingest doors

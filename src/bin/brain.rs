@@ -23,7 +23,7 @@ use std::process::exit;
 
 const DEFAULT_URL: &str = "http://127.0.0.1:8765";
 
-/// v0.9.2: walk bounds for `ingest-dir`. Guards against pathological vaults
+/// walk bounds for `ingest-dir`. Guards against pathological vaults
 /// blowing the ingest budget. 50k files / 500 MiB matches the plan's RSS ceiling
 /// with headroom for the model + index. ponytail ceiling: a vault larger than
 /// this needs the paid live-sync tier (streaming ingest), not one-shot ingest.
@@ -109,7 +109,7 @@ fn dirs_home() -> PathBuf {
     PathBuf::from(".")
 }
 
-/// v1.27.20 M4 — the ONE subcommand table: consumed by both the dispatcher
+/// the ONE subcommand table: consumed by both the dispatcher
 /// (name → run fn) and the help printer (name → usage line), so help can
 /// never drift from the dispatch set. `--json` marks the data commands whose
 /// output is a single machine envelope.
@@ -262,7 +262,7 @@ fn usage_text() -> String {
 
 // ── argument helpers ──────────────────────────────────────────────────────
 
-/// v1.27.20 M4 (F-37) — flag vocabulary discipline. Boolean flags NEVER
+/// flag vocabulary discipline. Boolean flags NEVER
 /// consume the next token (a positional after `--dry-run` stayed swallowed —
 /// `brain ingest-dir --dry-run ~/vault` ate the vault); value flags come from
 /// the explicit list; `--flag=value` works for both; `--` ends flag parsing
@@ -387,7 +387,7 @@ fn usage(msg: String) -> String {
     msg
 }
 
-/// v1.27.20 M4 (F-37): `--json` envelope mode — every supported data command
+/// `--json` envelope mode — every supported data command
 /// prints exactly one machine envelope instead of human lines.
 static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn json_mode() -> bool {
@@ -653,9 +653,9 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
     for (rank, h) in hits.iter().enumerate() {
         let id = h.get("id").and_then(|x| x.as_i64()).unwrap_or(-1);
         let score = h.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
-        // v1.20.24 "Sweep": recalled text is agent-facing — strip the same
+        // recalled text is agent-facing — strip the same
         // invisible-Unicode class the server screen + client strip.
-        // v1.27.14 "Fencepost2" (M5/F-63): + markdown-ref strip + control chars
+// + markdown-ref strip + control chars
         // (parity with the MCP `tool_result_payload` seam).
         let title = brain_server::fence::strip_markdown_refs(
             &brain_server::strip_invisible::strip_invisible(
@@ -761,9 +761,9 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
         println!("  revision   : {r}");
     }
     println!("  {:-<60}", "");
-    // v1.20.24 "Sweep": the CLI is an agent-facing surface — strip the same
+    // the CLI is an agent-facing surface — strip the same
     // invisible-Unicode class the server screen + client strip.
-    // v1.27.14 "Fencepost2" (M5/F-63): + markdown-ref + control-char parity.
+// + markdown-ref + control-char parity.
     let content = brain_server::strip_invisible::strip_control_chars(
         &brain_server::fence::strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
             &json_str(&v, "content").unwrap_or_default(),
@@ -791,7 +791,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
     collect_files(root, root, &ignore, &mut files)?;
     files.sort();
 
-    // v0.9.2: bound the walk so a pathological vault can't blow the ingest
+    // bound the walk so a pathological vault can't blow the ingest
     // budget. Counts/bytes are total file content, not just markdown.
     if files.len() > MAX_INGEST_FILES {
         return Err(format!(
@@ -865,7 +865,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
 
         let outcome = if is_markdown {
             let title = derive_title(f);
-            // v0.9.2: send the absolute path as source_path so the server can
+            // send the absolute path as source_path so the server can
             // dedup/replace per-file and surface provenance.
             let abs = std::fs::canonicalize(f)
                 .unwrap_or_else(|_| f.to_path_buf())
@@ -1076,7 +1076,7 @@ fn cmd_reconcile(args: &[String]) -> Result<(), String> {
 }
 
 /// `brain resolve <new_id> <old_id>`: mark `new_id` as superseding `old_id`.
-/// v1.6.0 "Reconcile" — operator-facing shortcut for the most common
+/// operator-facing shortcut for the most common
 /// consolidation case. POSTs one `{from:new, to:old, kind:"supersedes"}` link
 /// to `/consolidate/apply`; the server expires `old_id` (sets `valid_to=now`)
 /// atomically. The old chunk stays retrievable via `/recall?at=<past>`.
@@ -1128,7 +1128,7 @@ fn cmd_resolve(args: &[String]) -> Result<(), String> {
 }
 
 /// `brain domain-move <id> [<id> ...] --to <domain> [--confirm global]`:
-/// v1.13.0 M3 — bulk-relabel chunks across domains via `POST /domains/move`.
+/// bulk-relabel chunks across domains via `POST /domains/move`.
 /// This is the non-re-ingest fix for the 99%-in-`global` corpus: relabels
 /// `knowledge.domain`, recomputes the affected centroids, and leaves the
 /// content (and its embedding) untouched. Moving rows OUT of `global` needs
@@ -1311,7 +1311,7 @@ fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
     println!("  exact_duplicate_groups : {dups}");
     println!("  subject_conflicts       : {conflicts}");
     println!("  unresolved_contradictions: {}", unresolved.len());
-    // v1.8.0: stale sources + near-duplicates.
+    // stale sources + near-duplicates.
     let stale = v["stale_sources"].as_array().cloned().unwrap_or_default();
     let near = v["near_duplicates"].as_array().cloned().unwrap_or_default();
     println!("  stale_sources           : {}", stale.len());
@@ -1375,7 +1375,7 @@ fn cmd_source_delete(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ── v1.9.0 "Suggest": opt-in anticipation CLI ────────────────────────────────
+// ── opt-in anticipation CLI ────────────────────────────────
 
 /// `brain suggest "<context>"`: opt-in pull for related-but-not-surfaced
 /// chunks. The caller explicitly asks "what else might be relevant?" — the
@@ -1459,7 +1459,7 @@ fn cmd_suggest(args: &[String]) -> Result<(), String> {
     for h in &hits {
         let id = h["id"].as_i64().unwrap_or(0);
         let score = h["score"].as_f64().unwrap_or(0.0);
-        // v1.27.20 M4 (M4.5): strip parity with `print_hits`/`get` — a
+        // strip parity with `print_hits`/`get` — a
         // recalled payload cannot forge UI text or fence markers.
         let strip = |s: &str| {
             brain_server::fence::strip_markdown_refs(
@@ -1659,7 +1659,7 @@ fn cmd_retention(args: &[String]) -> Result<(), String> {
     Err("usage: brain retention get | set <kind> <days>".into())
 }
 
-// ── v1.21.0 "Profiles": the use-case onboarding wizard ─────────────────────
+// ── the use-case onboarding wizard ─────────────────────
 
 /// Pure: render a profile's knobs as the wizard's confirm lines (one knob per
 /// line, `null` retention shown as "no decay"). Unit-tested so the wizard's
@@ -1825,7 +1825,7 @@ fn cmd_setup(args: &[String]) -> Result<(), String> {
 }
 
 /// `brain snapshot-status` — run the snapshot self-check panel and exit
-/// `brain ump export|import` — the v1.17.3 UMP §4.3 file binding. Export pulls
+/// `brain ump export|import` — the UMP §4.3 file binding. Export pulls
 /// the full-record projection from `GET /export` (markdown records joined by
 /// `\n---\n`, or the JSON envelope with `--format ump`); import pushes a file
 /// back through `POST /ingest` (format detected by extension: `.md` →
@@ -2436,7 +2436,7 @@ fn cmd_snapshot_status(_args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ── v1.10.0 "Procedural": procedural-memory + categorization CLI ──────────
+// ── procedural-memory + categorization CLI ──────────
 
 /// `brain procedure <title> [--step "title: content" ...] [--domain D]`:
 /// ingest a procedure with ordered steps. Each `--step` is `"title: content"`
@@ -2619,7 +2619,7 @@ fn cmd_evaluate(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ── v0.9.6 Bridge: connector CLI ────────────────────────────────────────────
+// ── Bridge: connector CLI ────────────────────────────────────────────
 
 /// `brain connect github --app-id N --install-id N --key-file PATH --repo O/R [...]`
 ///
@@ -2954,7 +2954,7 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-// ── v1.2.0 "AuthN": JWT signing key management ──────────────────────────────
+// ── JWT signing key management ──────────────────────────────
 // Local-file operations — no server roundtrip. The server picks up new keys
 // on restart (hot-reload via KeyStore::reload is a follow-up; the rotation
 // watcher pattern from v1.1's TokenStore is the template).
@@ -2998,7 +2998,7 @@ fn token_file_path() -> PathBuf {
     }
 }
 
-/// v1.27.12 "Rotate": replace the shared static bearer token file so a leaked
+/// replace the shared static bearer token file so a leaked
 /// copy (e.g. the historical openclaw DB rows) is retired on the next reload.
 /// The running server + every file-reading consumer (brain/mcp/bench) pick the
 /// new value up through their rotation watchers within a poll interval (~5s).
@@ -3573,7 +3573,7 @@ fn cmd_status() -> Result<(), String> {
     Ok(())
 }
 
-/// v1.27.20 M4: `/stats` `-1` sentinels render as `n/a` — a missing field is
+/// `/stats` `-1` sentinels render as `n/a` — a missing field is
 /// not a count of minus one chunk.
 fn fmt_count(n: i64) -> String {
     if n < 0 {
@@ -3705,7 +3705,7 @@ fn cmd_doctor(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_bench() -> Result<(), String> {
-    // v1.17.1 "Govern" M3: optional recall floors as a ship gate, mirroring the
+    // optional recall floors as a ship gate, mirroring the
     // `BENCH_ENVELOPE` RSS/p95 gate. Format: `r5:0.85,r10:0.9` (or `r5=0.85`).
     let floors = match std::env::var("BENCH_RECALL_FLOOR") {
         Ok(spec) if !spec.trim().is_empty() => parse_floors(&spec)?,
@@ -4007,7 +4007,7 @@ mod tests {
         assert_eq!(results_to_doc_indices(r#"{"hits":[]}"#), Vec::<i64>::new());
     }
 
-    // ── v1.27.20 M4 (F-37): flag vocabulary + help truth ──────────────────
+    // ── flag vocabulary + help truth ──────────────────
 
     #[test]
     fn boolean_flag_does_not_eat_positional() {
@@ -4110,7 +4110,7 @@ mod tests {
         ));
     }
 
-    /// v1.17.1 M3: floor specs parse from either separator; unknown metrics and
+    /// floor specs parse from either separator; unknown metrics and
     /// out-of-range values are rejected so a typo can't silently disable the gate.
     #[test]
     fn floors_parse_and_reject_typos() {
@@ -4125,7 +4125,7 @@ mod tests {
         assert_eq!(parse_floors("").unwrap(), vec![]);
     }
 
-    /// v1.17.3 M4: `brain ump` rejects a missing subcommand and `import`
+    /// `brain ump` rejects a missing subcommand and `import`
     /// rejects a missing file — both without any network roundtrip.
     #[test]
     fn ump_requires_a_subcommand() {
@@ -4145,7 +4145,7 @@ mod tests {
         );
     }
 
-    /// v1.27.12 "Rotate": the generated token is 32 random bytes hex-encoded
+    /// the generated token is 32 random bytes hex-encoded
     /// (64 hex chars) — high-entropy, matching the server's opaque bearer.
     #[test]
     fn random_hex_token_is_64_hex_chars() {
@@ -4159,7 +4159,7 @@ mod tests {
         );
     }
 
-    /// v1.27.12 "Rotate": `brain token rotate` rewrites an owner-only token file
+    /// `brain token rotate` rewrites an owner-only token file
     /// to a fresh 64-hex token, preserving owner-only perms.
     #[test]
     #[cfg(unix)]
@@ -4177,7 +4177,7 @@ mod tests {
         assert_eq!(mode & 0o077, 0, "rotated secret stays owner-only");
     }
 
-    /// v1.27.12 "Rotate": the CLI refuses to rewrite a group/world-readable
+    /// the CLI refuses to rewrite a group/world-readable
     /// secret (fail-closed mirror of `check_secret_permissions`).
     #[test]
     #[cfg(unix)]
@@ -4193,7 +4193,7 @@ mod tests {
         );
     }
 
-    /// v1.17.3 M5: `brain ump keygen` writes a 32-byte operator seed (0600)
+    /// `brain ump keygen` writes a 32-byte operator seed (0600)
     /// and prints a `did:key`, and refuses to overwrite an existing key.
     #[test]
     fn ump_keygen_writes_0600_seed_and_prints_did() {
@@ -4230,7 +4230,7 @@ mod tests {
     }
 }
 
-/// v1.21.0 "Profiles": the wizard's confirm lines render every knob the
+/// the wizard's confirm lines render every knob the
 /// chosen preset sets — the display can't drift from the stored shape.
 #[test]
 fn setup_render_knobs_shows_every_set_knob() {

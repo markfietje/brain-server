@@ -115,9 +115,9 @@ fn rrf_fuses_graph_leg_with_vector_and_fts() {
     );
 }
 
-// ── v1.13.3 "SourceFix": post-fusion retrieval-leg filter ───────────────────
+// ── post-fusion retrieval-leg filter ───────────────────
 
-/// v1.13.3 "SourceFix" M1: a `Both`-tagged hit (appeared in ≥2 legs) survives
+/// a `Both`-tagged hit (appeared in ≥2 legs) survives
 /// every leg filter, while single-leg hits survive only their own leg.
 #[test]
 fn rrf_leg_filter_keeps_matching_leg_and_both() {
@@ -189,7 +189,7 @@ fn rrf_leg_filter_keeps_matching_leg_and_both() {
     );
 }
 
-/// v1.13.3 "SourceFix" M1: the leg filter applies BEFORE truncation, so a leg
+/// the leg filter applies BEFORE truncation, so a leg
 /// filter returns the top-k of THAT leg — not "the leg's hits that happened to
 /// survive into the top-k mixed set". Without pre-truncation filtering, a
 /// dominating FTS list would starve a `source:"vector"` query.
@@ -373,7 +373,7 @@ fn normalize_since_accepts_rfc3339_and_naive() {
     assert_eq!(offset, "2026-07-10 12:00:00", "offset must convert to UTC");
     let naive = normalize_since("2026-07-10 12:00:00").unwrap();
     assert_eq!(naive, "2026-07-10 12:00:00");
-    // v1.4.0: bare date → midnight (the bi-temporal `at` common form).
+    // bare date → midnight (the bi-temporal `at` common form).
     let bare = normalize_since("2026-07-10").unwrap();
     assert_eq!(bare, "2026-07-10 00:00:00");
 }
@@ -463,7 +463,7 @@ fn enrich_evidence_attaches_span_and_source_link() {
     assert_eq!(ev.line_start, Some(10));
     assert_eq!(ev.line_end, Some(12));
     assert_eq!(ev.heading_path.as_deref(), Some("Notes"));
-    // v0.9.8 M2.4: temporal + authority fields flow into the evidence block.
+    // temporal + authority fields flow into the evidence block.
     assert_eq!(ev.observed_at.as_deref(), Some("2024-05-01 00:00:00"));
     assert_eq!(ev.authority, Some(0.8));
     // text is a verbatim substring of content and contains the matched term.
@@ -563,7 +563,7 @@ fn enrich_evidence_surfaces_contradiction_links_for_conflict_flag() {
     assert!(has_contradiction, "contradiction link should be surfaced");
 }
 
-// ── v1.12.0 "Discern" — complexity-gated graph activation ────────────────
+// ── — complexity-gated graph activation ────────────────
 
 /// Plan verification #4: the rescue gate fires ONLY on `ClarifyQuery` with
 /// the graph leg disabled and the kill switch on.
@@ -602,7 +602,7 @@ fn graph_rescue_fuse_does_not_mark_prf_expanded() {
     assert_eq!(ids, prf_ids, "same fusion result aside from the flag");
 }
 
-/// v1.14.0 "Gate" M2/M3/M4: the shared SQL filter builder emits decay,
+/// the shared SQL filter builder emits decay,
 /// memory_kind, and access-scope clauses with params in order. This is the
 /// single function both retrievers call, so one test pins all three filters
 /// (a regression here would silently affect vec0 AND FTS retrieval).
@@ -628,7 +628,7 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
     assert!(sql.contains("k.node_kind = ?"), "kind clause");
     // Access scope: deny-by-default IN list with 2 placeholders.
     assert!(sql.contains("k.access_scope IN (?,?)"), "scope clause");
-    // v1.23.0 "Roles": the owner filter is an AND-ed IN list emitted after the
+    // the owner filter is an AND-ed IN list emitted after the
     // scope clause (self/reports record gating).
     let mut sql_roled = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
     let mut p_roled: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -666,7 +666,7 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
     assert!(p2.is_empty());
 }
 
-/// v1.17.1 "Govern" M2: when a per-kind retention policy is set, the decay
+/// when a per-kind retention policy is set, the decay
 /// clause becomes a per-kind disjunction that ALSO excludes chunks with no
 /// explicit `expires_at` but an elapsed kind-default expiry. The exact v1.14
 /// clause (`expires_at IS NULL OR >= now`) must NOT appear, and each kind
@@ -707,7 +707,7 @@ fn push_gate_filters_emits_per_kind_retention_disjunction() {
     assert_eq!(params.len(), 7, "now + per-kind (kind, days, now) x2");
 }
 
-/// v1.27.18 "Groundwork" (F-46): the kind-default expiry is timestamp math in
+/// the kind-default expiry is timestamp math in
 /// SQL — `unixepoch(COALESCE(created_at,…))`, identical to the String-based
 /// `strftime('%s', …)` it replaced but index-friendly and TEXT-immune. The
 /// equality is pinned SQL-side by `retention_filter_equality_unixepoch_vs_strftime`

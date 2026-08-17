@@ -1,4 +1,4 @@
-//! v1.22.0 "Regulated" M1 — legal hold: freeze a knowledge id against every
+//! legal hold: freeze a knowledge id against every
 //! erasure path (decay, `/purge`, DSAR) until every hold on it is explicitly
 //! released. The WORM-lite posture regulated buyers need (finance/government/
 //! litigation), layered on the existing supersede-not-delete + append-only
@@ -127,7 +127,7 @@ pub(crate) fn active_hold_ids(conn: &rusqlite::Connection) -> Result<HashSet<i64
     Ok(rows.flatten().collect())
 }
 
-/// v1.28.1 "Holdall" M1 (F-02): refuse an erasure when ANY target id has an
+/// refuse an erasure when ANY target id has an
 /// active hold. Runs inside the caller's write transaction (before the first
 /// DELETE), so every erasure path — `/purge`, DSAR, `DELETE /memory/{id}`, the
 /// source sweeps, quarantine delete, domain delete — is frozen by the same

@@ -55,7 +55,7 @@ use serde_json::Value;
 
 pub const DOMAIN_RE: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 pub const NAME_RE: &str = r"^[A-Za-z0-9 _-]{1,100}$";
-/// v1.4.0 "Calibrate" M3: allows an optional TRACE typed-edge prefix
+/// allows an optional TRACE typed-edge prefix
 /// (`update:`, `supersedes:`, `contradicts:`, `causes:`) before the base
 /// relation. The prefix is a single `:` separator; the base stays snake_case.
 pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
@@ -63,7 +63,7 @@ pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
 pub const MAX_QUERY: usize = 2_000;
 pub const MAX_TITLE: usize = 500;
 pub const MAX_CONTENT: usize = 1_000_000;
-/// v1.20.2 F1: bound on the autoCapture `source_prompt` reviewer-facing field.
+/// bound on the autoCapture `source_prompt` reviewer-facing field.
 /// The plugin sends ≤ 2000 chars; the server enforces its own bound so a
 /// malicious caller can't persist a multi-MiB prompt to the proposals table.
 pub const MAX_SOURCE_PROMPT: usize = 2_048;
@@ -115,27 +115,27 @@ pub struct RecallHit {
     /// `true` so the consuming agent enforces the instruction/data boundary and
     /// never treats recalled text as commands.
     pub untrusted: bool,
-    /// v0.9.8 M3.2: true when this chunk participates in a `contradicts` or
+    /// true when this chunk participates in a `contradicts` or
     /// `supersedes` link with another *current* chunk — i.e. the claim is
     /// contested. Absent (`None`) when not computed or when no conflict exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict: Option<bool>,
-    /// v1.14.0 "Gate" M3: deterministic stored confidence (0..1). Surfaced so
+    /// deterministic stored confidence (0..1). Surfaced so
     /// the caller can see how much weight a fact deserves.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
-    /// v1.14.0 "Gate" M3: `assertion_kind` (stated|observed|inferred).
+    /// `assertion_kind` (stated|observed|inferred).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assertion_kind: Option<String>,
-    /// v1.14.0 "Gate" M3: relevance tier (high|medium|low) derived from the
+    /// relevance tier (high|medium|low) derived from the
     /// fused score.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relevance: Option<&'static str>,
-    /// v1.14.0 "Gate" M2: true when this chunk's `expires_at` is in the past.
+    /// true when this chunk's `expires_at` is in the past.
     /// Only present when the caller opted into decayed results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decayed: Option<bool>,
-    /// v1.27.12 "Provenance": stored-row provenance labels carried from the
+    /// stored-row provenance labels carried from the
     /// `knowledge` row so a consuming agent can attribute a hit. `ingest_kind`
     /// is the ingest path (memory/markdown/structured/manual/vault/connector),
     /// `memory_kind` the `node_kind` vocabulary (fact/procedure/...),
@@ -151,7 +151,7 @@ pub struct RecallHit {
     pub region: Option<String>,
 }
 
-/// v1.5.0 "Epistemic" — calibrated abstention. When the existing
+/// calibrated abstention. When the existing
 /// `HeuristicEstimator` reports `Recommendation::ClarifyQuery` (low overlap,
 /// low lexical density, weak gap), `/recall` returns `low_confidence` with an
 /// empty `hits` slice instead of shipping top-1 garbage. NOT a magic score
@@ -175,13 +175,13 @@ pub struct RecallResponse {
     pub decision: RecallDecision,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-    /// v1.13.3 "SourceFix" M4: domains of the returned hits. Always present
+    /// domains of the returned hits. Always present
     /// (empty array when no hits); no longer gated on `provenance`.
     pub domains_searched: Vec<String>,
     /// Per-stage retrieval telemetry, included when `provenance` is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<crate::search::SearchTelemetry>,
-    /// v1.15.0 "Observe" M1/M2: the audit row id for this recall's read event,
+    /// the audit row id for this recall's read event,
     /// when read-event audit is enabled (JWT mode default) AND `?trace=true`
     /// was requested. `/recall/{trace_id}/trace` replays the decision path.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,7 +198,7 @@ pub struct IngestResponse {
     pub entities_added: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations_added: Option<u32>,
-    /// v1.26.0 "Cross-Border" M3: a strict-posture domain storing a record
+    /// a strict-posture domain storing a record
     /// with no documented lawful_basis is flagged here (purpose-limitation
     /// evidence). Absent when not flagged.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -268,7 +268,7 @@ impl HandlerError {
             inner: ApiError::new("not_found", message.into()),
         }
     }
-    /// v1.13.3 "SourceFix": HTTP 422 — the request was well-formed JSON but a
+    /// HTTP 422 — the request was well-formed JSON but a
     /// field value is rejected by the contract (e.g. an unknown `source`). Loud
     /// and early, before any DB/embed work.
     pub fn unprocessable(code: &'static str, message: impl Into<String>) -> Self {
@@ -295,7 +295,7 @@ impl HandlerError {
             inner: ApiError::new("recall_unavailable", message.into()),
         }
     }
-    /// v0.9.9 "Qualify": HTTP 507 — new ingests are refused because the server
+    /// HTTP 507 — new ingests are refused because the server
     /// is over its capacity envelope. Read routes (`/search`, `/recall`, `/get`)
     /// never return this; an over-capacity brain still answers.
     pub fn insufficient_storage(message: impl Into<String>) -> Self {
@@ -310,7 +310,7 @@ impl HandlerError {
             inner: ApiError::new("internal_error", message.into()),
         }
     }
-    /// v1.9.0 "Suggest": like [`internal`](Self::internal) but with an
+    /// like [`internal`](Self::internal) but with an
     /// explicit status + code. Used for the `BRAIN_SUGGEST_ENABLED=false` kill
     /// switch, which returns `501 Not Implemented` (not 500) so a configured
     /// client can distinguish "feature disabled" from "server error".
@@ -324,7 +324,7 @@ impl HandlerError {
             inner: ApiError::new(code, message.into()),
         }
     }
-    /// v1.20.2 "Harden": HTTP 409 — a concurrent modification won the race
+    /// HTTP 409 — a concurrent modification won the race
     /// (e.g. two reviewers approved/rejected the same proposal simultaneously).
     /// Surfaces a clear conflict code instead of a generic 500 from the
     /// underlying UNIQUE constraint.
@@ -334,7 +334,7 @@ impl HandlerError {
             inner: ApiError::new("conflict", message.into()),
         }
     }
-    /// v1.22.0 "Regulated" M1: a 409 with an explicit code + details. Used by
+    /// a 409 with an explicit code + details. Used by
     /// the legal-hold gate (`409 legal_hold_active` listing reasons).
     pub fn conflict_with(code: &'static str, message: impl Into<String>, details: Value) -> Self {
         Self {
@@ -344,7 +344,7 @@ impl HandlerError {
     }
 }
 
-/// v0.9.9 "Qualify": reject a write when the server is over its capacity
+/// reject a write when the server is over its capacity
 /// envelope. Returns `Ok(())` when writes are allowed; `Err(507)` when
 /// `CapacityStatus::Exceeded`. Best-effort: if the measurement query fails, the
 /// guard fails OPEN (allows the write) — a transient DB error must not turn the
@@ -397,7 +397,7 @@ impl IntoResponse for HandlerError {
 }
 
 // ---------------------------------------------------------------------------
-// AuthZ gate (v1.2.0 "AuthN" M3)
+// AuthZ gate
 // ---------------------------------------------------------------------------
 
 /// The single AuthZ gate every handler passes through. Returns Ok(()) if the
@@ -429,7 +429,7 @@ pub fn authorize(
     }
 }
 
-/// v1.27.16 "Drawbridge" (F-04/05/06): read-access predicate for a *target*
+/// read-access predicate for a *target*
 /// domain — distinct from `authorize`, which always checks the caller's
 /// own-domain posture. A principal may read `domain` iff some scope grants
 /// `read` there (`read:team/*` = read-everywhere). `None` principal
@@ -464,7 +464,7 @@ pub fn authorize_read_domain(
     }
 }
 
-/// v1.23.0 "Roles": the action-gate layer on top of `authorize`. When the
+/// the action-gate layer on top of `authorize`. When the
 /// principal carries a `roles` claim, the requested `can`-capability must be
 /// in at least one resolved role's allowlist or the action is FORBIDDEN (403)
 /// — the server enforces even if a client hid/disabled the button. A principal
@@ -498,7 +498,7 @@ pub fn authorize_role(
     }
 }
 
-/// v1.17.3 M5 (§5.2): enforce a capability token's verbs × scope at handler
+/// §5.2: enforce a capability token's verbs × scope at handler
 /// entry. `None` (no capability presented — the request authenticated via the
 /// middleware's JWT/opaque path) is a no-op. Read ops require `read`, writes
 /// `write` (`derive` also grants writes — deriving IS creating new memory),
@@ -533,7 +533,7 @@ pub fn cap_gate(
     Ok(())
 }
 
-/// v1.12.1 "Harden": tenant scope for the audit surface. The v1.2 matrix
+/// tenant scope for the audit surface. The v1.2 matrix
 /// forbids cross-tenant audit reads: a non-superuser principal may only ever
 /// see their own tenant's rows. Returns the effective tenant filter to apply
 /// (None = no filter, superuser only). Call AFTER `authorize(Admin)`.
@@ -570,7 +570,7 @@ impl HandlerError {
 }
 
 // ---------------------------------------------------------------------------
-// Domain resolution helpers (v1.0.0 "Domains")
+// Domain resolution helpers
 // ---------------------------------------------------------------------------
 
 /// Resolve a domain name to its connection pool via the registry.
@@ -582,7 +582,7 @@ pub fn resolve_domain_pool(
     domain: Option<&str>,
 ) -> Result<crate::Pool, HandlerError> {
     let d = domain.filter(|s| !s.trim().is_empty()).unwrap_or("global");
-    // v1.27.16 "Drawbridge" (M5/F-41): unregistered names (multi-db) map to
+// unregistered names (multi-db) map to
     // 404 `domain_unknown` — probe-blind, no file ever created. The legacy
     // `known_domains` detail list survives only for malformed names.
     registry.pool_for(d).map_err(|e| match e {
@@ -598,7 +598,7 @@ pub fn resolve_domain_pool(
     })
 }
 
-/// v1.27.16 "Drawbridge" (M5/F-41): 404 with the `domain_unknown` code — an
+/// 404 with the `domain_unknown` code — an
 /// unregistered domain name. Deliberately probe-blind: a never-registered name
 /// is indistinguishable from an empty-but-real domain, and no path ever
 /// creates a file for it (registered-only `pool_for`).
@@ -615,7 +615,7 @@ pub fn domain_unknown(domain: &str) -> HandlerError {
     }
 }
 
-/// v1.27.16 "Drawbridge" (M5/F-41): map a registry resolution error onto the
+/// map a registry resolution error onto the
 /// wire shape — the single seam every `pool_for`/`register` call site uses:
 /// 404 `domain_unknown` for unregistered names, 400 `domain_invalid` for
 /// malformed names, 507 at the registration cap, 500 for open/migration/
@@ -646,7 +646,7 @@ pub fn domain_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_lowercase())
 }
 
-/// v1.27.16 "Drawbridge" (F-06): the graph edge-read scope. Entity tables carry
+/// the graph edge-read scope. Entity tables carry
 /// no domain column, so in shim mode (one shared pool) the chunk link on a
 /// relationship is the domain atom: a JWT principal's graph reads restrict to
 /// edges whose `knowledge_id` chunk carries `label`; an unlinked edge is
@@ -736,7 +736,7 @@ pub fn normalize_rel_type(raw: &str) -> Result<String, HandlerError> {
 
 // Hand-rolled checkers for the three patterns used by the validators.
 // Replaces the `regex` crate dependency (removed with the annotator module in
-// v0.9.0). Each checker enforces ONE shape — the previous single `is_match`
+// the previous single `is_match`
 // ignored its `_pattern` argument and silently rejected spaces in entity
 // names (breaking the canonical `vitamin d3` example).
 //
@@ -770,7 +770,7 @@ fn is_valid_name(s: &str) -> bool {
 
 /// `^[a-z0-9_]{1,64}$` — relation types (snake_case, no hyphens).
 fn is_valid_rel_type(s: &str) -> bool {
-    // v1.4.0 "Calibrate" M3: allow one TRACE typed-edge prefix (update: | supersedes: |
+    // allow one TRACE typed-edge prefix (update: | supersedes: |
     // contradicts: | causes:) before the base relation. The prefix is lowercase
     // letters followed by a single `:`; the base is snake_case as before.
     let s = s.trim();
@@ -848,7 +848,7 @@ mod tests {
         assert!(!is_match(RELTYPE_RE, "has space"));
     }
 
-    // v1.17.3 M5 (§5.2): the capability-token gate. Verbs: read ops need
+    // §5.2: the capability-token gate. Verbs: read ops need
     // `read`, writes `write` (or `derive`), export paths `export`; admin is
     // never grantable. Scope must be None/empty or "global". No capability
     // (None — JWT/opaque-authenticated request) is always a pass.
@@ -897,7 +897,7 @@ mod tests {
         assert!(cap_gate(&adminish, "admin").is_err());
     }
 
-    // v1.3.0 Bedrock M6: idempotency property — normalizing a domain twice
+// idempotency property — normalizing a domain twice
     // yields the same result as normalizing once.
     use proptest::prelude::*;
 

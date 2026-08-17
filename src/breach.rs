@@ -1,4 +1,4 @@
-//! v1.25.0 "PH-Compliant" M2 — the breach-notification workflow.
+//! the breach-notification workflow.
 //!
 //! The one genuinely-new primitive in this release: PH DPA (+ most client laws)
 //! require breach notification within a bounded window (PH: 72h to the NPC +

@@ -1,4 +1,4 @@
-//! v0.9.7 "Guard" — verified webhook ingestion queue.
+//! verified webhook ingestion queue.
 //!
 //! A webhook delivery is verified (HMAC-SHA256) and idempotency-checked, then
 //! appended to a bounded FIFO [`WebhookQueue`] instead of mutating the index
@@ -85,7 +85,7 @@ impl WebhookQueue {
         mac.verify_slice(&expected).is_ok()
     }
 
-    /// v1.20.4 "Replay" (G6): verify a Standard Webhooks `v1,<base64>` signature
+    /// verify a Standard Webhooks `v1,<base64>` signature
     /// — HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}` keyed by
     /// `secret`, compared in constant time. The timestamp rides inside the HMAC
     /// payload, so a replay cannot re-stamp it. Header name + scheme match the
@@ -118,7 +118,7 @@ impl WebhookQueue {
         mac.verify_slice(&expected).is_ok()
     }
 
-    /// v1.20.8 "Signal": outbound mirror of [`verify_standard_signature`] —
+    /// outbound mirror of [`verify_standard_signature`] —
     /// produce the `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}`
     /// for the alert webhook sink. Interoperates with any svix-style receiver
     /// (the same scheme the server verifies inbound on `receive_standard`).
@@ -202,7 +202,7 @@ impl WebhookQueue {
         } else {
             // Record the delivery in the replay-window table so a post-drain
             // replay is still rejected until the window elapses.
-            // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed seen-write would
+// was `let _ =` — a failed seen-write would
             // let a replay within the window double-deliver to the sink.
             conn.execute(
                 "INSERT OR IGNORE INTO webhook_seen(delivery_hash) VALUES (?1)",
@@ -256,7 +256,7 @@ impl WebhookQueue {
     }
 }
 
-/// v1.20.26 "Tourniquet": the one outbound HTTP client used by both webhook
+/// the one outbound HTTP client used by both webhook
 /// sinks (alert + Art-19 DSAR). Redirects are refused (a 3xx is surfaced to
 /// the caller, not fetched), so an operator URL that bounces to cloud metadata
 /// or loopback cannot be followed. Defense-in-depth, not a replacement for
@@ -314,7 +314,7 @@ pub fn spawn_drain_worker(pool: Pool) {
                 Err(_) => continue,
             };
             while let Ok(Some((kind, _event, payload_hash))) = drain_one(&conn) {
-                // v0.9.8: real ingestion. Today we only record that a verified,
+                // real ingestion. Today we only record that a verified,
                 // idempotent delivery was drained; the event payload itself is
                 // intentionally not consumed (the index is kept fresh by the
                 // connector binaries pulling — the webhook is a freshness
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn standard_signature_covers_id_timestamp_payload() {
-        // v1.20.4 G6: the spec's canonical `v1,` scheme signs
+        // the spec's canonical `v1,` scheme signs
         // `{id}.{timestamp}.{raw body}` — a tamper to ANY of the three fails the
         // constant-time compare (so a replay cannot re-stamp the timestamp).
         let secret = b"topsecret";
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn alert_kind_roundtrips_through_verified_queue() {
-        // v1.20.8 M2: the outbound `sign_standard_signature` round-trips
+        // the outbound `sign_standard_signature` round-trips
         // through the verify side, and a `kind='alert'` enqueue is idempotent
         // via `webhook_seen` (the delivery-id dedup).
         let secret = b"alertsecret";
@@ -556,12 +556,12 @@ mod tests {
         assert_eq!(full, EnqueueOutcome::Full);
     }
 
-    // ── v1.20.26 "Tourniquet" SSRF egress tests ──────────────────────────────
+    // ── SSRF egress tests ──────────────────────────────
     //
     // Reuses the raw-HTTP `TcpListener` responder idiom from
     // `main.rs::test_observe_art19_webhook_posts_on_purge` — no new dev-dep.
 
-    /// v1.20.26: the hardened egress client MUST NOT follow a 302 redirect.
+    /// the hardened egress client MUST NOT follow a 302 redirect.
     /// The responder returns `302 → http://{same-listener}/followed`; if the
     /// client followed it, a second connection would land on the same listener
     /// and bump the accept counter. We assert the returned status is the 302
@@ -647,7 +647,7 @@ mod tests {
         );
     }
 
-    /// v1.20.26: happy path — the hardened client still delivers a legitimate
+    /// happy path — the hardened client still delivers a legitimate
     /// 200 response (regression: redirect refusal did not break normal egress).
     #[test]
     fn egress_client_sends_to_allowed_host() {

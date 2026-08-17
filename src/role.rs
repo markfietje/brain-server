@@ -1,4 +1,4 @@
-//! v1.23.0 "Roles" — a Role is a **named bundle of scopes + default panel
+//! a Role is a **named bundle of scopes + default panel
 //! visibility + an action `can` allowlist**, reused on the *existing* v1.14.2
 //! `access_scope`/`owner` mechanism ("same dashboard, scoped per role"). No new
 //! data filter: a role's `scopes` map straight onto the `access_scope` WHERE
@@ -15,7 +15,7 @@
 //! general ACL engine (per-record ownership, groups, arbitrary perms = v2.0
 //! Cortex RBAC). The `reports` agent-tree needs a source (`manages` JWT claim or
 //! a small table); large hierarchies may need a managed directory (v2.x SCIM).
-//! The MCP `tools_allowed` field (v1.23.0 plan M5) is **stored + surfaced** via
+//! The MCP `tools_allowed` field is **stored + surfaced** via
 //! the role API now; server-side enforcement at the MCP surface is v1.24, the
 //! same "store now, enforce later" discipline the `connectors_allowed` profile
 //! field shipped with (v1.21 stored, v1.24 enforces).
@@ -332,7 +332,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
         "exec",
         r#"{"name":"exec","description":"Executive: read-only dashboards across the team, no write or destructive actions","scopes":["private","domain","team"],"owner_filter":"reports","can":["read"],"panels_default":["overview","health","security"],"panels_hidden":["audit","data","subjects"],"tools_allowed":["ump.recall"]}"#,
     ),
-    // v1.27.9 "Roles": the BPO client postures. A client-auditor is READ-ONLY
+    // the BPO client postures. A client-auditor is READ-ONLY
     // on ONE client domain (its compliance login — `can` has only "read", the
     // min-necessary wedge); a bpo-ops is the all-clients operations read. Both
     // INSERT OR IGNORE so operator edits survive a re-migration.
@@ -389,7 +389,7 @@ mod tests {
         // The 'solo' SMB role is the simplest default: every action.
         let solo = all.iter().find(|r| r.name == "solo").unwrap();
         assert!(solo.can("approve") && solo.can("purge") && solo.can("dsar_export"));
-        // v1.27.9 "Roles": the BPO client postures. A client-auditor is the
+        // the BPO client postures. A client-auditor is the
         // read-only wedge (can == ["read"]); bpo-ops is read-only too.
         let auditor = all.iter().find(|r| r.name == "client-auditor").unwrap();
         assert_eq!(auditor.can, vec!["read"], "client-auditor is read-only");

@@ -1,4 +1,4 @@
-//! v0.9.5 M1 — versioned structured query document.
+//! versioned structured query document.
 //!
 //! One contract shared by `GET /search` and `POST /recall`. A plain-text
 //! query remains backwards compatible: `QueryDoc::from_text` treats the bare
@@ -63,26 +63,26 @@ pub struct QueryDoc {
     /// When true, responses include the query plan / telemetry / provenance.
     #[serde(default)]
     pub explain: bool,
-    /// v0.9.7 Guard: include quarantined (`flagged`) chunks in results. Operator
+/// include quarantined (`flagged`) chunks in results. Operator
     /// review path only; the default agent path keeps them excluded.
     #[serde(default)]
     pub include_flagged: bool,
-    /// v0.9.8 "Evidence": point-in-time recall. When set, recall returns the
+    /// point-in-time recall. When set, recall returns the
     /// revision of each source that was current *at* this RFC3339 instant
     /// (historical mode); superseded chunks become visible. `None` (default) ⇒
     /// only current evidence is returned.
     #[serde(default)]
     pub as_of: Option<String>,
-    /// v0.9.8 "Evidence": include structured `Evidence` (time + lifecycle +
+    /// include structured `Evidence` (time + lifecycle +
     /// links) on every hit. Serialization switch.
     #[serde(default)]
     pub evidence: bool,
-    /// v1.4.0 "Calibrate" M1: bi-temporal valid-time point-in-time filter.
+    /// bi-temporal valid-time point-in-time filter.
     /// RFC3339 or `YYYY-MM-DD`; only chunks whose valid-interval contains this
     /// instant are returned. Distinct from `as_of` (transaction-time recall).
     #[serde(default)]
     pub at: Option<String>,
-    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg
+    /// enable the graph-PPR retriever as a third RRF leg
     /// (opt-in; default `false` keeps the two-retriever path unchanged).
     #[serde(default)]
     pub graph: bool,
@@ -114,7 +114,7 @@ impl QueryDoc {
             Some(s) => Some(normalize_since(s).map_err(QueryDocError::InvalidSince)?),
             None => None,
         };
-        // v1.4.0 "Calibrate" M1: normalize the bi-temporal `at` filter.
+        // normalize the bi-temporal `at` filter.
         let at = match &self.at {
             Some(s) => Some(normalize_since(s).map_err(QueryDocError::InvalidAt)?),
             None => None,
@@ -252,7 +252,7 @@ pub fn compile_lex(spec: &LexSpec) -> String {
     parts.join(" ")
 }
 
-// ── v1.13.3 "SourceFix": the `source` retrieval-filter contract ───────────
+// ── the `source` retrieval-filter contract ───────────
 
 /// The parsed `source` retrieval filter. One parser ([`parse_source_filter`])
 /// is used at both handler boundaries (`POST /recall`, `GET /search`) so the
@@ -320,7 +320,7 @@ pub fn split_source_filter(filter: Option<&SourceFilter>) -> (Option<String>, Op
     }
 }
 
-/// v1.13.4: resolve the `source` filter for `POST /recall` from BOTH the JSON
+/// resolve the `source` filter for `POST /recall` from BOTH the JSON
 /// body and the query string (`?source=`), so a query-string value is honored
 /// instead of silently ignored (parity with `GET /search`). Body `source` wins
 /// when both are present; the query string fills in when the body omits it. An
@@ -370,7 +370,7 @@ pub enum QueryDocError {
     UnsupportedVersion(u8),
     EmptyQuery,
     InvalidSince(anyhow::Error),
-    /// v1.4.0 "Calibrate" M1: malformed `at` bi-temporal filter.
+    /// malformed `at` bi-temporal filter.
     InvalidAt(anyhow::Error),
 }
 
@@ -507,7 +507,7 @@ mod tests {
         ));
     }
 
-    // ── v1.13.3 "SourceFix": parse_source_filter contract ──────────────────
+    // ── parse_source_filter contract ──────────────────
 
     #[test]
     fn parse_source_filter_accepts_all_ingest_kinds() {

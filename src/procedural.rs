@@ -1,4 +1,4 @@
-//! v1.10.0 "Procedural" — deterministic procedural-memory primitives.
+//! deterministic procedural-memory primitives.
 //!
 //! The brain of an AI consultant: stores and reasons over assessment playbooks,
 //! decision trees, vendor knowledge, and ordered implementation steps. Every
@@ -31,7 +31,7 @@ pub enum MemoryKind {
     /// A conditional branch — the consultant's core reasoning primitive
     /// ("If HIPAA-relevant → recommend BAA-reviewed tools").
     Decision,
-    /// v1.14.0 "Gate" M5: a dated event record where `observed_at` is
+    /// a dated event record where `observed_at` is
     /// first-class (an episodic memory). The natural TTL candidate (M2).
     Episodic,
 }
@@ -59,7 +59,7 @@ impl MemoryKind {
             _ => MemoryKind::Fact,
         }
     }
-    /// v1.27.16 "Drawbridge" (M4/F-33): the strict write-boundary validator. A
+/// the strict write-boundary validator. A
     /// kind string is valid iff it round-trips through [`Self::from_str`] —
     /// `from_str` falls back to `Fact` on any unknown/mixed-case input, which
     /// must never be *silently accepted* at the write boundary (both the

@@ -7,7 +7,7 @@
 //! docs at 1k/5k/10k scales, and prints a markdown table of resident memory,
 //! ingest throughput, and `/search` latency percentiles to stdout.
 //!
-//! v0.9.9: when `BENCH_ENVELOPE` is set (desktop|jetson), each scale asserts
+//! when `BENCH_ENVELOPE` is set (desktop|jetson), each scale asserts
 //! against the published capacity envelope and the run exits non-zero on any
 //! breach — turning the report into a ship gate.
 //!
@@ -142,7 +142,7 @@ fn num_searches() -> usize {
         .unwrap_or(100)
 }
 
-/// v0.9.9: capacity envelope to assert against. `None` when `BENCH_ENVELOPE`
+/// capacity envelope to assert against. `None` when `BENCH_ENVELOPE`
 /// is unset (report-only). When set (desktop|jetson), the harness reads the
 /// published envelope from `brain_server::capacity` and exits non-zero on any
 /// breach — turning the report into a ship gate.
@@ -202,7 +202,7 @@ fn read_rss_mb(base: &str) -> Result<u64, String> {
     }
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("/health non-JSON body: {e}"))?;
-    // v0.9.9: prefer the process RSS from the capacity object (accurate).
+    // prefer the process RSS from the capacity object (accurate).
     // Fall back to system.memory_used_mb if the server predates v0.9.9 (no
     // capacity field yet) so the harness still works against older servers.
     v.get("capacity")
@@ -247,7 +247,7 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 }
 
 fn main() {
-    // v1.4.0 "Calibrate" M5: `bench eval` runs the retrieval-quality regression
+    // `bench eval` runs the retrieval-quality regression
     // harness against a judgments file (BRAIN_EVAL_JUDGMENTS). The default
     // (no arg) runs the synthetic-scale latency/RSS benchmark as before.
     let args: Vec<String> = std::env::args().collect();
@@ -370,7 +370,7 @@ fn run() -> Result<(), String> {
 
     print_report(&base, searches, &rows, &rss_after_batches);
 
-    // v0.9.9: when BENCH_ENVELOPE is set, assert each scale against the
+    // when BENCH_ENVELOPE is set, assert each scale against the
     // published capacity envelope. Any breach exits non-zero — the report
     // becomes a ship gate, not just a measurement.
     if let Some((env, target_name)) = envelope() {
@@ -450,7 +450,7 @@ fn print_report(base: &str, searches: usize, rows: &[Row], rss_after_batches: &[
     }
 }
 
-// ── v1.4.0 "Calibrate" M5: retrieval-quality regression harness ────────────
+// ── retrieval-quality regression harness ────────────
 
 /// Run the retrieval-quality regression harness. Loads a judgments file
 /// (`BRAIN_EVAL_JUDGMENTS`, JSON array of `{query, relevant_ids, gold_answer?}`),

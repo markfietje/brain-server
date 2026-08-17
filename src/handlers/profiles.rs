@@ -1,4 +1,4 @@
-//! v1.21.0 "Profiles" M4 — the profile API.
+//! the profile API.
 //!
 //! `GET /profiles` (list, seeded presets + operator clones), `GET
 //! /profiles/{name}`, `POST /profiles/{name}` (clone/edit, Admin + audited),

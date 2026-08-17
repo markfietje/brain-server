@@ -1,4 +1,4 @@
-//! v1.15.0 "Observe" — observability + compliance-workflow handlers.
+//! observability + compliance-workflow handlers.
 //!
 //! M1/M2: the recall read-event trace endpoint (`/recall/{id}/trace`) replays
 //! the decision path of a recorded read event (the audit row is hash-only; the
@@ -67,7 +67,7 @@ pub async fn get_trace(
 // ---------------------------------------------------------------------------
 
 /// `POST /dsar` request. `subject` is the owner/principal being actioned;
-/// `action` is `export` | `purge` | `both`; `dry_run` (v1.20.21) previews the
+/// `action` is `export` | `purge` | `both`; `dry_run` previews the
 /// footprint — locate + bundle build only, nothing is purged or written.
 #[derive(Debug, Deserialize)]
 pub struct DsarRequest {
@@ -76,13 +76,13 @@ pub struct DsarRequest {
     pub action: String,
     #[serde(default)]
     pub dry_run: bool,
-    /// v1.26.0 "Cross-Border" M2: the subject's jurisdiction (country code,
+    /// the subject's jurisdiction (country code,
     /// e.g. `eu`, `us`). Absent → the legacy generic Art 17 window/rights
     /// surface. When set, the response carries the jurisdiction's curated
     /// rights + its deadline (GDPR 1 month, CCPA 45 days, PH reasonable, ...).
     #[serde(default)]
     pub jurisdiction: Option<String>,
-    /// v1.26.0 "Cross-Border" M2: the mechanism (e.g. `scc-eu-2021`) recorded
+    /// the mechanism (e.g. `scc-eu-2021`) recorded
     /// on the deletion certificate — the per-law proof of compliance. Free-text
     /// so the operator records exactly what they signed.
     #[serde(default)]
@@ -93,7 +93,7 @@ fn default_dsar_action() -> String {
     "both".to_string()
 }
 
-/// v1.20.22 "Clocks" M1.1: the DSAR Art 17 erasure deadline — `created_at` +
+/// the DSAR Art 17 erasure deadline — `created_at` +
 /// the operator's window, a pure mirror of `gate::proposal_deadline`. The
 /// client countdown ticks against this absolute deadline, so an operator's
 /// `BRAIN_DSAR_WINDOW_DAYS` override is authoritative (no client window guess).
@@ -109,17 +109,17 @@ pub struct DsarResponse {
     pub id: i64,
     pub subject: String,
     pub status: &'static str,
-    /// v1.20.22 "Clocks" M1.1: when the request was created (ledger `created_at`).
+    /// when the request was created (ledger `created_at`).
     pub created_at: i64,
-    /// v1.20.22 "Clocks" M1.1: the computed Art 17 erasure deadline
+    /// the computed Art 17 erasure deadline
     /// (`created_at + window`) — the client clock's source of truth. `0` in a
     /// dry-run preview (no ledger row, no deadline).
     pub deadline: i64,
-    /// v1.26.0 "Cross-Border" M2: the subject's jurisdiction (when provided).
+    /// the subject's jurisdiction (when provided).
     /// Absent for the generic surface / a dry-run preview.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jurisdiction: Option<String>,
-    /// v1.26.0 "Cross-Border" M2: the jurisdiction's applicable subject rights
+    /// the jurisdiction's applicable subject rights
     /// (the DSAR response lists them so the operator acts per the subject's
     /// law). Empty when no jurisdiction was given.
     pub rights: Vec<&'static str>,
@@ -129,7 +129,7 @@ pub struct DsarResponse {
     pub footprint: Option<Footprint>,
 }
 
-/// v1.20.21: the would-be DSAR deletion footprint — what a live purge would
+/// the would-be DSAR deletion footprint — what a live purge would
 /// locate + export + delete, without executing any write. The GDPR Art 17
 /// preview a DPO reads before clicking "erase".
 #[derive(Debug, Serialize, Clone)]
@@ -158,7 +158,7 @@ pub async fn post_dsar(
     let action = req.action.clone();
     let action_did_purge = matches!(action.as_str(), "purge" | "both");
 
-    // v1.26.0 "Cross-Border" M2: normalize the subject's jurisdiction.
+    // normalize the subject's jurisdiction.
     let jurisdiction = match req.jurisdiction.clone() {
         Some(j) => {
             let j = j.trim().to_ascii_lowercase();
@@ -184,7 +184,7 @@ pub async fn post_dsar(
     let jur_for_cert = jurisdiction.clone();
     let mech_for_cert = mechanism.clone();
 
-    // v1.20.24 "Sweep" (cross-domain erasure): a DSAR must cover every
+// a DSAR must cover every
     // registered domain, not just the global pool. In multi-db mode each
     // `brain-<domain>.db` runs its own locate + purge tx; in shim mode the
     // list is exactly the global pool (whose owner query already covers every
@@ -205,7 +205,7 @@ pub async fn post_dsar(
             super::resolve_domain_pool(&state.registry, Some(d))?,
         ));
     }
-    // v1.23.0 "Roles": a DSAR (export|purge) is a capability-gated action on
+    // a DSAR (export|purge) is a capability-gated action on
     // the data surface; a roles-principal needs `dsar_export` in the allowlist.
     super::authorize_role(&principal.0, &pools[0].1, "dsar_export")?;
     // Global runs LAST so its ledger row can carry the cross-domain digest.
@@ -337,7 +337,7 @@ pub async fn post_dsar(
         let ledger_id =
             ledger_id.ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
 
-        // v1.20.17 M5: backfill the certificate onto the ledger row committed
+        // backfill the certificate onto the ledger row committed
         // with the purge (best-effort — the row + times already prove it).
         let _ = global_conn.execute(
             "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
@@ -450,7 +450,7 @@ fn normalize_dsar_subject(subject: &str, action: &str) -> Result<String, Handler
 /// `run_dsar_subject` (a single pool) so the audit-visible contract lives in
 /// one place. `purged_ids`/`held`/`tombstone_root` are the run(s)' erased sets;
 /// jurisdiction/mechanism are the request's per-law stamp (advisory).
-/// v1.28.1 "Holdall" M2.2: the honest physical-purge posture to disclose on the
+/// the honest physical-purge posture to disclose on the
 /// deletion certificate. Defaults to the disclosed logical posture when no run
 /// carried a stricter one (a strict domain's certificate states secure_delete).
 #[allow(clippy::too_many_arguments)]
@@ -624,7 +624,7 @@ pub struct DsarLedgerQuery {
     pub offset: Option<i64>,
 }
 
-/// One `dsar_requests` ledger row (v1.20.22 "Clocks" M1.2). `created_at` +
+/// One `dsar_requests` ledger row. `created_at` +
 /// `completed_at` are the clock inputs; `deadline` is the server-computed Art
 /// 17 erasure window so the client ticks against the SAME number the `POST`
 /// response carries — no client mirror of `BRAIN_DSAR_WINDOW_DAYS`. The
@@ -675,7 +675,7 @@ pub async fn list_dsar(
     Ok(Json(body))
 }
 
-/// Pure ledger query (v1.20.22 M1.2) — extracted so the ordering, the page
+/// Pure ledger query — extracted so the ordering, the page
 /// boundary, and the total count are unit-testable without an HTTP stack
 /// (the `page_decayed` idiom).
 pub(crate) fn list_dsar_page(
@@ -733,7 +733,7 @@ pub async fn list_tombstones(
     let subject = q.subject.clone();
     let since = q.since;
     let limit = q.limit.map(|l| l.clamp(1, MAX_TOMBSTONES)).unwrap_or(100);
-    // v1.20.2 E1: tenant scoping. A non-superuser admin only sees tombstones
+    // tenant scoping. A non-superuser admin only sees tombstones
     // whose `reason` (owner:<subject>) matches their own `sub`. Superuser
     // (`None` principal — opaque/loopback) is unconstrained. The query
     // caller-filter takes precedence if it's narrower than the principal scope.
@@ -812,7 +812,7 @@ pub async fn get_dsar_certificate(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
-    // v1.20.2 E1: tenant scoping. A non-superuser admin can only fetch
+    // tenant scoping. A non-superuser admin can only fetch
     // certificates for their own subject. The stored `dsar_requests.subject`
     // is checked against the principal's `sub`; a mismatch → 404 (don't leak
     // existence of another tenant's certificate).
@@ -857,7 +857,7 @@ pub async fn get_dsar_certificate(
 // Art 19 webhook (opt-in) + shared helpers
 // ---------------------------------------------------------------------------
 
-/// v1.20.17 M1: ledger retention. Completed `dsar_requests` rows older than
+/// ledger retention. Completed `dsar_requests` rows older than
 /// `retention_days` are deleted (the erasure record's remaining value is the
 /// certificate + the audit chain, not the ledger row itself). Returns the
 /// number of rows removed. Pure; best-effort callers swallow the result.
@@ -866,7 +866,7 @@ pub(crate) fn purge_stale_dsar_ledger(conn: &rusqlite::Connection, retention_day
         return 0;
     }
     let now = chrono::Utc::now().timestamp();
-    // v1.27.19 "Scrub" (D-1): was `.unwrap_or(0)` — a silent failure hid the
+// was `.unwrap_or(0)` — a silent failure hid the
     // prune; warn instead of pretending.
     match conn.execute(
         "DELETE FROM dsar_requests WHERE status = 'completed' AND completed_at < ?1",
@@ -880,7 +880,7 @@ pub(crate) fn purge_stale_dsar_ledger(conn: &rusqlite::Connection, retention_day
     }
 }
 
-/// v1.15.0 "Observe" M3: Art 19 onward-notification. When
+/// Art 19 onward-notification. When
 /// `BRAIN_DSAR_WEBHOOK_URL` is set, a completed DSAR purge POSTs
 /// `{subject, certified_at, certificate_id}` to the URL, HMAC-SHA256-signed
 /// (`X-Brain-Signature-256: sha256=<hex>`) when `BRAIN_DSAR_WEBHOOK_SECRET`
@@ -944,7 +944,7 @@ fn collect_ids(
     Ok(rows.flatten().collect())
 }
 
-/// v1.20.21: build the portable export bundle (the JSON a live purge embeds
+/// build the portable export bundle (the JSON a live purge embeds
 /// into its ledger row) for the given locate result. Extracted so the dry-run
 /// preview and the live path run the EXACT same query — behavior-preserving.
 pub(crate) fn build_export_bundle(
@@ -974,7 +974,7 @@ pub(crate) fn build_export_bundle(
                     "observed_at": row.get::<_, Option<String>>(6)?,
                     "valid_from": row.get::<_, Option<String>>(7)?,
                     "valid_to": row.get::<_, Option<String>>(8)?,
-                    // v1.26.0 "Cross-Border" M3: the lawful-basis + purpose
+                    // the lawful-basis + purpose
                     // tags surfaced on the export/DSAR bundle (Art 5/6 evidence).
                     "lawful_basis": row.get::<_, Option<String>>(9)?,
                     "purpose": row.get::<_, Option<String>>(10)?,
@@ -987,7 +987,7 @@ pub(crate) fn build_export_bundle(
     }
     Ok(serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
-        // v1.22.0 M3: the residency stamp on the DSAR bundle too.
+        // the residency stamp on the DSAR bundle too.
         "region": brain_server::storage_layout::region(),
         "subject": subject,
         "knowledge": rows,
@@ -995,7 +995,7 @@ pub(crate) fn build_export_bundle(
     .to_string())
 }
 
-/// v1.20.21: count prior deletions for a subject — the tombstone reasons a live
+/// count prior deletions for a subject — the tombstone reasons a live
 /// purge writes: `owner:<subject>` for roots, and `derived` (scoped to one of
 /// this subject's roots via `origin_id`) for derived descendants. The ledger
 /// trace a DPO sees in the preview.
@@ -1034,7 +1034,7 @@ fn count_subject_tombstones(
     Ok(count)
 }
 
-/// v1.20.24 "Sweep": one DSAR pool's outcome — the locate + purge result for a
+/// one DSAR pool's outcome — the locate + purge result for a
 /// single domain DB (global or `brain-<domain>.db`). Counts for the dry-run
 /// footprint, ids + bundle for the cross-domain aggregate, and the ledger row
 /// identity when this pool is the registry of record (global).
@@ -1046,7 +1046,7 @@ struct DsarPoolRun {
     dsar_rows: usize,
     /// Live-purge ids from this pool (certificate payload).
     purged_ids: Vec<i64>,
-    /// v1.22.0 "Regulated" M1: ids under legal hold that erasure DEFERRED,
+    /// ids under legal hold that erasure DEFERRED,
     /// with their reasons — listed on the certificate as the why. A held id
     /// is never purged here.
     held: Vec<serde_json::Value>,
@@ -1055,7 +1055,7 @@ struct DsarPoolRun {
     /// `Some(ledger row id)` when this pool wrote the ledger row (global).
     ledger_id: Option<i64>,
     tombstone_root: Option<i64>,
-    /// v1.28.1 "Holdall" M2 (F-24): the honest physical-purge posture for this
+    /// the honest physical-purge posture for this
     /// domain (secure_delete+checkpoint for a strict profile, else the disclosed
     /// logical posture). Surfaced verbatim on the deletion certificate.
     remanence: String,
@@ -1065,8 +1065,8 @@ struct DsarPoolRun {
 /// `write_ledger` is true only for the global pool (the registry of record);
 /// `aggregate_bundle_hash` carries the cross-domain SHA-256 in multi-db mode
 /// (the global run's own bundle is digested in shim mode — byte-identical to
-/// v1.20.23). All-or-nothing per pool: the purge + ledger row commit in the
-/// same tx (v1.20.17 M5).
+/// the purge + ledger row commit in the
+/// same tx.
 #[allow(clippy::too_many_arguments)] // 8 run fields; a struct would add ceremony to the single-erasure path
 fn run_dsar_pool(
     pool: &crate::Pool,
@@ -1081,7 +1081,7 @@ fn run_dsar_pool(
     let mut conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-    // v1.28.1 "Holdall" M2.1 (F-24): a strict-posture domain erases with
+    // a strict-posture domain erases with
     // `secure_delete=ON` (freed page images overwritten) + a WAL TRUNCATE
     // checkpoint after commit, so the certificate's erasure claim has teeth.
     // Best-effort profile lookup: an unreadable/missing bind defaults to the
@@ -1096,7 +1096,7 @@ fn run_dsar_pool(
         "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
     };
     if strict && !dry_run && matches!(action, "purge" | "both") {
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed secure_delete
+// was `let _ =` — a failed secure_delete
         // weakens the remanence claim on the certificate; warn, don't certify.
         if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
             tracing::warn!("secure_delete=ON failed for DSAR purge: {e}");
@@ -1162,7 +1162,7 @@ fn run_dsar_pool(
     let mut purged_ids: Vec<i64> = Vec::new();
     let mut held: Vec<serde_json::Value> = Vec::new();
     if matches!(action, "purge" | "both") {
-        // v1.22.0 "Regulated" M1: a held id is frozen against DSAR erasure too
+        // a held id is frozen against DSAR erasure too
         // (the WORM-lite posture). The subject's located set that is under an
         // active legal hold is DEFERRED — not purged — and listed (+ reasons)
         // on the certificate so the subject is told *why* erasure is deferred.
@@ -1218,7 +1218,7 @@ fn run_dsar_pool(
         purged_ids.extend(free(&roots).iter().copied());
     }
 
-    // v1.16.1: trace residue sweep. Since v1.20.17 M3 the trace no longer
+    // trace residue sweep. Since v1.20.17 M3 the trace no longer
     // stores the raw query (only its xxh3-64 hash), so the subject can't
     // appear in it — this sweep remains as a defensive net against any
     // future field that does embed personal data. Best-effort (short
@@ -1229,7 +1229,7 @@ fn run_dsar_pool(
             rusqlite::params![format!("%{subject}%")],
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
-        // v1.20.25: proposals hold raw candidate content with no owner column,
+        // proposals hold raw candidate content with no owner column,
         // so a DSAR could never locate them and their plaintext (possibly PII
         // about the subject) survived a "complete" erasure. Sweep them by the
         // subject verbatim — the same erasure-safe over-match posture as the
@@ -1237,7 +1237,7 @@ fn run_dsar_pool(
         // semantic owner join (proposals are operator-reviewed candidates, not
         // subject-attributed rows); the review-queue provenance for the subject
         // is intentionally erased with the memory per Art 17.
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a silent failure would leave
+// was `let _ =` — a silent failure would leave
         // subject PII in a "complete" erasure; propagate (tx rolls back).
         tx.execute(
             "DELETE FROM proposals WHERE content LIKE ?1",
@@ -1267,11 +1267,11 @@ fn run_dsar_pool(
     }
     tx.commit()
         .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-    // v1.28.1 M2.1: TRUNCATE the WAL so a just-erased subject's page images do
+    // TRUNCATE the WAL so a just-erased subject's page images do
     // not linger there (reuse the integrity.rs import pattern). Best-effort —
     // a checkpoint failure must not fail an otherwise-successful erasure.
     if !dry_run && matches!(action, "purge" | "both") {
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed TRUNCATE leaves the
+// was `let _ =` — a failed TRUNCATE leaves the
         // erased subject's page images in the WAL; warn, never certify silence.
         if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
             tracing::warn!("wal_checkpoint(TRUNCATE) failed after DSAR purge: {e}");
@@ -1431,7 +1431,7 @@ mod tests {
 
     #[test]
     fn ledger_row_is_committed_atomically_with_purge_tx_commit() {
-        // v1.20.17 M5 regression: the ledger insert used to happen AFTER the
+// the ledger insert used to happen AFTER the
         // tx.commit() — a crash between the two lost the erasure record. Now
         // the insert rides in the SAME tx as the purge; prove the row exists
         // the moment the tx commits by simulating the handler's sequence.
@@ -1514,7 +1514,7 @@ mod tests {
         conn
     }
 
-    /// v1.20.21 M1.1: a dry-run footprint reports the exact would-be counts and
+    /// a dry-run footprint reports the exact would-be counts and
     /// writes NOTHING — the knowledge rows survive, no ledger row, no new
     /// tombstone. The preview is a pure read.
     #[test]
@@ -1586,7 +1586,7 @@ mod tests {
         assert_eq!(led, 1, "no ledger row written");
     }
 
-    /// v1.20.21 M1.1: `build_export_bundle` is behavior-preserving — the
+    /// `build_export_bundle` is behavior-preserving — the
     /// extracted builder produces the same JSON the live purge path embeds.
     #[test]
     fn dsar_export_bundle_builder_matches_live_shape() {
@@ -1613,7 +1613,7 @@ mod tests {
         assert!(k[0].get("memory_kind").is_some());
     }
 
-    /// v1.20.24 "Sweep" (G4): a multi-domain DSAR purges the subject in EVERY
+    /// a multi-domain DSAR purges the subject in EVERY
     /// pool but writes the ledger row + aggregate hash only on the global pool
     /// (the registry of record) — mirroring the handler's run order (non-global
     /// first, global last). Each pool commits its own transaction, so a crash
@@ -1720,7 +1720,7 @@ mod tests {
         assert_eq!(health_led, 0, "non-global pool has no ledger rows");
     }
 
-    /// v1.20.25: a DSAR purge must erase the review-queue residue and the graph
+    /// a DSAR purge must erase the review-queue residue and the graph
     /// residue that v1.20.24 left behind — proposals have no owner column so
     /// their raw candidate content (possible PII about the subject) survived a
     /// "complete" erasure, and the entity-scoped relationship delete referenced

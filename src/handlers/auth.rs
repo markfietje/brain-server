@@ -159,7 +159,7 @@ pub async fn refresh(
             &chain_id,
         )
         .map_err(AuthHandlerError::internal_msg)?;
-        // v1.12.2 audit: `record_and_rotate` runs the reuse check + chain
+// `record_and_rotate` runs the reuse check + chain
         // rotation under `BEGIN IMMEDIATE` so two concurrent presentations of
         // the same refresh token cannot both pass (the prior check-then-act
         // race). On reuse it burns the chain exactly once and returns the
@@ -201,7 +201,7 @@ pub async fn logout(
     let pool = s.pool.clone();
     let cache = s.revocation_cache.clone();
     let issuer = s.jwt_issuer.clone();
-    // v1.27.19 "Scrub" (F-54): a failed denylist write must surface. An
+// a failed denylist write must surface. An
     // operator logging out believes the token is dead; if the INSERT failed
     // the token would live its full 15 min with that lie in the client.
     tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
@@ -247,7 +247,7 @@ pub async fn revoke_handler(
     principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<RevokeRequest>,
 ) -> Result<StatusCode, AuthHandlerError> {
-    // v1.12.1 "Harden": the route comment says "requires admin auth" — enforce
+    // the route comment says "requires admin auth" — enforce
     // it. `None` (no JWT) = superuser (v1.1 opaque back-compat).
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
         .map_err(|e| AuthHandlerError::forbidden(e.inner.message))?;
@@ -259,7 +259,7 @@ pub async fn revoke_handler(
     let jti = req.jti.clone();
     let iss = req.iss.clone();
     let reason = req.reason.clone();
-    // v1.27.19 "Scrub" (F-54): was 204-always — a failed denylist INSERT told
+// was 204-always — a failed denylist INSERT told
     // the operator the token was dead when it wasn't. Now 500 `revoke_failed`.
     tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
         let conn = pool.get().map_err(|e| {
@@ -294,7 +294,7 @@ where
     }
 }
 
-/// v1.17.3 M5 (§5.2): the capability token the auth middleware injected when
+/// §5.2: the capability token the auth middleware injected when
 /// a bearer verified as an operator-signed UMP capability token on the UMP
 /// surface (`/ump/*` + `/export`). `None` for every other auth path — the
 /// handler's `cap_gate` is then a no-op.
@@ -395,7 +395,7 @@ impl AuthHandlerError {
         }
     }
 
-    /// v1.27.19 "Scrub" (F-54): the revocation denylist write failed — an
+/// the revocation denylist write failed — an
     /// operator must never believe a token dead when it isn't.
     pub fn revoke_failed(msg: &str) -> Self {
         AuthHandlerError {

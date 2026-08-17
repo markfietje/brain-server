@@ -38,7 +38,7 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 /// multibyte UTF-8 sequences are always preserved.
 const MAX_CHUNK_BYTES: usize = 1000;
 
-/// v1.28.1 "Holdall" M5 (F-52): the hard cap on code blocks. Code blocks are
+/// the hard cap on code blocks. Code blocks are
 /// exempt from `MAX_CHUNK_BYTES` "to stay intact" — but that lets a single
 /// fenced block up to the 1 MB content cap become ONE giant chunk. Blocks
 /// over this cap are split at newline boundaries; fenced pieces re-open the
@@ -200,7 +200,7 @@ pub fn chunk_markdown(content: &str) -> Vec<Chunk> {
         .collect()
 }
 
-/// v1.28.1 "Holdall" M5 (F-52): split a single chunk that exceeds the hard
+/// split a single chunk that exceeds the hard
 /// cap at newline boundaries. Only code blocks (fenced or ≥4-space indented)
 /// and single-event prose runs can reach this size — normal prose flushes at
 /// every event boundary. Fenced blocks are re-opened with the same opener
@@ -506,7 +506,7 @@ mod tests {
         );
     }
 
-    // ── v1.28.1 "Holdall" M5 (F-52): code blocks were exempt from
+    // ── code blocks were exempt from
     // `MAX_CHUNK_BYTES` "to stay intact", so a single fenced block up to the
     // 1 MB content cap became ONE giant chunk. The hard cap
     // (`MAX_CODE_CHUNK_BYTES = 8 * MAX_CHUNK_BYTES`) splits oversized blocks
@@ -967,7 +967,7 @@ mod tests {
         }
     }
 
-    // v1.3.0 Bedrock M6: proper property-based test (replaces the hand-rolled
+// proper property-based test (replaces the hand-rolled
     // pseudo-fuzz above for the exhaustive case). proptest generates 1000s of
     // random UTF-8 inputs and verifies the chunk byte ranges are valid.
     use proptest::prelude::*;

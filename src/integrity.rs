@@ -1,4 +1,4 @@
-//! v1.1.0 "Harden" M3 — scheduled rolling backups + integrity self-check.
+//! scheduled rolling backups + integrity self-check.
 //!
 //! The encrypted-bundle path in `backup.rs` is for off-host transport
 //! (`brain backup` CLI, manual operator action). M3 adds the always-on,

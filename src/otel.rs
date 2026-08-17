@@ -1,4 +1,4 @@
-//! v1.20.7 "Telemetry" (M1) — feature-gated span-field helpers.
+//! feature-gated span-field helpers.
 //!
 //! Compiled ONLY under `--features otel` (the module declaration in `lib.rs`
 //! is `#[cfg(feature = "otel")]`), so a default build compiles nothing here

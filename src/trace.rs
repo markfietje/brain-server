@@ -1,4 +1,4 @@
-//! TRACE-style typed edges + validity-aware traversal (v1.4.0 "Calibrate" M3).
+//! TRACE-style typed edges + validity-aware traversal.
 //!
 //! arXiv:2607.00339 (*TRACE: State-Aware Query Processing over Temporal Evidence
 //! Graphs*) models conversations as a hierarchical graph with typed relations:
@@ -13,7 +13,7 @@
 //! bi-temporal window (M1's valid_at/invalid_at); traversal additionally skips
 //! edges that a later same-typed edge has superseded.
 //!
-//! v1.27.19 "Scrub" (D-5): the reserved `update:`/`supersedes:`/`contradicts:`/
+//! the reserved `update:`/`supersedes:`/`contradicts:`/
 //! `causes:` prefix vocabulary shipped here as `#[allow(dead_code)]` "reserved
 //! for v1.6" — v1.6 shipped and closed without consuming it, so the dead
 //! vocabulary and its tests are gone. What remains is the *used* surface:

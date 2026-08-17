@@ -1,8 +1,8 @@
-//! v1.24.0 "Connectors" M2 — the shared translate+ingest template.
+//! the shared translate+ingest template.
 //!
 //! Every vertical connector is "translate a source record → a `ConnectorDoc`,
 //! then feed it to the existing `/ingest/markdown` (source/revision linkage,
-//! v0.9.4) and its URI set to `/sources/reconcile` (v0.9.6)". The per-strong
+//! v0.9.4) and its URI set to `/sources/reconcile`". The per-strong
 //! system's transport (page fetch, auth refresh, rate limits) is
 //! connector-specific — that is the documented v1.24 honest ceiling (the
 //! GitHub connector, `connector/github`, is the tested network template). This

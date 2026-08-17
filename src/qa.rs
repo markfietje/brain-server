@@ -7,7 +7,7 @@ pub fn scorecard(in_scope: bool, cited: bool, confident: bool) -> i64 {
     base + if cited { 30 } else { 0 } + if confident { 20 } else { 10 }
 }
 
-/// v1.27.8 "QaQueue": compose the R7 scorecard from a proposal's trace signals
+/// compose the R7 scorecard from a proposal's trace signals
 /// (pure over the read shapes). An absent trace degrades `cited` to neutral —
 /// a proposal with no linked recall-trace is never penalized for being
 /// uncited. `in_scope` = the proposal's `owner` falls under the supervisor's

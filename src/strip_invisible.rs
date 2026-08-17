@@ -1,6 +1,6 @@
 //! The one invisible-Unicode strip boundary, shared by every binary.
 //!
-//! v1.20.24 "Sweep": [`strip_invisible`]/[`is_invisible`] moved out of the
+//! [`strip_invisible`]/[`is_invisible`] moved out of the
 //! server-private `screen.rs` into the lib so the MCP binary + `brain` CLI
 //! close the same bidi/zero-width smuggling class the server screen and the
 //! wasm client already close. One definition, four surfaces.
@@ -27,7 +27,7 @@ pub fn is_invisible(c: char) -> bool {
     (0xE0000..=0xE007F).contains(&cp)
         // Variation selectors (U+FE00–FE0F) — variant smuggling.
         || (0xFE00..=0xFE0F).contains(&cp)
-        // v1.27.14 "Fencepost2" (F-32): the supplementary variation-selector
+// the supplementary variation-selector
         // range (U+E0100–U+E01EF) — same variant-smuggling class as the BMP
         // range, used by emoji/ideographic variation sequences.
         || (0xE0100..=0xE01EF).contains(&cp)
@@ -36,7 +36,7 @@ pub fn is_invisible(c: char) -> bool {
         || (0x200E..=0x200F).contains(&cp)
         || (0x202A..=0x202E).contains(&cp)
         || (0x2066..=0x2069).contains(&cp)
-        // v1.27.14 "Fencepost2" (F-32): ARABIC LETTER MARK (U+061C) — a
+// ARABIC LETTER MARK (U+061C) — a
         // `Bidi_Control` codepoint (default-ignorable, renders nothing) that
         // closes the last gap in the documented `Bidi_Control` set.
         || cp == 0x061C
@@ -66,7 +66,7 @@ pub fn strip_control_chars(input: &str) -> String {
 mod tests {
     use super::*;
 
-    // v1.27.14 "Fencepost2" (F-32): the two added classes (U+061C ALM, the
+// the two added classes (U+061C ALM, the
     // U+E0100–U+E01EF supplemental VS range) must join the existing strip set.
     #[test]
     fn arabic_letter_mark_stripped() {

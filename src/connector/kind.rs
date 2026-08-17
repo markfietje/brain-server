@@ -1,4 +1,4 @@
-//! v1.24.0 "Connectors" — the connector kind vocabulary.
+//! the connector kind vocabulary.
 //!
 //! The `connectors` table already carries a free-form `kind TEXT` column; this
 //! module pins the shipped vocabulary the vertical set (USE_CASES.md) uses, and

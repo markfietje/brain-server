@@ -1,4 +1,4 @@
-//! v1.20.8 "Signal" — live operator alert feed (`GET /events`) + optional
+//! live operator alert feed (`GET /events`) + optional
 //! webhook sink.
 //!
 //! The decision-critical events the console cares about (new pending proposal,

@@ -47,7 +47,7 @@ fn has_word_boundaries(content: &str, start: usize, end: usize) -> bool {
 #[derive(Default)]
 pub struct EntityVocabulary {
     pub entities: Vec<String>,
-    /// v1.28.5 "Groundwork" (F-31): sidecar membership set so `insert` is
+/// sidecar membership set so `insert` is
     /// O(1) instead of a linear `contains` over the (≤ 500) entities — an
     /// adversarial 1 MiB doc with one repeated entity used to cost ~10¹⁰
     /// comparisons at build time.
@@ -276,7 +276,7 @@ pub fn extract_heading_relationships(
 // EntityVocabulary
 // ---------------------------------------------------------------------------
 
-/// v1.20.2 D2: cap on auto-extracted vocabulary size. Prevents the O(mentions²)
+/// cap on auto-extracted vocabulary size. Prevents the O(mentions²)
 /// blowup in `discover_verb_patterns`/`find_relationships` when an attacker
 /// submits adversarial content (e.g. 1 MiB of `**A0** **A1** **A2** …`). 500 is
 /// well above any legitimate document; the quadratic loop on 500 mentions is
@@ -284,7 +284,7 @@ pub fn extract_heading_relationships(
 /// legitimate dense-vocab domains if measured.
 pub const MAX_VOCAB_ENTITIES: usize = 500;
 
-/// v1.28.5 "Groundwork" (F-31): cap on per-sentence mentions kept for the
+/// cap on per-sentence mentions kept for the
 /// O(m²) relationship/verb-discovery pair loops. 200 keeps the pair scan at
 /// ≤ 40k iterations per sentence — far above any legitimate sentence, and the
 /// same "bounded on adversarial input" posture as `MAX_VOCAB_ENTITIES`.
@@ -297,7 +297,7 @@ impl EntityVocabulary {
         if name.len() < 3 {
             return;
         }
-        // v1.20.2 D2: bound the auto-extracted set so the downstream O(n²)
+        // bound the auto-extracted set so the downstream O(n²)
         // mention-pair scan stays bounded on adversarial input. The first 500
         // entities (in insertion order, which is document order) are kept — a
         // legitimate doc with >500 distinct entities is exceptional; an
@@ -365,7 +365,7 @@ impl EntityMatcher {
     }
 
     /// Find mentions with positions (for relationship extraction).
-    /// v1.28.5 "Groundwork" (F-31): bounded — the per-sentence mention list is
+/// bounded — the per-sentence mention list is
     /// truncated to [`MAX_MENTIONS_PER_SENTENCE`] after dedup so the O(m²)
     /// pair loops in the relationship paths stay bounded on adversarial
     /// sentences (a 1 MiB line that is one giant "sentence" could otherwise
@@ -393,7 +393,7 @@ impl EntityMatcher {
         deduped
     }
 
-    /// v1.28.5 "Groundwork" (F-31): dedup overlapping mention ranges. Matches
+/// dedup overlapping mention ranges. Matches
     /// arrive ordered by start; a kept range's end is strictly increasing (a
     /// candidate is only kept when it is contained in NO previous range,
     /// which for start-ordered input reduces to `end > last kept end`) — so
@@ -1355,7 +1355,7 @@ Ceph maps OSD failures.
         assert!(!is_likely_verb("system"));
     }
 
-    /// v1.20.2 D2: vocabulary extraction is capped so the O(mentions²) pair
+    /// vocabulary extraction is capped so the O(mentions²) pair
     /// scan in `discover_verb_patterns`/`find_relationships` stays bounded on
     /// adversarial input. Before the cap, 1 MiB of `**A0** **A1** …` (≈30k
     /// entities) made the quadratic loop run ~4.5×10⁸ iterations per sentence.
@@ -1378,7 +1378,7 @@ Ceph maps OSD failures.
         assert!(vocab.entities.len() < 10);
     }
 
-    /// v1.28.5 "Groundwork" (F-31): a 1 MiB line with ONE entity repeated
+/// a 1 MiB line with ONE entity repeated
     /// 10⁵× completes fast. The old `insert` ran a linear `contains` per call
     /// (10⁵ × avg 250 ≈ 2.5×10⁷ compares on a half-full vocab) — the sidecar
     /// HashSet makes it O(1). Bounded on time: CI on a loaded runner would
@@ -1404,7 +1404,7 @@ Ceph maps OSD failures.
         assert_eq!(vocab.seen.len(), 2, "sidecar set mirrors the vec");
     }
 
-    /// v1.28.5 "Groundwork" (F-31): the O(m) running-scan dedup must produce
+/// the O(m) running-scan dedup must produce
     /// exactly the output of the O(m²) containment scan it replaced. The old
     /// implementation is kept here as the oracle on randomized fixtures:
     /// start-ordered mention ranges, containers, disjoint, and adversarial

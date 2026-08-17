@@ -1,4 +1,4 @@
-//! v0.9.6 "Bridge" — connector contract.
+//! connector contract.
 //!
 //! A *connector* is an out-of-process binary that pulls documents from an
 //! external source (GitHub, …) into brain-server's existing source/revision

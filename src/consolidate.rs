@@ -1,4 +1,4 @@
-//! v0.9.8 "Evidence" M2 — deterministic consolidation (visibility, not deletion).
+//! deterministic consolidation (visibility, not deletion).
 //!
 //! Every function here is pure SQL + deterministic comparison over the existing
 //! `knowledge` + `source_revisions` + `evidence_links` tables. No LLM call, no
@@ -52,7 +52,7 @@ pub fn link_evidence(
     )?)
 }
 
-/// v1.6.0 "Reconcile" — atomic supersession resolution. The mandatory
+/// atomic supersession resolution. The mandatory
 /// Carry-forward from `IMPLEMENTATION_PLAN_v1.6.0_Reconcile.md`: a typed
 /// `supersedes` link must actually *expire* the prior fact, not just record
 /// the relationship. Graphiti's `resolve_edge_contradictions` (Context7,
@@ -98,7 +98,7 @@ pub fn resolve_supersession(
     )?;
     // 3. Audit. Target_hash = content_hash of the expired chunk (no PII).
     //    The `audit::record_tenant` savepoint nests inside the caller's tx
-    //    (v1.1.1 fix); a failure here rolls back only the audit row, not the
+    //; a failure here rolls back only the audit row, not the
     //    resolution. AuditKind::Reconcile is the documented kind for this.
     if expired > 0 {
         // Target_hash = content_hash of the expired chunk (no PII). Best-effort:
@@ -126,7 +126,7 @@ pub fn resolve_supersession(
     Ok(expired)
 }
 
-/// v1.6.0 "Reconcile" M5 — consistency check: find `contradicts` links that
+/// consistency check: find `contradicts` links that
 /// have no paired resolution. A contradicts edge is "unresolved" when BOTH
 /// endpoints are still current (neither has an incoming `supersedes` link and
 /// neither has `valid_to` set). These are the operator-actionable cases — a
@@ -161,7 +161,7 @@ pub fn find_unresolved_contradictions(conn: &Connection) -> Result<Vec<(i64, i64
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-// ── v1.8.0 "Maintain" — reviewable proposals + undo ─────────────────────
+// ── — reviewable proposals + undo ─────────────────────
 //
 // Roadmap v1.8: "duplicate and stale-source proposals, resumable batches,
 // review UI/API contract, and recovery rehearsal." Exit: reviewers accept
@@ -181,7 +181,7 @@ pub struct StaleSource {
     pub chunk_count: i64,
 }
 
-/// v1.8.0 M5 (partial): find vault sources whose `uri` is a file path that no
+/// find vault sources whose `uri` is a file path that no
 /// longer exists. Only checks `kind='vault'` sources (URIs starting with `/` or
 /// a drive letter); `manual://` and connector URIs have no filesystem backing.
 /// Pure detection — never archives or deletes. The operator decides.
@@ -230,7 +230,7 @@ pub struct NearDupPair {
     pub similarity: f32,
 }
 
-/// v1.8.0 M2 (partial): find near-duplicate chunk pairs via embedding cosine
+/// find near-duplicate chunk pairs via embedding cosine
 /// similarity. Uses the existing `vec_knowledge` KNN to find each chunk's
 /// nearest neighbor (k=2 = self + nearest); pairs above the threshold are
 /// proposed. Bounded O(n×k) via KNN, not O(n²) pairwise. Pure detection.
@@ -273,7 +273,7 @@ pub fn find_near_duplicates(
         .collect();
     drop(stmt);
 
-    // v1.28.5 "Groundwork" (E-10): the KNN statement is hoisted out of the
+// the KNN statement is hoisted out of the
     // per-chunk loop (was re-prepared once per chunk scanned).
     let mut knn = conn.prepare_cached(
         "SELECT v.knowledge_id, v.distance
@@ -350,7 +350,7 @@ pub(crate) fn decode_embedding(blob: &[u8]) -> Vec<f32> {
     blob.iter().map(|&b| (b as i8 as f32) / 127.0).collect()
 }
 
-/// v1.8.0 — undo a prior supersession. The roadmap exit criterion's
+/// undo a prior supersession. The roadmap exit criterion's
 /// "reject or undo them without retrieval regression" arm. Reverses
 /// `resolve_supersession`: clears `valid_to` back to NULL on the old chunk
 /// and removes the `supersedes` evidence_link, atomically in the caller's tx.
@@ -469,7 +469,7 @@ pub fn find_subject_conflicts(conn: &Connection) -> Result<Vec<ConflictPair>> {
     };
 
     let mut out = Vec::new();
-    // v1.20.18 "Bound": the pair loop is collapsed from O(n²) over ALL current
+    // the pair loop is collapsed from O(n²) over ALL current
     // rows to O(sum of m² per subject) by grouping on the subject key first —
     // the conflict rule only ever compares rows with the SAME subject. For the
     // live corpus (subjects mostly unique) this is ~O(n) dominating. Output is
@@ -804,7 +804,7 @@ mod tests {
 
     #[test]
     fn find_unresolved_contradictions_flags_unresolved_and_hides_resolved() {
-        // v1.6.0 M5: a `contradicts` link with no paired `supersedes` is
+        // a `contradicts` link with no paired `supersedes` is
         // unresolved (operator-actionable). Once either endpoint is superseded,
         // the contradiction is considered resolved and drops out.
         let mut c = db();

@@ -1,4 +1,4 @@
-//! v1.22.0 "Regulated" M1 — the legal-hold HTTP surface.
+//! the legal-hold HTTP surface.
 //!
 //! `POST /legal-hold` (ids + reason) freezes chunks against every erasure
 //! path; `POST /legal-hold/{id}/release` is the explicit un-freeze (never
@@ -132,7 +132,7 @@ pub async fn release_legal_hold(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, q.domain.as_deref())?;
-    // v1.28.1 "Holdall" M3 (F-51): releasing a hold unfreezes erasure mid-
+    // releasing a hold unfreezes erasure mid-
     // litigation — the same DPO/admin dual gate a breach close carries.
     super::breaches::require_dpo_role(&principal.0, &pool)?;
     let pool_for = pool.clone();

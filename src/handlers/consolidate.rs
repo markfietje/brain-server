@@ -1,4 +1,4 @@
-//! v0.9.8 "Evidence" M2.3 — consolidation handlers.
+//! consolidation handlers.
 //!
 //! `POST /consolidate/propose` detects duplicate/conflict candidates without
 //! mutating anything (reviewable). `POST /consolidate/apply` records the
@@ -23,14 +23,14 @@ pub struct ConsolidateProposal {
     pub exact_duplicates: Vec<Vec<i64>>,
     /// Subject conflicts: same subject, differing content, both current.
     pub conflicts: Vec<ConflictView>,
-    /// v1.6.0: `contradicts` links that have no paired `supersedes` resolution.
+    /// `contradicts` links that have no paired `supersedes` resolution.
     /// Each entry is `(from_chunk, to_chunk)`. Operator-actionable: a
     /// contradiction was flagged but nobody picked a winner.
     pub unresolved_contradictions: Vec<(i64, i64)>,
-    /// v1.8.0: vault sources whose backing file no longer exists on disk.
+    /// vault sources whose backing file no longer exists on disk.
     /// Operator reviews: re-ingest if moved, or `DELETE /sources/{id}` to retire.
     pub stale_sources: Vec<StaleSourceView>,
-    /// v1.8.0: near-duplicate chunk pairs (cosine > threshold, different hash).
+    /// near-duplicate chunk pairs (cosine > threshold, different hash).
     /// Propose `supersedes`; operator picks the winner via `brain resolve`.
     pub near_duplicates: Vec<NearDupView>,
 }
@@ -68,7 +68,7 @@ pub async fn propose(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
 ) -> Result<Json<ConsolidateProposal>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ read gate (detection surface, zero mutation).
+    // AuthZ read gate (detection surface, zero mutation).
     // `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
@@ -86,7 +86,7 @@ pub async fn propose(
             let uc = consolidate::find_unresolved_contradictions(&conn).map_err(|e| {
                 HandlerError::internal(format!("find_unresolved_contradictions failed: {e}"))
             })?;
-            // v1.8.0: stale-source + near-duplicate proposals.
+            // stale-source + near-duplicate proposals.
             let stale = consolidate::find_stale_sources(&conn)
                 .map_err(|e| HandlerError::internal(format!("find_stale_sources failed: {e}")))?;
             // ponytail: near-dup KNN scan is O(n) per chunk; bounded by
@@ -164,7 +164,7 @@ pub async fn apply(
     principal: OptPrincipal,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+// write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
     let links = req.links;
@@ -179,7 +179,7 @@ pub async fn apply(
             .transaction()
             .map_err(|e| HandlerError::internal(format!("tx failed: {e}")))?;
         for l in &links {
-            // v1.6.0 "Reconcile": `supersedes` is the only kind that expires
+            // `supersedes` is the only kind that expires
             // the prior fact (the mandatory Carry-forward). Other kinds
             // (contradicts/supports/references/derived_from) just record the
             // link — they don't change retrieval state. Routing on kind keeps
@@ -242,7 +242,7 @@ pub async fn undo(
     principal: OptPrincipal,
     Json(req): Json<UndoRequest>,
 ) -> Result<Json<UndoResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+// write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
     let chunks = req.old_chunks;

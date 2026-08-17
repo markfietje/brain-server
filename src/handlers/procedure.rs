@@ -1,4 +1,4 @@
-//! v1.10.0 "Procedural" — handlers for procedural memory + deterministic
+//! handlers for procedural memory + deterministic
 //! categorization + decision evaluation. See `src/procedural.rs` for the pure
 //! logic. These handlers are thin: validate → DB → render, exactly like
 //! `verify.rs` (v1.5) and `suggest.rs` (v1.9).
@@ -147,7 +147,7 @@ pub async fn create(
         Some(d) => Some(crate::handlers::normalize_domain(d)?),
         None => None,
     };
-    // v1.2.0 M3 AuthZ: write gate scoped to the actual target domain.
+// write gate scoped to the actual target domain.
     super::authorize(
         &principal.0,
         crate::auth::Action::Write,
@@ -177,7 +177,7 @@ pub async fn create(
         )
         .map_err(|e| HandlerError::internal(format!("procedure insert failed: {e}")))?;
         let root_id = tx.last_insert_rowid();
-        // v1.20.2 B1: flag the root if the screen quarantined. Excluded from
+        // flag the root if the screen quarantined. Excluded from
         // recall via `WHERE flagged = 0`, KG edges skipped below.
         let root_flagged = crate::flag_if_quarantined(&tx, root_id, root_quarantine)
             .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
@@ -203,7 +203,7 @@ pub async fn create(
             )
             .map_err(|e| HandlerError::internal(format!("step insert failed: {e}")))?;
             let step_id = tx.last_insert_rowid();
-            // v1.20.2 B1: flag this step if its screen quarantined. The verdict
+            // flag this step if its screen quarantined. The verdict
             // was computed per-step before the tx, so only the steps that
             // actually quarantined are flagged (a benign step in a quarantined
             // procedure stays clean).
@@ -335,7 +335,7 @@ pub async fn steps(
     principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<ProcedureStepsResponse>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ read gate. `None` (no JWT) = superuser.
+    // AuthZ read gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let procedure_id = id;
@@ -411,7 +411,7 @@ pub async fn classify(
     principal: OptPrincipal,
     Json(req): Json<ClassifyRequest>,
 ) -> Result<Json<ClassifyResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: read gate. Stateless pure function, but uniform gating
+// read gate. Stateless pure function, but uniform gating
     // keeps the surface predictable. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let text = req.text.trim().to_string();
@@ -458,7 +458,7 @@ pub async fn evaluate(
     Path(id): Path<i64>,
     Json(req): Json<EvaluateRequest>,
 ) -> Result<Json<DecisionOutcome>, HandlerError> {
-    // v1.2.0 M3 AuthZ: read gate (loads a chunk + runs the stored rule).
+// read gate (loads a chunk + runs the stored rule).
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<DecisionOutcome, HandlerError> {

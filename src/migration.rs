@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use xxhash_rust::xxh3::xxh3_64;
 use zerocopy::IntoBytes;
 
-/// v1.28.5 "Groundwork" (E-8): process-local truth that `vec_knowledge` exists
+/// Process-local truth that `vec_knowledge` exists
 /// in every DB this process has migrated. Set by [`run_migration_with_store_dim`],
 /// cleared by [`migrate_down_0_9_0`]. The search hot path reads this instead of
 /// probing the vec0 table per query (`SELECT COUNT(*) FROM vec_knowledge`); the
@@ -428,7 +428,7 @@ pub fn run_migration_with_store_dim(
         info!("vec_knowledge rebuilt; backfill will repopulate from embeddings");
     }
 
-    // v1.28.5 "Groundwork" (E-8): both paths above leave vec0 existing — stamp
+    // Both paths above leave vec0 existing — stamp
     // the search-path flag so the per-query existence probe disappears.
     VEC0_READY.store(true, Ordering::Relaxed);
 

@@ -1,4 +1,4 @@
-//! Authorization primitives (v1.2.0 "AuthN" M3).
+//! Authorization primitives.
 //!
 //! The hot path is `is_authorized`, which is O(scopes.len()) per request —
 //! typically 1–10 scopes, so tens of nanoseconds. No DB lookup, no network
@@ -24,7 +24,7 @@
 //! trait definition; the scope-matching logic stays unchanged.
 
 /// What the caller is trying to do. Maps to the route enforcement matrix in
-/// `IMPLEMENTATION_PLAN_v1.2.0_AuthN.md` §3.3.
+/// the AuthN plan §3.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Read,
@@ -64,10 +64,10 @@ pub struct Principal {
     /// The `jti` of the access token this principal came from. Used for
     /// audit attribution (who did what, with which token).
     pub jti: String,
-    /// v1.23.0 "Roles": the role *names* from the JWT `roles` claim. Empty =
+    /// the role *names* from the JWT `roles` claim. Empty =
     /// no role layer (the v1.14 scope path applies unchanged — back-compat).
     pub roles: Vec<String>,
-    /// v1.23.0 "Roles": the `manages` claim (their direct reports / agents),
+    /// the `manages` claim (their direct reports / agents),
     /// the source for an `owner_filter: "reports"` role's record gate. Empty =
     /// no reports (a reports-role sees nothing by default — deny-by-default).
     pub manages: Vec<String>,
@@ -126,7 +126,7 @@ impl Scope {
 /// (action, team, domain) tuple. Used by `handlers::authorize` which wraps this
 /// with the `Option<Principal>` back-compat path.
 ///
-/// Audit G2 (v1.11.0): an authenticated principal with zero valid scopes is
+/// Audit G2: an authenticated principal with zero valid scopes is
 /// deny-all — a token that carried no grants grants nothing. Explicit
 /// superuser requires `admin:*/*` (the `*:*/*` scope). The `None`-principal
 /// path (opaque-token/no-JWT back-compat) stays superuser in
@@ -140,7 +140,7 @@ pub fn is_authorized(principal: &Principal, action: Action, team: &str, domain: 
         .any(|s| s.grants(action, &team_lc, &domain_lc))
 }
 
-/// v1.27.9 "Roles": the client-domain allowlist seam. A `client-auditor`
+/// the client-domain allowlist seam. A `client-auditor`
 /// principal (a client's compliance login) is granted exactly the client
 /// domains its scopes name — the non-wildcard `domain` of each scope is the
 /// allowlist key (e.g. scope `admin:ops/acme-us` → client-domain `acme-us`).
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn empty_scopes_principal_is_deny_all_not_superuser() {
-        // Audit G2 (v1.11.0): an authenticated principal with zero scopes must
+        // Audit G2: an authenticated principal with zero scopes must
         // NOT be a superuser — a token that carried no grants grants nothing.
         // Explicit superuser requires `admin:*/*` (the `*:*/*` scope).
         let p = Principal {

@@ -1,4 +1,4 @@
-//! v1.21.0 "Profiles" — a Profile is a typed JSON bundle of *existing* knob
+//! a Profile is a typed JSON bundle of *existing* knob
 //! defaults (access_scope, PII posture, per-kind retention, audit level, kind
 //! vocabulary), stored as one row per name and bound to a domain. No new
 //! governance primitives: every field configures a v1.14/v1.15/v1.17.1 seam.
@@ -79,7 +79,7 @@ pub struct Profile {
     /// (enforcement lands with the v1.24 connector work). ponytail: ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connectors_allowed: Option<Vec<String>>,
-    /// v1.22.0 "Regulated" will read this when legal-hold enforcement ships;
+    /// Legal-hold enforcement will read this when it ships;
     /// here it is a stored flag only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_hold_default: Option<bool>,
@@ -167,9 +167,9 @@ impl Profile {
         self.pii_mode.as_deref() == Some("strict")
     }
 
-    /// v1.24.0 "Connectors": does this profile permit the connector `kind` for
+    /// does this profile permit the connector `kind` for
     /// its bound domain? The vertical-configuration lever — a profile's
-    /// `connectors_allowed` (v1.21.0) gates registration. A family-prefixed
+    /// `connectors_allowed` gates registration. A family-prefixed
     /// sub-kind (`crm-salesforce`) is granted by its bare family entry (`crm`),
     /// so the sales-team preset's `crm` permits every `crm-*` connector.
     ///

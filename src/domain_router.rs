@@ -107,7 +107,7 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
     drop(dconn);
 
     let count = vectors.len();
-    // v1.13.0 M4: a domain below DOMAIN_MIN_COUNT (default 1) keeps no centroid
+    // a domain below DOMAIN_MIN_COUNT (default 1) keeps no centroid
     // so `route()` stops sending traffic to a near-empty bucket. Default 1 is a
     // no-op — nothing is suppressed unless the operator raises the floor.
     let min_count = crate::config::brain_domain_min_count() as usize;
@@ -138,7 +138,7 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
     Ok(count)
 }
 
-/// v1.13.0 M4: one-shot recompute of every known domain's centroid from the
+/// one-shot recompute of every known domain's centroid from the
 /// corrected M1 source. Domain set = `DISTINCT knowledge.domain` ∪ existing
 /// `domain_centroids` rows (so a domain that emptied out also gets its stale
 /// centroid cleaned). In shim mode all domains share the global pool. Returns
@@ -276,7 +276,7 @@ mod tests {
         }
     }
 
-    // ── v1.13.0 M2: ingest auto-routing (pure decision) ──────────────────
+    // ── ingest auto-routing (pure decision) ──────────────────
 
     #[test]
     fn route_domain_label_forced_wins_over_centroids() {

@@ -17,7 +17,7 @@ pub async fn forget(
     principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<ForgetResponse>, HandlerError> {
-    // v1.12.1 "Harden": AuthZ admin gate — the v1.2 matrix puts DELETE
+    // AuthZ admin gate — the v1.2 matrix puts DELETE
     // /memory/{id} on the Admin surface (destructive operator action).
     // `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
@@ -33,13 +33,13 @@ pub async fn forget(
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
 
-        // v1.28.1 "Holdall" M1 (F-02): a held id is frozen against EVERY erasure
+        // a held id is frozen against EVERY erasure
         // path. Refuse this one in-transaction so `/purge`'s 409 shape is the
         // single hold-fence envelope.
         crate::legal_hold::refuse_if_held(&tx, &[id])?;
 
         // Capture the document_id + content digest for the tombstone before
-        // deleting (v1.28.1 M1.3: the deletion registry must carry the same
+        // deleting (the deletion registry must carry the same
         // SHA-256 evidence every other erasure path records).
         let doc_id: Option<String> = tx
             .query_row(
