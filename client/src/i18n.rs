@@ -66,7 +66,7 @@ static BUNDLES: LazyLock<HashMap<&'static str, HashMap<&'static str, &'static st
 
 /// M1: resolve a key in a given locale, falling back to `en` then to the key
 /// itself (visible — never a blank). Pure core; `t()` feeds it the live locale.
-fn resolve(key: &str, locale: &str) -> String {
+pub(crate) fn resolve(key: &str, locale: &str) -> String {
     for l in [locale, "en"] {
         if let Some(v) = BUNDLES.get(l).and_then(|b| b.get(key)) {
             return (*v).to_string();
@@ -80,6 +80,30 @@ fn resolve(key: &str, locale: &str) -> String {
 /// call subscribes the component to locale changes.
 pub fn t(key: &str) -> String {
     resolve(key, locale()())
+}
+
+/// F-38 v1.28: positional-interpolation core. `{0}`/`{1}`/… in the resolved
+/// value are replaced by `args` (positional — the convention that displaced
+/// the ad-hoc `.replace("{n}", …)` sites). Missing args stay verbatim
+/// (visible — the same never-blank posture). Pure; `t_fmt` feeds it the live
+/// locale, and tests pin it without a Dioxus runtime.
+pub(crate) fn resolve_fmt(key: &str, locale: &str, args: &[String]) -> String {
+    let s = resolve(key, locale);
+    if args.is_empty() {
+        return s;
+    }
+    let mut out = s;
+    for (i, a) in args.iter().enumerate() {
+        out = out.replace(&format!("{{{i}}}"), a);
+    }
+    out
+}
+
+/// F-38 v1.28: `t()` with positional arguments (`{0}`, `{1}`, …). Render-time
+/// only (subscribes to locale changes like `t`); the pure core is
+/// `resolve_fmt`, which the tests use.
+pub fn t_fmt(key: &str, args: &[String]) -> String {
+    resolve_fmt(key, locale()(), args)
 }
 
 /// M2: is a locale right-to-left? Arabic/Hebrew/Persian/Urdu. No RTL `.ftl`
@@ -232,12 +256,15 @@ mod tests {
         assert_eq!(pick_density("huge"), "comfortable");
     }
 
-    /// Every locale bundle compiles and is non-empty; `en` is the fallback and
-    /// must define every key that the other locales reference, so a missing key
-    /// anywhere resolves to English (never blank). Proves the `.ftl` files load
-    /// (the biggest failure mode — a path/parse error).
+    /// F-38 v1.28: the parity wall — every shipped locale must expose EXACTLY
+    /// the `en` key set. A locale behind `en` fails the build: that is the
+    /// process bug that made this pass necessary (keys added to `en` alone
+    /// drifted into a silently-English UI for de/fr/es/nl; the old test only
+    /// checked the weaker `en`-is-complete direction). The 119-key backfill
+    /// landed in the same change; a future key addition must ship its
+    /// translations in the same PR or the wall goes red.
     #[test]
-    fn locale_bundles_load_and_en_is_complete() {
+    fn locale_key_sets_are_identical() {
         let en = BUNDLES.get("en").expect("en bundle");
         assert!(!en.is_empty(), "en must not be empty");
         assert_eq!(
@@ -245,15 +272,359 @@ mod tests {
             SUPPORTED_LOCALES.len(),
             "one bundle per locale"
         );
-        // Every shipped locale's keys must exist in `en` so the fallback holds.
         for (loc, b) in BUNDLES.iter() {
             assert!(!b.is_empty(), "{loc} bundle must not be empty");
-            for k in b.keys() {
-                assert!(
-                    en.contains_key(*k),
-                    "{loc} key '{k}' missing from en fallback"
+            let missing: Vec<&str> = en.keys().filter(|k| !b.contains_key(*k)).copied().collect();
+            let extra: Vec<&str> = b.keys().filter(|k| !en.contains_key(*k)).copied().collect();
+            if !missing.is_empty() {
+                let sample = missing[..missing.len().min(5)].join(", ");
+                panic!(
+                    "{loc} missing {} keys vs en ({sample}…): backfill the same PR",
+                    missing.len()
                 );
             }
+            assert!(
+                extra.is_empty(),
+                "{loc} has keys absent from en: {}",
+                extra.join(", ")
+            );
         }
+    }
+
+    /// F-38 v1.28: `resolve_fmt` substitutes positionally and leaves unknown
+    /// placeholders visible (never blank). Pure — no Dioxus runtime needed.
+    #[test]
+    fn resolve_fmt_substitutes_positionally() {
+        assert_eq!(
+            resolve_fmt("proc_created", "en", &["3".to_string()]),
+            "Procedure created (3 steps)"
+        );
+        assert_eq!(
+            resolve_fmt("cons_applied", "de", &["2".to_string()]),
+            "2 Ablösungen angewendet"
+        );
+        assert_eq!(
+            resolve_fmt("data_purged", "nl", &["5".to_string()]),
+            "5 chunk(s) gewist"
+        );
+        // No args → the raw value, verbatim.
+        assert_eq!(resolve_fmt("review_title", "en", &[]), "Review queue");
+        // A stray `{0}` with no args stays visible — never blank.
+        assert_eq!(
+            resolve_fmt("sys_reindexed", "en", &[]),
+            "Reindexed {0} chunks"
+        );
+    }
+}
+
+/// v1.27.20 M3.3 — the no-raw-English-in-rsx gate. A scan of every render
+/// surface (main.rs + all panels + the shared confirm) asserts that no
+/// non-trivial plain string literal sits inside an `rsx!` block: every user-
+/// visible label must resolve through `t()`/`t_fmt()` or carry a
+/// `// i18n-exempt: <reason>` marker on the same line (CSS class expressions,
+/// wire/protocol vocabulary, keys) — an LLM's "lift the strings" refactor
+/// cannot silently leave a hardcoded label behind. Whitespace/openers like
+/// `" "` pass because punctuation/formatting is not content.
+#[cfg(test)]
+mod raw_string_scan {
+    const SURFACES: &[(&str, &str)] = &[
+        (
+            "main.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs")),
+        ),
+        (
+            "confirm.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/confirm.rs")),
+        ),
+        (
+            "panels/mod.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/mod.rs")),
+        ),
+        (
+            "panels/overview.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/overview.rs"
+            )),
+        ),
+        (
+            "panels/audit.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/audit.rs")),
+        ),
+        (
+            "panels/subjects.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/subjects.rs"
+            )),
+        ),
+        (
+            "panels/ops.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/ops.rs")),
+        ),
+        (
+            "panels/review.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/review.rs")),
+        ),
+        (
+            "panels/data.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/data.rs")),
+        ),
+        (
+            "panels/security.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/security.rs"
+            )),
+        ),
+        (
+            "panels/health.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/health.rs")),
+        ),
+        (
+            "panels/register.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/register.rs"
+            )),
+        ),
+        (
+            "panels/system.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/system.rs")),
+        ),
+        (
+            "panels/graph.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/graph.rs")),
+        ),
+        (
+            "panels/console.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/console.rs"
+            )),
+        ),
+        (
+            "panels/ump.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/ump.rs")),
+        ),
+        (
+            "panels/ingest.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/ingest.rs")),
+        ),
+        (
+            "panels/recall.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/panels/recall.rs")),
+        ),
+        (
+            "panels/procedures.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/procedures.rs"
+            )),
+        ),
+        (
+            "panels/consolidate.rs",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/panels/consolidate.rs"
+            )),
+        ),
+    ];
+
+    fn prev_nonspace(hay: &[u8], mut i: usize) -> Option<u8> {
+        while i > 0 {
+            i -= 1;
+            let c = hay[i];
+            if c != b' ' && c != b'\t' {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    fn next_nonspace(hay: &[u8], i: usize) -> Option<u8> {
+        hay.iter()
+            .skip(i)
+            .copied()
+            .find(|&c| c != b' ' && c != b'\t')
+    }
+
+    fn is_pure_snake(s: &str) -> bool {
+        s.bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    }
+
+    fn is_css_class(s: &str) -> bool {
+        s.starts_with("badge-")
+            || s.starts_with("text-")
+            || s.starts_with("border-")
+            || s.starts_with("bg-")
+            || s.starts_with("font-")
+            || s.starts_with("w-")
+            || s.starts_with("h-")
+            || s.starts_with("p-")
+            || s.starts_with("m-")
+            || s.starts_with("gap-")
+            || s.starts_with("max-w-")
+            || s.starts_with("rounded")
+            || s.starts_with("flex")
+            || s.starts_with("grid")
+            || s.starts_with("items-")
+            || s.starts_with("justify-")
+            || s.starts_with("space-y-")
+            || s.starts_with("overflow-")
+            || s.starts_with("whitespace-")
+            || s.starts_with("cursor-")
+            || s.starts_with("opacity-")
+            || s.starts_with("pointer-")
+            || s.starts_with("select")
+            || s.starts_with("absolute")
+            || s.starts_with("relative")
+            || s.starts_with("sticky")
+            || s.starts_with("tab-")
+            || s.starts_with("btn")
+            || s.starts_with("input-")
+            || s.starts_with("px-")
+            || s.starts_with("py-")
+            || s.starts_with("tracking-")
+            || s.starts_with("line-clamp")
+            || s.starts_with("z-")
+            || s.starts_with("fill-")
+            || s.starts_with("shrink-")
+            || s.starts_with("grow-")
+            || s.starts_with("order-")
+            || s.starts_with("content-")
+            || s.starts_with("self-")
+            || s.starts_with("truncate")
+    }
+
+    /// Scan one source file for suspect plain strings inside `rsx!` regions.
+    /// Rule per candidate `"…"`: too short, contains `{` (rsx interpolation),
+    /// contains whitespace/colon (sentence text passes), pure snake_case or a
+    /// CSS class (wire keys/classes), preceded by `: (= . [ ! & + - / \` '`
+    /// (prop value / fn arg / arithmetic), followed by `:` (attr key), or the
+    /// line carries `// i18n-exempt:` — all pass. Outside-rsx code, `r#`
+    /// raw strings, `#[cfg(test)]`/`mod tests` bodies and whole-line `//`
+    /// comments are skipped.
+    fn scan(src: &str) -> Vec<(usize, String)> {
+        let mut in_rsx = false;
+        let mut in_tests = false;
+        let mut test_depth = 0i32;
+        let mut hits = Vec::new();
+        for (idx, line) in src.lines().enumerate() {
+            let lineno = idx + 1;
+            if in_tests {
+                let open = line.matches('{').count() as i32;
+                let close = line.matches('}').count() as i32;
+                test_depth += open - close;
+                if test_depth <= 0 {
+                    in_tests = false;
+                }
+                continue;
+            }
+            if !in_rsx {
+                if line.contains("rsx!") {
+                    in_rsx = true;
+                } else {
+                    continue;
+                }
+            }
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || line.contains("// i18n-exempt:") || line.contains("r#")
+            {
+                continue;
+            }
+            if line.contains("#[cfg(test)]") || line.contains("mod tests") {
+                in_tests = true;
+                test_depth = line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                continue;
+            }
+            let bytes = line.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] != b'"' {
+                    i += 1;
+                    continue;
+                }
+                let start = i + 1;
+                let mut j = start;
+                let mut escaped = false;
+                while j < bytes.len() {
+                    let c = bytes[j];
+                    if c == b'\\' && !escaped {
+                        escaped = true;
+                    } else if c == b'"' && !escaped {
+                        break;
+                    } else if escaped {
+                        escaped = false;
+                    }
+                    j += 1;
+                }
+                let inner = &line[start..j];
+                let ok = if inner.len() < 2
+                    || !inner.bytes().any(|c| c.is_ascii_alphanumeric())
+                    || inner.contains('{')
+                    || inner.contains(' ')
+                    || inner.contains('\t')
+                    || inner.contains(':')
+                    || is_pure_snake(inner)
+                    || is_css_class(inner)
+                    || inner.starts_with('#')
+                {
+                    true
+                } else {
+                    let prev = prev_nonspace(bytes, start - 1);
+                    let next = next_nonspace(bytes, j.saturating_add(1));
+                    matches!(prev, Some(c) if b": (= . [ ! & + - / ` '".contains(&c))
+                        || matches!(next, Some(c) if c == b':')
+                };
+                if !ok {
+                    hits.push((lineno, inner.to_string()));
+                }
+                i = j.saturating_add(1).max(start);
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn no_raw_strings_in_rsx() {
+        let mut all = Vec::new();
+        for (name, src) in SURFACES {
+            for (line, s) in scan(src) {
+                all.push(format!("{name}:{line}: \"{s}\""));
+            }
+        }
+        assert!(
+            all.is_empty(),
+            "hardcoded string literals inside rsx! blocks (must use t()/t_fmt() or `// i18n-exempt:` + reason):\n{}",
+            all.join("\n")
+        );
+    }
+
+    #[test]
+    fn scanner_flags_hardcoded_label() {
+        let hits = scan("fn f() -> Element { rsx! { div { \"Hello\" } } }");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, "Hello");
+    }
+
+    #[test]
+    fn scanner_passes_exempt_and_props() {
+        assert!(scan("fn f() { rsx! { div { \"badge badge-ok\" /* css */ } } }").is_empty());
+        assert!(scan("fn f() { rsx! { div { \"Hello\" } } } // i18n-exempt: demo").is_empty());
+        assert!(
+            scan("fn f() { rsx! { input { placeholder: \"Type here\", value: \"x\" } } }")
+                .is_empty()
+        );
+        assert!(scan("fn f() { rsx! { p { { crate::i18n::t(\"k\") } } } }").is_empty());
+        assert!(scan("fn f() { rsx! { p { \"{x}\" } } }").is_empty());
+        assert!(
+            scan("fn f() { rsx! { button { \"aria-label\": \"m\", \"OK now\" } } }").is_empty()
+        );
+        assert!(scan("fn f() { rsx! { p { \"1:2\" } } }").is_empty());
+        assert!(
+            scan("#[cfg(test)] mod tests { fn g() { rsx! { p { \"Raw test\" } } } }").is_empty()
+        );
     }
 }

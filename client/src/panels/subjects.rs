@@ -7,6 +7,7 @@
 //! replacing the old freeform status line. Confirmation-first (DESIGN §1.7).
 
 use crate::api::{ApiClient, DsarCertificate, DsarLedgerRow, Footprint};
+use crate::i18n::{t, t_fmt};
 use crate::panels::{use_document_title, PageTitle};
 use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
 use crate::{Route, UiState};
@@ -36,13 +37,14 @@ pub fn dsar_clock(row: &DsarLedgerRow, now: i64) -> Option<(&'static str, String
     Some((cls, format_remaining(remaining(deadline, now))))
 }
 
-/// M5 pure: the chain badge state — green "chain verified" or red "CHAIN
-/// TAMPERED". Extracted so the card rendering is plumbing.
+/// M5 pure: the chain badge state — returns the class + the i18n KEY of the
+/// status text (the render site resolves it so the certificate card speaks the
+/// operator's locale). Extracted so the card rendering is plumbing.
 pub fn chain_badge(chain_verifies: bool) -> (&'static str, &'static str) {
     if chain_verifies {
-        ("text-ok", "✓ chain verified")
+        ("text-ok", "chain_verified")
     } else {
-        ("text-danger", "✗ CHAIN TAMPERED")
+        ("text-danger", "chain_tampered")
     }
 }
 
@@ -121,6 +123,7 @@ pub fn panel() -> Element {
         }
     });
 
+    let dsar_running = crate::i18n::t("dsar_running");
     rsx! {
         PageTitle { {crate::i18n::t("subjects_title")} }
         div { class: "card mt-2",
@@ -129,10 +132,10 @@ pub fn panel() -> Element {
                     input {
                         class: "input flex-1",
                         maxlength: MAX_SUBJECT,
-                        placeholder: "subject / owner / principal…",
+                        placeholder: t("dsar_subject_placeholder"),
                         value: "{subject}",
                         oninput: move |e| subject.set(e.value()),
-                        "aria-label": "subject to action",
+                        "aria-label": t("dsar_subject_aria"),
                     }
                 }
                 div { class: "flex gap-2",
@@ -146,7 +149,7 @@ pub fn panel() -> Element {
                             result.set(Some(run_dsar(api(), s, "export").await));
                             busy.set(false);
                         },
-                        "Locate & export"
+                        {t("dsar_locate_export")}
                     }
                     button {
                         class: "btn btn-destructive btn-md",
@@ -170,14 +173,14 @@ pub fn panel() -> Element {
                                 prev_busy.set(true);
                                 let out = match api().dsar_preview(&s).await {
                                     Ok(fp) => Ok(fp),
-                                    Err(e) => Err(format!("preview failed: {e}")),
+                                    Err(e) => Err(t_fmt("dsar_preview_failed", &[e.to_string()])),
                                 };
                                 prev.set(Some(out));
                                 prev_busy.set(false);
                                 pending_purge.set(Some(s));
                             }
                         },
-                        "Locate, export & purge"
+                        {t("dsar_locate_export_purge")}
                     }
                 }
                 // v1.28.1 M4: the confirm card — renders after step 1 and stays
@@ -198,7 +201,7 @@ pub fn panel() -> Element {
                                     class: "btn btn-outline btn-sm",
                                     disabled: busy(),
                                     onclick: move |_| pending_purge.set(None),
-                                    "Cancel"
+                                    {t("cancel")}
                                 }
                                 button {
                                     class: "btn btn-destructive btn-sm",
@@ -219,11 +222,11 @@ pub fn panel() -> Element {
                     }
                 }
                 if busy() {
-                    p { class: "text-muted-foreground", "running…" }
+                    p { class: "text-muted-foreground", "{dsar_running}" }
                 }
                 match &*result.read() {
                     Some(DsarOutcome::Done(r)) => rsx! { CertificateCard { result: r.clone() } },
-                    Some(DsarOutcome::Queued) => rsx! { p { class: "text-warn mt-2", "queued — will replay when the connection returns" } },
+                    Some(DsarOutcome::Queued) => rsx! { p { class: "text-warn mt-2", {t("dsar_queued")} } },
                     Some(DsarOutcome::Failed(msg)) => rsx! { p { class: "text-danger mt-2", "{msg}" } },
                     None => rsx! {},
                 }
@@ -241,15 +244,17 @@ pub fn panel() -> Element {
                     ul { class: "space-y-1",
                         for row in ledger() {
                             li { class: "flex items-center justify-between rounded border border-border p-2 text-sm",
+                                // i18n-exempt: ledger row data — the id + subject verbatim (the subject IS
+                                // signed data; the id is an autoincrement).
                                 span { class: "font-mono text-xs", "#{row.id} {row.subject}" }
                                 span { class: "flex items-center gap-2",
                                     if row.status == "completed" {
                                         span { class: "text-muted-foreground text-xs",
-                                        {crate::i18n::t("dsar_clock_completed")} " · " {crate::i18n::t("dsar_clock_retained")} }
+                                        {t_fmt("dsar_completed_retained", &[t("dsar_clock_completed"), t("dsar_clock_retained")])} }
                                     } else if let Some((cls, label)) = dsar_clock(&row, now_unix()) {
                                         span { class: "text-muted-foreground text-xs", "{row.action}" }
                                         span { class: "{cls} tabular",
-                                            {crate::i18n::t("dsar_clock_deadline")} ": {label}" }
+                                            {t_fmt("dsar_clock_deadline", &[label])} }
                                     }
                                 }
                             }
@@ -279,13 +284,13 @@ pub fn panel() -> Element {
                         onclick: move |_| async move {
                             let s = prev_subject().trim().to_string();
                             if s.is_empty() {
-                                prev.set(Some(Err("enter a subject first".into())));
+                                prev.set(Some(Err(t("dsar_subject_required"))));
                                 return;
                             }
                             prev_busy.set(true);
                             let out = match api().dsar_preview(&s).await {
                                 Ok(fp) => Ok(fp),
-                                Err(e) => Err(format!("preview failed: {e}")),
+                                Err(e) => Err(t_fmt("dsar_preview_failed", &[e.to_string()])),
                             };
                             prev.set(Some(out));
                             prev_busy.set(false);
@@ -294,7 +299,7 @@ pub fn panel() -> Element {
                     }
                 }
                 if prev_busy() {
-                    p { class: "text-muted-foreground", "previewing…" }
+                    p { class: "text-muted-foreground", {t("dsar_previewing")} }
                 }
                 match &*prev.read() {
                     Some(Ok(fp)) => rsx! { FootprintCard { fp: fp.clone() } },
@@ -304,8 +309,7 @@ pub fn panel() -> Element {
             }
         }
         p { class: "text-ink-faint mt-4 text-sm",
-            "Purge is irreversible: it writes a tombstone + hash-chain entry. "
-            "The deletion certificate re-verifies the chain head live."
+            {t("dsar_purge_note")}
         }
     }
 }
@@ -359,17 +363,19 @@ pub fn detail(dsar_id: i64) -> Element {
         let api = api();
         async move { api.dsar_certificate(dsar_id).await }
     });
+    let page_title = t_fmt("deletion_certificate", &[format!("#{dsar_id}")]);
+    let back_label = t("dsar_back_link");
     rsx! {
-        PageTitle { {format!("{} #{dsar_id}", crate::i18n::t("deletion_certificate"))} }
+        PageTitle { "{page_title}" }
         p { class: "text-xs text-muted-foreground mb-3",
-            Link { to: Route::Subjects {}, "← back to subjects" } }
+            Link { to: Route::Subjects {}, "{back_label}" } }
         match &*cert.read() {
             Some(Ok(v)) => {
                 let c = DsarCertificate::from_value(v.clone());
                 rsx! { CertificateCard { result: DsarResult { id: dsar_id, subject: subject_of(&c), cert: c } } }
             }
-            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "certificate failed: {e}" } },
-            None => rsx! { p { class: "text-muted-foreground mt-2", "loading…" } },
+            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", {t_fmt("cert_fetch_failed", &[e.to_string()])} } },
+            None => rsx! { p { class: "text-muted-foreground mt-2", {t("dsar_loading")} } },
         }
     }
 }
@@ -380,7 +386,8 @@ pub fn detail(dsar_id: i64) -> Element {
 #[component]
 fn CertificateCard(result: DsarResult) -> Element {
     let cert = result.cert.clone();
-    let (badge_class, badge_text) = chain_badge(cert.chain_verifies);
+    let (badge_class, badge_key) = chain_badge(cert.chain_verifies);
+    let badge_text = t(badge_key);
     let purged = cert
         .purged_ids
         .iter()
@@ -391,26 +398,35 @@ fn CertificateCard(result: DsarResult) -> Element {
         .tombstone_root
         .map(|r| format!("chunk #{r}"))
         .unwrap_or_else(|| "—".into());
+    let cert_title = t_fmt("deletion_certificate", &[format!("#{}", result.id)]);
+    let cert_subject = t_fmt("dsar_subject_line", &[result.subject.clone()]);
+    let cert_found = t("cert_found");
+    let cert_purged = t("cert_purged");
+    let cert_tombstone_root = t("cert_tombstone_root");
+    let cert_certified = t("cert_certified");
+    let cert_chain_head = t("cert_chain_head");
     rsx! {
         div { class: "card mt-2",
             div { class: "card-header",
-                h2 { class: "card-title", "Deletion certificate #{result.id}" }
+                // i18n-exempt: the certificate letter-id is the wire id (#n) —
+                // "Deletion certificate" itself is the translated key.
+                h2 { class: "card-title", "{cert_title}" }
                 Link {
                     class: "font-mono text-xs text-accent hover:underline",
                     to: Route::DsarDetail { dsar_id: result.id },
-                    "subject: {result.subject}"
+                    "{cert_subject}"
                 }
             }
             dl { class: "card-body grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm",
-                dt { class: "text-muted-foreground", "found" }
+                dt { class: "text-muted-foreground", "{cert_found}" }
                 dd { class: "font-mono tabular", "{cert.found_count}" }
-                dt { class: "text-muted-foreground", "purged" }
+                dt { class: "text-muted-foreground", "{cert_purged}" }
                 dd { class: "font-mono tabular", "{purged}" }
-                dt { class: "text-muted-foreground", "tombstone root" }
+                dt { class: "text-muted-foreground", "{cert_tombstone_root}" }
                 dd { class: "font-mono", "{root}" }
-                dt { class: "text-muted-foreground", "certified" }
+                dt { class: "text-muted-foreground", "{cert_certified}" }
                 dd { "{cert.certified_at}" }
-                dt { class: "text-muted-foreground", "chain head" }
+                dt { class: "text-muted-foreground", "{cert_chain_head}" }
                 dd { class: "font-mono text-xs", "{cert.chain_head}" }
             }
             div { class: "card-footer",
@@ -451,7 +467,12 @@ async fn run_dsar(api: ApiClient, subject: String, action: &'static str) -> Dsar
             });
             return DsarOutcome::Queued;
         }
-        Err(e) => return DsarOutcome::Failed(format!("dsar {action} failed: {e}")),
+        Err(e) => {
+            return DsarOutcome::Failed(t_fmt(
+                "dsar_action_failed",
+                &[action.to_string(), e.to_string()],
+            ))
+        }
         Ok(resp) => resp,
     };
     // Live chain re-verify: the cert-time head is a snapshot; the badge must
@@ -459,7 +480,7 @@ async fn run_dsar(api: ApiClient, subject: String, action: &'static str) -> Dsar
     let cert = match action {
         "purge" | "both" => match api.dsar_certificate(resp.id).await {
             Ok(v) => DsarCertificate::from_value(v),
-            Err(e) => return DsarOutcome::Failed(format!("certificate fetch failed: {e}")),
+            Err(e) => return DsarOutcome::Failed(t_fmt("cert_fetch_failed", &[e.to_string()])),
         },
         _ => {
             DsarCertificate::from_value(resp.certificate.clone().unwrap_or(serde_json::Value::Null))
@@ -480,14 +501,18 @@ mod tests {
     use super::*;
 
     /// The chain badge reflects the live verify state (the defining screenshot).
+    /// The badge text is an i18n KEY — the card translates it at render.
     #[test]
     fn chain_badge_reflects_live_verify() {
         let (cls, txt) = chain_badge(true);
         assert_eq!(cls, "text-ok");
-        assert!(txt.contains("verified"));
+        assert_eq!(txt, "chain_verified");
         let (cls, txt) = chain_badge(false);
         assert_eq!(cls, "text-danger");
-        assert!(txt.contains("TAMPERED"));
+        assert_eq!(txt, "chain_tampered");
+        // both keys resolve in the default locale (never a blank badge).
+        assert!(crate::i18n::resolve_fmt("chain_verified", "en", &[]).contains("verified"));
+        assert!(crate::i18n::resolve_fmt("chain_tampered", "en", &[]).contains("TAMPERED"));
     }
 
     /// v1.28.1 M4 (F-12): the two-step purge — the confirm stays frozen until

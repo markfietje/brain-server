@@ -267,7 +267,7 @@ pub fn panel() -> Element {
                 Some(Ok(s)) => rsx! {
                     StatusCard { label: crate::i18n::t("overview_snapshot"), route: Route::Health {},
                         div { class: "flex items-center gap-2",
-                            span { class: if s.all_ok { "size-2.5 rounded-full bg-ok" } else { "size-2.5 rounded-full bg-danger" } }
+                            span { class: if s.all_ok { "size-2.5 rounded-full bg-ok" } else { "size-2.5 rounded-full bg-danger" } }  // i18n-exempt: css class expression
                             span { class: "tabular", "{s.snapshot_count}" }
                         }
                     }
@@ -279,7 +279,7 @@ pub fn panel() -> Element {
                 Some(Ok(r)) => rsx! {
                     StatusCard { label: crate::i18n::t("overview_retention"), route: Route::Health {},
                         div { class: "flex items-center gap-2",
-                            span { class: if r.enabled { "size-2.5 rounded-full bg-ok" } else { "size-2.5 rounded-full bg-warn" } }
+                            span { class: if r.enabled { "size-2.5 rounded-full bg-ok" } else { "size-2.5 rounded-full bg-warn" } }  // i18n-exempt: css class expression
                             span { class: "tabular", "{r.counts.len()}" }
                             span { class: "text-muted-foreground", "{kinds}" }
                         }

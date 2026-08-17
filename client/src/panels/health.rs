@@ -3,7 +3,7 @@
 //! v1.21.0 "Profiles" M4: a third card — the home domain's active profile
 //! + effective knobs (transparency = the 2026 compliance ask).
 
-use crate::api::{error_message, ApiClient};
+use crate::api::ApiClient;
 use crate::panels::{use_document_title, PageTitle, RefreshButton};
 use crate::UiState;
 use dioxus::prelude::*;
@@ -41,6 +41,29 @@ pub fn panel() -> Element {
     let prof_title = crate::i18n::t("health_profile");
     let prof_none = crate::i18n::t("health_profile_none");
     let prof_knobs_note = crate::i18n::t("health_profile_knobs");
+    let health_dl_service = crate::i18n::t("health_dl_service");
+    let health_dl_status = crate::i18n::t("health_dl_status");
+    let health_dl_version = crate::i18n::t("health_dl_version");
+    let health_dl_docs = crate::i18n::t("health_dl_docs");
+    let health_dl_rss = crate::i18n::t("health_dl_rss");
+    let health_dl_capacity = crate::i18n::t("health_dl_capacity");
+    let health_dl_unavailable = crate::i18n::t("health_dl_unavailable");
+    let health_dl_unsafe = crate::i18n::t("health_dl_unsafe");
+    let health_dl_panics = crate::i18n::t("health_dl_panics");
+    let health_dl_corpus = crate::i18n::t("health_dl_corpus");
+    let health_dl_chunks = crate::i18n::t("health_dl_chunks");
+    let health_dl_embeddings = crate::i18n::t("health_dl_embeddings");
+    let health_dl_entities = crate::i18n::t("health_dl_entities");
+    let health_dl_relationships = crate::i18n::t("health_dl_relationships");
+    let health_dl_model = crate::i18n::t("health_dl_model");
+    let health_dl_profile = crate::i18n::t("health_dl_profile");
+    let health_dl_scope = crate::i18n::t("health_dl_scope");
+    let health_dl_pii = crate::i18n::t("health_dl_pii");
+    let health_dl_retention = crate::i18n::t("health_dl_retention");
+    let health_dl_audit = crate::i18n::t("health_dl_audit");
+    let health_dl_kinds = crate::i18n::t("health_dl_kinds");
+    let health_dl_hold = crate::i18n::t("health_dl_hold");
+    let health_dl_note = crate::i18n::t("health_dl_note");
     let prof_loaded = profile.read().clone().flatten();
     let prof_domain = prof_loaded
         .as_ref()
@@ -68,37 +91,37 @@ pub fn panel() -> Element {
             match &*health.read() {
                 Some(Ok(h)) => rsx! {
                     div { class: "card",
-                        div { class: "card-header", div { class: "card-title", "Service" } }
+                        div { class: "card-header", div { class: "card-title", "{health_dl_service}" } }
                         dl { class: "card-body grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular",
-                            dt { class: "text-muted-foreground", "status" }  dd { "{h.status}" }
-                            dt { class: "text-muted-foreground", "version" } dd { "{h.version}" }
+                            dt { class: "text-muted-foreground", "{health_dl_status}" }  dd { "{h.status}" }
+                            dt { class: "text-muted-foreground", "{health_dl_version}" } dd { "{h.version}" }
                             if let Some(c) = &h.capacity {
-                                dt { class: "text-muted-foreground", "docs" }     dd { "{c.docs} / {c.max_docs}" }
-                                dt { class: "text-muted-foreground", "rss" }      dd { "{c.rss_mib} / {c.max_rss_mib} MiB" }
-                                dt { class: "text-muted-foreground", "capacity" } dd { span { class: cap_class(&c.status), "{c.status}" } }
+                                dt { class: "text-muted-foreground", "{health_dl_docs}" }     dd { "{c.docs} / {c.max_docs}" }
+                                dt { class: "text-muted-foreground", "{health_dl_rss}" }      dd { "{c.rss_mib} / {c.max_rss_mib} MiB" }
+                                dt { class: "text-muted-foreground", "{health_dl_capacity}" } dd { span { class: cap_class(&c.status), "{c.status}" } }
                             } else {
-                                dt { class: "text-muted-foreground", "capacity" } dd { "unavailable" }
+                                dt { class: "text-muted-foreground", "{health_dl_capacity}" } dd { "{health_dl_unavailable}" }
                             }
                             if let Some(h2) = &h.hardening {
-                                dt { class: "text-muted-foreground", "unsafe blocks" } dd { "{h2.unsafe_blocks}" }
-                                dt { class: "text-muted-foreground", "panics caught" } dd { "{h2.panics_caught}" }
+                                dt { class: "text-muted-foreground", "{health_dl_unsafe}" } dd { "{h2.unsafe_blocks}" }
+                                dt { class: "text-muted-foreground", "{health_dl_panics}" } dd { "{h2.panics_caught}" }
                             }
                         }
                     }
                 },
-                Some(Err(e)) => rsx! { p { class: "text-danger", "health failed: {error_message(&e)}" } },
+                Some(Err(e)) => rsx! { p { class: "text-danger", {crate::i18n::t_fmt("health_failed", &[crate::api::error_message(e)])} } },
                 None => rsx! { p { class: "text-muted-foreground", "…" } },
             }
             match &*stats.read() {
                 Some(Ok(s)) => rsx! {
                     div { class: "card",
-                        div { class: "card-header", div { class: "card-title", "Corpus" } }
+                        div { class: "card-header", div { class: "card-title", "{health_dl_corpus}" } }
                         dl { class: "card-body grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular",
-                            dt { class: "text-muted-foreground", "chunks" }        dd { "{s.count}" }
-                            dt { class: "text-muted-foreground", "embeddings" }    dd { "{s.embeddings}" }
-                            dt { class: "text-muted-foreground", "entities" }      dd { "{s.entities}" }
-                            dt { class: "text-muted-foreground", "relationships" } dd { "{s.relationships}" }
-                            dt { class: "text-muted-foreground", "model" }         dd { "{s.model}" }
+                            dt { class: "text-muted-foreground", "{health_dl_chunks}" }        dd { "{s.count}" }
+                            dt { class: "text-muted-foreground", "{health_dl_embeddings}" }    dd { "{s.embeddings}" }
+                            dt { class: "text-muted-foreground", "{health_dl_entities}" }      dd { "{s.entities}" }
+                            dt { class: "text-muted-foreground", "{health_dl_relationships}" } dd { "{s.relationships}" }
+                            dt { class: "text-muted-foreground", "{health_dl_model}" }         dd { "{s.model}" }
                         }
                     }
                 },
@@ -114,26 +137,26 @@ pub fn panel() -> Element {
                     span { class: "badge", "{prof_domain}" }
                 }
                 dl { class: "card-body grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular",
-                    dt { class: "text-muted-foreground", "profile" } dd { "{prof_name_line}" }
+                    dt { class: "text-muted-foreground", "{health_dl_profile}" } dd { "{prof_name_line}" }
                     if let Some(v) = &prof_scope {
-                        dt { class: "text-muted-foreground", "default scope" } dd { "{v}" }
+                        dt { class: "text-muted-foreground", "{health_dl_scope}" } dd { "{v}" }
                     }
                     if let Some(v) = &prof_pii {
-                        dt { class: "text-muted-foreground", "pii mode" } dd { "{v}" }
+                        dt { class: "text-muted-foreground", "{health_dl_pii}" } dd { "{v}" }
                     }
                     if let Some(v) = &prof_retention {
-                        dt { class: "text-muted-foreground", "retention" } dd { "{v}" }
+                        dt { class: "text-muted-foreground", "{health_dl_retention}" } dd { "{v}" }
                     }
                     if let Some(v) = &prof_audit {
-                        dt { class: "text-muted-foreground", "audit level" } dd { "{v}" }
+                        dt { class: "text-muted-foreground", "{health_dl_audit}" } dd { "{v}" }
                     }
                     if let Some(v) = &prof_kinds {
-                        dt { class: "text-muted-foreground", "kinds" } dd { "{v}" }
+                        dt { class: "text-muted-foreground", "{health_dl_kinds}" } dd { "{v}" }
                     }
                     if let Some(v) = prof_hold {
-                        dt { class: "text-muted-foreground", "legal hold default" } dd { "{v}" }
+                        dt { class: "text-muted-foreground", "{health_dl_hold}" } dd { "{v}" }
                     }
-                    dt { class: "text-muted-foreground", "note" } dd { "{prof_knobs_note}" }
+                    dt { class: "text-muted-foreground", "{health_dl_note}" } dd { "{prof_knobs_note}" }
                 }
             }
         }

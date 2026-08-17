@@ -39,6 +39,8 @@ pub fn panel() -> Element {
     let memory_tab = crate::i18n::t("ingest_tab_memory");
     let content_lbl = crate::i18n::t("ingest_content");
     let title_lbl = crate::i18n::t("ingest_title");
+    let ingest_kinds_ph = crate::i18n::t("ingest_kinds_ph");
+    let ingest_domain_ph = crate::i18n::t("ingest_domain_ph");
     let kind_lbl = crate::i18n::t("ingest_kind");
     let domain_lbl = crate::i18n::t("ingest_domain");
     let entities_lbl = crate::i18n::t("ingest_entities");
@@ -146,11 +148,11 @@ pub fn panel() -> Element {
                         div { class: "grid gap-3 md:grid-cols-2 mt-3",
                             label { class: "flex flex-col gap-1 text-xs text-muted-foreground",
                                 "{kind_lbl}"
-                                input { class: "input", placeholder: "fact · procedure · step · decision", value: "{s_kind}", oninput: move |e| s_kind.set(e.value()), "aria-label": "{kind_lbl}" }
+                                input { class: "input", placeholder: "{ingest_kinds_ph}", value: "{s_kind}", oninput: move |e| s_kind.set(e.value()), "aria-label": "{kind_lbl}" }
                             }
                             label { class: "flex flex-col gap-1 text-xs text-muted-foreground",
                                 "{domain_lbl}"
-                                input { class: "input", placeholder: "global", value: "{s_domain}", oninput: move |e| s_domain.set(e.value()), "aria-label": "{domain_lbl}" }
+                                input { class: "input", placeholder: "{ingest_domain_ph}", value: "{s_domain}", oninput: move |e| s_domain.set(e.value()), "aria-label": "{domain_lbl}" }
                             }
                         }
                         label { class: "flex flex-col gap-1 text-xs text-muted-foreground mt-3",
@@ -178,7 +180,7 @@ pub fn panel() -> Element {
                             }
                             label { class: "flex flex-col gap-1 text-xs text-muted-foreground",
                                 "{domain_lbl}"
-                                input { class: "input", placeholder: "global", value: "{md_domain}", oninput: move |e| md_domain.set(e.value()), "aria-label": "{domain_lbl}" }
+                                input { class: "input", placeholder: "{ingest_domain_ph}", value: "{md_domain}", oninput: move |e| md_domain.set(e.value()), "aria-label": "{domain_lbl}" }
                             }
                             label { class: "flex items-center gap-1.5 text-sm",
                                 input { "type": "checkbox", class: "accent-accent", checked: md_replace(), onchange: move |e| md_replace.set(e.value() == "true") }
@@ -212,7 +214,7 @@ fn tab_btn(tab: Signal<String>, id: &'static str, label: &str) -> Element {
     let active = tab() == id;
     rsx! {
         button {
-            class: if active { "btn btn-secondary btn-sm" } else { "btn btn-ghost btn-sm" },
+            class: if active { "btn btn-secondary btn-sm" } else { "btn btn-ghost btn-sm" },  // i18n-exempt: css class expression
             "aria-pressed": active,
             onclick: move |_| {
                 let mut t = tab;

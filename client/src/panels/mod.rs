@@ -23,7 +23,9 @@ pub mod system;
 
 /// v1.20.3/1.20.6: a `screen_verdict` (`clean`/`quarantine`) maps to a
 /// semantic token + a human label. Shared by the review detail card and the
-/// /ops flagged surface so one source of truth drives both.
+/// /ops flagged surface so one source of truth drives both. v1.27.20 M3: the
+/// label is now an i18n KEY (`verdict_clean`/`verdict_quarantined`) — the
+/// render sites resolve it via `t()` so every locale speaks it.
 pub fn verdict_badge(v: &str) -> &'static str {
     match v {
         "quarantine" => "warn",
@@ -33,15 +35,16 @@ pub fn verdict_badge(v: &str) -> &'static str {
 
 pub fn verdict_label(v: &str) -> &'static str {
     match v {
-        "quarantine" => "quarantined",
-        _ => "clean",
+        "quarantine" => "verdict_quarantined",
+        _ => "verdict_clean",
     }
 }
 
 /// v1.20.14 "Steer" M1: a proposal whose `edited_at` is set was rewritten in
 /// place before decision — the reviewer (and a later auditor) should see that
 /// the content shown is not the original capture. Renders a `warn` badge with a
-/// stable label; `None` (never edited) renders nothing.
+/// stable label; `None` (never edited) renders nothing. v1.27.20 M3: the label
+/// is an i18n KEY (`edited`) — render sites resolve it via `t()`.
 pub fn edited_label(edited_at: Option<i64>) -> Option<&'static str> {
     edited_at.map(|_| "edited")
 }
@@ -112,10 +115,21 @@ mod tests {
     #[test]
     fn verdict_maps_quarantine_to_warn_and_clean_to_ok() {
         assert_eq!(verdict_badge("quarantine"), "warn");
-        assert_eq!(verdict_label("quarantine"), "quarantined");
+        assert_eq!(verdict_label("quarantine"), "verdict_quarantined");
         assert_eq!(verdict_badge("clean"), "ok");
-        assert_eq!(verdict_label("clean"), "clean");
+        assert_eq!(verdict_label("clean"), "verdict_clean");
         assert_eq!(verdict_badge("reject"), "ok"); // reject never persists; reads as quarantine is handled server-side
         assert_eq!(verdict_badge(""), "ok"); // unknown/legacy -> clean posture
+    }
+
+    /// The verdict label is an i18n KEY and must resolve in the default
+    /// locale — the badges speak the operator's language, never raw English.
+    /// (The value may legitimately equal the key — "edited" is both.)
+    #[test]
+    fn verdict_and_edited_labels_resolve_as_keys() {
+        for k in ["verdict_clean", "verdict_quarantined", "edited"] {
+            let resolved = crate::i18n::resolve_fmt(k, "en", &[]);
+            assert!(!resolved.is_empty(), "{k} must resolve in en");
+        }
     }
 }

@@ -15,8 +15,18 @@ use crate::confirm::ConfirmDestructive;
 use crate::panels::{use_document_title, PageTitle};
 use dioxus::prelude::*;
 
+/// M3.1: a boolean evidence cell renders via an i18n key (yes/no), never the
+/// raw English `true`/`false` from JSON. Pure so the scan guard cannot trip.
+fn sys_bool(v: bool) -> &'static str {
+    if v {
+        "sys_yes"
+    } else {
+        "sys_no"
+    }
+}
+
 pub fn panel() -> Element {
-    use_document_title(|| "Console — brain".into());
+    use_document_title(|| format!("{} — brain", crate::i18n::t("sys_title")));
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<crate::UiState>();
     let writes = (ui.writes_enabled)();
@@ -40,6 +50,10 @@ pub fn panel() -> Element {
     // seam); `secret` lines stay in-memory. Raw token-bearing input is never
     // written — the `credentials_stay_in_memory` grep guard still holds.
     const HISTORY_CAP: usize = 100;
+    let sys_multi_domains = crate::i18n::t("sys_multi_domains");
+    let sys_http_get = crate::i18n::t("sys_http_get");
+    let sys_http_post = crate::i18n::t("sys_http_post");
+    let sys_http_delete = crate::i18n::t("sys_http_delete");
     use_effect(move || {
         spawn(async move {
             if let Some(saved) = crate::i18n::pref_load("console_history").await {
@@ -81,7 +95,12 @@ pub fn panel() -> Element {
             }
         });
     };
-    load(());
+    // v1.27.20 "Console" (F-40): load ONCE on mount, not on every render. An
+    // unconditional `load(())` in the body re-fires per keystroke/re-render
+    // (the panel re-renders as `status`/`reindex_r`/`history` change), stacking
+    // a 4-request batch per keystroke. Same pattern the ump.rs panel uses for
+    // its own mount-once fetch; the ⟳ button keeps a manual refresh.
+    use_effect(move || load(()));
 
     let run_reindex = move |_| {
         let api = api;
@@ -89,9 +108,10 @@ pub fn panel() -> Element {
             match api().reindex().await {
                 Ok(r) => {
                     reindex_r.set(Some(r.clone()));
-                    status
-                        .set(Some(Ok(crate::i18n::t("sys_reindexed")
-                            .replace("{n}", &r.reembedded.to_string()))));
+                    status.set(Some(Ok(crate::i18n::t_fmt(
+                        "sys_reindexed",
+                        &[r.reembedded.to_string()],
+                    ))));
                 }
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
@@ -149,6 +169,11 @@ pub fn panel() -> Element {
     let sources_lbl = crate::i18n::t("sys_sources");
     let console_lbl = crate::i18n::t("sys_console");
     let title_lbl = crate::i18n::t("sys_title");
+    let sys_col_file = crate::i18n::t("sys_col_file");
+    let sys_col_size = crate::i18n::t("sys_col_size");
+    let sys_col_perms = crate::i18n::t("sys_col_perms");
+    let sys_col_integrity = crate::i18n::t("sys_col_integrity");
+    let sys_col_chain = crate::i18n::t("sys_col_chain");
     let sub_lbl = crate::i18n::t("sys_sub");
 
     rsx! {
@@ -170,7 +195,7 @@ pub fn panel() -> Element {
                                 span { class: "font-mono text-xs", "{d.name}" }
                                 span { class: "text-muted-foreground text-xs",
                                     "{d.entries} · {d.entities} e · {d.relations} r"
-                                    {if d.multi_db { " · multi" } else { "" }}
+                                    {if d.multi_db { sys_multi_domains.as_str() } else { "" }}
                                 }
                             }
                         }
@@ -184,19 +209,19 @@ pub fn panel() -> Element {
             div { class: "card-body text-sm",
                 if let Some(s) = snapshot() {
                     div { class: "flex items-center gap-2",
-                        span { class: if s.all_ok { "badge badge-ok" } else { "badge badge-danger" },
-                            {if s.all_ok {"ok"} else {"degraded"}}
+                        span { class: if s.all_ok { "badge badge-ok" } else { "badge badge-danger" },  // i18n-exempt: css class expression
+                            {crate::i18n::t(if s.all_ok {"sys_snapshot_ok"} else {"sys_snapshot_degraded"})}
                         }
-                        span { class: "text-muted-foreground", "{s.snapshot_count} snapshots" }
+                        span { class: "text-muted-foreground", {crate::i18n::t_fmt("sys_snapshot_count", &[s.snapshot_count.to_string()])} }
                     }
                     if !s.snapshots.is_empty() {
                         table { class: "table mt-2",
                             thead { tr {
-                                th { class: "text-left pr-2", "file" }
-                                th { class: "text-left pr-2", "size" }
-                                th { class: "text-left pr-2", "perms" }
-                                th { class: "text-left pr-2", "integrity" }
-                                th { class: "text-left pr-2", "audit chain" }
+                                th { class: "text-left pr-2", "{sys_col_file}" }
+                                th { class: "text-left pr-2", "{sys_col_size}" }
+                                th { class: "text-left pr-2", "{sys_col_perms}" }
+                                th { class: "text-left pr-2", "{sys_col_integrity}" }
+                                th { class: "text-left pr-2", "{sys_col_chain}" }
                             } }
                             tbody {
                                 for r in s.snapshots.iter() {
@@ -204,15 +229,21 @@ pub fn panel() -> Element {
                                         td { class: "pr-2 font-mono text-xs", "{r.file}" }
                                         td { class: "pr-2 tabular text-xs", "{r.size_bytes}" }
                                         td { class: "pr-2",
-                                            span { class: if r.mode_0600 { "badge badge-ok" } else { "badge badge-danger" },
-                                                {if r.mode_0600 {"0600"} else {"world-readable"}}
+                                            span { class: if r.mode_0600 { "badge badge-ok" } else { "badge badge-danger" },  // i18n-exempt: css class expression
+                                                {crate::i18n::t(if r.mode_0600 {"sys_perms_0600"} else {"sys_world_readable"})}
                                             }
                                         }
                                         td { class: "pr-2",
-                                            span { class: if r.integrity_check { "text-ok" } else { "text-danger" }, "{r.integrity_check}" }
+                                            span {
+                                                class: if r.integrity_check { "text-ok" } else { "text-danger" },  // i18n-exempt: css class expression
+                                                {crate::i18n::t(sys_bool(r.integrity_check))}
+                                            }
                                         }
                                         td { class: "pr-2",
-                                            span { class: if r.audit_chain_ok { "text-ok" } else { "text-danger" }, "{r.audit_chain_ok}" }
+                                            span {
+                                                class: if r.audit_chain_ok { "text-ok" } else { "text-danger" },  // i18n-exempt: css class expression
+                                                {crate::i18n::t(sys_bool(r.audit_chain_ok))}
+                                            }
                                         }
                                     }
                                 }
@@ -237,7 +268,7 @@ pub fn panel() -> Element {
                     }
                     if let Some(r) = reindex_r() {
                         span { class: "text-xs text-muted-foreground",
-                            "{r.status} · {r.reembedded} re-embedded · {r.skipped} skipped"
+                            {crate::i18n::t_fmt("sys_reindex_result", &[r.status.clone(), r.reembedded.to_string(), r.skipped.to_string()])}
                         }
                     }
                 }
@@ -276,11 +307,11 @@ pub fn panel() -> Element {
                     class: "btn btn-outline btn-sm",
                     disabled: !writes,
                     onclick: run_reconcile,
-                    "reconcile sources"
+                    {crate::i18n::t("sys_reconcile")}
                 }
                 if let Some(r) = reconcile_r() {
                     span { class: "text-xs text-muted-foreground",
-                        "{r.deleted_sources} retired · {r.deleted_chunks} chunks"
+                        {crate::i18n::t_fmt("sys_reconcile_result", &[r.deleted_sources.to_string(), r.deleted_chunks.to_string()])}
                     }
                 }
             }
@@ -295,9 +326,9 @@ pub fn panel() -> Element {
                         value: "{method}",
                         onchange: move |e| method.set(e.value()),
                         "aria-label": "method",
-                        option { value: "GET", "GET" }
-                        option { value: "POST", "POST" }
-                        option { value: "DELETE", "DELETE" }
+                        option { value: "GET", "{sys_http_get}" }
+                        option { value: "POST", "{sys_http_post}" }
+                        option { value: "DELETE", "{sys_http_delete}" }
                     }
                     input {
                         class: "input flex-1 font-mono",
@@ -358,5 +389,39 @@ mod tests {
         assert!(!crate::confirm::confirm_allowed(false, false, false));
         assert!(crate::confirm::confirm_allowed(true, false, false));
         assert!(!crate::confirm::arm_allowed(false, true, false));
+    }
+
+    /// F-40 (v1.27.20 "Console"): the panel's 4-request batch load fires ONCE
+    /// per mount, not on every render. Without a render harness, the honest
+    /// pin is a source guard: the loader must be invoked through `use_effect`
+    /// and never as a bare body statement (the pre-fix shape that stacked a
+    /// `/domains`+`/snapshot/status`+`/art30`+`/connectors` batch per
+    /// keystroke). The same grep-guard style as
+    /// `interactive_elements_are_buttons` in main.rs.
+    #[test]
+    fn system_panel_fetches_once_per_mount() {
+        let src = std::fs::read_to_string("src/panels/system.rs").unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        let body = lines[17..350].join("\n"); // panel() only, not the tests
+        assert!(
+            body.contains("use_effect(move || load(()))"),
+            "the batch loader must be wired through use_effect (mount-once)"
+        );
+        // No bare body-statement call of `load(())` may exist outside the
+        // use_effect line (the rm-fix regression this guard catches).
+        for (i, line) in body.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//")
+                || trimmed.starts_with("use_effect(")
+                || trimmed.contains("use_effect")
+            {
+                continue;
+            }
+            assert!(
+                !trimmed.starts_with("load(())"),
+                "bare body call of load at {} — re-fires per render",
+                i + 18,
+            );
+        }
     }
 }

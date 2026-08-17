@@ -290,7 +290,7 @@ pub fn panel() -> Element {
                 span { class: "text-sm font-medium", {crate::i18n::t("ops_gate")} }
                 span { class: "badge badge-{gh.severity}", {crate::i18n::t(gh.label)} }
                 span { class: "text-xs text-muted-foreground tabular",
-                    "A {a} · R {r}"
+                    {crate::i18n::t_fmt("ops_ar_counts", &[a.to_string(), r.to_string()])}
                 }
                 // v1.27.19 "Scrub" (D-7): the last decide/load outcome — the
                 // console must never show a success state after a failed write.
@@ -319,11 +319,12 @@ pub fn panel() -> Element {
                         for (pid, p) in ordered.iter().map(|p| (p.id, p)) {
                             li { class: "py-2.5",
                                 div { class: "flex justify-between items-center gap-2",
+                                    // i18n-exempt: decision data — the proposal id + wire kind verbatim.
                                     span { class: "font-mono text-sm text-accent", "proposal #{p.id} · {p.kind}" }
                                     span { class: "flex items-center gap-2",
                                         if let Some(v) = p.screen_verdict.as_deref() {
                                             span { class: "badge badge-{crate::panels::verdict_badge(v)}",
-                                                "screen: {crate::panels::verdict_label(v)}" }
+                                                {crate::i18n::t_fmt("screen_label", &[crate::i18n::t(crate::panels::verdict_label(v))])} }
                                         }
                                         {clock_badge(p, now)}
                                     }
@@ -343,14 +344,14 @@ pub fn panel() -> Element {
                                     button {
                                         class: "btn btn-primary btn-sm",
                                         disabled: !writes,
-                                        title: "approve (a)",
+                                        title: crate::i18n::t("ops_tip_approve"),
                                         onclick: move |_| decide(pid, false),
                                         {crate::i18n::t("approve")}
                                     }
                                     button {
                                         class: "btn btn-outline btn-sm",
                                         disabled: !writes,
-                                        title: "reject (r)",
+                                        title: crate::i18n::t("ops_tip_reject"),
                                         onclick: move |_| decide(pid, true),
                                         {crate::i18n::t("reject")}
                                     }
@@ -359,7 +360,7 @@ pub fn panel() -> Element {
                         }
                         }
                     },
-                    Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {e}" } },
+                    Some(Err(e)) => rsx! { p { class: "text-danger mt-2", {crate::i18n::t_fmt("queue_failed", &[e.to_string()])} } },
                     None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
                 }
             }
@@ -422,7 +423,7 @@ fn clock_badge(p: &Proposal, now: i64) -> Element {
     let t = tier(remaining(p.expires_at, now), p.warn_secs, p.critical_secs);
     if t == Tier::Expired {
         return rsx! {
-            span { class: "badge badge-danger tabular", title: "server auto-rejects expired proposals",
+            span { class: "badge badge-danger tabular", title: crate::i18n::t("auto_reject_title"),
                 {crate::i18n::t("ops_expired")} }
         };
     }
@@ -431,9 +432,10 @@ fn clock_badge(p: &Proposal, now: i64) -> Element {
         Tier::Warn => "badge-warn",
         _ => "badge-ok",
     };
+    let ttl = format_remaining(remaining(p.expires_at, now));
     rsx! {
-        span { class: "badge {cls} tabular", title: "time until expiry",
-            "expires in {format_remaining(remaining(p.expires_at, now))}" }
+        span { class: "badge {cls} tabular", title: crate::i18n::t("time_until_expiry"),
+            {crate::i18n::t_fmt("expires_in", &[ttl])} }
     }
 }
 

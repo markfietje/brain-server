@@ -43,6 +43,7 @@ pub fn ConfirmDestructive(
     on_arm: Option<EventHandler<()>>,
 ) -> Element {
     let mut armed = use_signal(|| false);
+    let cancel_lbl = crate::i18n::t("confirm_cancel");
     let arm_hint = blocked_hint.unwrap_or_else(|| note.clone());
     let size = if small { " btn-sm" } else { "" };
 
@@ -69,7 +70,7 @@ pub fn ConfirmDestructive(
                     button {
                         class: "btn btn-outline btn-sm",
                         onclick: cancel,
-                        "Cancel"
+                        "{cancel_lbl}"
                     }
                     button {
                         class: "btn btn-destructive btn-sm",

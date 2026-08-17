@@ -49,7 +49,7 @@ mod storage;
 mod time_budget;
 
 use api::ApiClient;
-use i18n::t;
+use i18n::{t, t_fmt};
 
 /// v1.20.3 "Classify" (G5): the operator-console render boundary. Stored
 /// content may contain invisible Unicode that a server screen let through as
@@ -116,6 +116,37 @@ fn resolve_base(raw: &str, origin: Option<String>) -> String {
     } else {
         trimmed
     }
+}
+
+/// v1.27.20 M2.2 (F-37 audit): the plaintext-http guard — a non-loopback
+/// `http://` base (e.g. `http://10.0.0.5:8765`) sends the auth token in
+/// cleartext, so Connect warns BEFORE the operator submits. Loopback hosts
+/// (127.x, ::1, localhost) are exempt — the dev default must not nag. Pure so
+/// it's testable. Degenerate inputs warn only when they are really
+/// scheme-http + non-loopback (garbage fails at the request, not here).
+fn plaintext_http(url: &str) -> bool {
+    let base = resolve_base(url, None);
+    let rest = match base.strip_prefix("http://") {
+        Some(r) => r,
+        None => return false, // empty→loopback default, https, or junk
+    };
+    let host = if rest.contains('[') {
+        // bracketed IPv6 — the port split must not touch the address itself.
+        let end = rest.rfind(']').map(|i| i + 1).unwrap_or(rest.len());
+        rest[..end].trim_matches(['[', ']'])
+    } else if let Some(cut) = rest.rfind(':') {
+        // if the last ':' is an address char (colons 0..1), it's a bare
+        // unbracketed v6 with no port — keep the whole rest.
+        if cut <= 1 && rest[..=cut].ends_with("::") {
+            rest
+        } else {
+            &rest[..cut]
+        }
+    } else {
+        rest
+    };
+    let host = host.to_ascii_lowercase();
+    !(host == "localhost" || host.starts_with("127.") || host == "::1")
 }
 
 /// v1.17.0 M3.4: the offline-prefill rule — a remembered base pre-fills the
@@ -467,20 +498,28 @@ fn app() -> Element {
         // (the client holds no secrets beyond the token, which is never in an
         // error message).
         ErrorBoundary {
-            handle_error: |errors: ErrorContext| rsx! {
-                div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
-                    div { class: "max-w-md",
-                        h1 { class: "text-xl text-danger", "Something went wrong" }
-                        p { class: "text-muted-foreground mt-2",
-                            "The client hit an unexpected error. Reload to retry."
-                        }
-                        pre { class: "text-xs text-ink-faint mt-4 overflow-auto",
-                            "{errors:?}"
-                        }
-                        button {
-                            class: "btn btn-outline btn-sm mt-4",
-                            onclick: move |_| errors.clear_errors(),
-                            "Dismiss"
+            handle_error: |errors: ErrorContext| {
+                // M3.1 (v1.27.20): the crash path speaks the current locale —
+                // the strings resolve fresh because `t` subscribes to locale
+                // changes (the fallback panel is a component, not a closure
+                // capturing one render's translations).
+                rsx! {
+                    div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
+                        div { class: "max-w-md",
+                            h1 { class: "text-xl text-danger", {t("err_title")} }
+                            p { class: "text-muted-foreground mt-2",
+                                {t("err_body")}
+                            }
+                            pre { class: "text-xs text-ink-faint mt-4 overflow-auto",
+                                "{errors:?}"
+                            }
+                            // v1.16.2: `clear_errors` drops the pane back to the
+                            // last good route (recovery, not a reload promise).
+                            button {
+                                class: "btn btn-outline btn-sm mt-4",
+                                onclick: move |_| errors.clear_errors(),
+                                {t("err_dismiss")}
+                            }
                         }
                     }
                 }
@@ -605,16 +644,24 @@ fn Connect() -> Element {
                 ApiClient::with_principal(base.clone(), access_val, None)
             };
             status.set(Some(match client.health().await {
-                Ok(h) => Ok(format!(
-                    "connected — v{} · {}{}",
-                    h.version,
-                    h.capacity
+                Ok(h) => {
+                    let cap = h
+                        .capacity
                         .as_ref()
-                        .map(|c| format!("docs {}/{}, ", c.docs, c.max_docs))
-                        .unwrap_or_default(),
-                    h.status
+                        .map(|c| {
+                            t_fmt(
+                                "connected_capacity",
+                                &[c.docs.to_string(), c.max_docs.to_string()],
+                            )
+                        })
+                        .unwrap_or_default();
+                    let msg = t_fmt("connected_v", &[h.version.clone(), cap, h.status.clone()]);
+                    Ok(msg)
+                }
+                Err(e) => Err(t_fmt(
+                    "could_not_reach",
+                    &[base.clone(), crate::api::error_message(&e)],
                 )),
-                Err(e) => Err(format!("could not reach {base}: {e}")),
             }));
             if matches!(status(), Some(Ok(_))) {
                 // v1.16.6 M2: persist the token to the OS keyring on a successful
@@ -694,9 +741,9 @@ fn Connect() -> Element {
                     wizard_profiles.set(Vec::new());
                     nav.replace(Route::Review {});
                 }
-                Err(e) => wizard_status.set(Some(Err(format!(
-                    "bind failed: {}",
-                    crate::api::error_message(&e)
+                Err(e) => wizard_status.set(Some(Err(t_fmt(
+                    "bind_failed",
+                    &[crate::api::error_message(&e)],
                 )))),
             }
         });
@@ -739,6 +786,13 @@ fn Connect() -> Element {
                                 oninput: move |e| url.set(e.value()),
                                 placeholder: t("url_placeholder"),
                                 "aria-label": "backend URL",
+                            }
+                        }
+                        if plaintext_http(&url()) {
+                            p {
+                                class: "text-warn text-sm",
+                                "role": "alert",
+                                {t("plaintext_http")}
                             }
                         }
                         label { class: "block space-y-1",
@@ -805,7 +859,7 @@ fn Connect() -> Element {
                         div { class: "card-body space-y-3",
                             select {
                                 class: "input w-full",
-                                "aria-label": "profile preset",
+                                "aria-label": t("wizard_preset_aria"),
                                 value: "{pick.name}",
                                 onchange: move |e| {
                                     if let Some(i) = wizard_profiles()
@@ -821,26 +875,26 @@ fn Connect() -> Element {
                             }
                             dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm tabular",
                                 if let Some(v) = &pick.default_access_scope {
-                                    dt { class: "text-muted-foreground", "default scope" } dd { "{v}" }
+                                    dt { class: "text-muted-foreground", {t("wizard_knob_scope")} } dd { "{v}" }
                                 }
                                 if let Some(v) = &pick.pii_mode {
-                                    dt { class: "text-muted-foreground", "pii mode" } dd { "{v}" }
+                                    dt { class: "text-muted-foreground", {t("wizard_knob_pii")} } dd { "{v}" }
                                 }
                                 if let Some(v) = pick.retention_label() {
-                                    dt { class: "text-muted-foreground", "retention" } dd { "{v}" }
+                                    dt { class: "text-muted-foreground", {t("wizard_knob_retention")} } dd { "{v}" }
                                 }
                                 if let Some(v) = &pick.audit_level {
-                                    dt { class: "text-muted-foreground", "audit" } dd { "{v}" }
+                                    dt { class: "text-muted-foreground", {t("wizard_knob_audit")} } dd { "{v}" }
                                 }
                                 if let Some(v) = &wizard_kinds_label {
-                                    dt { class: "text-muted-foreground", "kinds" } dd { "{v}" }
+                                    dt { class: "text-muted-foreground", {t("wizard_knob_kinds")} } dd { "{v}" }
                                 }
                                 if let Some(v) = pick.legal_hold_default {
-                                    dt { class: "text-muted-foreground", "legal hold" } dd { "{v}" }
+                                    dt { class: "text-muted-foreground", {t("wizard_knob_hold")} } dd { "{v}" }
                                 }
                             }
                             p { class: "text-xs text-ink-faint",
-                                "defaults only — an explicit row value always wins; bind target: global"
+                                {t("wizard_defaults_note")}
                             }
                             div { class: "flex gap-2",
                                 button {
@@ -1453,35 +1507,35 @@ pub(crate) fn destructive_action(a: &RunAction) -> bool {
 /// M5 pure: a command's search/display label.
 fn command_label(c: &Command) -> &'static str {
     match c {
-        Command::Navigate(Route::Overview {}) => "Overview",
-        Command::Navigate(Route::Review {}) => "Review queue",
-        Command::Navigate(Route::Recall {}) => "Recall",
-        Command::Navigate(Route::Graph {}) => "Graph",
-        Command::Navigate(Route::Create {}) => "Create",
-        Command::Navigate(Route::Subjects {}) => "Subjects (DSAR)",
-        Command::Navigate(Route::Security {}) => "Security",
+        Command::Navigate(Route::Overview {}) => "overview_title",
+        Command::Navigate(Route::Review {}) => "review_title",
+        Command::Navigate(Route::Recall {}) => "recall_title",
+        Command::Navigate(Route::Graph {}) => "graph_title",
+        Command::Navigate(Route::Create {}) => "create_title",
+        Command::Navigate(Route::Subjects {}) => "subjects_title",
+        Command::Navigate(Route::Security {}) => "security_title",
         Command::Navigate(Route::Audit {
             since: None,
             principal: None,
-        }) => "Audit",
-        Command::Navigate(Route::Health {}) => "Health",
-        Command::Navigate(Route::Data {}) => "Data",
-        Command::Navigate(Route::Ump {}) => "UMP",
-        Command::Navigate(Route::System {}) => "System",
-        Command::Navigate(Route::Ops {}) => "Operations",
-        Command::Navigate(Route::Register {}) => "Agent Memory Register",
-        Command::Navigate(Route::Clients {}) => "Clients (BPO console)",
-        Command::SignOut => "Sign out",
-        Command::Lookup(Lookup::Proposal(_)) => "Open proposal",
-        Command::Lookup(Lookup::Chunk(_)) => "Open chunk",
-        Command::Lookup(Lookup::Entity(_)) => "Open entity",
-        Command::Run(RunAction::ExportAudit) => "Export audit",
-        Command::Run(RunAction::ExportUmp) => "Export UMP",
-        Command::Run(RunAction::Reindex) => "Reindex",
-        Command::Run(RunAction::Refresh(_)) => "Refresh",
-        Command::Run(RunAction::OpenTrace(_)) => "Open trace",
+        }) => "audit_title",
+        Command::Navigate(Route::Health {}) => "health_title",
+        Command::Navigate(Route::Data {}) => "data_title",
+        Command::Navigate(Route::Ump {}) => "ump_title",
+        Command::Navigate(Route::System {}) => "system_title",
+        Command::Navigate(Route::Ops {}) => "ops_title",
+        Command::Navigate(Route::Register {}) => "register_title",
+        Command::Navigate(Route::Clients {}) => "clients_title",
+        Command::SignOut => "sign_out",
+        Command::Lookup(Lookup::Proposal(_)) => "palette_open_proposal",
+        Command::Lookup(Lookup::Chunk(_)) => "palette_open_chunk",
+        Command::Lookup(Lookup::Entity(_)) => "palette_open_entity",
+        Command::Run(RunAction::ExportAudit) => "palette_export_audit",
+        Command::Run(RunAction::ExportUmp) => "palette_export_ump",
+        Command::Run(RunAction::Reindex) => "reindex_title",
+        Command::Run(RunAction::Refresh(_)) => "refresh_label",
+        Command::Run(RunAction::OpenTrace(_)) => "palette_open_trace",
         // The deep-link / Connect variants never appear in the palette list.
-        Command::Navigate(_) => "Open",
+        Command::Navigate(_) => "palette_open",
     }
 }
 
@@ -1509,9 +1563,12 @@ fn CommandPalette() -> Element {
     let confirm = use_signal(|| None::<Command>);
 
     let confirm_destructive = t("confirm_destructive");
+    let palette_placeholder = t("palette_placeholder");
+    let palette_filter_aria = t("palette_filter_aria");
+    let palette_no_match = t("palette_no_match");
     let confirm_text = confirm()
         .as_ref()
-        .map(|c| format!("{confirm_destructive}: {}", command_label(c)));
+        .map(|c| format!("{confirm_destructive}: {}", t(command_label(c))));
     let commands = palette_commands(configured);
     let groups = if confirm().is_some() {
         Vec::new() // confirm state replaces the list
@@ -1584,37 +1641,39 @@ fn CommandPalette() -> Element {
         run(c.clone());
     };
 
-    let mut cursor_ui = ui;
+    let cursor_ui = ui;
     let confirm_ui = confirm;
     let run_ui = run;
     let select_ui = select;
     let flat_ui = flat.clone();
 
     rsx! {
-        div {
-            class: "fixed inset-0 z-50 bg-surface-overlay/70 flex items-start justify-center pt-24 p-4",
-            role: "dialog", "aria-modal": "true", "aria-label": "command palette",
-            onmousedown: move |_| {
-                *cursor_ui.palette_open.write() = false;
+        crate::Modal {
+            label: t("palette_modal_label").to_string(),
+            trap: ".command-palette".to_string(),
+            initial_focus: ".command-palette input".to_string(),
+            close_on_overlay: true,
+            on_close: move |_| {
+                let mut cursor_ui = cursor_ui;
+                let mut confirm_ui = confirm_ui;
+                if confirm_ui().is_some() {
+                    confirm_ui.set(None);
+                } else {
+                    *cursor_ui.palette_open.write() = false;
+                }
             },
             div {
-                class: "command-palette card w-full max-w-md bg-popover shadow-xl",
+                class: "command-palette card w-full max-w-md bg-popover shadow-xl mt-24",
                 onmousedown: move |e| e.stop_propagation(),
                 onkeydown: move |e| {
                     let mut cursor = cursor;
-                    let mut cursor_ui = cursor_ui;
                     let mut confirm_ui = confirm_ui;
                     let select_ui = select_ui;
                     let run_ui = run_ui;
                     let flat = flat_ui.clone();
                     match e.key() {
-                        Key::Escape => {
-                            if confirm_ui().is_some() {
-                                confirm_ui.set(None);
-                            } else {
-                                *cursor_ui.palette_open.write() = false;
-                            }
-                        }
+                        // Esc + Tab are owned by the Modal shell (two-step Esc
+                        // lives in `on_close`; the focus trap is v1.16.7's).
                         Key::ArrowDown => {
                             cursor.set((cursor() + 1).min(flat.len().saturating_sub(1)))
                         }
@@ -1629,10 +1688,6 @@ fn CommandPalette() -> Element {
                                     select_ui(c);
                                 }
                             }
-                        }
-                        Key::Tab => {
-                            let shift = e.modifiers().contains(Modifiers::SHIFT);
-                            spawn(async move { focus_trap(".command-palette", shift).await; });
                         }
                         Key::Character(k) if k == "/" => {
                             // `/` re-focuses the search input from anywhere in the
@@ -1649,7 +1704,7 @@ fn CommandPalette() -> Element {
                 },
                 input {
                     class: "input w-full border-b border-border rounded-b-none",
-                    placeholder: "type a command… (↑↓ to move, Enter to run, Esc to close)",
+                    placeholder: "{palette_placeholder}",
                     value: "{needle}",
                     oninput: move |e| {
                         let mut cursor = cursor;
@@ -1662,7 +1717,7 @@ fn CommandPalette() -> Element {
                         let el = el.data();
                         spawn(async move { let _ = el.set_focus(true).await; });
                     },
-                    "aria-label": "command filter",
+                    "aria-label": "{palette_filter_aria}",
                 }
                 ul { class: "max-h-80 overflow-y-auto p-1.5",
                     // v1.17.6 M1.4: destructive confirm replaces the list.
@@ -1674,7 +1729,7 @@ fn CommandPalette() -> Element {
                             "{text}"
                         }
                     } else if flat.is_empty() {
-                        li { class: "px-3 py-2 text-sm text-muted-foreground", "no match" }
+                        li { class: "px-3 py-2 text-sm text-muted-foreground", "{palette_no_match}" }
                     } else {
                         for (global, header, c) in rows {
                             if let Some(g) = header {
@@ -1697,8 +1752,8 @@ fn CommandPalette() -> Element {
                                         select_ui(&c);
                                     }
                                 },
-                                "aria-label": "{command_label(&c)}",
-                                "{command_label(&c)}"
+                                "aria-label": t(command_label(&c)),
+                                {t(command_label(&c))}
                             }
                         }
                     }
@@ -1786,6 +1841,56 @@ if (root) {{
 "#
     );
     let _ = document::eval(&js).await;
+}
+
+/// v1.27.20 "Console" (M2.1): the shared modal shell — one component for every
+/// dialog so keyboard parity is the DEFAULT (the pre-fix editors had Esc-only;
+/// focus could Tab out into the page behind them). Renders the overlay +
+/// dialog semantics + Esc-to-close + the v1.16.7 Tab-cycling `focus_trap` +
+/// autofocus of `initial_focus` on open. `close_on_overlay` reproduces the
+/// palette's click-outside policy for callers that want it (the editors
+/// deliberately don't — a keyboard-only reviewer must not be surprised).
+///
+/// ponytail: ONE modal open at a time is the invariant (the palette + editors
+/// open from exclusive signals; the trap root is the caller's own card class,
+/// so even the remote combo keeps both traps scoped).
+#[component]
+pub(crate) fn Modal(
+    label: String,
+    trap: String,
+    initial_focus: String,
+    #[props(default)] close_on_overlay: bool,
+    on_close: EventHandler<()>,
+    children: Element,
+) -> Element {
+    use_effect(move || {
+        let sel = initial_focus.clone();
+        spawn(async move {
+            let js = format!("const i=document.querySelector({sel:?}); if(i) i.focus();");
+            let _ = document::eval(&js).await;
+        });
+    });
+    rsx! {
+        div {
+            class: "fixed inset-0 z-50 bg-surface-overlay/80 flex items-center justify-center p-4",
+            role: "dialog", "aria-modal": "true", "aria-label": "{label}",
+            onmousedown: move |_| {
+                if close_on_overlay {
+                    on_close.call(());
+                }
+            },
+            onkeydown: move |e: Event<KeyboardData>| {
+                if e.key() == Key::Escape {
+                    on_close.call(());
+                } else if e.key() == Key::Tab {
+                    let shift = e.modifiers().contains(Modifiers::SHIFT);
+                    let t = trap.clone();
+                    spawn(async move { focus_trap(&t, shift).await; });
+                }
+            },
+            {children}
+        }
+    }
 }
 
 /// M2.2: the context drawer. Esc closes (clears the signal); Tab-cycling focus
@@ -2056,6 +2161,26 @@ mod tests {
         );
     }
 
+    /// v1.27.20 M2.2: plaintext http over a NON-loopback address warns; every
+    /// loopback form, https, and the empty default stay silent.
+    #[test]
+    fn plaintext_http_warns_non_loopback_only() {
+        // The dev default + loopback forms are exempt (no nagging).
+        assert!(!plaintext_http(""));
+        assert!(!plaintext_http("http://127.0.0.1:8765"));
+        assert!(!plaintext_http("http://127.0.0.10:8765"));
+        assert!(!plaintext_http("http://localhost:8765"));
+        assert!(!plaintext_http("http://[::1]:8765"));
+        assert!(!plaintext_http("http://::1"));
+        // https is exempt whatever the host.
+        assert!(!plaintext_http("https://10.0.0.5:8765"));
+        assert!(!plaintext_http("https://brain.example.com"));
+        // The warning cases: scheme-http + non-loopback host.
+        assert!(plaintext_http("http://10.0.0.5:8765"));
+        assert!(plaintext_http("http://brain.lan"));
+        assert!(plaintext_http("http://192.168.1.20:8765"));
+    }
+
     /// v1.17.0 M3.4: the offline-prefill guard — a remembered base fills an
     /// EMPTY field but never overwrites what the operator typed.
     #[test]
@@ -2207,7 +2332,7 @@ mod tests {
         let sec = palette_lookup(&commands, "SECURITY", &[]);
         let sec_flat: Vec<&Command> = sec.iter().flat_map(|(_, c)| c.iter()).collect();
         assert_eq!(sec_flat.len(), 1);
-        assert_eq!(command_label(sec_flat[0]), "Security");
+        assert_eq!(command_label(sec_flat[0]), "security_title");
         assert!(palette_lookup(&commands, "zzz-no-such", &[]).is_empty());
         let all = palette_lookup(&commands, "", &[]);
         let all_flat: Vec<&Command> = all.iter().flat_map(|(_, c)| c.iter()).collect();

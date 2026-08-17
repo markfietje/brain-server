@@ -26,8 +26,21 @@ struct TraverseReq {
 /// v1.17.7 M3.2: the debounce window (mirrors the recall panel).
 const DEBOUNCE_MS: u64 = 300;
 
+/// F-58 (v1.27.20 "Console"): why the traverse Run button is disabled — i18n
+/// key or `None` (runnable). The pre-fix button was silently inert on an empty
+/// start / invalid kind; now the reason is visible next to it. Pure.
+fn traverse_block_reason(start: &str, kind: &str) -> Option<&'static str> {
+    if start.trim().is_empty() {
+        Some("graph_need_start")
+    } else if !kind_is_valid(kind) {
+        Some("graph_need_kind")
+    } else {
+        None
+    }
+}
+
 pub fn panel() -> Element {
-    use_document_title(|| "Graph — brain".into());
+    use_document_title(|| format!("{} — brain", crate::i18n::t("graph_title")));
     let api = use_context::<Signal<ApiClient>>();
 
     // Entity search (debounced, the recall pattern).
@@ -100,6 +113,8 @@ pub fn panel() -> Element {
     let paths_lbl = crate::i18n::t("graph_paths");
     let rows_lbl = crate::i18n::t("graph_rows");
     let none = crate::i18n::t("none");
+    // F-58: why Run is disabled, resolved per render (the button + the hint).
+    let run_block = traverse_block_reason(&t_start(), &t_kind()).map(crate::i18n::t);
 
     rsx! {
         PageTitle { {crate::i18n::t("graph_title")} }
@@ -136,7 +151,7 @@ pub fn panel() -> Element {
                                                         td { class: "font-mono text-xs", "{crate::strip_invisible(&rel.relation_type)}" }
                                                         td { "{crate::strip_invisible(&rel.other)}" }
                                                         td {
-                                                            span { class: if rel.dir == "out" { "badge badge-info" } else { "badge badge-neutral" },
+                                                            span { class: if rel.dir == "out" { "badge badge-info" } else { "badge badge-neutral" },  // i18n-exempt: css class expression (not display text)
                                                                 if rel.dir == "out" { "{out_lbl}" } else { "{in_lbl}" }
                                                             }
                                                         }
@@ -212,23 +227,31 @@ pub fn panel() -> Element {
                         }
                         "{cross_lbl}"
                     }
-                    button {
-                        class: "btn btn-primary",
-                        onclick: move |_| {
-                            let depth = t_depth().trim().parse().unwrap_or(2).clamp(1, 4);
-                            let start = t_start().trim().to_string();
-                            if start.is_empty() || !kind_is_valid(&t_kind()) {
-                                return;
-                            }
-                            req.set(Some(TraverseReq {
-                                start,
-                                depth,
-                                kind: t_kind().trim().to_string(),
-                                at: t_at().trim().to_string(),
-                                cross_domain: t_cross(),
-                            }));
-                        },
-                        "{run_lbl}"
+                    // F-58: the block reason is a label (not a silent no-op) —
+                    // the button disables AND the hint explains why.
+                    div { class: "flex flex-col gap-1",
+                        button {
+                            class: "btn btn-primary",
+                            disabled: run_block.is_some(),
+                            onclick: move |_| {
+                                let depth = t_depth().trim().parse().unwrap_or(2).clamp(1, 4);
+                                let start = t_start().trim().to_string();
+                                if traverse_block_reason(&start, &t_kind()).is_some() {
+                                    return;
+                                }
+                                req.set(Some(TraverseReq {
+                                    start,
+                                    depth,
+                                    kind: t_kind().trim().to_string(),
+                                    at: t_at().trim().to_string(),
+                                    cross_domain: t_cross(),
+                                }));
+                            },
+                            "{run_lbl}"
+                        }
+                        if let Some(reason) = &run_block {
+                            p { class: "text-xs text-warn", "{reason}" }
+                        }
                     }
                 }
                 { traverse_view(&traverse.read(), &paths_lbl, &rows_lbl) }
@@ -245,6 +268,10 @@ fn traverse_view(
     paths_lbl: &str,
     rows_lbl: &str,
 ) -> Element {
+    let graph_col_entity = crate::i18n::t("graph_col_entity");
+    let graph_col_depth = crate::i18n::t("graph_col_depth");
+    let graph_col_domain = crate::i18n::t("graph_col_domain");
+    let graph_no_paths = crate::i18n::t("graph_no_paths");
     match t {
         Some(Ok(r)) if !r.paths.is_empty() => rsx! {
             div { class: "mt-3",
@@ -261,7 +288,7 @@ fn traverse_view(
                         summary { class: "cursor-pointer text-xs text-accent", "{rows_lbl}" }
                         div { class: "overflow-x-auto mt-2",
                             table { class: "table",
-                                thead { tr { th { "entity" } th { "depth" } th { "domain" } } }
+                                thead { tr { th { "{graph_col_entity}" } th { "{graph_col_depth}" } th { "{graph_col_domain}" } } }
                                 tbody {
                                     for row in &r.traversal {
                                         tr {
@@ -277,10 +304,52 @@ fn traverse_view(
                 }
             }
         },
-        Some(Ok(_)) => rsx! { p { class: "text-sm text-muted-foreground mt-3", "no paths" } },
+        Some(Ok(_)) => {
+            rsx! { p { class: "text-sm text-muted-foreground mt-3", "{graph_no_paths}" } }
+        }
         Some(Err(e)) => {
             rsx! { p { class: "text-danger text-sm mt-3", "{crate::api::error_message(&e)}" } }
         }
         None => rsx! { p { class: "text-muted-foreground text-sm mt-3", "…" } },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-58 (v1.27.20): the Run button is disabled with a REASON — empty start
+    /// and invalid/empty kind both block, each with its own hint. A valid
+    /// start+kind pair is runnable (None). The pre-fix button silently no-oped.
+    #[test]
+    fn graph_run_disabled_with_reason() {
+        assert_eq!(
+            traverse_block_reason("", "works_at"),
+            Some("graph_need_start")
+        );
+        assert_eq!(
+            traverse_block_reason("  ", "causes"),
+            Some("graph_need_start"),
+            "whitespace-only start is empty"
+        );
+        assert_eq!(
+            traverse_block_reason("acme", "bad kind!"),
+            Some("graph_need_kind")
+        );
+        assert_eq!(
+            traverse_block_reason("acme", ""),
+            Some("graph_need_kind"),
+            "empty kind is invalid, not free-typed"
+        );
+        assert_eq!(
+            traverse_block_reason("acme", "works_at"),
+            None,
+            "valid pair runs"
+        );
+        assert_eq!(
+            traverse_block_reason("acme", "causes:"),
+            None,
+            "the server's kind-with-colon vocabulary stays accepted"
+        );
     }
 }

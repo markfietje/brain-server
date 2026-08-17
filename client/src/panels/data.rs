@@ -107,9 +107,10 @@ pub fn panel() -> Element {
             }
             match api().purge(&ids, Some(&owner)).await {
                 Ok(r) => {
-                    status.set(Some(Ok(
-                        crate::i18n::t("data_purged").replace("{n}", &r.purged.to_string())
-                    )));
+                    status.set(Some(Ok(crate::i18n::t_fmt(
+                        "data_purged",
+                        &[r.purged.to_string()],
+                    ))));
                     load(());
                 }
                 Err(e) if crate::queue::is_offline(&e) => {
@@ -163,9 +164,10 @@ pub fn panel() -> Element {
         spawn(async move {
             match api().retention_set(&kind, days).await {
                 Ok(r) => {
-                    status
-                        .set(Some(Ok(crate::i18n::t("data_retention_set")
-                            .replace("{n}", &r.updated.to_string()))));
+                    status.set(Some(Ok(crate::i18n::t_fmt(
+                        "data_retention_set",
+                        &[r.updated.to_string()],
+                    ))));
                     load(());
                 }
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
@@ -246,6 +248,12 @@ pub fn panel() -> Element {
         })
         .unwrap_or(false);
 
+    let data_ids_lbl = crate::i18n::t("data_ids_lbl");
+    let data_owner_lbl = crate::i18n::t("data_owner_lbl");
+    let data_json = crate::i18n::t("data_json");
+    let data_ump = crate::i18n::t("data_ump");
+    let data_ump_md = crate::i18n::t("data_ump_md");
+
     rsx! {
         PageTitle { {crate::i18n::t("data_title")} }
         p { class: "text-sm text-muted-foreground mb-4", {crate::i18n::t("data_sub")} }
@@ -287,9 +295,9 @@ pub fn panel() -> Element {
                             p { class: "text-sm text-muted-foreground",
                                 {crate::i18n::t("data_purge_preview_note")} }
                             dl { class: "grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm",
-                                dt { class: "text-muted-foreground", "Chunk ids" }
+                                dt { class: "text-muted-foreground", "{data_ids_lbl}" }
                                 dd { class: "font-mono tabular", "{purge_preview_ids}" }
-                                dt { class: "text-muted-foreground", "Owner" }
+                                dt { class: "text-muted-foreground", "{data_owner_lbl}" }
                                 dd { class: "font-mono tabular",
                                     "{purge_snap.as_ref().unwrap().1}" }
                             }
@@ -319,9 +327,9 @@ pub fn panel() -> Element {
         div { class: "card",
             div { class: "card-header", div { class: "card-title", "{export_lbl}" } }
             div { class: "card-body flex items-center gap-3",
-                button { class: "btn btn-outline", onclick: move |_| run_download("json".into()), "JSON" }
-                button { class: "btn btn-outline", onclick: move |_| run_download("ump".into()), "UMP" }
-                button { class: "btn btn-outline", onclick: move |_| run_download("ump-md".into()), "UMP Markdown" }
+                button { class: "btn btn-outline", onclick: move |_| run_download("json".into()), "{data_json}" }
+                button { class: "btn btn-outline", onclick: move |_| run_download("ump".into()), "{data_ump}" }
+                button { class: "btn btn-outline", onclick: move |_| run_download("ump-md".into()), "{data_ump_md}" }
             }
         }
 

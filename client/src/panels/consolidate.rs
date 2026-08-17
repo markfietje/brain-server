@@ -86,9 +86,10 @@ pub fn panel() -> Element {
                 .await
             {
                 Ok(r) => {
-                    status.set(Some(Ok(
-                        crate::i18n::t("cons_applied").replace("{n}", &r.recorded.to_string())
-                    )));
+                    status.set(Some(Ok(crate::i18n::t_fmt(
+                        "cons_applied",
+                        &[r.recorded.to_string()],
+                    ))));
                     load(()); // refresh the propose list
                 }
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
@@ -108,9 +109,10 @@ pub fn panel() -> Element {
         spawn(async move {
             match api().consolidate_undo(&ids).await {
                 Ok(r) => {
-                    status.set(Some(Ok(
-                        crate::i18n::t("cons_undone").replace("{n}", &r.undone.to_string())
-                    )));
+                    status.set(Some(Ok(crate::i18n::t_fmt(
+                        "cons_undone",
+                        &[r.undone.to_string()],
+                    ))));
                     load(());
                 }
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),

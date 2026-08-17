@@ -107,7 +107,7 @@ fn batch_summary(outcomes: &HashMap<i64, RowOutcome>) -> Element {
     if (s.done + s.already_done + s.queued + s.failed) > 0 && s.pending == 0 {
         rsx! {
             p { class: "text-xs text-muted-foreground mb-1", role: "status", "aria-live": "polite",
-                "batch: {s.done} approved · {s.already_done} already decided · {s.queued} queued (offline) · {s.failed} failed"
+                {crate::i18n::t_fmt("batch_summary", &[s.done.to_string(), s.already_done.to_string(), s.queued.to_string(), s.failed.to_string()])}
             }
         }
     } else {
@@ -264,9 +264,9 @@ fn calibration_strip(api: Signal<ApiClient>, refresh: Signal<u32>) -> Element {
                     h2 { class: "card-title text-sm", {crate::i18n::t("cal_title")} }
                     button {
                         class: "btn btn-ghost btn-sm",
-                        "aria-label": "dismiss calibration",
+                        "aria-label": crate::i18n::t("cal_dismiss_aria"),
                         onclick: move |_| dismissed.set(true),
-                        "dismiss"
+                        {crate::i18n::t("cal_dismiss")}
                     }
                 }
                 div { class: "grid grid-cols-2 sm:grid-cols-4 gap-2 mt-1",
@@ -583,25 +583,25 @@ pub fn panel() -> Element {
                     class: "btn btn-outline btn-md",
                     disabled: !writes || all_ids.is_empty(),
                     onclick: move |_| { selected.set(all_ids.iter().copied().collect()); },
-                    "Select visible ({all_ids.len()})"
+                    {crate::i18n::t_fmt("select_visible", &[all_ids.len().to_string()])}
                 }
                 button {
                     class: "btn btn-primary btn-md",
                     disabled: !writes || selected().is_empty(),
                     onclick: move |_| run_batch(selected().iter().copied().collect(), false, None),
-                    {crate::i18n::t("approve")} " selected (" {selected().len().to_string()} ")"
+                    {crate::i18n::t_fmt("approve_selected", &[selected().len().to_string()])}
                 }
                 button {
                     class: "btn btn-ghost btn-md",
                     onclick: move |_| selected.set(HashSet::new()),
-                    "Clear"
+                    {crate::i18n::t("clear")}
                 }
                 // v1.20.15 "Clock": toggle the queue ordering — nearest expiry
                 // first (the live clock rule) vs the server's creation order.
                 button {
                     class: "btn btn-outline btn-md",
                     onclick: move |_| sort_expiry.set(!sort_expiry()),
-                    if sort_expiry() { "expiry first" } else { "creation order" }
+                    {if sort_expiry() { crate::i18n::t("expiry_first") } else { crate::i18n::t("creation_order") }}
                 }
                 // M3.2: WCAG 2.1.4 — single-char shortcuts must be turn-offable.
                 label { class: "flex items-center gap-1.5 text-xs text-muted-foreground ml-2",
@@ -611,7 +611,7 @@ pub fn panel() -> Element {
                         checked: shortcuts(),
                         onchange: move |e| shortcuts.set(e.value() == "true"),
                     }
-                    "keys (A/S/R/J/K)"
+                    {crate::i18n::t("shortcut_hint")}
                 }
                 // M1.4: discoverable shortcut help (WCAG 3.2.6); `?` toggles it too.
                 button {
@@ -659,12 +659,12 @@ pub fn panel() -> Element {
                                         let _ = api().propose("sample proposal — approve me to try the gate").await;
                                         refresh += 1;
                                     },
-                                    "Ingest a sample proposal to try the gate"
+                                    {crate::i18n::t("sample_proposal_cta")}
                                 }
                             }
                         }
                     },
-                    Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "queue failed: {error_message(&e)}" } },
+                    Some(Err(e)) => rsx! { p { class: "text-danger mt-2", {crate::i18n::t_fmt("queue_failed", &[crate::api::error_message(e)])} } },
                     None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
                 }
             } else {
@@ -728,6 +728,8 @@ fn card(
     let conflict = proposal.conflict_with;
     let outcome = outcomes.get(&id).cloned();
     let is_focused = cursor == Some(index);
+    let review_sourcing_prompt = crate::i18n::t("review_sourcing_prompt");
+    let review_approve_supersede = crate::i18n::t("review_approve_supersede");
     let ring = if is_focused {
         " ring-2 ring-accent"
     } else {
@@ -756,26 +758,29 @@ fn card(
                     checked,
                     disabled: !writes,
                     onchange: move |_| toggle(id),
-                    "aria-label": "select proposal {id}",
+                    "aria-label": crate::i18n::t_fmt("select_proposal_aria", &[id.to_string()]),
                 }
                 div { class: "flex-1",
                     div { class: "flex justify-between items-center gap-2",
                         Link {
                             class: "font-mono text-sm text-accent hover:underline text-left",
                             to: Route::ReviewDetail { proposal_id: id },
+                            // i18n-exempt: the queue-row link is wire data — the proposal id
+                            // + kind verbatim (the operator's cross-check
+                            // vocabulary, same as the audit columns).
                             "proposal #{id} · {proposal.kind}"
                         }
                         span { class: "text-xs text-muted-foreground tabular",
-                            "novelty {proposal.novelty:.2} · salience {proposal.salience:.2}" }
-                        span { class: "{tier_class} tabular", title: "approve before the deadline",
+                            {crate::i18n::t_fmt("novelty_salience", &[format!("{:.2}", proposal.novelty), format!("{:.2}", proposal.salience)])} }
+                        span { class: "{tier_class} tabular", title: crate::i18n::t("approve_before_deadline"),
                             "{expiry_label}" }
                         if let Some(lbl) = crate::panels::edited_label(proposal.edited_at) {
-                            span { class: "badge badge-warn", "{lbl}" }
+                            span { class: "badge badge-warn", "{crate::i18n::t(lbl)}" }
                         }
                     }
                     if let Some(c) = conflict {
                         p { class: "text-sm text-warn",
-                            "conflicts with chunk #{c} — approve to supersede" }
+                            {crate::i18n::t_fmt("conflict_supersede", &[c.to_string()])} }
                     }
                     // v1.20.24 "Sweep" (LITL fence): proposal content renders in
                     // a bounded scroll box (not a full-height <p>) so padded
@@ -789,7 +794,7 @@ fn card(
                     }
                     if let Some(sp) = &proposal.source_prompt {
                         details { class: "mt-1 text-xs",
-                            summary { class: "cursor-pointer text-accent", "sourcing prompt" }
+                            summary { class: "cursor-pointer text-accent", "{review_sourcing_prompt}" }
                             p { class: "mt-1 text-ink-faint whitespace-pre-wrap border border-border rounded p-2",
                                 "{crate::strip_invisible(sp)}" }
                         }
@@ -806,7 +811,7 @@ fn card(
                                 class: "btn btn-outline btn-sm",
                                 disabled: !writes,
                                 onclick: move |_| decide(id, conflict, false),
-                                {crate::i18n::t("approve")} " & supersede"
+                                {crate::i18n::t("approve")} "{review_approve_supersede}"
                             }
                         }
                         button {
@@ -819,7 +824,7 @@ fn card(
                         button {
                             class: "btn btn-ghost btn-sm",
                             onclick: move |_| reingest_for.set(Some((id, content_for_reingest.clone()))),
-                            "suggest re-ingest"
+                            {crate::i18n::t("suggest_reingest")}
                         }
                         // v1.20.14 "Steer" M1: rewrite the content in place before
                         // deciding (edit-then-approve), instead of reject + re-ingest.
@@ -838,16 +843,16 @@ fn card(
                                 span { class: "text-xs text-ink-faint", "…" }
                             },
                             RowOutcome::Done(cid) => rsx! {
-                                span { class: "text-xs text-ok", "✓ approved → chunk #{cid}" }
+                                span { class: "text-xs text-ok", {crate::i18n::t_fmt("approved_chunk", &[cid.to_string()])} }
                             },
                             RowOutcome::AlreadyDone => rsx! {
-                                span { class: "text-xs text-muted-foreground", "already decided" }
+                                span { class: "text-xs text-muted-foreground", {crate::i18n::t("already_decided")} }
                             },
                             RowOutcome::Queued => rsx! {
-                                span { class: "text-xs text-warn", "queued (offline)" }
+                                span { class: "text-xs text-warn", {crate::i18n::t("queued_offline")} }
                             },
                             RowOutcome::Failed(e) => rsx! {
-                                span { class: "text-xs text-danger", "failed: {e}" }
+                                span { class: "text-xs text-danger", {crate::i18n::t_fmt("row_failed", &[e])} }
                             },
                         }
                     }
@@ -870,16 +875,17 @@ fn RejectEditor(
     let mut reject_for = reject_for;
     let mut reason = use_signal(String::new);
     rsx! {
-        div {
-            class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4",
-            role: "dialog", "aria-modal": "true", "aria-label": "reject with reason",
-            onkeydown: move |e| if e.key() == Key::Escape { reject_for.set(None) },
-            div { class: "card p-4 w-full max-w-md bg-popover",
-                h2 { class: "card-title", "Reject proposal #{id}" }
+        crate::Modal {
+            label: crate::i18n::t("reject_modal_label"),
+            trap: ".review-modal".to_string(),
+            initial_focus: ".review-modal textarea".to_string(),
+            on_close: move |_| reject_for.set(None),
+            div { class: "review-modal card p-4 w-full max-w-md bg-popover",
+                h2 { class: "card-title", {crate::i18n::t_fmt("reject_title", &[id.to_string()])} }
                 textarea {
                     class: "input w-full mt-3 text-sm min-h-20",
                     rows: "3",
-                    placeholder: "reason (recorded in the audit log)…",
+                    placeholder: crate::i18n::t("reason_placeholder"),
                     value: "{reason}",
                     oninput: move |e| reason.set(e.value()),
                 }
@@ -887,7 +893,7 @@ fn RejectEditor(
                     button {
                         class: "btn btn-ghost btn-md",
                         onclick: move |_| reject_for.set(None),
-                        "Cancel"
+                        {crate::i18n::t("cancel")}
                     }
                     button {
                         class: "btn btn-destructive btn-md",
@@ -938,12 +944,13 @@ fn ReingestEditor(
     let mut reingest_for = reingest_for;
     let mut content = use_signal(|| initial);
     rsx! {
-        div {
-            class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4",
-            role: "dialog", "aria-modal": "true", "aria-label": "suggest re-ingest",
-            onkeydown: move |e| if e.key() == Key::Escape { reingest_for.set(None) },
-            div { class: "card p-4 w-full max-w-md bg-popover",
-                h2 { class: "card-title", "Re-ingest proposal #{id} as a new proposal" }
+        crate::Modal {
+            label: crate::i18n::t("suggest_reingest").to_string(),
+            trap: ".review-modal".to_string(),
+            initial_focus: ".review-modal textarea".to_string(),
+            on_close: move |_| reingest_for.set(None),
+            div { class: "review-modal card p-4 w-full max-w-md bg-popover",
+                h2 { class: "card-title", {crate::i18n::t_fmt("reingest_title", &[id.to_string()])} }
                 textarea {
                     class: "input w-full mt-3 text-sm min-h-28",
                     rows: "5",
@@ -954,7 +961,7 @@ fn ReingestEditor(
                     button {
                         class: "btn btn-ghost btn-md",
                         onclick: move |_| reingest_for.set(None),
-                        "Cancel"
+                        {crate::i18n::t("cancel")}
                     }
                     button {
                         class: "btn btn-primary btn-md",
@@ -970,7 +977,7 @@ fn ReingestEditor(
                                 reingest_for.set(None);
                             });
                         },
-                        "Post new proposal"
+                        {crate::i18n::t("post_new_proposal")}
                     }
                 }
             }
@@ -996,12 +1003,13 @@ fn EditEditor(
     let mut content = use_signal(|| initial);
     let feedback = use_signal(|| None::<String>);
     rsx! {
-        div {
-            class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4",
-            role: "dialog", "aria-modal": "true", "aria-label": "edit",
-            onkeydown: move |e| if e.key() == Key::Escape { edit_for.set(None) },
-            div { class: "card p-4 w-full max-w-md bg-popover",
-                h2 { class: "card-title", "Edit proposal #{id}" }
+        crate::Modal {
+            label: crate::i18n::t("edit_modal_label"),
+            trap: ".review-modal".to_string(),
+            initial_focus: ".review-modal textarea".to_string(),
+            on_close: move |_| edit_for.set(None),
+            div { class: "review-modal card p-4 w-full max-w-md bg-popover",
+                h2 { class: "card-title", {crate::i18n::t_fmt("edit_title", &[id.to_string()])} }
                 textarea {
                     class: "input w-full mt-3 text-sm min-h-28",
                     rows: "5",
@@ -1055,10 +1063,16 @@ fn locate_proposal(list: &[Proposal], id: i64) -> Option<Proposal> {
 /// Renders one card read-only + Approve/Reject, so a reviewer can share the
 /// *specific* item. A proposal already decided by someone else is not in the
 /// pending list → shown as "no longer pending", not an error.
+///
+/// v1.27.20 "Console" (F-39): the resource STATE is matched before anything is
+/// rendered — `None` (fetch in flight) is a Loading row, `Err` is an error row
+/// with a retry, and only a successfully-loaded list without the id is the
+/// not-found card. The pre-F-39 code collapsed all three into "No pending
+/// proposal" — a false state on a slow network and after a transient failure.
 pub fn detail(proposal_id: i64) -> Element {
-    use_document_title(move || format!("Proposal #{proposal_id} — brain"));
+    use_document_title(move || format!("{} #{proposal_id}", crate::i18n::t("proposal")));
     let api = use_context::<Signal<ApiClient>>();
-    let proposals = use_resource(move || {
+    let mut proposals = use_resource(move || {
         let api = api();
         async move { api.proposals("pending").await }
     });
@@ -1073,66 +1087,150 @@ pub fn detail(proposal_id: i64) -> Element {
             }
         }
     });
-    let found = match &*proposals.read() {
-        Some(Ok(list)) => locate_proposal(list, proposal_id),
-        _ => None,
-    };
     let now = crate::time_budget::now_unix();
-    let _ = tick();
-    let deadline = found.as_ref().map(|p| {
-        let remaining = crate::time_budget::remaining(p.expires_at, now);
-        let tier = crate::time_budget::tier(remaining, p.warn_secs, p.critical_secs);
-        let class = match tier {
-            crate::time_budget::Tier::Critical | crate::time_budget::Tier::Expired => {
-                "badge badge-danger"
-            }
-            crate::time_budget::Tier::Warn => "badge badge-warn",
-            crate::time_budget::Tier::Ok => "badge",
-        };
-        (
-            class.to_string(),
-            crate::time_budget::format_remaining(remaining),
-        )
-    });
+    let _ = tick(); // subscribe renders to the clock bump
+    let state = detail_state(&proposals.read(), proposal_id);
+    // Hoisted labels: Dioxus rsx format strings can't parse a nested call with
+    // quotes inside `{}` (the house pattern — `t()` locals before the rsx).
+    let back_label = crate::i18n::t("back_to_queue");
+    let loading_label = crate::i18n::t("detail_loading");
+    let retry_label = crate::i18n::t("retry");
+    let not_pending = crate::i18n::t_fmt("detail_not_pending", &[proposal_id.to_string()]);
+    let digest_label = crate::i18n::t("digest_label");
+    let copy_label = crate::i18n::t("copy_digest");
     rsx! {
         PageTitle { {format!("{} #{proposal_id}", crate::i18n::t("proposal"))} }
         p { class: "text-xs text-muted-foreground mb-3",
-            Link { to: Route::Review {}, "← back to the review queue" } }
-        match found {
-            Some(p) => rsx! {
+            Link { to: Route::Review {}, "{back_label}" } }
+        match state {
+            DetailState::Found(p) => {
+                let deadline = deadline_badge(&p, now);
+                // Copies of the digest for the copy button + the approve footer
+                // (both closures move their captured value).
+                let digest = p.content_digest.clone();
+                let digest_display = digest_short(&digest);
+                rsx! {
+                    div { class: "card",
+                        div { class: "card-header",
+                            // i18n-exempt: the wire id + kind verbatim (matches
+                            // the /proposals rows — the operator's cross-check
+                            // vocabulary, like the audit column headers).
+                            h2 { class: "card-title", "Proposal #{proposal_id} · {p.kind}" }
+                            if let Some(v) = p.screen_verdict.as_deref() {
+                                span { class: "badge badge-{crate::panels::verdict_badge(v)}",
+                                    {crate::i18n::t_fmt("screen_label", &[crate::i18n::t(crate::panels::verdict_label(v))])} }
+                            }
+                            if let Some(lbl) = crate::panels::edited_label(p.edited_at) {
+                                span { class: "badge badge-warn", "{crate::i18n::t(lbl)}" }
+                            }
+                            if let Some((class, lbl)) = &deadline {
+                                span { class: "{class} tabular", title: crate::i18n::t("approve_before_deadline"), "{lbl}" }
+                            }
+                        }
+                        div { class: "card-body space-y-2",
+                            p { class: "text-sm text-foreground", "{crate::strip_invisible(&p.content)}" }
+                            p { class: "text-xs text-muted-foreground tabular",
+                                {crate::i18n::t_fmt("novelty_salience_created", &[format!("{:.2}", p.novelty), format!("{:.2}", p.salience), p.created_at.to_string()])} }
+                            if let Some(c) = p.conflict_with {
+                                p { class: "text-sm text-warn", {crate::i18n::t_fmt("conflict_supersede", &[c.to_string()])} }
+                            }
+                            // v1.27.20 "Console" (M1.6): the digest the approve
+                            // verb binds is shown here — the operator attests to
+                            // visible bytes AND sees the fingerprint in the same
+                            // breath. First 16 hex chars + a copy affordance.
+                            if !digest.is_empty() {
+                                p { class: "text-xs text-muted-foreground tabular flex items-center gap-2",
+                                    span { "{digest_label}: {digest_display}" }
+                                    button {
+                                        class: "btn btn-ghost btn-sm",
+                                        "aria-label": "{copy_label}",
+                                        onclick: move |_| copy_text(&digest),
+                                        "{copy_label}"
+                                    }
+                                }
+                            }
+                        }
+                        div { class: "card-footer", DetailActions { api, proposal_id, digest: p.content_digest.clone() } }
+                    }
+                }
+            }
+            DetailState::Loading => rsx! {
+                p { class: "text-muted-foreground text-sm", "{loading_label}" }
+            },
+            DetailState::Error(e) => rsx! {
                 div { class: "card",
-                    div { class: "card-header",
-                        h2 { class: "card-title", "Proposal #{proposal_id} · {p.kind}" }
-                        if let Some(v) = p.screen_verdict.as_deref() {
-                            span { class: "badge badge-{crate::panels::verdict_badge(v)}",
-                                "screen: {crate::panels::verdict_label(v)}" }
-                        }
-                        if let Some(lbl) = crate::panels::edited_label(p.edited_at) {
-                            span { class: "badge badge-warn", "{lbl}" }
-                        }
-                        if let Some((class, lbl)) = &deadline {
-                            span { class: "{class} tabular", title: "approve before the deadline", "{lbl}" }
+                    div { class: "card-body",
+                        p { class: "text-danger text-sm", "{e}" }
+                        button {
+                            class: "btn btn-outline btn-sm mt-3",
+                            onclick: move |_| proposals.restart(),
+                            "{retry_label}"
                         }
                     }
-                    div { class: "card-body space-y-2",
-                        p { class: "text-sm text-foreground", "{crate::strip_invisible(&p.content)}" }
-                        p { class: "text-xs text-muted-foreground tabular",
-                            "novelty {p.novelty:.2} · salience {p.salience:.2} · created {p.created_at}" }
-                        if let Some(c) = p.conflict_with {
-                            p { class: "text-sm text-warn", "conflicts with chunk #{c} — approve to supersede" }
-                        }
-                    }
-                    div { class: "card-footer", DetailActions { api, proposal_id, digest: p.content_digest.clone() } }
                 }
             },
-            None => rsx! {
+            DetailState::NotFound => rsx! {
                 div { class: "card",
                     div { class: "card-body text-muted-foreground",
-                        p { "No pending proposal #{proposal_id} (already decided?)." } }
+                        p { "{not_pending}" } }
                 }
             },
         }
     }
+}
+
+/// F-39 (v1.27.20): the deep-link detail's honest match over the pending-list
+/// resource. `Loading` while the fetch is in flight; `Error` surfaced with a
+/// retry; `NotFound` ONLY when a loaded list lacks the id. Pure — the panel is
+/// plumbing. (`Box` keeps the enum small — `Proposal` is a wide struct.)
+#[derive(Debug)]
+enum DetailState {
+    Loading,
+    Error(String),
+    Found(Box<Proposal>),
+    NotFound,
+}
+
+fn detail_state(resource: &Option<Result<Vec<Proposal>, ApiError>>, id: i64) -> DetailState {
+    match resource {
+        None => DetailState::Loading,
+        Some(Err(e)) => DetailState::Error(error_message(e)),
+        Some(Ok(list)) => match locate_proposal(list, id) {
+            Some(p) => DetailState::Found(Box::new(p)),
+            None => DetailState::NotFound,
+        },
+    }
+}
+
+/// v1.20.15 "Clock": the deadline badge (class + label) for one proposal —
+/// extracted so the detail + queue cards share the one mapping.
+fn deadline_badge(p: &Proposal, now: i64) -> Option<(String, String)> {
+    let remaining = crate::time_budget::remaining(p.expires_at, now);
+    let tier = crate::time_budget::tier(remaining, p.warn_secs, p.critical_secs);
+    let class = match tier {
+        crate::time_budget::Tier::Critical | crate::time_budget::Tier::Expired => {
+            "badge badge-danger"
+        }
+        crate::time_budget::Tier::Warn => "badge badge-warn",
+        crate::time_budget::Tier::Ok => "badge",
+    };
+    Some((
+        class.to_string(),
+        crate::time_budget::format_remaining(remaining),
+    ))
+}
+
+/// v1.27.20 (M1.6): the first 16 hex chars of the digest — enough to eyeball
+/// fingerprint without blowing up the card. The full value rides the wire.
+fn digest_short(d: &str) -> String {
+    d.chars().take(16).collect()
+}
+
+/// v1.27.20 (M1.6): clipboard copy via the webview JS bridge (web + desktop
+/// both ship a JS engine; a renderer without one degrades to a silent no-op).
+fn copy_text(s: &str) {
+    let js = format!("navigator.clipboard.writeText({s:?}).catch(()=>{{}});");
+    let _ = document::eval(&js);
 }
 
 /// v1.16.7 M1: Approve/Reject for the deep-linked proposal. On success it
@@ -1534,5 +1632,67 @@ mod tests {
             ..Calibration::default()
         };
         assert!(!rubber_stamp(&balanced), "approve_rate <= 0.9 → no warn");
+    }
+
+    fn proposal(id: i64) -> Proposal {
+        Proposal {
+            id,
+            kind: "episodic".into(),
+            content: format!("body {id}"),
+            content_digest: "a1b2c3d4e5f60718293a4b5c6d7e8f90deadbeef".into(),
+            source: None,
+            source_prompt: None,
+            screen_verdict: None,
+            authority: None,
+            novelty: 0.5,
+            conflict_with: None,
+            salience: 0.5,
+            created_at: 1_735_689_600,
+            edited_at: None,
+            expires_at: 1_735_689_600 + 86_400,
+            warn_secs: 300,
+            critical_secs: 60,
+            decided_at: None,
+        }
+    }
+
+    /// F-39 (v1.27.20): the deep-linked detail renders Loading, Error, and
+    /// NotFound as DISTINCT states — the pre-fix code showed "No pending
+    /// proposal (already decided?)" while the fetch was still in flight.
+    #[test]
+    fn deep_link_shows_loading_then_not_found() {
+        assert!(matches!(detail_state(&None, 7), DetailState::Loading));
+        assert!(matches!(
+            detail_state(&Some(Err(ApiError::Status(503, "unhealthy".into()))), 7),
+            DetailState::Error(_)
+        ));
+        // A loaded list without the id is the ONLY not-found shape.
+        let loaded = Some(Ok(vec![proposal(1), proposal(2)]));
+        assert!(matches!(detail_state(&loaded, 7), DetailState::NotFound));
+        // And the found shape carries the full proposal (digest included).
+        match detail_state(&loaded, 2) {
+            DetailState::Found(p) => {
+                assert_eq!(p.id, 2);
+                assert!(p.content_digest.contains("deadbeef"));
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    /// M1.6 (v1.27.20): the approve detail shows the bound digest as its first
+    /// 16 hex chars — the operator attests to the visible fingerprint.
+    #[test]
+    fn approve_detail_shows_digest() {
+        assert_eq!(
+            digest_short(&proposal(9).content_digest),
+            "a1b2c3d4e5f60718"
+        );
+        assert_eq!(digest_short(""), "");
+        // The Found state carries the digest the DetailActions footer binds.
+        let loaded = Some(Ok(vec![proposal(9)]));
+        match detail_state(&loaded, 9) {
+            DetailState::Found(p) => assert_eq!(p.content_digest.len(), 40),
+            other => panic!("expected Found, got {other:?}"),
+        }
     }
 }

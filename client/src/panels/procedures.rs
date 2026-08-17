@@ -49,9 +49,10 @@ pub fn panel() -> Element {
                 Ok(pr) => {
                     let n = pr.step_ids.len();
                     let id = pr.id;
-                    status.set(Some(Ok(
-                        crate::i18n::t("proc_created").replace("{n}", &n.to_string())
-                    )));
+                    status.set(Some(Ok(crate::i18n::t_fmt(
+                        "proc_created",
+                        &[n.to_string()],
+                    ))));
                     // Fetch the ordered steps for the new procedure, best-effort.
                     steps_view.set(api().procedure_steps(id).await.ok().map(|r| r.steps));
                 }

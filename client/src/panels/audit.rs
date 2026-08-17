@@ -8,6 +8,7 @@
 //! triggers a download via `document::eval` (no new server route).
 
 use crate::api::{ApiClient, AuditRow};
+use crate::i18n::{t, t_fmt};
 use crate::panels::{use_document_title, PageTitle, RefreshButton};
 use crate::UiState;
 use dioxus::prelude::*;
@@ -154,28 +155,28 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
         div { class: "card mt-2",
             div { class: "card-body",
                 match (events().is_empty(), &page_err()) {
-                    (_, Some(e)) => rsx! { p { class: "text-danger text-sm", "audit failed: {e}" } },
-                    (true, None) => rsx! { p { class: "text-muted-foreground text-sm", "no events" } },
+                    (_, Some(e)) => rsx! { p { class: "text-danger text-sm", {t_fmt("audit_error", std::slice::from_ref(e))} } },
+                    (true, None) => rsx! { p { class: "text-muted-foreground text-sm", {t("audit_empty")} } },
                     (false, None) => rsx! {
                         p { class: "text-muted-foreground text-sm",
-                            "{events().len()} events loaded · {rows.len()} after filter (hash-only — no raw content)" }
+                            {t_fmt("audit_filtered_summary", &[events().len().to_string(), rows.len().to_string()])} }
                     },
                 }
                 // M7.1: client-side filter controls.
                 div { class: "flex gap-2 my-3 flex-wrap items-center",
                     input {
                         class: "input",
-                        placeholder: "principal…",
+                        placeholder: t("audit_principal_placeholder"),
                         value: "{filter().principal}",
                         oninput: move |e| filter.write().principal = e.value(),
-                        "aria-label": "filter by principal",
+                        "aria-label": t("audit_filter_principal"),
                     }
                     select {
                         class: "select",
                         value: "{filter().kind}",
                         onchange: move |e| filter.write().kind = e.value(),
-                        "aria-label": "filter by kind",
-                        option { value: "", "all kinds" }
+                        "aria-label": t("audit_filter_kind"),
+                        option { value: "", {t("audit_all_kinds")} }
                         for k in &kinds {
                             option { value: "{k}", "{k}" }
                         }
@@ -185,7 +186,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                         "type": "date",
                         value: "{filter().since}",
                         oninput: move |e| filter.write().since = e.value(),
-                        "aria-label": "filter since date",
+                        "aria-label": t("audit_filter_since"),
                     }
                     // M7.1: export the filtered rows as JSON. Ponytail: no `/audit/export`
                     // server route exists and "the client adds no new server routes" — so
@@ -206,21 +207,30 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                                 );
                                 let _ = document::eval(&js);
                             },
-                            "Export JSON"
+                            {t("audit_export")}
                         }
                         // v1.17.0 M2.4: portable refresh (resets pagination to page 0).
                         div { class: "ml-1", RefreshButton { refresh } }
                     // M7.5: announce the export to screen readers.
                     if !rows.is_empty() {
                         span { class: "sr-only", role: "status", "aria-live": "polite",
-                            "{rows.len()} audit rows exported"
+                            {t_fmt("audit_rows_exported", &[rows.len().to_string()])}
                         }
                     }
                 }
-                div { class: "overflow-x-auto" }
-                table { class: "table",
+                // F-59 (v1.27.20 "Console"): the table lives INSIDE the
+                // horizontal-scroll wrapper — the pre-fix markup had an empty
+                // self-closing `div.overflow-x-auto` beside a bare `<table>`,
+                // so a wide kind/actor column overflowed the card on narrow
+                // viewports instead of scrolling.
+                div { class: "overflow-x-auto",
+                    table { class: "table",
                     thead {
                         tr {
+                            // i18n-exempt: wire-vocabulary column headers (the
+                            // audit row fields as documented in openapi.yaml —
+                            // translating them would break ops cross-checks
+                            // against the API).
                             th { class: "text-left pr-2", "id" }
                             th { class: "text-left pr-2", "ts" }
                             th { class: "text-left pr-2", "kind" }
@@ -249,6 +259,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                             }
                         }
                     }
+                    }
                 }
                 // v1.16.7 M4: paginated tail. Load the next page (append) until
                 // the server returns a short page. A real scroll-detect needs
@@ -258,7 +269,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                         button {
                             class: "btn btn-outline btn-md",
                             onclick: load_more,
-                            "Load more ({events().len()} loaded)"
+                            {t_fmt("audit_load_more", &[events().len().to_string()])}
                         }
                     }
                 }

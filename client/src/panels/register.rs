@@ -9,7 +9,7 @@
 //! reusable evidence detail renderer (register rows open it; a recall hit
 //! entry is a documented ceiling — recall hits already open the shared drawer).
 
-use crate::api::{error_message, ApiClient};
+use crate::api::ApiClient;
 use crate::panels::{use_document_title, PageTitle};
 use dioxus::prelude::*;
 
@@ -176,7 +176,7 @@ impl EvidenceRow {
 /// The register panel (v1.20.9 M1): reads `/export`, filters client-side,
 /// and lets an operator open the evidence detail for any row.
 pub fn panel() -> Element {
-    use_document_title(|| "Agent Memory Register — brain".into());
+    use_document_title(|| format!("{} — brain", crate::i18n::t("register_title")));
     let api = use_context::<Signal<ApiClient>>();
     let mut tab = use_signal(String::new); // "" = All
     let mut owner = use_signal(String::new);
@@ -204,23 +204,25 @@ pub fn panel() -> Element {
         _ => Vec::new(),
     };
 
+    let register_owner_ph = crate::i18n::t("register_owner_ph");
+    let register_source_ph = crate::i18n::t("register_source_ph");
+    let register_kind_ph = crate::i18n::t("register_kind_ph");
+
     rsx! {
-        PageTitle { "Agent Memory Register" }
-        p { class: "text-muted-foreground text-sm mb-3",
-            "Read-only provenance ledger — who wrote each memory and what it is based on."
-        }
+        PageTitle { {crate::i18n::t("register_title")} }
+        p { class: "text-muted-foreground text-sm mb-3", {crate::i18n::t("register_sub")} }
         div { class: "card",
             div { class: "card-body",
                 // Origin Tabs (provenance-trust order) + filters.
                 div { class: "flex flex-wrap gap-2 items-center mb-3",
                     button {
-                        class: if tab().is_empty() { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline" },
+                        class: if tab().is_empty() { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline" },  // i18n-exempt: css class expression
                         onclick: move |_| tab.set(String::new()),
-                        "All"
+                        {crate::i18n::t("register_all")}
                     }
                     for g in &groups {
                         button {
-                            class: if tab() == g.origin { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline" },
+                            class: if tab() == g.origin { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline" },  // i18n-exempt: css class expression
                             onclick: {
                                 let o = g.origin.clone();
                                 move |_| tab.set(o.clone())
@@ -230,16 +232,16 @@ pub fn panel() -> Element {
                     }
                 }
                 div { class: "flex flex-wrap gap-2 mb-3",
-                    input { class: "input", placeholder: "owner…", value: "{owner}", oninput: move |e| owner.set(e.value()) }
-                    input { class: "input", placeholder: "source…", value: "{source}", oninput: move |e| source.set(e.value()) }
-                    input { class: "input", placeholder: "memory kind…", value: "{kind}", oninput: move |e| kind.set(e.value()) }
+                    input { class: "input", placeholder: "{register_owner_ph}", value: "{owner}", oninput: move |e| owner.set(e.value()) }
+                    input { class: "input", placeholder: "{register_source_ph}", value: "{source}", oninput: move |e| source.set(e.value()) }
+                    input { class: "input", placeholder: "{register_kind_ph}", value: "{kind}", oninput: move |e| kind.set(e.value()) }
                 }
                 match &*rows.read() {
                     Some(Err(e)) => rsx! {
-                        p { class: "text-danger text-sm", "register failed: {error_message(&e)}" }
+                        p { class: "text-danger text-sm", {crate::i18n::t_fmt("register_failed", &[crate::api::error_message(e)])} }
                     },
                     Some(Ok(_)) if visible.is_empty() => rsx! {
-                        p { class: "text-muted-foreground text-sm", "no memories match the filter." }
+                        p { class: "text-muted-foreground text-sm", {crate::i18n::t("register_empty")} }
                     },
                     _ => rsx! {
                         ul { class: "divide-y divide-border",
@@ -250,7 +252,7 @@ pub fn panel() -> Element {
                                         p { class: "text-sm", "{register_excerpt(&r.content, 120)}" }
                                         div { class: "flex flex-wrap gap-2 text-xs mt-0.5",
                                             span { class: "badge", "{r.origin}" }
-                                            if let Some(o) = &r.owner { span { class: "badge", "owner {o}" } }
+                                            if let Some(o) = &r.owner { span { class: "badge", {crate::i18n::t_fmt("register_owner", std::slice::from_ref(o))} } }
                                             span { class: "badge", "{r.memory_kind}" }
                                             if !r.source.is_empty() { span { class: "badge", "{r.source}" } }
                                         }
@@ -262,7 +264,7 @@ pub fn panel() -> Element {
                                         button {
                                             class: "btn btn-outline btn-xs",
                                             onclick: { let id = r.id; move |_| open.set(Some(id)) },
-                                            "evidence"
+                                            {crate::i18n::t("register_evidence")}
                                         }
                                     }
                                 }
@@ -295,31 +297,33 @@ pub fn EvidenceModal(open: Signal<Option<i64>>) -> Element {
         }
     });
     rsx! {
-        div { class: "fixed inset-0 bg-surface-overlay/80 flex items-center justify-center p-4 z-50",
-            role: "dialog", "aria-modal": "true", "aria-label": "evidence for chunk",
-            onkeydown: move |e| if e.key() == Key::Escape { open.set(None) },
-            div { class: "card p-4 w-full max-w-2xl bg-popover max-h-[80vh] overflow-y-auto",
+        crate::Modal {
+            label: crate::i18n::t("register_evidence_modal").to_string(),
+            trap: ".evidence-modal".to_string(),
+            initial_focus: ".evidence-modal button".to_string(),
+            on_close: move |_| open.set(None),
+            div { class: "evidence-modal card p-4 w-full max-w-2xl bg-popover max-h-[80vh] overflow-y-auto",
                 div { class: "flex items-center justify-between",
-                    h2 { class: "text-lg font-semibold", "Evidence — chunk #{id}" }
+                    h2 { class: "text-lg font-semibold", {crate::i18n::t_fmt("register_evidence_title", &[id.to_string()])} }
                     button { class: "btn btn-ghost btn-md", onclick: move |_| open.set(None), "×" }
                 }
                 match &*ev.read() {
                     Some(Ok(e)) => rsx! {
                         if let Some(t) = &e.title { p { class: "text-sm text-muted-foreground mt-1", "{t}" } }
                         div { class: "flex flex-wrap gap-2 text-xs mt-2",
-                            if let Some(uri) = &e.source_uri { span { class: "badge", "src {uri}" } }
-                            if let Some(rid) = e.revision_id { span { class: "badge", "rev {rid}" } }
+                            if let Some(uri) = &e.source_uri { span { class: "badge", {crate::i18n::t_fmt("register_src", std::slice::from_ref(uri))} } }
+                            if let Some(rid) = e.revision_id { span { class: "badge", {crate::i18n::t_fmt("register_rev", &[rid.to_string()])} } }
                             if let Some(hp) = &e.heading_path { span { class: "badge", "{hp}" } }
-                            if let (Some(a), Some(b)) = (e.line_start, e.line_end) { span { class: "badge", "lines {a}–{b}" } }
+                            if let (Some(a), Some(b)) = (e.line_start, e.line_end) { span { class: "badge", {crate::i18n::t_fmt("register_lines", &[a.to_string(), b.to_string()])} } }
                             if let Some(c) = &e.created_at { span { class: "badge", "{c}" } }
                         }
                         pre { class: "mt-3 p-3 bg-muted/50 rounded font-mono text-xs whitespace-pre-wrap", "{crate::strip_invisible(&e.content)}" }
                     },
                     Some(Err(err)) => rsx! {
-                        p { class: "text-danger mt-3", "evidence failed: {error_message(&err)}" }
+                        p { class: "text-danger mt-3", {crate::i18n::t_fmt("register_ev_failed", &[crate::api::error_message(err)])} }
                     },
                     None => rsx! {
-                        p { class: "text-muted-foreground mt-3", "loading evidence…" }
+                        p { class: "text-muted-foreground mt-3", {crate::i18n::t("register_ev_loading")} }
                     },
                 }
             }

@@ -49,6 +49,7 @@ refresh_token_label = Refresh token
 refresh_token_placeholder = from `brain key mint` or an IdP
 connecting = Connecting…
 connect_button = Connect
+plaintext_http = Plain http:// over a non-loopback address — the auth token would travel unencrypted. Use https:// or a loopback host.
 install_hint = One-line install:  curl -fsSL … | sh   then  brain doctor
 
 ## Review
@@ -67,7 +68,7 @@ review_key_next = Next proposal
 review_key_prev = Previous proposal
 
 ## Subjects
-deletion_certificate = Deletion certificate
+deletion_certificate = Deletion certificate {0}
 chain_verified = chain verified
 chain_tampered = CHAIN TAMPERED
 
@@ -197,7 +198,7 @@ proc_add_step = Add step
 proc_create = Create procedure
 proc_steps = Steps
 proc_is_decision = Decision rule
-proc_created = Procedure created ({n} steps)
+proc_created = Procedure created ({0} steps)
 cls_title = Classify
 cls_text = Text to classify
 cls_run = Classify
@@ -214,8 +215,8 @@ cons_undo = Undo
 cons_empty = Nothing to consolidate.
 cons_near_dup = near-dup
 cons_conflict = conflict
-cons_applied = Applied {n} supersessions
-cons_undone = Undone {n}
+cons_applied = Applied {0} supersessions
+cons_undone = Undone {0}
 
 ## Data (v1.17.8 M5 — Rights group)
 nav_data = Data
@@ -230,14 +231,14 @@ data_retention_state = Retention
 data_retention_kind = Kind
 data_retention_days = Days
 data_retention_bad_days = Days must be a whole number
-data_retention_set = Updated {n} override(s)
+data_retention_set = Updated {0} override(s)
 data_decayed = Decayed
 data_next_expiry = Next to expire
 data_tombstones = Tombstones
 data_empty = Nothing to show.
 data_purge_ids = Chunk ids (comma/space separated)
 data_purge_owner = Or purge all for owner
-data_purged = Purged {n} chunk(s)
+data_purged = Purged {0} chunk(s)
 data_purged_queued = Queued for replay (offline) — will purge when the connection returns
 data_purge_empty = Provide chunk ids or an owner
 
@@ -262,13 +263,14 @@ sys_domains = Domains
 sys_snapshot = Snapshot integrity
 sys_art30 = Art 30 register
 sys_reindex = Reindex
-sys_reindexed = Reindexed {n} chunks
+sys_reindexed = Reindexed {0} chunks
 sys_sources = Sources & connectors
 sys_console = Try-it console
 
 ## Operations (v1.20.6 M1–M3 — Memory Operations panel)
 nav_ops = Operations
-ops_title = Operationsops_sub = The live HITL work surface: pending queue, SLA clocks, and the flagged screen output.
+ops_title = Operations
+ops_sub = The live HITL work surface: pending queue, SLA clocks, and the flagged screen output.
 ops_queue = Live queue
 ops_queue_summary = pending
 # v1.27.19 "Scrub" (D-7): the offline-enqueue replay took over the action.
@@ -358,3 +360,259 @@ replay_dismiss = Dismiss all
 replay_subject_prompt = Re-enter the subject to erase (the offline form kept only its hash):
 replay_subject_placeholder = subject / owner / principal…
 replay_subject_required = Re-enter the subject first — the hash is one-way.
+
+## v1.27.20 Console — deep-link state honesty (F-39) + digest display (M1.6)
+back_to_queue = ← back to the review queue
+detail_loading = Loading proposal…
+retry = Retry
+detail_not_pending = No pending proposal #{0} (already decided?)
+digest_label = digest
+copy_digest = copy digest
+
+# F-58 graph traverse block hints
+graph_need_start = Enter an entity name to start from
+graph_need_kind = Enter a valid relation kind
+
+## Audit surface (v1.27.20 M3 — render-surface extraction)
+audit_error = audit failed: {0}
+audit_empty = No events.
+audit_filtered_summary = {0} events loaded · {1} after filter (hash-only — no raw content)
+audit_principal_placeholder = principal…
+audit_filter_principal = filter by principal
+audit_filter_kind = filter by kind
+audit_all_kinds = all kinds
+audit_filter_since = filter since date
+audit_export = Export JSON
+audit_rows_exported = {0} audit rows exported
+audit_load_more = Load more ({0} loaded)
+
+## Subjects/DSAR surface (v1.27.20 M3 — render-surface extraction)
+dsar_subject_placeholder = subject / owner / principal…
+dsar_subject_aria = subject to action
+dsar_subject_required = enter a subject first
+dsar_locate_export = Locate & export
+dsar_locate_export_purge = Locate, export & purge
+cancel = Cancel
+dsar_queued = queued — will replay when the connection returns
+dsar_previewing = previewing…
+dsar_purge_note = Purge is irreversible: it writes a tombstone + hash-chain entry. The deletion certificate re-verifies the chain head live.
+dsar_preview_failed = preview failed: {0}
+dsar_action_failed = dsar {0} failed: {1}
+cert_fetch_failed = certificate fetch failed: {0}
+dsar_loading = loading…
+dsar_back_link = ← back to subjects
+dsar_completed_retained = {0} · {1}
+dsar_subject_line = subject: {0}
+cert_found = found
+cert_purged = purged
+cert_tombstone_root = tombstone root
+cert_certified = certified
+cert_chain_head = chain head
+
+## Review/ops surface (v1.27.20 M3 — render-surface extraction)
+verdict_clean = clean
+verdict_quarantined = quarantined
+edited = edited
+batch_summary = batch: {0} approved · {1} already decided · {2} queued (offline) · {3} failed
+select_visible = Select visible ({0})
+clear = Clear
+queue_failed = queue failed: {0}
+select_proposal_aria = select proposal {0}
+novelty_salience = novelty {0} · salience {1}
+conflict_supersede = conflicts with chunk #{0} — approve to supersede
+approved_chunk = ✓ approved → chunk #{0}
+already_decided = already decided
+queued_offline = queued (offline)
+row_failed = failed: {0}
+reject_title = Reject proposal #{0}
+reingest_title = Re-ingest proposal #{0} as a new proposal
+edit_title = Edit proposal #{0}
+post_new_proposal = Post new proposal
+reason_placeholder = reason (recorded in the audit log)…
+approve_before_deadline = approve before the deadline
+screen_label = screen: {0}
+novelty_salience_created = novelty {0} · salience {1} · created {2}
+approve_selected = Approve selected ({0})
+expiry_first = expiry first
+creation_order = creation order
+shortcut_hint = keys (A/S/R/E/J/K)
+sample_proposal_cta = Ingest a sample proposal to try the gate
+cal_dismiss = dismiss
+cal_dismiss_aria = dismiss calibration
+suggest_reingest = suggest re-ingest
+reject_modal_label = reject with reason
+edit_modal_label = edit proposal
+ops_ar_counts = A {0} · R {1}
+time_until_expiry = time until expiry
+expires_in = expires in {0}
+auto_reject_title = server auto-rejects expired proposals
+ops_tip_approve = approve (a)
+ops_tip_reject = reject (r)
+
+## Connect/wizard/error surface (v1.27.20 M3)
+connected_v = connected — v{0} · {1}{2}
+connected_capacity = docs {0}/{1}, 
+could_not_reach = could not reach {0}: {1}
+bind_failed = bind failed: {0}
+wizard_defaults_note = defaults only — an explicit row value always wins; bind target: global
+wizard_preset_aria = profile preset
+wizard_knob_scope = default scope
+wizard_knob_pii = pii mode
+wizard_knob_retention = retention
+wizard_knob_audit = audit
+wizard_knob_kinds = kinds
+wizard_knob_hold = legal hold
+err_title = Something went wrong
+err_body = The client hit an unexpected error. Reload to retry.
+err_dismiss = Dismiss
+## Command palette (v1.27.20 M3.2)
+system_title = System
+register_title = Agent Memory Register
+clients_title = Clients (BPO console)
+palette_open = Open
+palette_open_proposal = Open proposal
+palette_open_chunk = Open chunk
+palette_open_entity = Open entity
+palette_export_audit = Export audit
+palette_export_ump = Export UMP
+reindex_title = Reindex
+refresh_label = Refresh
+palette_open_trace = Open trace
+palette_modal_label = command palette
+palette_placeholder = type a command… (↑↓ to move, Enter to run, Esc to close)
+palette_filter_aria = command filter
+palette_no_match = no match
+## Recall surface (v1.27.20 M3.1)
+recall_placeholder = query brain-server (min 5 chars)…
+recall_query_aria = recall query
+recall_trace_toggle = trace decision path
+recall_min_relevance = min relevance
+recall_rel_any = any
+recall_rel_medium_plus = medium+
+recall_rel_high = high
+recall_summary = decision: {0} · {1} hits
+recall_trace_link = decision-path trace #{0} ↗
+recall_no_hits = no hits
+recall_failed = recall failed: {0}
+recall_chunk_id = chunk #{0}
+recall_score = {0} score {1}
+recall_via = via {0}
+recall_relevance = relevance: {0}
+recall_confidence = conf {0}
+recall_decayed = decayed
+recall_superseded = superseded
+replay_back = ← back to recall
+replay_sub = the recorded decision path for a past recall (replayable audit artifact)
+replay_failed = trace failed: {0}
+replay_loading = loading…
+
+## Security surface (v1.27.20 M3.1)
+sec_audit_chain = Audit chain
+sec_chain_ok = chain ok
+sec_chain_tampered = CHAIN TAMPERED
+sec_trust_anchor = the trust anchor
+sec_verify_chain = Verify audit chain
+sec_quarantine_title = Quarantine ({0})
+sec_chunk_id = chunk #{0}
+sec_release = Release
+sec_delete = Delete
+sec_source = source: {0}
+sec_no_quarantine = no quarantined chunks
+sec_quarantine_failed = quarantine failed: {0}
+sec_auth_failures = Auth failures ({0})
+sec_no_auth_failures = no recent denied-auth events
+
+## System surface (v1.27.20 M3.1)
+sys_snapshot_ok = ok
+sys_snapshot_degraded = degraded
+sys_snapshot_count = {0} snapshots
+sys_col_file = file
+sys_col_size = size
+sys_col_perms = perms
+sys_col_integrity = integrity
+sys_col_chain = audit chain
+sys_perms_0600 = 0600
+sys_world_readable = world-readable
+sys_yes = yes
+sys_no = no
+sys_reindex_result = {0} · {1} re-embedded · {2} skipped
+sys_reconcile = reconcile sources
+sys_reconcile_result = {0} retired · {1} chunks
+
+## Register surface (v1.27.20 M3.1)
+register_title = Agent Memory Register
+register_sub = Read-only provenance ledger — who wrote each memory and what it is based on.
+register_all = All
+register_owner_ph = owner…
+register_source_ph = source…
+register_kind_ph = memory kind…
+register_failed = register failed: {0}
+register_empty = no memories match the filter.
+register_owner = owner {0}
+register_evidence = evidence
+register_evidence_modal = evidence for chunk
+register_evidence_title = Evidence — chunk #{0}
+register_src = src {0}
+register_rev = rev {0}
+register_lines = lines {0}–{1}
+register_ev_failed = evidence failed: {0}
+register_ev_loading = loading evidence…
+
+## Graph surface (v1.27.20 M3.1)
+graph_col_entity = entity
+graph_col_depth = depth
+graph_col_domain = domain
+
+## Health/Data/Graph/misc labels (v1.27.20 M3.1)
+data_ids_lbl = Chunk ids
+data_owner_lbl = Owner
+data_json = JSON
+data_ump = UMP
+data_ump_md = UMP Markdown
+graph_no_paths = no paths
+dsar_running = running…
+review_sourcing_prompt = sourcing prompt
+review_approve_supersede =  & supersede
+ump_verify_chain = verify chain
+sys_multi_domains =  · multi
+health_dl_service = Service
+health_dl_status = status
+health_dl_version = version
+health_dl_docs = docs
+health_dl_rss = rss
+health_dl_capacity = capacity
+health_dl_unavailable = unavailable
+health_dl_unsafe = unsafe blocks
+health_dl_panics = panics caught
+health_dl_corpus = Corpus
+health_dl_chunks = chunks
+health_dl_embeddings = embeddings
+health_dl_entities = entities
+health_dl_relationships = relationships
+health_dl_model = model
+health_dl_profile = profile
+health_dl_scope = default scope
+health_dl_pii = pii mode
+health_dl_retention = retention
+health_dl_audit = audit level
+health_dl_kinds = kinds
+health_dl_hold = legal hold default
+health_dl_note = note
+health_failed = health failed: {0}
+
+## Confirm dialog + HTTP method labels (v1.27.20 M3.1)
+confirm_cancel = Cancel
+sys_http_get = GET
+sys_http_post = POST
+sys_http_delete = DELETE
+
+## Input placeholders (v1.27.20 M3.1) — wire-value examples, locale-invariant
+ump_content_ph = content...
+ump_query_ph = query…
+ump_kind_ph = kind (opt)
+ingest_kinds_ph = fact · procedure · step · decision
+ingest_domain_ph = global
+data_ids_ph = 1, 2, 3
+data_owner_ph = user@example.com
+data_kind_ph = fact
+data_days_ph = 90

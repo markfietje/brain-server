@@ -70,15 +70,15 @@ pub fn panel() -> Element {
         PageTitle { {crate::i18n::t("security_title")} }
         div { class: "card",
             div { class: "card-header",
-                div { class: "card-title", "Audit chain" }
+                div { class: "card-title", {crate::i18n::t("sec_audit_chain")} }
                 match &*chain.read() {
-                    Some(Ok(true)) => rsx! { span { class: "badge badge-ok", "chain ok" } },
+                    Some(Ok(true)) => rsx! { span { class: "badge badge-ok", {crate::i18n::t("sec_chain_ok")} } },
                     Some(Ok(false)) => {
                         ui.audit_dirty.set(true);
-                        rsx! { span { class: "badge badge-danger", "CHAIN TAMPERED" } }
+                        rsx! { span { class: "badge badge-danger", {crate::i18n::t("sec_chain_tampered")} } }
                     }
                     Some(Err(e)) => rsx! { span { class: "badge badge-danger", "{e}" } },
-                    None => rsx! { span { class: "badge", "the trust anchor" } },
+                    None => rsx! { span { class: "badge", {crate::i18n::t("sec_trust_anchor")} } },
                 }
             }
             div { class: "card-body flex items-center gap-3",
@@ -88,11 +88,11 @@ pub fn panel() -> Element {
                     onclick: move |_| async move {
                         chain.set(Some(verify_chain(api()).await));
                     },
-                    "Verify audit chain"
+                    {crate::i18n::t("sec_verify_chain")}
                 }
             }
         }
-        h2 { class: "mt-4 text-base font-semibold", "Quarantine ({q_count})" }
+        h2 { class: "mt-4 text-base font-semibold", {crate::i18n::t_fmt("sec_quarantine_title", &[q_count.to_string()])} }
         // v1.27.19 "Scrub" (D-7): last release/delete outcome, announced.
         div { "role": "status", "aria-live": "polite", class: "text-sm",
             match status() {
@@ -107,7 +107,7 @@ pub fn panel() -> Element {
                     for row in &q.quarantined {
                         li { class: "py-2.5",
                             div { class: "flex justify-between items-center",
-                                span { class: "font-mono text-sm", "chunk #{row.id}" }
+                                span { class: "font-mono text-sm", {crate::i18n::t_fmt("sec_chunk_id", &[row.id.to_string()])} }
                                 span { class: "flex gap-2",
                                     button {
                                         class: "btn btn-outline btn-sm",
@@ -122,14 +122,14 @@ pub fn panel() -> Element {
                                             }
                                             refresh += 1;
                                         } },
-                                        "Release"
+                                        {crate::i18n::t("sec_release")}
                                     }
                                     // v1.28.1 M4 (F-35): the hard delete routes
                                     // through the SAME two-step confirm the
                                     // palette uses for destructive runs —
                                     // one deliberate second click.
                                     ConfirmDestructive {
-                                        label: "Delete".to_string(),
+                                        label: crate::i18n::t("sec_delete").to_string(),
                                         note: crate::i18n::t("quarantine_delete_irreversible"),
                                         blocked: false,
                                         disabled: !writes,
@@ -156,7 +156,7 @@ pub fn panel() -> Element {
                                 }
                             }
                             if let Some(src) = &row.source {
-                                p { class: "text-xs text-ink-faint mt-0.5", "source: {src}" }
+                                p { class: "text-xs text-ink-faint mt-0.5", {crate::i18n::t_fmt("sec_source", std::slice::from_ref(src))} }
                             }
                             if let Some(h) = &row.content_hash {
                                 p { class: "text-xs font-mono text-ink-faint", "{h}" }
@@ -165,14 +165,14 @@ pub fn panel() -> Element {
                     }
                 }
             },
-            Some(Ok(_)) => rsx! { p { class: "text-muted-foreground mt-2", "no quarantined chunks" } },
-            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "quarantine failed: {e}" } },
+            Some(Ok(_)) => rsx! { p { class: "text-muted-foreground mt-2", {crate::i18n::t("sec_no_quarantine")} } },
+            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", {crate::i18n::t_fmt("sec_quarantine_failed", &[format!("{e}")])} } },
             None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
         }
         // M6: the auth-failure feed — recent 401/403s with principal + route.
-        h2 { class: "mt-4 text-base font-semibold", "Auth failures ({failures.len()})" }
+        h2 { class: "mt-4 text-base font-semibold", {crate::i18n::t_fmt("sec_auth_failures", &[failures.len().to_string()])} }
         if failures.is_empty() {
-            p { class: "text-muted-foreground text-sm mt-1", "no recent denied-auth events" }
+            p { class: "text-muted-foreground text-sm mt-1", {crate::i18n::t("sec_no_auth_failures")} }
         } else {
             div { class: "card mt-2 overflow-x-auto",
                 table { class: "table",

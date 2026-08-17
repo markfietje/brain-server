@@ -7,7 +7,7 @@
 //! slider, and the `?trace=true` decision-path artifact (deep-linkable via
 //! `/recall/:trace_id`).
 
-use crate::api::{error_message, ApiClient, Hit, RecallResponse};
+use crate::api::{ApiClient, Hit, RecallResponse};
 use crate::panels::{use_document_title, PageTitle};
 use crate::Route;
 use crate::{DrawerContent, UiState};
@@ -52,7 +52,7 @@ pub fn drop_low_relevance(hits: Vec<Hit>, min: Option<&str>) -> Vec<Hit> {
 }
 
 pub fn panel() -> Element {
-    use_document_title(|| "Recall — brain".into());
+    use_document_title(|| format!("{} — brain", crate::i18n::t("recall_title")));
     let api = use_context::<Signal<ApiClient>>();
     // v1.16.7 M6: two signals — `input` (raw, per keystroke, drives the box) and
     // `query` (debounced, drives the use_resource). The resource never sees a
@@ -102,14 +102,22 @@ pub fn panel() -> Element {
         }
     });
 
+    let recall_placeholder = crate::i18n::t("recall_placeholder");
+    let recall_query_aria = crate::i18n::t("recall_query_aria");
+    let recall_trace_toggle = crate::i18n::t("recall_trace_toggle");
+    let recall_min_relevance = crate::i18n::t("recall_min_relevance");
+    let recall_rel_any = crate::i18n::t("recall_rel_any");
+    let recall_rel_medium_plus = crate::i18n::t("recall_rel_medium_plus");
+    let recall_rel_high = crate::i18n::t("recall_rel_high");
+
     rsx! {
         PageTitle { {crate::i18n::t("recall_title")} }
         input {
             class: "input w-full",
-            placeholder: "query brain-server (min 5 chars)…",
+            placeholder: "{recall_placeholder}",
             value: "{input}",
             oninput,
-            "aria-label": "recall query",
+            "aria-label": "{recall_query_aria}",
         }
         div { class: "flex gap-4 my-3 items-center text-sm flex-wrap",
             // M4.2: the trace toggle produces a deep-linkable trace_id.
@@ -123,19 +131,19 @@ pub fn panel() -> Element {
                     // reads stay interactive during Reconnecting — writes freeze,
                     // reads don't (DESIGN §6). Matches the query input + select.
                 }
-                "trace decision path"
+                {recall_trace_toggle}
             }
             // M4.1: min_relevance post-fusion filter (the "stop poisoning the
             // context window" slider — deterministic, zero-token).
             label { class: "flex items-center gap-1.5",
-                "min relevance"
+                {recall_min_relevance}
                 select {
                     class: "select",
                     value: "{min_rel}",
                     onchange: move |e| min_rel.set(e.value()),
-                    option { value: "", "any" }
-                    option { value: "medium", "medium+" }
-                    option { value: "high", "high" }
+                    option { value: "", "{recall_rel_any}" }
+                    option { value: "medium", "{recall_rel_medium_plus}" }
+                    option { value: "high", "{recall_rel_high}" }
                 }
             }
         }
@@ -162,7 +170,7 @@ fn recall_view(
             );
             rsx! {
                 div { class: "mt-2 space-y-3",
-                    p { class: "text-sm text-muted-foreground", "decision: {r.decision} · {hits.len()} hits" }
+                    p { class: "text-sm text-muted-foreground", {crate::i18n::t_fmt("recall_summary", &[r.decision.clone(), hits.len().to_string()])} }
                     ul { class: "divide-y divide-border",
                         for h in &hits { HitRow { hit: h.clone() } }
                     }
@@ -171,16 +179,18 @@ fn recall_view(
                     if let Some(tid) = r.trace_id {
                         p { class: "text-xs text-muted-foreground",
                             Link { to: Route::RecallTrace { trace_id: tid },
-                                "decision-path trace #{tid} ↗"
+                                {crate::i18n::t_fmt("recall_trace_link", &[tid.to_string()])}
                             }
                         }
                     }
                 }
             }
         }
-        Some(Ok(_)) => rsx! { p { class: "text-muted-foreground mt-2", "no hits" } },
+        Some(Ok(_)) => {
+            rsx! { p { class: "text-muted-foreground mt-2", {crate::i18n::t("recall_no_hits")} } }
+        }
         Some(Err(e)) => {
-            rsx! { p { class: "text-danger mt-2", "recall failed: {error_message(&e)}" } }
+            rsx! { p { class: "text-danger mt-2", {crate::i18n::t_fmt("recall_failed", &[crate::api::error_message(e)])} } }
         }
         None => rsx! { p { class: "text-muted-foreground mt-2", "…" } },
     }
@@ -197,7 +207,7 @@ fn HitRow(hit: Hit) -> Element {
                 button {
                     class: "font-mono text-sm text-accent hover:underline text-left",
                     onclick: move |_| ui.drawer.set(Some(DrawerContent::Hit(hit.clone()))),
-                    "chunk #{hit.id}"
+                    {crate::i18n::t_fmt("recall_chunk_id", &[hit.id.to_string()])}
                 }
                 // M4.1: per-retriever ranks + fused score (monospace, tabular).
                 span { class: "font-mono text-xs text-muted-foreground tabular",
@@ -206,28 +216,28 @@ fn HitRow(hit: Hit) -> Element {
                         let f = prov.as_ref().and_then(|p| p.fts_rank).map(|_| "f").unwrap_or("");
                         let g = prov.as_ref().and_then(|p| p.graph_rank).map(|_| "g").unwrap_or("");
                         let fused = prov.as_ref().and_then(|p| p.fused_score).map(|s| format!(" {s:.2}")).unwrap_or_default();
-                        format!("{v}{f}{g} score {score:.3}{fused}", score = hit.score)
+                        crate::i18n::t_fmt("recall_score", &[format!("{v}{f}{g}"), format!("{:.3}{fused}", hit.score)])
                     }
                 }
             }
             div { class: "flex gap-2 text-xs mt-0.5 flex-wrap items-center",
                 if let Some(src) = &hit.source {
-                    span { class: "badge", "via {src}" }
+                    span { class: "badge", {crate::i18n::t_fmt("recall_via", std::slice::from_ref(src))} }
                 }
                 if let Some(r) = &rel {
-                    span { class: relevance_color(r), "relevance: {r}" }
+                    span { class: relevance_color(r), {crate::i18n::t_fmt("recall_relevance", std::slice::from_ref(r))} }
                 }
                 if let Some(a) = &hit.assertion_kind {
                     span { class: "text-info", "{a}" }
                 }
                 if let Some(c) = hit.confidence {
-                    span { class: "text-muted-foreground tabular", "conf {c:.2}" }
+                    span { class: "text-muted-foreground tabular", {crate::i18n::t_fmt("recall_confidence", &[format!("{c:.2}")])} }
                 }
                 if hit.decayed == Some(true) {
-                    span { class: "text-warn", "decayed" }
+                    span { class: "text-warn", {crate::i18n::t("recall_decayed")} }
                 }
                 if hit.conflict == Some(true) {
-                    span { class: "text-warn", "superseded" }
+                    span { class: "text-warn", {crate::i18n::t("recall_superseded")} }
                 }
             }
             p { class: "text-sm text-foreground mt-1", "{crate::strip_invisible(&hit.content)}" }
@@ -345,20 +355,21 @@ pub fn trace_panel(trace_id: i64) -> Element {
                         },
                         "{export_label}"
                     }
-                    Link { to: Route::Recall {}, "← back to recall" }
+                    Link { to: Route::Recall {}, {crate::i18n::t("replay_back")} }
                 }
             }
         }
-        _ => rsx! { p { class: "mt-3" , Link { to: Route::Recall {}, "← back to recall" } } },
+        _ => {
+            rsx! { p { class: "mt-3" , Link { to: Route::Recall {}, {crate::i18n::t("replay_back")} } } }
+        }
     };
     rsx! {
         PageTitle { "{title} #{trace_id}" }
-        p { class: "text-xs text-muted-foreground mb-2",
-            "the recorded decision path for a past recall (replayable audit artifact)" }
+        p { class: "text-xs text-muted-foreground mb-2", {crate::i18n::t("replay_sub")} }
         match &*trace.read() {
             Some(Ok(v)) => rsx! { TraceCard { trace: v.clone() } },
-            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", "trace failed: {error_message(&e)}" } },
-            None => rsx! { p { class: "text-muted-foreground mt-2", "loading…" } },
+            Some(Err(e)) => rsx! { p { class: "text-danger mt-2", {crate::i18n::t_fmt("replay_failed", &[crate::api::error_message(e)])} } },
+            None => rsx! { p { class: "text-muted-foreground mt-2", {crate::i18n::t("replay_loading")} } },
         }
         { export_el }
     }

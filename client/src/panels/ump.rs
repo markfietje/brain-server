@@ -22,6 +22,10 @@ pub fn panel() -> Element {
     let mut status = use_signal(|| None::<Result<String, String>>);
 
     let mut remember_body = use_signal(String::new);
+    let ump_verify_chain = crate::i18n::t("ump_verify_chain");
+    let ump_content_ph = crate::i18n::t("ump_content_ph");
+    let ump_query_ph = crate::i18n::t("ump_query_ph");
+    let ump_kind_ph = crate::i18n::t("ump_kind_ph");
     let mut recall_q = use_signal(String::new);
     let mut recall_kind = use_signal(String::new);
     let audit_limit = use_signal(|| 50usize);
@@ -166,7 +170,7 @@ pub fn panel() -> Element {
                     rows: 5,
                     value: "{remember_body}",
                     oninput: move |e| remember_body.set(e.value()),
-                    placeholder: "content...",
+                    placeholder: "{ump_content_ph}",
                 }
                 button { class: "btn btn-primary", disabled: !writes, onclick: move |_| run_remember(()), "{remember_lbl}" }
             }
@@ -181,13 +185,13 @@ pub fn panel() -> Element {
                         value: "{recall_q}",
                         oninput: move |e| recall_q.set(e.value()),
                         onkeydown: move |e| if e.key() == Key::Enter { run_recall(()) },
-                        placeholder: "query…",
+                        placeholder: "{ump_query_ph}",
                     }
                     input {
                         class: "input w-32",
                         value: "{recall_kind}",
                         oninput: move |e| recall_kind.set(e.value()),
-                        placeholder: "kind (opt)",
+                        placeholder: "{ump_kind_ph}",
                     }
                     button { class: "btn btn-outline", onclick: move |_| run_recall(()), "{recall_lbl}" }
                 }
@@ -209,7 +213,7 @@ pub fn panel() -> Element {
                 div { class: "card-title", "{audit_lbl}" }
                 div { class: "flex items-center gap-2",
                     button { class: "btn btn-outline btn-sm", onclick: move |_| run_audit(()), "load" }
-                    button { class: "btn btn-outline btn-sm", onclick: move |_| run_verify(()), "verify chain" }
+                    button { class: "btn btn-outline btn-sm", onclick: move |_| run_verify(()), {ump_verify_chain} }
                 }
             }
             div { class: "card-body text-xs",
