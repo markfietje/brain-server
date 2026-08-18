@@ -320,7 +320,7 @@ annotation engine was retired in v0.9.0).
 ```json
 {
   "status": "ok",
-  "version": "1.20.29",
+  "version": "1.27.22",
   "model": "minishlab/potion-retrieval-32M",
   "system": { "memory_used_mb": 220, "memory_total_mb": 4096, "memory_percent": 5.4 },
   "pool":   { "connections": 2, "idle_connections": 1, "busy_connections": 1 },

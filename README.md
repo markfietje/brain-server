@@ -118,7 +118,7 @@ scripts/install-service.sh
 
 ## Client GUI
 
-The Dioxus app in `client/` runs on web, desktop, iOS, and Android from one Rust codebase. It gives operators a visual, WCAG 2.2 AA compliant surface for six panels: Review (human-gated write-back with A/S/R/J/K keyboard), Recall (decision-path viewer), Subjects (DSAR certificate card), Security (audit chain and quarantine), Audit (filters and export), and Health.
+The Dioxus app in `client/` runs on web, desktop, iOS, and Android from one Rust codebase. It gives operators a visual, WCAG 2.2 AA compliant surface with panels for Review (human-gated write-back with A/S/R/J/K keyboard), Recall (decision-path viewer), Subjects (DSAR certificate card), Security (audit chain and quarantine), Audit (filters and export), Health, plus Overview, Graph, Data, Ump, System, Ops, Register, and role-gated Clients views.
 
 ```bash
 cd client && ./deploy-web.sh
@@ -129,9 +129,8 @@ cd client && ./deploy-web.sh
 Brain Server implements the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) (UMP 1.0) end to end, at conformance level L3: signed records with tamper-evident integrity, capability tokens for consent-based access, batch ingest, and three bindings (HTTP, MCP tools, and a portable Markdown file format). Any UMP 1.0 agent can read memory written here, and this server can read memory exported by other UMP implementations.
 
 ```bash
-# Create the operator identity and a capability token
+# Create the operator identity
 brain ump keygen
-brain ump token --verb read,write
 
 # Write and read portable memory over HTTP
 curl -X POST localhost:8765/ump/remember \

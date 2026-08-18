@@ -15,6 +15,8 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [Hybrid Fusion: RRF over BM25 + quantized vectors](./08-hybrid-fusion.md) — Cormack & Clarke RRF, Robertson & Zaragoza BM25, Jégou quantization
 - [Opt-in Anticipation (the Suggest surface)](./09-anticipation.md) — Generative Agents / MemGPT / Mem0, honestly bounded
 - [Structure-Aware Markdown Chunking](./10-chunking.md) — CommonMark split, Lewis 2020 RAG framing
+- [Centroid Domain Auto-Routing](./11-domain-routing.md) — the nearest-centroid classifier, carving the store by domain
+- [Deterministic Consolidation](./12-consolidation.md) — record-linkage duplicates/conflicts/stale-source sweep, reviewable not autonomous
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store — no LLM in the retrieval loop, no data egress.

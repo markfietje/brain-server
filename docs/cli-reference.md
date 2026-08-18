@@ -2,9 +2,10 @@
 
 The `brain` binary is the operator command-line surface. This page is the command reference.
 The CLI covers retrieval, ingest (directories), self-correction, domain/retention/backup/key
-management, UMP, and health — the commands it ships in `src/bin/brain.rs` (hand-rolled argument
-parsing, no clap). For actions the CLI does **not** expose (erasure, proposal approval, DSAR,
-reading the audit log), use the HTTP API or the client console.
+management, UMP, clients, and health — the commands it ships in `src/bin/brain.rs` (hand-rolled argument
+parsing, no clap). Per-client DSAR and legal hold are exposed here via `brain client`; the actions
+the CLI does **not** expose (erasure of a bare chunk, proposal approval, the global audit log) live
+on the HTTP API or the client console.
 
 ## Health & operations
 
@@ -14,6 +15,7 @@ reading the audit log), use the HTTP API or the client console.
 | `brain status` | Counts, model, version |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
 | `brain snapshot-status` | Show the point-in-time snapshot state |
+| `brain setup [domain] [--profile NAME] [--yes]` | Interactive first-run: pick a profile preset, preview its knobs, bind it to a domain (`--yes` scripts it) |
 | `brain bench` | Benchmark harness (feature-gated `bench`) |
 
 ## Retrieval
@@ -42,6 +44,18 @@ reading the audit log), use the HTTP API or the client console.
 | `brain domain-move <id> [<id> ...] --to <domain> [--confirm global]` | Move chunks to another domain |
 | `brain domains-recompute` | Recompute domain membership / stats |
 | `brain retention get` \| `set <kind> <days>` | Per-kind retention expiry policy |
+
+## Clients (BPO register, v1.27)
+
+| Command | Purpose |
+|---|---|
+| `brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]` | Register an operating client (one isolation domain per client) |
+| `brain client dpa get <name>` | Show a client's DPA terms |
+| `brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S` | Set a client's DPA terms |
+| `brain client dsar <name> <subject> [--action purge\|export\|both] [--dry-run]` | Run a per-client jurisdiction-aware DSAR |
+| `brain client hold add <name> <id> [<id> ...] --reason R` \| `list <name>` | Legal-hold / release a client's domain; list holds |
+| `brain client qa list <name>` \| `coach <name> <id> --note N [--flag]` | Supervisor QA queue + coaching note (v1.27.8, Admin) |
+| `brain client end <name> [--purge\|--return] [--dataset D] [--yes]` | Terminate a client: purge-or-return + archive + certificate |
 
 ## Self-correction & maintenance
 

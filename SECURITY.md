@@ -109,7 +109,7 @@ ownership... log access control failures."
 | `cargo audit` in CI (`.github/workflows/ci.yml`) | CI | ✅ |
 | Pinned direct deps in `Cargo.toml` | repo | ✅ |
 | Optional features for high-surface deps (reqwest, jsonwebtoken) | Cargo features | ✅ |
-| Reproducible release build | `Cargo.lock`, `opt-level="z"`, `lto="fat"` | ✅ |
+| Reproducible release build | `Cargo.lock`, `opt-level=2`, `lto="fat"` | ✅ |
 | Known-issue ledger: RUSTSEC-2023-0071 (rsa "Marvin") — no fix exists in any release (verified 2026-08-04); accepted + documented in `.cargo/audit.toml`; local-daemon timing model, keys 0600, EdDSA avoids RSA entirely | `.cargo/audit.toml` + `THREAT_MODEL.md` | ✅ accepted |
 
 ### A04:2025 — Cryptographic Failures ✅

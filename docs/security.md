@@ -56,7 +56,9 @@ brain key prune       # drop expired keys from JWKS
 A deny-by-default AuthZ layer (`Action`: Read / Write / Admin / Traverse; `Scope`
 grammar with wildcards) gates every non-public route at handler entry. In JWT
 mode, record-level `access_scope` + `owner` filter data so a principal only sees
-what it may. Denials return `403`, never `404`, so route existence is not leaked.
+what it may. Capability/scope denials return `403`; resource-visibility paths
+(foreign-domain by-id reads, never-registered domain lookups) return probe-blind
+`404`s so a reader cannot infer the existence of rows or domains they may not see.
 
 ---
 

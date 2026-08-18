@@ -38,8 +38,8 @@ cargo build --release --features bench
 cargo build --release --features bench,connector-github
 ```
 
-The release profile is size-optimized (`opt-level="z"`, `lto="fat"`,
-`codegen-units=1`, `strip`, `panic="abort"`).
+The release profile uses `opt-level = 2` (speed), `lto = "fat"`,
+`codegen-units = 1`, `strip = true`, and `panic = "abort"`.
 
 ---
 
