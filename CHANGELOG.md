@@ -28,7 +28,9 @@ pass-2 audit rates CRITICAL when an unfenced erasure seam or a forgeable
 untrusted region diverges. No new schema, no new columns/tables, no telemetry;
 the one wire change is the deliberately-bit-stable **backup v3** writer.
 
-### Security fixes
+### Release notes
+
+**Security fixes**
 
 - **Legal-hold fence closed on two erasure paths (S2-03 CRIT / S2-04).** A held
   chunk was frozen against `/purge`, DSAR and `forget` — but `POST
@@ -57,7 +59,7 @@ the one wire change is the deliberately-bit-stable **backup v3** writer.
   passes `require_dpo_role` only when the deployment defines no roles at all,
   closing the single-token shape that could ride a bare admin scope.
 
-### Bug fixes
+**Bug fixes**
 
 - **Empty reconcile is an explicit decision (S2/N1).** An empty `live_uris`
   previously retired **every** active vault source and swept its chunks,
