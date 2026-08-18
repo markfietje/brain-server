@@ -35,6 +35,26 @@ use crate::connector::auth::github_app::GITHUB_API_VERSION;
 /// `ponytail:` an hour-long sleep would wedge the connector silently.
 const RATE_LIMIT_SLEEP_CAP: Duration = Duration::from_secs(60);
 
+/// The only host this client is ever allowed to send the installation bearer
+/// to. The `rel="next"` pagination URL comes from GitHub's own `Link` header,
+/// but a compromised/forged response could point anywhere; refusing non-API
+/// hosts closes F-30 (token exfiltration via Link-header redirect).
+const GITHUB_API_HOST: &str = "api.github.com";
+
+/// Reject any URL that is not `https://api.github.com/...`. Called by every
+/// outbound request (`get_authed`), so a forged pagination `next` URL is
+/// refused before the bearer leaves the process.
+fn assert_api_host(url: &str) -> Result<()> {
+    let parsed = url::Url::parse(url).with_context(|| format!("invalid URL {url:?}"))?;
+    if parsed.scheme() == "https" && parsed.host_str() == Some(GITHUB_API_HOST) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "refusing to send bearer to non-GitHub-API host: {url:?} \
+         (only https://{GITHUB_API_HOST} is allowed)"
+    )
+}
+
 /// Wrapper around `reqwest::blocking::Client` that knows GitHub's headers
 /// and rate-limit dance. Built once at connector startup; shared across all
 /// REST calls in a single backfill pass.
@@ -64,6 +84,11 @@ impl GitHubClient {
     /// the rate-limit sleep (capped). Returns the raw response value parsed
     /// as JSON. Errors on non-2xx.
     fn get_authed(&self, url: &str, bearer: &str) -> Result<reqwest::blocking::Response> {
+        // F-30: a GitHub responses's `Link: rel="next"` header (the only
+        // user-influenced URL this client follows) must never carry the
+        // installation bearer to a forged host. Verified centrally so every
+        // future endpoint inherits the guard.
+        assert_api_host(url)?;
         let resp = self
             .http
             .get(url)
@@ -208,6 +233,25 @@ mod tests {
     #[test]
     fn test_parse_link_rel_returns_none_when_no_link_header() {
         assert!(parse_link_rel("", "next").is_none());
+    }
+
+    #[test]
+    fn api_host_guard_rejects_foreign_hosts() {
+        // F-30: a forged Link `next` URL must be refused before the bearer goes out.
+        assert_api_host("https://api.github.com/repos/o/r/issues?page=2").unwrap();
+        assert_api_host("https://api.github.com").unwrap();
+        for bad in [
+            "http://api.github.com/repos/o/r/issues",
+            "https://api.github.com.evil.net/repos/o/r",
+            "https://evil.net/api.github.com/repos/o/r",
+            "https://user:pass@evil.net/steal",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                assert_api_host(bad).is_err(),
+                "must refuse non-API host: {bad}"
+            );
+        }
     }
 
     /// Live integration test — `#[ignore]` by default because it needs real
