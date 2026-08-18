@@ -1,4 +1,4 @@
-//! Encrypted, checksummed backup & restore (v0.9.7 "Guard").
+//! Encrypted, checksummed backup & restore.
 //!
 //! `backup` snapshots the live sqlite DB via `VACUUM INTO`, records a manifest
 //! of the DB plus connector config files (secret files are listed by path only,
@@ -28,6 +28,15 @@
 //! KDF → hard error), v1 falls back to the legacy derive with a `warn!`. v1
 //! backups stay restorable; v2 is what we write. `brain backup --format v1` is
 //! the documented "legacy, weaker" escape hatch.
+//!
+//! # Format v3 (2026-08-17 audit, S2-13)
+//!
+//! The v2 header was NOT covered by the GCM tag — any header bit could be
+//! flipped without failing authentication (only the KDF-string and salt/nonce
+//! length were re-validated). v3 is byte-identical in layout but binds the
+//! exact header bytes as GCM AAD, so any header tamper fails decryption.
+//! Decrypt: v3 requires AAD = the header bytes actually read; v2 keeps the
+//! legacy no-AAD path (read-compat); v1 unchanged. v3 is what we write.
 
 use crate::audit::{self, AuditKind, AuditStatus};
 use anyhow::{Context, Result};
@@ -38,15 +47,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::{
-    aead::{generic_array::GenericArray, Aead, KeyInit},
+    aead::{generic_array::GenericArray, Aead, KeyInit, Payload},
     Aes256Gcm,
 };
 use sha2::{Digest, Sha256};
 use xxhash_rust::xxh3::xxh3_64;
 
-/// v2 file magic — absent = legacy v1 layout (`created_at\n` + ciphertext).
+/// v2+ file magic — absent = legacy v1 layout (`created_at\n` + ciphertext).
 const MAGIC: &[u8] = b"BSBK";
 const VERSION_V2: u16 = 2;
+const VERSION_V3: u16 = 3;
 
 /// Argon2id parameters for the v2 KDF: 64 MiB / t=3 / p=1, 32-byte output.
 /// Tuned so a laptop backup stays well under 2 s (see BENCHMARKS.md).
@@ -85,11 +95,12 @@ pub struct Manifest {
     pub components: Vec<ManifestComponent>,
 }
 
-/// v2 plaintext header: KDF parameters + per-backup salt/nonce + the manifest
+/// v2/v3 plaintext header: KDF parameters + per-backup salt/nonce + the manifest
 /// (which v1 kept inside the encrypted bundle — the header is length-prefixed
-/// so restore can find the ciphertext without it).
+/// so restore can find the ciphertext without it). Same JSON shape for both
+/// versions; only the AAD binding differs (v3 covers the header bytes).
 #[derive(Serialize, Deserialize, Debug)]
-struct HeaderV2 {
+struct Header {
     kdf: String,
     m: u32,
     t: u32,
@@ -100,12 +111,23 @@ struct HeaderV2 {
     manifest: Manifest,
 }
 
-/// Choose the backup wire format. v2 (default) is what we write; v1 is the
-/// documented legacy escape hatch (`brain backup --format v1`).
+/// Bounds for header-supplied Argon2id parameters (S2-14): the header is
+/// attacker-controllable, so a crafted `m` must fail validation — not drive a
+/// multi-TiB allocation. 8 MiB..1 GiB of KiB units / t 1..=64 / p 1..=8 spans
+/// every parameter set this project has ever written, with generous headroom.
+const KDF_M_MIN: u32 = 8 * 1024;
+const KDF_M_MAX: u32 = 1_048_576;
+const KDF_T_MAX: u32 = 64;
+const KDF_P_MAX: u32 = 8;
+
+/// Choose the backup wire format. v3 (default) is what we write — the header
+/// is GCM AAD; v2 is read-compatible legacy; v1 is the documented legacy
+/// escape hatch (`brain backup --format v1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupFormat {
     V1,
     V2,
+    V3,
 }
 
 fn is_secret(name: &str) -> bool {
@@ -244,6 +266,19 @@ pub fn vacuum_into_private(conn: &rusqlite::Connection, path: &Path) -> Result<(
     Ok(())
 }
 
+/// S2-25/S2-26: own the target with `O_CREAT|O_EXCL` at 0600 BEFORE the
+/// vacuum, then let SQLite write into that pre-created EMPTY file (the
+/// overwrite check is `sz > 0` after open — pinned by
+/// `vacuum_into_writes_into_precreated_empty_file`). There is no remove step
+/// and no post-hoc chmod, so there is no umask window: a pre-planted regular
+/// file, hard link, or (dangling) symlink makes `create_new` fail closed
+/// instead of being written through. The caller keeps ownership for cleanup.
+fn vacuum_into_exclusive(conn: &rusqlite::Connection, path: &Path) -> Result<()> {
+    create_private_file(path)?;
+    vacuum_into(conn, path)?;
+    Ok(())
+}
+
 /// Every exit path from [`backup_inner`] removes the plaintext snapshot —
 /// success and failure alike. A crash between creation and cleanup still
 /// leaks a 0600 file (bounded; the file is per-backup and named by nanos).
@@ -260,7 +295,7 @@ fn snapshot_db(db_path: &Path, snapshot_path: &Path) -> Result<()> {
         .with_context(|| format!("open DB for snapshot: {db_path:?}"))?;
     conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
         .context("wal_checkpoint before vacuum")?;
-    vacuum_into_private(&conn, snapshot_path)?;
+    vacuum_into_exclusive(&conn, snapshot_path)?;
     Ok(())
 }
 
@@ -285,14 +320,17 @@ fn encrypt_v1(bundle: &[u8], passphrase: &[u8], created_at: &str) -> Result<Vec<
     Ok(out)
 }
 
-/// v2 encryption: `BSBK | u16 version | u32 header_len | header JSON |
+/// v2/v3 encryption: `BSBK | u16 version | u32 header_len | header JSON |
 /// ciphertext`. Salt and nonce are `rand::random()` per backup — nonce
-/// uniqueness by RNG, never by construction.
-fn encrypt_v2(
+/// uniqueness by RNG, never by construction. v3 additionally binds the exact
+/// header bytes as GCM AAD (S2-13); v2 keeps the legacy no-AAD ciphertext so
+/// files written by older builds stay bit-stable.
+fn encrypt_versioned(
     manifest: &Manifest,
     snapshot: &[u8],
     passphrase: &[u8],
     created_at: &str,
+    version: u16,
 ) -> Result<Vec<u8>> {
     let salt: [u8; 16] = rand::random();
     let nonce: [u8; 12] = rand::random();
@@ -304,11 +342,7 @@ fn encrypt_v2(
         ARGON2_P_COST,
     )?;
     let cipher = Aes256Gcm::new(&GenericArray::from(key));
-    let ciphertext = cipher
-        .encrypt((&nonce).into(), snapshot)
-        .map_err(|e| anyhow::anyhow!("AES-256-GCM encrypt failed: {e}"))?;
-
-    let header = HeaderV2 {
+    let header = Header {
         kdf: "argon2id".to_string(),
         m: ARGON2_M_COST,
         t: ARGON2_T_COST,
@@ -318,72 +352,140 @@ fn encrypt_v2(
         created_at: created_at.to_string(),
         manifest: manifest.clone(),
     };
-    let header_json = serde_json::to_vec(&header).context("serialize v2 header")?;
+    let header_json = serde_json::to_vec(&header).context("serialize header")?;
+    let ciphertext = match version {
+        VERSION_V3 => cipher
+            .encrypt(
+                (&nonce).into(),
+                Payload {
+                    msg: snapshot,
+                    aad: &header_json,
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("AES-256-GCM encrypt failed: {e}"))?,
+        VERSION_V2 => cipher
+            .encrypt((&nonce).into(), snapshot)
+            .map_err(|e| anyhow::anyhow!("AES-256-GCM encrypt failed: {e}"))?,
+        v => anyhow::bail!("cannot write backup format version {v}"),
+    };
+
     let mut out = Vec::with_capacity(4 + 2 + 4 + header_json.len() + ciphertext.len());
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&VERSION_V2.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(header_json.len() as u32).to_le_bytes());
     out.extend_from_slice(&header_json);
     out.extend_from_slice(&ciphertext);
     Ok(out)
 }
 
-/// Split a v2 file into its header + ciphertext, rejecting unknown versions
-/// and KDFs (forward compat from day one).
-fn parse_v2_file(full: &[u8]) -> Result<(HeaderV2, &[u8])> {
+/// Reject header-supplied Argon2id parameters outside the documented bounds
+/// (S2-14) BEFORE any allocation: argon2 derives its key only after this
+/// passes, so a crafted `m = u32::MAX` errors here instead of OOMing.
+fn validate_kdf_params(header: &Header) -> Result<()> {
+    if !(KDF_M_MIN..=KDF_M_MAX).contains(&header.m)
+        || header.t == 0
+        || header.t > KDF_T_MAX
+        || header.p == 0
+        || header.p > KDF_P_MAX
+    {
+        anyhow::bail!(
+            "kdf_params_out_of_range: m={} (want {}..={}), t={} (want 1..={}), p={} (want 1..={})",
+            header.m,
+            KDF_M_MIN,
+            KDF_M_MAX,
+            header.t,
+            KDF_T_MAX,
+            header.p,
+            KDF_P_MAX
+        );
+    }
+    Ok(())
+}
+
+/// Split a v2/v3 file into (version, header, exact header bytes, ciphertext),
+/// rejecting unknown versions and KDFs (forward compat from day one). The
+/// header bytes are returned separately because v3's AAD must be the bytes
+/// actually read — a re-serialization could differ and silently break auth.
+fn parse_versioned_file(full: &[u8]) -> Result<(u16, Header, &[u8], &[u8])> {
     if full.len() < 10 {
-        anyhow::bail!("v2 backup truncated header");
+        anyhow::bail!("backup truncated header");
     }
     if &full[..4] != MAGIC {
-        anyhow::bail!("not a v2 backup (magic mismatch)");
+        anyhow::bail!("not a versioned backup (magic mismatch)");
     }
     let version = u16::from_le_bytes([full[4], full[5]]);
-    if version != VERSION_V2 {
-        anyhow::bail!("unsupported backup format version {version} (this build reads v1 and v2)");
+    if version != VERSION_V2 && version != VERSION_V3 {
+        anyhow::bail!(
+            "unsupported backup format version {version} (this build reads v1, v2 and v3)"
+        );
     }
     let header_len = u32::from_le_bytes([full[6], full[7], full[8], full[9]]) as usize;
     let header_end = 10usize
         .checked_add(header_len)
-        .context("v2 header length overflow")?;
+        .context("backup header length overflow")?;
     if header_end > full.len() {
-        anyhow::bail!("v2 backup header length exceeds file");
+        anyhow::bail!("backup header length exceeds file");
     }
-    let header: HeaderV2 =
-        serde_json::from_slice(&full[10..header_end]).context("parse v2 header")?;
+    let header_bytes = &full[10..header_end];
+    let header: Header = serde_json::from_slice(header_bytes).context("parse backup header")?;
     if header.kdf != "argon2id" {
-        anyhow::bail!("unsupported v2 KDF {:?} (forward compat)", header.kdf);
+        anyhow::bail!("unsupported backup KDF {:?} (forward compat)", header.kdf);
     }
-    Ok((header, &full[header_end..]))
+    validate_kdf_params(&header)?;
+    Ok((version, header, header_bytes, &full[header_end..]))
 }
 
-fn decrypt_v2(ct: &[u8], passphrase: &[u8], header: &HeaderV2) -> Result<Vec<u8>> {
+fn decrypt_versioned(
+    ct: &[u8],
+    passphrase: &[u8],
+    header: &Header,
+    header_bytes: &[u8],
+    version: u16,
+) -> Result<Vec<u8>> {
     let salt = base64::engine::general_purpose::STANDARD
         .decode(&header.salt)
-        .context("v2 salt not valid base64")?;
+        .context("backup salt not valid base64")?;
     let nonce_raw = base64::engine::general_purpose::STANDARD
         .decode(&header.nonce)
-        .context("v2 nonce not valid base64")?;
+        .context("backup nonce not valid base64")?;
     if salt.len() != 16 || nonce_raw.len() != 12 {
-        anyhow::bail!("v2 header salt/nonce lengths invalid");
+        anyhow::bail!("backup header salt/nonce lengths invalid");
     }
     let mut salt_bytes = [0u8; 16];
     salt_bytes.copy_from_slice(&salt);
     let key = kdf_v2(passphrase, &salt_bytes, header.m, header.t, header.p)?;
     let cipher = Aes256Gcm::new(&GenericArray::from(key));
     let nonce = *aes_gcm::aead::Nonce::<Aes256Gcm>::from_slice(&nonce_raw);
-    cipher.decrypt(&nonce, ct).map_err(|e| {
-        anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase or tampered backup): {e}")
-    })
+    // v3: the header bytes are the AAD — any header bit-flip fails here.
+    // v2: legacy no-AAD decrypt (read-compat with pre-v3 writers).
+    let plain = if version == VERSION_V3 {
+        cipher
+            .decrypt(
+                &nonce,
+                Payload {
+                    msg: ct,
+                    aad: header_bytes,
+                },
+            )
+            .map_err(|_| {
+                anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase or tampered backup)")
+            })
+    } else {
+        cipher.decrypt(&nonce, ct).map_err(|_| {
+            anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase or tampered backup)")
+        })
+    };
+    plain
 }
 
-/// Decrypt a backup file — v2 (header) or v1 (legacy derive, `warn!`) — and
+/// Decrypt a backup file — v3/v2 (header) or v1 (legacy derive, `warn!`) — and
 /// return the manifest + plaintext snapshot bytes. The v1 bundle carries the
-/// manifest inside the ciphertext; the v2 manifest lives in the plaintext
-/// header, so the v2 bundle is the snapshot itself.
+/// manifest inside the ciphertext; the v2/v3 manifest lives in the plaintext
+/// header, so the bundle is the snapshot itself.
 fn decrypt_backup(full: &[u8], passphrase: &[u8]) -> Result<(Manifest, Vec<u8>)> {
     if full.starts_with(MAGIC) {
-        let (header, ct) = parse_v2_file(full)?;
-        let snapshot = decrypt_v2(ct, passphrase, &header)?;
+        let (version, header, header_bytes, ct) = parse_versioned_file(full)?;
+        let snapshot = decrypt_versioned(ct, passphrase, &header, header_bytes, version)?;
         return Ok((header.manifest, snapshot));
     }
     let (created_at, ct) = split_header(full)?;
@@ -420,13 +522,13 @@ fn parse_bundle(bundle: &[u8]) -> Result<(Manifest, Vec<u8>)> {
 }
 
 /// Create an encrypted backup of the DB + connector config (secrets excluded),
-/// v2 format (Argon2id + random nonce/salt).
+/// v3 format (Argon2id + random nonce/salt + header-as-AAD).
 pub fn backup(db_path: &Path, out_path: &Path, passphrase: &[u8]) -> Result<()> {
-    backup_with_config_dir_and_format(db_path, out_path, passphrase, None, BackupFormat::V2)
+    backup_with_config_dir_and_format(db_path, out_path, passphrase, None, BackupFormat::V3)
 }
 
 /// Legacy v1 backup (`SHA-256` KDF + derived nonce) — the `--format v1`
-/// escape hatch: "legacy, weaker", for interoperability only. v2 is what we
+/// escape hatch: "legacy, weaker", for interoperability only. v3 is what we
 /// write; this keeps old restore tooling usable.
 pub fn backup_v1(db_path: &Path, out_path: &Path, passphrase: &[u8]) -> Result<()> {
     backup_with_config_dir_and_format(db_path, out_path, passphrase, None, BackupFormat::V1)
@@ -442,7 +544,7 @@ pub fn backup_with_config_dir(
     passphrase: &[u8],
     config_dir: Option<&Path>,
 ) -> Result<()> {
-    backup_with_config_dir_and_format(db_path, out_path, passphrase, config_dir, BackupFormat::V2)
+    backup_with_config_dir_and_format(db_path, out_path, passphrase, config_dir, BackupFormat::V3)
 }
 
 pub fn backup_with_config_dir_and_format(
@@ -471,6 +573,23 @@ fn backup_inner(
     format: BackupFormat,
 ) -> Result<()> {
     let created_at = now_iso();
+    // S2-52: a leftover <db>.bak is the pre-restore evidence of a previous
+    // restore. Refusing to back up over it (fail-closed) makes the changelog's
+    // "refuses while a stale .bak exists" claim true; symlink_metadata sees a
+    // dangling symlink where `exists()` would report false.
+    let bak = db_path.with_file_name(format!(
+        "{}.bak",
+        db_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
+    if fs::symlink_metadata(&bak).is_ok() {
+        anyhow::bail!(
+            "refusing backup: stale safety snapshot {bak:?} exists; \
+             move or delete it to allow a backup"
+        );
+    }
     let snapshot_path = out_path.with_file_name(format!(
         ".brain-snapshot-{}.db",
         SystemTime::now()
@@ -479,10 +598,12 @@ fn backup_inner(
             .unwrap_or(0)
     ));
 
-    snapshot_db(db_path, &snapshot_path).with_context(|| "snapshot live DB failed")?;
-    // F-29 (M2): the snapshot is 0600 + this guard removes it on EVERY exit
-    // path — success included. A plaintext DB copy must never outlive the call.
+    // S2-25: the guard is armed BEFORE the snapshot is written, so a failure
+    // inside snapshot_db (chmod, disk-full VACUUM) still removes the partial
+    // plaintext file rather than leaking it. F-29 (M2): the plaintext copy
+    // must never outlive this call, success or failure.
     let _guard = SnapshotGuard(snapshot_path.clone());
+    snapshot_db(db_path, &snapshot_path).with_context(|| "snapshot live DB failed")?;
 
     let snapshot_bytes =
         fs::read(&snapshot_path).with_context(|| format!("read snapshot {snapshot_path:?}"))?;
@@ -528,18 +649,24 @@ fn backup_inner(
         components,
     };
     let version_label = match format {
+        BackupFormat::V3 => "v3",
         BackupFormat::V2 => "v2",
         BackupFormat::V1 => "v1",
     };
 
-    // v2: the manifest rides in the plaintext header → bundle is the snapshot.
-    // v1: the bundle is `[manifest][snapshot]` inside the ciphertext.
+    // v2/v3: the manifest rides in the plaintext header → bundle is the
+    // snapshot. v1: the bundle is `[manifest][snapshot]` inside the ciphertext.
     let bundle = match format {
-        BackupFormat::V2 => snapshot_bytes,
+        BackupFormat::V3 | BackupFormat::V2 => snapshot_bytes,
         BackupFormat::V1 => build_bundle(&manifest, &snapshot_bytes)?,
     };
     let out = match format {
-        BackupFormat::V2 => encrypt_v2(&manifest, &bundle, passphrase, &created_at)?,
+        BackupFormat::V3 => {
+            encrypt_versioned(&manifest, &bundle, passphrase, &created_at, VERSION_V3)?
+        }
+        BackupFormat::V2 => {
+            encrypt_versioned(&manifest, &bundle, passphrase, &created_at, VERSION_V2)?
+        }
         BackupFormat::V1 => encrypt_v1(&bundle, passphrase, &created_at)?,
     };
 
@@ -603,6 +730,35 @@ pub fn verify(cipher_path: &Path, passphrase: &[u8]) -> Result<Manifest> {
     Ok(manifest)
 }
 
+/// Write `data` to `path` via an in-directory temp file: write → fsync →
+/// rename, then fsync the directory so the rename is durable. A crash at any
+/// point leaves either the old file or the fully-written new file, never a
+/// truncated in-place overwrite (S2-27). The temp name is derived from the
+/// target; leftover temps from a killed restore on a read-only-overwrite
+/// failure are reclaimed by the next `write_atomic` on the same target.
+fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
+    }
+    let tmp = path.with_file_name(format!(
+        "{}.restore-tmp",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    ));
+    fs::write(&tmp, data).with_context(|| format!("write temp {tmp:?}"))?;
+    let f = fs::File::open(&tmp).with_context(|| format!("open temp {tmp:?}"))?;
+    f.sync_all()
+        .with_context(|| format!("fsync temp {tmp:?}"))?;
+    fs::rename(&tmp, path).with_context(|| format!("rename over {path:?}"))?;
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
+}
+
 fn decrypt_bundle_v1(ciphertext: &[u8], passphrase: &[u8], created_at: &str) -> Result<Vec<u8>> {
     let key = derive_key_v1(passphrase);
     let nonce = derive_nonce_v1(passphrase, created_at);
@@ -630,7 +786,7 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     let full = fs::read(cipher_path).with_context(|| format!("read {cipher_path:?}"))?;
     verify_checksum(cipher_path, &full)?;
 
-    // v1.27.17 (M1/F-08): format sniff — v2 (Argon2id) or legacy v1 (warn!).
+    // format sniff — v2 (Argon2id) or legacy v1 (warn!).
     let (manifest, snapshot) = decrypt_backup(&full, passphrase)?;
 
     // integrity: snapshot's xxh3 must match manifest
@@ -657,7 +813,10 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         ));
-        if bak.exists() {
+        // symlink_metadata (not `exists`) also refuses a pre-planted dangling
+        // symlink at the .bak path, and `vacuum_into_exclusive`'s create_new
+        // would fail closed on any surviving pre-existing path.
+        if fs::symlink_metadata(&bak).is_ok() {
             // Fail closed rather than overwrite a previous safety snapshot:
             // it is evidence of the pre-restore state, and clobbering it
             // silently would make a crash-during-sync unrecoverable.
@@ -670,19 +829,19 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
             .with_context(|| format!("open live DB {db_path:?}"))?;
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
             .context("wal_checkpoint before safety snapshot")?;
-        vacuum_into(&conn, &bak)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&bak, std::fs::Permissions::from_mode(0o600))?;
-        }
+        // S2-26: create the .bak exclusively at 0600, then VACUUM INTO the
+        // pre-created empty file — no umask window, no write-through of a
+        // pre-planted file or symlink.
+        vacuum_into_exclusive(&conn, &bak)?;
     }
 
-    // write the decrypted snapshot over the live DB
+    // write the decrypted snapshot over the live DB atomically
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
-    fs::write(db_path, &snapshot).with_context(|| format!("write restored DB {db_path:?}"))?;
+    // S2-27: temp + fsync + rename (crash mid-write never leaves a corrupt DB)
+    // then fsync the directory so the rename itself is durable.
+    write_atomic(db_path, &snapshot).with_context(|| format!("write restored DB {db_path:?}"))?;
     audit_backup(db_path, AuditStatus::Ok, "restore complete");
     Ok(())
 }
@@ -936,7 +1095,7 @@ mod tests {
         let _ = fs::remove_file(&dst_bak);
     }
 
-    // ── v1.27.17 "Strongbox" (M1/M2/M5): format v2 + snapshot hygiene ───────
+    // ── format v2 + snapshot hygiene ───────
 
     #[test]
     fn v2_backup_roundtrips() {
@@ -971,8 +1130,8 @@ mod tests {
         backup(&src, &out1, b"pass".as_slice()).unwrap();
         backup(&src, &out2, b"pass".as_slice()).unwrap();
 
-        let h1 = parse_v2_file(&fs::read(&out1).unwrap()).unwrap().0;
-        let h2 = parse_v2_file(&fs::read(&out2).unwrap()).unwrap().0;
+        let h1 = parse_versioned_file(&fs::read(&out1).unwrap()).unwrap().1;
+        let h2 = parse_versioned_file(&fs::read(&out2).unwrap()).unwrap().1;
         assert_ne!(h1.nonce, h2.nonce, "nonces must be random per backup");
         assert_ne!(h1.salt, h2.salt, "salts must be random per backup");
     }
@@ -1140,6 +1299,31 @@ mod tests {
             leftovers.is_empty(),
             "snapshot must be removed on failure, left: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn vacuum_into_writes_into_precreated_empty_file() {
+        // S2-26 ground truth: SQLite's VACUUM INTO overwrite check is `sz > 0`
+        // AFTER open, so a pre-created ZERO-length target is accepted and
+        // written into. This is what lets us own the target with
+        // O_CREAT|O_EXCL (0600) BEFORE the vacuum, closing the symlink-plant
+        // and umask windows. If a future bundled SQLite tightens this check,
+        // this test fails and `vacuum_into_exclusive`'s fallback must be used.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.db");
+        let dst = dir.path().join("snap.db");
+        make_db(&src, "exclusive").unwrap();
+        create_private_file(&dst).unwrap();
+        assert_eq!(fs::metadata(&dst).unwrap().len(), 0, "probe is empty");
+
+        let conn = rusqlite::Connection::open(&src).unwrap();
+        vacuum_into(&conn, &dst).expect("VACUUM INTO must accept an empty target");
+
+        let c2 = rusqlite::Connection::open(&dst).unwrap();
+        let text: String = c2
+            .query_row("SELECT text FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(text, "exclusive");
     }
 
     #[test]
