@@ -146,7 +146,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
     Subcommand { name: "connect", json: false, run: cmd_connect, usage: "brain connect github --app-id N --install-id N --key-file PATH \\\n                      --repo owner/repo [...] [--webhook-secret-file PATH]\n  brain connect --kind crm-salesforce ...   (vocabulary accepts the v1.24 set;\n                                             only github has a runnable binary)" },
     Subcommand { name: "sync", json: false, run: cmd_sync, usage: "brain sync [github] [--config PATH]" },
     Subcommand { name: "connector-status", json: true, run: cmd_connector_status, usage: "brain connector-status" },
-    Subcommand { name: "backup", json: false, run: cmd_backup, usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]" },
+    Subcommand { name: "backup", json: false, run: cmd_backup, usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]" },
     Subcommand { name: "restore", json: false, run: cmd_restore, usage: "brain restore <in-path> [--passphrase-file PATH]" },
     Subcommand { name: "key", json: false, run: cmd_key, usage: "brain key generate [--kid ID] [--alg RS256] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]" },
     Subcommand { name: "ump", json: false, run: cmd_ump, usage: "brain ump export [--format md|ump] [--out FILE]\n  brain ump import <file>\n  brain ump keygen [--dir PATH]" },
