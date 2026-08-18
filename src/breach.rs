@@ -224,11 +224,7 @@ fn breach_row(conn: &Connection, id: i64) -> Result<Option<BreachRow>, HandlerEr
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<BreachRow> {
     let jurisdictions: String = r.get(6)?;
     let jurisdictions = serde_json::from_str(&jurisdictions).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            6,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(e))
     })?;
     Ok(BreachRow {
         id: r.get(0)?,
@@ -447,10 +443,7 @@ mod tests {
         .unwrap();
         let mut stmt = conn.prepare("SELECT * FROM breaches").unwrap();
         let rows: Vec<_> = stmt
-            .query_map([], |r| {
-                row_from(r)?;
-                Ok(())
-            })
+            .query_map([], |r| row_from(r).map(|_| ()))
             .unwrap()
             .collect();
         assert!(
@@ -461,7 +454,7 @@ mod tests {
         conn.execute("UPDATE breaches SET jurisdictions = '[\"ph\"]'", [])
             .unwrap();
         let mut stmt = conn.prepare("SELECT * FROM breaches").unwrap();
-        let ok = stmt.query_map([], |r| row_from(r)).unwrap().next();
+        let ok = stmt.query_map([], row_from).unwrap().next();
         let row = ok.unwrap().unwrap();
         assert_eq!(row.jurisdictions, vec!["ph".to_string()]);
     }
