@@ -19,6 +19,92 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.21] — 2026-08-18
+
+Server + client + plugin release (server `Cargo.toml`/lock `1.27.20` → **`1.27.21`**;
+client `1.27.20` → **`1.27.21`**; plugin **0.4.4 → 0.4.5**). The complete
+hardening pass — fail-closed erasure + fence-forgeability close, the class the
+pass-2 audit rates CRITICAL when an unfenced erasure seam or a forgeable
+untrusted region diverges. No new schema, no new columns/tables, no telemetry;
+the one wire change is the deliberately-bit-stable **backup v3** writer.
+
+### Security fixes
+
+- **Legal-hold fence closed on two erasure paths (S2-03 CRIT / S2-04).** A held
+  chunk was frozen against `/purge`, DSAR and `forget` — but `POST
+  /ump/forget {"hard":true}` (reachable at Write scope via the MCP `ump.forget`
+  tool) and the ingest-replace/vault sweep bypassed the fence and could erase
+  it. Both now run `refuse_if_held` in-tx → `409 legal_hold_active`, all-or-
+  nothing.
+- **Fence-forgeability close (S2-02).** A stored body containing the literal
+  `=== BRAIN_UNTRUSTED_CONTEXT END ===` (or BEGIN) would close the untrusted
+  region early. The shared `strip_sentinels` primitive now removes both
+  literals before wrapping on every seam (MCP `tool_result_payload` +
+  `format_response`, and the plugin's recall banner), ordered invisible-strip
+  first so a zero-width split cannot re-heal a marker into the fence.
+- **Backup v3 header bound as GCM AAD + KDF bounds (S2-13 / S2-14).** The v2
+  header was not covered by the GCM tag — any header bit could be flipped
+  without failing authentication. v3 (same byte layout, `brain backup` now
+  defaults to `v3`) binds the exact header bytes as GCM AAD, and
+  `validate_kdf_params` bounds attacker-controlled Argon2id params before any
+  allocation (m 8 MiB..1 GiB, t 1..=64, p 1..=8) so a crafted `m = u32::MAX`
+  errors (`kdf_params_out_of_range`) instead of OOMing. `brain backup` accepts
+  `v1|v2|v3`; legacy v1/v2 files keep their read paths.
+- **Auth fail-closed (F-27 class).** A single-team wildcard `read:<team>/*` now
+  grants only the shared `global` pool, never every tenant's named domain (a
+  flat domain namespace means the team field can never narrow a `*` domain
+  grant — naming a domain requires naming it); and a token with **no roles**
+  passes `require_dpo_role` only when the deployment defines no roles at all,
+  closing the single-token shape that could ride a bare admin scope.
+
+### Bug fixes
+
+- **Empty reconcile is an explicit decision (S2/N1).** An empty `live_uris`
+  previously retired **every** active vault source and swept its chunks,
+  indistinguishable from a failed listing. It now 400s `live_set_empty` unless
+  the caller sets `allow_empty: true`; the client panel waives it only through
+  the shared two-step confirm.
+- **Client offline-queue integrity (N5–N8).** Retry-park (a persisted counter
+  parks an auto-replay after 5 failures instead of refiring forever;
+  destructive actions always park); idempotency key normalizes the volatile
+  fields out so a re-enqueue collapses onto its twin; the persisted DSAR
+  subject hash is now `SHA-256(salt ‖ subject)` with a per-install salt
+  (defeats precomputed/rainbow tables, legacy items decode via the empty-salt
+  form); and the purge **owner** is persisted so an owner-scoped purge no
+  longer replays as an empty no-op body that silently erased nothing.
+- **Replay drift (N9/N13).** Char-boundary-safe `hash_prefix` (a corrupt stored
+  hash truncates on char boundaries) and `kept_set` drift detection vs the
+  parent catch same-length row swaps.
+- **Fence sentinel in the plugin (M7).** The plugin resolves its bearer via the
+  env ladder `BRAIN_TOKEN_FILE` → `BRAIN_TOKEN` → config, never writes a token,
+  and its per-turn abstention log logs the **query length only** (a recall query
+  is user text and openclaw's log is persistent) — see the plugin 0.4.5
+  CHANGELOG.
+- **Webhook egress bound.** The egress client now enforces a 5 s connect / 15 s
+  total timeout so a hung sink cannot stall the request path.
+
+### Engineering record
+
+Tests: server lib **128** / 1 ignored, main bin **674** / 6 ignored, brain
+**18**, mcp **19**, bench **5**, eval **2**, metrics **8**; client 140 →
+**152**; clippy `-D warnings` + fmt clean on both trees (server default +
+`bench`; the three client gate failures found during the pass —
+`&mut Vec`→slice, unnecessary slice-clone, and a grep-guard that matched its
+own assertion literal — are fixed with new pins); wasm release build
+**5.3 MB** (budget 7). Plugin 0.4.5 green on the openclaw tree (144 vitest +
+oxlint + tsc). Honest ceilings: backup v3 AAD binds header bytes at write/read
+time — it does not migrate or re-anchor existing v2 `.bak` files (they stay
+readable via the v2 no-AAD path); the legal-hold fences are read-time
+enforcement over stored rows (a write that stores a wrong label is out of
+scope); N7's salt sits in the same localStorage as the hash — it is uniqueness,
+not secrecy; the role-empty gate is governance narrowing — a deployment that
+defines roles but issues scope-only tokens sees those surfaces denied until
+roles are granted. F-09/S2-28 (restore-path audit-chain verification + legal-
+hold/tombstone reapply) is deliberately deferred to the audit-repair milestone.
+See `IMPLEMENTATION_PLAN_v1.27.21_Finish.md`.
+
+---
+
 ## [1.27.20] — 2026-08-17
 
 ### Improvements — "Console"

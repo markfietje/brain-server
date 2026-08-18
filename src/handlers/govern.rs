@@ -562,7 +562,7 @@ fn check_snapshot(p: &std::path::Path) -> serde_json::Value {
 mod tests {
     use super::*;
 
-/// plan Verification 4: the retention report
+    /// plan Verification 4: the retention report
     /// reflects the configured per-kind TTL + counts + the 30-day-expiring
     /// window. A kind with a policy reports expiring rows via created_at; a
     /// kind with no policy counts only explicit `expires_at`, and the schedule

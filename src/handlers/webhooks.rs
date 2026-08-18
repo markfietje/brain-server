@@ -168,7 +168,7 @@ pub async fn receive(
     let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
     match queue.enqueue_ts(&kind, &event, &delivery_id, &body, received_at) {
         Ok(EnqueueOutcome::Enqueued) => {
-// audit a verified, accepted webhook (delivery id only).
+            // audit a verified, accepted webhook (delivery id only).
             if let Ok(conn) = state.pool.get() {
                 crate::audit::record(
                     &conn,

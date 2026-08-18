@@ -121,9 +121,11 @@ pub fn panel() -> Element {
     let run_reconcile = move |_| {
         let api = api;
         spawn(async move {
-            // Reconcile with an empty live set retires nothing; the operator
-            // drives the URI set via the CLI. Surface the ledger counts here.
-            match api().sources_reconcile("vault", &[]).await {
+            // v1.27.21 (N1): the panel reconciles with an EMPTY live set —
+            // that retires EVERY vault source and sweeps its chunks, so the
+            // button is a two-step confirm and the request waives the
+            // server's `live_set_empty` guard explicitly (`allow_empty`).
+            match api().sources_reconcile("vault", &[], true).await {
                 Ok(r) => reconcile_r.set(Some(r)),
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
             }
@@ -303,11 +305,16 @@ pub fn panel() -> Element {
                         }
                     }
                 }
-                button {
-                    class: "btn btn-outline btn-sm",
+                // v1.27.21 (N1): reconcile with an empty live set is a mass
+                // retirement — the same two-step confirm as reindex/purge,
+                // with the consequence spelled out before the second click.
+                ConfirmDestructive {
+                    label: crate::i18n::t("sys_reconcile"),
+                    note: crate::i18n::t("sys_reconcile_irreversible"),
+                    small: true,
+                    blocked: false,
                     disabled: !writes,
-                    onclick: run_reconcile,
-                    {crate::i18n::t("sys_reconcile")}
+                    on_confirm: move |_| run_reconcile(()),
                 }
                 if let Some(r) = reconcile_r() {
                     span { class: "text-xs text-muted-foreground",
@@ -325,7 +332,7 @@ pub fn panel() -> Element {
                         class: "select w-28",
                         value: "{method}",
                         onchange: move |e| method.set(e.value()),
-                        "aria-label": "method",
+                        "aria-label": crate::i18n::t("aria_method"),
                         option { value: "GET", "{sys_http_get}" }
                         option { value: "POST", "{sys_http_post}" }
                         option { value: "DELETE", "{sys_http_delete}" }
@@ -334,7 +341,7 @@ pub fn panel() -> Element {
                         class: "input flex-1 font-mono",
                         value: "{path}",
                         oninput: move |e| path.set(e.value()),
-                        placeholder: "/recall",
+                        placeholder: crate::i18n::t("sys_path_ph"),
                     }
                     button { class: "btn btn-primary", disabled: !writes, onclick: run_console, "send" }
                 }
@@ -344,7 +351,7 @@ pub fn panel() -> Element {
                         rows: 4,
                         value: "{body}",
                         oninput: move |e| body.set(e.value()),
-                        placeholder: "query...",
+                        placeholder: crate::i18n::t("sys_body_ph"),
                     }
                 }
                 if !history().is_empty() {
@@ -389,6 +396,37 @@ mod tests {
         assert!(!crate::confirm::confirm_allowed(false, false, false));
         assert!(crate::confirm::confirm_allowed(true, false, false));
         assert!(!crate::confirm::arm_allowed(false, true, false));
+    }
+
+    /// v1.27.21 (N1): reconcile with an empty live set retires EVERY vault
+    /// source — a single click must never fire it. The panel routes the
+    /// button through the shared two-step confirm, and the request carries
+    /// the `allow_empty` waiver ONLY on that confirmed path (the wire's
+    /// default omits it, so a stray caller meets the server's 400
+    /// `live_set_empty` guard instead of a mass retirement).
+    #[test]
+    fn reconcile_confirms_and_waives_empty_live_set_only_on_confirm() {
+        assert!(crate::confirm::arm_allowed(false, false, false));
+        assert!(!crate::confirm::confirm_allowed(false, false, false));
+        assert!(crate::confirm::confirm_allowed(true, false, false));
+        assert!(!crate::confirm::arm_allowed(false, false, true));
+        // The panel fires reconcile only through the confirm's on_confirm…
+        let src = std::fs::read_to_string("src/panels/system.rs").unwrap();
+        assert!(
+            src.contains("label: crate::i18n::t(\"sys_reconcile\")"),
+            "the reconcile button must be the shared two-step confirm"
+        );
+        // …and only the confirmed path waives the empty-live-set guard. The
+        // needle is assembled at runtime so the counting line below does not
+        // match itself (a contiguous literal would count as a second call).
+        let needle = format!("{}{}{}", "api().", "sources_reconcile", "(");
+        assert_eq!(src.matches(&needle).count(), 1);
+        assert!(src.contains("sources_reconcile(\"vault\", &[], true)"));
+        let guarded = crate::api::sources_reconcile_body("vault", &[], false);
+        assert!(
+            guarded.get("allow_empty").is_none(),
+            "an unwaived body must let the server 400 live_set_empty"
+        );
     }
 
     /// F-40 (v1.27.20 "Console"): the panel's 4-request batch load fires ONCE

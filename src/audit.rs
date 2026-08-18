@@ -256,7 +256,7 @@ pub fn record_tenant(
         // touch the caller's outer transaction; rolling back a top-level
         // IMMEDIATE tx only undoes this best-effort audit row.
         //
-// a failure to settle the tx is never silent —
+        // a failure to settle the tx is never silent —
         // a row the caller believes is on the durable chain may be stuck in
         // the air. Log at error level (visible in the operator log) and bump
         // the `audit_chain_commit_failures` counter surfaced on `/health`.
@@ -352,7 +352,7 @@ pub fn read_trace(conn: &Connection, audit_id: i64) -> Option<String> {
 /// acceptable for a multi-thousand-row audit log. A >1M-row log would want a
 /// periodic checkpoint instead (verify_chain already notes the same ceiling).
 pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i64> {
-// was `.ok()?` — a silent skip hid the prune's
+    // was `.ok()?` — a silent skip hid the prune's
     // failure from the only diagnostic seam (its caller). Warn instead.
     let cutoff: String = match conn.query_row(
         "SELECT datetime('now', ?1)",
@@ -987,7 +987,7 @@ mod tests {
         );
     }
 
-/// a failed COMMIT/ROLLBACK settle of a best-effort
+    /// a failed COMMIT/ROLLBACK settle of a best-effort
     /// audit row bumps `audit_commit_failures()` (surfaced on `/health`) and
     /// logs at error level — the row may not be durable and that must be
     /// visible, not silent. Forced here for real: a second connection holds a
@@ -1172,7 +1172,7 @@ mod tests {
             .is_empty());
     }
 
-/// concurrent autocommit `record_tenant` callers must not
+    /// concurrent autocommit `record_tenant` callers must not
     /// fork the chain. Two pooled connections, a `Barrier` so both threads
     /// reach the audit call simultaneously, then verify the chain holds.
     /// Mirrors the proven `concurrent_refresh_serializes_exactly_one_winner`

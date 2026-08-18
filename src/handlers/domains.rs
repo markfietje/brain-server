@@ -173,10 +173,10 @@ pub async fn create_domain(
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&req.name)?;
-// write gate (creating a domain is a write). `None` (no JWT) = superuser.
+    // write gate (creating a domain is a write). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", &name)?;
 
-// registration is the ONE creation path —
+    // registration is the ONE creation path —
     // this is the only place a domain file comes into being (cap-bounded in
     // multi-db; warm no-op over the shared pool in shim mode).
     let pool = state
@@ -223,7 +223,7 @@ pub async fn delete_domain(
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-// admin gate (destructive lifecycle op). `None` (no JWT) = superuser.
+    // admin gate (destructive lifecycle op). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
 
     if name == "global" {
@@ -414,7 +414,7 @@ pub async fn vacuum_domain(
 ) -> Result<impl IntoResponse, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-// admin gate (maintenance op). `None` (no JWT) = superuser.
+    // admin gate (maintenance op). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
     let pool = state
         .registry
@@ -452,7 +452,7 @@ pub async fn export_domain(
 ) -> Result<Response, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-// read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
+    // read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", &name)?;
     let pool = state
         .registry
@@ -520,7 +520,7 @@ pub async fn import_domain(
     use super::normalize_domain;
     use axum::body::to_bytes;
     let name = normalize_domain(&name)?;
-// admin gate (overwrites domain data). `None` (no JWT) = superuser.
+    // admin gate (overwrites domain data). `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &name)?;
     if name == "global" {
         // Importing into `global` would overwrite the legacy live DB.
@@ -583,7 +583,7 @@ pub async fn import_domain(
     // Open the imported DB via the registry so migration runs and the pool
     // is cached. This is the validity check: if the bytes weren't a real
     // SQLite DB (despite the magic header), opening the pool will fail.
-// `register` — an import is an admin-created resource
+    // `register` — an import is an admin-created resource
     // (an unregistered name must not lazily create a file).
     if let Err(e) = state.registry.register(&name) {
         // Clean up the bad import so the next attempt can succeed.
@@ -622,7 +622,7 @@ pub async fn move_domains(
 ) -> Result<Json<MoveDomainsResponse>, HandlerError> {
     use super::normalize_domain;
     let to = normalize_domain(&req.to)?;
-// Admin gate (bulk relabel of memory).
+    // Admin gate (bulk relabel of memory).
     super::authorize(&principal.0, crate::auth::Action::Admin, "", &to)?;
     if to == "global" {
         return Err(HandlerError::bad_request(
@@ -692,7 +692,7 @@ pub async fn recompute_domains(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
 ) -> Result<Json<RecomputeResponse>, HandlerError> {
-// Admin gate (operator sweep over all domains).
+    // Admin gate (operator sweep over all domains).
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = state.pool.clone();
     let result =

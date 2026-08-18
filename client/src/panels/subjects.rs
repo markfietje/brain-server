@@ -460,10 +460,16 @@ async fn run_dsar(api: ApiClient, subject: String, action: &'static str) -> Dsar
         Err(e) if crate::queue::is_offline(&e) => {
             // v1.28.1 M4: the queue persists only the subject's SHA-256 hash —
             // the raw email never touches site-local storage; replay re-prompts.
+            // v1.27.21 (N7): the digest is salted per install, so the stored
+            // hash is useless as a precomputed/rainbow-table target; replay
+            // verifies the retyped subject against the same salt.
+            let (subject_hash, salted) = crate::queue::dsar_subject_hash(&subject);
             crate::queue::enqueue(crate::queue::QueuedAction::Dsar {
-                subject_hash: crate::queue::digest(&subject),
+                subject_hash,
                 action: action.to_string(),
+                salted,
                 queued_at: crate::queue::now_ts(),
+                retries: 0,
             });
             return DsarOutcome::Queued;
         }

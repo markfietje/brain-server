@@ -1,10 +1,10 @@
-//! v1.25.0 "PH-Compliant" M2 — the breach-notification HTTP surface.
+//! the breach-notification HTTP surface.
 //!
 //! `POST /breach` opens an incident (the DPO role is the actor);
 //! `POST /breach/{id}/event` appends a notification/assessment/note;
 //! `POST /breach/{id}/close` closes it; `GET /breaches` + `GET /breaches/{id}`
 //! are the DPO/audit ledger. Every action is `authorize(Admin)`-gated AND
-//! role-gated to the `dpo`/`admin` bundle (v1.23.0), and every write is
+//! role-gated to the `dpo`/`admin` bundle, and every write is
 //! hash-chained into the audit (`AuditKind::Breach`). Human-opened by design —
 //! automated detection is a v2.x monitoring concern.
 
@@ -20,9 +20,9 @@ use crate::AppState;
 
 /// The breach actors: `authorize(Admin)` is the base gate, and a JWT principal
 /// that carries roles must hold a role named `dpo` OR one with the `admin`
-/// capability (v1.23.0) — an `agent`/`qa` token cannot open or close a breach.
+/// capability — an `agent`/`qa` token cannot open or close a breach.
 /// Whether a resolved role bundle may act on a breach: it must include the
-/// `dpo` role or one carrying the `admin` capability (v1.23.0). Pure, so the
+/// `dpo` role or one carrying the `admin` capability. Pure, so the
 /// role-gate test (`dpo_role_is_the_breach_actor`) pins the rule directly.
 fn can_act_on_breach(roles: &[brain_server::role::Role]) -> bool {
     roles.iter().any(|r| r.name == "dpo" || r.can("admin"))
@@ -35,12 +35,28 @@ pub(crate) fn require_dpo_role(
     let Some(p) = principal else {
         return Ok(()); // no JWT = loopback incumbent
     };
-    if p.roles.is_empty() {
-        return Ok(());
-    }
     let conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    if p.roles.is_empty() {
+        // a scope-only admin token passes ONLY while the
+        // deployment defines no roles at all. Once the role store is populated
+        // the deployment has opted into role-based governance, and a token
+        // with no roles is exactly the single-token shape the dual gate
+        // exists to stop (hold release / breach close are one-principal
+        // decisions that must not ride a bare admin scope).
+        let defined: i64 = conn
+            .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
+            .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
+        if defined == 0 {
+            return Ok(());
+        }
+        return Err(HandlerError::forbidden(
+            crate::auth::Action::Admin,
+            &p.tenant,
+            "breach",
+        ));
+    }
     let roles = brain_server::role::resolve(&conn, &p.roles)
         .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
     if can_act_on_breach(&roles) {

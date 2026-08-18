@@ -59,7 +59,7 @@ impl MemoryKind {
             _ => MemoryKind::Fact,
         }
     }
-/// the strict write-boundary validator. A
+    /// the strict write-boundary validator. A
     /// kind string is valid iff it round-trips through [`Self::from_str`] —
     /// `from_str` falls back to `Fact` on any unknown/mixed-case input, which
     /// must never be *silently accepted* at the write boundary (both the

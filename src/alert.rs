@@ -1,19 +1,13 @@
-//! live operator alert feed (`GET /events`) + optional
-//! webhook sink.
+//! live operator alert feed (`GET /events`) + optional webhook sink.
 //!
-//! The decision-critical events the console cares about (new pending proposal,
-//! proposal near-expiry, injection verdict, audit-chain verify failure) are
-//! published on a bounded `tokio::sync::broadcast` channel held in `AppState`
-//! and streamed to the `/ops` panel over SSE. The same events feed an optional
-//! `BRAIN_ALERT_WEBHOOK_URL` sink so a headless operator gets identical
-//! signals via the v1.20.4 Standard Webhooks handshake.
+//! Decision-critical events (pending/expiry/injection/chain-verify) publish on a
+//! bounded `AppState` broadcast and stream to the `/ops` panel via SSE; the same
+//! events feed an optional `BRAIN_ALERT_WEBHOOK_URL` (v1.20.4 Webhooks handshake).
 //!
-//! Invariants (the 2026 alert-fatigue + PII rules):
-//! - The signal set is **fixed and hand-curated** (no rules engine).
-//! - `AlertEvent.payload` is a fixed, small object — **never content, never
-//!   PII** (the client fetches full detail from the existing endpoints).
-//! - `expiry` fires **once per boundary crossed** via the pure
-//!   [`tier_transition`] core, not on every clock tick.
+//! Invariants (2026 alert-fatigue + PII): the signal set is **fixed & hand-curated**
+//! (no rules engine); `AlertEvent.payload` is a fixed small object — **never content,
+//! never PII** (the client fetches detail from endpoints); `expiry` fires **once per
+//! boundary crossed** via the pure [`tier_transition`] core.
 
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -43,8 +37,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// Map remaining proposal lifetime (seconds) onto a tier using the config
-    /// boundaries (`ALERT_CRITICAL_SECS` < 5 min, `ALERT_WARN_SECS` < 1 hr).
+    /// Map remaining lifetime (secs) onto a tier via config boundaries (crit<5min, warn<1hr).
     pub fn from_remaining(remaining_secs: i64) -> Tier {
         if remaining_secs < crate::config::ALERT_CRITICAL_SECS {
             Tier::Critical
@@ -56,9 +49,8 @@ impl Tier {
     }
 }
 
-/// Fire exactly one transition per boundary crossing — "crossing critical fires
-/// once, re-triggering on the same tier does not" (the queue is a clock, but
-/// the alert is a signal). Returns the tier label to raise.
+/// Fire exactly one transition per boundary crossing — a re-trigger on the same
+/// tier is silent (the queue is a clock, the alert is a signal). Returns the label.
 pub fn tier_transition(before: Tier, after: Tier) -> Option<&'static str> {
     match (before, after) {
         (Tier::Ok, Tier::Warn) => Some("warn"),
@@ -67,23 +59,20 @@ pub fn tier_transition(before: Tier, after: Tier) -> Option<&'static str> {
     }
 }
 
-/// Last known audit-chain posture, written by [`spawn_chain_watcher`] and read
-/// by `/health`. Default is `chain_ok=false` until the first check completes on
-/// boot (the watcher runs once immediately, so a live server reports real data
-/// within the first tick).
+/// Last audit-chain posture, written by [`spawn_chain_watcher`], read by `/health`.
+/// Default `chain_ok=false` until the first check (the watcher runs once at boot).
 #[derive(Debug, Clone, Default)]
 pub struct ChainStatus {
     /// `true` when the last full-chain verify passed.
     pub chain_ok: bool,
     /// Unix epoch seconds of the last check (0 = never).
     pub checked_at: i64,
-    /// Chain head hash of the last check ("" until checked) — evidence the
-    /// posture claim describes a specific, verifiable state.
+    /// Chain-head hash of the last check ("" = unchecked) — pins the posture claim.
     pub chain_head: String,
 }
 
-/// Shared handle to the watcher's latest result (cheap clone; writer is the
-/// watcher task, readers are `/health`). Mirrors `integrity::SnapshotState`.
+/// Shared handle to the watcher's latest result (writer = watcher, readers = `/health`).
+/// Mirrors `integrity::SnapshotState`.
 #[derive(Clone, Default)]
 pub struct ChainWatchState {
     inner: Arc<RwLock<ChainStatus>>,
@@ -100,10 +89,9 @@ impl ChainWatchState {
     }
 }
 
-/// Decide whether the integrity watcher raises a signal this tick. Fires only
-/// on an `ok` ↔ `broken` transition (or a broken chain discovered on the very
-/// first check) — never on a stable tick, so a healthy chain is silent.
-/// Returns the severity label to publish: `danger` (broken), `ok` (recovered).
+/// Decide whether the integrity watcher signals this tick. Fires only on an
+/// `ok` ↔ `broken` transition (or a broken first check) — a stable tick is silent.
+/// Returns `danger` (broken) or `ok` (recovered).
 pub fn chain_transition(prev_ok: Option<bool>, now_ok: bool) -> Option<&'static str> {
     match (prev_ok, now_ok) {
         (Some(true), false) => Some("danger"), // ok → broken
@@ -119,12 +107,10 @@ pub struct EventsQuery {
     kinds: Option<String>,
 }
 
-/// `GET /events` — SSE live alert feed. Public-but-Read-gated (auth
-/// `Action::Read`, the operator console token already has read). Mirrors the
-/// `/ump/subscribe` broadcast→SSE shape: a `pending` handshake first, then
-/// `alert` events. A lagging consumer drops missed events (bounded broadcast)
-/// and re-syncs from the console's polling fallback. `?kinds=` filters the
-/// stream to a subset of [`ALERT_KIND_*`].
+/// `GET /events` — SSE live alert feed (Read-gated). Mirrors `/ump/subscribe`:
+/// a `pending` handshake, then `alert` events; a lagging consumer drops missed
+/// events (bounded broadcast) and re-syncs via the polling fallback.
+/// `?kinds=` filters to a subset of [`ALERT_KIND_*`].
 pub async fn events(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -175,9 +161,8 @@ pub async fn events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// Publish an alert: fan out on the SSE broadcast (never blocks), and if the
-/// webhook sink is configured, hand the event to it (enqueue for the audit/
-/// idempotency record + a real Standard-Webhooks POST). Fail-soft both ways.
+/// Publish an alert: fan out on the SSE broadcast (never blocks); if the webhook
+/// sink is configured, hand it off (audit/idempotency record + Webhooks POST). Fail-soft.
 pub(crate) fn publish(state: &Arc<AppState>, kind: &str, payload: Value) {
     let seq = state.alert_seq.fetch_add(1, Ordering::Relaxed);
     let event = json!({
@@ -194,11 +179,10 @@ pub(crate) fn publish(state: &Arc<AppState>, kind: &str, payload: Value) {
     }
 }
 
-/// Webhook sink: audit/idempotency record in the existing `webhook_queue`
-/// (kind='alert', delivery-id = `alert-<seq>`), then a Standard Webhooks
-/// POST (`webhook-id`/`webhook-timestamp`/`webhook-signature: v1,<base64>`),
-/// bounded retries, fail-soft. `webhook_seen` dedups a replay; the receiver
-/// also has `alert.seq` in the body for its own idempotency.
+/// Webhook sink: an audit/idempotency `webhook_queue` record (kind='alert',
+/// delivery-id = `alert-<seq>`), then a Standard Webhooks POST (`webhook-id`/
+/// `webhook-timestamp`/`webhook-signature: v1,<base64>`), bounded retries, fail-soft.
+/// `webhook_seen` dedups replays; the receiver also has `alert.seq` for idempotency.
 async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
     let Some(url) = crate::config::alert_webhook_url() else {
         return;
@@ -234,10 +218,9 @@ async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
     tracing::warn!("alert webhook sink failed after retries: {last_err:?}");
 }
 
-/// Background task: watch pending proposals and fire the `expiry` alert once
-/// per proposal as it crosses each SLA tier boundary. `Ok` → `Warn` (fires
-/// "warn") and any → `Critical` (fires "critical"); re-triggering on the same
-/// tier does not. Proposals that leave the pending set are pruned.
+/// Background task: watch pending proposals, firing the `expiry` alert once per
+/// proposal as it crosses each tier boundary (`Ok`→`Warn` "warn", any→`Critical`
+/// "critical"); same-tier re-trigger is silent. Left-the-pending-set ids are pruned.
 pub(crate) async fn spawn_expiry_watcher(state: Arc<AppState>) {
     let mut last_tier: std::collections::HashMap<i64, Tier> = std::collections::HashMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -284,12 +267,10 @@ pub(crate) async fn spawn_expiry_watcher(state: Arc<AppState>) {
     }
 }
 
-/// Background task: watch the audit hash chain and raise an `integrity`
-/// (kind=`chain`) alert on `ok` ↔ `broken` transitions. Runs the existing,
-/// authoritative full-chain check (`audit::verify_chain`) on a cadence and
-/// records the last posture for `/health` — it is a *watcher* over the existing
-/// tamper-evident log, not a new tamper mechanism. First tick runs immediately
-/// so a booted server reports real posture without a wait.
+/// Background task: watch the audit hash chain, raising an `integrity` (`chain`)
+/// alert on `ok` ↔ `broken` transitions. Runs the authoritative `audit::verify_chain`
+/// on a cadence + records the last posture for `/health` — a *watcher* over the
+/// existing tamper-evident log. First tick runs immediately, so boot reports real posture.
 pub(crate) async fn spawn_chain_watcher(state: Arc<AppState>, watch: ChainWatchState) {
     let mut prev: Option<bool> = None;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(
@@ -368,11 +349,9 @@ mod tests {
         assert_eq!(chain_transition(Some(false), false), None);
         // ok → broken raises danger once.
         assert_eq!(chain_transition(Some(true), false), Some("danger"));
-        // broken → recovered raises ok once (integrity is the load-bearing
-        // guarantee — recovery is a signal, not a silence).
+        // broken → recovered raises ok once (recovery is a signal, not a silence).
         assert_eq!(chain_transition(Some(false), true), Some("ok"));
-        // First check: a healthy boot is silent; an already-broken boot raises
-        // danger immediately (the operator must know at boot).
+        // First check: a healthy boot is silent; an already-broken boot raises danger immediately.
         assert_eq!(chain_transition(None, true), None);
         assert_eq!(chain_transition(None, false), Some("danger"));
     }
@@ -395,8 +374,7 @@ mod tests {
 
     #[test]
     fn alert_kinds_are_fixed_curated_set() {
-        // The 2026 alert-fatigue guard: the signal set is fixed and hand-
-        // curated. Adding a kind is a deliberate code change, never a config.
+        // 2026 alert-fatigue guard: the signal set is fixed & hand-curated; adding a kind is a deliberate code change, never config.
         assert_eq!(
             [
                 ALERT_KIND_PENDING,
@@ -413,9 +391,7 @@ mod tests {
 
     #[test]
     fn event_envelope_is_fixed_and_never_content() {
-        // The `AlertEvent` envelope is exactly {kind, ts, seq, payload} — no
-        // content/PII ever rides in the envelope itself (payloads are the
-        // hand-curated signal objects). Guard-style assertion on the shape.
+        // The `AlertEvent` envelope is exactly {kind, ts, seq, payload} — no content/PII rides in it (payloads are the hand-curated signals).
         let event = json!({
             "kind": "pending",
             "ts": 1700000000i64,

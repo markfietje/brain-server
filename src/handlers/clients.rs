@@ -1,4 +1,4 @@
-//! v1.27.1 "Clients" — the BPO operating register (HTTP surface).
+//! the BPO operating register (HTTP surface).
 //!
 //! `POST /clients` registers an operating client (name / isolation domain /
 //! jurisdiction / bound profile); `GET /clients` lists the register; `GET
@@ -737,7 +737,7 @@ mod tests {
     }
 
     fn seed_subject(state: &AppState, domain: &str, owner: &str) {
-        // v1.27.16 (M5/F-41): registered-only; `register` is idempotent.
+        // registered-only; `register` is idempotent.
         let pool = state.registry.register(domain).expect("domain pool");
         pool.get()
             .unwrap()
@@ -1351,7 +1351,7 @@ mod tests {
         assert_eq!(denied.status, StatusCode::NOT_FOUND);
     }
 
-    // ── v1.28.1 "Holdall" M1 (F-02): the universal legal-hold fence ────────
+    // ── the universal legal-hold fence ────────
     // Every erasure path — `/purge`, DSAR, `DELETE /memory/{id}`, the source
     // sweeps (single delete + reconcile), quarantine delete, domain delete —
     // runs one `refuse_if_held` inside its write tx and answers `409
@@ -1501,7 +1501,127 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_reconcile_defers_held_chunks() {
+    async fn ump_hard_forget_refuses_held_chunk() {
+        // S2-03 (CRITICAL): `POST /ump/forget {"hard":true}` reaches
+        // `purge_chunk_ids` — the legal-hold fence that guards every other
+        // erasure path must guard this one too (it is MCP-reachable at Write
+        // scope via the `ump.forget` tool).
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (_sid, cid) = seed_source_chunk(&state, "/v/hold.md", "vault", "litigation evidence");
+        hold(&state.pool, &[cid]);
+        let cid_s = cid.to_string();
+
+        let err = crate::handlers::ump_ops::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            Json(crate::handlers::ump_ops::ForgetRequest {
+                id: cid_s.clone(),
+                reason: Some("ump_forget".to_string()),
+                hard: true,
+            }),
+        )
+        .await
+        .expect_err("a hard forget of a held chunk must 409");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.inner.code, "legal_hold_active");
+
+        let chunks: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id = ?1",
+                rusqlite::params![cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunks, 1, "held chunk survives the hard-forget attempt");
+
+        // Release → the same request erases.
+        let mut conn = state.pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::legal_hold::release(&tx, 1, 63).unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+        let _erased = crate::handlers::ump_ops::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            Json(crate::handlers::ump_ops::ForgetRequest {
+                id: cid_s,
+                reason: Some("ump_forget".to_string()),
+                hard: true,
+            }),
+        )
+        .await
+        .expect("after release the hard forget completes");
+        let chunks: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id = ?1",
+                rusqlite::params![cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunks, 0, "released chunk is erased");
+    }
+
+    #[tokio::test]
+    async fn empty_live_set_requires_explicit_allow_empty() {
+        // S2/N1: an empty live_uris retires EVERY active source of the kind —
+        // indistinguishable on the wire from a caller whose listing failed, so
+        // it must be an explicit decision, not a default.
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (sid, _cid) = seed_source_chunk(&state, "/v/a.md", "vault", "content");
+
+        let err = crate::handlers::sources::reconcile(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::sources::ReconcileRequest {
+                kind: "vault".to_string(),
+                live_uris: vec![],
+                allow_empty: false,
+            }),
+        )
+        .await
+        .expect_err("an unconfirmed empty live set must be refused");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.inner.code, "live_set_empty");
+
+        let sstate: String = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM sources WHERE id = ?1",
+                rusqlite::params![sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sstate, "active", "nothing retired by the refused request");
+
+        // The explicit confirmation retires it.
+        let resp = crate::handlers::sources::reconcile(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::sources::ReconcileRequest {
+                kind: "vault".to_string(),
+                live_uris: vec![],
+                allow_empty: true,
+            }),
+        )
+        .await
+        .expect("confirmed empty set proceeds");
+        assert_eq!(resp.deleted_sources, 1);
+    }
+
+    #[tokio::test]
+    async fn source_reconcile_refuses_held_chunks() {
         // §F-02 adversarial replay: hold a chunk, then reconcile with an empty
         // live set — the sweep must refuse (409) and the chunk must survive.
         let dir = tempfile::tempdir().unwrap();
@@ -1515,6 +1635,7 @@ mod tests {
             Json(crate::handlers::sources::ReconcileRequest {
                 kind: "vault".to_string(),
                 live_uris: vec![],
+                allow_empty: true,
             }),
         )
         .await
@@ -1546,6 +1667,7 @@ mod tests {
             Json(crate::handlers::sources::ReconcileRequest {
                 kind: "vault".to_string(),
                 live_uris: vec![],
+                allow_empty: true,
             }),
         )
         .await
@@ -1597,7 +1719,7 @@ mod tests {
         );
     }
 
-    // ── v1.28.1 "Holdall" M1.4 (F-02): the audit chain survives a domain
+    // ── the audit chain survives a domain
     // delete. Multi-db mode exports the domain's audit segment to
     // `archives/<domain>-audit-<epoch>.ndjson` (0600), keeps the file in
     // place with its chain intact, and records a `domain_deleted` event.
@@ -1759,7 +1881,7 @@ mod tests {
         );
     }
 
-    // ── v1.28.1 "Holdall" M2 (F-24): the deletion certificate discloses the
+    // ── the deletion certificate discloses the
     // honest physical-purge posture — secure_delete+checkpoint for a
     // strict-posture domain, the disclosed logical posture otherwise.
 
@@ -1834,7 +1956,7 @@ mod tests {
         assert_eq!(count_knowledge(&state, "acme-us"), 0);
     }
 
-    // ── v1.28.1 "Holdall" M3 (F-51): releasing a legal hold unfreezes erasure
+    // ── releasing a legal hold unfreezes erasure
     // mid-litigation — the same DPO/admin dual gate a breach close carries.
     // A `dpo`-role principal releases; a role bundle without the dpo role OR
     // an admin capability is refused even when its SCOPES grant admin.
@@ -1932,7 +2054,7 @@ mod tests {
         assert!(resp["released"].as_bool().unwrap_or(false));
     }
 
-    // ── v1.28.1 "Holdall" M3 (F-51): the Art-30 register row + its audit row
+    // ── the Art-30 register row + its audit row
     // are ONE transaction — a crash between commit and audit cannot leave an
     // unmirrored register entry (and a rollback erases both).
 

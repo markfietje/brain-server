@@ -21,8 +21,7 @@ use crate::AppState;
 pub struct HoldRequest {
     pub ids: Vec<i64>,
     pub reason: String,
-    /// Domain whose pool holds these ids (defaults to `global` — the
-    /// multi-db knob, same resolution as every domain-aware handler).
+    /// Domain whose pool holds these ids (defaults to `global` — the multi-db knob).
     #[serde(default)]
     pub domain: Option<String>,
 }
@@ -35,7 +34,6 @@ pub struct HoldResponse {
 }
 
 /// `POST /legal-hold` — place a hold on the `global` (or `?domain=`) pool.
-/// Composes the shared per-domain hold write (`post_legal_hold_for_domain`).
 pub async fn post_legal_hold(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,

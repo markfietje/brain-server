@@ -131,7 +131,7 @@ pub async fn suggest(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
-// read gate — /suggest returns full chunk content, so it
+    // read gate — /suggest returns full chunk content, so it
     // needs tenant/scope enforcement like any content-returning route (audit
     // S1). Scoped to the actual target domain. `None` (no JWT) = superuser.
     super::authorize(
@@ -289,7 +289,7 @@ pub async fn feedback(
     principal: OptPrincipal,
     Json(req): Json<FeedbackRequest>,
 ) -> Result<Json<FeedbackResponse>, HandlerError> {
-// write gate. `None` (no JWT) = superuser.
+    // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     if !config::brain_suggest_enabled() {
         return Err(HandlerError::internal_with(

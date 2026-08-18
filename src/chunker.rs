@@ -967,7 +967,7 @@ mod tests {
         }
     }
 
-// proper property-based test (replaces the hand-rolled
+    // proper property-based test (replaces the hand-rolled
     // pseudo-fuzz above for the exhaustive case). proptest generates 1000s of
     // random UTF-8 inputs and verifies the chunk byte ranges are valid.
     use proptest::prelude::*;

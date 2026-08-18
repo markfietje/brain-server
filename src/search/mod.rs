@@ -256,7 +256,7 @@ pub struct SearchResult {
     /// Internal provenance label; never serialized.
     #[serde(skip)]
     pub region: Option<String>,
-/// one-shot screen of `content` against the
+    /// one-shot screen of `content` against the
     /// prompt-injection blocklist, computed at construction (`raw`) — the PRF
     /// extractors consume this instead of re-normalizing every hit. Internal;
     /// never serialized.
@@ -276,7 +276,7 @@ fn provenance_is_empty(p: &Provenance) -> bool {
 
 impl SearchResult {
     /// Minimal constructor for a raw retriever hit (no provenance yet).
-/// the blocklist screen runs here — once per hit,
+    /// the blocklist screen runs here — once per hit,
     /// not per consumer.
     pub(crate) fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
         let blocklist_hit = crate::contains_suspicious_pattern(&content);
@@ -415,13 +415,13 @@ impl SearchResult {
                 },
             );
         }
-// one batched evidence-links lookup for the
+        // one batched evidence-links lookup for the
         // whole hit set (was one sqlite_master probe + one query per hit).
         let links_by_chunk = evidence_links_batch_for(conn, &ids).unwrap_or_default();
         for res in results.iter_mut() {
             // Recompute the verbatim window at the bounded size for a consistent
             // `text`, then derive highlight ranges from snippet_q within it.
-// when the caller already attached a
+            // when the caller already attached a
             // snippet for this query, reuse it — identical by construction
             // (same content + same snippet_q inputs to `with_snippet`) — and
             // skip the second lowercase scan + window rebuild.
@@ -477,7 +477,7 @@ impl SearchResult {
                     None
                 };
                 // load typed links this chunk participates in.
-// from the one batched lookup
+                // from the one batched lookup
                 // (was one sqlite_master probe + one query per hit).
                 let links = links_by_chunk.get(&res.id).cloned().unwrap_or_default();
                 res.evidence = Some(Evidence {
@@ -619,7 +619,7 @@ pub struct SearchFilters {
     /// post-fusion on the `SearchSource` tag, never as SQL.
     pub source_leg: Option<LegFilter>,
     /// Multi-source OR scope. Empty = unrestricted.
-/// `Arc` — every hit-enrich callback may touch
+    /// `Arc` — every hit-enrich callback may touch
     /// this; clones of the filter bundle are cell-cheap.
     pub sources: Arc<Vec<String>>,
     /// Validated ISO-8601 timestamp (RFC3339 or `YYYY-MM-DD HH:MM:SS`); rows
@@ -690,14 +690,14 @@ pub struct SearchFilters {
     /// `Some` (list of allowed scopes from the principal) is applied as a
     /// deny-by-default `WHERE access_scope ∈ allowed`. `None` (loopback/
     /// opaque) = no scope restriction (trusts localhost).
-/// `Arc` for cell-cheap filter clones.
+    /// `Arc` for cell-cheap filter clones.
     pub access_scopes: Option<Arc<Vec<String>>>,
     /// record-owner filter (self/reports), JWT + roles mode
     /// only. `Some` (list of `owner` values) is applied as `WHERE k.owner IN
     /// (…)`. `None` (no role, or `all`/`admin` owner_filter) = no owner
     /// restriction. Deny-by-default: a `reports` role with an empty `manages`
     /// claim gets `Some(vec![])` → reads nothing.
-/// `Arc` for cell-cheap filter clones.
+    /// `Arc` for cell-cheap filter clones.
     pub owner_in: Option<Arc<Vec<String>>>,
     /// per-kind retention policy (`kind -> days`) used to
     /// derive a kind-default `expires_at` for chunks with none. Applied at query
@@ -705,7 +705,7 @@ pub struct SearchFilters {
     /// (own `expires_at`, else kind-default from `created_at`) is in the past is
     /// excluded, exactly like a per-chunk `expires_at`. Empty = no kind policy
     /// (the v1.14-only behavior).
-/// `Arc` for cell-cheap filter clones.
+    /// `Arc` for cell-cheap filter clones.
     pub retention_days: Arc<Vec<(String, i64)>>,
 }
 
@@ -1086,7 +1086,7 @@ pub fn prf_extract_terms_fts(
     use std::collections::HashSet;
 
     // Collect rowids of safe (non-flagged, non-blocklist) hits only.
-// the blocklist screen ran once at construction;
+    // the blocklist screen ran once at construction;
     // the flag is read here instead of re-normalizing every hit.
     let safe_ids: Vec<i64> = hits
         .iter()
@@ -1115,7 +1115,7 @@ pub fn prf_extract_terms_fts(
         })
         .collect();
 
-// two narrow vocab queries instead of one
+    // two narrow vocab queries instead of one
     // corpus-wide scan. The pre-E-1 query materialized `corpus` as a full
     // `GROUP BY term` over the ENTIRE vocab table, then JOINed the selected
     // terms into it — the df side cost grew with the corpus, not with the
@@ -1514,7 +1514,7 @@ pub fn vec0_knn(
         sql.push_str(" AND v.created_at > ?");
         params_vec.push(Box::new(since.clone()));
     }
-// exclude quarantined rows from retrieval by default so
+    // exclude quarantined rows from retrieval by default so
     // flagged/prompt-injection content never reaches the agent. Review paths
     // set `include_flagged = true`. Historical mode (as_of) still honors the
     // quarantine boundary unless the caller explicitly opts into flagged rows.
@@ -1538,7 +1538,7 @@ pub fn vec0_knn(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
-// bi-temporal valid-time
+    // bi-temporal valid-time
     // filter. Two modes:
     //   - `at` = None (default recall): exclude EXPIRED chunks only
     //     (valid_to IS NULL). v1.6.0 fix — before this, superseded chunks
@@ -1631,7 +1631,7 @@ fn fts_search(
         sql.push_str(" AND k.created_at > ?");
         params_vec.push(Box::new(since.clone()));
     }
-// exclude quarantined rows from lexical retrieval too.
+    // exclude quarantined rows from lexical retrieval too.
     if !filters.include_flagged {
         sql.push_str(" AND k.flagged = 0");
     }
@@ -1648,7 +1648,7 @@ fn fts_search(
         params_vec.push(Box::new(as_of.clone()));
         params_vec.push(Box::new(as_of.clone()));
     }
-// bi-temporal valid-time filter (see vec0_knn).
+    // bi-temporal valid-time filter (see vec0_knn).
     match &filters.at {
         Some(at) => {
             sql.push_str(
@@ -1840,7 +1840,7 @@ pub fn perform_search_traced(
             let vh = scope.spawn(move || -> Result<(Vec<SearchResult>, f32)> {
                 let conn = vec_pool.get().context("DB connection failed (vector)")?;
                 let t_vec = Instant::now();
-// the per-query `COUNT(*) FROM
+                // the per-query `COUNT(*) FROM
                 // vec_knowledge` probe is replaced by the process-local flag the
                 // migration path stamps (every pooled conn's DB was migrated
                 // in-process). On the impossible "flag set, table absent" case

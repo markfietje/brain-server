@@ -1,29 +1,23 @@
 //! TRACE-style typed edges + validity-aware traversal.
 //!
-//! arXiv:2607.00339 (*TRACE: State-Aware Query Processing over Temporal Evidence
-//! Graphs*) models conversations as a hierarchical graph with typed relations:
-//! temporal, causal, update, contradiction. brain-server adopts the typed-edge
-//! layer of this model on top of the existing `relationships` + `evidence_links`
-//! tables, and makes traversal *validity-aware*: an edge invalidated by a later
-//! `update:`/`supersedes:` edge is skipped at query time.
+//! Models conversations as a hierarchical graph with typed relations (temporal,
+//! causal, update, contradiction) over the existing `relationships` +
+//! `evidence_links` tables. Traversal is validity-aware: an edge invalidated by
+//! a later `update:`/`supersedes:` edge is skipped at query time.
 //!
-//! The key invariant (mirroring Graphiti's `resolve_edge_contradictions`, Context7
-//! 2026-07-30): when a new fact contradicts an older one, the older edge is
-//! *expired* (invalid_at set), not deleted. Retrieval filters by the
-//! bi-temporal window (M1's valid_at/invalid_at); traversal additionally skips
-//! edges that a later same-typed edge has superseded.
+//! Key invariant (mirroring Graphiti's `resolve_edge_contradictions`): when a
+//! new fact contradicts an older one, the older edge is expired (invalid_at
+//! set), not deleted. Retrieval filters by the bi-temporal window; traversal
+//! additionally skips superseded same-typed edges.
 //!
-//! the reserved `update:`/`supersedes:`/`contradicts:`/
-//! `causes:` prefix vocabulary shipped here as `#[allow(dead_code)]` "reserved
-//! for v1.6" — v1.6 shipped and closed without consuming it, so the dead
-//! vocabulary and its tests are gone. What remains is the *used* surface:
-//! `MAX_HOPS`/`MAX_VISITED`, the traversal caps the graph walk enforces.
+//! The reserved `update:`/`supersedes:`/`contradicts:`/`causes:` vocabulary was
+//! removed (v1.6 closed without consuming it). What remains: the *used*
+//! surface, the traversal caps `MAX_HOPS`/`MAX_VISITED`.
 
 #![deny(unsafe_code)]
 
 /// Hard cap on traversal depth (BFS). The forbidden-list rule "unbounded graph
-/// walks" mandates a hard cap; 4 hops covers any realistic multi-hop query
-/// without runaway cost.
+/// walks" mandates it; 4 hops covers any realistic multi-hop query.
 pub const MAX_HOPS: u32 = 4;
 
 /// Hard cap on visited nodes per traversal. Bounds memory + time; a pathological
@@ -36,9 +30,8 @@ mod tests {
 
     #[test]
     fn caps_are_finite() {
-        // Runtime check that the forbidden-list caps are sensible bounds.
-        // (Compile-time enforcement would be ideal but clippy flags const
-        // asserts; the values are small constants reviewed by hand.)
+        // Sense-check the forbidden-list caps (clippy flags const asserts, so
+        // these small constants are reviewed by hand rather than compile-time).
         assert!((1..=8).contains(&MAX_HOPS));
         assert!((1..=1024).contains(&MAX_VISITED));
     }

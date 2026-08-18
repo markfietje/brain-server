@@ -372,7 +372,7 @@ mod tests {
         assert!(cached.contains("real-token"));
     }
 
-/// a poisoned lock must read as
+    /// a poisoned lock must read as
     /// `ReadFailed` (deny at the middleware), never as an empty set
     /// ("auth disabled" → allow-all).
     #[test]

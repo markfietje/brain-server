@@ -1,4 +1,4 @@
-//! v0.9.4 Sources — source lifecycle HTTP handlers.
+//! source lifecycle HTTP handlers.
 //!
 //! - `POST /sources/reconcile`: kind-scoped reconciliation. The caller passes
 //!   the live URI set (typically the files currently on disk under a vault
@@ -33,6 +33,12 @@ pub struct ReconcileRequest {
     /// whose URI is NOT in this set is retired.
     #[serde(default)]
     pub live_uris: Vec<String>,
+    /// Explicit confirmation for the degenerate case: an empty `live_uris`
+    /// retires EVERY active source of the kind and permanently sweeps its
+    /// chunks. Without this flag that request is refused (`live_set_empty`) —
+    /// a lost/failed listing on the caller side must not read as "delete all".
+    #[serde(default)]
+    pub allow_empty: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,7 +61,7 @@ pub async fn reconcile(
     principal: OptPrincipal,
     Json(req): Json<ReconcileRequest>,
 ) -> Result<Json<ReconcileResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let kind = req.kind.trim().to_lowercase();
     if kind.is_empty() {
@@ -75,6 +81,18 @@ pub async fn reconcile(
             serde_json::json!({ "max": MAX_LIVE_URIS, "got": req.live_uris.len() }),
         ));
     }
+    // An empty live set is "nothing survived" — every active source of the
+    // kind gets retired and swept. That is occasionally the truth (a vault
+    // dir really was emptied), but it is indistinguishable on the wire from a
+    // caller whose listing failed, so it must be an explicit decision.
+    if req.live_uris.is_empty() && !req.allow_empty {
+        return Err(HandlerError::bad_request_with(
+            "live_set_empty",
+            "an empty live_uris retires every active source of the kind and \
+             sweeps its chunks; pass allow_empty=true to confirm",
+            serde_json::json!({ "kind": kind }),
+        ));
+    }
     let live: std::collections::HashSet<String> = req.live_uris.iter().cloned().collect();
     let kind_for_db = kind.clone();
     let audit_state = Arc::clone(&state);
@@ -87,7 +105,7 @@ pub async fn reconcile(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
-        // v1.28.1 "Holdall" M1 (F-02): preflight the to-be-swept set inside the
+        // preflight the to-be-swept set inside the
         // same tx — if ANY chunk a reconcile would retire is under an active
         // legal hold, the whole sweep refuses with 409 (the audit exploit:
         // hold a chunk, then `{"live": []}` must not erase it). All-or-nothing,
@@ -111,7 +129,7 @@ pub async fn reconcile(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
-    // v0.9.7 Guard: audit successful reconcile (kind-scoped; no secret URIs).
+    // audit successful reconcile (kind-scoped; no secret URIs).
     if let Ok(conn) = audit_state.pool.get() {
         crate::audit::record(
             &conn,
@@ -137,7 +155,7 @@ pub async fn delete_source(
     principal: OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<DeleteSourceResponse>, HandlerError> {
-    // v1.2.0 M3 AuthZ: write gate. `None` (no JWT) = superuser.
+    // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
 
@@ -148,7 +166,7 @@ pub async fn delete_source(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
-        // v1.28.1 "Holdall" M1 (F-02): a source with any active-held chunk
+        // a source with any active-held chunk
         // refuses deletion (all-or-nothing, matching `/purge`). The operator
         // must release every hold first.
         let chunk_ids = crate::sources::chunk_ids_for_source(&tx, id)
@@ -174,7 +192,7 @@ pub async fn delete_source(
         return Err(HandlerError::not_found(format!("no source with id {id}")));
     }
 
-    // v0.9.7 Guard: audit successful source deletion (id only, never the URI).
+    // audit successful source deletion (id only, never the URI).
     if let Ok(conn) = state.pool.get() {
         crate::audit::record(
             &conn,

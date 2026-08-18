@@ -273,7 +273,7 @@ pub fn find_near_duplicates(
         .collect();
     drop(stmt);
 
-// the KNN statement is hoisted out of the
+    // the KNN statement is hoisted out of the
     // per-chunk loop (was re-prepared once per chunk scanned).
     let mut knn = conn.prepare_cached(
         "SELECT v.knowledge_id, v.distance

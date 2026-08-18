@@ -574,7 +574,7 @@ pub fn operator_signing_key() -> Option<(String, SigningKey)> {
         if !e.path().is_file() {
             return None;
         }
-// the seed is a signing secret —
+        // the seed is a signing secret —
         // same 0600 owner-only enforcement the JWT keys / token file /
         // webhook secret get. A group/world-readable seed would let any local
         // user mint capability tokens; refuse it (fail closed to L2
@@ -713,7 +713,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-// record engine
+    // record engine
     // -----------------------------------------------------------------------
 
     /// M1: `emit_record` ids are content-addressed (§6.2 L2) — deterministic

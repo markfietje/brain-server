@@ -2,61 +2,52 @@
 //!
 //! Replaces "top-k by score" with the July-2026 SOTA: jointly optimize
 //! **relevance**, **coverage**, **representativeness**, and **diversity** under
-//! a *token budget* (not a fixed count). Based on arXiv:2607.00725 (*What
-//! Survives Into Context: submodular evidence packing for multi-hop RAG*).
+//! a *token budget* (not a fixed count). Based on arXiv:2607.00725.
 //!
 //! ## Why submodular
 //!
-//! A function f: 2^V → ℝ is *submodular* if it has diminishing returns: the
-//! marginal gain of adding an element to a set only shrinks as the set grows.
-//! Formally, for A ⊆ B and e ∉ B: f(A ∪ {e}) − f(A) ≥ f(B ∪ {e}) − f(B).
-//!
-//! Monotone submodular maximization under a knapsack (budget) constraint admits
-//! a (1 − 1/e) ≈ 0.632 approximation via greedy (Nemhauser/Wolsey/Fisher 1978).
-//! Leskovec et al. (2007) showed the *lazy greedy* variant exploiting diminishing
-//! returns skips most re-evaluations: maintain a max-heap of upper bounds on
-//! marginal gains; an item's stale bound that still tops the heap is its true
-//! gain (it can only have dropped), so pop-and-emit without recompute.
+//! A function f: 2^V → ℝ is *submodular* with diminishing returns: for A ⊆ B and
+//! e ∉ B, f(A ∪ {e}) − f(A) ≥ f(B ∪ {e}) − f(B). Monotone submodular
+//! maximization under a knapsack constraint admits a (1 − 1/e) ≈ 0.632
+//! approximation via greedy (Nemhauser/Wolsey/Fisher 1978). Leskovec et al.
+//! (2007) showed *lazy greedy* exploiting diminishing returns skips most
+//! re-evaluations: a stale heap bound that still tops the heap is the true gain.
 //!
 //! ## Our objective
 //!
 //! f(S) = α·relevance(S) + β·coverage(S) + γ·representativeness(S) − δ·redundancy(S)
 //!
-//! Each term is normalized to [0,1] over the candidate pool so weights are
-//! commensurable. Weights default to the paper's balance (α=0.4 relevance,
-//! β=0.2 coverage, γ=0.2 representativeness, δ=0.2 diversity); overridable via
-//! `PACKING_WEIGHTS` env (`a,b,c,d` summing to ~1.0). Negation of redundancy
-//! keeps f monotone (adding an item never decreases coverage/relevance, and
-//! the diversity penalty is bounded by the marginal relevance gain on a single
-//! item — empirically monotone on real retrievals; the lazy-greedy bound holds
-//! when the weights keep the combined function monotone, which the defaults do).
+//! Each term normalized to [0,1] over the pool so weights are commensurable.
+//! Defaults to the paper's balance (α=0.4, β=0.2, γ=0.2, δ=0.2); overridable via
+//! `PACKING_WEIGHTS` env (`a,b,c,d` summing to ~1.0). Negating redundancy keeps
+//! f monotone (the diversity penalty is bounded by marginal relevance gain on a
+//! single item — empirically monotone on real retrievals; the lazy-greedy bound
+//! holds when the weights keep f monotone, which the defaults do).
 //!
 //! ## Token budget
 //!
 //! Instead of fixed `k`, the caller supplies `max_context_tokens`. We estimate
-//! tokens ≈ chars/4 (the standard heuristic; matches the paper's hot spot of
-//! ~160 default). Packing stops when the next candidate would overflow.
+//! tokens ≈ chars/4 (standard heuristic; matches the paper's ~160 hot spot).
+//! Packing stops when the next candidate would overflow.
 //!
-//! `answer_in_context` diagnostic: after packing, if a `gold_answer` substring
-//! is supplied, report whether its tokens survived into the packed context —
-//! the paper's regression metric (did the right evidence make the cut?).
+//! `answer_in_context` diagnostic: if a `gold_answer` is supplied, report whether
+//! its tokens survived into the packed context — the paper's regression metric.
 
 #![deny(unsafe_code)]
 
 use crate::search::SearchResult;
 
 /// Chars-per-token estimate. GPT-family tokenizers average ~4 chars/token on
-/// English prose; the static-embedding model's own tokenizer is finer-grained
-/// but this is a budget proxy, not an exact count.
+/// English prose; a budget proxy, not an exact count.
 ///   ponytail: a fixed divisor is O(1) and within ~10% of any tokenizer on
-///   English; a real tokenizer would add a dep + per-call cost. Upgrade path:
-///   plumb the model2vec tokenizer in if measured budgets drift.
+///   English; a real tokenizer adds a dep + per-call cost. Upgrade path: plumb
+///   the model2vec tokenizer in if measured budgets drift.
 pub const CHARS_PER_TOKEN: usize = 4;
 
 /// Default token budget matching the paper's hot-spot (~160 tokens).
 /// ponytail: the recall handler takes `Option<usize>` and only packs when set;
-/// this constant documents the paper's reference default and is the value
-/// `brain query --pack` (M3 CLI) will pass when no explicit budget is given.
+/// this documents the reference default that `brain query --pack` passes when
+/// no explicit budget is given.
 #[allow(dead_code)]
 pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 160;
 
@@ -74,19 +65,17 @@ pub const DEFAULT_WEIGHTS: Weights = Weights {
 ///   already bounded this. A corpus with >64 RRF hits has bigger problems.
 pub const MAX_CANDIDATES: usize = 64;
 
-/// Near-duplicate threshold (MMR-style). A candidate whose maximum Jaccard
-/// similarity to an already-packed item exceeds this is skipped entirely — it
-/// adds no new information regardless of remaining budget. 0.85 ≈ "essentially
-/// the same token set"; tuned to catch verbatim dups + heavy paraphrase without
-/// killing legitimate near-repeats (e.g. two chunks that share boilerplate).
-///   ponytail: Jaccard on lexical tokens is a cheap proxy for semantic dup; a
-///   real embedding-similarity gate would need the model in the packer (adds a
-///   dep + per-call cost for a small win). Upgrade path: plumb the query vector
-///   and use cosine if lexical Jaccard proves too coarse on real corpora.
+/// Near-duplicate threshold (MMR-style). A candidate whose max Jaccard similarity
+/// to an already-packed item exceeds this is skipped — it adds no new info
+/// regardless of budget. 0.85 ≈ "essentially the same token set"; tuned to catch
+/// verbatim dups + heavy paraphrase without killing legit near-repeats.
+///   ponytail: Jaccard on lexical tokens is a cheap dup proxy; a real
+///   embedding-similarity gate would need the model in the packer. Upgrade path:
+///   use cosine if lexical Jaccard proves too coarse on real corpora.
 pub const DEDUP_SIMILARITY: f32 = 0.85;
 
-/// Objective weights. All non-negative; relevance+coverage+representativeness+
-/// diversity should sum to ~1.0 for the lazy-greedy (1-1/e) bound to hold.
+/// Objective weights. All non-negative; the four should sum to ~1.0 for the
+/// lazy-greedy (1-1/e) bound to hold.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Weights {
     pub relevance: f32,
@@ -146,14 +135,14 @@ pub struct PackedResults {
     pub results: Vec<SearchResult>,
     /// Estimated tokens consumed by the packed content.
     pub packed_tokens: usize,
-    /// The budget that was in effect. Diagnostic; reported to callers that
-    /// inspect the packing decision (bench harness, explain).
+    /// The budget that was in effect. Diagnostic for callers that inspect the
+    /// packing decision (bench harness, explain).
     #[allow(dead_code)]
     pub max_context_tokens: usize,
     /// How many candidates were considered (post-cap).
     pub candidates: usize,
     /// If a gold answer was supplied: did its tokens survive into the packed
-    /// context? The paper's regression metric. `None` if no gold was given.
+    /// context? The paper's regression metric. `None` if no gold given.
     pub answer_in_context: Option<bool>,
 }
 
@@ -193,8 +182,8 @@ fn text_covers_term(text: &str, term: &str) -> bool {
 ///
 /// - `candidates`: pre-fused results (typically RRF output), already bounded.
 /// - `query`: the user query (drives relevance + coverage).
-/// - `max_context_tokens`: budget. Items exceeding the remaining budget are
-///   skipped (but a small later item may still fit — we don't stop early).
+/// - `max_context_tokens`: budget. Items exceeding it are skipped, but a small
+///   later item may still fit — we don't stop early.
 /// - `weights`: objective weights.
 /// - `gold_answer`: optional substring; if present, sets `answer_in_context`.
 pub fn pack(
@@ -207,7 +196,6 @@ pub fn pack(
     // Bound the candidate pool (defensive — callers should already cap via RRF).
     candidates.truncate(MAX_CANDIDATES);
     let n = candidates.len();
-
     let subtopics = query_subtopics(query);
     let mut packed: Vec<SearchResult> = Vec::new();
     let mut packed_tokens = 0usize;

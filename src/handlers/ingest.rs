@@ -191,7 +191,7 @@ pub async fn ingest(
         };
 
     if lowered.len() == 1 {
-// was `.next().unwrap()` — trivially safe after
+        // was `.next().unwrap()` — trivially safe after
         // the len==1 guard, but express it without a panic fallback (the lint
         // wall denies unwrap/expect in production).
         let mut lowered = lowered;
@@ -347,7 +347,7 @@ pub(crate) async fn ingest_one(
             crate::ph::ScrapePosture::Quarantine
         );
 
-// trust labels are not client-asserted.
+    // trust labels are not client-asserted.
     // A DIRECT client assert (HTTP `/ingest`, `/proposals` — `ump_meta` is
     // None) must be a real kind, the same strict round-trip the proposal path
     // now enforces — an unknown value must not silently store as `fact`. The
@@ -402,7 +402,7 @@ pub(crate) async fn ingest_one(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
-// write gate at handler entry, scoped to the actual
+    // write gate at handler entry, scoped to the actual
     // target domain (forced, else "global"). Back-compat — `None` principal
     // (no JWT) is superuser.
     let gate_domain = forced_domain.as_deref().unwrap_or("global");
@@ -507,7 +507,7 @@ pub(crate) async fn ingest_one(
         crate::domain_router::route_domain_label(&forced_domain, &embedding, &centroids)
     };
     // Resolve the domain's pool via the registry (shim mode → global pool).
-// registered-only in multi-db — an unregistered label
+    // registered-only in multi-db — an unregistered label
     // 404s (`domain_unknown`); creation happens only in `POST /domains`.
     let pool = state
         .registry
@@ -890,7 +890,7 @@ mod tests {
         assert!(lower_ump(&serde_json::json!({"ump": "1.0", "body": {"text": 42}})).is_err());
     }
 
-/// a strict-posture
+    /// a strict-posture
     /// profile masks PII at the write boundary — the email/phone/card NEVER
     /// reach the store, only the deterministic placeholders (the v1.20.19
     /// "no vault" posture: one-way, no recovery map).
@@ -996,7 +996,7 @@ mod tests {
         assert!(apply_profile_ingest(Some(&sealed), "t".into(), "c".into(), None, None).is_err());
     }
 
-/// an explicit `ttl_days`
+    /// an explicit `ttl_days`
     /// becomes the row's absolute expiry — and an explicit `expires_at` always
     /// wins over a later ttl_days (the row-wins invariant).
     #[test]

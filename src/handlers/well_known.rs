@@ -3,11 +3,10 @@
 //! - `GET /.well-known/openid-configuration` — OIDC Discovery metadata (RFC 8414).
 //! - `GET /.well-known/jwks.json` — JWK Set (RFC 7517) for key distribution.
 //!
-//! Both routes are PUBLIC (no auth) — this is how external clients discover
-//! the server's signing keys + endpoints. The issuer is pinned to
-//! `BRAIN_PUBLIC_BASE_URL` (never inferred from the `Host` header — OWASP
-//! A02:2025 Security Misconfiguration: an attacker who can set the Host
-//! header could otherwise redirect discovery to a malicious endpoint).
+//! Both routes are PUBLIC (no auth) — external clients discover the server's
+//! signing keys + endpoints here. The issuer is pinned to `BRAIN_PUBLIC_BASE_URL`
+//! (never inferred from the `Host` header — OWASP A02:2025: an attacker setting
+//! Host could redirect discovery to a malicious endpoint).
 
 use std::sync::Arc;
 
@@ -20,14 +19,14 @@ use serde::Serialize;
 use crate::auth::jwks::{JwkSet, KeyStore};
 use crate::AppState;
 
-/// `GET /.well-known/openid-configuration`. Returns the OIDC Discovery
-/// metadata. The `jwks_uri` + `issuer` are derived from `BRAIN_PUBLIC_BASE_URL`.
+/// `GET /.well-known/openid-configuration`. Returns OIDC Discovery metadata.
+/// `jwks_uri` + `issuer` derive from `BRAIN_PUBLIC_BASE_URL`.
 pub async fn openid_configuration(State(s): State<Arc<AppState>>) -> Json<OidcConfig> {
     Json(s.oidc_config.clone())
 }
 
-/// `GET /.well-known/jwks.json`. Returns the current signing key set as a
-/// RFC 7517 JWK Set JSON document. Cached in the KeyStore; rebuilt on rotation.
+/// `GET /.well-known/jwks.json`. Returns the current signing key set as an
+/// RFC 7517 JWK Set. Cached in the KeyStore; rebuilt on rotation.
 pub async fn jwks(State(s): State<Arc<AppState>>) -> Response {
     match build_jwks_response(&s.key_store) {
         Ok(resp) => resp,
@@ -44,10 +43,10 @@ pub async fn jwks(State(s): State<Arc<AppState>>) -> Response {
 
 /// `GET /.well-known/security.txt` (RFC 9116). Public/no-auth — the disclosure
 /// endpoint procurement and the EU Cyber Resilience Act look for. `Contact` is
-/// read from `BRAIN_SECURITY_CONTACT` (mailto: or https:// to a private-vuln-
-/// report URL) and omitted when unset, so the operator owns the address.
-/// `Expires` is computed (now + 1 year) so it never goes stale. `Canonical` is
-/// included when `BRAIN_PUBLIC_BASE_URL` is set.
+/// read from `BRAIN_SECURITY_CONTACT` (mailto: or https: to a private-vuln-report
+/// URL) and omitted when unset, so the operator owns the address. `Expires` is
+/// computed (now + 1 year) so it never goes stale. `Canonical` is included when
+/// `BRAIN_PUBLIC_BASE_URL` is set.
 pub async fn security_txt() -> Response {
     let contact = std::env::var("BRAIN_SECURITY_CONTACT")
         .ok()
@@ -74,9 +73,9 @@ pub async fn security_txt() -> Response {
 
 /// `GET /.well-known/ai-notice` (EU AI Act Art 50 transparency). Public/no-auth.
 /// Machine-readable disclosure that this service stores, retrieves, and may
-/// return AI-generated or AI-processed content, so consumers can mark it as
-/// such — the Art 50 model-origin transparency obligation. Version-tagged so
-/// the notice can evolve without breaking consumers.
+/// return AI-generated or AI-processed content — the Art 50 model-origin
+/// transparency obligation. Version-tagged so the notice can evolve without
+/// breaking consumers.
 pub async fn ai_notice() -> Response {
     let body = build_ai_notice();
     (
@@ -110,7 +109,7 @@ pub async fn ai_literacy() -> Response {
 /// `GET /.well-known/cop-notice` (EU AI Act Code of Practice marker).
 /// Public/no-auth sibling of `ai-notice` + `ai-literacy` (v1.16.8).
 /// Machine-readable self-attested conformity state the client's CoP icon lane
-/// renders; declarative only — this asserts posture, not certification.
+/// renders; declarative only — asserts posture, not certification.
 pub async fn cop_notice() -> Response {
     let body = build_cop_notice();
     (
@@ -123,8 +122,8 @@ pub async fn cop_notice() -> Response {
         .into_response()
 }
 
-/// Pure builder for the Art 4 literacy disclosure. Returns a JSON document
-/// pointing at the playbook and enumerating the inspectable controls.
+/// Pure builder for the Art 4 literacy disclosure: a JSON document pointing at
+/// the playbook and enumerating the inspectable controls.
 fn build_ai_literacy() -> String {
     serde_json::json!({
         "schema_version": "1.0",
@@ -157,8 +156,8 @@ fn build_cop_notice() -> String {
     .to_string()
 }
 
-/// Pure builder for the Art 50 transparency notice. Returns a JSON document
-/// describing how this service handles AI-generated content.
+/// Pure builder for the Art 50 transparency notice: a JSON document describing
+/// how this service handles AI-generated content.
 fn build_ai_notice() -> String {
     serde_json::json!({
         "schema_version": "1.0",
@@ -173,7 +172,7 @@ fn build_ai_notice() -> String {
 }
 
 /// Pure builder for the RFC 9116 `security.txt` body. Split out so the field
-/// layout is unit-tested without env/time. `Contact` is emitted only when the
+/// layout is unit-tested without env/time. `Contact` emitted only when the
 /// operator configured an address.
 fn build_security_txt(contact: Option<&str>, expires: &str, canonical: Option<&str>) -> String {
     let mut s = String::from("Expires: ");
@@ -189,17 +188,17 @@ fn build_security_txt(contact: Option<&str>, expires: &str, canonical: Option<&s
 }
 
 /// Build the JWKS HTTP response once, with a long cache header. Clients cache
-/// the key set; the cache header tells them how long. During rotation, the
-/// old key stays in the set until every cached client's token has expired,
-/// so a stale cache can't break verification.
+/// the key set; the header tells them how long. During rotation the old key
+/// stays in the set until every cached client's token has expired, so a stale
+/// cache can't break verification.
 fn build_jwks_response(store: &KeyStore) -> Result<Response, ()> {
     let jwks: JwkSet = store.to_jwks().map_err(|_| ())?;
     let body = serde_json::to_string(&jwks).map_err(|_| ())?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/jwk-set+json"),
-            // 1h cache. RFC 8414 §3.5: clients SHOULD cache discovery; the
-            // same applies to JWKS. Rotation keeps the old key live > cache TTL.
+            // 1h cache. RFC 8414 §3.5: clients SHOULD cache discovery; rotation
+            // keeps the old key live > cache TTL.
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
         body,
@@ -207,8 +206,8 @@ fn build_jwks_response(store: &KeyStore) -> Result<Response, ()> {
         .into_response())
 }
 
-/// The OIDC Discovery metadata. Serialized to JSON as-is. Fields per RFC 8414
-/// + the OIDC Core spec; only the ones brain-server actually supports.
+/// The OIDC Discovery metadata, serialized to JSON as-is. Fields per RFC 8414
+/// + OIDC Core spec; only the ones brain-server actually supports.
 #[derive(Debug, Clone, Serialize)]
 pub struct OidcConfig {
     pub issuer: String,
@@ -223,9 +222,9 @@ pub struct OidcConfig {
 }
 
 impl OidcConfig {
-    /// Build the discovery doc from the public base URL. The base URL must
-    /// be configured explicitly via `BRAIN_PUBLIC_BASE_URL` — never inferred
-    /// from the request (Host header spoofing).
+    /// Build the discovery doc from the public base URL. Must be configured
+    /// explicitly via `BRAIN_PUBLIC_BASE_URL` — never inferred from the request
+    /// (Host header spoofing).
     pub fn build(base_url: &str) -> Self {
         let base = base_url.trim_end_matches('/');
         OidcConfig {
@@ -246,8 +245,8 @@ impl OidcConfig {
     }
 
     /// Placeholder config when JWT is not configured. The discovery endpoint
-    /// still serves something (clients probing for OIDC support get a clear
-    /// "not configured" signal rather than a 404 that looks like a routing bug).
+    /// still serves something — probing clients get a clear "not configured"
+    /// signal rather than a 404 that looks like a routing bug.
     pub fn unconfigured() -> Self {
         OidcConfig {
             issuer: String::new(),

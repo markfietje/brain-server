@@ -184,7 +184,7 @@ pub async fn post_dsar(
     let jur_for_cert = jurisdiction.clone();
     let mech_for_cert = mechanism.clone();
 
-// a DSAR must cover every
+    // a DSAR must cover every
     // registered domain, not just the global pool. In multi-db mode each
     // `brain-<domain>.db` runs its own locate + purge tx; in shim mode the
     // list is exactly the global pool (whose owner query already covers every
@@ -866,7 +866,7 @@ pub(crate) fn purge_stale_dsar_ledger(conn: &rusqlite::Connection, retention_day
         return 0;
     }
     let now = chrono::Utc::now().timestamp();
-// was `.unwrap_or(0)` — a silent failure hid the
+    // was `.unwrap_or(0)` — a silent failure hid the
     // prune; warn instead of pretending.
     match conn.execute(
         "DELETE FROM dsar_requests WHERE status = 'completed' AND completed_at < ?1",
@@ -1096,7 +1096,7 @@ fn run_dsar_pool(
         "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
     };
     if strict && !dry_run && matches!(action, "purge" | "both") {
-// was `let _ =` — a failed secure_delete
+        // was `let _ =` — a failed secure_delete
         // weakens the remanence claim on the certificate; warn, don't certify.
         if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
             tracing::warn!("secure_delete=ON failed for DSAR purge: {e}");
@@ -1237,7 +1237,7 @@ fn run_dsar_pool(
         // semantic owner join (proposals are operator-reviewed candidates, not
         // subject-attributed rows); the review-queue provenance for the subject
         // is intentionally erased with the memory per Art 17.
-// was `let _ =` — a silent failure would leave
+        // was `let _ =` — a silent failure would leave
         // subject PII in a "complete" erasure; propagate (tx rolls back).
         tx.execute(
             "DELETE FROM proposals WHERE content LIKE ?1",
@@ -1271,7 +1271,7 @@ fn run_dsar_pool(
     // not linger there (reuse the integrity.rs import pattern). Best-effort —
     // a checkpoint failure must not fail an otherwise-successful erasure.
     if !dry_run && matches!(action, "purge" | "both") {
-// was `let _ =` — a failed TRUNCATE leaves the
+        // was `let _ =` — a failed TRUNCATE leaves the
         // erased subject's page images in the WAL; warn, never certify silence.
         if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
             tracing::warn!("wal_checkpoint(TRUNCATE) failed after DSAR purge: {e}");
@@ -1431,7 +1431,7 @@ mod tests {
 
     #[test]
     fn ledger_row_is_committed_atomically_with_purge_tx_commit() {
-// the ledger insert used to happen AFTER the
+        // the ledger insert used to happen AFTER the
         // tx.commit() — a crash between the two lost the erasure record. Now
         // the insert rides in the SAME tx as the purge; prove the row exists
         // the moment the tx commits by simulating the handler's sequence.

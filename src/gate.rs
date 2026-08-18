@@ -1,4 +1,4 @@
-//! v1.14.0 "Gate" — write-back gating, decay, and trust surfaces.
+//! write-back gating, decay, and trust surfaces.
 //!
 //! The thread's missing **front door**: today `/ingest/*` writes straight into
 //! long-term memory with no gate, no confidence, no decay, no access scope, and
@@ -201,7 +201,7 @@ pub fn novelty(conn: &Connection, embedding: &[f32]) -> Option<f32> {
 }
 
 /// Deterministic confidence (M3). Base 1.0, each factor is a stored,
-/// v1.18.2 "Transparency" M2: the model-vs-human origin marker. `source` is the
+/// the model-vs-human origin marker. `source` is the
 /// ingest kind; `origin` says who produced the memory. Manual/interactive →
 /// human, auto-capture/assistant (`memory`) → model, bulk import + everything
 /// else → `imported`. The safe fallback is `imported` — never claim human
@@ -257,7 +257,7 @@ pub fn is_decayed(expires_at: Option<i64>, now_unix: i64) -> bool {
     expires_at.is_some_and(|e| e < now_unix)
 }
 
-/// v1.17.1 "Govern" M2: the effective expiry (unix ts) of a chunk. A chunk's own
+/// the effective expiry (unix ts) of a chunk. A chunk's own
 /// `expires_at` always wins; when it's NULL and a per-kind retention policy
 /// applies (`retention_days: kind -> days`), the default expiry is derived from
 /// the chunk's creation unix ts (`created_unix`) — the row's age — so retention
@@ -277,7 +277,7 @@ pub fn effective_expiry(
     Some(created + days * 86_400)
 }
 
-/// v1.17.1 "Govern" M2: the retention reason for a decayed chunk — `per_chunk`
+/// the retention reason for a decayed chunk — `per_chunk`
 /// when its own `expires_at` elapsed, `kind_policy` when the kind-level default
 /// elapsed (no explicit `expires_at`), else `None`. Distinguishes the two decay
 /// sources so `/decayed` can tell an operator *why* a chunk is being retained/
@@ -309,7 +309,7 @@ pub fn has_pii_read(principal: &Option<crate::auth::Principal>) -> bool {
     }
 }
 
-/// v1.14.0 "Gate" M4: output redaction. When `content` was PII-flagged at
+/// output redaction. When `content` was PII-flagged at
 /// ingest AND the principal does not hold `pii:read`, replace every PII span
 /// with a `[redacted:<kind>]` placeholder. Loopback/opaque (`None`) and admin
 /// principals get the full text (trusts localhost, SECURITY.md posture).
@@ -319,7 +319,7 @@ pub fn has_pii_read(principal: &Option<crate::auth::Principal>) -> bool {
 /// the original (patterns may drift). It flags the chunk, not exact offsets —
 /// the deterministic "structural control, not a classifier" posture.
 ///
-/// v1.20.19 "Vault": there is **no** write-time PII placeholder vault. A
+/// there is **no** write-time PII placeholder vault. A
 /// fetchable stored-placeholder → raw-value map would create a personal-data
 /// store to protect, competing with this default-on output redaction which
 /// never persists the plaintext. This heuristic *is* the shipped control.
@@ -343,7 +343,7 @@ pub fn redact_content(
     out
 }
 
-/// v1.20.27 "Cordon": neutralize the EchoLeak markdown exfil class on emitted
+/// neutralize the EchoLeak markdown exfil class on emitted
 /// text. Rewrites `![alt](url)` → `[alt]` and `[text](url)` → `text` so a
 /// recalled chunk cannot carry a remote reference that a downstream markdown
 /// renderer would dereference (image pixel / link referer exfil of surrounding
@@ -360,12 +360,12 @@ pub fn redact_content(
 /// `strip_invisible` so a bidi-wrapped `]` can't defeat the bracket scan after
 /// invisible stripping.
 ///
-/// v1.27.14 "Fencepost2" (M3.7): moved to the shared lib `fence` module (re-export
+/// moved to the shared lib `fence` module (re-export
 /// here) so the MCP binary + CLI use the same single definition. Behavior
 /// unchanged; `sanitize_read` still routes through this exact function.
 pub use brain_server::fence::strip_markdown_refs;
 
-/// v1.20.25 "Consolidate": the read-path output seam. Applies PII redaction
+/// the read-path output seam. Applies PII redaction
 /// (when the row is PII-flagged and the principal holds no `pii:read`) AND the
 /// invisible-Unicode strip (bidi / zero-width / tag-block smuggling) to EVERY
 /// text field a chunk may emit — content, title, snippet, evidence, heading —
@@ -373,18 +373,22 @@ pub use brain_server::fence::strip_markdown_refs;
 /// every field through this, closing the raw-invisible-Unicode gap the v1.20.24
 /// Sweep left on the HTTP JSON boundary. Idempotent; safe where clients re-strip.
 ///
-/// v1.20.27 "Cordon": order is redact (PII spans) → strip_markdown_refs (drop
-/// remote refs) → strip_invisible (bidi/ZW). Markdown stripping runs after PII
-/// redaction and before invisible-Unicode stripping; `redact_content`'s
+/// redact (PII spans) →
+/// strip_invisible (bidi/ZW) → strip_markdown_refs (drop remote refs).
+/// Invisible stripping MUST run first: the ref scanner requires `(` directly
+/// after `]`, so an invisible char between them makes it miss — and a later
+/// invisible strip would then HEAL the construct back into a dereferenceable
+/// ref (`![i]\u{200B}(url)` survived the old order; PoC-pinned). Nothing runs
+/// after the ref strip, so nothing can heal a miss. `redact_content`'s
 /// `[redacted:*]` placeholders carry no following `(...)`, so they pass through
 /// `strip_markdown_refs` untouched (no interaction).
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    brain_server::strip_invisible::strip_invisible(&strip_markdown_refs(&redact_content(
-        s, pii, principal,
-    )))
+    strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
+        &redact_content(s, pii, principal),
+    ))
 }
 
-/// v1.28.5 "Groundwork" (E-12): borrow-preserving variant of [`sanitize_read`].
+/// borrow-preserving variant of [`sanitize_read`].
 /// Returns the input unchanged — zero copies — when every transform is provably
 /// a no-op: no PII layer active, no `[` byte (the markdown-ref strip can only
 /// fire on a construct that contains one), and no invisible chars. Only when a
@@ -418,7 +422,7 @@ pub fn sanitize_read_opt(
     v.map(|s| sanitize_read_cow(&s, pii, principal).into_owned())
 }
 
-/// v1.27.14 "Fencepost2" (M3.1): the single read boundary for stored text. Every
+/// the single read boundary for stored text. Every
 /// field of every response that carries stored content goes through this —
 /// recall, search, get, quarantine, proposals, suggest, UMP, export previews.
 /// Named alias of [`sanitize_read`] so the wiring meta-test (`stored_text_fields_
@@ -427,7 +431,7 @@ pub fn sanitize_stored(s: &str, pii: bool, principal: &Option<crate::auth::Princ
     sanitize_read_cow(s, pii, principal).into_owned()
 }
 
-/// v1.20.1 "Shield" M2(b): PII-screen a reviewer-facing `source_prompt` before
+/// PII-screen a reviewer-facing `source_prompt` before
 /// persist. Only the `[redacted:email]` / `[redacted:phone]` / `[redacted:card]`
 /// form is stored, so a capture trigger containing a forwarded address/number/
 /// card never lands raw in the review queue's provenance. Mirrors the read-path
@@ -516,7 +520,7 @@ fn count_digits(s: &str) -> usize {
     s.bytes().filter(|b| b.is_ascii_digit()).count()
 }
 
-/// v1.20.2 C1: mask Luhn-valid 13–19 digit runs (Visa/Mastercard/Amex/Discover).
+/// mask Luhn-valid 13–19 digit runs (Visa/Mastercard/Amex/Discover).
 /// `scan_pii` already flags these via `has_luhn_card`, but `mask_phone` only
 /// covers 10–15 digits — so 16-digit cards (the most common length) leaked via
 /// `redact_content` and `screen_source_prompt` until this fn was added. We
@@ -678,7 +682,7 @@ mod tests {
         assert_eq!(redact_content("plain text", false, &none), "plain text");
     }
 
-    /// v1.20.1 "Shield" M2(b): a reviewer-facing `source_prompt` is screened at
+    /// a reviewer-facing `source_prompt` is screened at
     /// persist time — only the `[redacted:…]` form is stored, an email/phone
     /// in the capture-trigger text never lands raw in the review queue.
     #[test]
@@ -695,7 +699,7 @@ mod tests {
         );
     }
 
-    /// v1.20.2 C1: a Luhn-valid 16-digit Visa test card must be masked. Before
+    /// a Luhn-valid 16-digit Visa test card must be masked. Before
     /// this fix `mask_phone` (10–15 digits) missed it, so a card in a PII-flagged
     /// chunk leaked via `redact_content` and `screen_source_prompt`. We verify
     /// both the source_prompt screen AND the read-path `redact_content` (the
@@ -815,7 +819,7 @@ mod tests {
         assert!(novelty(&conn, &[0.1, 0.2]).is_none());
     }
 
-    /// v1.17.1 M2: a chunk's own `expires_at` always wins over the kind policy.
+    /// a chunk's own `expires_at` always wins over the kind policy.
     #[test]
     fn effective_expiry_own_expires_at_wins() {
         let policy = std::collections::BTreeMap::from([("fact".to_string(), 365)]);
@@ -829,7 +833,7 @@ mod tests {
         );
     }
 
-    /// v1.17.1 M2: no explicit expiry → the kind-default derives from created_unix.
+    /// no explicit expiry → the kind-default derives from created_unix.
     #[test]
     fn effective_expiry_kind_default_from_creation() {
         let policy = std::collections::BTreeMap::from([("fact".to_string(), 365)]);
@@ -847,7 +851,7 @@ mod tests {
         assert_eq!(effective_expiry(None, None, "fact", &policy), None);
     }
 
-    /// v1.17.1 M2: `/decayed` distinguishes the two decay sources.
+    /// `/decayed` distinguishes the two decay sources.
     #[test]
     fn retention_reason_distinguishes_per_chunk_and_kind_policy() {
         let policy = std::collections::BTreeMap::from([("fact".to_string(), 365)]);
@@ -861,7 +865,7 @@ mod tests {
         assert_eq!(retention_reason(None, None), None);
     }
 
-    /// v1.20.27 "Cordon": the markdown link/image construct is neutralized —
+    /// the markdown link/image construct is neutralized —
     /// `![alt](url)` → `[alt]` (drop `!` + url), `[text](url)` → `text` (drop
     /// brackets + url). Bare prose and labels survive.
     #[test]
@@ -870,7 +874,7 @@ mod tests {
         assert_eq!(strip_markdown_refs(input), "see [logo] and docs");
     }
 
-    /// v1.20.27 "Cordon": false-positive guard. Bare URLs in prose and plain
+    /// false-positive guard. Bare URLs in prose and plain
     /// text pass through unchanged; malformed/unterminated brackets must not
     /// panic and must pass through verbatim.
     #[test]
@@ -885,7 +889,7 @@ mod tests {
         assert_eq!(strip_markdown_refs("![only"), "![only");
     }
 
-    /// v1.20.27 "Cordon": end-to-end through the read seam. A PII-clean chunk
+    /// end-to-end through the read seam. A PII-clean chunk
     /// (pii=false → redact_content passes through) carrying an image-pixel
     /// exfil URL loses the URL but keeps the label and surrounding text.
     #[test]

@@ -1,4 +1,4 @@
-//! v0.9.4 "Sources" — canonical source + revision lifecycle.
+//! canonical source + revision lifecycle.
 //!
 //! A `source` is a stable identity for an external document (a vault file, a
 //! connector doc, …): identified by its canonical `uri` (the file path / URL),
@@ -85,7 +85,7 @@ pub fn upsert_revision(
         .optional()?
     {
         // Refresh observed time on the source even on a no-op revision.
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed refresh silently
+// was `let _ =` — a failed refresh silently
         // misleads the reconcile "last observed" display. Cosmetic: warn.
         if let Err(e) = tx.execute(
             "UPDATE sources SET observed_at = CURRENT_TIMESTAMP WHERE id = ?1",
@@ -132,7 +132,7 @@ pub fn link_chunks(
     Ok(linked)
 }
 
-/// v0.9.8 "Evidence" — temporal authority for a chunk. Source-authority is a
+/// temporal authority for a chunk. Source-authority is a
 /// documented tie-breaker only (M2.4); it is never fed into RRF/BM25 scores.
 /// Defaults chosen so the common ingest kinds are distinguishable without
 /// per-source tuning.
@@ -140,7 +140,7 @@ pub const AUTHORITY_MANUAL: f32 = 1.0;
 pub const AUTHORITY_VAULT: f32 = 0.8;
 // ponytail: connector ingests currently flow through the vault ingest path
 // (they set `source_path`), so they are stamped with AUTHORITY_VAULT today.
-// This constant is reserved for when the connector path is split out (v0.9.9+);
+// This constant is reserved for when the connector path is split out;
 // keep it so the documented authority tiers stay explicit.
 #[allow(dead_code)]
 pub const AUTHORITY_CONNECTOR: f32 = 0.6;
@@ -188,10 +188,34 @@ pub struct ReconcileReport {
 /// disk; anything indexed but no longer on disk is retired.
 ///
 /// Never deletes blindly across kinds — only `kind`-scoped sources are touched,
-/// so reconciling a vault never retire a manual memory.
+/// so reconciling a vault never retires a manual memory.
+pub fn reconcile(
+    tx: &Transaction<'_>,
+    kind: &str,
+    live_uris: &std::collections::HashSet<String>,
+) -> Result<ReconcileReport> {
+    let indexed = orphaned_sources(tx, kind, live_uris)?;
+
+    let mut report = ReconcileReport::default();
+    for (sid, uri) in &indexed {
+        report.orphan_uris.push(uri.clone());
+        report.deleted_chunks += sweep_source_chunks(tx, *sid)?;
+        tx.execute(
+            "UPDATE sources SET state = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![sid],
+        )?;
+        tx.execute(
+            "UPDATE source_revisions SET state = 'tombstoned'\n             WHERE source_id = ?1 AND state = 'active'",
+            params![sid],
+        )?;
+        report.deleted_sources += 1;
+    }
+    Ok(report)
+}
+
 /// Active sources of `kind` absent from `live_uris` — exactly the set a
 /// reconcile WOULD retire. The reconcile handler preflights this set against
-/// legal holds (v1.28.1 M1.2: a held chunk refuses the whole sweep with 409),
+/// legal holds (a held chunk refuses the whole sweep with 409),
 /// and `reconcile` itself re-uses it so both sites share one query.
 pub fn orphaned_sources(
     tx: &Transaction<'_>,
@@ -207,33 +231,6 @@ pub fn orphaned_sources(
         .filter_map(|r| r.ok())
         .filter(|(_, uri)| !live_uris.contains(uri))
         .collect())
-}
-
-pub fn reconcile(
-    tx: &Transaction<'_>,
-    kind: &str,
-    live_uris: &std::collections::HashSet<String>,
-) -> Result<ReconcileReport> {
-    let indexed = orphaned_sources(tx, kind, live_uris)?;
-
-    let mut report = ReconcileReport::default();
-    for (sid, uri) in &indexed {
-        if live_uris.contains(uri) {
-            continue;
-        }
-        report.orphan_uris.push(uri.clone());
-        report.deleted_chunks += sweep_source_chunks(tx, *sid)?;
-        tx.execute(
-            "UPDATE sources SET state = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
-            params![sid],
-        )?;
-        tx.execute(
-            "UPDATE source_revisions SET state = 'tombstoned'\n             WHERE source_id = ?1 AND state = 'active'",
-            params![sid],
-        )?;
-        report.deleted_sources += 1;
-    }
-    Ok(report)
 }
 
 /// Chunk ids belonging to `source_id`. Shared by the erasure guard so a held
@@ -270,43 +267,32 @@ pub fn delete_source(tx: &Transaction<'_>, source_id: i64) -> Result<bool> {
 
 /// Remove every chunk belonging to `source_id` from retrieval: vec0 rows, FTS
 /// rows (via the knowledge_ad trigger), and the knowledge rows themselves.
-/// v1.28.1 "Holdall" M1 (F-02): a chunk under an active legal hold is DEFERRED
-/// (skipped, never deleted) — reconcile retires the source but the frozen chunk
-/// survives, matching the `/purge` hold fence. Returns the number of chunks
-/// actually swept (held chunks are not counted).
+/// A chunk under an active legal hold REFUSES the
+/// sweep. The HTTP handlers preflight with `refuse_if_held` so operators see
+/// the `409 legal_hold_active` envelope; this core guard is the backstop that
+/// keeps a non-HTTP caller from retiring a source and orphaning the frozen
+/// chunk's provenance. A failed vec0 delete propagates (a sweep that leaves an
+/// orphan vector is a partial erasure, not a retirement).
 fn sweep_source_chunks(tx: &Transaction<'_>, source_id: i64) -> Result<usize> {
     let ids = chunk_ids_for_source(tx, source_id)?;
     // Active holds are tiny + partial-index-served; a missing legal_holds table
     // (a unit-test schema) means no holds.
-    let held = match crate::legal_hold::active_hold_ids(tx) {
-        Ok(h) => h,
-        Err(e) if e.inner.code == "internal_error" && is_missing_table(&e.inner.message) => {
-            std::collections::HashSet::new()
-        }
-        Err(e) => {
+    if let Err(e) = crate::legal_hold::refuse_if_held(tx, &ids) {
+        if !(e.inner.code == "internal_error" && is_missing_table(&e.inner.message)) {
             return Err(anyhow::anyhow!(
-                "legal hold check failed: {}",
+                "source {source_id} sweep refused: {}",
                 e.inner.message
-            ))
+            ));
         }
-    };
-    // Rust-side free set — the same hold fence the old inline
-    // `NOT IN (SELECT … FROM legal_holds)` subquery enforced, without
-    // referencing `legal_holds` (a unit-test schema lacks the table, and the
-    // fallback above only guards the `active_hold_ids` call).
-    let free: Vec<i64> = ids
-        .iter()
-        .copied()
-        .filter(|id| !held.contains(id))
-        .collect();
-    for id in &free {
-        let _ = tx.execute(
+    }
+    for id in &ids {
+        tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             params![id],
-        );
+        )?;
     }
     let mut n = 0usize;
-    for id in &free {
+    for id in &ids {
         n += tx.execute("DELETE FROM knowledge WHERE id = ?1", params![id])?;
     }
     Ok(n)
@@ -341,7 +327,7 @@ mod tests {
 
     // Lifecycle vocabulary used by the assertions below. Kept here (not exported)
     // because the production binary only exercises KIND_VAULT today; the other
-    // kinds/states are the documented set the connector layer (v0.9.6) will use.
+    // kinds/states are the documented set the connector layer will use.
     const KIND_MANUAL: &str = "manual";
     const STATE_ACTIVE: &str = "active";
     const STATE_DELETED: &str = "deleted";
@@ -355,7 +341,7 @@ mod tests {
     fn db() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
-            "CREATE TABLE knowledge(\n                id INTEGER PRIMARY KEY,\n                content TEXT,\n                source_id INTEGER,\n                revision_id INTEGER,\n                observed_at TEXT,\n                valid_from TEXT,\n                valid_to TEXT,\n                authority REAL,\n                flagged INTEGER DEFAULT 0\n             );\n             CREATE TABLE sources(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                uri TEXT NOT NULL UNIQUE,\n                kind TEXT NOT NULL DEFAULT 'vault',\n                title TEXT,\n                current_revision_id INTEGER,\n                state TEXT NOT NULL DEFAULT 'active',\n                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n                observed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n             );\n             CREATE TABLE source_revisions(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                source_id INTEGER NOT NULL,\n                revision TEXT NOT NULL,\n                content_hash TEXT,\n                chunk_count INTEGER NOT NULL DEFAULT 0,\n                byte_size INTEGER NOT NULL DEFAULT 0,\n                state TEXT NOT NULL DEFAULT 'active',\n                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE\n             );\n             CREATE UNIQUE INDEX idx_source_revisions_src_rev\n                ON source_revisions(source_id, revision);",
+            "CREATE TABLE knowledge(\n                id INTEGER PRIMARY KEY,\n                content TEXT,\n                source_id INTEGER,\n                revision_id INTEGER,\n                observed_at TEXT,\n                valid_from TEXT,\n                valid_to TEXT,\n                authority REAL,\n                flagged INTEGER DEFAULT 0\n             );\n             CREATE TABLE sources(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                uri TEXT NOT NULL UNIQUE,\n                kind TEXT NOT NULL DEFAULT 'vault',\n                title TEXT,\n                current_revision_id INTEGER,\n                state TEXT NOT NULL DEFAULT 'active',\n                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n                observed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n             );\n             CREATE TABLE source_revisions(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                source_id INTEGER NOT NULL,\n                revision TEXT NOT NULL,\n                content_hash TEXT,\n                chunk_count INTEGER NOT NULL DEFAULT 0,\n                byte_size INTEGER NOT NULL DEFAULT 0,\n                state TEXT NOT NULL DEFAULT 'active',\n                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n                FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE\n             );\n             CREATE TABLE vec_knowledge(\n                knowledge_id INTEGER PRIMARY KEY\n             );\n             CREATE TABLE legal_holds(\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                knowledge_id INTEGER NOT NULL,\n                reason TEXT NOT NULL,\n                held_by TEXT,\n                held_at INTEGER NOT NULL,\n                released_at INTEGER\n             );\n             CREATE UNIQUE INDEX idx_source_revisions_src_rev\n                ON source_revisions(source_id, revision);",
         )
         .unwrap();
         c
@@ -521,7 +507,7 @@ mod tests {
 
     #[test]
     fn slack_reconcile_sweeps_deleted_channel_and_spares_other_kinds() {
-        // v1.24.0 Connectors M3: removing a channel from the allowed list
+        // removing a channel from the allowed list
         // retires that channel's sources via a kind-scoped reconcile — a Slack
         // reconcile never touches a CRM source (kind-scoping is per-connector).
         let mut c = db();
@@ -560,6 +546,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count_active, 2);
+    }
+
+    #[test]
+    fn sweep_refuses_when_a_chunk_is_held() {
+        // the core sweep refuses on an active hold instead of
+        // deferring — retiring the source would orphan the frozen chunk's
+        // provenance. The HTTP preflight owns the 409 envelope; this is the
+        // backstop for any non-HTTP caller.
+        let mut c = db();
+        let tx = c.transaction().unwrap();
+        let sid = upsert_source(&tx, "/v/a.md", KIND_VAULT, None).unwrap();
+        let rid = match upsert_revision(&tx, sid, "r1", None, 1, 10).unwrap() {
+            RevisionOutcome::Created { id, .. } => id,
+            _ => panic!("expected created"),
+        };
+        let cid = chunk(&tx, "evidence");
+        link_chunks(&tx, sid, rid, &[cid]).unwrap();
+        crate::legal_hold::insert_holds(&tx, &[cid], "litigation", Some("dpo"), 1).unwrap();
+
+        let err = delete_source(&tx, sid).unwrap_err();
+        assert!(
+            err.to_string().contains("refused"),
+            "held chunk must refuse the sweep: {err}"
+        );
+        // Nothing was destroyed: chunk + source survive, whole sweep rolled
+        // back by the caller's tx (here we just assert the rows still exist).
+        let chunks: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id = ?1",
+                params![cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunks, 1, "held chunk untouched");
     }
 
     #[test]

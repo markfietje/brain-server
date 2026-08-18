@@ -94,56 +94,56 @@ pub struct RecallRequest {
     /// Retrieval profile hint (passthrough in M1).
     #[serde(default)]
     pub profile: Option<String>,
-    /// v0.9.7 Guard: when true, include quarantined (`flagged`) chunks in the
+    /// when true, include quarantined (`flagged`) chunks in the
     /// results. Operator review path only — the default agent path stays clean.
     #[serde(default)]
     pub include_flagged: bool,
-    /// v0.9.8 "Evidence": point-in-time recall. RFC3339 instant; returns the
+    /// point-in-time recall. RFC3339 instant; returns the
     /// revision current at that time (historical mode). When set, hits are
     /// tagged `lifecycle: "historical"`.
     #[serde(default)]
     pub as_of: Option<String>,
-    /// v0.9.8 "Evidence": include structured `Evidence` (time + lifecycle +
+    /// include structured `Evidence` (time + lifecycle +
     /// links) on every hit even without `provenance`.
     #[serde(default)]
     pub evidence: bool,
-    /// v1.4.0 "Calibrate" M1: bi-temporal valid-time point-in-time filter.
+    /// bi-temporal valid-time point-in-time filter.
     /// RFC3339 or `YYYY-MM-DD` instant; only chunks whose valid-interval
     /// (valid_from, valid_to) contains this instant are returned. Distinct
     /// from `as_of` (transaction-time / revision recall). Graphiti semantics.
     #[serde(default)]
     pub at: Option<String>,
-    /// v1.4.0 "Calibrate" M2: submodular evidence packing token budget. When
+    /// submodular evidence packing token budget. When
     /// set, results are re-ranked by budgeted monotone submodular maximization
     /// (relevance + coverage + representativeness + diversity) and truncated
     /// to fit the budget. Replaces fixed `k` truncation for the packed path.
     #[serde(default)]
     pub max_context_tokens: Option<usize>,
-    /// v1.4.0 "Calibrate" M2: optional gold-answer substring for the
+    /// optional gold-answer substring for the
     /// `answer_in_context` diagnostic (did the gold survive packing?). Reported
     /// in telemetry when `provenance=true`.
     #[serde(default)]
     pub gold_answer: Option<String>,
-    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg.
+    /// enable the graph-PPR retriever as a third RRF leg.
     /// Opt-in; default `false` keeps the two-retriever (vector + FTS) path
     /// unchanged. Deterministic, zero-token, no embeddings.
     #[serde(default)]
     pub graph: bool,
-    /// v1.14.0 "Gate" M2: include decayed chunks (`expires_at` in the past) in
+    /// include decayed chunks (`expires_at` in the past) in
     /// the results, tagged `decayed: true`. Default false — decayed facts are
     /// excluded from current recall (the operator review path opts in).
     #[serde(default)]
     pub include_decayed: bool,
-    /// v1.14.0 "Gate" M3: `memory_kind` filter (fact|procedure|step|decision|
+    /// `memory_kind` filter (fact|procedure|step|decision|
     /// episodic). Restricts retrieval to that `knowledge.node_kind`.
     #[serde(default)]
     pub memory_kind: Option<String>,
-    /// v1.14.0 "Gate" M3: minimum relevance tier (high|medium|low). Drops
+    /// minimum relevance tier (high|medium|low). Drops
     /// lower-tier hits after fusion — the "stop poisoning the context window"
     /// filter, deterministic and zero-token.
     #[serde(default)]
     pub min_relevance: Option<String>,
-    /// v1.15.0 "Observe" M1/M2: when true AND read-event audit is enabled
+    /// when true AND read-event audit is enabled
     /// (JWT mode default), the response includes a `trace_id` (the audit row
     /// id) that `/recall/{trace_id}/trace` can replay. Pure opt-in: without
     /// it the read event (if recorded) is still hash-only and unreplayable.
@@ -155,7 +155,7 @@ fn default_limit() -> u32 {
     DEFAULT_RECALL_LIMIT
 }
 
-/// v1.17.3 "UMP": the shared recall core's return — the tagged (result, domain)
+/// the shared recall core's return — the tagged (result, domain)
 /// pairs plus the decision/telemetry/trace envelope. Each binding (`/recall`,
 /// `/ump/recall`) renders its own hit shape from `tagged`.
 pub(crate) struct RecallOutcome {
@@ -167,7 +167,7 @@ pub(crate) struct RecallOutcome {
     pub primary_domain: String,
 }
 
-/// v1.13.4: optional query-string `?source=` on `POST /recall`. The JSON body
+/// optional query-string `?source=` on `POST /recall`. The JSON body
 /// `source` is primary; this fills the gap when the body omits it and is always
 /// validated (422 on unknown), so a query-string value is never silently
 /// ignored. Parity with `GET /search?source=`.
@@ -179,7 +179,7 @@ pub struct RecallSourceQuery {
 
 /// `POST /recall` — deterministic end-to-end recall.
 ///
-/// v0.9.0 scope: single-DB treated as the `global` domain. Reuses the proven
+/// single-DB treated as the `global` domain. Reuses the proven
 /// `perform_search` path (sqlite-vec int8 KNN with a brute-force fallback,
 /// model2vec local embeddings). Per-domain centroid routing + cross-domain
 /// fallback + hybrid RRF fusion land in v1.0.0 / v0.9.1; the `domain`/
@@ -194,7 +194,7 @@ pub async fn recall(
     source_query: Query<RecallSourceQuery>,
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<RecallResponse>, HandlerError> {
-    // v1.17.3 "UMP": the deterministic pipeline lives in `run_recall` so the
+    // the deterministic pipeline lives in `run_recall` so the
     // HTTP and UMP bindings share one core; only the renderer differs.
     let provenance = req.provenance;
     let include_decayed = req.include_decayed;
@@ -210,12 +210,12 @@ pub async fn recall(
     }))
 }
 
-/// v1.17.3 "UMP": the deterministic recall core shared by `/recall` and
+/// the deterministic recall core shared by `/recall` and
 /// `/ump/recall`. Runs embed → centroid routing → hybrid search → cross-domain
 /// merge → packing → tier filter → calibrated abstention, and records the
 /// optional read-event audit trace. Returns the tagged (result, domain) pairs
 /// so each binding renders its own hit shape.
-/// v1.20.7 "Telemetry" (M1): the recall core emits a `recall` span under
+/// the recall core emits a `recall` span under
 /// `--features otel` carrying decision/count/domain/principal labels + a short
 /// `query_hash` — never the query body (PII rule; see `otel.rs`).
 #[cfg_attr(
@@ -249,7 +249,7 @@ pub(crate) async fn run_recall(
         Some(d) => Some(normalize_domain(d)?),
         None => None,
     };
-    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // AuthZ read gate, scoped to the requested domain.
     // `None` (no JWT) = superuser.
     super::authorize(
         principal,
@@ -289,7 +289,7 @@ pub(crate) async fn run_recall(
             targets.push((d.clone(), p));
         }
         None if !multi_db => {
-            // v1.15.0 M1 hotfix: automatic retrieval routing in shim mode. The
+            // automatic retrieval routing in shim mode. The
             // old code pushed the `global` pool and skipped centroid routing
             // entirely — so after v1.13.0 moved rows into a non-global label,
             // they became unreachable by default recall (a `k.domain='global'`-
@@ -371,7 +371,7 @@ pub(crate) async fn run_recall(
         }
     }
 
-    // v1.27.16 "Drawbridge" (F-05): drop any target the principal may not
+    // drop any target the principal may not
     // read BEFORE a search runs against it. The domain-level authorize above
     // covers the forced/explicit domain only; the federation + centroid
     // branches collect every known domain, and a tenant-scoped principal must
@@ -389,7 +389,7 @@ pub(crate) async fn run_recall(
     }
 
     let k = req.limit as usize;
-    // v1.13.3 "SourceFix" M1 + v1.13.4: parse `source` from the body AND the
+    // parse `source` from the body AND the
     // query string. Ingest-kind values stay SQL equality; retrieval-leg values
     // become a post-fusion filter; "both" is unrestricted. Body `source` wins
     // when both are present; the query string fills in when the body omits it.
@@ -441,7 +441,7 @@ pub(crate) async fn run_recall(
         }
     };
     base_filters.source_leg = source_leg;
-    // v1.14.0 "Gate": decay + memory_kind + min_relevance + access scope.
+    // decay + memory_kind + min_relevance + access scope.
     base_filters.include_decayed = req.include_decayed;
     base_filters.now_unix = chrono::Utc::now().timestamp();
     base_filters.memory_kind = req.memory_kind.as_deref().map(str::to_string);
@@ -456,7 +456,7 @@ pub(crate) async fn run_recall(
     }
     base_filters.access_scopes =
         crate::handlers::gate::scope_filter(principal).map(std::sync::Arc::new);
-    // v1.23.0 "Roles": a JWT principal with a `roles` claim is scoped by its
+    // a JWT principal with a `roles` claim is scoped by its
     // role bundles (narrowed access_scopes + an owner predicate for
     // self/reports). No roles → the v1.14 scope path above applies unchanged.
     // The gate (resolved once, below) also feeds the v1.27.7 "Qa" scope-violation
@@ -466,14 +466,14 @@ pub(crate) async fn run_recall(
         role_restricted = gate.owner_in.is_some();
         crate::handlers::gate::apply_role_gate(&mut base_filters, &gate);
     }
-    // v1.17.1 "Govern" M2: when per-kind retention is enabled, carry the policy
+    // when per-kind retention is enabled, carry the policy
     // into the retriever so chunks whose kind-default expiry has elapsed are
     // excluded from default recall exactly like an explicit `expires_at`.
     if crate::config::brain_retention_enabled() {
         base_filters.retention_days =
             std::sync::Arc::new(crate::config::retention_kind_days().into_iter().collect());
     }
-    // v1.21.0 "Profiles": a bound profile's retention block REPLACES the
+    // a bound profile's retention block REPLACES the
     // server-wide policy for that domain (explicit nulls remove a kind's
     // decay; an empty block = no kind decay at all). One read, before the
     // search closure; an exhausted pool degrades to the server-wide policy
@@ -490,7 +490,7 @@ pub(crate) async fn run_recall(
                 .map(|m| (d.clone(), m.into_iter().collect::<Vec<_>>()))
         })
         .collect();
-    // v1.15.0 "Observe" M1: capture the access-scope decision for the read-event
+    // capture the access-scope decision for the read-event
     // trace before the filters are moved into the search closure.
     let applied_scopes = base_filters.access_scopes.clone();
     let trace_now = base_filters.now_unix;
@@ -499,10 +499,10 @@ pub(crate) async fn run_recall(
         .clone()
         .or_else(|| base_filters.embedding_query.clone())
         .unwrap_or_else(|| query.clone());
-    // v1.4.0 "Calibrate" M2: capture the query for the post-search packing pass
+    // capture the query for the post-search packing pass
     // before `query` is moved into the spawn_blocking closure below.
     let packing_query = query.clone();
-    // v1.15.0 "Observe" M1: capture the query text for the read-event trace
+    // capture the query text for the read-event trace
     // (same reason — the closure consumes `query`).
     let trace_query = query.clone();
     let max_context_tokens = req.max_context_tokens;
@@ -526,7 +526,7 @@ pub(crate) async fn run_recall(
             } else {
                 f.domain = Some(domain.clone());
             }
-            // v1.21.0 "Profiles": the bound profile's retention map is THE
+            // the bound profile's retention map is THE
             // policy for this domain (replaces the server-wide map; an empty
             // map = no kind decay — the smb-simple posture).
             if let Some(days) = profile_retention.get(domain) {
@@ -548,7 +548,7 @@ pub(crate) async fn run_recall(
                         f.as_of.is_some(),
                     );
                 }
-                // v0.9.7 Guard: strip snippet/evidence for flagged hits (after
+                // strip snippet/evidence for flagged hits (after
                 // enrichment) unless the caller opted into flagged rows.
                 for r in &mut rs {
                     crate::suppress_flagged_evidence(r, f.include_flagged);
@@ -568,7 +568,7 @@ pub(crate) async fn run_recall(
         Err(_) => return Err(HandlerError::unavailable("recall timed out")),
     };
 
-    // v1.4.0 "Calibrate" M2: submodular evidence packing. When a token budget
+    // submodular evidence packing. When a token budget
     // is supplied, re-rank the merged results by budgeted monotone submodular
     // maximization (relevance + coverage + representativeness + diversity) and
     // truncate to the budget. Replaces fixed-k truncation for the packed path.
@@ -584,7 +584,7 @@ pub(crate) async fn run_recall(
         tagged = packed.results.into_iter().zip(domains).collect();
     }
 
-    // v1.14.0 "Gate": post-fusion relevance-tier filter (min_relevance drops
+    // post-fusion relevance-tier filter (min_relevance drops
     // low-tier hits — the "poison the context window" ask, zero-token) and
     // decay tagging (include_decayed returns decayed chunks tagged decayed).
     let min_tier = req.min_relevance.clone();
@@ -601,7 +601,7 @@ pub(crate) async fn run_recall(
         .or(routed)
         .unwrap_or_else(|| "global".to_string());
 
-    // v1.5.0 "Epistemic" + v1.12.0 "Discern" – calibrated abstention. The
+    // Calibrated abstention. The
     // existing `HeuristicEstimator` classified this query via overlap + gap +
     // lexical density into a `Recommendation`. When it says `ClarifyQuery`,
     // the retrieval is too weak to support a claim — but v1.12.0 gave the
@@ -615,13 +615,13 @@ pub(crate) async fn run_recall(
     // demonstrated").
     let decision = abstention_decision(tel.recommendation, tagged.is_empty());
 
-    // v1.13.3 "SourceFix" M4: domains of the returned hits, always present
+    // domains of the returned hits, always present
     // (empty array when no hits). Only telemetry stays provenance-gated.
     let mut domains_searched: Vec<String> = tagged.iter().map(|(_, d)| d.clone()).collect();
     domains_searched.sort();
     domains_searched.dedup();
 
-    // v1.27.7 "Qa": a role-restricted agent that searched beyond the global
+    // a role-restricted agent that searched beyond the global
     // perimeter domain crossed a client border — a security event on the
     // established Auth/Denied channel. Best-effort (never fails the recall).
     if crate::qa::scope_violation(role_restricted, &domains_searched) {
@@ -640,12 +640,12 @@ pub(crate) async fn run_recall(
         }
     }
 
-    // v1.15.0 "Observe" M1/M2: emit a read event into the hash-chained audit
+    // emit a read event into the hash-chained audit
     // (opt-in: on in JWT mode, off in loopback, overridable via
     // BRAIN_AUDIT_READ_EVENTS + BRAIN_AUDIT_READ_SAMPLE_RATE). The trace id is
     // surfaced in the response only when `?trace=true`. Best-effort — a failure
     // here must never fail the recall the caller asked for.
-    // v1.21.0 "Profiles": when the env is unset, the primary domain's bound
+    // when the env is unset, the primary domain's bound
     // profile decides (verbose on / minimal off / standard = JWT posture);
     // `/search`, `/get`, `/multi-get` keep the global env posture (ceiling —
     // they are not the decision-path read).
@@ -663,7 +663,7 @@ pub(crate) async fn run_recall(
             let trace_detail = if req.trace {
                 Some(
                     serde_json::json!({
-                        // v1.20.17 M3: the trace records a bounded hash of the
+                        // the trace records a bounded hash of the
                         // query (SHA-256, v1.20.25), never the raw text — a recall query
                         // can itself be personal data of the subject (the DSAR
                         // residue-sweep in observe.rs relies on this too).
@@ -706,7 +706,7 @@ pub(crate) async fn run_recall(
                         // is logged inside the helper.
                         crate::audit::prune_audit_retention(&conn, days);
                     }
-                    // v1.20.17 M1: piggyback the DSAR ledger retention on the
+                    // piggyback the DSAR ledger retention on the
                     // same read-event prune cadence (no dedicated timer).
                     crate::handlers::observe::purge_stale_dsar_ledger(
                         &conn,
@@ -748,7 +748,7 @@ pub(crate) async fn run_recall(
 // Pure helpers (testable without AppState / StaticModel)
 // ---------------------------------------------------------------------------
 
-/// v1.15.0 "Observe" M1: audit actor label for a recall read event — the JWT
+/// audit actor label for a recall read event — the JWT
 /// principal's `sub`, or `loopback` in opaque/no-auth mode.
 pub(crate) fn principal_label(principal: &Option<crate::auth::Principal>) -> String {
     principal
@@ -757,7 +757,7 @@ pub(crate) fn principal_label(principal: &Option<crate::auth::Principal>) -> Str
         .unwrap_or_else(|| "loopback".to_string())
 }
 
-/// v1.15.0 "Observe" M1: audit tenant for a recall read event — the JWT
+/// audit tenant for a recall read event — the JWT
 /// principal's tenant, or the default tenant in opaque/no-auth mode.
 pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> String {
     principal
@@ -766,7 +766,7 @@ pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> St
         .unwrap_or_else(|| crate::audit::DEFAULT_TENANT.to_string())
 }
 
-/// v1.15.0 M1 hotfix: resolve the shim-mode target domains given the
+/// resolve the shim-mode target domains given the
 /// centroid-route result. Pure + deterministic.
 ///
 /// - `Some(d)`, `d != "global"`: `[d, global]` — the routed domain is primary,
@@ -818,7 +818,7 @@ fn results_to_hits(
     results
         .into_iter()
         .map(|(mut r, domain)| {
-            // v1.20.25: every text field the chunk emits goes through the read
+            // every text field the chunk emits goes through the read
             // seam — PII redaction + invisible-Unicode strip — not just `content`.
             let pii = r.pii;
             let evidence = r.evidence.map(|mut e| {
@@ -848,12 +848,16 @@ fn results_to_hits(
                 untrusted: true,
                 conflict,
                 confidence: r.confidence,
-                assertion_kind: r.assertion_kind,
+                // assertion_kind is free text at POST /ingest (no
+                // vocabulary check), ingest_kind is free text via loopback
+                // /add, memory_kind rides the UMP raw_kind round-trip — all
+                // stored text, all through the same read seam.
+                assertion_kind: crate::gate::sanitize_read_opt(r.assertion_kind, pii, principal),
                 relevance: Some(crate::gate::relevance_tier(r.score)),
                 decayed: include_decayed.then(|| crate::gate::is_decayed(r.expires_at, now_unix)),
-                ingest_kind: r.ingest_kind,
-                memory_kind: r.memory_kind,
-                // v1.27.14 "Fencepost2" (M3.5): provenance labels are stored text
+                ingest_kind: crate::gate::sanitize_read_opt(r.ingest_kind, pii, principal),
+                memory_kind: crate::gate::sanitize_read_opt(r.memory_kind, pii, principal),
+                // provenance labels are stored text
                 // (lawful_basis is free-form; region is regex-validated but the
                 // read seam is the uniform control) — run through sanitize.
                 lawful_basis: crate::gate::sanitize_read_opt(r.lawful_basis.take(), pii, principal),
@@ -1371,7 +1375,7 @@ mod tests {
         // Return/RunPrf/RunReranker/IncreaseTopK all map to Ok — they
         // produced (or could produce) usable hits.
         use crate::Recommendation::*;
-        // v1.12.0 "Discern": a graph rescue may have produced hits, so
+        // a graph rescue may have produced hits, so
         // ClarifyQuery + non-empty hits → Ok (never abstain on real results).
         assert_eq!(
             abstention_decision(Some(ClarifyQuery), false),
@@ -1398,7 +1402,7 @@ mod tests {
         );
     }
 
-    /// v1.20.17 M3: the stored recall trace records `query_hash` (SHA-256, v1.20.25),
+    /// the stored recall trace records `query_hash` (SHA-256, v1.20.25),
     /// never the raw query text — a recall query typed by a user is itself
     /// personal data of that subject, and must not linger in the replay
     /// artifact (the DSAR residue sweep relies on this invariant).
@@ -1435,7 +1439,7 @@ mod tests {
         // (which is what record_read_event stores), never the replay artifact.
     }
 
-    /// v1.20.25: the recall read seam (results_to_hits) must strip invisible
+    /// the recall read seam (results_to_hits) must strip invisible
     /// Unicode (bidi / zero-width) AND PII-redact EVERY text field a hit emits —
     /// title, content, snippet, evidence.text, evidence.heading_path — not just
     /// `content`. This closes the gap where title/snippet/evidence rode raw past

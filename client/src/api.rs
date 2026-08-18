@@ -942,12 +942,17 @@ impl ApiClient {
         self.post_empty("/reindex").await
     }
     /// POST /sources/reconcile — retire sources whose URI is no longer live.
+    /// `allow_empty` is the explicit empty-live-set waiver (v1.27.21 N1): the
+    /// server 400s `live_set_empty` without it, because an empty live set
+    /// retires EVERY source of the kind — callers pass `true` only from a
+    /// destructive confirm.
     pub async fn sources_reconcile(
         &self,
         kind: &str,
         live_uris: &[String],
+        allow_empty: bool,
     ) -> Result<ReconcileResult, ApiError> {
-        let body = serde_json::json!({ "kind": kind, "live_uris": live_uris });
+        let body = sources_reconcile_body(kind, live_uris, allow_empty);
         self.post_json("/sources/reconcile", &body).await
     }
     /// DELETE /sources/{id} — retire one source + sweep its chunks.
@@ -1426,6 +1431,21 @@ pub fn parse_footprint(value: &serde_json::Value) -> Option<Footprint> {
 /// accidentally purging is a serialization detail, so it's worth a pin).
 pub fn dsar_preview_body(subject: &str) -> serde_json::Value {
     serde_json::json!({ "subject": subject, "action": "both", "dry_run": true })
+}
+/// v1.27.21 (N1): the `/sources/reconcile` request body builder. Pure so a
+/// wire test can pin the empty-live-set guard: `allow_empty` rides the body
+/// ONLY when true (absent = the server's default `false`, which 400s
+/// `live_set_empty` rather than mass-retiring every source of the kind).
+pub fn sources_reconcile_body(
+    kind: &str,
+    live_uris: &[String],
+    allow_empty: bool,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({ "kind": kind, "live_uris": live_uris });
+    if allow_empty {
+        body["allow_empty"] = serde_json::json!(true);
+    }
+    body
 }
 /// v1.16.0 M5: the deletion-certificate card fields, pulled up from the
 /// raw `{certificate, chain_verifies}` envelope by `from_value`. Not derived
@@ -2973,6 +2993,21 @@ mod tests {
         // The live builder's body has no dry_run key.
         let live = serde_json::json!({ "subject": "a", "action": "both" });
         assert!(live.get("dry_run").is_none());
+    }
+    /// v1.27.21 (N1): the reconcile wire omits `allow_empty` unless the caller
+    /// explicitly waives the empty-live-set guard — a default-false body must
+    /// let the server 400 `live_set_empty` instead of retiring every source.
+    #[test]
+    fn reconcile_body_waives_empty_live_set_only_explicitly() {
+        let guarded = sources_reconcile_body("vault", &[], false);
+        assert_eq!(guarded["kind"], "vault");
+        assert_eq!(guarded["live_uris"], serde_json::json!([]));
+        assert!(
+            guarded.get("allow_empty").is_none(),
+            "absent = server default false = 400 live_set_empty"
+        );
+        let waived = sources_reconcile_body("vault", &[], true);
+        assert_eq!(waived["allow_empty"], serde_json::json!(true));
     }
     /// v1.20.22 M2.1: the `/dsar` ledger page parses with a missing
     /// `completed_at` (an open request) — `#[serde(default)]` timestamps mean

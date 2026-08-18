@@ -47,7 +47,7 @@ fn has_word_boundaries(content: &str, start: usize, end: usize) -> bool {
 #[derive(Default)]
 pub struct EntityVocabulary {
     pub entities: Vec<String>,
-/// sidecar membership set so `insert` is
+    /// sidecar membership set so `insert` is
     /// O(1) instead of a linear `contains` over the (≤ 500) entities — an
     /// adversarial 1 MiB doc with one repeated entity used to cost ~10¹⁰
     /// comparisons at build time.
@@ -365,7 +365,7 @@ impl EntityMatcher {
     }
 
     /// Find mentions with positions (for relationship extraction).
-/// bounded — the per-sentence mention list is
+    /// bounded — the per-sentence mention list is
     /// truncated to [`MAX_MENTIONS_PER_SENTENCE`] after dedup so the O(m²)
     /// pair loops in the relationship paths stay bounded on adversarial
     /// sentences (a 1 MiB line that is one giant "sentence" could otherwise
@@ -393,7 +393,7 @@ impl EntityMatcher {
         deduped
     }
 
-/// dedup overlapping mention ranges. Matches
+    /// dedup overlapping mention ranges. Matches
     /// arrive ordered by start; a kept range's end is strictly increasing (a
     /// candidate is only kept when it is contained in NO previous range,
     /// which for start-ordered input reduces to `end > last kept end`) — so
@@ -1378,7 +1378,7 @@ Ceph maps OSD failures.
         assert!(vocab.entities.len() < 10);
     }
 
-/// a 1 MiB line with ONE entity repeated
+    /// a 1 MiB line with ONE entity repeated
     /// 10⁵× completes fast. The old `insert` ran a linear `contains` per call
     /// (10⁵ × avg 250 ≈ 2.5×10⁷ compares on a half-full vocab) — the sidecar
     /// HashSet makes it O(1). Bounded on time: CI on a loaded runner would
@@ -1404,7 +1404,7 @@ Ceph maps OSD failures.
         assert_eq!(vocab.seen.len(), 2, "sidecar set mirrors the vec");
     }
 
-/// the O(m) running-scan dedup must produce
+    /// the O(m) running-scan dedup must produce
     /// exactly the output of the O(m²) containment scan it replaced. The old
     /// implementation is kept here as the oracle on randomized fixtures:
     /// start-ordered mention ranges, containers, disjoint, and adversarial

@@ -1,24 +1,21 @@
-//! the BPO operating register: one row per operating
-//! client (name, isolation domain, jurisdiction, bound profile, status),
-//! stored in the global DB like the `transfers` register it mirrors. This is
-//! the spine of the BPO arc — every later release (onboard, DPA, DSAR, holds,
-//! termination, QA) reads or extends these rows.
+//! the BPO operating register: one row per operating client (name, isolation
+//! domain, jurisdiction, bound profile, status), stored in the global DB like the
+//! `transfers` register it mirrors — the spine of the BPO arc (every later release
+//! reads/extends these rows).
 //!
-//! Honest framing: this is the **identity/evidence** register only. It does not
-//! gate recall, DSAR, or any enforcement on membership (that is v1.27.x +
-//! v2.x). It records *which* clients the operator serves and under what
-//! jurisdiction — so the DPA/DSAR/hold/termination workflow has a stable
-//! anchor. One domain per client is the isolation seam (separate SQLite pools
-//! since v1.0); `domain` here is the validated label linking a row to that
-//! pool (the domain need not exist until the Onboard release scaffolds it).
+//! Honest framing: the **identity/evidence** register only. It does not gate recall,
+//! DSAR, or any enforcement on membership (that is v1.27.x + v2.x). It records which
+//! clients the operator serves and under what jurisdiction — the stable anchor the
+//! DPA/DSAR/hold/termination workflow needs. One domain per client is the isolation
+//! seam (separate SQLite pools since v1.0); `domain` is the validated label linking a
+//! row to that pool (need not exist until the Onboard release scaffolds it).
 
 use rusqlite::{Connection, Transaction};
 
 use crate::handlers::HandlerError;
 
-/// Art 28 sub-processor terms — the evidence a client's controller checks
-/// before authorizing the BPO. All free-text + bounded; exported as-is.
-/// Honest: these are CONFIG the operator fills, not a signed contract.
+/// Art 28 sub-processor terms — the evidence a controller checks before
+/// authorizing the BPO. Free-text + bounded, exported as-is; CONFIG the operator fills, not a signed contract.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DpaTerms {
     pub retention_on_termination: String,
@@ -43,10 +40,8 @@ pub(crate) struct Client {
     pub archived_at: Option<i64>,
 }
 
-/// Validate a `POST /clients` payload before any write. One error per field,
-/// in order (name → domain → jurisdiction), matching the `transfers`
-/// `validate_register` shape. Reuses the existing domain + jurisdiction
-/// validators — never re-written.
+/// Validate a `POST /clients` payload before any write. One error per field in order
+/// (name → domain → jurisdiction), matching `transfers::validate_register`; reuses the existing validators.
 pub(crate) fn validate_new_client(
     name: &str,
     domain: &str,
@@ -74,10 +69,9 @@ pub(crate) fn validate_new_client(
     Ok(())
 }
 
-/// Insert a client row inside the caller's transaction. `name` is the PK, so a
-/// duplicate is caught by the `ON CONFLICT DO NOTHING` + row-count check →
-/// `conflict` (POST 409). Name + jurisdiction land in their canonical lowercase
-/// form (validation is case-insensitive; storage is the vocabulary).
+/// Insert a client row in the caller's tx. `name` is the PK, so a duplicate is caught
+/// by `ON CONFLICT DO NOTHING` + row-count → `conflict` (409). Name + jurisdiction
+/// land in canonical lowercase (validation is case-insensitive; storage is the vocabulary).
 pub(crate) fn register(
     tx: &Transaction,
     name: &str,
@@ -105,9 +99,8 @@ pub(crate) fn register(
     Ok(())
 }
 
-/// Trust boundary: DPA terms ride out to a client's controller unredacted (Art
-/// 28 evidence), so nothing goes out blank or oversized. Deterministic field
-/// order. One error per field, `dpa_field_invalid`, naming the field.
+/// Trust boundary: DPA terms ride out unredacted (Art 28 evidence), so nothing goes
+/// out blank or oversized. Deterministic order; one error per field, `dpa_field_invalid`.
 pub(crate) fn validate_dpa_terms(t: &DpaTerms) -> Result<(), HandlerError> {
     let fields: [(&str, &str); 6] = [
         ("retention_on_termination", &t.retention_on_termination),
@@ -141,9 +134,8 @@ pub(crate) fn validate_dpa_terms(t: &DpaTerms) -> Result<(), HandlerError> {
     Ok(())
 }
 
-/// Write the terms to the client row inside the caller's tx, scoped `WHERE
-/// name = ?`, returning the affected row count so the handler can 404 on an
-/// unknown client without a second query.
+/// Write the terms to the client row in the caller's tx (`WHERE name = ?`), returning
+/// the affected row count so the handler 404s an unknown client without a second query.
 pub(crate) fn set_dpa_terms(
     tx: &Transaction,
     name: &str,

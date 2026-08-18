@@ -243,7 +243,7 @@ mod tests {
         }
     }
 
-// classify() is monotonic — increasing docs/db/rss never
+    // classify() is monotonic — increasing docs/db/rss never
     // improves the status.
     use proptest::prelude::*;
 

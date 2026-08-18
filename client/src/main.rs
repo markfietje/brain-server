@@ -55,9 +55,17 @@ use i18n::{t, t_fmt};
 /// content may contain invisible Unicode that a server screen let through as
 /// `clean` (the blocklist + classifier strip it for *their* decision, but the
 /// bytes stay verbatim at rest). This strips those invisible chars from
-/// *displayed* content so the operator sees the de-obfuscated form. Mirrors the
-/// server `screen::is_invisible` predicate so render and screen agree. Pure +
-/// idempotent; the raw bytes are never rewritten at rest.
+/// *displayed* content so the operator sees the de-obfuscated form.
+///
+/// Synchronization contract: this is a DELIBERATE COPY of the server lib's
+/// `strip_invisible`/`is_invisible` (src/strip_invisible.rs) — the wasm
+/// bundle cannot link the server crate, so the set is mirrored by hand and
+/// kept in lockstep in the same change (the codepoints below must match the
+/// server's, including the v1.27.14 F-32 additions). The codepoint pins in
+/// `strip_invisible_removes_smuggling_but_keeps_visible_text` below are the
+/// client-side drift alarm; changing the server set means changing this one
+/// in the same PR.
+/// Pure + idempotent; the raw bytes are never rewritten at rest.
 pub(crate) fn strip_invisible(input: &str) -> String {
     input.chars().filter(|&c| !is_invisible(c)).collect()
 }
@@ -66,16 +74,20 @@ pub(crate) fn strip_invisible(input: &str) -> String {
 /// instruction/exfiltration bytes or defeat substring matching.
 fn is_invisible(c: char) -> bool {
     let cp = c as u32;
-    // Tag block (U+E0000–E007F), variation selectors (U+FE00–FE0F), zero-width
+    // Tag block (U+E0000–E007F), variation selectors (U+FE00–FE0F plus the
+    // supplementary range U+E0100–U+E01EF — F-32), zero-width
     // space/non-joiner/joiner + word joiner, the legacy BOM / function +
     // abbreviation + invisible separators / soft hyphen / grapheme joiner, and
-    // the Unicode Bidi_Control set (U+200E/200F, U+202A–202E, U+2066–2069 — the
-    // Trojan Source / W3C TR#20 directional smuggling class).
+    // the Unicode Bidi_Control set (U+200E/200F, U+202A–202E, U+2066–2069,
+    // U+061C ALM — F-32 — the Trojan Source / W3C TR#20 directional
+    // smuggling class).
     (0xE0000..=0xE007F).contains(&cp)
         || (0xFE00..=0xFE0F).contains(&cp)
+        || (0xE0100..=0xE01EF).contains(&cp)
         || (0x200E..=0x200F).contains(&cp)
         || (0x202A..=0x202E).contains(&cp)
         || (0x2066..=0x2069).contains(&cp)
+        || cp == 0x061C
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
 }
@@ -359,7 +371,14 @@ fn app() -> Element {
     // v1.16.8: restore persisted UI prefs (theme / density / locale) on launch.
     // Best-effort (web localStorage; no-op elsewhere); sanitized so a corrupt
     // stored value can never produce an unsupported theme/density/locale.
-    use_future(|| async move {
+    //
+    // v1.27.21 (N15): the restores ride the async eval seam, i.e. they land
+    // AFTER the first render — a de/fr/es/nl operator saw an English first
+    // paint. The router is therefore gated behind a locale-neutral shell
+    // until this future settles (`booted` below).
+    // v1.27.21 (N7): the per-install DSAR salt rides the same restore pass.
+    let mut booted = use_signal(|| false);
+    use_future(move || async move {
         if let Some(v) = i18n::pref_load("theme").await {
             i18n::theme().set(i18n::pick_theme(&v));
         }
@@ -369,6 +388,9 @@ fn app() -> Element {
         if let Some(v) = i18n::pref_load("locale").await {
             i18n::locale().set(i18n::pick_locale(&v));
         }
+        if let Some(v) = i18n::pref_load(queue::SALT_PREF_KEY).await {
+            queue::salt().set(Some(v));
+        }
         // v1.20.0 M3: restore any offline-queued actions (web localStorage).
         if let Some(v) = i18n::pref_load(queue::QUEUE_PREF_KEY).await {
             let items = queue::queue_from_json(&v);
@@ -376,6 +398,7 @@ fn app() -> Element {
                 queue::queue().set(items);
             }
         }
+        booted.set(true);
     });
 
     // v1.16.8 M3/M4/M2: apply theme + density + RTL dir to the document root.
@@ -459,6 +482,11 @@ fn app() -> Element {
     // v1.28.1 M4 (F-34): ONLY the non-destructive actions auto-replay.
     // Destructive ones stay parked in the queue and surface in the review
     // banner (`replay.rs`) — an irreversible op never fires without a human.
+    //
+    // v1.27.21 (N5): a server-ANSWERED failure (not offline, not 404-already-
+    // done) costs the action one of its `MAX_REPLAY_RETRIES` — a persistently
+    // 500-ing action used to re-enqueue and refire forever. Offline failures
+    // stay free: they succeed once the connection is genuinely back.
     let replay_ui = ui;
     use_effect(move || {
         let connected = (replay_ui.conn)() == Conn::Connected;
@@ -483,8 +511,14 @@ fn app() -> Element {
                     Edit { id, content, .. } => api.edit_proposal(*id, content).await.map(|_| ()),
                     Purge { .. } | Dsar { .. } => Ok(()), // never auto-fired
                 };
-                if !queue::replay_applied(&res) {
-                    queue::enqueue(action); // stay queued for the next recovery
+                if queue::replay_applied(&res) {
+                    continue;
+                }
+                match res {
+                    Err(e) if queue::is_offline(&e) => {
+                        queue::enqueue(action); // stay queued, no retry cost
+                    }
+                    _ => queue::requeue_failed(&action), // parks at the cap
                 }
             }
         });
@@ -492,39 +526,45 @@ fn app() -> Element {
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/tailwind.css") }
-        // v1.16.2 "Harden" M4.1: an ErrorBoundary around the router so a panic
-        // in a child panel renders an operator-facing fallback instead of a
-        // blank screen. Errors are Debug-formatted; no sensitive data leaks
-        // (the client holds no secrets beyond the token, which is never in an
-        // error message).
-        ErrorBoundary {
-            handle_error: |errors: ErrorContext| {
-                // M3.1 (v1.27.20): the crash path speaks the current locale —
-                // the strings resolve fresh because `t` subscribes to locale
-                // changes (the fallback panel is a component, not a closure
-                // capturing one render's translations).
-                rsx! {
-                    div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
-                        div { class: "max-w-md",
-                            h1 { class: "text-xl text-danger", {t("err_title")} }
-                            p { class: "text-muted-foreground mt-2",
-                                {t("err_body")}
-                            }
-                            pre { class: "text-xs text-ink-faint mt-4 overflow-auto",
-                                "{errors:?}"
-                            }
-                            // v1.16.2: `clear_errors` drops the pane back to the
-                            // last good route (recovery, not a reload promise).
-                            button {
-                                class: "btn btn-outline btn-sm mt-4",
-                                onclick: move |_| errors.clear_errors(),
-                                {t("err_dismiss")}
+        if booted() {
+            // v1.16.2 "Harden" M4.1: an ErrorBoundary around the router so a panic
+            // in a child panel renders an operator-facing fallback instead of a
+            // blank screen. Errors are Debug-formatted; no sensitive data leaks
+            // (the client holds no secrets beyond the token, which is never in an
+            // error message).
+            ErrorBoundary {
+                handle_error: |errors: ErrorContext| {
+                    // M3.1 (v1.27.20): the crash path speaks the current locale —
+                    // the strings resolve fresh because `t` subscribes to locale
+                    // changes (the fallback panel is a component, not a closure
+                    // capturing one render's translations).
+                    rsx! {
+                        div { class: "min-h-screen flex items-center justify-center bg-background text-foreground p-4",
+                            div { class: "max-w-md",
+                                h1 { class: "text-xl text-danger", {t("err_title")} }
+                                p { class: "text-muted-foreground mt-2",
+                                    {t("err_body")}
+                                }
+                                pre { class: "text-xs text-ink-faint mt-4 overflow-auto",
+                                    "{errors:?}"
+                                }
+                                // v1.16.2: `clear_errors` drops the pane back to the
+                                // last good route (recovery, not a reload promise).
+                                button {
+                                    class: "btn btn-outline btn-sm mt-4",
+                                    onclick: move |_| errors.clear_errors(),
+                                    {t("err_dismiss")}
+                                }
                             }
                         }
                     }
-                }
-            },
-            Router::<Route> {}
+                },
+                Router::<Route> {}
+            }
+        } else {
+            // v1.27.21 (N15): the locale-neutral launch shell — no text, so no
+            // locale can flash before the pref restore settles.
+            div { class: "min-h-screen bg-background" }
         }
     }
 }
@@ -785,7 +825,7 @@ fn Connect() -> Element {
                                 value: "{url}",
                                 oninput: move |e| url.set(e.value()),
                                 placeholder: t("url_placeholder"),
-                                "aria-label": "backend URL",
+                                "aria-label": t("aria_backend_url"),
                             }
                         }
                         if plaintext_http(&url()) {
@@ -803,7 +843,7 @@ fn Connect() -> Element {
                                 value: "{token}",
                                 oninput: move |e| token.set(e.value()),
                                 placeholder: if jwt_pair() { t("token_access_placeholder") } else { t("token_placeholder") },
-                                "aria-label": "auth token",
+                                "aria-label": t("aria_auth_token"),
                             }
                         }
                         // v1.16.5 M4: JWT-pair mode — access + refresh tokens
@@ -829,7 +869,7 @@ fn Connect() -> Element {
                                     value: "{refresh_token}",
                                     oninput: move |e| refresh_token.set(e.value()),
                                     placeholder: t("refresh_token_placeholder"),
-                                    "aria-label": "refresh token",
+                                    "aria-label": t("aria_refresh_token"),
                                 }
                             }
                         }
@@ -1065,7 +1105,7 @@ fn AppShell() -> Element {
             // Fixed sidebar: brand + primary nav + identity footer.
             aside {
                 class: "nav-rail sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card",
-                "aria-label": "primary navigation",
+                "aria-label": t("aria_primary_nav"),
                 div { class: "flex items-center gap-2 border-b border-border px-4 h-14",
                     div { class: "flex size-8 items-center justify-center rounded-md bg-accent/15 text-accent",
                         span { class: "font-mono text-sm font-bold", "b" }
@@ -1135,7 +1175,7 @@ fn AppShell() -> Element {
             // Both surfaces use the same NavLink targets so a11y nav is identical.
             nav {
                 class: "tab-bar",
-                "aria-label": "primary navigation (mobile)",
+                "aria-label": t("aria_primary_nav_mobile"),
                 TabLink { to: Route::Overview {}, "{nav_overview}" }
                 TabLink { to: Route::Review {}, "{nav_review}" }
                 TabLink { to: Route::Recall {}, "{nav_recall}" }
@@ -1167,7 +1207,7 @@ fn AppShell() -> Element {
                 header { class: "sticky top-0 z-10 flex h-14 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur",
                     span {
                         class: "font-mono text-sm",
-                        "aria-label": "connection status",
+                        "aria-label": t("aria_connection_status"),
                         span { class: conn_dot(conn), "●" }
                         " {conn_text}"
                     }
@@ -1908,7 +1948,7 @@ fn Drawer() -> Element {
             class: "drawer",
             role: "dialog",
             "aria-modal": "true",
-            "aria-label": "detail drawer",
+            "aria-label": t("aria_detail_drawer"),
             tabindex: "0",
             onkeydown: move |e: Event<KeyboardData>| {
                 // Esc closes; Tab / Shift+Tab cycle focus within the dialog.
@@ -2378,6 +2418,9 @@ mod tests {
 
     /// v1.20.3 "Classify" (G5) render boundary: the console strips invisible
     /// smuggling chars from displayed content but preserves visible Unicode.
+    /// v1.27.21 (read-seam audit): the F-32 pins — U+061C (ALM) and the
+    /// supplementary variation selectors — guard the copy's sync contract
+    /// with the server lib (this copy had drifted behind exactly these two).
     #[test]
     fn strip_invisible_removes_smuggling_but_keeps_visible_text() {
         for c in [
@@ -2389,10 +2432,14 @@ mod tests {
             '\u{00AD}',
             '\u{E0000}',
             '\u{FE00}',
-            // Bidi controls: LRM, RLO (override), LRI (isolate).
+            // Bidi controls: LRM, RLO (override), LRI (isolate), ALM (F-32).
             '\u{200E}',
             '\u{202E}',
             '\u{2066}',
+            '\u{061C}',
+            // Supplementary variation selectors (F-32): both range ends.
+            '\u{E0100}',
+            '\u{E01EF}',
         ] {
             assert_eq!(
                 strip_invisible(&format!("ig{}nore", c)),

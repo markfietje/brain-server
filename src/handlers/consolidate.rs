@@ -164,7 +164,7 @@ pub async fn apply(
     principal: OptPrincipal,
     Json(req): Json<ApplyRequest>,
 ) -> Result<Json<ApplyResponse>, HandlerError> {
-// write gate. `None` (no JWT) = superuser.
+    // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
     let links = req.links;
@@ -242,7 +242,7 @@ pub async fn undo(
     principal: OptPrincipal,
     Json(req): Json<UndoRequest>,
 ) -> Result<Json<UndoResponse>, HandlerError> {
-// write gate. `None` (no JWT) = superuser.
+    // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let pool = state.pool.clone();
     let chunks = req.old_chunks;

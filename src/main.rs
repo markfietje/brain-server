@@ -42,7 +42,7 @@ use zerocopy::IntoBytes;
 
 use auth::TokenStore;
 use brain_server::audit;
-// v0.9.9 "Qualify" M2.1: `run_migration` + `migrate_down_0_9_0` were extracted
+// `run_migration` + `migrate_down_0_9_0` were extracted
 // to `brain_server::migration` (src/migration.rs) so the `brain-migrate-rehearse`
 // binary can call them via the lib crate. Re-imported here so the server binary
 // and its existing tests work unchanged. `mmap_mib` is now an explicit arg
@@ -75,13 +75,13 @@ mod qa;
 mod search;
 mod temporal;
 mod transfers;
-// v1.20.3 "Classify" (G5): the two-layer injection screen seam.
+// the two-layer injection screen seam.
 mod screen;
 mod sources;
 mod trace;
 mod vault;
 mod webhook;
-// v1.20.7 "Telemetry" (M1): OTLP trace export. Feature-gated so the default
+// OTLP trace export. Feature-gated so the default
 // build compiles none of it (see Cargo.toml `otel` feature).
 #[cfg(feature = "otel")]
 mod otel;
@@ -171,7 +171,7 @@ impl ConnectionTracker {
     }
 }
 
-/// v1.28.5 "Groundwork" (F-53): RAII guard for a [`ConnectionTracker`] slot.
+/// RAII guard for a [`ConnectionTracker`] slot.
 /// The release used to live at the end of each defer-less closure — a
 /// short-circuit `return` inside `spawn_blocking` (or the 60 s timeout
 /// dropping the task mid-flight) leaked the slot until the watchdog noticed.
@@ -200,7 +200,7 @@ struct RateLimiter {
     requests: Mutex<HashMap<String, Vec<Instant>>>,
     max_requests: usize,
     window: StdDuration,
-    /// v1.20.2 D1: bounded memory. When the tracked-IP set would exceed this,
+    /// bounded memory. When the tracked-IP set would exceed this,
     /// the oldest 25% of buckets are evicted. Defeats the spoofed-XFF memory
     /// exhaustion attack.
     max_keys: usize,
@@ -276,7 +276,7 @@ pub fn spawn_connection_watchdog(tracker: std::sync::Arc<ConnectionTracker>) {
     });
 }
 
-/// v1.1.0 Harden M5: RSS watchdog. Polls every `CONNECTION_WATCHDOG_INTERVAL_SECS`
+/// RSS watchdog. Polls every `CONNECTION_WATCHDOG_INTERVAL_SECS`
 /// (reuses the leak-detector cadence — both are "is something stuck" checks).
 /// When process RSS exceeds the active envelope's `max_rss_mib` for two
 /// consecutive samples, logs `error!`. If `BRAIN_RSS_RESTART=1` is set, exits
@@ -337,9 +337,9 @@ struct AppState {
     /// The compiler sees zero direct reads — false positive, required.
     #[allow(dead_code)]
     rate_limiter: Arc<RateLimiter>,
-    /// v1.1.0 Harden M3: last backup+integrity result for `/health`.
+    /// last backup+integrity result for `/health`.
     snapshot: integrity::SnapshotState,
-    /// v1.1.1: TTL-memoized `audit::verify_chain` result for `/metrics`.
+    /// TTL-memoized `audit::verify_chain` result for `/metrics`.
     /// `/audit/verify` always does a fresh full scan (authoritative answer);
     /// `/metrics` reads this cache and refreshes only if older than
     /// `AUDIT_CHAIN_CACHE_TTL`. The cached value is a real verified result —
@@ -348,7 +348,7 @@ struct AppState {
     /// adequate for monitoring; an operator wanting a fresh answer hits
     /// `/audit/verify`.
     audit_chain_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, bool)>>>,
-    // ── v1.2.0 "AuthN" JWT fields ─────────────────────────────────────
+    // ── JWT fields ─────────────────────────────────────
     /// Which auth mode the server resolved at startup. `Opaque` (v1.1 back-
     /// compat, default) or `Jwt` (opt-in via BRAIN_JWT_ISSUER + key dir).
     auth_mode: auth::AuthMode,
@@ -365,16 +365,16 @@ struct AppState {
     /// OIDC discovery metadata (built from BRAIN_PUBLIC_BASE_URL). Served at
     /// `/.well-known/openid-configuration`. Empty placeholder when JWT is off.
     oidc_config: handlers::well_known::OidcConfig,
-    /// v1.17.3 "UMP" M2: `GET /ump/subscribe` SSE change events (`{kind, id}` —
+    /// `GET /ump/subscribe` SSE change events (`{kind, id}` —
     /// never record bodies). Published by remember/revise/forget.
     ump_events: tokio::sync::broadcast::Sender<serde_json::Value>,
-    /// v1.20.8 "Signal": `GET /events` SSE live alert feed (`{kind, ts, seq,
+    /// `GET /events` SSE live alert feed (`{kind, ts, seq,
     /// payload}` — never content/PII). Published by the four decision cores.
     alert_events: tokio::sync::broadcast::Sender<serde_json::Value>,
-    /// v1.20.8 "Signal": monotonic alert sequence (the webhook delivery-id
+    /// monotonic alert sequence (the webhook delivery-id
     /// source + the receiver's idempotency key).
     alert_seq: std::sync::atomic::AtomicU64,
-    /// v1.20.10 "Proof": cached audit-chain posture from the integrity watcher.
+    /// cached audit-chain posture from the integrity watcher.
     /// Written by `alert::spawn_chain_watcher`; read by `/health` so the
     /// tamper-evident posture is visible without an on-demand full scan.
     chain_watch: alert::ChainWatchState,
@@ -411,23 +411,23 @@ struct SearchParams {
     /// When set, include per-stage telemetry + the query plan in the response.
     #[serde(default)]
     explain: bool,
-    /// v0.9.7 Guard: include quarantined (`flagged`) chunks in results.
+    /// include quarantined (`flagged`) chunks in results.
     #[serde(default)]
     include_flagged: bool,
-    /// v0.9.8 "Evidence": point-in-time recall. RFC3339 instant; returns the
+    /// point-in-time recall. RFC3339 instant; returns the
     /// revision current at that time (historical mode).
     #[serde(default)]
     as_of: Option<String>,
-    /// v0.9.8 "Evidence": include structured `Evidence` (time + lifecycle +
+    /// include structured `Evidence` (time + lifecycle +
     /// links) on every hit.
     #[serde(default)]
     evidence: bool,
-    /// v1.0.0 "Domains": target domain. When set, search is scoped to this
+    /// target domain. When set, search is scoped to this
     /// domain's pool (multi-db mode) or filtered by the `domain` column (shim
     /// mode). Falls back to "global" when absent.
     #[serde(default)]
     domain: Option<String>,
-    /// v1.11.0 "Associate": enable the graph-PPR retriever as a third RRF leg.
+    /// enable the graph-PPR retriever as a third RRF leg.
     /// Opt-in; default `false` keeps the two-retriever path unchanged.
     #[serde(default)]
     graph: bool,
@@ -442,7 +442,7 @@ struct AddRequest {
     source: String,
 }
 
-/// v1.27.16 "Drawbridge" (M4.3/F-33): the closed `/add` `source` vocabulary for
+/// the closed `/add` `source` vocabulary for
 /// JWT (agent) principals. Values match what `knowledge.source` stores — the
 /// search vocabulary (memory|markdown|structured|vault, `search::query::
 /// INGEST_KINDS`) plus the connector family kinds mapped from the shipped
@@ -472,14 +472,14 @@ struct AddResponse {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     chunk_id: Option<i64>,
-    /// v1.13.3 "SourceFix" M3: every real inserted rowid from this request
+    /// every real inserted rowid from this request
     /// (empty for the single-chunk `/add` path and for no-op/duplicate runs).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     chunk_ids: Vec<i64>,
-    /// v1.13.3 "SourceFix" M3: count of chunks actually inserted.
+    /// count of chunks actually inserted.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     entries_added: Option<i64>,
-    /// v1.13.3 "SourceFix" M3: count of dedup-skipped entries.
+    /// count of dedup-skipped entries.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     duplicates_skipped: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -510,7 +510,7 @@ enum EmbeddingsInput {
     Batch(Vec<String>),
 }
 
-/// v1.20.2 D4: cap on `/v1/embeddings` batch size. Bounds the response
+/// cap on `/v1/embeddings` batch size. Bounds the response
 /// amplification (each input → 256 floats × 4 bytes in the buffered JSON).
 /// 64 is the OpenAI default; matches the upstream contract.
 const MAX_EMBEDDING_BATCH: usize = 64;
@@ -549,7 +549,7 @@ fn default_model() -> String {
 struct MarkdownPayload {
     content: String,
     title: Option<String>,
-    /// v0.9.2: absolute file path for vault ingest provenance. When set, the
+    /// absolute file path for vault ingest provenance. When set, the
     /// server treats this as a vault file: dedup + replace are scoped to this
     /// path, and frontmatter/wikilinks are parsed into the knowledge graph.
     #[serde(default)]
@@ -572,7 +572,7 @@ struct RelationsQuery {
     to: Option<String>,
 }
 
-/// v1.20.18 "Bound": graph endpoints read a `?limit=` that is clamped to
+/// graph endpoints read a `?limit=` that is clamped to
 /// `MAX_GRAPH_EDGES` (bounded output on the operator Graph surface).
 #[derive(Deserialize)]
 struct GraphLimit {
@@ -587,22 +587,22 @@ struct TraverseQuery {
     #[serde(alias = "name", alias = "entity")]
     start: Option<String>,
     max_depth: Option<u8>,
-    /// v1.0.0 M3: when true, walk edges across every known domain pool
+    /// when true, walk edges across every known domain pool
     /// (labelled per hop). When false (default) the resolved domain only.
     #[serde(default)]
     cross_domain: bool,
-    /// v1.4.0 "Calibrate" M1: bi-temporal point-in-time traversal. RFC3339 or
+    /// bi-temporal point-in-time traversal. RFC3339 or
     /// `YYYY-MM-DD`; edges whose valid-interval (valid_at, invalid_at) does
     /// NOT contain this instant are skipped (Graphiti semantics).
     #[serde(default)]
     at: Option<String>,
-    /// v1.7.0 "Explain": restrict the walk to edges whose `relation_type`
+    /// restrict the walk to edges whose `relation_type`
     /// matches this value (exact match) or prefix (if it ends with `:`,
     /// e.g. `causes:` for the causal subgraph). Empty/absent = walk all
     /// edge types. Opt-in filter — does not claim causality.
     #[serde(default)]
     kind: Option<String>,
-    /// v1.7.0 "Explain": when true, the response includes a `paths` array
+    /// when true, the response includes a `paths` array
     /// with structured per-hop explanations (from_entity, relation, to_entity,
     /// valid_at, invalid_at). The flat `traversal` array stays for back-compat.
     #[serde(default)]
@@ -613,13 +613,13 @@ struct TraverseQuery {
 pub enum AppError {
     BadRequest(&'static str),
     NotFound(&'static str),
-    /// v0.9.9 "Qualify": HTTP 507 — over capacity envelope.
+    /// HTTP 507 — over capacity envelope.
     InsufficientStorage(String),
-    /// v1.11.0 "Associate": HTTP 403 — AuthZ gate (audit G1). The legacy
+    /// HTTP 403 — AuthZ gate (audit G1). The legacy
     /// main.rs write handlers use `AppError`, so the JWT AuthZ gate needs a
     /// 403 channel here (the modern `HandlerError` paths already have one).
     Forbidden(String),
-    /// v1.28.1 "Holdall": HTTP 409 — an erasure refused by an active legal
+    /// HTTP 409 — an erasure refused by an active legal
     /// hold (the quarantine delete path runs on the legacy `AppError` type).
     Conflict(String),
     Internal(String),
@@ -646,7 +646,7 @@ impl axum::response::IntoResponse for AppError {
     }
 }
 
-/// v0.9.9 "Qualify": capacity guard for the main.rs ingest handlers that use
+/// capacity guard for the main.rs ingest handlers that use
 /// `AppError` (the legacy `/add` + `/ingest/memory`). Returns
 /// `AppError::InsufficientStorage` when the envelope is exceeded. Best-effort:
 /// fails open if the pool or measurement errors. Mirrors
@@ -683,7 +683,7 @@ async fn add_chunk(
     principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<AddRequest>,
 ) -> Json<AddResponse> {
-    // v1.11.0 "Associate" (audit G1): AuthZ write gate. `/add` is the legacy
+    // AuthZ write gate. `/add` is the legacy
     // path — we return its existing `{ success: false, error }` shape rather
     // than a real 403 so the response stays shape-compatible (mirrors the
     // capacity-guard choice below). `None` principal (no JWT) = superuser.
@@ -692,7 +692,7 @@ async fn add_chunk(
     {
         return Json(AddResponse::error(e.inner.message));
     }
-    // v0.9.9: capacity guard. `/add` is the legacy path; we return its existing
+    // capacity guard. `/add` is the legacy path; we return its existing
     // `{ success: false, error }` shape rather than an HTTP 507 so the
     // response stays shape-compatible. The primary paths (`/ingest`,
     // `/ingest/markdown`) return a proper 507 via HandlerError.
@@ -700,14 +700,14 @@ async fn add_chunk(
         return Json(AddResponse::error(msg));
     }
 
-    // v1.13.6 "Hygiene": strip reasoning/trace blocks from the raw text before
+    // strip reasoning/trace blocks from the raw text before
     // it is embedded/stored (manual `/add` is single explicit text, so the
     // skip-pattern drop is not applied here — that's for batch `/ingest/memory`).
     let text = hygiene::strip_reasoning_blocks(req.text.trim());
     if text.trim().is_empty() {
         return Json(AddResponse::error("text cannot be empty"));
     }
-    // v1.27.16 "Drawbridge" (M4.3/F-33): `source` is a trust label, not a
+    // `source` is a trust label, not a
     // free-form field. For a JWT (agent) principal the vocabulary is closed —
     // and deliberately EXCLUDES `manual` (the `origin:human` marker,
     // `gate::origin_for_source`): an agent cannot forge human authorship.
@@ -721,7 +721,7 @@ async fn add_chunk(
             ADD_SOURCES_FOR_JWT.join("|")
         )));
     }
-    // v1.20.2 E3: enforce MAX_CONTENT on the legacy /add path too (its siblings
+    // enforce MAX_CONTENT on the legacy /add path too (its siblings
     // /ingest + /ingest/memory + /ingest/markdown all do). Previously /add
     // relied only on the global MAX_REQUEST_SIZE body limit, which is slightly
     // larger — inconsistent + wrong if the body is split across fields.
@@ -732,7 +732,7 @@ async fn add_chunk(
         )));
     }
 
-    // v0.9.7 Guard: injection screen. v1.20.3 (G5): now the full two-layer
+    // injection screen. v1.20.3 (G5): now the full two-layer
     // screen ([`screen::screen`] = blocklist + optional classifier). `Reject`
     // keeps the old HTTP-400 shape; `Quarantine` ingests then flags post-insert;
     // `Allow` disables the screen. The screen runs inside the blocking closure
@@ -740,7 +740,7 @@ async fn add_chunk(
     let model = Arc::clone(&s.model);
     let pool = s.pool.clone();
     let title = req.title.filter(|t| !t.is_empty());
-    // v1.17.1: record the creating principal (JWT `sub`) so `/dsar` + `/purge`
+    // record the creating principal (JWT `sub`) so `/dsar` + `/purge`
     // can locate by subject. `None` (loopback/opaque) keeps the legacy NULL.
     let owner = crate::handlers::gate::principal_to_owner(&principal.0);
 
@@ -809,7 +809,7 @@ async fn add_chunk(
 
         let chunk_id = tx.last_insert_rowid();
         if chunk_id > 0 {
-            // ── v0.9.0: store quantized vectors in vec0 (int8 + binary) ────
+            // ── store quantized vectors in vec0 (int8 + binary) ────
             if let Err(e) = tx.execute(
                 "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
                  VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), ?3, datetime('now'))",
@@ -818,7 +818,7 @@ async fn add_chunk(
                 return AddResponse::error(format!("vec0 insert failed: {}", e));
             }
 
-            // v0.9.0 DoD: raw f32 vectors are no longer written to the legacy
+            // raw f32 vectors are no longer written to the legacy
             // `embeddings` JSON column. vec0 (int8 + binary) is the sole write
             // target. The `embeddings` table is retained read-only for one-time
             // backfill of pre-v0.9.0 DBs (see run_migration).
@@ -827,16 +827,16 @@ async fn add_chunk(
                 return AddResponse::error(format!("Commit failed: {}", e));
             }
 
-            // v0.9.7 Guard: under Quarantine policy, flag the just-inserted row
+            // under Quarantine policy, flag the just-inserted row
             // (post-commit UPDATE) so it is stored but excluded from retrieval.
-            // v1.27.14 "Fencepost2" (M4): fail closed — a requested flag write
+            // fail closed — a requested flag write
             // that failed surfaces as an ingest error rather than silently
             // leaving an injection hit cleanly retrievable.
             if let Err(e) = flag_if_quarantined(&conn, chunk_id, quarantine) {
                 return AddResponse::error(format!("quarantine flag failed: {e}"));
             }
 
-            // v0.9.7 Guard: audit successful ingest (hash only, never raw text).
+            // audit successful ingest (hash only, never raw text).
             audit::record(
                 &conn,
                 audit::AuditKind::Ingest,
@@ -869,8 +869,8 @@ async fn search(
     principal: crate::handlers::auth::OptPrincipal,
     Query(p): Query<SearchParams>,
 ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
-    // v1.12.1 "Harden": AuthZ read gate. Legacy shape — see `/add`.
-    // v1.27.16 "Drawbridge" (F-04): the gate must match the pool the query
+    // AuthZ read gate. Legacy shape — see `/add`.
+    // the gate must match the pool the query
     // actually runs against (`p.domain`, defaulting to the caller's tenant
     // domain) — authorizing `global` while querying a foreign pool let a
     // tenant-scoped principal read by name. `None` principal (loopback/
@@ -904,7 +904,7 @@ async fn search(
             })),
         );
     }
-    // v1.13.3 "SourceFix" M1: parse `source` once. Ingest-kind → SQL equality;
+    // parse `source` once. Ingest-kind → SQL equality;
     // retrieval-leg → post-fusion filter; "both"/omitted → unrestricted. Unknown
     // values get HTTP 422 before any DB/embed work (the one place this legacy
     // 200-envelope endpoint fails loud, matching `POST /recall`).
@@ -926,8 +926,18 @@ async fn search(
 
     // Lower the legacy GET params into the v0.9.5 structured QueryDoc. The old
     // raw `lex` string maps to LexSpec.terms (now FTS5-quoted, strictly safer).
+    // The domain label the authorize already validated must also SCOPE the
+    // query: in shim mode the pool is shared by every tenant, so without the
+    // SQL predicate a `read:<t>/global` principal would rank other tenants'
+    // rows. Multi-db mirrors /recall: the pool IS the domain, drop the label.
+    let doc_domain = if s.registry.is_multi_db() {
+        None
+    } else {
+        Some(p.domain.clone().unwrap_or_else(|| "global".to_string()))
+    };
     let mut doc = QueryDoc {
         q: Some(q.clone()),
+        domain: doc_domain,
         k: p.k.map(|k| k as u32),
         source: source_kind,
         sources: p
@@ -969,7 +979,7 @@ async fn search(
     filters.source_leg = source_leg;
 
     let model = Arc::clone(&s.model);
-    // v1.0.0: resolve pool from domain param (defaults to global).
+    // resolve pool from domain param (defaults to global).
     let pool = match handlers::resolve_domain_pool(&s.registry, p.domain.as_deref()) {
         Ok(p) => p,
         Err(e) => {
@@ -1014,17 +1024,17 @@ async fn search(
                     );
                 }
 
-                // v0.9.7 Guard: strip snippet/evidence for flagged hits (after
+                // strip snippet/evidence for flagged hits (after
                 // enrichment, which would otherwise re-populate evidence) unless the
                 // request opted into flagged rows (operator review path).
                 for r in &mut results {
                     suppress_flagged_evidence(r, filters.include_flagged);
                 }
 
-                // v1.20.24 "Sweep": PII read-projection uniformity — the same
+                // PII read-projection uniformity — the same
                 // `redact_content` gate /recall applies, now on the legacy
                 // search surface (loopback/opaque principals stay unmasked).
-                // v1.27.14 "Fencepost2" (M3.3): upgrade the search surface from
+                // upgrade the search surface from
                 // content-only redaction to the full read seam over every stored
                 // text field (content, title, snippet, evidence.text/heading) —
                 // the same bidi/ZW/markdown-ref boundary `/recall` uses.
@@ -1045,7 +1055,7 @@ async fn search(
                     }
                 }
 
-                // v1.15.0 "Observe" M1: read-event audit for search reads
+                // read-event audit for search reads
                 // (best-effort, never fails the search the caller asked for).
                 if crate::config::audit_read_events(principal.0.is_some()) {
                     if let Ok(conn) = s.pool.get() {
@@ -1129,7 +1139,7 @@ async fn ingest_memory(
     principal: crate::handlers::auth::OptPrincipal,
     body: Body,
 ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
-    // v1.28.5 "Groundwork" (F-45): the legacy always-200 JSON-error shell gains
+    // the legacy always-200 JSON-error shell gains
     // two real 4xx rejections for entries that would previously be silently
     // stored or mis-reported; every existing wire shape is unchanged.
     fn error_json(
@@ -1141,7 +1151,7 @@ async fn ingest_memory(
             Json(serde_json::json!({ "success": false, "status": status, "message": message })),
         )
     }
-    // v1.11.0 "Associate" (audit G1): AuthZ write gate. Legacy shape — see
+    // AuthZ write gate. Legacy shape — see
     // `/add`. `None` principal (no JWT) = superuser.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
@@ -1188,7 +1198,7 @@ async fn ingest_memory(
         return error_json("error", "Empty content");
     }
 
-    // v0.9.9: capacity guard. `/ingest/memory` returns the legacy JSON shape;
+    // capacity guard. `/ingest/memory` returns the legacy JSON shape;
     // the primary `/ingest` path returns a proper 507.
     if let Err(AppError::InsufficientStorage(msg)) = guard_capacity(&s) {
         return error_json("error", &msg);
@@ -1197,10 +1207,10 @@ async fn ingest_memory(
     let model = Arc::clone(&s.model);
     let pool = s.pool.clone();
     let tracker = std::sync::Arc::clone(&s.connection_tracker);
-    // v1.17.1: record the creating principal (see add_chunk).
+    // record the creating principal (see add_chunk).
     let owner = crate::handlers::gate::principal_to_owner(&principal.0);
 
-    // v1.28.5 "Groundwork" (F-45): the two rejections the closure can raise
+    // the two rejections the closure can raise
     // before any write happens. Everything else keeps the legacy wire shape.
     #[derive(Debug)]
     enum MemoryReject {
@@ -1234,7 +1244,7 @@ async fn ingest_memory(
 
         let mut added = 0;
         let mut duplicates = 0;
-        // v1.13.3 "SourceFix" M3: capture the real inserted rowids so the
+        // capture the real inserted rowids so the
         // response can name what it just wrote (the old `entry_id` was the
         // COUNT of added rows — useless for delete/verify round-trips).
         let mut chunk_ids: Vec<i64> = Vec::new();
@@ -1260,7 +1270,7 @@ async fn ingest_memory(
                 continue;
             }
 
-            // v0.9.4: prep source/revision identity for this entry before the
+            // prep source/revision identity for this entry before the
             // transaction opens. URI is `manual://{content_hash}` so each
             // distinct memory is its own source (no PII in the URI; stable
             // across re-ingests of the same content). Kind = 'manual' keeps
@@ -1269,7 +1279,7 @@ async fn ingest_memory(
             let revision = sources::compute_revision(&text);
             let title_for_source = title.clone();
             let text_len = text.len();
-            // v1.20.3 (G5): screen each memory entry through the full two-layer
+            // screen each memory entry through the full two-layer
             // screen. Memory keeps its "trusted local write surface" contract —
             // never dropped, but injection-y content is flagged out of
             // retrieval. A `Quarantine` verdict flags the row; a `Reject`
@@ -1302,9 +1312,9 @@ async fn ingest_memory(
 
             let chunk_id = tx.last_insert_rowid();
             if chunk_id > 0 {
-                // v0.9.0: write to vec0 (int8 + binary quantized). DoD: no raw
+                // write to vec0 (int8 + binary quantized). DoD: no raw
                 // f32 JSON is written to the legacy `embeddings` column.
-                // v1.27.19 "Scrub" (D-1): propagate — a chunk stored without
+                // propagate — a chunk stored without
                 // its vector is silently degraded (FTS-only retrieval with no
                 // embedding to fuse). The entry is skipped, never half-stored.
                 if tx
@@ -1318,7 +1328,7 @@ async fn ingest_memory(
                     continue;
                 }
 
-                // v0.9.4: link this memory to its source + revision. Best-effort
+                // link this memory to its source + revision. Best-effort
                 // inside the tx — a failure here rolls back the whole entry (the
                 // chunk INSERT + vec0 INSERT), preserving the invariant that a
                 // visible memory always has source linkage. Matches the existing
@@ -1341,7 +1351,7 @@ async fn ingest_memory(
                             sources::RevisionOutcome::Unchanged(id)
                             | sources::RevisionOutcome::Created { id, .. } => id,
                         };
-                        // v1.27.19 "Scrub" (D-1): was `let _ =` + a comment
+                        // was `let _ =` + a comment
                         // claiming failure "rolls back the whole entry" — it did
                         // not (the tx committed regardless), so a failed link
                         // stored a visible memory with no source linkage. Now a
@@ -1358,7 +1368,7 @@ async fn ingest_memory(
                             eprintln!("⚠️ source link failed — rolling back chunk {chunk_id}");
                             continue;
                         }
-                        // v0.9.8 M1.1: manual memories are observed == valid_from
+                        // manual memories are observed == valid_from
                         // == now and remain current (valid_to NULL); highest
                         // authority (trusted local write surface).
                         if sources::stamp_evidence(
@@ -1377,12 +1387,12 @@ async fn ingest_memory(
                     }
                 }
 
-                // v0.9.7 Guard: quarantine path only (no Reject branch here —
+                // quarantine path only (no Reject branch here —
                 // memory is a trusted local write surface; flagging keeps
                 // injection-y content out of retrieval without dropping it).
                 // Runs inside the tx (Transaction derefs to Connection) so it
                 // commits atomically with the chunk.
-                // v1.27.14 "Fencepost2" (M4): fail closed — if the flag write
+                // fail closed — if the flag write
                 // fails, log and let the tx drop uncommitted (rollback), so an
                 // injection hit that MUST be flagged is never stored clean.
                 if flag_if_quarantined(&tx, chunk_id, quarantine).is_err() {
@@ -1392,7 +1402,7 @@ async fn ingest_memory(
                 if tx.commit().is_ok() {
                     added += 1;
                     chunk_ids.push(chunk_id);
-                    // v0.9.7 Guard: audit successful ingest (hash only).
+                    // audit successful ingest (hash only).
                     audit::record(
                         &conn,
                         audit::AuditKind::Ingest,
@@ -1429,7 +1439,7 @@ async fn ingest_memory(
                 axum::http::StatusCode::OK,
                 Json(serde_json::json!({
                     "status": status,
-                    // v1.13.3 "SourceFix" M3: real first inserted rowid (null when
+                    // real first inserted rowid (null when
                     // nothing was added). `entry_id` is the deprecated alias.
                     "chunk_id": resp.chunk_id,
                     "chunk_ids": resp.chunk_ids,
@@ -1495,7 +1505,7 @@ fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> {
         entries.push((current.trim().to_string(), title));
     }
 
-    // v1.13.6 "Hygiene": strip reasoning/trace blocks; drop entries matching a
+    // strip reasoning/trace blocks; drop entries matching a
     // BRAIN_INGEST_SKIP_PATTERNS prefix (autoCapture dream prompts). Stops the
     // bleeding at the ingest door; historical cleanup is a separate sweep.
     let patterns = hygiene::skip_patterns();
@@ -1505,7 +1515,7 @@ fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-/// v0.9.9 "Qualify": measure the current capacity utilization and classify it
+/// measure the current capacity utilization and classify it
 /// against the active target's envelope. Shared by `/health` (reports it) and
 /// the ingest handlers (reject with 507 when `Exceeded`). Returns the measured
 /// counts + the classification so callers don't re-query.
@@ -1570,7 +1580,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         let mut sys = System::new();
         sys.refresh_memory();
         let pool_state = pool.state();
-        // v0.9.9: capacity measurement needs a connection. Best-effort — if the
+        // capacity measurement needs a connection. Best-effort — if the
         // pool is exhausted, capacity is omitted rather than failing /health.
         let capacity = pool.get().ok().map(|c| measure_capacity(&c, &db_path));
         Ok::<_, anyhow::Error>((
@@ -1627,74 +1637,74 @@ fn health_body(
     audit_commit_failures: usize,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
-        "status": "ok",
-        "version": SERVER_VERSION,
-        "model": MODEL_ID,
-        "system": {
-            "memory_used_mb": used_mb,
-            "memory_total_mb": total_mb,
-            "memory_percent": if total_mb > 0 { (used_mb as f64 / total_mb as f64) * 100.0 } else { 0.0 }
-        },
-        "pool": {
-            "connections": pool_connections,
-            "idle_connections": pool_idle,
-            "busy_connections": pool_connections.saturating_sub(pool_idle)
-        },
-        "backup": backup,
-        // v1.20.4 "Replay" (G6): effective webhook posture at a glance.
-        // `scheme` is the Standard Webhooks handshake when the timestamp-required
-        // flag is set, else the legacy GitHub delivery-id idempotency path.
-        "webhook": {
-            "replay_secs": crate::config::WEBHOOK_REPLAY_SECS,
-            "timestamp_required": crate::config::webhook_timestamp_required(),
-            "scheme": if crate::config::webhook_timestamp_required() {
-                "standard-webhooks"
-            } else {
-                "legacy"
+            "status": "ok",
+            "version": SERVER_VERSION,
+            "model": MODEL_ID,
+            "system": {
+                "memory_used_mb": used_mb,
+                "memory_total_mb": total_mb,
+                "memory_percent": if total_mb > 0 { (used_mb as f64 / total_mb as f64) * 100.0 } else { 0.0 }
+            },
+            "pool": {
+                "connections": pool_connections,
+                "idle_connections": pool_idle,
+                "busy_connections": pool_connections.saturating_sub(pool_idle)
+            },
+            "backup": backup,
+            // effective webhook posture at a glance.
+            // `scheme` is the Standard Webhooks handshake when the timestamp-required
+            // flag is set, else the legacy GitHub delivery-id idempotency path.
+            "webhook": {
+                "replay_secs": crate::config::WEBHOOK_REPLAY_SECS,
+                "timestamp_required": crate::config::webhook_timestamp_required(),
+                "scheme": if crate::config::webhook_timestamp_required() {
+                    "standard-webhooks"
+                } else {
+                    "legacy"
+                }
+            },
+            // OTLP export posture at a glance. `enabled`
+            // reflects the runtime kill switch; `endpoint` the configured OTLP/HTTP
+            // trace endpoint. Always present (defaults to disabled/loopback) so
+            // health is uniform across builds.
+            "otel": {
+                "enabled": crate::config::otel_enabled(),
+                "endpoint": crate::config::otel_endpoint(),
+            },
+    // the named Data Protection Officer
+            // contact (from BRAIN_DPO_CONTACT) surfaced on the public health
+            // probe + the privacy notice. `null` when unset — the posture never
+            // invents a contact. A data-subject / breach event needs a named
+            // channel, and this proves the deployment configured one.
+            "compliance": {
+                "dpo_contact": crate::config::dpo_contact(),
+            },
+    // hardening observability. Lets ops see the
+            // memory-safety posture at a glance. `unsafe_blocks` is the
+            // audited count (each has a SAFETY comment); `panics_caught`
+            // comes from CatchPanicLayer (would be >0 only if a handler
+            // panicked and was caught).
+    // `audit_commit_failures` — monotonic count of
+            // best-effort audit-chain settles that could not COMMIT/ROLLBACK since
+            // process start. Zero is the green state; >0 means a row the caller
+            // believes is on the durable chain may not be. Read-only, no secrets.
+            "hardening": {
+                "unsafe_blocks": 1, // single shared lib call (register_sqlite_vec), no transmute
+                "panics_caught": 0,
+                "memory_leaks_detected": 0,
+                "audit_commit_failures": audit_commit_failures,
+                // whether the layer-2 injection classifier
+                // is loaded. Mirrors `screen::screen_classifier_loaded()`; lets ops
+                // confirm the opt-in model is actually active.
+                "injection_classifier_loaded": crate::screen::screen_classifier_loaded()
             }
-        },
-        // v1.20.7 "Telemetry" (M1): OTLP export posture at a glance. `enabled`
-        // reflects the runtime kill switch; `endpoint` the configured OTLP/HTTP
-        // trace endpoint. Always present (defaults to disabled/loopback) so
-        // health is uniform across builds.
-        "otel": {
-            "enabled": crate::config::otel_enabled(),
-            "endpoint": crate::config::otel_endpoint(),
-        },
-        // v1.25.0 "PH-Compliant" (M1/DPO): the named Data Protection Officer
-        // contact (from BRAIN_DPO_CONTACT) surfaced on the public health
-        // probe + the privacy notice. `null` when unset — the posture never
-        // invents a contact. A data-subject / breach event needs a named
-        // channel, and this proves the deployment configured one.
-        "compliance": {
-            "dpo_contact": crate::config::dpo_contact(),
-        },
-        // v1.3.0 Bedrock M7: hardening observability. Lets ops see the
-        // memory-safety posture at a glance. `unsafe_blocks` is the
-        // audited count (each has a SAFETY comment); `panics_caught`
-        // comes from CatchPanicLayer (would be >0 only if a handler
-        // panicked and was caught).
-        // v1.27.19 "Scrub" (D-2): `audit_commit_failures` — monotonic count of
-        // best-effort audit-chain settles that could not COMMIT/ROLLBACK since
-        // process start. Zero is the green state; >0 means a row the caller
-        // believes is on the durable chain may not be. Read-only, no secrets.
-        "hardening": {
-            "unsafe_blocks": 1, // single shared lib call (register_sqlite_vec), no transmute
-            "panics_caught": 0,
-            "memory_leaks_detected": 0,
-            "audit_commit_failures": audit_commit_failures,
-            // v1.20.3 "Classify" (G5): whether the layer-2 injection classifier
-            // is loaded. Mirrors `screen::screen_classifier_loaded()`; lets ops
-            // confirm the opt-in model is actually active.
-            "injection_classifier_loaded": crate::screen::screen_classifier_loaded()
-        }
-    });
+        });
     if let Some(c) = capacity {
         if let serde_json::Value::Object(ref mut m) = body {
             m.insert("capacity".to_string(), c);
         }
     }
-    // v1.20.10 "Proof": cached audit-chain posture from the integrity watcher —
+    // cached audit-chain posture from the integrity watcher —
     // never content, never PII (a hash + two booleans/timestamps).
     if let serde_json::Value::Object(ref mut m) = body {
         m.insert("integrity".to_string(), integrity);
@@ -1745,7 +1755,7 @@ async fn health_db(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Result<Json<serde_json::Value>, crate::handlers::HandlerError> {
-    // v1.20.2 F2: was public (leaked DB size + last-write + pool state); now
+    // was public (leaked DB size + last-write + pool state); now
     // Read-gated. `/health` (the load-balancer probe shape) stays public.
     crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = s.pool.clone();
@@ -1780,19 +1790,19 @@ async fn health_db(
     }
 }
 
-/// `GET /audit` (v0.9.7 Guard) — read-only operator diagnostics. Returns recent
+/// `GET /audit` — read-only operator diagnostics. Returns recent
 /// audit events, optionally filtered by `kind` and bounded by `limit` (default
 /// 100, capped at `config::MAX_MULTI_GET`). All rows are hashes only — no
 /// secrets survive the round-trip. Gated by `auth_middleware` like other
 /// non-public routes.
 ///
-/// v1.1.0: optional `tenant` filter scopes rows at the SQL layer.
+/// optional `tenant` filter scopes rows at the SQL layer.
 async fn list_audit(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Query(params): Query<AuditQuery>,
 ) -> Json<serde_json::Value> {
-    // v1.12.1 "Harden": Admin gate + tenant scope. The v1.2 matrix makes
+    // Admin gate + tenant scope. The v1.2 matrix makes
     // `/audit` an Admin surface AND forbids cross-tenant reads: a principal
     // only ever sees its own tenant's rows (superuser `None` keeps v1.1
     // passthrough). Legacy shape.
@@ -1835,12 +1845,12 @@ struct AuditQuery {
     tenant: Option<String>,
     #[serde(default)]
     limit: Option<usize>,
-    /// v1.16.7 M4: pagination cursor. `offset` past the last row returns [].
+    /// pagination cursor. `offset` past the last row returns [].
     #[serde(default)]
     offset: usize,
 }
 
-/// `GET /metrics` (v1.1.0 Harden M5) — Prometheus text-format exporter.
+/// `GET /metrics` — Prometheus text-format exporter.
 /// Reuses the same numbers `/health` reports; no Prometheus client dep, just
 /// the wire format. Auth-gated like other operator surfaces (`auth_middleware`).
 ///
@@ -1851,7 +1861,7 @@ async fn metrics(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> (axum::http::StatusCode, String) {
-    // v1.12.1 "Harden": AuthZ read gate. Prometheus text is the body; a 403
+    // AuthZ read gate. Prometheus text is the body; a 403
     // with the reason keeps the non-JSON contract.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
@@ -1868,7 +1878,7 @@ async fn metrics(
             .saturating_sub(pool_state.idle_connections);
         // Reuse the capacity measurement so `/metrics` and `/health` agree.
         let cap = pool.get().ok().map(|c| measure_capacity(&c, &db_path));
-        // v1.13.5: report THIS process's RSS, not system-wide used memory.
+        // report THIS process's RSS, not system-wide used memory.
         // `System::used_memory()` is the whole-host figure; the gauge's HELP
         // says "Process RSS in MiB" and must match the per-process 320 MB
         // capacity envelope that `/health` reports (see `process_rss_mib`).
@@ -1929,7 +1939,7 @@ async fn metrics(
     (axum::http::StatusCode::OK, body)
 }
 
-/// `GET /audit/verify` (v1.1.0 Harden) — read-only check that the audit hash
+/// `GET /audit/verify` — read-only check that the audit hash
 /// chain is intact. Returns `{ "ok": bool }`. Exposed separately from
 /// `GET /audit` because the chain check is a full-table scan and shouldn't run
 /// on every list call.
@@ -1937,7 +1947,7 @@ async fn verify_audit_chain(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Json<serde_json::Value> {
-    // v1.12.1 "Harden": Admin gate (tamper-detection surface). Legacy shape.
+    // Admin gate (tamper-detection surface). Legacy shape.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
     {
@@ -1949,7 +1959,7 @@ async fn verify_audit_chain(
     })
     .await
     .unwrap_or(false);
-    // v1.20.8 "Signal": a failed chain verify is a decision-critical alert.
+    // a failed chain verify is a decision-critical alert.
     if !ok {
         alert::publish(&s, alert::ALERT_KIND_CHAIN, serde_json::json!({}));
     }
@@ -1961,7 +1971,7 @@ async fn stats(
     principal: crate::handlers::auth::OptPrincipal,
     Query(params): Query<StatsQuery>,
 ) -> Json<serde_json::Value> {
-    // v1.12.1 "Harden": AuthZ read gate. Legacy shape — see `/add`.
+    // AuthZ read gate. Legacy shape — see `/add`.
     if let Err(e) = crate::handlers::authorize(
         &principal.0,
         crate::auth::Action::Read,
@@ -1970,7 +1980,7 @@ async fn stats(
     ) {
         return Json(serde_json::json!({ "success": false, "error": e.inner.message }));
     }
-    // v1.0.0: resolve per-domain pool from the ?domain= query param.
+    // resolve per-domain pool from the ?domain= query param.
     let pool = match handlers::resolve_domain_pool(&s.registry, params.domain.as_deref()) {
         Ok(p) => p,
         Err(_) => s.pool.clone(),
@@ -2040,7 +2050,7 @@ async fn embeddings(
     principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<EmbeddingsRequest>,
 ) -> Json<serde_json::Value> {
-    // v1.12.1 "Harden": AuthZ write gate. Legacy OpenAI-style shape.
+    // AuthZ write gate. Legacy OpenAI-style shape.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
     {
@@ -2061,7 +2071,7 @@ async fn embeddings(
             }));
         }
         EmbeddingsInput::Batch(v) if v.len() > MAX_EMBEDDING_BATCH => {
-            // v1.20.2 D4: bound the batch to prevent memory amplification. A
+            // bound the batch to prevent memory amplification. A
             // 1 MiB body of ~50k short strings produces ~50 MB of buffered
             // JSON response; concurrent calls OOM the server.
             return Json(serde_json::json!({
@@ -2207,7 +2217,7 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
     // Normalize first to defeat trivial obfuscation: collapse zero-width /
     // control characters and excessive whitespace that attackers use to break
     // substring matching (e.g. "ig​nore previous" with a zero-width space).
-    // v1.20.3: `screen::is_invisible` is the canonical invisible-char test
+    // `screen::is_invisible` is the canonical invisible-char test
     // (same predicate the layer-2 classifier and the client render boundary
     // use), so the blocklist and classifier agree on what is invisible.
     let normalized: String = input
@@ -2259,20 +2269,20 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
     })
 }
 
-/// v0.9.7 Guard: under the default `Quarantine` injection policy, an ingested
+/// under the default `Quarantine` injection policy, an ingested
 /// chunk that trips `contains_suspicious_pattern` is not rejected — it is stored
 /// with `flagged = 1` so retrieval excludes it until an operator reviews it.
 /// Returns `Ok(true)` if the row was flagged (so callers can skip durable side
 /// effects like KG-edge creation for quarantined evidence).
 ///
-/// v1.20.3 (G5): the caller now passes an explicit `quarantine` flag produced
+/// the caller now passes an explicit `quarantine` flag produced
 /// by [`screen::screen`] (layer 1 blocklist OR layer-2 classifier). This keeps
 /// the flag write paired with the actual screen verdict instead of re-running
 /// the blocklist in isolation — a layer-2 hit quarantines exactly like a
 /// layer-1 hit. Only acts under `Quarantine`; `Reject`/`Allow` are handled at
 /// the call site's pre-insert branch.
 ///
-/// v1.27.14 "Fencepost2" (M4/F-15): returns `rusqlite::Result<bool>` and callers
+/// returns `rusqlite::Result<bool>` and callers
 /// **fail closed** — an injection chunk that MUST be flagged is never stored
 /// clean if the flag write fails. The worst outcome (a confident injection hit
 /// retrievable with `flagged = 0`) is the one the writer refuses.
@@ -2291,7 +2301,7 @@ pub(crate) fn flag_if_quarantined(
     Ok(true)
 }
 
-/// v0.9.7 Guard: keep quarantined prose out of the agent's rendered evidence by
+/// keep quarantined prose out of the agent's rendered evidence by
 /// default. Called at the search/recall render boundary — a flagged hit that the
 /// request did not explicitly opt into (`include_flagged`) has its snippet and
 /// structured evidence stripped. Returns whether suppression was applied.
@@ -2313,16 +2323,16 @@ async fn ingest_markdown(
     principal: crate::handlers::auth::OptPrincipal,
     Json(payload): Json<MarkdownPayload>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.11.0 "Associate" (audit G1): AuthZ write gate. This is the primary
+    // AuthZ write gate. This is the primary
     // vault ingest path, so it gets a proper HTTP 403 via AppError::Forbidden.
     // `None` principal (no JWT) = superuser.
     crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
-    // v0.9.9: capacity guard — the primary vault ingest path returns a proper
+    // capacity guard — the primary vault ingest path returns a proper
     // HTTP 507 when the envelope is exceeded.
     guard_capacity(&state)?;
 
-    // v0.9.2: vault semantics. Frontmatter is stripped before chunking (never
+    // vault semantics. Frontmatter is stripped before chunking (never
     // useful prose to embed); wikilinks and tags/aliases become KG edges.
     let (yaml, body) = vault::split_frontmatter(&payload.content);
     let fm = vault::parse_frontmatter(&yaml);
@@ -2361,7 +2371,7 @@ async fn ingest_markdown(
     if title.is_empty() {
         return Err(AppError::BadRequest("Title is required"));
     }
-    // v0.9.7 Guard: injection screen. v1.20.3 (G5): now the full two-layer
+    // injection screen. v1.20.3 (G5): now the full two-layer
     // screen ([`screen::screen`] = blocklist + optional classifier). `Reject`
     // keeps HTTP-400; `Quarantine` (default) proceeds to ingest and flags every
     // inserted chunk; `Allow` disables the screen.
@@ -2387,7 +2397,7 @@ async fn ingest_markdown(
     if !content.is_empty() {
         let from = escaped_title.to_lowercase();
 
-        // v1.4.0+: deterministic entity linker — Aho-Corasick backed, zero LLM.
+        // deterministic entity linker — Aho-Corasick backed, zero LLM.
         // Builds vocabulary from document structure, merges in existing entities
         // from the database (cross-document linking), then finds mentions and
         // typed relationship patterns. Code blocks and tables are excluded.
@@ -2422,7 +2432,7 @@ async fn ingest_markdown(
             }
             kg_edges.push(("references".to_string(), from.clone(), mention.to_string()));
         }
-        // v1.4.0+: Heading hierarchy → part_of relationships.
+        // Heading hierarchy → part_of relationships.
         // A heading at level N+1 under a heading at level N creates a
         // `part_of` edge if both are known entities.
         for edge in linker::extract_heading_relationships(&content, &entity_set, &excluded_ranges) {
@@ -2499,7 +2509,7 @@ async fn ingest_markdown(
     let edges = kg_edges.clone();
     let raw_content_for_source = payload.content.clone();
     let replace = payload.replace;
-    // v1.17.1: record the creating principal (see add_chunk).
+    // record the creating principal (see add_chunk).
     let owner = crate::handlers::gate::principal_to_owner(&principal.0);
     let result = task::spawn_blocking(move || -> Result<(i64, usize, usize), AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
@@ -2520,7 +2530,7 @@ async fn ingest_markdown(
                     rows.filter_map(|r| r.ok()).collect()
                 };
                 for id in &stale_ids {
-                    // v1.27.19 "Scrub" (D-1): was `let _ =` — a stale vec0 row
+                    // was `let _ =` — a stale vec0 row
                     // would surface the old chunk in retrieval after the replace.
                     tx.execute(
                         "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -2530,6 +2540,12 @@ async fn ingest_markdown(
                 }
                 // Sweep relationships: both those still linked (previously
                 // stale_ids) AND orphans already NULLed by prior re-ingests.
+                // The replace sweep is an erasure path: a held chunk refuses
+                // the whole re-ingest (same 409 fence as /purge) — held
+                // evidence must not be destroyed by routine supersession.
+                crate::legal_hold::refuse_if_held(&tx, &stale_ids).map_err(|e| {
+                    AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message))
+                })?;
                 tx.execute("DELETE FROM relationships WHERE knowledge_id IS NULL", [])
                     .map_err(|e| AppError::Internal(e.to_string()))?;
                 for id in &stale_ids {
@@ -2556,7 +2572,7 @@ async fn ingest_markdown(
             &owner,
         )?;
         tx.commit().map_err(|e| AppError::Internal(e.to_string()))?;
-        // v0.9.7 Guard: audit successful markdown ingest (identifier only).
+        // audit successful markdown ingest (identifier only).
         audit::record(
             &conn,
             audit::AuditKind::Ingest,
@@ -2582,7 +2598,7 @@ async fn ingest_markdown(
         let pool = state.pool.clone();
         let d = domain.clone();
         let did = document_id.clone();
-        // v1.27.19 "Scrub" (D-1): was `let _ = ... .await;` — a failed post-commit
+        // was `let _ = ... .await;` — a failed post-commit
         // domain move left chunks in "global" with no signal. Post-commit, so a
         // rejection is dishonest; log instead.
         match task::spawn_blocking(move || -> Result<(), AppError> {
@@ -2603,7 +2619,7 @@ async fn ingest_markdown(
     }
 
     // Refresh the domain centroid so routing stays current.
-    // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed refresh silently left
+    // was `let _ =` — a failed refresh silently left
     // stale routing. Post-commit; log.
     if let Err(e) = domain_router::recompute_centroid(&state.pool, &domain, &state.pool) {
         eprintln!("⚠️ centroid refresh failed for domain {domain}: {e}");
@@ -2619,7 +2635,7 @@ async fn ingest_markdown(
     })))
 }
 
-/// v0.9.2: pure DB-write for a markdown ingest. Extracted from `ingest_markdown`
+/// pure DB-write for a markdown ingest. Extracted from `ingest_markdown`
 /// so the vault dedup/replace + KG-edge logic is unit-testable without the
 /// embedding model. Caller provides pre-computed embeddings (one per chunk).
 ///
@@ -2632,7 +2648,7 @@ async fn ingest_markdown(
 /// `edges` are document-level KG relations `(rel, from, to)` attached to the
 /// first inserted chunk.
 ///
-/// v0.9.4: `raw_content` is the original payload (frontmatter + body). It feeds
+/// `raw_content` is the original payload (frontmatter + body). It feeds
 /// `sources::compute_revision` so any change anywhere in the file — including
 /// frontmatter that never reaches the chunks — yields a new revision. Vault
 /// ingests (source_path set) are linked to a `sources`/`source_revisions` row;
@@ -2658,7 +2674,7 @@ fn write_markdown_ingest(
     let mut first_id: i64 = 0;
     let mut inserted = 0usize;
     let mut duplicates = 0usize;
-    // v0.9.4: collect inserted chunk ids so we can link them to source+revision
+    // collect inserted chunk ids so we can link them to source+revision
     // after the per-chunk INSERT loop. The vec is left empty for unchanged files.
     let mut inserted_ids: Vec<i64> = Vec::with_capacity(chunks.len());
 
@@ -2707,8 +2723,13 @@ fn write_markdown_ingest(
                 .map_err(|e| AppError::Internal(e.to_string()))?;
             rows.filter_map(|r| r.ok()).collect()
         };
+        // The changed-file sweep is an erasure path: a held chunk refuses the
+        // re-ingest (same 409 fence as /purge) — litigation-frozen evidence
+        // must not vanish because its source file changed on disk.
+        crate::legal_hold::refuse_if_held(tx, &stale_ids)
+            .map_err(|e| AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message)))?;
         for id in &stale_ids {
-            // v1.27.19 "Scrub" (D-1): was `let _ =` — a stale vec0 row would
+            // was `let _ =` — a stale vec0 row would
             // surface the old chunk in retrieval after the file changed.
             tx.execute(
                 "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -2769,7 +2790,7 @@ fn write_markdown_ingest(
         inserted_ids.push(k_id);
 
         let emb = &embeddings[idx];
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a chunk stored without its
+        // was `let _ =` — a chunk stored without its
         // vector is silently degraded. Fail the batch; no half-stored chunks.
         tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
@@ -2780,7 +2801,7 @@ fn write_markdown_ingest(
         inserted += 1;
     }
 
-    // v0.9.7 Guard: under Quarantine policy the ingested content tripped the
+    // under Quarantine policy the ingested content tripped the
     // injection screen — flag every inserted chunk so retrieval excludes it.
     if quarantine_flagged && !inserted_ids.is_empty() {
         let ph = std::iter::repeat_n("?", inserted_ids.len())
@@ -2797,7 +2818,7 @@ fn write_markdown_ingest(
         .map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
-    // v0.9.4: link the freshly-inserted chunks to their canonical source +
+    // link the freshly-inserted chunks to their canonical source +
     // revision. Fail-loud here (unlike the unchanged path above): an orphan
     // chunk with no source linkage is a real bug we want to surface, not a
     // degraded ingest. Vault ingests only — interactive adds stay unlinked.
@@ -2811,7 +2832,7 @@ fn write_markdown_ingest(
     // Targets that don't exist yet are still created as placeholder entities
     // so the graph is complete when their file is later ingested.
     //
-    // v0.9.7 Guard: quarantined evidence must NOT become durable graph
+    // quarantined evidence must NOT become durable graph
     // structure — skip edge creation when this ingest was flagged.
     if !quarantine_flagged && first_id != 0 && !edges.is_empty() {
         for (rel, from, to) in edges {
@@ -2852,7 +2873,7 @@ fn write_markdown_ingest(
     Ok((first_id, inserted, duplicates))
 }
 
-/// v0.9.4: compose the source/revision/link calls for one vault file into a
+/// compose the source/revision/link calls for one vault file into a
 /// single helper so the unchanged and changed paths in `write_markdown_ingest`
 /// share one implementation. Idempotent at every layer:
 ///   - `upsert_source` reuses the row (or reactivates a deleted one);
@@ -2889,11 +2910,11 @@ fn link_vault_source(
     if !chunk_ids.is_empty() {
         sources::link_chunks(tx, source_id, revision_id, chunk_ids)
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        // v0.9.8 M1.1: stamp temporal evidence on the freshly-linked vault chunks.
+        // stamp temporal evidence on the freshly-linked vault chunks.
         // valid_from defaults to observed_at (no world-time beyond ingest time is
         // known for a vault file); authority is the vault kind's constant.
         let observed = chrono::Utc::now().to_rfc3339();
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a silently-missed evidence
+        // was `let _ =` — a silently-missed evidence
         // stamp left vault chunks with no temporal provenance. Fail the ingest;
         // the caller reports it (matching link_chunks above).
         for cid in chunk_ids {
@@ -2930,7 +2951,7 @@ fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
             continue;
         }
         let tx = conn.unchecked_transaction()?;
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed delete/insert here
+        // was `let _ =` — a failed delete/insert here
         // would silently lose the vector for `id` (FTS-only retrieval).
         tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -2956,7 +2977,7 @@ async fn reindex(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Json<serde_json::Value> {
-    // v1.12.1 "Harden": AuthZ admin gate (v1.2 matrix: reindex is an operator
+    // AuthZ admin gate (v1.2 matrix: reindex is an operator
     // surface). Legacy shape — see `/add`. `None` principal (no JWT) = superuser.
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
@@ -2984,7 +3005,7 @@ async fn reindex(
             // Replace the vec0 row (delete + re-insert, since vec0 has no UPSERT
             // for changed vectors). v0.9.0 DoD: vec0 is the sole vector store;
             // the legacy JSON `embeddings` column is no longer written.
-            // v1.27.19 "Scrub" (D-1): was `let _ =`; propagate — a silently
+// was `let _ =`; propagate — a silently
             // lost vector is a silent retrieval regression.
             tx.execute(
                 "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -3021,7 +3042,7 @@ async fn get_chunk(
     headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
         &principal.0,
@@ -3030,10 +3051,10 @@ async fn get_chunk(
         domain.as_deref().unwrap_or("global"),
     )
     .map_err(|e| AppError::Forbidden(e.inner.message))?;
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
-    // v1.27.16 "Drawbridge" (F-04/F-06): the read scope is the header-resolved
+    // the read scope is the header-resolved
     // domain label. The SQL predicate below binds the same label so an id can
     // never cross domains in shim mode (multi-db pools are territory-scoped
     // already); the composite record gate (v1.14 scope / v1.23 role) resolves
@@ -3044,7 +3065,7 @@ async fn get_chunk(
         .unwrap_or("global")
         .to_string();
     let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
-    // v1.20.24 "Sweep": mask PII for non-admin principals like /recall does —
+    // mask PII for non-admin principals like /recall does —
     // the pii-flagged row's content never leaves unmasked through the legacy
     // read path (loopback/opaque stays unmasked by design).
     let pii_principal = principal.0.clone();
@@ -3063,7 +3084,7 @@ async fn get_chunk(
                 let content = row.get::<_, String>(2)?;
                 let pii: i64 = row.get(12)?;
                 let pii_flag = pii != 0;
-                // v1.20.25: title + heading_path ride the same read seam as
+                // title + heading_path ride the same read seam as
                 // content (PII redaction + invisible-Unicode strip).
                 let title = crate::gate::sanitize_read_opt(
                     row.get::<_, Option<String>>(1)?,
@@ -3097,7 +3118,7 @@ async fn get_chunk(
         );
         match r {
             Ok((value, row_domain, row_owner, row_scope)) => {
-                // v1.27.16 (F-04): belt-and-braces — re-authorize against the
+                // belt-and-braces — re-authorize against the
                 // row's OWN domain, and run the record gate (the recall
                 // parity), so any future predicate loosening cannot leak the
                 // row to a principal that could not read it via recall.
@@ -3118,7 +3139,7 @@ async fn get_chunk(
 
     match row {
         Some(v) => {
-            // v1.15.0 "Observe" M1: read-event audit for direct chunk reads
+            // read-event audit for direct chunk reads
             // (best-effort). Target is the chunk id — no content leaves the row.
             if crate::config::audit_read_events(principal.0.is_some()) {
                 if let Ok(conn) = state.pool.get() {
@@ -3151,7 +3172,7 @@ async fn multi_get(
     headers: axum::http::HeaderMap,
     Json(req): Json<MultiGetRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.12.1 "Harden": AuthZ read gate FIRST (then size check), scoped to the
+    // AuthZ read gate FIRST (then size check), scoped to the
     // requested domain. v1.20.2 F3: reorder — auth before size so an unauth'd
     // caller learns nothing about the request shape.
     let domain = handlers::domain_from_headers(&headers);
@@ -3165,10 +3186,10 @@ async fn multi_get(
     if req.ids.len() > MAX_MULTI_GET {
         return Err(AppError::BadRequest("too many ids"));
     }
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
-    // v1.27.16 "Drawbridge" (F-04/F-06): same label + record gate as `/get/{id}`
+    // same label + record gate as `/get/{id}`
     // — the domain predicate below binds `label`, and the composite gate runs
     // over every fetched row (the recall parity).
     let label = domain
@@ -3178,18 +3199,18 @@ async fn multi_get(
         .to_string();
     let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
     let ids = req.ids;
-    // v1.20.24 "Sweep": mask PII per row for non-admin principals (loopback/
+    // mask PII per row for non-admin principals (loopback/
     // opaque stays unmasked by design — has_pii_read(None)).
     let pii_principal = principal.0.clone();
     let rows = task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-        // v1.20.2 F3: single `WHERE id IN (...)` query instead of N round-trips.
+        // single `WHERE id IN (...)` query instead of N round-trips.
         // Safe parameterization: build placeholders from the ids length, bind
         // each id by position. Bounded by MAX_MULTI_GET (1000).
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        // v1.27.16 "Drawbridge" (F-04): the domain predicate binds the
+        // the domain predicate binds the
         // header-resolved label, so ids cannot cross domains in shim mode.
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
         let label_ph = ids.len() + 1;
@@ -3247,7 +3268,7 @@ async fn multi_get(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut out = Vec::with_capacity(ids.len());
         for v in rows.flatten() {
-            // v1.27.16 (F-04/F-06): drop (not error) rows whose domain the
+            // drop (not error) rows whose domain the
             // principal may not read and rows the record gate denies — a
             // batch read filters like recall searches, keeping id-probing
             // of foreign rows blind rather than loud.
@@ -3265,7 +3286,7 @@ async fn multi_get(
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
 
-    // v1.15.0 "Observe" M1: read-event audit for batched reads (best-effort).
+    // read-event audit for batched reads (best-effort).
     // One event per request; target = the chunk count, never content.
     if crate::config::audit_read_events(principal.0.is_some()) {
         if let Ok(conn) = state.pool.get() {
@@ -3285,7 +3306,7 @@ async fn multi_get(
     Ok(Json(serde_json::json!({ "chunks": rows })))
 }
 
-// ── v0.9.7 Guard: quarantine operator endpoints ──────────────────────────
+// ── Guard: quarantine operator endpoints ──────────────────────────
 // Rows with `flagged = 1` are excluded from retrieval by default (see
 // vec0_knn/fts_search). These endpoints let an operator review, approve
 // (release), or purge (delete) quarantined chunks.
@@ -3301,12 +3322,12 @@ async fn list_quarantined(
     principal: crate::handlers::auth::OptPrincipal,
     Query(p): Query<QuarantineListParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.12.1 "Harden": AuthZ read gate (operator review surface).
+    // AuthZ read gate (operator review surface).
     crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let limit = p.limit.unwrap_or(100).clamp(1, config::MAX_MULTI_GET);
     let pool = state.pool.clone();
-    // v1.27.14 "Fencepost2" (M3.4): the /quarantine list is the reviewer-facing
+    // the /quarantine list is the reviewer-facing
     // surface for flagged content — exactly where bidi smuggling is most
     // dangerous. Run title/source through the read seam. The principal is
     // copied in (loopback/opaque stay unmasked like every read surface).
@@ -3351,7 +3372,7 @@ async fn release_quarantine(
     principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.11.0 "Associate" (audit G1): AuthZ admin gate (operator action).
+    // AuthZ admin gate (operator action).
     crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let pool = state.pool.clone();
@@ -3394,7 +3415,7 @@ async fn delete_quarantine(
     principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.11.0 "Associate" (audit G1): AuthZ admin gate (operator action).
+    // AuthZ admin gate (operator action).
     crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
         .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let pool = state.pool.clone();
@@ -3403,12 +3424,12 @@ async fn delete_quarantine(
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        // v1.28.1 "Holdall" M1 (F-02): a held chunk refuses any erasure,
+        // a held chunk refuses any erasure,
         // including the quarantine delete path (a held id can be flagged).
         crate::legal_hold::refuse_if_held(&tx, &[id])
             .map_err(|e| AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message)))?;
         // vec0 has no FK cascade — clean the index entry explicitly.
-        // v1.27.19 "Scrub" (D-1): was `let _ =` — a lingering vec0 row would
+        // was `let _ =` — a lingering vec0 row would
         // surface a deleted chunk's vector in retrieval.
         tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
@@ -3461,7 +3482,7 @@ async fn get_entity(
         return Err(AppError::BadRequest("Invalid entity name"));
     }
 
-    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
         &principal.0,
@@ -3470,13 +3491,13 @@ async fn get_entity(
         domain.as_deref().unwrap_or("global"),
     )
     .map_err(|e| AppError::Forbidden(e.inner.message))?;
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let name_lower = name.to_lowercase();
-    // v1.20.18 "Bound": finite edge set, clamped like the multi-get cap.
+    // finite edge set, clamped like the multi-get cap.
     let limit = clamp_graph_limit(limit_q.limit);
-    // v1.27.16 "Drawbridge" (F-06): in shim mode a JWT principal reads only
+    // in shim mode a JWT principal reads only
     // edges whose chunk provenance carries the requested domain label.
     let domain_scoped = domain.as_deref().unwrap_or("global");
     let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, domain_scoped);
@@ -3516,10 +3537,10 @@ async fn get_entity(
     Ok(Json(result))
 }
 
-/// v1.20.18 "Bound": the edge set for an entity, capped at `limit` (newest ids
+/// the edge set for an entity, capped at `limit` (newest ids
 /// first — a stable, reproducible order; the KG has no histogram to rank by).
 /// Extracted so the LIMIT contract is unit-testable without an HTTP stack.
-/// v1.27.16 "Drawbridge" (F-06): `domain_scope` restricts edges to those whose
+/// `domain_scope` restricts edges to those whose
 /// chunk provenance carries the label (shim mode, JWT principal) — an edge
 /// with no knowledge link has no domain atom and is invisible to scoped
 /// readers. `None` = loopback/opaque/multi-db (unrestricted, unchanged).
@@ -3574,7 +3595,7 @@ async fn get_relations(
         _ => return Err(AppError::BadRequest("Must specify 'from' or 'to'")),
     };
 
-    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
         &principal.0,
@@ -3583,13 +3604,13 @@ async fn get_relations(
         domain.as_deref().unwrap_or("global"),
     )
     .map_err(|e| AppError::Forbidden(e.inner.message))?;
-    // v1.0.0: resolve pool from X-Brain-Domain header.
+    // resolve pool from X-Brain-Domain header.
     let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
     let param_lower = param.to_lowercase();
-    // v1.20.18 "Bound": finite edge set, clamped like the multi-get cap.
+    // finite edge set, clamped like the multi-get cap.
     let limit = clamp_graph_limit(limit_q.limit);
-    // v1.27.16 "Drawbridge" (F-06): shim-mode JWT edge scoping (see
+    // shim-mode JWT edge scoping (see
     // `graph_domain_scope`).
     let domain_scope = handlers::graph_domain_scope(
         &principal.0,
@@ -3616,9 +3637,9 @@ async fn get_relations(
     Ok(Json(result))
 }
 
-/// v1.20.18 "Bound": the relations fan-out/in from an entity, capped at `limit`
+/// the relations fan-out/in from an entity, capped at `limit`
 /// (newest ids first). Extracted for the LIMIT contract to be unit-testable.
-/// v1.27.16 "Drawbridge" (F-06): `domain_scope` restricts edges by their chunk
+/// `domain_scope` restricts edges by their chunk
 /// provenance label (see `entity_relations`).
 fn relations_for(
     conn: &rusqlite::Connection,
@@ -3668,7 +3689,7 @@ async fn traverse_graph(
     headers: axum::http::HeaderMap,
     Query(params): Query<TraverseQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // v1.12.1 "Harden": AuthZ read gate, scoped to the requested domain.
+    // AuthZ read gate, scoped to the requested domain.
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
         &principal.0,
@@ -3678,11 +3699,11 @@ async fn traverse_graph(
     )
     .map_err(|e| AppError::Forbidden(e.inner.message))?;
     let entity = params.start.unwrap_or_default();
-    // v1.4.0 "Calibrate" M3: hard-cap traversal depth at trace::MAX_HOPS
+    // hard-cap traversal depth at trace::MAX_HOPS
     // (forbidden-list rule: no unbounded graph walks).
     let depth = params.max_depth.unwrap_or(2).min(trace::MAX_HOPS as u8);
     let cross_domain = params.cross_domain;
-    // v1.7.0 "Explain": structured path output (default off for back-compat).
+    // structured path output (default off for back-compat).
     let explain = params.explain;
 
     if entity.is_empty() {
@@ -3696,7 +3717,7 @@ async fn traverse_graph(
         return Err(AppError::BadRequest("Invalid entity name"));
     }
 
-    // v1.4.0 "Calibrate" M1: normalize the bi-temporal `at` filter to the
+    // normalize the bi-temporal `at` filter to the
     // SQLite-comparable format. Reject malformed timestamps (a silent lexical
     // compare would be wrong, not just useless).
     let at_normalized: Option<String> = match params.at.as_deref().map(str::trim) {
@@ -3706,7 +3727,7 @@ async fn traverse_graph(
         })?),
     };
 
-    // v1.7.0 "Explain": normalize the `kind` filter into either an exact
+    // normalize the `kind` filter into either an exact
     // match or a prefix match (if it ends with `:`). Empty → None (walk all).
     // The filter is applied INSIDE the recursive CTE via parameterized SQL,
     // never interpolation (forbidden-list rule).
@@ -3717,7 +3738,7 @@ async fn traverse_graph(
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    // v1.0.0: resolve pool from X-Brain-Domain header. When `cross_domain=true`,
+    // resolve pool from X-Brain-Domain header. When `cross_domain=true`,
     // walk edges across every known domain pool (per the plan M3 control).
     let header_domain = handlers::domain_from_headers(&headers);
     // F-06 scope label: computed once (the header is moved into the target
@@ -3741,30 +3762,30 @@ async fn traverse_graph(
             .unwrap_or_else(|_| state.pool.clone());
         targets.push((d, p));
     }
-    // v1.27.16 "Drawbridge" (F-05/F-06): a tenant-scoped principal must not
+    // a tenant-scoped principal must not
     // walk FOREIGN pools. Drop every target whose domain it may not read —
     // the same retain `/recall` federation applies. Loopback/opaque
     // (superuser) is untouched. An emptied list is a legitimate "nothing
     // walkable", not an error.
     targets.retain(|(d, _)| handlers::can_read_domain(&principal.0, d));
-    // v1.27.16 (F-06): shim-mode JWT edge scoping (the entity tables carry no
+    // shim-mode JWT edge scoping (the entity tables carry no
     // domain column; the chunk link is the domain atom).
     let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, &scope_label);
 
     let result = task::spawn_blocking(move || -> Result<serde_json::Value, AppError> {
-        // v1.4.0 "Calibrate" M1: bi-temporal edge filter. When `at` is set, an
+        // bi-temporal edge filter. When `at` is set, an
         // edge is traversable iff its valid-interval [valid_at, invalid_at)
         // contains `at`: valid_at <= at AND (invalid_at IS NULL OR invalid_at > at).
         // NULL valid_at ⇒ origin unknown ⇒ treated as always-valid (the
         // additive-migration default for pre-v1.4 edges). Parameterized, never
         // interpolated. Graphiti-validity semantics (Context7 2026-07-30).
         //
-        // v1.4.0 M3 (TRACE): the CTE also bounds depth (already) and visits
+        // the CTE also bounds depth (already) and visits
         // (the recursive UNION ALL has no global visited-set; the path-based
         // cycle guard below prevents infinite loops). MAX_HOPS/MAX_VISITED are
         // enforced on the Rust side after the walk.
         //
-        // v1.7.0 "Explain": the CTE now carries `relation_type` per hop so the
+        // the CTE now carries `relation_type` per hop so the
         // structured `paths` output can render faithful explanations
         // (`A --works_at--> B --ceo_of--> C`). The flat `traversal` array stays
         // for back-compat. Path string carries ids+rels as `id:rel:id:rel:id`.
@@ -3774,7 +3795,7 @@ async fn traverse_graph(
         } else {
             ""
         };
-        // v1.7.0: kind filter. Prefix match when kind ends with `:` (e.g.
+        // kind filter. Prefix match when kind ends with `:` (e.g.
         // `causes:`), exact match otherwise. Applied to BOTH the seed and the
         // recursive step so the walk stays inside the requested edge type.
         // Use named placeholders that we'll substitute to the right ?N below.
@@ -3796,7 +3817,7 @@ async fn traverse_graph(
         // hardcoded to ?4, which only worked when `at` was also bound.
         let at_ph = "?3";
         let kind_ph = if at_normalized.is_some() { "?4" } else { "?3" };
-        // v1.27.16 "Drawbridge" (F-06): the scope placeholder sits after every
+        // the scope placeholder sits after every
         // optional at/kind param (always bound, as `Option<String>`); the
         // scope clause is compiled in only when the request is scoped, so
         // unscoped walks (loopback/opaque/multi-db) keep the byte-identical
@@ -3936,7 +3957,7 @@ async fn traverse_graph(
             total_visited += rows.len();
             all.extend(rows);
         }
-        // v1.7.0 "Explain": build the structured `paths` array when requested.
+        // build the structured `paths` array when requested.
         // Each entry groups a traversal row into a hop chain with named entities
         // + relation types, so a consuming agent can render
         // "A --works_at--> B --ceo_of--> C" without parsing the id-string.
@@ -3957,7 +3978,7 @@ async fn traverse_graph(
     Ok(Json(result))
 }
 
-/// v1.7.0 "Explain": row mapper for the recursive CTE. Extracted so all four
+/// row mapper for the recursive CTE. Extracted so all four
 /// param-shape branches share one definition (DRY; the only thing that varies
 /// is which params are bound, not how the row maps).
 fn traverse_row_mapper(
@@ -3975,7 +3996,7 @@ fn traverse_row_mapper(
     }
 }
 
-/// v1.7.0 "Explain": turn the flat traversal rows into structured hop chains.
+/// turn the flat traversal rows into structured hop chains.
 /// Each row's `path` is `id->id->id` and `edge_path` is `rel|rel|rel`. We pair
 /// them with the entity names already on the row (the leaf) and the from_entity
 /// (the seed) to reconstruct the named chain. ponytail: this is a best-effort
@@ -4111,7 +4132,7 @@ async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    // v1.20.2 D1: only trust `X-Forwarded-For` when the operator has explicitly
+    // only trust `X-Forwarded-For` when the operator has explicitly
     // opted in via `BRAIN_TRUST_PROXY=1`. Default uses the socket address — a
     // direct-connection attacker cannot spoof it, so the per-IP limiter actually
     // bounds them. When behind a reversing proxy that overwrites client XFF,
@@ -4152,10 +4173,10 @@ async fn rate_limit_middleware(
 /// browsers send it without credentials and it must reach the CORS layer intact
 /// to attach preflight headers; the following real request authenticates normally.
 ///
-/// v1.1.0: tokens come from the cached, mtime-refreshed `TokenStore` rather
+/// tokens come from the cached, mtime-refreshed `TokenStore` rather
 /// than a per-request disk read. Fail-safe: if the file was deleted, the store
 /// keeps the last-good set so auth can never silently clear.
-/// v1.2.0 "AuthN": state for the JWT auth middleware. A subset of AppState
+/// state for the JWT auth middleware. A subset of AppState
 /// containing only what the middleware needs. Kept separate so the middleware
 /// can be layered with `from_fn_with_state` without the full AppState (which
 /// is constructed at the very end of router setup).
@@ -4170,7 +4191,7 @@ pub struct JwtMiddlewareState {
     pub db_path: PathBuf,
 }
 
-/// v1.2.0 "AuthN": JWT verification middleware. Runs ONLY when JWT mode is
+/// JWT verification middleware. Runs ONLY when JWT mode is
 /// on (BRAIN_JWT_ISSUER + keys configured). In opaque mode it's a no-op pass-
 /// through. On success, injects a `Principal` into request extensions; the
 /// opaque `auth_middleware` sees the Principal already set and short-circuits.
@@ -4205,7 +4226,7 @@ async fn jwt_auth_middleware(
             | "/ump/capabilities"
             | "/auth/refresh"
     ) || path.starts_with("/webhooks/")
-        // v1.16.2 "Harden": the client SPA is public (static assets, no data).
+        // the client SPA is public (static assets, no data).
         || path == "/"
         || path.starts_with("/app");
     if public || req.method() == axum::http::Method::OPTIONS {
@@ -4288,7 +4309,7 @@ async fn jwt_auth_middleware(
             next.run(req).await
         }
         Err(code) => {
-            // v1.17.3 M5: on the UMP surface the bearer may be an operator-
+            // on the UMP surface the bearer may be an operator-
             // signed capability token rather than a JWS. Try it before
             // rejecting (the handler's cap_gate enforces verbs × scope).
             if capability_pass_through(&mut req, &raw_for_fallback, &path_owned) {
@@ -4300,7 +4321,7 @@ async fn jwt_auth_middleware(
     }
 }
 
-/// v1.17.3 M5 (§5.2): try the bearer as an operator-signed capability token
+/// §5.2: try the bearer as an operator-signed capability token
 /// on the UMP surface (`/ump/*` + `/export`). A valid token is injected into
 /// request extensions and the request passes — the handler's `cap_gate` then
 /// enforces verbs × scope (expiry is enforced here at parse). Returns true
@@ -4366,7 +4387,7 @@ async fn auth_middleware(
     let public = matches!(
         path.as_str(),
         "/health" | "/ready" | "/version" | "/openapi.yaml"
-        // v1.2.0 AuthN: OIDC discovery + JWKS are public by design (clients
+// OIDC discovery + JWKS are public by design (clients
         // need them to verify tokens; can't require a token to learn how to
         // verify tokens). `/auth/refresh` verifies its own refresh token.
         // `/auth/logout` is NOT public (v1.27.16 "Drawbridge" M3.4/F-13): it
@@ -4383,7 +4404,7 @@ async fn auth_middleware(
         | "/ump/capabilities"
         | "/auth/refresh"
     ) || path.starts_with("/webhooks/")
-        // v1.16.2 "Harden": the client SPA is public (static assets, no data).
+        // the client SPA is public (static assets, no data).
         || path == "/"
         || path.starts_with("/app");
     // Webhook endpoints are authenticated by their own HMAC signature check
@@ -4392,7 +4413,7 @@ async fn auth_middleware(
     if public || req.method() == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
-    // v1.2.0: JWT path. When JWT mode is on, the bearer token is a JWS; we
+    // JWT path. When JWT mode is on, the bearer token is a JWS; we
     // verify it, build a Principal, and inject it into request extensions.
     // Handlers that read the Principal (via `OptPrincipal` or `Extension`)
     // get the typed claims; handlers that don't see `None` and run as before.
@@ -4408,7 +4429,7 @@ async fn auth_middleware(
     if req.extensions().get::<auth::Principal>().is_some() {
         return next.run(req).await;
     }
-    // v1.27.16 "Drawbridge" (M3.1/F-26): the token read now distinguishes
+    // the token read now distinguishes
     // "never configured" from "read failed" — a poisoned token store is a 500
     // fail-closed and a configured-but-empty store denies (auth is ON with
     // no valid tokens). Only a truly unconfigured store keeps the loopback
@@ -4453,11 +4474,11 @@ async fn auth_middleware(
     if ok {
         next.run(req).await
     } else if capability_pass_through(&mut req, &presented_owned, &path) {
-        // v1.17.3 M5: the bearer verified as an operator-signed capability
+        // the bearer verified as an operator-signed capability
         // token on the UMP surface; the handler's cap_gate enforces verbs.
         next.run(req).await
     } else {
-        // v0.9.7 Guard: audit denied auth attempts at the trust boundary. The
+        // audit denied auth attempts at the trust boundary. The
         // middleware has no pool, so open a fresh read-only-ish connection
         // (denials are rare, so the cost is negligible and best-effort — audit
         // must never fail the action). Pass the request path, never the token.
@@ -4479,7 +4500,7 @@ async fn auth_middleware(
     }
 }
 
-// v1.1.2: replaced a hand-rolled fold with `subtle::ConstantTimeEq`, which
+// replaced a hand-rolled fold with `subtle::ConstantTimeEq`, which
 // is backed by asm/black_box primitives that the optimizer cannot short-
 // circuit. `subtle` is already a transitive dep (sha2/hmac/aes-gcm), so this
 // adds zero build surface. The length check below is inherently leaky, but
@@ -4531,7 +4552,7 @@ fn worker_threads() -> Option<usize> {
         .filter(|&n| n > 0)
 }
 
-// ── v1.20.29 "Bound": startup bind fail-closed (ATLAS F-5) ────────────────
+// ── startup bind fail-closed (ATLAS F-5) ────────────────
 // `handlers/mod.rs` treats a `None` principal as superuser (by-design
 // loopback). The symmetric gap: a non-loopback bind with no AUTH_TOKEN/JWT is
 // an open superuser API. v1.20.24 G3 added fail-closed file-perms; this is the
@@ -4598,7 +4619,7 @@ async fn main_inner() -> Result<()> {
     // `brain-server --version` never logs, opens sockets, or loads the model.
     handle_cli_args();
 
-    // ── v1.20.24 "Sweep": fail-closed auth configuration ────────────────
+    // ── fail-closed auth configuration ────────────────
     // An explicitly-set-but-broken token file must not silently disable auth
     // (the wrong failure direction); a secret file readable by group/world
     // must not be accepted at all. Both refuse startup with a clear message.
@@ -4610,7 +4631,7 @@ async fn main_inner() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
     }
 
-    // ── v1.20.7 "Telemetry" (M1): optional OTLP trace export ──────────────
+    // ── optional OTLP trace export ──────────────
     // Default build (no `otel` feature): plain fmt logging, byte-for-byte
     // unchanged. With `--features otel`, when `BRAIN_OTEL_ENABLED` (default
     // on) the four decision-critical spans are ALSO exported via OTLP/HTTP to
@@ -4770,7 +4791,7 @@ async fn main_inner() -> Result<()> {
     )?;
     info!("Migration complete (embedding_dim = {})", model.store_dim());
 
-    // ── v1.0.0 legacy cutover: brain.db → global.db (M6) ─────────────────
+    // ── legacy cutover: brain.db → global.db (M6) ─────────────────
     // When `BRAIN_MULTI_DB=true`, the per-domain system needs the legacy
     // single-DB content at `global.db`. We snapshot it ONCE, atomically, with
     // `VACUUM INTO` (consistent copy even under WAL) and stamp a marker so
@@ -4842,11 +4863,11 @@ async fn main_inner() -> Result<()> {
     spawn_connection_watchdog(std::sync::Arc::clone(&connection_tracker));
     info!("Connection watchdog started");
 
-    // v1.1.0 Harden M5: RSS watchdog. Log-only by default; `BRAIN_RSS_RESTART=1`
+    // RSS watchdog. Log-only by default; `BRAIN_RSS_RESTART=1`
     // opts in to exit-on-sustained-breach for supervisor-managed restarts.
     spawn_rss_watchdog();
 
-    // v1.1.0 Harden M1.4: cached, fail-safe bearer-token store + hot rotation.
+    // cached, fail-safe bearer-token store + hot rotation.
     // The watcher polls `AUTH_TOKEN_FILE` mtime every 5s and reloads on change.
     let token_store = TokenStore::new();
     if token_store.has_file() {
@@ -4854,7 +4875,7 @@ async fn main_inner() -> Result<()> {
         info!("token rotation watcher started");
     }
 
-    // v1.1.0 Harden M3: rolling backup + integrity self-check. Runs once on
+    // rolling backup + integrity self-check. Runs once on
     // boot then every 6h; `/health` reports `last_backup` + `integrity_ok`.
     let snapshot_state = integrity::SnapshotState::default();
     integrity::spawn_scheduler(db_path.clone(), snapshot_state.clone());
@@ -4866,7 +4887,7 @@ async fn main_inner() -> Result<()> {
         loop {
             interval.tick().await;
             if let Ok(conn) = pool_for_health.get() {
-                // v1.27.19 "Scrub" (D-1): was `let _ =` — a failing probe only
+                // was `let _ =` — a failing probe only
                 // ever logged nothing (the OK branch logged).
                 if let Err(e) = conn.query_row("SELECT 1", [], |_| Ok(())) {
                     warn!("pool health probe failed: {e}");
@@ -4882,7 +4903,7 @@ async fn main_inner() -> Result<()> {
     let rate_limiter = Arc::new(RateLimiter::new());
     info!("Rate limiter initialized");
 
-    // v0.9.0 Phase 3: annotator module removed.
+    // annotator module removed.
     // The TOML domain engine (src/annotator/) has been deleted; the inline
     // [[relation::entity]] byte scanner (parse_annotations) is kept.
     // On a default deploy the annotator was already a no-op, so this is
@@ -4950,13 +4971,13 @@ async fn main_inner() -> Result<()> {
         )
         .max_age(std::time::Duration::from_secs(config::CORS_MAX_AGE_SECS));
 
-    // v0.9.7 "Guard": clone the pool for the webhook drain worker before it is
+    // clone the pool for the webhook drain worker before it is
     // moved into AppState below.
     let webhook_pool = pool.clone();
-    // v1.1.0 Harden M4: clone the pool for the post-shutdown WAL checkpoint.
+    // clone the pool for the post-shutdown WAL checkpoint.
     let shutdown_pool = pool.clone();
 
-    // v1.2.0 "AuthN": JWT/JWS key loading + middleware state setup. Done before
+    // JWT/JWS key loading + middleware state setup. Done before
     // the router construction so the middleware state can be passed to
     // `from_fn_with_state` + the same values mirrored into AppState.
     let key_dir = auth::jwks::resolve_key_dir();
@@ -4965,7 +4986,7 @@ async fn main_inner() -> Result<()> {
         auth::jwks::KeyStore::default()
     });
     let auth_mode = auth::AuthMode::from_env(key_store.len());
-    // v1.27.12 "Rotate" (M2): the UMP operator Ed25519 signing key is read from
+    // the UMP operator Ed25519 signing key is read from
     // ambient `BRAIN_UMP_KEY_DIR` without a perms check in its own load path.
     // Warn once at startup if any key file there is group/world-readable (the
     // fail-soft L2 degrade posture is preserved — this is a warning, not a boot
@@ -5041,7 +5062,7 @@ async fn main_inner() -> Result<()> {
                 interval.tick().await;
                 purge_cache.purge_negatives();
                 if let Ok(conn) = Connection::open(&purge_db_path) {
-                    // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed purge is
+                    // was `let _ =` — a failed purge is
                     // fail-safe (stale denylist rows linger; tokens expire
                     // sooner, never later) but must be visible.
                     if let Err(e) = auth::revocation::purge_expired(&conn) {
@@ -5061,7 +5082,7 @@ async fn main_inner() -> Result<()> {
         db_path: db_path.clone(),
     });
 
-    // v1.28.5 "Groundwork" (F-44): the import route gets its OWN body-limit
+    // the import route gets its OWN body-limit
     // layer — 1 GiB, matching the handler's `to_bytes` cap. Tower-http
     // semantics: a router-level `RequestBodyLimitLayer` is applied eagerly to
     // the routes present at `.layer()` time, so the 1 MiB shared limit below
@@ -5097,7 +5118,7 @@ async fn main_inner() -> Result<()> {
         .route("/reindex", post(reindex))
         .route("/get/{id}", get(get_chunk))
         .route("/multi-get", post(multi_get))
-        // v0.9.7 Guard: quarantine operator surface. `GET /quarantine` lists
+        // quarantine operator surface. `GET /quarantine` lists
         // flagged chunks; release clears the flag; delete purges the chunk.
         .route("/quarantine", get(list_quarantined))
         .route("/quarantine/{id}/release", post(release_quarantine))
@@ -5108,7 +5129,7 @@ async fn main_inner() -> Result<()> {
         // Plugin API (contract: API_CONTRACT.md). Wire is locked; bodies land with v0.9.0/v1.0.0.
         .route("/recall", post(handlers::recall::recall))
         .route("/ingest", post(handlers::ingest::ingest))
-        // v1.17.3 "UMP" M2: the UMP 1.0 HTTP ops binding. Capabilities +
+        // the UMP 1.0 HTTP ops binding. Capabilities +
         // `/.well-known/ump.json` are PUBLIC (negotiation handshake); the
         // rest are authz-gated per the §3.3 matrix.
         .route("/ump/capabilities", get(handlers::ump_ops::capabilities))
@@ -5132,16 +5153,16 @@ async fn main_inner() -> Result<()> {
             get(handlers::domains::domains).post(handlers::domains::create_domain),
         )
         .route("/domains/{name}", delete(handlers::domains::delete_domain))
-        // v1.13.0 M3: bulk relabel of chunks across domains (the non-re-ingest
+        // bulk relabel of chunks across domains (the non-re-ingest
         // fix for the 99%-in-global corpus). A POST on a distinct path, so it
         // cannot collide with the `/domains/{name}` DELETE above.
         .route("/domains/move", post(handlers::domains::move_domains))
-        // v1.13.0 M4: one-shot recompute sweep over every domain's centroid.
+        // one-shot recompute sweep over every domain's centroid.
         .route(
             "/domains/recompute",
             post(handlers::domains::recompute_domains),
         )
-        // v1.0.0 M5: per-domain lifecycle. Vacuum reclaims free pages; export
+        // per-domain lifecycle. Vacuum reclaims free pages; export
         // streams a consistent snapshot; import restores a snapshot into a new
         // domain name. `name` is validated inside each handler.
         .route(
@@ -5152,7 +5173,7 @@ async fn main_inner() -> Result<()> {
             "/domains/{name}/export",
             get(handlers::domains::export_domain),
         )
-        // v1.21.0 "Profiles" M4: the preset API. Reads are Read-gated; writes
+        // the preset API. Reads are Read-gated; writes
         // (profile upsert + domain binding) are Admin + audited. Dual-method
         // paths register GET first then POST (the /retention precedent) so the
         // authz source-scan lands on the Admin POST as the conservative check.
@@ -5167,14 +5188,14 @@ async fn main_inner() -> Result<()> {
             "/domains/{name}/profile",
             post(handlers::profiles::domain_profile_bind),
         )
-        // v1.23.0 "Roles" M4: the role API. Reads are Read-gated; writes
+        // the role API. Reads are Read-gated; writes
         // (role upsert) are Admin + audited. Dual-method on {name}: GET then
         // POST, so the authz source-scan lands on the Admin POST as the
         // conservative check (the /retention + /profiles precedent).
         .route("/roles", get(handlers::roles::list_roles))
         .route("/roles/{name}", get(handlers::roles::get_role))
         .route("/roles/{name}", post(handlers::roles::upsert_role))
-        // v1.22.0 "Regulated" M1: legal hold — place/release/list holds that
+        // legal hold — place/release/list holds that
         // freeze ids against erasure (decay, /purge, DSAR).
         .route("/legal-hold", post(handlers::holds::post_legal_hold))
         .route(
@@ -5182,7 +5203,7 @@ async fn main_inner() -> Result<()> {
             post(handlers::holds::release_legal_hold),
         )
         .route("/legal-holds", get(handlers::holds::list_legal_holds))
-        // v1.25.0 "PH-Compliant" M2: the breach-notification workflow. Human-
+        // the breach-notification workflow. Human-
         // opened by the DPO role; every event is hash-chained into the audit.
         .route("/breach", post(handlers::breaches::post_breach))
         .route(
@@ -5192,7 +5213,7 @@ async fn main_inner() -> Result<()> {
         .route("/breach/{id}/close", post(handlers::breaches::close_breach))
         .route("/breaches", get(handlers::breaches::list_breaches))
         .route("/breaches/{id}", get(handlers::breaches::get_breach))
-        // v1.26.0 "Cross-Border" M1/M4: the cross-border transfer register +
+        // the cross-border transfer register +
         // the TIA/DPA evidence artifacts. Writes are Admin + audited; the
         // register + templates are the Art 30/46 + Schrems II evidence a
         // client's regulator asks for (a human DPO/legal reviews + signs them).
@@ -5200,7 +5221,7 @@ async fn main_inner() -> Result<()> {
         .route("/transfers", get(handlers::transfers::list_transfers))
         .route("/transfers/{id}/tia", get(handlers::transfers::get_tia))
         .route("/transfers/{id}/dpa", get(handlers::transfers::get_dpa))
-        // v1.27.1 "Clients": the BPO operating register — the spine every later
+        // the BPO operating register — the spine every later
         // BPO release (onboard/dpa/dsar/holds/termination) reads. Writes are
         // Admin + audited (AuditKind::Client); the identity/evidence surface
         // only (no enforcement gate).
@@ -5218,7 +5239,7 @@ async fn main_inner() -> Result<()> {
         .route("/clients/{name}/dsar", post(handlers::clients::client_dsar))
         .route("/clients/{name}/hold", post(handlers::clients::client_hold))
         .route("/clients/{name}/end", post(handlers::clients::client_end))
-        // v1.27.8 "QaQueue": the supervisor QA surface — owner-scoped queue
+        // the supervisor QA surface — owner-scoped queue
         // list + audited coaching (read + write are Admin like every client op).
         .route(
             "/clients/{name}/proposals",
@@ -5228,22 +5249,22 @@ async fn main_inner() -> Result<()> {
             "/clients/{name}/proposals/{id}/coach",
             post(handlers::clients::coach_proposal),
         )
-        // v0.9.4 Sources: source lifecycle. `reconcile` retires active sources
+        // source lifecycle. `reconcile` retires active sources
         // of a kind whose URI is no longer in the live set (a vault delete or
         // rename); `delete /sources/{id}` retires a single source explicitly.
         .route("/sources/reconcile", post(handlers::sources::reconcile))
         .route("/sources/{id}", delete(handlers::sources::delete_source))
-        // v0.9.6 Bridge: connector registry. `GET /connectors` lists every
+        // connector registry. `GET /connectors` lists every
         // registered connector instance across all kinds.
         .route("/connectors", get(handlers::connectors::list))
-        // v1.24.0 Connectors M1: register a connector instance, gated by the
+        // register a connector instance, gated by the
         // domain's bound profile `connectors_allowed` (Admin, audited).
         .route("/connectors/register", post(handlers::connectors::register))
-        // v1.5.0 "Epistemic" M5: deterministic span verification. Given a
+        // deterministic span verification. Given a
         // claim + chunk_id, returns whether the claim is supported by the
         // chunk's text. Pure lexical match — no embeddings, no LLM.
         .route("/verify", post(handlers::verify::verify))
-        // v1.9.0 "Suggest": opt-in, non-interrupting anticipation. `/suggest`
+        // opt-in, non-interrupting anticipation. `/suggest`
         // is an explicit pull (caller asks "what else might be relevant?");
         // `/suggest/feedback` records accept/dismiss; `/suggest/metrics` is
         // the false-positive rate (roadmap exit criterion). All three are
@@ -5252,7 +5273,7 @@ async fn main_inner() -> Result<()> {
         .route("/suggest", post(handlers::suggest::suggest))
         .route("/suggest/feedback", post(handlers::suggest::feedback))
         .route("/suggest/metrics", get(handlers::suggest::metrics))
-        // v1.10.0 "Procedural": procedural memory + deterministic categorization
+        // procedural memory + deterministic categorization
         // + decision evaluation. `POST /procedure` ingests an ordered runbook;
         // `GET /procedure/{id}/steps` returns the ordered chain; `POST /classify`
         // categorizes text deterministically (Mem0's premium, free); `POST
@@ -5265,15 +5286,15 @@ async fn main_inner() -> Result<()> {
             "/decision/{id}/evaluate",
             post(handlers::procedure::evaluate),
         )
-        // v0.9.8 "Evidence" M2.3: reviewable consolidation. `propose` is pure
+        // reviewable consolidation. `propose` is pure
         // detection (no mutation); `apply` records operator-chosen typed links.
         .route("/consolidate/propose", post(handlers::consolidate::propose))
         .route("/consolidate/apply", post(handlers::consolidate::apply))
-        // v1.8.0 "Maintain": reverse prior supersession resolutions. The undo
+        // reverse prior supersession resolutions. The undo
         // arm of the roadmap exit criterion ("reject or undo them without
         // retrieval regression"). Clears valid_to + removes the supersedes link.
         .route("/consolidate/undo", post(handlers::consolidate::undo))
-        // v1.14.0 "Gate" M1: write-back gate — proposals queue + human review.
+        // write-back gate — proposals queue + human review.
         // No auto-promote: a candidate becomes memory only by explicit approval.
         .route("/ingest/proposal", post(handlers::gate::ingest_proposal))
         .route("/proposals", get(handlers::gate::list_proposals))
@@ -5286,13 +5307,13 @@ async fn main_inner() -> Result<()> {
             post(handlers::gate::reject_proposal),
         )
         .route("/proposals/{id}/edit", post(handlers::gate::edit_proposal))
-        // v1.14.0 "Gate" M2: decay + GDPR lifecycle. `/export` is portable JSON
+        // decay + GDPR lifecycle. `/export` is portable JSON
         // (interchange); `/purge` is hard, explicit, audited deletion; `/decayed`
         // is the operator review list. Nothing is deleted autonomously.
         .route("/decayed", get(handlers::gate::list_decayed))
         .route("/export", get(handlers::gate::export))
         .route("/purge", post(handlers::gate::purge))
-        // v1.17.1 "Govern": per-kind retention policy (M2), the Art 30
+        // per-kind retention policy (M2), the Art 30
         // records-of-processing register (M5), and the snapshot self-check
         // panel (M7). GET /retention reads; POST /retention overrides
         // (Admin + audited); /art30 and /snapshot/status are Admin read-only.
@@ -5301,7 +5322,7 @@ async fn main_inner() -> Result<()> {
         .route("/retention/report", get(handlers::govern::retention_report))
         .route("/art30", get(handlers::govern::art30))
         .route("/snapshot/status", get(handlers::govern::snapshot_status))
-        // v1.15.0 "Observe": read-event trace + DSAR workflow. `/recall/{id}/
+        // read-event trace + DSAR workflow. `/recall/{id}/
         // trace` replays a recorded recall decision path; `/dsar` is the GDPR
         // Art 15/17 workflow (locate → export → purge → certificate);
         // `/tombstones` is the queryable deletion registry; `/dsar/{id}/
@@ -5311,7 +5332,7 @@ async fn main_inner() -> Result<()> {
             get(handlers::observe::get_trace),
         )
         .route("/dsar", post(handlers::observe::post_dsar))
-        // v1.20.22 "Clocks" M1.2: the DSAR ledger list (Admin) — past requests
+        // the DSAR ledger list (Admin) — past requests
         // + the Art 17 window the client countdown renders.
         .route("/dsar", get(handlers::observe::list_dsar))
         .route("/tombstones", get(handlers::observe::list_tombstones))
@@ -5319,10 +5340,10 @@ async fn main_inner() -> Result<()> {
             "/dsar/{id}/certificate",
             get(handlers::observe::get_dsar_certificate),
         )
-        // v0.9.7 "Guard": verified webhook ingestion. The handler only verifies
+        // verified webhook ingestion. The handler only verifies
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
-        // v1.2.0 "AuthN": OIDC discovery + JWKS + auth endpoints. These are
+        // OIDC discovery + JWKS + auth endpoints. These are
         // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
         // and `/auth/logout` (v1.27.16 "Drawbridge" M3.4/F-13 — the
         // middleware verifies the presented access token, so the handler can
@@ -5355,7 +5376,7 @@ async fn main_inner() -> Result<()> {
         .route("/audit", get(list_audit))
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
-        // v1.16.2 "Harden" M1.1: serve the built client SPA from client/dist.
+        // serve the built client SPA from client/dist.
         // nest_service strips the `/app` prefix; ServeDir serves files with MIME
         // + path-traversal prevention, and not_found_service returns index.html
         // for SPA deep-links (the Dioxus router handles them client-side). The
@@ -5375,7 +5396,7 @@ async fn main_inner() -> Result<()> {
         )
         // Inner layers (closest to handler)
         .layer(RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE))
-        // v1.28.5 "Groundwork" (F-44): merge the 1 GiB import router AFTER the
+        // merge the 1 GiB import router AFTER the
         // shared 1 MiB limit so the shared cap never wraps the import route
         // (see the import_router comment above). All shared layers below
         // (auth, JWT, rate limit, timeout, trace) still cover it.
@@ -5407,7 +5428,7 @@ async fn main_inner() -> Result<()> {
             token_store.clone(),
             auth_middleware,
         ))
-        // v1.2.0 "AuthN": JWT verification. Outermost auth layer — runs before
+        // JWT verification. Outermost auth layer — runs before
         // `auth_middleware`. In opaque mode (default) it's a no-op pass-through.
         // In JWT mode it verifies the JWS, checks revocation, and injects a
         // Principal into extensions (which `auth_middleware` then sees + passes).
@@ -5449,17 +5470,17 @@ async fn main_inner() -> Result<()> {
                 alert_seq: std::sync::atomic::AtomicU64::new(0),
                 chain_watch: alert::ChainWatchState::default(),
             });
-            // v1.20.8 "Signal": watch pending proposals and fire the `expiry`
+            // watch pending proposals and fire the `expiry`
             // alert once per SLA-tier boundary crossed.
             let watcher_state = Arc::clone(&app_state);
             tokio::spawn(async move { alert::spawn_expiry_watcher(watcher_state).await });
-            // v1.20.10 "Proof": watch the audit hash chain and raise an
+            // watch the audit hash chain and raise an
             // `integrity` alert on ok↔broken transitions; /health reads the
             // cached posture.
             let cw_state = Arc::clone(&app_state);
             let cw_watch = app_state.chain_watch.clone();
             tokio::spawn(async move { alert::spawn_chain_watcher(cw_state, cw_watch).await });
-            // v1.27.16 "Drawbridge" (M5/F-41): seed the multi-db registry from
+            // seed the multi-db registry from
             // the clients register — a client's domain must resolve even if
             // its per-domain file vanished between boots (register recreates
             // it: cap-bounded; a refused seed is logged, never fatal).
@@ -5482,7 +5503,7 @@ async fn main_inner() -> Result<()> {
             app_state
         });
 
-    // v0.9.7 "Guard": spawn the webhook drain worker. It processes verified
+    // spawn the webhook drain worker. It processes verified
     // deliveries off the bounded queue without an HTTP round-trip.
     webhook::spawn_drain_worker(webhook_pool);
     info!("webhook drain worker started");
@@ -5521,14 +5542,14 @@ async fn main_inner() -> Result<()> {
         }
     };
 
-    // v1.20.29 "Bound": refuse to serve on a non-loopback bind with no auth.
+    // refuse to serve on a non-loopback bind with no auth.
     // Runs after `addr` resolves + `auth_mode` is known, before the socket is
     // bound. The guard is a pure function (unit-tested) so the startup path
     // stays deterministic. See `enforce_loopback_bind_guard`.
     enforce_loopback_bind_guard(&addr, auth_mode)?;
 
     println!("🚀 Server: http://{}:{}", bind_host, bind_port);
-    // v1.27.12 "Rotate" (M2): make the two unsigned-by-default egress signatures
+    // make the two unsigned-by-default egress signatures
     // a visible startup warning, never a silent default — an operator shipping a
     // webhook sink should know the payload integrity is off until the secret is
     // set. `eprintln!` so it lands in `err.log` beside the rest of the warnings.
@@ -5549,7 +5570,7 @@ async fn main_inner() -> Result<()> {
     }
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // v1.3.0 Bedrock fix: the v1.1.0 `timeout(drain_cap, axum::serve(...))`
+    // the v1.1.0 `timeout(drain_cap, axum::serve(...))`
     // was wrapping the ENTIRE serve lifetime, causing a 30s crash-loop on
     // systemd-managed deployments (the server would run for exactly
     // SHUTDOWN_DRAIN_SECS then exit). The timeout was intended to cap only
@@ -5559,7 +5580,7 @@ async fn main_inner() -> Result<()> {
     // TimeoutStopSec (default 90s) will kill the process — that's the
     // outer cap, not the application.
     //
-    // v1.27.16 "Drawbridge" (F-07): `into_make_service_with_connect_info`
+    // `into_make_service_with_connect_info`
     // injects the peer `SocketAddr` extension on every request. Previously
     // the plain `serve` never provided it, so `rate_limit_middleware`'s
     // `req.extensions().get::<SocketAddr>()` was always `None` and every
@@ -5573,7 +5594,7 @@ async fn main_inner() -> Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await?;
 
-    // v1.1.0 Harden M4: checkpoint WAL on shutdown so a kill -9 or power loss
+    // checkpoint WAL on shutdown so a kill -9 or power loss
     // can't leave the live DB with un-replayed WAL frames. Best-effort: a
     // failure here is logged, not fatal (the OS will replay WAL on next open
     // anyway). `TRUNCATE` zeros the WAL file back to its minimum size.
@@ -5617,7 +5638,7 @@ mod tests {
 
     #[test]
     fn process_rss_mib_reports_plausible_process_footprint() {
-        // v1.13.5 regression guard: the /metrics gauge must reflect THIS
+        // the /metrics gauge must reflect THIS
         // process's RSS, not system-wide used memory (which is ~50x larger on
         // a busy host and would silently mislead Prometheus consumers).
         let rss = process_rss_mib();
@@ -5649,7 +5670,7 @@ mod tests {
         assert_eq!(tracker.count(), 0);
     }
 
-    /// v1.20.2 D1: the rate limiter's HashMap is bounded so an attacker
+    /// the rate limiter's HashMap is bounded so an attacker
     /// cycling spoofed `X-Forwarded-For` values can't grow memory unboundedly.
     /// At the cap the oldest 25% of buckets are evicted; the limiter keeps
     /// working (new IPs get tracked) instead of OOMing.
@@ -5677,7 +5698,7 @@ mod tests {
         assert!(rl.is_allowed("172.16.0.1"));
     }
 
-    /// v1.20.18 "Bound": the graph endpoints return a finite edge set. A hub
+    /// the graph endpoints return a finite edge set. A hub
     /// entity with 1000 edges returns at most `limit` (the 500-lowest, newest
     /// relationship ids first by the stable `ORDER BY r.id`), and the clamp
     /// keeps a bogus `?limit=` inside `1..=MAX_GRAPH_EDGES`.
@@ -6196,7 +6217,7 @@ mod tests {
         assert_eq!(rows_again, 1, "idempotent re-run must not duplicate rows");
     }
 
-    // ── v0.9.0 Phase 2: FTS5 tests ──────────────────────────────────────
+    // ── Phase 2: FTS5 tests ──────────────────────────────────────
 
     #[test]
     fn test_fts5_table_exists() {
@@ -6288,7 +6309,7 @@ mod tests {
         assert_eq!(after, 0, "FTS should be synced after delete");
     }
 
-    // ── v0.9.0 Phase 3: inline annotations after annotator removal ──────
+    // ── Phase 3: inline annotations after annotator removal ──────
 
     #[test]
     fn test_parse_annotations_still_works() {
@@ -6313,7 +6334,7 @@ mod tests {
         );
     }
 
-    // ── v0.9.0 Phase 4: migration safety / round-trip ─────────────────────
+    // ── Phase 4: migration safety / round-trip ─────────────────────
 
     #[test]
     fn test_vec0_search_returns_inserted_content() {
@@ -6472,7 +6493,7 @@ mod tests {
         );
     }
 
-    // ── v0.9.1 Milestone 2: metadata-filtered KNN ────────────────────────
+    // ── Milestone 2: metadata-filtered KNN ────────────────────────
 
     #[test]
     fn test_vec0_knn_filters_by_source() {
@@ -6521,7 +6542,7 @@ mod tests {
         assert_eq!(filtered[0].id, kid_manual);
     }
 
-    // ── v0.9.7 Guard: quarantine / injection-policy tests ─────────────────
+    // ── Guard: quarantine / injection-policy tests ─────────────────
 
     #[test]
     fn ingest_quarantines_flagged_instead_of_rejecting() {
@@ -6643,7 +6664,7 @@ mod tests {
         );
     }
 
-    /// v1.28.1 "Holdall" M1 (F-02): the quarantine delete path is an erasure
+    /// the quarantine delete path is an erasure
     /// path — a held chunk must refuse `POST /quarantine/{id}/delete` with the
     /// same 409 shape, and the row must survive until holds are released.
     #[tokio::test]
@@ -6772,7 +6793,7 @@ mod tests {
 
     #[test]
     fn bitemporal_edge_filter_in_traverse_query() {
-        // v1.4.0 M1: two edges for the same (from,to,kind) with different
+        // two edges for the same (from,to,kind) with different
         // valid-intervals — "Kamala was CA AG from 2011 to 2017" vs a current
         // holder. A `?at=2015` query must traverse the 2011–2017 edge; a
         // `?at=2020` query must NOT (its invalid_at has passed).
@@ -6835,7 +6856,7 @@ mod tests {
 
     #[test]
     fn kind_filter_restricts_traverse_to_matching_edge_type() {
-        // v1.7.0: the ?kind=<relation_type> filter must restrict the walk to
+        // the ?kind=<relation_type> filter must restrict the walk to
         // edges of that type. This is a regression test for the placeholder-
         // numbering bug: when `at` was None, kind was incorrectly hardcoded
         // to ?4 (which didn't exist when only 3 params were bound) → 500.
@@ -6895,7 +6916,7 @@ mod tests {
 
     #[test]
     fn supersession_makes_chunk_invisible_to_default_recall_but_visible_historically() {
-        // v1.6.0 "Reconcile" Carry-forward proof: after resolve_supersession,
+        // after resolve_supersession,
         // the existing /recall bi-temporal filter (vec0_knn + fts_search both
         // use this fragment on knowledge.valid_from/valid_to) must:
         //   - exclude the old chunk from DEFAULT recall (no `?at`)
@@ -6951,7 +6972,7 @@ mod tests {
 
     #[test]
     fn near_duplicates_cover_vec0_ingested_chunks_not_legacy_json_only() {
-        // v1.9.1 regression (C1): find_near_duplicates used to JOIN the legacy
+        // find_near_duplicates used to JOIN the legacy
         // `embeddings` JSON table, which froze at v0.9.0 — production ingests
         // write only vec_knowledge, so on a live DB the scan silently covered
         // ~0% of chunks (2 of 8538 on the operator's DB). This test ingests
@@ -6995,7 +7016,7 @@ mod tests {
         );
     }
 
-    // ── v1.13.0 "Route" M1: centroid reads the live vec0 index ──────────
+    // ── centroid reads the live vec0 index ──────────
     //
     // v1.13.0 root-cause regression (domain auto-routing): recompute_centroid
     // used to read the frozen legacy `embeddings` JSON table (2 rows since
@@ -7079,7 +7100,7 @@ mod tests {
         );
     }
 
-    // ── v1.9.0 "Suggest" integration tests ──────────────────────────────
+    // ── integration tests ──────────────────────────────
     //
     // The pure-function tests in handlers/suggest.rs cover validation,
     // outcome parsing, and the metric math. These integration tests prove the
@@ -7089,7 +7110,7 @@ mod tests {
     #[test]
     fn suggest_feedback_ledger_is_queryable_and_tenant_scoped() {
         // The handler's INSERT + the metrics GROUP BY against real rows.
-        // Each (chunk_id, session) key carries one signal (v1.9.1 dedup), so
+        // Each (chunk_id, session) key carries one signal, so
         // the sessions below are distinct — the counts exercise the exact
         // GROUP BY shape the metrics handler issues.
         let db = test_db();
@@ -7172,7 +7193,7 @@ mod tests {
 
     #[test]
     fn suggest_feedback_last_wins_per_chunk_session() {
-        // v1.9.1 (S2): the handler's upsert + unique index must make feedback
+        // the handler's upsert + unique index must make feedback
         // one-signal-per-(chunk, session). A replay or a changed mind updates
         // the existing row instead of appending, so the false-positive metric
         // can't be poisoned by duplicate rows.
@@ -7230,7 +7251,7 @@ mod tests {
 
     #[test]
     fn suggest_exclude_filter_uses_the_same_knowledge_visibility_as_recall() {
-        // v1.6.0 warranty carried into /suggest: a superseded chunk (valid_to
+        // a superseded chunk (valid_to
         // set) must NOT be suggestable, because vec0_knn reuses the
         // `valid_to IS NULL` default filter. Proves /suggest never re-surfaces
         // a fact the operator already retired.
@@ -7262,7 +7283,7 @@ mod tests {
 
     #[test]
     fn temporal_extractor_populates_edge_interval() {
-        // v1.4.0 M1: the deterministic extractor pulls valid_at/invalid_at from
+        // the deterministic extractor pulls valid_at/invalid_at from
         // free text. "from 2011 to 2017" → [2011, 2017).
         use crate::temporal::extract_interval;
         let now = chrono::NaiveDate::from_ymd_opt(2026, 7, 30)
@@ -7276,7 +7297,7 @@ mod tests {
 
     #[test]
     fn typed_edge_prefix_passes_validation() {
-        // v1.4.0 M3: TRACE typed-edge prefixes (update:, supersedes:, etc.) must
+        // TRACE typed-edge prefixes (update:, supersedes:, etc.) must
         // pass the relation_type validator so callers can ingest typed edges.
         use crate::handlers::{is_match, RELTYPE_RE};
         assert!(is_match(RELTYPE_RE, "update:lives_in"));
@@ -7293,7 +7314,7 @@ mod tests {
 
     #[test]
     fn explanation_paths_reconstruct_hop_chain_from_cte_output() {
-        // v1.7.0 "Explain": build_explanation_paths must turn a flat traversal
+        // build_explanation_paths must turn a flat traversal
         // row (path="1->5->9", edge_path="works_at|ceo_of") into a structured
         // hop chain with named endpoints. This is the faithful explanation
         // the roadmap exit criterion asks for.
@@ -7327,7 +7348,7 @@ mod tests {
 
     #[test]
     fn trace_traversal_caps_are_bounded() {
-        // v1.4.0 M3: the forbidden-list rule mandates bounded graph walks.
+        // the forbidden-list rule mandates bounded graph walks.
         // Read into locals so clippy sees a runtime check, not a const assertion.
         let hops = crate::trace::MAX_HOPS;
         let visited = crate::trace::MAX_VISITED;
@@ -7337,7 +7358,7 @@ mod tests {
 
     #[test]
     fn eval_metrics_compute_correctly() {
-        // v1.4.0 M5: the regression-harness metric functions produce the
+        // the regression-harness metric functions produce the
         // hand-computed values (the smallest check that fails if a metric breaks).
         use brain_server::eval::{mrr, ndcg, precision_at_k, recall_at_k};
         assert!((precision_at_k(&[1, 2, 3, 4, 5], &[2, 4], 5) - 0.4).abs() < 1e-6);
@@ -7379,7 +7400,7 @@ mod tests {
         assert!(r.snippet.is_some());
     }
 
-    // ── v0.9.0 M4: migration parity — nearest-neighbor overlap ────────────
+    // ── migration parity — nearest-neighbor overlap ────────────
 
     /// Insert a small corpus into BOTH the legacy JSON `embeddings` table and
     /// `vec_knowledge`, then assert the vec0 KNN top-K overlaps with a brute-
@@ -7488,7 +7509,7 @@ mod tests {
         );
     }
 
-    // ── v0.9.0 M4: migrate_down reversibility ──────────────────────────────
+    // ── migrate_down reversibility ──────────────────────────────
 
     #[test]
     fn test_migrate_down_0_9_0_drops_vec_and_fts() {
@@ -7528,7 +7549,7 @@ mod tests {
         migrate_down_0_9_0(&mut db).expect("idempotent migrate_down");
     }
 
-    // ── v0.9.0 M4: FTS5 update-sync (the AU trigger) ───────────────────────
+    // ── FTS5 update-sync (the AU trigger) ───────────────────────
 
     #[test]
     fn test_fts5_update_sync() {
@@ -7567,7 +7588,7 @@ mod tests {
         assert_eq!(new_n, 1, "FTS must index new terms after UPDATE");
     }
 
-    // ── v0.9.1 M4: FTS5-weighted PRF term extraction ───────────────────────
+    // ── FTS5-weighted PRF term extraction ───────────────────────
 
     #[test]
     fn test_prf_extract_terms_fts_weights_corpus() {
@@ -7622,7 +7643,7 @@ mod tests {
         ];
 
         let terms = crate::search::prf_extract_terms_fts(&db, &hits, "gut health", 5);
-        // v1.27.18 "Groundwork" (E-1): this assertion now sees the REAL vocab
+        // this assertion now sees the REAL vocab
         // path. Pre-E-1 it pinned the SILENT FALLBACK: the bundled SQLite
         // 3.53.2 fts5vocab 'instance' table exposes `(term, doc, col, offset)` —
         // one row per OCCURRENCE — while the pre-E-1 query referenced the
@@ -7640,7 +7661,7 @@ mod tests {
         assert!(!terms.iter().any(|t| t == "gut" || t == "health"));
     }
 
-    // ── v0.9.1 M5: recall eval harness (pure-vector vs hybrid vs hybrid+PRF) ──
+    // ── recall eval harness (pure-vector vs hybrid vs hybrid+PRF) ──
     //
     // Measures recall@5 / recall@10 across the retrieval configs on a small
     // in-process corpus. `#[ignore]` because it loads the model2vec weights
@@ -7812,7 +7833,7 @@ mod tests {
         assert!(pv_r5.is_finite() && hy_r5.is_finite() && prf_r5.is_finite());
     }
 
-    // ── v0.9.2: vault ingest (source_path, idempotency, replace, KG) ─────────
+    // ── vault ingest (source_path, idempotency, replace, KG) ─────────
 
     /// Fake 512-dim embedding for tests that exercise the DB logic without the model.
     fn fake_embedding(seed: f32) -> Vec<f32> {
@@ -8009,7 +8030,7 @@ mod tests {
         assert_eq!(count, 1, "replace must not accumulate rows");
     }
 
-    /// v0.9.4: a vault ingest must create a `sources` row + an active
+    /// a vault ingest must create a `sources` row + an active
     /// `source_revisions` row, and every chunk it inserted must point at them.
     /// This is the integration glue between `write_markdown_ingest` and
     /// `sources::{upsert_source, upsert_revision, link_chunks}` — the smallest
@@ -8077,7 +8098,7 @@ mod tests {
         assert_eq!(k_rid, rev_id);
     }
 
-    /// v0.9.8 M1.2: historical point-in-time recall hides a chunk once a newer
+    /// historical point-in-time recall hides a chunk once a newer
     /// active revision of the same source has been fetched at/before `as_of`.
     /// Exercises the exact `as_of` predicate embedded in `vec0_knn`/`fts_search`
     /// against a migrated DB (validates the join + supersession semantics).
@@ -8127,7 +8148,7 @@ mod tests {
         assert_eq!(visible_after, 0, "chunk retired after rB fetched at as_of");
     }
 
-    /// v0.9.4: pre-v0.9.4 chunks have NULL `source_id`. Re-ingesting an
+    /// pre-v0.9.4 chunks have NULL `source_id`. Re-ingesting an
     /// unchanged file must NOT be a true no-op at the source layer — it must
     /// backfill the linkage on first v0.9.4 ingest. (Subsequent re-ingests are
     /// then a true no-op.) This is the path the live 430-doc DB takes when it
@@ -8222,7 +8243,7 @@ mod tests {
         assert_eq!(src_count, 1);
     }
 
-    /// v0.9.4: editing a vault file must supersede the prior active revision
+    /// editing a vault file must supersede the prior active revision
     /// and relink the new chunks to a fresh revision row. The prior revision
     /// row is retained (state = 'superseded'), not deleted.
     #[test]
@@ -8325,7 +8346,7 @@ mod tests {
         assert!(k_rev > 0);
     }
 
-    /// v0.9.4: `/ingest/memory` composes `upsert_source`/`upsert_revision`/
+    /// `/ingest/memory` composes `upsert_source`/`upsert_revision`/
     /// `link_chunks` per memory entry with kind='manual' and a `manual://{hash}`
     /// URI. The handler inlines this (no `write_memory_ingest` helper exists),
     /// so this test is the smallest check that the composition works the way the
@@ -8393,7 +8414,7 @@ mod tests {
         assert_eq!(stored_uri, source_uri);
     }
 
-    /// v0.9.4 warranty test: markdown files whose NAME or CONTENT contain
+    /// markdown files whose NAME or CONTENT contain
     /// "special" characters (`#`, `-`, `_`, spaces, parens, brackets, unicode,
     /// backticks, code fences with `#`-comments) must round-trip verbatim
     /// through the ingest pipeline — filename preserved as `sources.uri` /
@@ -8704,7 +8725,7 @@ Final paragraph after the rule.";
         assert_eq!(aliased, 1, "alias_of edge must exist");
     }
 
-    // ── v0.9.4 schema-contract test ────────────────────────────────────
+    // ── schema-contract test ────────────────────────────────────
     // The migration safety net for the Sources release. Asserts the full set of
     // tables/columns the rest of the codebase depends on. When v0.9.4 adds the
     // `sources`/`source_revisions` tables and the `knowledge.source_id`/
@@ -8747,12 +8768,12 @@ Final paragraph after the rule.";
             "refresh_chains",
             // v1.22.0 Regulated
             "legal_holds",
-            // v1.25.0 PH-Compliant: the breach-notification ledger.
+            // the breach-notification ledger.
             "breaches",
             "breach_events",
-            // v1.26.0 Cross-Border: the transfer register (Art 30/46 evidence).
+            // the transfer register (Art 30/46 evidence).
             "transfers",
-            // v1.27.1 Clients: the BPO operating register (global-operator rows).
+            // the BPO operating register (global-operator rows).
             "clients",
         ];
         let missing: Vec<String> = expected_tables
@@ -8802,7 +8823,7 @@ Final paragraph after the rule.";
             "authority",
             // v1.18.2 Transparency
             "origin",
-            // v1.22.0 Regulated M3: the residency stamp column.
+            // the residency stamp column.
             "region",
         ];
         let actual_cols: std::collections::HashSet<String> = db
@@ -8822,7 +8843,7 @@ Final paragraph after the rule.";
             "knowledge table is missing expected columns: {missing_cols:?}"
         );
 
-        // v1.1.0 Harden: audit_events gained `tenant_id` + `prev_hash`. Both
+        // audit_events gained `tenant_id` + `prev_hash`. Both
         // are referenced by `audit::record_tenant` + `audit::verify_chain`; a
         // dropped column would break the chain at the next ingest.
         let expected_audit_cols = ["tenant_id", "prev_hash"];
@@ -8887,7 +8908,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(count, 1, "knowledge count should reflect the insert");
 
-        // v1.4.0 "Calibrate" M1: bi-temporal edge columns exist.
+        // bi-temporal edge columns exist.
         let rel_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(relationships)")
             .unwrap()
@@ -8901,7 +8922,7 @@ Final paragraph after the rule.";
                 "v1.4.0: relationships.{col} column must exist after migration"
             );
         }
-        // v1.4.0 "Calibrate" M3: TRACE node hierarchy reservation columns.
+        // TRACE node hierarchy reservation columns.
         let k_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(knowledge)")
             .unwrap()
@@ -8915,7 +8936,7 @@ Final paragraph after the rule.";
                 "v1.4.0: knowledge.{col} column must exist after migration"
             );
         }
-        // v1.10.0 "Procedural": the repurposed node_kind defaults to 'fact'
+        // the repurposed node_kind defaults to 'fact'
         // (the memory_kind of every declarative chunk) for fresh-DB inserts.
         let node_kind: String = db
             .query_row(
@@ -8926,7 +8947,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(node_kind, "fact", "node_kind defaults to 'fact'");
 
-        // v0.9.9: schema_version is recorded after migration and readable via
+        // schema_version is recorded after migration and readable via
         // the shared helper. The rehearsal tool relies on this to refuse a
         // migrate-down without --force. v1.9.0 bumped this from 1.4.0 (the
         // light-cut releases v1.5–v1.8 made no schema changes); v1.9.1 bumped
@@ -8951,7 +8972,7 @@ Final paragraph after the rule.";
             "schema_version must be recorded as 1.27.18 after migration"
         );
 
-        // v1.21.0 "Profiles": the preset tables exist and the 12 ship-with
+        // the preset tables exist and the 12 ship-with
         // presets are seeded (INSERT OR IGNORE — a re-migration never
         // overwrites an operator edit).
         let seeded: i64 = db
@@ -8973,7 +8994,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(bindings, 0, "no domain is bound to a profile by default");
 
-        // v1.23.0 "Roles": the roles table exists and the 12 ship-with roles
+        // the roles table exists and the 12 ship-with roles
         // are seeded (INSERT OR IGNORE — a re-migration never overwrites an
         // operator edit). The `solo` SMB role carries every action (the
         // simplest default).
@@ -8981,7 +9002,7 @@ Final paragraph after the rule.";
             .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
             .unwrap();
         assert_eq!(roles_seeded, 12, "the 12 ship-with roles are seeded");
-        // v1.27.9 "Roles": the BPO client postures are among them.
+        // the BPO client postures are among them.
         let auditor: String = db
             .query_row(
                 "SELECT json FROM roles WHERE name = 'client-auditor'",
@@ -8997,7 +9018,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert!(solo.contains("\"owner_filter\":\"all\""));
 
-        // v1.20.14 "Steer": the pending-proposal edit marker column exists.
+        // the pending-proposal edit marker column exists.
         // The review badge + read-time view key off it; a missing column here
         // means the migration regressed and the client badge would silently
         // never render.
@@ -9011,7 +9032,7 @@ Final paragraph after the rule.";
             > 0;
         assert!(has_edited_at, "proposals.edited_at column must exist");
 
-        // v1.27.8 "QaQueue": the review queue's agent provenance + coaching note
+        // the review queue's agent provenance + coaching note
         // columns exist (the QA surface reads/writes them; an additive-regression
         // here silently breaks owner scoping + the coach verb).
         for col in ["owner", "qa_note"] {
@@ -9023,13 +9044,10 @@ Final paragraph after the rule.";
                 )
                 .unwrap_or(0)
                 > 0;
-            assert!(
-                present,
-                "proposals.{col} column must exist after migration (v1.27.8)"
-            );
+            assert!(present, "proposals.{col} column must exist after migration");
         }
 
-        // v1.9.0 "Suggest": the feedback ledger exists with its audit columns.
+        // the feedback ledger exists with its audit columns.
         // Append-only by construction; this is the smallest check that fails
         // if the migration forgets the table or any of its audit-relevant cols.
         let sf_cols: std::collections::HashSet<String> = db
@@ -9067,7 +9085,7 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(idx_exists, 1, "idx_suggest_feedback_tenant_ts must exist");
-        // v1.9.1 "Harden": the last-wins dedup index also exists — without it
+        // the last-wins dedup index also exists — without it
         // the handler's upsert silently no-ops on a duplicate key error path
         // and the false-positive metric can be poisoned by replays.
         let dedup_idx: i64 = db
@@ -9079,10 +9097,10 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(
             dedup_idx, 1,
-            "idx_suggest_feedback_chunk_session (v1.9.1) must exist"
+            "idx_suggest_feedback_chunk_session must exist"
         );
 
-        // v1.20.18 "Bound": the tombstone registry + DSAR certificate reads
+        // the tombstone registry + DSAR certificate reads
         // `WHERE reason = ? AND purged_at >= ?` — dropping the compound index
         // makes those full scans behind the operator + erase paths.
         let tomb_idx: i64 = db
@@ -9092,12 +9110,9 @@ Final paragraph after the rule.";
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(
-            tomb_idx, 1,
-            "idx_tombstones_reason_purged (v1.20.18) must exist"
-        );
+        assert_eq!(tomb_idx, 1, "idx_tombstones_reason_purged must exist");
 
-        // v1.10.0 "Procedural": evidence_links gained step_index; legacy
+        // evidence_links gained step_index; legacy
         // 'event' node_kind rows were relabeled to 'fact'.
         let el_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(evidence_links)")
@@ -9134,7 +9149,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(kind, "fact", "legacy 'event' rows must relabel to 'fact'");
 
-        // v1.14.0 "Gate": the write-back gate + trust columns + lifecycle tables.
+        // the write-back gate + trust columns + lifecycle tables.
         // Defaults preserve current behavior exactly (private/stated/1.0/0/null).
         let gate_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(knowledge)")
@@ -9170,7 +9185,7 @@ Final paragraph after the rule.";
             assert_eq!(n, 1, "v1.14.0: {tbl} table must exist after migration");
             let _ = idx;
         }
-        // v1.20.19 "Vault": the dead `pii_map` table is dropped, not present.
+        // the dead `pii_map` table is dropped, not present.
         let pii_map: i64 = db
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pii_map'",
@@ -9225,7 +9240,7 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(pstatus, "pending", "proposals default to status='pending'");
 
-        // v1.15.0 "Observe": read-event trace + DSAR ledger tables, and the
+        // read-event trace + DSAR ledger tables, and the
         // tombstone columns the DSAR purge writes.
         for tbl in ["recall_traces", "dsar_requests"] {
             let n: i64 = db
@@ -9251,7 +9266,7 @@ Final paragraph after the rule.";
             );
         }
 
-        // v1.17.1 "Govern": the persisted per-kind retention override table.
+        // the persisted per-kind retention override table.
         // Empty table = code defaults; a POST /retention override upserts here.
         let ret_cols: std::collections::HashSet<String> = db
             .prepare("PRAGMA table_info(retention_policy)")
@@ -9268,7 +9283,7 @@ Final paragraph after the rule.";
         }
     }
 
-    /// v1.20.19 "Vault": a legacy DB carrying `pii_map` rows (the never-built
+    /// a legacy DB carrying `pii_map` rows (the never-built
     /// write-time placeholder vault) has them erased and the table dropped by
     /// migration. The privacy-win direction: a dead personal-data table is
     /// removed, and `/export`/`/recall` still work (nothing depends on it).
@@ -9317,7 +9332,7 @@ Final paragraph after the rule.";
         assert_eq!(total, 1, "knowledge ingest still works without pii_map");
     }
 
-    /// v1.14.0 "Gate" M2/M3/M4 schema-level filter check. Runs the real
+    /// Schema-level filter check. Runs the real
     /// migration on an in-memory DB, inserts rows spanning the new columns, and
     /// asserts the SQL the retrievers build (decay + memory_kind + access_scope)
     /// behaves deny-by-default. Model-free — the smallest check that fails if
@@ -9455,7 +9470,7 @@ Final paragraph after the rule.";
         assert_eq!(status, "approved");
     }
 
-    /// v1.20.1 "Shield" M2 TTL: a proposal that aged out of the review window is
+    /// a proposal that aged out of the review window is
     /// refused (expired → rejected + audited), a fresh one passes through.
     #[test]
     fn test_proposal_expires_after_ttl_and_audits() {
@@ -9516,7 +9531,7 @@ Final paragraph after the rule.";
         assert_eq!(prompt.as_deref(), Some("a prompt"));
     }
 
-    /// v1.20.15 "Clock" M1: the proposal deadline is derived server-side
+    /// the proposal deadline is derived server-side
     /// (created_at + TTL) and the SLA bands mirror the alert watcher's, so the
     /// client countdown is authoritative. The smallest check that fails if the
     /// derivation or the band mirror drifts.
@@ -9533,7 +9548,7 @@ Final paragraph after the rule.";
         assert_eq!(critical_secs, crate::config::ALERT_CRITICAL_SECS);
     }
 
-    /// v1.20.22 "Clocks" M1.1: the DSAR Art 17 deadline is created_at + the
+    /// the DSAR Art 17 deadline is created_at + the
     /// operator's window (the config override is authoritative — no client
     /// window guess). The smallest check that fails if the derivation drifts.
     #[test]
@@ -9547,7 +9562,7 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v1.20.22 "Clocks" M1.2: the `/dsar` ledger page lists the request rows
+    /// the `/dsar` ledger page lists the request rows
     /// newest-first with their clock inputs (`created_at`/`completed_at`), the
     /// total counts all rows, and a page boundary honors `limit`/`offset`.
     #[test]
@@ -9634,7 +9649,7 @@ Final paragraph after the rule.";
         assert_eq!(tombstone, 1, "tombstone left behind");
     }
 
-    // ── v1.15.0 "Observe" ────────────────────────────────────────────────
+    // ──  ────────────────────────────────────────────────
 
     /// M1: a recall read event lands in the hash-chained audit (hash-only
     /// invariant) and its trace is replayable via `read_trace`. The smallest
@@ -9773,7 +9788,7 @@ Final paragraph after the rule.";
         assert_eq!(origin, Some(1), "derived tombstone points at its root");
     }
 
-    /// v1.17.1 "Govern" M1: the drill's exact failure case now green. Ingest as
+    /// the drill's exact failure case now green. Ingest as
     /// a JWT principal writes `owner = sub`, and `dsar_locate` then finds the
     /// row by subject WITHOUT any manual owner-seeding — the fix's payoff.
     #[test]
@@ -9827,7 +9842,7 @@ Final paragraph after the rule.";
         drop(tx);
     }
 
-    /// v1.16.1: a purge must cascade to `recall_traces`. The trace side table
+    /// a purge must cascade to `recall_traces`. The trace side table
     /// embeds hit chunk ids in its JSON; a purged chunk must not leave a trace
     /// that still "proves" it was returned. (Round 11 finding: purge/DSAR did
     /// not touch recall_traces at all.)
@@ -9864,7 +9879,7 @@ Final paragraph after the rule.";
         assert_eq!(kept, Some(102), "unrelated trace survives");
     }
 
-    /// v1.16.1: retention pruning of audit rows must sweep the orphaned
+    /// retention pruning of audit rows must sweep the orphaned
     /// `recall_traces` side rows (no FK between them — Round 11 finding).
     #[test]
     fn test_retention_prune_sweeps_orphaned_traces() {
@@ -9895,7 +9910,7 @@ Final paragraph after the rule.";
         assert_eq!(kept, Some(2), "fresh trace survives");
     }
 
-    /// v1.16.1: legacy tombstones (pre-v1.14 rows with NULL `purged_at`,
+    /// legacy tombstones (pre-v1.14 rows with NULL `purged_at`,
     /// only `deleted_at`) are backfilled to a unix epoch by the migration, and
     /// the read path surfaces them (the Round 11 bug: `i64` get on NULL dropped
     /// 6,008 of 6,009 registry rows silently via `flatten()`).
@@ -10145,16 +10160,16 @@ Final paragraph after the rule.";
             "/ingest",
             "/memory/{id}",
             "/domains",
-            // v1.0.0 M5: per-domain lifecycle
+            // per-domain lifecycle
             "/domains/{name}",
             "/domains/{name}/vacuum",
             "/domains/{name}/export",
             "/domains/{name}/import",
-            // v1.13.0 M3: bulk relabel across domains.
+            // bulk relabel across domains.
             "/domains/move",
-            // v1.13.0 M4: one-shot recompute sweep.
+            // one-shot recompute sweep.
             "/domains/recompute",
-            // v1.21.0 Profiles: the preset API + the domain binding.
+            // the preset API + the domain binding.
             "/profiles",
             "/profiles/{name}",
             "/domains/{name}/profile",
@@ -10165,24 +10180,24 @@ Final paragraph after the rule.";
             "/legal-hold",
             "/legal-hold/{id}/release",
             "/legal-holds",
-            // v1.25.0 PH-Compliant: the breach-notification workflow.
+            // the breach-notification workflow.
             "/breach",
             "/breach/{id}/event",
             "/breach/{id}/close",
             "/breaches",
             "/breaches/{id}",
-            // v1.26.0 Cross-Border: the transfer register + TIA/DPA artifacts.
+            // the transfer register + TIA/DPA artifacts.
             "/transfers",
             "/transfers/{id}/tia",
             "/transfers/{id}/dpa",
-            // v1.27.1 Clients: the BPO operating register.
+            // the BPO operating register.
             "/clients",
             "/clients/{name}",
             "/clients/{name}/dpa",
             "/clients/{name}/dsar",
             "/clients/{name}/hold",
             "/clients/{name}/end",
-            // v1.27.8 "QaQueue": the supervisor QA surface.
+            // the supervisor QA surface.
             "/clients/{name}/proposals",
             "/clients/{name}/proposals/{id}/coach",
             "/retention/report",
@@ -10190,7 +10205,7 @@ Final paragraph after the rule.";
             "/sources/{id}",
             // v0.9.6 Bridge
             "/connectors",
-            // v1.24.0 Connectors M1: profile-gated registration (Admin).
+            // profile-gated registration (Admin).
             "/connectors/register",
             // v1.5.0 Epistemic
             "/verify",
@@ -10267,7 +10282,7 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v0.9.7 Guard: an ingest audit record is emitted (hash only, no raw
+    /// an ingest audit record is emitted (hash only, no raw
     /// secret) and is retrievable via `audit::recent`.
     #[test]
     fn audit_emitted_on_ingest() {
@@ -10299,7 +10314,7 @@ Final paragraph after the rule.";
         assert!(!raw.contains("manual"), "audit detail must be hashed");
     }
 
-    /// v0.9.7 Guard: a denied auth attempt is recorded with status "denied"
+    /// a denied auth attempt is recorded with status "denied"
     /// and is retrievable. (Middleware wiring is covered by reading the code +
     /// the openapi route test; this asserts the record shape.)
     #[test]
@@ -10319,7 +10334,7 @@ Final paragraph after the rule.";
         assert_eq!(rows[0].target_hash, audit::hash("/add"));
     }
 
-    // ── v1.0.0 M6 integration tests ────────────────────────────────────
+    // ── integration tests ────────────────────────────────────
     //
     // The four exit-criteria tests the plan requires:
     //   1. Domain isolation (write to A, confirm B empty)
@@ -10344,7 +10359,7 @@ Final paragraph after the rule.";
         let reg = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true);
 
         // Write a row tagged domain='health'.
-        // v1.27.16 (M5/F-41): registered-only — creation goes through `register`.
+        // registered-only — creation goes through `register`.
         let health_pool = reg.register("health").expect("register health");
         {
             let conn = health_pool.get().unwrap();
@@ -10605,7 +10620,7 @@ Final paragraph after the rule.";
         drop(dst); // unused, just to keep the NamedTempFile scope obvious
     }
 
-    // ── v1.2.0 "AuthN" integration tests ────────────────────────────────────
+    // ── integration tests ────────────────────────────────────
     // These pin the end-to-end auth behavior the DoD names. They run against
     // the in-memory DB + a real RSA keypair (2048-bit; ~50ms per test).
 
@@ -10624,7 +10639,7 @@ Final paragraph after the rule.";
         std::fs::write(key_dir.join("test-kid.pem"), pub_pem.as_bytes()).unwrap();
         let key_path = key_dir.join("test-kid.key");
         std::fs::write(&key_path, priv_pem.as_bytes()).unwrap();
-        // v1.20.24 fail-closed auth: owner-only mode, as production enforces.
+        // owner-only mode, as production enforces.
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let key_store = auth::jwks::KeyStore::load(key_dir).expect("load test keys");
@@ -10717,7 +10732,7 @@ Final paragraph after the rule.";
         assert_eq!(typ, auth::jwt::TokenType::Access);
     }
 
-    // ── v1.23.0 "Roles" verification ─────────────────────────────────────
+    // ── verification ─────────────────────────────────────
 
     /// A migrated, roles-seeded connection pool (both role gates only need a
     /// pool + the roles store; no AppState required).
@@ -10743,7 +10758,7 @@ Final paragraph after the rule.";
         }
     }
 
-    /// v1.23.0 plan #1: `role_scopes_filter_recall` — the roles data gate
+    /// `role_scopes_filter_recall` — the roles data gate
     /// (access_scopes + owner) drives the retrieval filter for self/reports/
     /// admin, pulled straight from the seeded role bundles.
     #[test]
@@ -10768,7 +10783,7 @@ Final paragraph after the rule.";
         assert_eq!(g3.access_scopes, None);
     }
 
-    /// v1.23.0 plan #3/#4: `action_gating_matches_can` + `solo_role_full_access`
+    /// `action_gating_matches_can` + `solo_role_full_access`
     /// — the role action gate denies a held action a role's `can` omits, and
     /// the SMB `solo` role passes every action.
     #[test]
@@ -10811,7 +10826,7 @@ Final paragraph after the rule.";
         assert!(ok(&nora, "approve"), "no-roles principal not role-gated");
     }
 
-    /// v1.23.0 plan #5: `role_resolved_from_jwt_claim` — a JWT with a `roles`
+    /// `role_resolved_from_jwt_claim` — a JWT with a `roles`
     /// claim resolves to the role without a lookup (the IdP sets the claim;
     /// the middleware harvests it into the principal).
     #[test]
@@ -10906,7 +10921,7 @@ Final paragraph after the rule.";
         .expect("cryptographic verification still passes; revocation is the gate");
     }
 
-    /// v1.27.19 "Scrub" (F-54): a denylist write failure must surface as a 500
+    /// a denylist write failure must surface as a 500
     /// `revoke_failed` — the operator must never believe a token dead when the
     /// revocation did not land. A pool whose file manager points into a
     /// nonexistent directory fails every `pool.get()`.
@@ -10965,7 +10980,10 @@ Final paragraph after the rule.";
     }
 
     /// AuthZ: a principal with team-alpha scopes cannot authorize team-beta.
-    /// This is the DoD's cross-tenant 403 test.
+    /// This is the DoD's cross-tenant 403 test. A DOMAIN wildcard grants only
+    /// the shared `global` pool (domains are a flat namespace — a team can
+    /// never narrow a `*` domain grant, so `*` must not read other tenants'
+    /// named domains); naming a domain requires a scope that names it.
     #[test]
     fn authz_cross_team_read_is_denied() {
         let principal = auth::Principal {
@@ -10976,16 +10994,25 @@ Final paragraph after the rule.";
             roles: vec![],
             manages: vec![],
         };
-        // Same team: allowed.
+        // Same team, shared pool: allowed.
         assert!(handlers::authorize(
             &Some(principal.clone()),
             auth::Action::Read,
             "team-alpha",
-            "any"
+            "global"
         )
         .is_ok());
+        // Same team but a NAMED domain the scope does not name: denied — a
+        // domain wildcard is not a cross-domain grant.
+        assert!(handlers::authorize(
+            &Some(principal.clone()),
+            auth::Action::Read,
+            "team-alpha",
+            "acme-us"
+        )
+        .is_err());
         // Cross-team: denied with 403.
-        let err = handlers::authorize(&Some(principal), auth::Action::Read, "team-beta", "any")
+        let err = handlers::authorize(&Some(principal), auth::Action::Read, "team-beta", "global")
             .unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
         assert_eq!(err.inner.code, "forbidden");
@@ -10999,7 +11026,7 @@ Final paragraph after the rule.";
         assert!(handlers::authorize(&None, auth::Action::Write, "any", "any").is_ok());
     }
 
-    /// v1.20.29 "Bound" (F-5): the bind guard is the symmetric defense to the
+    /// the bind guard is the symmetric defense to the
     /// `None`-principal-is-superuser behavior above — a non-loopback bind with
     /// no auth must refuse startup. Pure predicates + guard, no live socket.
     #[test]
@@ -11078,7 +11105,7 @@ Final paragraph after the rule.";
         assert!(handlers::authorize(&Some(admin), auth::Action::Admin, "t", "l1").is_ok());
     }
 
-    /// v1.12.1 "Harden": audit-surface tenant scope. A non-superuser principal
+    /// audit-surface tenant scope. A non-superuser principal
     /// may only read its own tenant's audit rows; cross-tenant requests 403.
     #[test]
     fn audit_scope_forces_own_tenant_and_blocks_cross_tenant() {
@@ -11105,7 +11132,7 @@ Final paragraph after the rule.";
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     }
 
-    /// v1.12.1 "Harden": superuser (None principal) keeps the v1.1 passthrough
+    /// superuser (None principal) keeps the v1.1 passthrough
     /// — the requested tenant filter applies verbatim.
     #[test]
     fn audit_scope_none_principal_passes_requested_tenant_through() {
@@ -11116,7 +11143,7 @@ Final paragraph after the rule.";
         assert_eq!(handlers::audit_scope(&None, &None).unwrap(), None);
     }
 
-    /// v1.12.1 "Harden" wiring guard: every non-public route's handler must
+    /// every non-public route's handler must
     /// call `authorize()` with the v1.2-matrix action. Mirrors
     /// `test_openapi_covers_routes` (hardcoded contract table). A route that
     /// ships without a gate fails here — this is the test Agent 38's S1
@@ -11126,7 +11153,7 @@ Final paragraph after the rule.";
         // (route, expected `Action::X` literal in the handler body)
         // PUBLIC by design (no gate): /health, /ready, /version, /openapi.yaml,
         // /.well-known/*, /auth/refresh. (/health/db is Read-gated since
-        // v1.20.2 F2.) /auth/logout is NOT in the table: its gate is the
+        // its gate is the
         // middleware itself (v1.27.16 "Drawbridge" M3.4/F-13) — the handler
         // carries no `authorize()` literal because it has no action gate; it
         // relies on the verified bearer principal injected upstream (without
@@ -11156,35 +11183,35 @@ Final paragraph after the rule.";
             ("/domains/{name}/import", "Admin"),
             ("/domains/move", "Admin"),
             ("/domains/recompute", "Admin"),
-            // v1.21.0 Profiles: reads are Read; upsert + bind are Admin (the
+            // reads are Read; upsert + bind are Admin (the
             // POST on /profiles/{name} shares its path with a Read GET, so
             // Admin is the conservative check — the /retention precedent).
             ("/profiles", "Read"),
             ("/profiles/{name}", "Admin"),
             ("/domains/{name}/profile", "Admin"),
-            // v1.23.0 Roles: reads are Read; upsert is Admin (the POST on
+            // reads are Read; upsert is Admin (the POST on
             // /roles/{name} shares its path with a Read GET, so Admin is the
             // conservative check — the /profiles precedent).
             ("/roles", "Read"),
             ("/roles/{name}", "Admin"),
-            // v1.22.0 Regulated: legal hold + the retention schedule are
+            // legal hold + the retention schedule are
             // operator surfaces (Admin).
             ("/legal-hold", "Admin"),
             ("/legal-hold/{id}/release", "Admin"),
             ("/legal-holds", "Admin"),
-            // v1.25.0 PH-Compliant: breach workflow is a DPO surface.
+            // breach workflow is a DPO surface.
             ("/breach", "Admin"),
             ("/breach/{id}/event", "Admin"),
             ("/breach/{id}/close", "Admin"),
             ("/breaches", "Admin"),
             ("/breaches/{id}", "Admin"),
-            // v1.26.0 Cross-Border: the transfer register + TIA/DPA artifacts
+            // the transfer register + TIA/DPA artifacts
             // are operator evidence surfaces (Admin).
             ("/transfers", "Admin"),
             ("/transfers/{id}/tia", "Admin"),
             ("/transfers/{id}/dpa", "Admin"),
-            // v1.27.1 Clients: the BPO operating register (Admin, audited).
-            // v1.27.9 Roles: /clients + /clients/{name} stay Admin at the path
+            // the BPO operating register (Admin, audited).
+            // /clients + /clients/{name} stay Admin at the path
             // gate; a client-auditor principal gets a row-level domain filter
             // (the handler still enforces authorize — defense-in-depth).
             ("/clients", "Admin"),
@@ -11226,19 +11253,19 @@ Final paragraph after the rule.";
             ("/decayed", "Read"),
             ("/export", "Read"),
             ("/purge", "Admin"),
-            // v1.15.0 Observe: trace replay + DSAR are operator surfaces.
+            // trace replay + DSAR are operator surfaces.
             ("/recall/{trace_id}/trace", "Admin"),
             ("/dsar", "Admin"),
             ("/tombstones", "Admin"),
             ("/dsar/{id}/certificate", "Admin"),
-            // v1.17.1 Govern: retention policy set + compliance/snapshot reads
+            // retention policy set + compliance/snapshot reads
             // are operator surfaces (Admin). GET /retention is Read, but the
             // route shares a path with POST (Admin); the scan maps to the last
             // registered handler (POST), so Admin is the conservative check.
             ("/retention", "Admin"),
             ("/art30", "Admin"),
             ("/snapshot/status", "Admin"),
-            // v1.17.3 UMP: §3.3 matrix — Writes for remember/revise/forget/
+            // §3.3 matrix — Writes for remember/revise/forget/
             // feedback, Read for recall/get/subscribe, Admin for audit.
             ("/ump/remember", "Write"),
             ("/ump/memory/{id}", "Read"),
@@ -11325,7 +11352,7 @@ Final paragraph after the rule.";
             };
             let body = handler_body(src, handler_name)
                 .unwrap_or_else(|| panic!("handler `fn {handler_name}` not found in source"));
-            // v1.17.3 "UMP": some handlers delegate their whole body to a
+            // some handlers delegate their whole body to a
             // shared `run_*`/`*_one` core (the `/recall` + `/ingest` bindings
             // route through `run_recall`/`ingest_one`), so the scan follows
             // the delegation when the handler itself delegates.
@@ -11352,7 +11379,7 @@ Final paragraph after the rule.";
         }
     }
 
-    /// v1.17.1 "Govern" M1: every direct-ingest INSERT into `knowledge` writes
+    /// every direct-ingest INSERT into `knowledge` writes
     /// the `owner` column (the caller's JWT `sub`, else NULL), so `/dsar` +
     /// `/purge` can locate by subject. Mirrors the `authz_gates` source-scan
     /// style: a hand-maintained site table pinned against the live insert SQL.
@@ -11405,7 +11432,7 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v1.20.3 "Classify" (G5) wiring guard: every ingest *write* site routes
+    /// every ingest *write* site routes
     /// through the single [`screen::screen`] seam (blocklist + optional
     /// classifier). Mirrors the `authz_gates`/`ingest_insert_sites` source-scan
     /// style: a new write path must add a row + a `screen::screen` call or this
@@ -11440,7 +11467,7 @@ Final paragraph after the rule.";
         }
     }
 
-    /// v1.27.14 "Fencepost2" (M3.6): every stored-content read surface passes
+    /// every stored-content read surface passes
     /// through the single read seam (`sanitize_read(_opt)`/`sanitize_stored`).
     /// Mirrors the `authz_gates`/`screen` source-scan style: a hand-maintained
     /// site table of the response-forming functions that carry stored text,
@@ -11536,7 +11563,7 @@ Final paragraph after the rule.";
         None
     }
 
-    /// v1.12.1 "Harden": auth presentation at the middleware layer. Non-public
+    /// auth presentation at the middleware layer. Non-public
     /// routes 401 without a token; public + webhook prefixes bypass; a valid
     /// opaque token passes. The per-handler action gates are pinned separately
     /// by `authz_gates_cover_every_non_public_route`.
@@ -11634,7 +11661,7 @@ Final paragraph after the rule.";
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
-    /// v1.27.16 "Drawbridge" (M2, F-07): the rate limiter keys buckets by the
+    /// the rate limiter keys buckets by the
     /// peer `SocketAddr` extension — the gap the audit flagged (pre-v1.27.16
     /// the extension was missing, so EVERY request shared one bucket). One
     /// remote address exhausting its budget must never throttle another.
@@ -11703,7 +11730,7 @@ Final paragraph after the rule.";
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
-    /// v1.27.16 "Drawbridge" (M2, F-07): with `RATE_LIMIT_MAX_KEYS` buckets the
+    /// with `RATE_LIMIT_MAX_KEYS` buckets the
     /// tracked set is bounded — a flurry of distinct (spoofed) IPs evicts the
     /// oldest 25%, and one user's exhaustion never denies another.
     #[test]
@@ -11724,7 +11751,7 @@ Final paragraph after the rule.";
         assert!(l2.is_allowed("10.1.1.2"), "other user untouched");
     }
 
-    /// v1.27.16 "Drawbridge" (M2, F-07): the serve wiring MUST inject the peer
+    /// the serve wiring MUST inject the peer
     /// socket via `into_make_service_with_connect_info` — the production pin
     /// for the per-IP bucket guarantee (a direct `axum::serve` regression
     /// silently collapses every client into one bucket).
@@ -11737,7 +11764,7 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v1.27.16 "Drawbridge" (M3.4, F-13/F-25): `/auth/logout` sits behind the
+    /// `/auth/logout` sits behind the
     /// bearer middleware (revoking requires a verified token, and a public
     /// logout could only ever "succeed" at revoking nothing). Pinned three
     /// ways: it IS a bootstrap route, it is NOT in any middleware public list,
@@ -11763,7 +11790,7 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v1.27.16 "Drawbridge" (M3.1, F-26): a configured-but-EMPTY token store
+    /// a configured-but-EMPTY token store
     /// must deny (401), never read as "auth disabled" (the pre-Drawbridge
     /// allow-all collapse). Middleware-level pin: file exists, zero tokens.
     #[tokio::test]
@@ -11800,7 +11827,7 @@ Final paragraph after the rule.";
         );
     }
 
-    // ── v1.27.16 "Drawbridge" (M1, F-04/F-05/F-06) ─────────────────────────
+    // ── (M1, F-04/F-05/F-06) ─────────────────────────
     //
     // The domain read-gate: a tenant-scoped JWT principal can read chunks,
     // search, and walk graph edges only inside the domains its scopes grant.
@@ -12284,7 +12311,7 @@ Final paragraph after the rule.";
         assert!(!gate.admits(&None, &None), "deny-all on store failure");
     }
 
-    /// v1.17.3 M5 (§5.2): the capability-token acceptance decision. A token
+    /// §5.2: the capability-token acceptance decision. A token
     /// signed by the operator key passes on the UMP surface (`/ump/*`,
     /// `/export`) and nowhere else; a wrong-key or expired token never
     /// passes, even on the UMP surface.
@@ -12340,7 +12367,7 @@ Final paragraph after the rule.";
         assert!(!capability_accepted("nonsense", "/ump/remember", &pk));
     }
 
-    /// v1.16.2 "Harden" M1.2: the security-headers middleware is path-aware —
+    /// the security-headers middleware is path-aware —
     /// API routes get the strict API_CSP; client `/app` routes get the
     /// WASM-friendly CLIENT_CSP. Pins the whole point of the feature.
     #[tokio::test]
@@ -12497,17 +12524,17 @@ Final paragraph after the rule.";
         assert!(obj.contains_key("version"));
         assert!(obj.contains_key("hardening"));
         assert!(obj.contains_key("capacity"));
-        // v1.27.19 "Scrub" (D-2): the settle-failure counter is part of the
+        // the settle-failure counter is part of the
         // hardening block; the value passed in is echoed untouched.
         let hardening = obj["hardening"].as_object().expect("hardening object");
         assert_eq!(hardening["audit_commit_failures"], 7);
-        // v1.20.4 "Replay" (G6): webhook posture is exposed for ops. The flag is
+        // webhook posture is exposed for ops. The flag is
         // read from env, so this test only pins that the object is present with
         // the known default (legacy scheme, 300s window).
         let webhook = obj["webhook"].as_object().expect("webhook object");
         assert_eq!(webhook["replay_secs"], 300);
         assert_eq!(webhook["scheme"], "legacy");
-        // v1.20.10 "Proof": cached audit-chain posture is exposed for ops. Only
+        // cached audit-chain posture is exposed for ops. Only
         // a boolean + timestamps + a chain hash — never content/PII.
         let integrity = obj["integrity"].as_object().expect("integrity object");
         assert_eq!(integrity["chain_ok"], true);
@@ -12515,7 +12542,7 @@ Final paragraph after the rule.";
         assert!(integrity.contains_key("chain_head"));
     }
 
-    /// v1.25.0 "PH-Compliant" verification 6: `/health` surfaces the configured
+    /// `/health` surfaces the configured
     /// DPO contact (from `BRAIN_DPO_CONTACT`) and is `null` (never invented)
     /// when unset.
     #[test]
@@ -12552,7 +12579,7 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v1.25.0 "PH-Compliant" verification 3: every breach event is hash-chained
+    /// every breach event is hash-chained
     /// into the existing audit (kind `breach`) and the chain stays verifiable.
     #[test]
     fn breach_chain_verified() {
@@ -12583,7 +12610,7 @@ Final paragraph after the rule.";
         assert_eq!(rows[0].kind, "breach");
     }
 
-    /// v1.17.3 "UMP" M2: the batch wire path end-to-end. A multi-record
+    /// the batch wire path end-to-end. A multi-record
     /// `POST /ingest?format=ump` lowers each record, persists the COMPUTED
     /// `ump_id` + overlay, and returns the per-record envelope (one failure
     /// never aborts the batch); a single-record batch keeps the v1.17.1
@@ -12722,7 +12749,7 @@ Final paragraph after the rule.";
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(v["error"]["code"], "unknown_format");
 
-        // v1.17.3 M4: the §6.3 markdown projection round-trips — export
+        // the §6.3 markdown projection round-trips — export
         // `?format=ump-md` (rendered straight from the row) → import it back
         // via `?format=ump-md` (raw text body) → both records ingest, the
         // projection is L2-lossless.
@@ -12754,7 +12781,7 @@ Final paragraph after the rule.";
         assert_eq!(results[1]["status"], "created", "{v}");
     }
 
-    /// v1.21.0 "Profiles" — the plan's verification 1–4 end-to-end through
+    /// the plan's verification 1–4 end-to-end through
     /// the real handlers on a migrated DB: (1) a health-hipaa-bound domain
     /// ingests an email and stores ONLY the placeholder (strict write-time
     /// masking) with the profile's access-scope default; (2) an explicit
@@ -13001,7 +13028,7 @@ Final paragraph after the rule.";
         }
     }
 
-    /// v1.20.1 "Shield" M1: the shared `/ingest` write core (plain + single-
+    /// the shared `/ingest` write core (plain + single-
     /// UMP + batch-UMP + the OpenClaw plugin's `memory_store`/`autoCapture`)
     /// now screens injection exactly like its siblings. Under the default
     /// `Quarantine` policy a crafted instruction body is stored but flagged
@@ -13133,7 +13160,7 @@ Final paragraph after the rule.";
         assert_eq!(flagged, 0, "benign content is not flagged");
     }
 
-    /// v1.20.2 B1: `/procedure` is a sibling write core and must screen
+    /// `/procedure` is a sibling write core and must screen
     /// injection exactly like `/ingest`, `/add`, `/ingest/memory`,
     /// `/ingest/markdown` — the Shield release's "shared write core" claim
     /// had a hole here (it INSERTed into `knowledge` directly). Under the
@@ -13275,7 +13302,7 @@ Final paragraph after the rule.";
         std::env::remove_var("INJECTION_POLICY");
     }
 
-    /// v1.17.4: the reference conformance suite's wire expectations, end to
+    /// the reference conformance suite's wire expectations, end to
     /// end, against a keyed instance (L3): capabilities envelope, remember
     /// (procedural + provenance) → `{id, result:"created"}`, get-by-urn with
     /// a reference-shape signed integrity block, recall (urn id + `signals`
@@ -13577,7 +13604,7 @@ Final paragraph after the rule.";
         std::env::remove_var("BRAIN_UMP_KEY_DIR");
     }
 
-    /// v1.22.0 "Regulated" M1 — the WORM-lite enforcement end to end:
+    /// the WORM-lite enforcement end to end:
     /// (1) a held id is absent from the `/decayed` registry, (2) `/purge`
     /// refuses it with `409 legal_hold_active` + reasons, (3) a DSAR defers it
     /// and lists it (+ reason) on the certificate while still purging the
@@ -13809,7 +13836,7 @@ Final paragraph after the rule.";
             .collect()
     }
 
-    // ── v1.27.18 "Groundwork" tests ──────────────────────────────────────
+    // ── tests ──────────────────────────────────────
 
     /// A state whose `db_path` points at a real migrated DB file: the
     /// F-45 ingest handlers read the db file's metadata in the capacity guard.
@@ -14184,7 +14211,7 @@ Final paragraph after the rule.";
         assert!(fts.is_empty() || fts == crate::search::prf_extract_terms(&empty, "fox", 5));
     }
 
-    /// v1.27.19 "Scrub" (D-8): the prompt-injection blocklist screen is
+    /// the prompt-injection blocklist screen is
     /// computed ONCE at `raw()` construction and carried as the
     /// `blocklist_hit` flag (hidden from the wire) — the PRF extractors read
     /// the flag instead of re-normalizing every hit per query.

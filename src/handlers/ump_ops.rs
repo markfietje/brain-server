@@ -1,4 +1,4 @@
-//! v1.17.3 "UMP" M2: the HTTP ops binding (`/ump/*` + `/.well-known/ump.json`).
+//! the HTTP ops binding (`/ump/*` + `/.well-known/ump.json`).
 //! Handler layer over the record codec (`ump.rs`); every operation delegates to
 //! an existing engine (`run_recall`, `ingest_one`, `resolve_supersession`,
 //! `purge_chunk_ids`, `record_feedback`, the audit chain) — this file adds no
@@ -55,7 +55,7 @@ pub async fn capabilities() -> Json<Value> {
     Json(capabilities_payload())
 }
 
-/// v1.20.17 M4: record a `Denied` auth audit row for a §3.7 consent mismatch.
+/// record a `Denied` auth audit row for a §3.7 consent mismatch.
 /// Extractable for a test (pass an on-disk/in-memory conn); the handler uses a
 /// fresh connection to the live DB. Best-effort: a failure is ignored so a
 /// missing audit log never fails the request.
@@ -96,7 +96,7 @@ pub async fn remember(
     if let Some(owner) = principal_to_owner(&principal.0) {
         if let Some(declared) = &meta.owner {
             if declared != &owner {
-                // v1.20.17 M4: authorize()-style consent denials on the UMP
+                // authorize()-style consent denials on the UMP
                 // surface must be audited like any other authz denial
                 // (COMPLIANCE.md §3.5 promised this; it never happened). Fresh
                 // connection, best-effort — a missing audit log must not fail
@@ -218,27 +218,64 @@ async fn stored_ump_id(pool: &crate::Pool, id: i64) -> Result<String, HandlerErr
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
 }
 
-/// v1.27.14 "Fencepost2" (M3.2): sanitize a knowledge row's stored-text fields
-/// (content, title, source) for the *interactive* UMP read surface — the same
-/// read boundary the HTTP recall/search surface applies. The export path
-/// (`render_ump` in gate.rs) deliberately stays byte-faithful (DSAR
-/// portability), so this helper is only used by `/ump/memory/{id}` +
-/// `/ump/recall`. It mutates a CLONE of the row, then `emit_record` hashes the
+/// sanitize a knowledge row's stored-text fields
+/// for the *interactive* UMP read surface — the same read boundary the HTTP
+/// recall/search surface applies. The export path (`render_ump` in gate.rs)
+/// deliberately stays byte-faithful (DSAR portability), so this helper is only
+/// used by `/ump/memory/{id}` + `/ump/recall`. A later pass extends the field set
+/// to `assertion_kind` (free text at ingest — the one text column the v1.27.14
+/// pass missed). It mutates a CLONE of the row, then `emit_record` hashes the
 /// sanitized text — so the emitted record's `integrity.content_hash` stays
 /// self-consistent and `verify_record` still passes (§2.8/§5.3 unaffected).
 fn sanitize_ump_row_for_read(row: Value) -> Value {
     let mut row = row;
     let none: Option<crate::auth::Principal> = None;
-    if let Some(content) = row["content"].as_str() {
-        row["content"] = json!(crate::gate::sanitize_stored(content, false, &none));
-    }
-    if let Some(title) = row["title"].as_str() {
-        row["title"] = json!(crate::gate::sanitize_stored(title, false, &none));
-    }
-    if let Some(source) = row["source"].as_str() {
-        row["source"] = json!(crate::gate::sanitize_stored(source, false, &none));
+    for field in ["content", "title", "source", "assertion_kind"] {
+        if let Some(v) = row[field].as_str() {
+            row[field] = json!(crate::gate::sanitize_stored(v, false, &none));
+        }
     }
     row
+}
+
+/// the `ump_meta` overlay is client-controlled at
+/// `/ump/remember` and re-emitted verbatim — its string fields and every
+/// string leaf of the free-form `provenance`/`consent` JSON are stored text on
+/// an LLM-facing surface, so they pass the same read seam. The RAW owner still
+/// drives the redact decision before this runs (a sanitized owner must not
+/// change who sees what).
+fn sanitize_ump_meta_for_read(meta: &ump::UmpMeta) -> ump::UmpMeta {
+    let none: Option<crate::auth::Principal> = None;
+    let s = |o: &Option<String>| {
+        o.as_ref()
+            .map(|v| crate::gate::sanitize_stored(v, false, &none))
+    };
+    ump::UmpMeta {
+        kind: s(&meta.kind),
+        owner: s(&meta.owner),
+        visibility: s(&meta.visibility),
+        origin: s(&meta.origin),
+        provenance: meta.provenance.as_ref().map(sanitize_json_strings),
+        consent: meta.consent.as_ref().map(sanitize_json_strings),
+    }
+}
+
+/// Recursively apply the read seam to every string leaf of a stored JSON blob
+/// (`provenance` is arbitrary client JSON). Structure is preserved verbatim.
+fn sanitize_json_strings(v: &Value) -> Value {
+    match v {
+        Value::String(s) => {
+            let none: Option<crate::auth::Principal> = None;
+            json!(crate::gate::sanitize_stored(s, false, &none))
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sanitize_json_strings).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, val)| (k.clone(), sanitize_json_strings(val)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// `GET /ump/memory/{id}` — one record by numeric row id OR `urn:ump:…`
@@ -281,15 +318,17 @@ pub async fn get_memory(
                 .map(|o| Some(o) != owner.as_deref())
                 .unwrap_or(true);
         let superseded = superseded_by_for(&conn, rid)?;
-        // v1.27.14 "Fencepost2" (M3.2): interactive read → sanitize a clone of
+        // interactive read → sanitize a clone of
         // the row before emit, so bidi/ZW/markdown-ref never reach the LLM
         // boundary. `emit_record` hashes the sanitized text (self-consistent).
+        // the meta overlay rides the same seam (raw owner already
+        // decided `redact` above).
         let rec = ump::emit_record(
             &sanitize_ump_row_for_read(row),
             "global",
             &json!([]),
             &serde_json::Value::Array(relations_for_chunk(&conn, rid)?),
-            &meta,
+            &sanitize_ump_meta_for_read(&meta),
             redact,
             &superseded,
             signer.as_ref().map(|(did, sk)| (did.as_str(), sk)),
@@ -320,10 +359,14 @@ fn relations_for_chunk(conn: &rusqlite::Connection, id: i64) -> Result<Vec<Value
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     let rows = stmt
         .query_map(rusqlite::params![id], |r| {
+            // entity names arrive from vault
+            // wikilinks/frontmatter with no vocabulary gate, and the relation
+            // type is linker text — stored text, same seam.
+            let none: Option<crate::auth::Principal> = None;
             Ok(json!({
-                "from": r.get::<_, String>(0)?,
-                "to": r.get::<_, String>(1)?,
-                "type": r.get::<_, String>(2)?,
+                "from": crate::gate::sanitize_stored(&r.get::<_, String>(0)?, false, &none),
+                "to": crate::gate::sanitize_stored(&r.get::<_, String>(1)?, false, &none),
+                "type": crate::gate::sanitize_stored(&r.get::<_, String>(2)?, false, &none),
             }))
         })
         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -452,7 +495,7 @@ pub async fn recall(
                 domain,
                 &json!([]),
                 &serde_json::Value::Array(relations_for_chunk(&conn, r.id)?),
-                &meta,
+                &sanitize_ump_meta_for_read(&meta),
                 redact,
                 &superseded,
                 signer.as_ref().map(|(did, sk)| (did.as_str(), sk)),
@@ -637,13 +680,18 @@ pub async fn forget(
                 rusqlite::params![id],
                 |r| r.get::<_, i64>(0),
             )
-            .map(|n| n != 0)
-            .unwrap_or(false);
+            .map_err(|e| HandlerError::internal(format!("existence check failed: {e}")))?
+            != 0;
         if !exists {
             return Err(HandlerError::not_found(format!("no chunk with id {id}")));
         }
         let now = chrono::Utc::now().timestamp();
         if hard {
+            // the hard path IS an erasure — the legal-hold
+            // fence that guards `/purge`/DSAR/forget must guard it here too,
+            // inside the same tx (the 409 envelope matches `/purge`). This is
+            // the seam an MCP `ump.forget` reaches with only Write scope.
+            crate::legal_hold::refuse_if_held(&tx, &[id])?;
             crate::handlers::gate::purge_chunk_ids(&tx, &[id], now, &reason, None)?;
         } else {
             // Soft: quarantine-style flag; tombstone + audit row (hash-only).
@@ -954,7 +1002,7 @@ mod tests {
         );
     }
 
-    /// v1.20.17 M4: a §3.7 consent mismatch is audited as a `Denied` auth
+    /// a §3.7 consent mismatch is audited as a `Denied` auth
     /// event on the read-event-capable audit chain (COMPLIANCE.md §3.5
     /// promised it; the gap this closes was a silent 400 with no footprint).
     #[test]

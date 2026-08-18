@@ -1,4 +1,4 @@
-//! v1.14.0 "Gate" — HTTP handlers for write-back gating (M1), decay + GDPR
+//! HTTP handlers for write-back gating (M1), decay + GDPR
 //! lifecycle (M2). The pure logic lives in `src/gate.rs`; this module does the
 //! HTTP + transaction wiring, reusing the existing ingest / consolidate /
 //! sources machinery instead of re-implementing it.
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::handlers::auth::{OptCapability, OptPrincipal};
 use crate::handlers::{HandlerError, MAX_QUERY, MAX_SOURCE_PROMPT};
 
-/// v1.20.2 D3: cap on `/export` row count. The export buffers every row into
+/// cap on `/export` row count. The export buffers every row into
 /// memory then serializes; on a multi-GB DB this OOMs. We refuse above this
 /// threshold + document the per-domain snapshot path. ponytail: a true
 /// streaming encoder is a v2.x change; this guard prevents the OOM today.
@@ -53,7 +53,7 @@ pub struct ProposalRequest {
     pub observed_at: Option<i64>,
     #[serde(default)]
     pub domain: Option<String>,
-    /// v1.20.1 "Shield" M2: the caller-provided prompt that fed this capture.
+    /// the caller-provided prompt that fed this capture.
     /// Lets a reviewer context-check the proposal and lets the queue surface
     /// re-run the injection screen against the sourcing text.
     #[serde(default)]
@@ -75,7 +75,7 @@ pub struct ProposalResponse {
 
 /// `POST /ingest/proposal` — queue a scored candidate. No `knowledge` row is
 /// created; `/recall` cannot see it until a human approves.
-/// v1.20.7 "Telemetry" (M1): emits a `gate.propose` span under `--features otel`
+/// emits a `gate.propose` span under `--features otel`
 /// carrying proposal_id + screen_verdict + principal + domain (no content body).
 #[cfg_attr(
     feature = "otel",
@@ -113,7 +113,7 @@ pub async fn ingest_proposal(
             format!("content exceeds {MAX_QUERY} chars"),
         ));
     }
-    // v1.20.3 "Classify" M1 (G5): run the injection screen on the proposal
+    // run the injection screen on the proposal
     // content. `Reject` → 400, never persisted (the review queue only ever
     // sees `clean`/`quarantine`); `Quarantine` → stored + badged so the
     // reviewer sees the flag before approving a capture whose own text was
@@ -126,7 +126,7 @@ pub async fn ingest_proposal(
             "input contains suspicious patterns",
         ));
     }
-    // v1.20.2 F1: bound + injection-screen `source_prompt`. The plugin caps at
+    // bound + injection-screen `source_prompt`. The plugin caps at
     // 2000 client-side; the server enforces its own bound so a malicious caller
     // can't persist a 1 MiB prompt. If the screen trips, the screened form is
     // still stored (the reviewer needs to see WHY the capture tripped) — but a
@@ -140,7 +140,7 @@ pub async fn ingest_proposal(
             ));
         }
     }
-    // v1.27.16 "Drawbridge" (M4/F-33): strict kind validation — the raw-string
+    // strict kind validation — the raw-string
     // round-trip, so unknown/mixed-case values (which `from_str` silently
     // resolves to Fact) are rejected, not stored as a different kind.
     if !crate::procedural::MemoryKind::is_strict_valid(&req.kind) {
@@ -153,7 +153,7 @@ pub async fn ingest_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
     let model = Arc::clone(&state.model);
     let content_for_task = content.clone();
-    // v1.27.8 "QaQueue": attribute the candidate to the acting agent so the
+    // attribute the candidate to the acting agent so the
     // supervisor's QA queue can scope by owner. `None` (loopback/opaque) →
     // unowned, the legacy default.
     let owner = principal_to_owner(&principal.0);
@@ -233,7 +233,7 @@ pub async fn ingest_proposal(
         span.record("domain", domain.clone());
     }
 
-    // v1.20.8 "Signal": alert the console a candidate is awaiting review
+    // alert the console a candidate is awaiting review
     // (pending), and separately when the injection screen tripped (screen).
     // Payloads are signals, never content/PII.
     let now = chrono::Utc::now().timestamp();
@@ -294,7 +294,7 @@ pub struct ProposalListQuery {
     pub status: String,
     #[serde(default)]
     pub limit: Option<usize>,
-    /// v1.20.23 "Calibrate" M1.2: `?since=<unix ts>` bounds the page to
+    /// `?since=<unix ts>` bounds the page to
     /// proposals created at or after the timestamp (the review stats' window).
     /// Absent → the legacy query (every row, newest first).
     #[serde(default)]
@@ -309,13 +309,13 @@ fn default_pending() -> String {
 pub struct ProposalView {
     pub id: i64,
     pub kind: String,
-    /// v1.27.12 "ReviewArmour": the READ-canonical form — `sanitize_read` of the
+    /// the READ-canonical form — `sanitize_read` of the
     /// stored row (redact → markdown-ref → invisible strip), i.e. the exact bytes
     /// recall will emit. Every review read returns this, so the reviewer sees
     /// what the system will later recall. Stored bytes stay verbatim (evidence
     /// fidelity in /export + DSAR); this is the display boundary only.
     pub content: String,
-    /// v1.27.12 "ReviewArmour": `sha256_hex(review_digest(content))` — the
+    /// `sha256_hex(review_digest(content))` — the
     /// stable, reader-independent fingerprint of the canonical form the approve
     /// verb binds to. Present iff the row was served through a principal-aware
     /// read (list/edit); empty in the bare-`Connection` unit path.
@@ -328,45 +328,45 @@ pub struct ProposalView {
     pub conflict_with: Option<i64>,
     pub salience: f32,
     pub created_at: i64,
-    /// v1.20.3 "Classify" M1 (G5): the injection-screen verdict for `content`,
+    /// the injection-screen verdict for `content`,
     /// recomputed deterministically at read time. `clean` or `quarantine` only
     /// (`reject` is never persisted — see `ingest_proposal`).
     pub screen_verdict: String,
-    /// v1.20.14 "Steer" M1: unix ts of the last content rewrite, `None` if the
+    /// unix ts of the last content rewrite, `None` if the
     /// pending proposal was never edited. Keys the review badge + read-time view.
     pub edited_at: Option<i64>,
-    /// v1.20.15 "Clock" M1: when this proposal ages out of the review window
+    /// when this proposal ages out of the review window
     /// (unix ts), derived server-side as `created_at + TTL`. The review queue
     /// ticks against this absolute deadline, so an operator override of
     /// `BRAIN_PROPOSAL_TTL_SECS` is authoritative (no client TTL guess).
     pub expires_at: i64,
-    /// v1.20.15 "Clock" M1: the SLA band boundaries (secs of remaining life), a
+    /// the SLA band boundaries (secs of remaining life), a
     /// mirror of the alert watcher's `ALERT_WARN_SECS`/`ALERT_CRITICAL_SECS` so
     /// the client colors its countdown from the same thresholds as the server.
     pub warn_secs: i64,
     pub critical_secs: i64,
-    /// v1.20.23 "Calibrate" M1.1: unix ts of the decision (approve/reject/expire),
+    /// unix ts of the decision (approve/reject/expire),
     /// `None` while the proposal is still pending. Exposed so a consumer can
     /// compute a decision-latency (`decided_at - created_at`) — the reviewer
     /// calibration signal. The column was written since v1.14.0 but never read.
     #[serde(default)]
     pub decided_at: Option<i64>,
-    /// v1.27.8 "QaQueue": the agent whose interaction produced the candidate.
+    /// the agent whose interaction produced the candidate.
     /// `None` for loopback/opaque (unowned) writes. Keys the supervisor's owner
     /// scope (R1 role `manages`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
-    /// v1.27.8 "QaQueue": the supervisor's coaching note (set via the coach
+    /// the supervisor's coaching note (set via the coach
     /// verb). `None` until coached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qa_note: Option<String>,
-    /// v1.27.8 "QaQueue": the R7 QA scorecard composed from the proposal's
+    /// the R7 QA scorecard composed from the proposal's
     /// owner + trace signals. Advisory (never gates approve).
     #[serde(default)]
     pub qa_score: i64,
 }
 
-/// v1.20.15 "Clock": the review deadline + SLA bands, shared by every
+/// the review deadline + SLA bands, shared by every
 /// `ProposalView` construction site so the countdown is one definition.
 pub fn proposal_deadline(created_at: i64) -> (i64, i64, i64) {
     (
@@ -405,12 +405,12 @@ pub async fn list_proposals(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
-    // v1.20.24 "Sweep": PII read-projection uniformity — a proposal whose
+    // PII read-projection uniformity — a proposal whose
     // content scans as PII is masked for non-admin principals exactly like the
     // knowledge read paths (the queue never promoted the row, but the review
     // surface is a read surface). Loopback/opaque principals stay unmasked.
     //
-    // v1.27.12 "ReviewArmour": the review wire now returns the FULL read-canonical
+    // the review wire now returns the FULL read-canonical
     // form (redact → markdown-ref → invisible strip) — not PII-only — so the
     // reviewer sees exactly what recall will emit, and the `content_digest` the
     // approve verb binds to. The digest is computed over the canonical form with
@@ -422,10 +422,13 @@ pub async fn list_proposals(
         p.content_digest = review_digest(&raw);
         let pii = !crate::gate::scan_pii(&raw).is_empty();
         p.content = crate::gate::sanitize_read_cow(&raw, pii, &principal.0).into_owned();
-        // v1.27.14 "Fencepost2" (M3.5): source_prompt (provenance) + qa_note
+        // source_prompt (provenance) + qa_note
         // (reviewer note) are reviewer-facing stored text — run them through
-        // the same read seam. F-16 caution: these are NOT what feeds
-        // `review_digest` (that stays content-only, digest stable).
+        // the same read seam, and `source` too: it is client
+        // free-text on the write side with no vocabulary gate. F-16 caution:
+        // these are NOT what feeds `review_digest` (that stays content-only,
+        // digest stable).
+        p.source = crate::gate::sanitize_read_opt(p.source.take(), pii, &principal.0);
         p.source_prompt = crate::gate::sanitize_read_opt(p.source_prompt.take(), pii, &principal.0);
         p.qa_note = crate::gate::sanitize_read_opt(p.qa_note.take(), pii, &principal.0);
     }
@@ -433,7 +436,7 @@ pub async fn list_proposals(
     Ok(Json(rows))
 }
 
-/// v1.20.23 "Calibrate": the review-queue SELECT, extracted so the new
+/// the review-queue SELECT, extracted so the new
 /// `decided_at` column + the optional `since` window are unit-testable with a
 /// bare `&Connection` (the `page_decayed`/`list_dsar_page` idiom — no HTTP
 /// stack, no model). Column order is pinned by the index-based `r.get(n)`.
@@ -472,7 +475,7 @@ pub(crate) fn list_proposals_page(
             let created_at: i64 = r.get(9)?;
             let owner: Option<String> = r.get(12)?;
             let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
-            // v1.27.8 "QaQueue": compose the QA scorecard. Proposals are not
+            // compose the QA scorecard. Proposals are not
             // recall-trace-linked in schema, so `has_trace` stays false — the
             // absent-trace neutral corner (never NaN). `in_scope` = the candidate
             // is agent-owned (the supervisor QA surface) vs an unowned loopback.
@@ -486,7 +489,7 @@ pub(crate) fn list_proposals_page(
                 ))
                 .to_string(),
                 content: row_content,
-                // v1.27.12 "ReviewArmour": the digest is reader-dependent only
+                // the digest is reader-dependent only
                 // through None (no PII redaction) — it is banker-settled in the
                 // principal-aware HTTP layer (`list_proposals`), not here.
                 content_digest: String::new(),
@@ -513,7 +516,7 @@ pub(crate) fn list_proposals_page(
     Ok(rows)
 }
 
-/// v1.27.8 "QaQueue": narrow a proposal page to the owners a supervisor
+/// narrow a proposal page to the owners a supervisor
 /// manages (R1 role `owner IN manages`). Empty `manages` → the whole page
 /// (an admin who manages no agents sees the unrestricted queue).
 pub(crate) fn owner_in_filtered(rows: Vec<ProposalView>, manages: &[String]) -> Vec<ProposalView> {
@@ -529,7 +532,7 @@ pub(crate) fn owner_in_filtered(rows: Vec<ProposalView>, manages: &[String]) -> 
         .collect()
 }
 
-/// v1.20.1 "Shield" M2 TTL: if the proposal is older than
+/// if the proposal is older than
 /// [`crate::config::proposal_ttl_secs`], mark it rejected + audit
 /// `proposal_expired` and return `false`. A stale auto-capture prompt's
 /// context is unrecoverable, so the queue refuses to act on it (neither
@@ -565,7 +568,7 @@ pub(crate) fn expire_if_stale(
 /// marks the proposal approved + decided_at. With `?supersedes=<id>`, calls
 /// [`crate::consolidate::resolve_supersession`] in the SAME transaction so
 /// approving a conflicting fact atomically supersedes the old one.
-/// v1.20.7 "Telemetry" (M1): emits a `gate.approve` span (proposal_id + outcome
+/// emits a `gate.approve` span (proposal_id + outcome
 /// + principal) under `--features otel`.
 #[cfg_attr(
     feature = "otel",
@@ -591,7 +594,7 @@ pub async fn approve_proposal(
     super::authorize_role(&principal.0, &pool, "approve")?;
     let model = Arc::clone(&state.model);
 
-    // v1.20.7 "Telemetry" (M1): capture the actor label before `principal` is
+    // capture the actor label before `principal` is
     // moved into the blocking closure below (the closure promotes via
     // `principal_to_owner`), so the span can record it afterward.
     #[cfg(feature = "otel")]
@@ -603,14 +606,14 @@ pub async fn approve_proposal(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
 
-        // v1.20.2 A4: run the TTL check + expiration audit on the raw autocommit
+        // run the TTL check + expiration audit on the raw autocommit
         // connection BEFORE opening the tx. Previously `expire_if_stale` was
         // called inside the tx, so its `proposal_expired` audit row rolled back
         // if anything between here and `tx.commit()` failed. Now the expiration
         // event lands independently + the re-check inside the tx catches a
         // concurrent state change.
         //
-        // v1.20.2 A3: BEGIN IMMEDIATE so the SELECT-then-promote is serialized
+        // BEGIN IMMEDIATE so the SELECT-then-promote is serialized
         // against any concurrent approve/reject — eliminates the double-promote
         // race that was previously caught only by the content_hash UNIQUE index
         // (which surfaced as a generic 500 to the loser).
@@ -679,7 +682,7 @@ pub async fn approve_proposal(
             qa_note,
         } = p;
 
-        // v1.27.12 "ReviewArmour": bind the decision to the bytes the reviewer
+        // bind the decision to the bytes the reviewer
         // was shown. The client passes the `content_digest` it rendered; if the
         // stored content diverged since display (concurrent edit), recompute the
         // digest from the current row and 409 — never approve bytes the operator
@@ -705,7 +708,7 @@ pub async fn approve_proposal(
         );
         let now_utc = chrono::Utc::now().to_rfc3339();
 
-        // v1.20.28 "Fencepost": the chunk inherits the screen verdict it WOULD
+        // the chunk inherits the screen verdict it WOULD
         // get if re-ingested now, so the quarantine taint label survives human
         // approval as provenance. The human's decision is final (mantra #3) —
         // this does NOT gate recall on it.
@@ -719,7 +722,7 @@ pub async fn approve_proposal(
             crate::screen::ScreenResult::Quarantine | crate::screen::ScreenResult::Reject
         ) as i64;
 
-        // v1.27.8 "QaQueue": carry the supervisor's coaching note into the
+        // carry the supervisor's coaching note into the
         // promoted chunk's provenance (`origin`) so the coaching survives
         // approval as audit-grade evidence on the chunk itself.
         let mut origin = crate::gate::origin_for_source(Some(&source_kind)).to_string();
@@ -749,7 +752,7 @@ pub async fn approve_proposal(
         .map_err(|e| HandlerError::internal(format!("insert failed: {e}")))?;
         let chunk_id = tx.last_insert_rowid();
 
-        // v1.13.6: strip reasoning traces at the ingest door (same as /add).
+        // strip reasoning traces at the ingest door (same as /add).
         tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
              VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), ?3, datetime('now'))",
@@ -769,7 +772,7 @@ pub async fn approve_proposal(
                 .map_err(|e| HandlerError::internal(format!("supersession failed: {e}")))?;
         }
 
-        // v1.20.2 A3: CAS the proposals row — `AND status = 'pending'` so a
+        // CAS the proposals row — `AND status = 'pending'` so a
         // concurrent approve/reject can't both succeed. Combined with the
         // IMMEDIATE tx above, this eliminates the double-promote race; the
         // UNIQUE content_hash index is the last-resort backstop.
@@ -798,7 +801,7 @@ pub async fn approve_proposal(
             "api",
             &format!("proposal:{id}"),
             crate::audit::AuditStatus::Ok,
-            // v1.20.28 "Fencepost": note the screen verdict as provenance in the
+            // note the screen verdict as provenance in the
             // existing detail slot (no schema change — just the detail string).
             // The human's decision is final; this records what the deterministic
             // screen WOULD say if the content were re-ingested now.
@@ -834,7 +837,7 @@ pub async fn approve_proposal(
 pub struct ApproveQuery {
     #[serde(default)]
     pub supersedes: Option<i64>,
-    /// v1.27.12 "ReviewArmour": the `content_digest` the reviewer was shown.
+    /// the `content_digest` the reviewer was shown.
     /// Optional for backward-compat (quick-approve/offline-replay pass `None`);
     /// WHEN PRESENT the server recomputes it from the current row and 409s on
     /// drift, so an approval binds to the bytes that were actually rendered.
@@ -850,7 +853,7 @@ pub fn principal_to_owner(p: &Option<crate::auth::Principal>) -> Option<String> 
     p.as_ref().map(|pr| pr.sub.clone())
 }
 
-/// v1.14.0 "Gate" M4: record-level access-scope filter for retrieval. In JWT
+/// record-level access-scope filter for retrieval. In JWT
 /// mode a principal may only see chunks whose `access_scope` is in their
 /// allowed set (deny-by-default). The set is derived from the principal's
 /// existing scopes: an `admin` scope sees everything; otherwise the principal
@@ -877,13 +880,13 @@ pub fn scope_filter(p: &Option<crate::auth::Principal>) -> Option<Vec<String>> {
     }
 }
 
-/// v1.23.0 "Roles": the record-level retrieval gate when a JWT principal
+/// the record-level retrieval gate when a JWT principal
 /// carries a `roles` claim. `None` when the principal has no roles (the
 /// v1.14 `scope_filter` path applies unchanged). Otherwise resolves the role
 /// bundles and returns the narrowed `access_scopes` + the `owner_in` set
 /// (self/reports).
 ///
-/// v1.27.16 "Drawbridge" (M3.2, F-27): degradation is now fail-closed. A
+/// degradation is now fail-closed. A
 /// pool/role-store error returns the *empty permit* (matches nothing) with a
 /// `warn!` — never `None` (which the v1.14 caller reads as "no narrowing").
 /// The old availability-first fallback was a fail-open data gate: incident
@@ -926,7 +929,7 @@ pub fn role_retrieval_gate(
     }
 }
 
-/// v1.27.16 "Drawbridge" (F-06): the composite record-level read gate by-id
+/// the composite record-level read gate by-id
 /// read surfaces apply — the same (access_scopes, owner_in) pair `/recall`
 /// enforces via SQL, so a direct `/get/{id}`/`/multi-get` cannot bypass the
 /// v1.14 scope / v1.23 role boundary. `unrestricted` for loopback/opaque
@@ -1018,7 +1021,7 @@ pub fn apply_role_gate(
 /// `POST /proposals/{id}/reject` — mark rejected + decided_at. Kept in the
 /// audit trail (append-only, hash-only via `/audit`); never silently dropped,
 /// never deleted.
-/// v1.20.7 "Telemetry" (M1): emits a `gate.reject` span (proposal_id + outcome
+/// emits a `gate.reject` span (proposal_id + outcome
 /// + principal) under `--features otel`.
 #[cfg_attr(
     feature = "otel",
@@ -1045,7 +1048,7 @@ pub async fn reject_proposal(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // v1.20.1 M2: refuse to act on an expired proposal (audits + rejects it).
+        // refuse to act on an expired proposal (audits + rejects it).
         let created_at: Option<i64> = conn
             .query_row(
                 "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
@@ -1112,7 +1115,7 @@ pub async fn reject_proposal(
 /// `edited_at` is stamped so the review badge survives a refresh; the audit
 /// detail carries only the SHA-256 of the before + after content (never raw
 /// text — consistent with the existing hash-only audit practice).
-/// v1.20.7 "Telemetry" (M1): emits a `gate.edit` span under `--features otel`.
+/// emits a `gate.edit` span under `--features otel`.
 #[cfg_attr(
     feature = "otel",
     tracing::instrument(
@@ -1167,7 +1170,7 @@ pub async fn edit_proposal(
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
 
-            // Same stale/expiry discipline as approve/reject (v1.20.2 A4):
+            // Same stale/expiry discipline as approve/reject:
             // the TTL check + expiration audit land on the raw autocommit conn
             // BEFORE the tx, then the tx re-checks `status='pending'`.
             let created_at: Option<i64> = conn
@@ -1312,12 +1315,15 @@ pub async fn edit_proposal(
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
 
-    // v1.27.14 "Fencepost2" (M3.5): the edit response is a reviewer-facing view
-    // — run source_prompt/qa_note through the read seam (like list_proposals).
+    // the edit response is a reviewer-facing view
+    // — run the stored-text fields through the read seam, exactly like
+    // list_proposals ahead exposed content + source raw; both now route the read seam.
     // F-16 caution: content_digest was already computed on the raw content and
     // is left untouched.
     if let Ok(mut v) = res {
         let pii = !crate::gate::scan_pii(&v.content).is_empty();
+        v.content = crate::gate::sanitize_read_cow(&v.content, pii, &principal.0).into_owned();
+        v.source = crate::gate::sanitize_read_opt(v.source.take(), pii, &principal.0);
         v.source_prompt = crate::gate::sanitize_read_opt(v.source_prompt.take(), pii, &principal.0);
         v.qa_note = crate::gate::sanitize_read_opt(v.qa_note.take(), pii, &principal.0);
         return Ok(Json(v));
@@ -1340,9 +1346,9 @@ pub struct ProposalEditRequest {
     pub content: String,
 }
 
-/// v1.20.14 "Steer": hex SHA-256 of a string, for the edit audit detail (the
+/// hex SHA-256 of a string, for the edit audit detail (the
 /// before/after hashes prove an edit happened without persisting the content).
-/// v1.20.24 "Sweep": promoted to `pub(crate)` — also the deletion-registry
+/// promoted to `pub(crate)` — also the deletion-registry
 /// digest (tombstones + the DSAR ledger bundle hash), replacing the
 /// brute-forceable xxh3-64 where the digest protects DELETED content.
 pub(crate) fn sha256_hex(s: &str) -> String {
@@ -1352,7 +1358,7 @@ pub(crate) fn sha256_hex(s: &str) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// v1.27.12 "ReviewArmour": the canonical review fingerprint the approve verb
+/// the canonical review fingerprint the approve verb
 /// binds to. SHA-256 over the markdown-stripped + invisible-stripped form — the
 /// exact bytes recall emits — with PII redaction DISABLED so the digest is a
 /// stable, reader-independent content fingerprint (identical across admin and
@@ -1367,7 +1373,7 @@ pub(crate) fn review_digest(content: &str) -> String {
     sha256_hex(&crate::gate::sanitize_read(content, false, &None))
 }
 
-/// v1.27.12 "ReviewArmour": the approve gate predicate — a supplied digest must
+/// the approve gate predicate — a supplied digest must
 /// equal the current row's canonical fingerprint, or the approval is refused
 /// (the reviewer would be committing bytes they were not shown). `None` = the
 /// caller did not opt in (legacy quick-approve/offline-replay), passes.
@@ -1381,7 +1387,7 @@ pub(crate) fn review_digest_matches(content: &str, want: Option<&str>) -> bool {
 /// for operator review. `brain sweep --list` wraps it. Nothing is ever deleted
 /// autonomously.
 ///
-/// v1.17.1 "Govern" M2: the review list now surfaces *why* a chunk is decayed —
+/// the review list now surfaces *why* a chunk is decayed —
 /// `per_chunk` (its own `expires_at` elapsed) or `kind_policy` (no `expires_at`,
 /// but the kind-level retention default elapsed). The effective expiry is
 /// computed at query time, the same way retrieval excludes it.
@@ -1393,7 +1399,7 @@ pub async fn list_decayed(
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let now = chrono::Utc::now().timestamp();
-    // v1.20.18 "Bound": bounded page; the Rust-side expiry filter runs BEFORE
+    // bounded page; the Rust-side expiry filter runs BEFORE
     // the page split so a boundary never splits the "is it expired?" decision.
     let limit = page
         .limit
@@ -1406,7 +1412,7 @@ pub async fn list_decayed(
     } else {
         std::collections::BTreeMap::new()
     };
-    // v1.21.0 "Profiles": a bound domain's retention block replaces the
+    // a bound domain's retention block replaces the
     // server-wide policy for ITS rows (nulls remove decay). The Rust filter
     // (page_decayed) resolves per row via its domain; the SQL superset uses
     // the union of kinds with the least-restrictive cutoff across the
@@ -1433,7 +1439,7 @@ pub async fn list_decayed(
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            // v1.20.24 "Sweep": narrow the scan in SQL instead of pulling every
+            // narrow the scan in SQL instead of pulling every
             // row. The WHERE is a *superset* of the Rust-side
             // `effective_expiry` filter (`page_decayed` remains the arbiter, so
             // semantics are unchanged by construction): branch A is the exact
@@ -1466,7 +1472,7 @@ pub async fn list_decayed(
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .filter_map(|r| r.ok())
                 .collect::<Vec<DecayedRow>>();
-            // v1.22.0 "Regulated" M1: a held id never shows up in the decay
+            // a held id never shows up in the decay
             // registry — the operator must never see a frozen id as "safe to
             // purge". Filter the loaded rows before the Rust arbiter pages them
             // (keeps `page_decayed` a pure function of the rows + policy).
@@ -1490,7 +1496,7 @@ pub async fn list_decayed(
     Ok(Json(rows))
 }
 
-/// v1.20.24 "Sweep": the SQL-superset WHERE for `/decayed` — branch A (exact
+/// the SQL-superset WHERE for `/decayed` — branch A (exact
 /// per-chunk expiry, `expires_at < ?1`, index-served) plus branch B (kind-
 /// policy superset via the raw `created_at` text, cut off at the LEAST
 /// restrictive threshold — min days → latest cutoff — so no Rust-expired row
@@ -1534,7 +1540,7 @@ fn decayed_superset_sql(
     (sql, params)
 }
 
-/// v1.20.18 "Bound": `?limit=`/`?offset=` on `/decayed` (clamped to
+/// `?limit=`/`?offset=` on `/decayed` (clamped to
 /// `MAX_DECAYED`). Extracted so the page + clamp contract is unit-testable
 /// without an HTTP stack.
 #[derive(Deserialize)]
@@ -1553,7 +1559,7 @@ type DecayedRow = (i64, Option<String>, Option<i64>, String, i64, String);
 /// Pure core of `/decayed`: from the loaded `ORDER BY id` rows, keep the
 /// expired ones (Rust-side [`crate::gate::effective_expiry`] — not an
 /// expressible SQL predicate) and page them. Stable across the Rust filter.
-/// v1.21.0: a row whose domain has a bound profile with a retention block is
+/// a row whose domain has a bound profile with a retention block is
 /// judged by THAT map (replacing the server-wide policy); other rows keep the
 /// server-wide policy.
 fn page_decayed(
@@ -1632,7 +1638,7 @@ pub async fn purge(
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // v1.28.1 "Holdall" M2.1 (F-24): a strict-posture domain erases with
+        // a strict-posture domain erases with
         // `secure_delete=ON` (freed page images overwritten) + a WAL TRUNCATE
         // checkpoint after commit — the same hygiene the DSAR pool path runs.
         // Best-effort profile lookup: an unreadable/missing bind falls back to
@@ -1642,7 +1648,7 @@ pub async fn purge(
             .flatten()
             .is_some_and(|p| p.pii_strict());
         if strict {
-            // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed secure_delete
+            // was `let _ =` — a failed secure_delete
             // silently weakens the erasure guarantee claimed on the purge.
             if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
                 tracing::warn!("secure_delete=ON failed for purge: {e}");
@@ -1675,7 +1681,7 @@ pub async fn purge(
             return Err(HandlerError::not_found("no matching chunks to purge"));
         }
 
-        // v1.22.0 "Regulated" M1: a held id is frozen against EVERY erasure
+        // a held id is frozen against EVERY erasure
         // path. Refuse with 409 + the hold reasons; the operator must release
         // every hold first (POST /legal-hold/{id}/release).
         let held = crate::legal_hold::active_reasons(&tx, &ids)?;
@@ -1690,11 +1696,11 @@ pub async fn purge(
         let purged = purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-        // v1.28.1 M2.1: TRUNCATE the WAL so the erased page images do not
+        // TRUNCATE the WAL so the erased page images do not
         // linger there. Best-effort — a checkpoint failure must not fail an
         // otherwise-successful erasure.
         if strict {
-            // v1.27.19 "Scrub" (D-1): was `let _ =` — a failed TRUNCATE leaves
+            // was `let _ =` — a failed TRUNCATE leaves
             // erased page images in the WAL; warn instead of certifying silence.
             if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
                 tracing::warn!("wal_checkpoint(TRUNCATE) failed after purge: {e}");
@@ -1730,6 +1736,12 @@ pub(crate) fn purge_chunk_ids(
     reason: &str,
     origin_id: Option<i64>,
 ) -> Result<i64, HandlerError> {
+    // the structural legal-hold fence. Every production
+    // caller preflights (`/purge` 409s, DSAR defers + lists, client
+    // termination filters, ump forget refuses), so this guard is the backstop
+    // that makes "every erasure path" true of the FUNCTION, not of today's
+    // call-site discipline — a future caller cannot repeat the ump.forget miss.
+    crate::legal_hold::refuse_if_held(tx, ids)?;
     let mut purged = 0i64;
     // Entity ids referenced by the purged chunks' relationships, collected so the
     // post-loop orphan sweep can drop graph nodes that no longer link to any
@@ -1771,7 +1783,7 @@ pub(crate) fn purge_chunk_ids(
         // relationships (and with them their PII-bearing entity names) survived
         // every purge. Now removed; entity-level cleanup runs in the post-loop
         // orphan sweep. vec0 rows are deleted by knowledge_id.
-        // v1.27.19 "Scrub" (D-1): these residue DELETEs were `let _ =` — a single
+        // these residue DELETEs were `let _ =` — a single
         // silent failure left relationships/vec/evidence/traces for a chunk the
         // purge then tombstoned as erased (partial erasure certified complete).
         // All now propagate: a residue failure rolls back the whole purge tx.
@@ -1795,7 +1807,7 @@ pub(crate) fn purge_chunk_ids(
             rusqlite::params![id],
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
-        // v1.16.1: cascade to recall_traces. The trace side table (read-event
+        // cascade to recall_traces. The trace side table (read-event
         // replay artifact) embeds hit chunk ids in its JSON; a purged chunk
         // must not leave a trace that still "proves" it was returned. JSON1
         // is compiled into the bundled SQLite (rusqlite "bundled"), so the
@@ -1834,7 +1846,7 @@ pub(crate) fn purge_chunk_ids(
         }
     }
 
-    // v1.20.25: orphan-entity sweep. An entity referenced by a purged chunk
+    // orphan-entity sweep. An entity referenced by a purged chunk
     // whose relationships are now all gone is erased too — an entity *name* can
     // itself be PII (a person/email/account label), so "memory you can see,
     // approve, and erase" must not leave a graph node behind after erasure.
@@ -1852,7 +1864,7 @@ pub(crate) fn purge_chunk_ids(
         if alive == 0 {
             // Clear any residual relationship rows first (FK-off safety; if FKs
             // are on the entity DELETE cascades them anyway).
-            // v1.27.19 "Scrub" (D-1): was `let _ =` — an orphan PII-named entity
+            // was `let _ =` — an orphan PII-named entity
             // surviving a purge is a partial erasure; propagate.
             tx.execute(
                 "DELETE FROM relationships WHERE from_entity_id = ?1 OR to_entity_id = ?1",
@@ -1867,7 +1879,7 @@ pub(crate) fn purge_chunk_ids(
     Ok(purged)
 }
 
-/// v1.17.3 "UMP" M2: the shared `knowledge` column list for row rendering
+/// the shared `knowledge` column list for row rendering
 /// (export + the `/ump/*` record paths) — one source of truth so the record
 /// engine never misses a column the export carries.
 pub(crate) const KNOWLEDGE_ROW_COLS: &str =
@@ -1899,7 +1911,7 @@ pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde
             .filter(|&ts| ts != 0),
         "ump_meta": r.get::<_, Option<String>>(17)?,
         "ump_id": r.get::<_, Option<String>>(18)?,
-        // v1.22.0 M3: the residency stamp on every chunk (data residency).
+        // the residency stamp on every chunk (data residency).
         "region": r.get::<_, Option<String>>(19)?,
     }))
 }
@@ -1923,7 +1935,7 @@ pub(crate) fn load_knowledge_row(
 /// (`[redacted]`) and there is no write-time placeholder vault to resolve.
 #[derive(Debug, Default, Deserialize)]
 pub struct ExportQuery {
-    /// v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP records.
+    /// `?format=ump` re-renders the payload as UMP records.
     #[serde(default)]
     pub format: Option<String>,
 }
@@ -1935,13 +1947,13 @@ pub async fn export(
     Query(q): Query<ExportQuery>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
-    // v1.17.3 M5: export paths require the `export` verb (§5.2).
+    // export paths require the `export` verb (§5.2).
     super::cap_gate(&cap.0, "export")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     // M2: resolved before the `move` closure so the export path can redact
     // records the principal doesn't own (§2.7).
     let redact_owner = principal.0.as_ref().map(|p| p.sub.clone());
-    // v1.20.17 M2: the closure redacts rows it doesn't own; an owned String
+    // the closure redacts rows it doesn't own; an owned String
     // clone so the original is still usable for the UMP render below.
     let redact_closure = redact_owner.clone();
 
@@ -1949,7 +1961,7 @@ pub async fn export(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // v1.20.2 D3: pre-flight row count to bound memory. The full export
+        // pre-flight row count to bound memory. The full export
         // buffers every row into a Vec<Value> then serializes; on a multi-GB
         // DB that OOMs the server. We refuse (413) above MAX_EXPORT_ROWS and
         // document the per-domain `GET /domains/{name}/export` path (a single
@@ -1976,7 +1988,7 @@ pub async fn export(
                 knowledge.push(v);
             }
         }
-        // v1.20.17 M2: same redaction rule as `render_ump` (which already
+        // same redaction rule as `render_ump` (which already
         // redacts the official `.well-known` surface) — empty owner is
         // personal + shared, so a non-principal exporter sees only the shell;
         // an exporter whose sub matches the row's OWN owner sees that row.
@@ -2054,7 +2066,7 @@ pub async fn export(
                 edges.push(v);
             }
         }
-        // v1.18.2 "Transparency" M1: provenance summary counts per origin/source
+        // provenance summary counts per origin/source
         // kind (the Art 50 model-vs-human bridge) + additive format version.
         let mut by_origin: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
         let mut by_source: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
@@ -2069,7 +2081,7 @@ pub async fn export(
         Ok(serde_json::json!({
             "export_format_version": 2,
             "exported_at": chrono::Utc::now().to_rfc3339(),
-            // v1.22.0 M3: the residency stamp — where data lived.
+            // the residency stamp — where data lived.
             "region": brain_server::storage_layout::region(),
             "knowledge": knowledge,
             "entities": entities,
@@ -2085,14 +2097,14 @@ pub async fn export(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
-    // v1.17.3 "UMP" M2: `?format=ump` re-renders the payload as signed/redactable
+    // `?format=ump` re-renders the payload as signed/redactable
     // UMP records (per-chunk graph included, name-based, so a UMP peer can
     // restore it). M5 wires the operator signer here.
     if let Some(fmt) = q.format.as_deref() {
         if fmt == "ump" || fmt == "ump-md" {
             let rendered = render_ump(&body, redact_owner.as_deref(), None);
             if fmt == "ump-md" {
-                // v1.17.3 M4 (§6.3): the markdown projection per record,
+                // §6.3: the markdown projection per record,
                 // records joined by the `\n---\n` separator.
                 // ponytail: a body containing a bare `---` line (setext /
                 // thematic break) is a documented split ceiling.
@@ -2197,7 +2209,7 @@ fn render_ump(
     })
 }
 
-/// v1.17.3 M4: `?format=ump-md` — the §6.3 markdown projection per record,
+/// `?format=ump-md` — the §6.3 markdown projection per record,
 /// joined by the `\n---\n` record separator (pure; the handler wires it).
 fn render_ump_md(body: &serde_json::Value, redact_owner: Option<&str>) -> Result<String, String> {
     let rendered = render_ump(body, redact_owner, None);
@@ -2215,7 +2227,7 @@ fn render_ump_md(body: &serde_json::Value, redact_owner: Option<&str>) -> Result
 mod tests {
     use super::*;
 
-    /// v1.20.14 "Steer": the edit-audit detail is SHA-256 of before+after
+    /// the edit-audit detail is SHA-256 of before+after
     /// content (hashes only — never raw text), and it is deterministic so a
     /// replay of the same edit produces the same audit hash.
     #[test]
@@ -2236,7 +2248,7 @@ mod tests {
         );
     }
 
-    /// v1.27.12 "ReviewArmour": the approve-bind fingerprint is stable, strips
+    /// the approve-bind fingerprint is stable, strips
     /// the markdown-ref + invisible-smuggling class (the LITL divergence), and
     /// does NOT redact reader PII — so the digest is identical across admin and
     /// non-admin reviewers, and across list/edit/approve. This is what makes a
@@ -2271,7 +2283,7 @@ mod tests {
         );
     }
 
-    /// v1.27.12 "ReviewArmour": the approve gate. A matching digest passes; a
+    /// the approve gate. A matching digest passes; a
     /// stale (mismatched) digest is refused — the reviewer would be committing
     /// bytes other than the ones they saw. `None` (legacy quick-approve /
     /// offline-replay) passes by design.
@@ -2308,7 +2320,7 @@ mod tests {
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
     }
 
-    /// v1.27.8 "QaQueue": an ingested proposal records its agent `owner`, and
+    /// an ingested proposal records its agent `owner`, and
     /// `list_proposals_page` returns it alongside a `qa_score` — in-scope
     /// (owned) gets the absent-trace neutral corner, unowned degrades to
     /// out-of-scope. The supervisor page filter (R1 `manages`) keeps only
@@ -2367,7 +2379,7 @@ mod tests {
         assert_eq!(scoped[0].id, owned, "outside-manages proposal excluded");
     }
 
-    /// v1.20.19 "Vault": the `/export` read-side round-trip for the never-built
+    /// the `/export` read-side round-trip for the never-built
     /// write-time `pii_map` vault is gone. `ExportQuery` no longer carries
     /// `include_pii_map` (an unknown `?include_pii_map=` is ignored by serde),
     /// the export envelope has no `pii_map` key, and the table is dropped.
@@ -2416,7 +2428,7 @@ mod tests {
         })));
     }
 
-    /// v1.20.18 "Bound": `/decayed` returns a bounded first page and `?offset=`
+    /// `/decayed` returns a bounded first page and `?offset=`
     /// pages the rest — the page split never re-introduces an unbounded list.
     #[test]
     fn page_decayed_respects_limit_and_offset() {
@@ -2464,7 +2476,7 @@ mod tests {
         assert!(page_decayed(&rows, now, &retention, &per_domain, 99, 2).is_empty());
     }
 
-    /// v1.21.0 "Profiles": a row in a bound domain is judged by THAT profile's
+    /// a row in a bound domain is judged by THAT profile's
     /// retention map (replacing the server-wide policy); unbound rows keep the
     /// server-wide policy. An empty profile map = no kind decay at all.
     #[test]
@@ -2517,7 +2529,7 @@ mod tests {
         assert_eq!(ids, vec![1, 3]);
     }
 
-    /// v1.20.24 "Sweep" (G5): the SQL WHERE is a superset of the Rust-side
+    /// the SQL WHERE is a superset of the Rust-side
     /// filter — every row `page_decayed` would keep must be selected by the
     /// narrowed SQL, on real CURRENT_TIMESTAMP-format dates. The SQL never
     /// decides a row's fate; the exact filter still lives in Rust.
@@ -2643,7 +2655,7 @@ mod tests {
         );
     }
 
-    /// v1.20.24 "Sweep" (G6): the deletion registry's digest is the SHA-256 of
+    /// the deletion registry's digest is the SHA-256 of
     /// the deleted content — NOT the row's own content_hash (the 64-bit xxh3
     /// that was brute-forceable offline for low-entropy values). The tombstone
     /// must carry the new digest, and it must not be the stored hash.
@@ -2775,7 +2787,7 @@ mod tests {
         }
     }
 
-    /// v1.20.17 M2: the JSON `/export` body applies the same §2.7 rule as the
+    /// the JSON `/export` body applies the same §2.7 rule as the
     /// UMP renderer — a principal sees only OWN-owned content (`[redacted]`
     /// shell for other/ownerless rows), while loopback/opaque sees everything.
     #[test]
@@ -2843,7 +2855,7 @@ mod tests {
         );
     }
 
-    /// v1.18.2 M1: export JSON carries per-row `source` + `origin` + the
+    /// export JSON carries per-row `source` + `origin` + the
     /// provenance_summary envelope + export_format_version 2, while all v1
     /// field names survive (regression guard for downstream importers).
     #[test]
@@ -2934,7 +2946,7 @@ mod tests {
         }
     }
 
-    /// v1.18.2 M2: the migration backfills `origin` by source kind.
+    /// the migration backfills `origin` by source kind.
     #[test]
     fn migration_backfills_origin_by_source() {
         crate::register_sqlite_vec();
@@ -2967,7 +2979,7 @@ mod tests {
         );
     }
 
-    /// v1.20.23 "Calibrate" M1.1: `decided_at` surfaces on every `ProposalView`
+    /// `decided_at` surfaces on every `ProposalView`
     /// — `None` while pending, set after a decision (the write paths stamp it),
     /// and set on a TTL auto-expire. The round-trip proves the column now reads
     /// where the writers always wrote it.
@@ -3049,7 +3061,7 @@ mod tests {
         );
     }
 
-    /// v1.20.23 "Calibrate" M1.2: `since` bounds the page by `created_at`, and
+    /// `since` bounds the page by `created_at`, and
     /// its absence returns the legacy full query (back-compat pinned).
     #[test]
     fn proposals_since_filters_created_at_and_is_optional() {
@@ -3087,7 +3099,7 @@ mod tests {
         );
     }
 
-    /// v1.20.28 "Fencepost" (Diff 1): the approve INSERT now carries the screen
+    /// the approve INSERT now carries the screen
     /// verdict into the promoted chunk's `flagged` column, so a proposal the
     /// deterministic screen quarantined at ingest keeps that taint as provenance
     /// after human approval. Focused test of the new derivation + INSERT (the
@@ -3148,7 +3160,7 @@ mod tests {
         );
     }
 
-    /// v1.20.28 "Fencepost" (Diff 1, regression): clean content stays unflagged
+    /// clean content stays unflagged
     /// through the same approve INSERT — clean memories are not tainted just
     /// because they passed through the review queue.
     #[test]

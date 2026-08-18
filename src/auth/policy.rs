@@ -113,11 +113,18 @@ impl Scope {
     }
 
     /// True when this scope grants the requested action on (team, domain).
-    /// Wildcards in either field match anything.
+    /// Team wildcards match any team; a DOMAIN wildcard (`*`) grants only the
+    /// shared `global` pool — domains are a flat namespace with no tenant
+    /// qualification, so a `read:<team>/*` scope reading EVERY tenant's
+    /// domain would be a cross-tenant grant the team field can never narrow
+    /// (the caller's own team is pinned at every check site). Granting a
+    /// specific domain requires naming it: `read:<team>/acme-us`. This
+    /// matches `client_authorized_domains`, which already strips `*`/`global`.
     fn grants(&self, action: Action, team: &str, domain: &str) -> bool {
         let action_ok = self.action.rank() >= action.rank();
         let team_ok = self.team == "*" || self.team == team;
-        let domain_ok = self.domain == "*" || self.domain == domain;
+        let domain_ok = self.domain == domain
+            || (self.domain == "*" && (domain == "global" || self.team == "*"));
         action_ok && team_ok && domain_ok
     }
 }
@@ -195,10 +202,14 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_domain_matches_any_domain() {
+    fn wildcard_domain_grants_only_the_shared_pool() {
+        // Narrowed from "matches any domain": a single-team wildcard grant
+        // over a FLAT namespace would read every tenant's domains, and the
+        // team field can never narrow it (callers pin their own team).
         let s = Scope::parse("read:team/*").unwrap();
-        assert!(s.grants(Action::Read, "team", "anything"));
-        assert!(!s.grants(Action::Read, "other-team", "anything"));
+        assert!(s.grants(Action::Read, "team", "global"));
+        assert!(!s.grants(Action::Read, "team", "acme-us"));
+        assert!(!s.grants(Action::Read, "other-team", "global"));
     }
 
     #[test]
@@ -263,8 +274,42 @@ mod tests {
             roles: vec![],
             manages: vec![],
         };
-        assert!(is_authorized(&p, Action::Read, "team-alpha", "any"));
-        assert!(!is_authorized(&p, Action::Read, "team-beta", "any"));
+        // A domain wildcard grants the shared pool…
+        assert!(is_authorized(&p, Action::Read, "team-alpha", "global"));
+        // …not other tenants' named domains (flat namespace: the team field
+        // can never narrow a `*` domain grant)…
+        assert!(!is_authorized(&p, Action::Read, "team-alpha", "acme-us"));
+        assert!(!is_authorized(&p, Action::Read, "team-beta", "global"));
+        // …and naming a domain requires a scope that names it.
+        let named = Principal {
+            scopes: vec![
+                Scope::parse("read:team-alpha/*").unwrap(),
+                Scope::parse("read:team-alpha/acme-us").unwrap(),
+            ],
+            ..p
+        };
+        assert!(is_authorized(&named, Action::Read, "team-alpha", "acme-us"));
+    }
+
+    #[test]
+    fn explicit_superuser_still_grants_named_domains() {
+        // `admin:*/*` is the documented explicit-superuser shape: both fields
+        // wildcarded grants everything. Narrowing single-team wildcards must
+        // not touch it.
+        let p = Principal {
+            sub: "user:root".to_string(),
+            tenant: "global".to_string(),
+            scopes: vec![Scope::parse("admin:*/*").unwrap()],
+            jti: "jti-2".to_string(),
+            roles: vec![],
+            manages: vec![],
+        };
+        for domain in ["global", "acme-us", "beta-eu"] {
+            for team in ["team-alpha", "team-beta"] {
+                assert!(is_authorized(&p, Action::Read, team, domain));
+                assert!(is_authorized(&p, Action::Write, team, domain));
+            }
+        }
     }
 
     fn auditor(roles: &[&str], scopes: &[&str]) -> Option<Principal> {

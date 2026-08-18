@@ -159,7 +159,7 @@ pub async fn refresh(
             &chain_id,
         )
         .map_err(AuthHandlerError::internal_msg)?;
-// `record_and_rotate` runs the reuse check + chain
+        // `record_and_rotate` runs the reuse check + chain
         // rotation under `BEGIN IMMEDIATE` so two concurrent presentations of
         // the same refresh token cannot both pass (the prior check-then-act
         // race). On reuse it burns the chain exactly once and returns the
@@ -201,7 +201,7 @@ pub async fn logout(
     let pool = s.pool.clone();
     let cache = s.revocation_cache.clone();
     let issuer = s.jwt_issuer.clone();
-// a failed denylist write must surface. An
+    // a failed denylist write must surface. An
     // operator logging out believes the token is dead; if the INSERT failed
     // the token would live its full 15 min with that lie in the client.
     tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
@@ -259,7 +259,7 @@ pub async fn revoke_handler(
     let jti = req.jti.clone();
     let iss = req.iss.clone();
     let reason = req.reason.clone();
-// was 204-always — a failed denylist INSERT told
+    // was 204-always — a failed denylist INSERT told
     // the operator the token was dead when it wasn't. Now 500 `revoke_failed`.
     tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
         let conn = pool.get().map_err(|e| {
@@ -395,7 +395,7 @@ impl AuthHandlerError {
         }
     }
 
-/// the revocation denylist write failed — an
+    /// the revocation denylist write failed — an
     /// operator must never believe a token dead when it isn't.
     pub fn revoke_failed(msg: &str) -> Self {
         AuthHandlerError {

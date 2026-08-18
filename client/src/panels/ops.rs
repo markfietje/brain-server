@@ -245,12 +245,14 @@ pub fn panel() -> Element {
                         crate::queue::QueuedAction::Reject {
                             id,
                             queued_at: crate::queue::now_ts(),
+                            retries: 0,
                         }
                     } else {
                         crate::queue::QueuedAction::Approve {
                             id,
                             supersedes: None,
                             queued_at: crate::queue::now_ts(),
+                            retries: 0,
                         }
                     });
                 }

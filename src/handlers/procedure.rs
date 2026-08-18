@@ -147,7 +147,7 @@ pub async fn create(
         Some(d) => Some(crate::handlers::normalize_domain(d)?),
         None => None,
     };
-// write gate scoped to the actual target domain.
+    // write gate scoped to the actual target domain.
     super::authorize(
         &principal.0,
         crate::auth::Action::Write,
@@ -411,7 +411,7 @@ pub async fn classify(
     principal: OptPrincipal,
     Json(req): Json<ClassifyRequest>,
 ) -> Result<Json<ClassifyResponse>, HandlerError> {
-// read gate. Stateless pure function, but uniform gating
+    // read gate. Stateless pure function, but uniform gating
     // keeps the surface predictable. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let text = req.text.trim().to_string();
@@ -458,7 +458,7 @@ pub async fn evaluate(
     Path(id): Path<i64>,
     Json(req): Json<EvaluateRequest>,
 ) -> Result<Json<DecisionOutcome>, HandlerError> {
-// read gate (loads a chunk + runs the stored rule).
+    // read gate (loads a chunk + runs the stored rule).
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<DecisionOutcome, HandlerError> {

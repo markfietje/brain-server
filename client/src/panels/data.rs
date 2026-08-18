@@ -116,11 +116,18 @@ pub fn panel() -> Element {
                 Err(e) if crate::queue::is_offline(&e) => {
                     // v1.20.0 M3: unreachable backend → queue the purge for
                     // replay instead of failing the operator's request.
-                    // v1.28.1 M4: the persisted payload carries only the ids
-                    // + a stamp — no owner text in site-local storage.
+                    // v1.27.21 (N8): the owner travels WITH the ids — an
+                    // owner-scoped purge replayed without its owner sends an
+                    // empty body (a silent no-op dressed as an erasure).
+                    let owner_opt = {
+                        let o = owner.trim();
+                        (!o.is_empty()).then(|| o.to_string())
+                    };
                     crate::queue::enqueue(crate::queue::QueuedAction::Purge {
                         chunk_ids: ids.clone(),
+                        owner: owner_opt,
                         queued_at: crate::queue::now_ts(),
+                        retries: 0,
                     });
                     status.set(Some(Ok(crate::i18n::t("data_purged_queued"))));
                 }
@@ -270,14 +277,14 @@ pub fn panel() -> Element {
                     rows: 2,
                     value: "{purge_ids}",
                     oninput: move |e| purge_ids.set(e.value()),
-                    placeholder: "1, 2, 3",
+                    placeholder: crate::i18n::t("data_ids_ph"),
                 }
                 label { class: "label", {crate::i18n::t("data_purge_owner")} }
                 input {
                     class: "input",
                     value: "{purge_owner}",
                     oninput: move |e| purge_owner.set(e.value()),
-                    placeholder: "user@example.com",
+                    placeholder: crate::i18n::t("data_owner_ph"),
                 }
                 // v1.28.1 M4 (F-12): the inline footprint preview — rendered
                 // BEFORE the purge can arm. The card snapshots the input at
@@ -364,11 +371,11 @@ pub fn panel() -> Element {
                 div { class: "mt-3 flex items-end gap-2",
                     div { class: "flex-1",
                         label { class: "label", "{ret_kind_lbl}" }
-                        input { class: "input", value: "{new_kind}", oninput: move |e| new_kind.set(e.value()), placeholder: "fact" }
+                        input { class: "input", value: "{new_kind}", oninput: move |e| new_kind.set(e.value()), placeholder: crate::i18n::t("data_kind_ph") }
                     }
                     div { class: "w-28",
                         label { class: "label", "{ret_days_lbl}" }
-                        input { class: "input", value: "{new_days}", oninput: move |e| new_days.set(e.value()), placeholder: "90" }
+                        input { class: "input", value: "{new_days}", oninput: move |e| new_days.set(e.value()), placeholder: crate::i18n::t("data_days_ph") }
                     }
                     button { class: "btn btn-primary", disabled: !writes, onclick: run_retention, "set" }
                 }

@@ -582,7 +582,7 @@ pub fn resolve_domain_pool(
     domain: Option<&str>,
 ) -> Result<crate::Pool, HandlerError> {
     let d = domain.filter(|s| !s.trim().is_empty()).unwrap_or("global");
-// unregistered names (multi-db) map to
+    // unregistered names (multi-db) map to
     // 404 `domain_unknown` — probe-blind, no file ever created. The legacy
     // `known_domains` detail list survives only for malformed names.
     registry.pool_for(d).map_err(|e| match e {
@@ -897,7 +897,7 @@ mod tests {
         assert!(cap_gate(&adminish, "admin").is_err());
     }
 
-// idempotency property — normalizing a domain twice
+    // idempotency property — normalizing a domain twice
     // yields the same result as normalizing once.
     use proptest::prelude::*;
 

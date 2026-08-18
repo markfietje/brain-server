@@ -477,12 +477,14 @@ pub fn panel() -> Element {
                     crate::queue::QueuedAction::Reject {
                         id,
                         queued_at: crate::queue::now_ts(),
+                        retries: 0,
                     }
                 } else {
                     crate::queue::QueuedAction::Approve {
                         id,
                         supersedes: None,
                         queued_at: crate::queue::now_ts(),
+                        retries: 0,
                     }
                 };
                 outcomes.write().insert(id, settle(res, action));
@@ -510,12 +512,14 @@ pub fn panel() -> Element {
                 crate::queue::QueuedAction::Reject {
                     id,
                     queued_at: crate::queue::now_ts(),
+                    retries: 0,
                 }
             } else {
                 crate::queue::QueuedAction::Approve {
                     id,
                     supersedes,
                     queued_at: crate::queue::now_ts(),
+                    retries: 0,
                 }
             };
             outcomes.write().insert(id, settle(res, action));
@@ -916,6 +920,7 @@ fn RejectEditor(
                                         crate::queue::QueuedAction::Reject {
                                             id,
                                             queued_at: crate::queue::now_ts(),
+                                            retries: 0,
                                         },
                                     ),
                                 );
@@ -1257,6 +1262,7 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64, digest: String) -> El
                         id: proposal_id,
                         supersedes: None,
                         queued_at: crate::queue::now_ts(),
+                        retries: 0,
                     });
                     state.set("queued — will replay when the connection returns".to_string());
                 }
@@ -1275,6 +1281,7 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64, digest: String) -> El
                     crate::queue::enqueue(crate::queue::QueuedAction::Reject {
                         id: proposal_id,
                         queued_at: crate::queue::now_ts(),
+                        retries: 0,
                     });
                     state.set("queued — will replay when the connection returns".to_string());
                 }

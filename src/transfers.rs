@@ -788,7 +788,7 @@ mod tests {
             None
         )
         .is_err());
-// signed/expiry timestamps validated in the shared
+        // signed/expiry timestamps validated in the shared
         // validator — the write path's single validation site.
         assert!(validate_register(
             "d",

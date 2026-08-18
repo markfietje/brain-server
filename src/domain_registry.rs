@@ -163,7 +163,7 @@ impl DomainRegistry {
         self.pool_for(domain)
     }
 
-/// add `domain` to the registered set
+    /// add `domain` to the registered set
     /// WITHOUT opening its pool — the boot-time clients-table seed (no eager
     /// connection pools at startup; the first access opens lazily, and a
     /// vanished file is recreated on demand, always bounded by the cap). The
@@ -364,7 +364,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// an unregistered multi-db name is
+    /// an unregistered multi-db name is
     /// refused with `Unknown` and — critically — leaves NO file behind: the
     /// registered-only rule is the anti-disk-fill bound on probeable reads.
     #[test]
@@ -399,7 +399,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// `register` is the single creation path
+    /// `register` is the single creation path
     /// and the cap (`BRAIN_MAX_DOMAIN_DBS`, default 256) bounds how many
     /// files may exist — creation is refused (Capacity, no file) beyond it.
     #[test]
@@ -441,7 +441,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// the boot seed registers names WITHOUT
+    /// the boot seed registers names WITHOUT
     /// opening a pool (no eager connections); the first access opens lazily.
     #[test]
     fn seeded_domain_opened_lazily_on_first_access() {

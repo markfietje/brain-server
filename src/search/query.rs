@@ -63,7 +63,7 @@ pub struct QueryDoc {
     /// When true, responses include the query plan / telemetry / provenance.
     #[serde(default)]
     pub explain: bool,
-/// include quarantined (`flagged`) chunks in results. Operator
+    /// include quarantined (`flagged`) chunks in results. Operator
     /// review path only; the default agent path keeps them excluded.
     #[serde(default)]
     pub include_flagged: bool,
