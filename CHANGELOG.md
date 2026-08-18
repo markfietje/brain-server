@@ -107,6 +107,86 @@ See `IMPLEMENTATION_PLAN_v1.27.21_Finish.md`.
 
 ---
 
+## [1.27.22] — 2026-08-18
+
+Server-only release (server `Cargo.toml`/lock `1.27.21` → **`1.27.22`**; client +
+plugin unchanged). **"Cascade"** — a bug-fix release closing two
+*documented-but-unimplemented* behaviors in the graph edge layer: edge
+supersession was write-once (nothing ever closed an old edge's `invalid_at` when
+reality changed) and traversal claimed to skip superseded edges but never did.
+This release makes the code true to its own documentation, reusing the
+bi-temporal columns + hash-chained audit + quarantine machinery already shipped.
+No new storage, no new schema columns/tables, no wire change, no telemetry; the
+schema stamp advances to **1.27.22** for the added `relationships.superseded_at`
+column + index swap.
+
+### Bug fixes
+
+- **Edge supersession is now wired (BUG-1).** The ingest path replaced its
+  write-once `INSERT OR IGNORE` with a pure bi-temporal resolver
+  (`resolve_edge_insert`). Re-ingesting an *unchanged* relation is still an
+  idempotent no-op (no history churn); re-ingesting a relation with a *changed*
+  window/interval now retires the old edge version (`superseded_at` = the
+  transaction-time end, old row preserved verbatim) and inserts the corrected
+  version as the new current belief. The handoff is exact:
+  `old.superseded_at == new.created_at`.
+- **Traversal now skips superseded edges (BUG-2), matching its own doc.** The
+  recursive walk filters edges to *current beliefs*: live (`superseded_at IS
+  NULL`) and the newest live version of their `(from, to, relation_type)`
+  triple. This is a no-op on well-formed/legacy DBs (a lone edge has no newer
+  live peer), so default recall/traversal output is byte-identical; it corrects
+  the case where a backdated supersession previously returned two edges claiming
+  the same triple at one instant.
+- **`/graph/relationships/{id}/history` (Admin, audited).** A new read surface
+  reconstructs the full version history of an edge triple — every version in
+  order with its four timestamps (`valid_at`, `invalid_at`, `created_at`,
+  `superseded_at`) + a `current` flag — given any one version id, so a
+  superseded belief can always be recovered (supersession never deletes).
+- **Superseded edges are hidden from graph + adjacency reads.** `GET
+  /graph/relations`, `entity_relations`, `relations_for`, the UMP relation
+  fan-out, and the graph-PPR adjacency aggregation all filter to current
+  beliefs, so a retired edge no longer surfaces as a live relation.
+
+### Improvements
+
+- Supersession events ride the existing hash-chained audit log
+  (`AuditKind::Ingest`, detail `created:<id>` / `superseded:<old_id>->:<new_id>`)
+  and the history-surface read is itself recorded (`AuditKind::GraphRead`).
+- Fail-closed: an inability to resolve an edge insert declines the ingest
+  transaction (never a silent half-write); an unresolvable history id returns
+  `404 Relationship not found`.
+
+### Security fixes
+
+- None (no new trust boundary; the graph-label read seam posture is unchanged
+  from v1.27.21).
+
+### Engineering record
+
+- New lib module `graph_supersede` (pure `resolve_edge_insert` +
+  `EdgeAction::{SameWindow, Created, Superseded}`, unit-tested with a bare
+  `Connection`), wired from `ingest.rs`; migration adds `superseded_at` and swaps
+  the write-once UNIQUE index for the plain `idx_rels_bt` (schema **1.27.22**).
+- Tests: server bin **686** / 6 ignored (was 685; +1 `edge_history`), lib **133**
+  (incl. 5 `graph_supersede`), graph `superseded_edges_are_not_counted_in_adjacency`,
+  `traversal_skips_superseded_edge`, `traversal_keeps_oldest_edge_when_no_later_same_typed`,
+  `graph_read_surfaces_hide_superseded_edges`; clippy `-D warnings` + fmt clean.
+- Recall gate green on the new build: `brain eval --floor r5=0.85,r10=0.85,mrr=0.85`
+  over the frozen 37-query 10-doc smoke corpus → r@5 0.919 / r@10 0.919 /
+  mrr 0.905 / ndcg@10 0.909, exit 0 (see `BENCHMARKS.md`).
+- Honest ceilings: edge supersession is deterministic on the temporal interval,
+  not LLM-judged (semantic contradictions like "now trust X, still respect Y"
+  stay out of scope); history is the versioned edge rows, not a per-field audit
+  diff; this is a correctness/doc-truth fix, not a recall-quality claim —
+  LongMemEval parity stays `PENDING`. Rollback is minimal: supersession only
+  *sets* `superseded_at` (never destructively mutates), so reverting M1/M2
+  restores the old no-op write path; leftover `superseded:` audit rows are
+  harmless evidence. Verify `brain doctor` post-install (first boot since
+  v1.27.21 runs the idempotent migration).
+  See `IMPLEMENTATION_PLAN_v1.27.22_Cascade.md`.
+
+---
+
 ## [1.27.20] — 2026-08-17
 
 ### Improvements — "Console"

@@ -280,6 +280,29 @@ reachable. Faster per-core but a different machine; kept for the delta.
 > separated by this set — BGE-M3's sparse/colbert heads aren't even consumed
 > yet (that's v1.30). The real gate is the ≥100-query frozen set.
 
+### v1.27.22 "Cascade" recall-gate re-verification (2026-08-18)
+
+> **Byte-identity check for the graph supersession bug-fix.** The release
+> touches the traversal/adjacency read path (superseded-edge skip + adjacency
+> filter) that feeds recall, so the frozen set was re-run on the new build to
+> confirm the default (`superseded_at IS NULL` = no-op on well-formed DBs) is
+> behavior-identical. Same procedure as the CI `recall-gate` job: scratch
+> instance, the 10-doc smoke corpus, 37 judged queries, default profile, this
+> dev host. Gate holds (exit 0) and metrics match the long-standing baseline —
+> the fix did not move recall.
+
+| metric | score |
+|---|---|
+| recall@5 | 0.919 |
+| recall@10 | 0.919 |
+| nDCG@10 | 0.909 |
+| MRR | 0.905 |
+| precision@5 / @10 | 0.276 / 0.138 |
+
+> Note: nDCG@10 here (0.909) matches the v1.17.4 smoke set's 0.911 within this
+> set's run-to-run variance at n=37; the pinned CI floors (r5/r10/mrr ≥ 0.85)
+> are comfortably held.
+
 ### Quality (frozen final query set)
 
 > **v1.17.4 smoke run (2026-08-09)** — the 10-doc CI smoke corpus
