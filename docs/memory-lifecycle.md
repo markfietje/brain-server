@@ -170,10 +170,15 @@ structured, `main.rs::ingest_memory` / `ingest_markdown` for the others):
 4. **Route the domain** — forced if given, else auto-routed to the nearest
    centroid (`domain_router`); no confident centroid → `global`.
 5. **Write, in one transaction:** `knowledge` + `vec_knowledge` + (for
-   structured) `entities` / `relationships`. The graph upserts are idempotent
-   (`INSERT OR IGNORE`); relations auto-create missing endpoint entities and
-   carry bi-temporal `valid_at` / `invalid_at` (explicit caller value wins,
-   else a deterministic extractor over the content).
+   structured) `entities` / `relationships`. The graph upserts are idempotent:
+   a re-ingested relation with an **unchanged** window is a no-op (no history
+   churn); a re-ingested relation with a **changed** window retires the old edge
+   (`superseded_at` = transaction-time end, old row preserved verbatim) and
+   inserts the corrected version as the new current belief (v1.27.22). Relations
+   auto-create missing endpoint entities and carry a four-timestamp
+   bi-temporal model — `valid_at` / `invalid_at` (valid time) + `created_at` /
+   `superseded_at` (transaction time) — with explicit caller value winning over
+   a deterministic extractor over the content.
 6. **Recompute the domain centroid** (best-effort) so future queries route to
    it.
 7. Record `pii` flag from `gate::scan_pii` (email / phone / Luhn card).
@@ -200,7 +205,7 @@ id.
 | `knowledge` | The row: `title`, `content`, `source`, `content_hash`, `domain`, `pii`, `owner`, `node_kind`, `assertion_kind`, `confidence`, `access_scope`, `expires_at`, `valid_from/to`, `observed_at`, `authority`, `origin`, `ump_id`/`ump_meta` | all paths |
 | `vec_knowledge` | int8 (`vec_quantize_int8 'unit'`) + binary embeddings | all paths |
 | FTS5 | tokenized text for lexical recall | all paths |
-| `entities` / `relationships` | the knowledge graph, bi-temporal | structured (+ consolidate) |
+| `entities` / `relationships` | the knowledge graph, four-timestamp bi-temporal (valid + transaction time; `superseded_at IS NULL` = current belief) | structured (+ consolidate + v1.27.22 edge supersession) |
 | `proposals` | gated candidates + scores + `decided_at` | proposal path |
 | `sources` | reconciled source bookkeeping | ingest/sources |
 

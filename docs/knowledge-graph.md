@@ -14,7 +14,11 @@ The graph is built from two sources:
 
 2. **Explicit structured ingest** — `POST /ingest` accepts explicit `entities` and `relations`, so the caller controls the graph schema.
 
-Entities and relationships live in `entities` / `relationships` tables with **bi-temporal validity** (`valid_at` / `invalid_at`): they know *when* a fact was true.
+Entities and relationships live in `entities` / `relationships` tables with a
+**four-timestamp bi-temporal model** (v1.27.22): `valid_at` / `invalid_at`
+(valid time — when the fact was true in the world) plus `created_at` /
+`superseded_at` (transaction time — when the store learned it and when it
+stopped believing it). `superseded_at IS NULL` marks the current belief.
 
 ## Querying the graph
 
@@ -50,7 +54,20 @@ Each hop is `{from: {id, name}, relation, to: {id, name}}`, so a consuming agent
 
 ## Temporal correctness
 
-The graph is bi-temporal: facts carry `valid_at` / `invalid_at`, and `/graph/traverse` accepts `?at=` to see the graph as it was at a point in time. Superseded facts are expired (`invalid_at` set), never deleted — historical queries still return them, current queries do not.
+The graph is four-timestamp bi-temporal. Facts carry `valid_at` / `invalid_at`,
+and `/graph/traverse` accepts `?at=` to see the graph as it was at a point in
+time. When a corrected belief arrives, the superseding write sets the old
+edge's `superseded_at` (transaction-time end, v1.27.22) — the old version is
+**retired, never deleted**, so current reads (which filter `superseded_at IS
+NULL`) return the new belief while the full history stays recoverable.
+
+### Edge history (v1.27.22)
+
+`GET /graph/relationships/{id}/history` (Admin, audited) returns every version
+of an edge triple in order — each with its four timestamps and a `current`
+flag — given any one version id. This is the read-side guarantee that
+supersession never deletes: a retired belief can always be reconstructed here
+even though default reads hide it.
 
 ## The graph as a retrieval leg (v1.11+)
 

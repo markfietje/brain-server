@@ -1,14 +1,17 @@
 //! TRACE-style typed edges + validity-aware traversal.
 //!
-//! Models conversations as a hierarchical graph with typed relations (temporal,
-//! causal, update, contradiction) over the existing `relationships` +
-//! `evidence_links` tables. Traversal is validity-aware: an edge invalidated by
-//! a later `update:`/`supersedes:` edge is skipped at query time.
+//! Models conversations as a hierarchical graph with typed relations over the
+//! existing `relationships` + `evidence_links` tables. Traversal is
+//! validity-aware and current-belief-aware (v1.27.22): an edge whose
+//! `superseded_at` is set (a corrected belief has replaced it, transaction-time
+//! END per the bi-temporal model) is skipped at query time.
 //!
 //! Key invariant (mirroring Graphiti's `resolve_edge_contradictions`): when a
-//! new fact contradicts an older one, the older edge is expired (invalid_at
-//! set), not deleted. Retrieval filters by the bi-temporal window; traversal
-//! additionally skips superseded same-typed edges.
+//! new fact corrects an older one, the older edge is retired (`superseded_at`
+//! set), never deleted — its valid interval + created_at are preserved for
+//! historical/as-of reads. Traversal filters by the bi-temporal window AND
+//! skips superseded same-typed edges, so a corrected belief yields one live
+//! edge per triple.
 //!
 //! The reserved `update:`/`supersedes:`/`contradicts:`/`causes:` vocabulary was
 //! removed (v1.6 closed without consuming it). What remains: the *used*

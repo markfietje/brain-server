@@ -16,11 +16,16 @@ traversal. The reasoning chain is a first-class artifact, not a side effect.
 
 ## The implementation
 
-`src/trace.rs` provides a **prefix vocabulary** (`update:` / `supersedes:` /
-`contradicts:` / `causes:`) and hard bounds `MAX_HOPS = 4`, `MAX_VISITED = 256`.
-`/graph/traverse`:
+`src/trace.rs` provides the hard bounds `MAX_HOPS = 4`, `MAX_VISITED = 256`
+(its typed-edge **prefix vocabulary** — `update:` / `supersedes:` /
+`contradicts:` / `causes:` — was removed v1.6/v1.27.19 as un-consumed reserved
+words). `/graph/traverse`:
 
 - is **validity-aware** (`?at=`, bi-temporal filters on every hop);
+- is **current-belief aware** (v1.27.22): a hop is traversed only when it is the
+  live, newest version of its edge triple (`superseded_at IS NULL` AND no newer
+  live same-typed row) — the behavior `trace`'s doc claimed all along, now
+  actually enforced, and a no-op on well-formed/legacy graphs;
 - is **cross-domain** capable (`?cross_domain=true` fans out per domain);
 - with `?explain=true` returns a `paths` array of **structured hop chains**
   `[{from:{id,name}, relation, to:{id,name}}, ...]` — the recursive CTE carries

@@ -76,13 +76,23 @@ human approval.
 
 ## Knowledge graph
 
-Entities and relationships live in `entities` / `relationships` tables with
-bi-temporal validity (`valid_at` / `invalid_at`). `/graph/traverse` walks the graph
-(bounded to depth 4, ≤256 visited) and, with `?explain=true`, returns **faithful
-hop chains** (`A --works_at--> B --ceo_of--> C`) rather than a flat id string.
+Entities and relationships live in `entities` / `relationships` tables with a
+four-timestamp bi-temporal model (`valid_at` / `invalid_at` + `created_at` /
+`superseded_at`, v1.27.22). `/graph/traverse` walks the graph (bounded to depth
+4, ≤256 visited) and, with `?explain=true`, returns **faithful hop chains**
+(`A --works_at--> B --ceo_of--> C`) rather than a flat id string. Traversal
+visits only *current* edges — a rewritten edge whose `superseded_at` is set is
+skipped (a backdated correction no longer yields two live edges for one triple).
 
-`supersedes` links (approved via `/consolidate`) atomically expire the prior fact:
-historical recall (`?at=<past>`) still returns it, current recall does not.
+Graph edges are superseded two ways, both retire-never-delete:
+
+- **Operator-approved `supersedes` links** (via `/consolidate`) atomically
+  expire the prior fact (its `invalid_at` closes): historical recall
+  (`?at=<past>`) still returns it, current recall does not.
+- **Automatic on changed re-ingest** (v1.27.22): re-ingesting a relation with a
+  different window sets the old edge's `superseded_at` (transaction-time end)
+  and inserts the corrected version as the new current belief. The full version
+  lineage is readable via `GET /graph/relationships/{id}/history`.
 
 ---
 

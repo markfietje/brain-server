@@ -22,6 +22,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 ## Self-correction & maintenance
 
 - **Self-correction** (v1.6) — operator-approved `supersedes` links atomically expire the prior fact; historical recall (`?at=<past>`) still returns it. `brain resolve` + `brain check-consistency` surface action items.
+- **Automatic edge supersession** (v1.27.22) — re-ingesting a relation with a changed window retires the old edge (`superseded_at` set, old row preserved) and inserts the corrected belief; traversal + graph reads surface only current edges. `GET /graph/relationships/{id}/history` recovers the full version lineage.
 - **Reviewable proposals** (v1.8) — `/consolidate/propose` detects exact duplicates, subject conflicts, unresolved contradictions, **stale sources** (deleted vault files), and **near-duplicates** (cosine > 0.95). `brain undo-resolve` reverses prior resolutions without retrieval regression.
 - **Write-back gating** (v1.14) — `POST /ingest/proposal` scores a candidate (novelty via KNN, conflict via consolidation, salience via heuristics) but creates **no** `knowledge` row; it becomes memory only via human approval.
 - **Approval binds to the displayed bytes** (v1.27.12) — `/proposals` serves the read-canonical review form (PII-redacted, markdown-ref-stripped, invisible-Unicode-free) plus a stable `content_digest`; approving with a stale digest is rejected (`409`), so a decision can never bless content that recall would render differently.

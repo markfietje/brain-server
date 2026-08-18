@@ -1,6 +1,7 @@
 # Bi-temporal Knowledge Graph (validity-aware facts)
 
-**File:** `src/temporal.rs` (extraction) · `src/search/mod.rs` (filters)
+**File:** `src/temporal.rs` (extraction) · `src/search/mod.rs` (filters) ·
+`src/graph_supersede.rs` (edge supersession, v1.27.22)
 
 ## The problem
 
@@ -32,6 +33,16 @@ bi-temporal v1.4.0):
   alongside. Superseding a chunk sets `valid_to = now` (v1.6
   `resolve_supersession`) — the old fact becomes invisible to *default* recall
   but still retrievable with `?at=<past>`.
+
+Graph edges carry the **full SQL:2011 / Snodgrass four-timestamp model**
+(v1.27.22): the `relationships` table keeps `valid_at`/`invalid_at` (valid
+time) plus `created_at`/`superseded_at` (transaction time). A corrected belief
+on re-ingest (`src/graph_supersede.rs::resolve_edge_insert`) sets the old
+edge's `superseded_at` — not its `invalid_at` — because the valid interval of
+the old version is still the truth-as-believed; only the store's belief moved.
+The old row is preserved verbatim; `superseded_at IS NULL` marks the current
+belief, and `GET /graph/relationships/{id}/history` reconstructs the full
+version lineage from any one version id.
 
 ## Measured ceiling
 

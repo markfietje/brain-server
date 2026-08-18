@@ -4,9 +4,9 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.20.29 "Bound" (2026-08-14) — the ATLAS-hardening tail closed: SSRF-egress refusals (Tourniquet), quarantine-taint provenance (Fencepost), and the fail-closed loopback bind guard (Bound).
-- **Latest client version:** 1.20.25 "Consolidate" (2026-08-13) — ships alongside the server (read-seam rendering, DSAR/purge surfaces).
-- **Latest plugin version:** 0.4.2 "Bound" (2026-08-14) — recall amplification bound + schema-clamped tool params.
+- **Latest server version:** 1.27.22 "Cascade" (2026-08-18) — a bug-fix release closing two documented-but-unimplemented graph edge behaviors: edge supersession is now wired on re-ingest (a changed window retires the old edge via `superseded_at`, old row preserved) and traversal actually skips superseded edges. New `GET /graph/relationships/{id}/history` (Admin) reconstructs an edge's full version lineage.
+- **Latest client version:** 1.27.21 "Finish" (2026-08-18) — ships alongside the server (offline-queue integrity, salted DSAR digests).
+- **Latest plugin version:** 0.4.5 "Finish" (2026-08-18) — env-token ladder + privacy query log.
 - **Next milestone:** v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 
@@ -51,6 +51,15 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | v1.18.0 | Compliant | `?` keyboard help on Review (WCAG 3.2.6) + a `client-gate` CI job |
 | v1.18.1 | Harden | Console history persists (secret-safe) + measured client bundle |
 | v1.18.2 | Transparency | Art 50 `knowledge.origin` marker + `/export` provenance |
+| v1.19.0 | Integrated | Audit filters URL-addressable; deep links, PWA, JWT-pair SSO-half |
+| v1.20.x | Polish → Vault | Client polish + offline queue; the v1.14→v1.20 client chain closes; `pii_map` vault removed (read-time redaction is the control) |
+| v1.21.0 | Profiles | Preset knob bundles + `brain setup` + profile-bound retention/PII |
+| v1.22.0 | Regulated | Legal hold + retention report + region pin + compliance pack |
+| v1.23.0 | Roles | Role-based UI posture + role presets (`client-auditor`, `bpo-ops`) |
+| v1.24.0 | Connectors | Profile-gated connector registry + translate template |
+| v1.25.0 | PH-Compliant | Breach-notification workflow + PIA + scraping provenance |
+| v1.26.x | Cross-Border | Transfer register + jurisdiction rules + TIA/DPA templates |
+| v1.27.x | Harden/Console/Review | Fail-closed erasure + fence forgeability, backup v3, console `--json`, i18n truth, client reviewer calibration, silent-failure sweep, recall-cost + PRF weights, client console dashboard, edge supersession + history (1.27.22 "Cascade") |
 
 ## Milestone themes
 
