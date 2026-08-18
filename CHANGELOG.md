@@ -29,6 +29,26 @@ new schema, no new endpoints, no wire change, no telemetry. Two landed here
 outbound client) was already shipped in v1.27.21 (M9: 5 s connect / 15 s total
 egress bound) and is re-verified, not re-built.
 
+### Release notes
+
+**Security fixes**
+
+- **Public `/health` is now the minimal probe shape.** The unauthenticated
+  load-balancer probe shows only `status` + `version`; every
+  deployment-fingerprinting field (`model`, `otel.endpoint`, `pool`, `backup`,
+  `webhook`, `hardening`, `compliance.dpo_contact`, `integrity`) moved behind
+  the authenticated `/health/db` detail. Operator monitors must switch to the
+  gated detail.
+- **HTTP/2 dependency hardened (h2 0.4.16).** Clears RUSTSEC-2026-0258
+  ("unbounded empty DATA frames") on the reqwest/hyper client; `cargo audit` is
+  clean on both trees.
+
+**Bug fixes**
+
+- **Silent embedding failures are now loud.** If a neural embedder fails to
+  load, the server emits a warning instead of quietly returning an empty vector
+  (which callers already skip) — no more silent retrieval gaps.
+
 ### Security fixes
 
 - **Public `/health` is now the minimal probe shape (A-02).** The load-balancer
