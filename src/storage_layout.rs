@@ -78,6 +78,11 @@ pub const SCHEMA_VERSION_V1_27_8: &str = "1.27.8";
 /// `idx_entities_name`, `idx_evidence_links_from` dropped (superseded by
 /// stricter indexes / autoindexes).
 pub const SCHEMA_VERSION_V1_27_18: &str = "1.27.18";
+/// v1.27.22 "Cascade": `relationships` gains the transaction-time END
+/// `superseded_at` (the fourth timestamp — true bi-temporal, SQL:2011 /
+/// Graphiti), `idx_rels_unique` (write-once UNIQUE) is replaced by the plain
+/// `idx_rels_bt` (versioned edges may hold many rows per triple).
+pub const SCHEMA_VERSION_V1_27_22: &str = "1.27.22";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

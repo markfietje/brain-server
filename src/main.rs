@@ -64,6 +64,7 @@ mod consolidate;
 mod domain_registry;
 mod domain_router;
 mod gate;
+mod graph_supersede;
 mod handlers;
 mod hygiene;
 mod integrity;
@@ -3557,6 +3558,7 @@ fn entity_relations(
              JOIN entities e ON (r.to_entity_id = e.id OR r.from_entity_id = e.id)
              LEFT JOIN knowledge k ON r.knowledge_id = k.id
              WHERE (r.from_entity_id = ?1 OR r.to_entity_id = ?1)
+               AND r.superseded_at IS NULL
                AND (?3 IS NULL OR k.domain = ?3)
              ORDER BY r.id LIMIT ?2",
         )
@@ -3654,6 +3656,7 @@ fn relations_for(
          JOIN entities e ON r.to_entity_id = e.id
          LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.from_entity_id = (SELECT id FROM entities WHERE name = ?1)
+           AND r.superseded_at IS NULL
            AND (?3 IS NULL OR k.domain = ?3)
          ORDER BY r.id LIMIT ?2"
     } else {
@@ -3661,6 +3664,7 @@ fn relations_for(
          JOIN entities e ON r.from_entity_id = e.id
          LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.to_entity_id = (SELECT id FROM entities WHERE name = ?1)
+           AND r.superseded_at IS NULL
            AND (?3 IS NULL OR k.domain = ?3)
          ORDER BY r.id LIMIT ?2"
     };
@@ -3681,6 +3685,125 @@ fn relations_for(
         .filter_map(|r| r.ok())
         .collect::<Vec<_>>();
     Ok(results)
+}
+
+/// `GET /graph/relationships/{id}/history` — the supersession lineage of an
+/// edge.
+///
+/// Given any version of a (from,to,relation_type) triple, return **every**
+/// version of that triple in version order (oldest → newest), each with its
+/// four timestamps (valid_at, invalid_at, created_at, superseded_at) and a
+/// `current` flag (`superseded_at IS NULL`). This is the historical surface
+/// that a "current belief" read deliberately hides: retired versions carry
+/// entity names + valid intervals that a default view redacts. It is the
+/// read-side guarantee of the four-timestamp model — supersession never
+/// deletes, so this surface can always reconstruct what brain believed and
+/// when it stopped.
+///
+/// Admin-gated at the row level (the history is operator evidence, not a
+/// regular read); the call is audit-recorded (`AuditKind::GraphRead`) so the
+/// retrieval of retired PII-bearing labels is itself on the chain.
+async fn get_edge_history(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // AuthZ: Admin-level read (the supersession lineage is operator evidence).
+    let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    let pool = handlers::resolve_domain_pool(&state.registry, domain.as_deref())
+        .unwrap_or(state.pool.clone());
+    let actor = principal
+        .0
+        .as_ref()
+        .map(|p| p.sub.clone())
+        .unwrap_or_else(|| "auto".to_string());
+
+    let result = task::spawn_blocking(move || -> Result<serde_json::Value, AppError> {
+        let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
+        // Resolve the triple from the requested version id.
+        let triple: Option<(i64, i64, String)> = conn
+            .query_row(
+                "SELECT from_entity_id, to_entity_id, relation_type FROM relationships WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        let Some((from_id, to_id, kind)) = triple else {
+            return Err(AppError::NotFound("Relationship not found"));
+        };
+        // Every version of the triple, oldest → newest. Retired versions keep
+        // their entity names — this surface is the read-side guarantee that
+        // supersession never deletes.
+        let mut stmt = conn
+            .prepare(
+                "SELECT e1.name, e2.name, r.relation_type, r.knowledge_id,
+                        r.valid_at, r.invalid_at, r.created_at, r.superseded_at,
+                        r.id
+                 FROM relationships r
+                 JOIN entities e1 ON r.from_entity_id = e1.id
+                 JOIN entities e2 ON r.to_entity_id = e2.id
+                 WHERE r.from_entity_id = ?1 AND r.to_entity_id = ?2
+                   AND r.relation_type = ?3
+                 ORDER BY r.id",
+            )
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let versions: Vec<serde_json::Value> = stmt
+            .query_map(params![from_id, to_id, kind], |r| {
+                Ok(serde_json::json!({
+                    "id": r.get::<_, i64>(8)?,
+                    "relation_id": r.get::<_, i64>(8)?,
+                    "from_entity": r.get::<_, String>(0)?,
+                    "to_entity": r.get::<_, String>(1)?,
+                    "relation_type": r.get::<_, String>(2)?,
+                    "knowledge_id": r.get::<_, Option<i64>>(3)?,
+                    "valid_at": r.get::<_, Option<String>>(4)?,
+                    "invalid_at": r.get::<_, Option<String>>(5)?,
+                    "created_at": r.get::<_, Option<String>>(6)?,
+                    "superseded_at": r.get::<_, Option<String>>(7)?,
+                    "current": r.get::<_, Option<String>>(7)?.is_none(),
+                }))
+            })
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if versions.is_empty() {
+            // The triple resolved but produced no versions (should not happen
+            // with FK integrity, but fail closed rather than return an empty
+            // lineage).
+            return Err(AppError::NotFound("Relationship not found"));
+        }
+        let current_count = versions.iter().filter(|v| v["current"] == true).count();
+        // Audit the read (the retrieval of retired, PII-bearing labels is
+        // evidence). Best-effort: a failed audit must not fail the response.
+        let _ = crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::GraphRead,
+            &actor,
+            &id.to_string(),
+            crate::audit::AuditStatus::Ok,
+            &format!("lineage:{from_id}:->:{to_id}:={kind} current={current_count}"),
+        );
+        Ok(serde_json::json!({
+            "relation_id": versions[0]["relation_id"],
+            "from_entity": versions[0]["from_entity"],
+            "to_entity": versions[0]["to_entity"],
+            "relation_type": kind,
+            "current": versions.iter().find(|v| v["current"] == true),
+            "versions": versions,
+        }))
+    })
+    .await
+    .map_err(|_| AppError::Internal("Task join error".into()))??;
+
+    Ok(Json(result))
 }
 
 async fn traverse_graph(
@@ -3795,6 +3918,49 @@ async fn traverse_graph(
         } else {
             ""
         };
+        // v1.27.22 "Cascade" (BUG-2 fix): traversal meets its own doc. The
+        // module doc promised "traversal skips edges that a later same-typed
+        // edge has superseded" — the code never did (it filtered only by the
+        // valid-time window). This predicate makes an edge a *current belief*
+        // per the true bi-temporal model (SQL:2011 / Snodgrass): it is live
+        // (`superseded_at IS NULL` — transaction-time END unset) AND it is the
+        // newest live version of its (from,to,relation_type) triple
+        // (`NOT EXISTS` a newer live `r2.id`). Currency is a **transaction-time**
+        // property, deliberately NOT a valid-time one: a corrected belief that
+        // is backdated (earlier valid_at) still supersedes the old current belief
+        // (see graph_supersede::backdated_overlap_preserves_both_valid_intervals),
+        // so the anti-join orders by id, not by valid interval.
+        //
+        // It is a no-op on well-formed + legacy DBs (byte-identical default:
+        // the UNIQUE idx_rels_unique historically enforced one row per triple,
+        // so a lone row has no same-triple live peer and the NOT EXISTS holds).
+        // On a corrupt legacy DB (multiple live rows for one triple, written
+        // before the invariant), the anti-join deterministically converges to
+        // the newest live edition. When `at` is present the valid-time window
+        // (already served by `valid_clause`) is composed on the SAME current
+        // belief — the standard bi-temporal as-of query (current beliefs whose
+        // valid interval contains `at`).
+        let current_clause = "
+                AND r.superseded_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM relationships r2
+                    WHERE r2.from_entity_id = r.from_entity_id
+                      AND r2.to_entity_id = r.to_entity_id
+                      AND r2.relation_type = r.relation_type
+                      AND r2.superseded_at IS NULL
+                      AND r2.id > r.id)";
+        // The seed CTE's `relationships` is aliased `rs` (it joins `knowledge`
+        // for the domain scope). Qualify every correlated reference with `rs.`
+        // so the NOT EXISTS subquery's `r2` does not shadow the outer row
+        // (a shadowed `r2.id > id` would compare a row to itself — always false,
+        // the NOT EXISTS always true, and the seed anti-join silently disabled).
+        let current_seed_clause = "
+                AND rs.superseded_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM relationships r2
+                    WHERE r2.from_entity_id = rs.from_entity_id
+                      AND r2.to_entity_id = rs.to_entity_id
+                      AND r2.relation_type = rs.relation_type
+                      AND r2.superseded_at IS NULL
+                      AND r2.id > rs.id)";
         // kind filter. Prefix match when kind ends with `:` (e.g.
         // `causes:`), exact match otherwise. Applied to BOTH the seed and the
         // recursive step so the walk stays inside the requested edge type.
@@ -3833,7 +3999,7 @@ async fn traverse_graph(
                 };
                 (
                     format!(" AND (?{ph} IS NULL OR k.domain = ?{ph})"),
-                    "LEFT JOIN knowledge k ON k.id = relationships.knowledge_id".to_string(),
+                    "LEFT JOIN knowledge k ON k.id = rs.knowledge_id".to_string(),
                     "LEFT JOIN knowledge k ON r.knowledge_id = k.id".to_string(),
                 )
             }
@@ -3842,12 +4008,17 @@ async fn traverse_graph(
         let valid_clause = valid_clause.replace("?at", at_ph);
         let kind_clause = kind_clause_tmpl.replace("?kind", kind_ph);
         let kind_seed_clause = kind_seed_clause_tmpl.replace("?kind", kind_ph);
+        // The current-belief clauses carry no `?at` placeholder (currency is
+        // transaction-time, independent of the valid-time window); they are
+        // constants, not templates.
+        let current_clause = current_clause.to_string();
+        let current_seed_clause = current_seed_clause.to_string();
         let query = format!(
             "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
-                SELECT from_entity_id, to_entity_id, 1, \
-                       CAST(from_entity_id AS TEXT), CAST(relation_type AS TEXT) \
-                FROM relationships {scope_join} \
-                WHERE from_entity_id = ?1{valid_clause}{kind_seed_clause}{scope_clause} \
+                SELECT rs.from_entity_id, rs.to_entity_id, 1, \
+                       CAST(rs.from_entity_id AS TEXT), CAST(rs.relation_type AS TEXT) \
+                FROM relationships rs {scope_join} \
+                WHERE rs.from_entity_id = ?1{valid_clause}{kind_seed_clause}{current_seed_clause}{scope_clause} \
                 UNION ALL \
                 SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, \
                        t.path || '->' || CAST(r.from_entity_id AS TEXT), \
@@ -3855,7 +4026,7 @@ async fn traverse_graph(
                 FROM relationships r \
                 JOIN traversal t ON r.from_entity_id = t.to_id \
                 {scope_join_rec} \
-                WHERE t.depth < ?2{valid_clause}{kind_clause}{scope_clause} \
+                WHERE t.depth < ?2{valid_clause}{kind_clause}{current_clause}{scope_clause} \
             ) \
             SELECT DISTINCT e.name, t.depth, t.path, t.edge_path, \
                    (SELECT name FROM entities WHERE id = t.from_id) AS from_name \
@@ -5126,6 +5297,7 @@ async fn main_inner() -> Result<()> {
         .route("/graph/entity/{name}", get(get_entity))
         .route("/graph/relations", get(get_relations))
         .route("/graph/traverse", get(traverse_graph))
+        .route("/graph/relationships/{id}/history", get(get_edge_history))
         // Plugin API (contract: API_CONTRACT.md). Wire is locked; bodies land with v0.9.0/v1.0.0.
         .route("/recall", post(handlers::recall::recall))
         .route("/ingest", post(handlers::ingest::ingest))
@@ -5733,6 +5905,52 @@ mod tests {
         assert_eq!(to[0]["entity"], "hub");
     }
 
+    #[test]
+    fn graph_read_surfaces_hide_superseded_edges() {
+        // Read-path sweep pin: every current-belief read surface
+        // (`entity_relations` + `relations_for`) filters `superseded_at IS
+        // NULL`. A retired version of a triple must not appear as a current
+        // relation even though its row survives (supersession never deletes).
+        let c = graph_db(4); // hub (id 1) → e1001..e1004 via 'links_to'
+                             // Retire the edge to e1001 in place (transaction-time END set).
+        c.execute(
+            "UPDATE relationships SET superseded_at = '2025-01-01 00:00:00'
+             WHERE to_entity_id = 1001",
+            [],
+        )
+        .unwrap();
+        // entity_relations: the retired edge is hidden; the other 3 remain. Its
+        // join matches both endpoints (2 rows per edge: hub + target), so 3
+        // live edges → 6 rows; the point is e1001 is absent.
+        let rels = entity_relations(&c, 1, 100, None).unwrap();
+        assert_eq!(rels.len(), 6, "3 live edges, 2 join rows each");
+        assert!(
+            !rels.iter().any(|v| v["to_entity"] == "e1001"),
+            "e1001 must not appear as current"
+        );
+        // relations_for (both branches): e1001 is gone from the fan-out.
+        let from = relations_for(&c, "hub", true, "out", 100, None).unwrap();
+        assert_eq!(
+            from.len(),
+            3,
+            "the superseded edge is hidden from relations_from"
+        );
+        assert!(!from.iter().any(|v| v["to_entity"] == "e1001"));
+        // History is still preserved in the table (never deleted).
+        let rows: i64 = c
+            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 4, "supersession never deletes the retired row");
+        // A lone live edge (e1002, no peers) still passes — the byte-identity
+        // no-op for the common case.
+        let e1002: String = c
+            .query_row("SELECT name FROM entities WHERE id = 1002", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(e1002, "e1002");
+    }
+
     /// Build an in-memory graph where entity 1 ("hub") has `edges` out-relations
     /// to entities `e{1001..}`, each a fresh target with a fresh relationship id.
     fn graph_db(edges: i64) -> rusqlite::Connection {
@@ -5742,7 +5960,7 @@ mod tests {
             "CREATE TABLE entities(id INTEGER PRIMARY KEY, name TEXT, entity_type TEXT);
              CREATE TABLE relationships(id INTEGER PRIMARY KEY,
                 from_entity_id INTEGER, to_entity_id INTEGER, relation_type TEXT,
-                knowledge_id INTEGER);
+                knowledge_id INTEGER, superseded_at TIMESTAMP);
              -- v1.27.16 (F-06): the bounded-query joins through knowledge for
              -- the domain-scope atom; a bare fixture keeps the table (empty).
              CREATE TABLE knowledge(id INTEGER PRIMARY KEY, domain TEXT);",
@@ -6912,6 +7130,446 @@ mod tests {
             .query_row(sql, params![a, 2_i64, "linked_to"], |r| r.get(0))
             .unwrap();
         assert_eq!(n2, 1, "kind=linked_to must select exactly 1 edge");
+    }
+
+    #[test]
+    fn traversal_skips_superseded_edge() {
+        // v1.27.22 BUG-2: traversal promised in its module doc to "skip edges
+        // that a later same-typed edge has superseded" but only filtered by the
+        // valid window — a backdated supersession returned two edges claiming
+        // the same (from,to,kind) at one instant. This pins the transaction-time
+        // current-belief predicate (the `superseded_at IS NULL` live filter +
+        // the `NOT EXISTS` newer-live anti-join): a walk — even with no `at`
+        // window that would otherwise disambiguate — must resolve to exactly ONE
+        // edge (the current belief), and HISTORY is preserved (the old row
+        // survives with its `superseded_at` set).
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES \
+              ('kg_a','thing'),('kg_b','thing'),('kg_c','thing')",
+            [],
+        )
+        .unwrap();
+        let a: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='kg_a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='kg_b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let _c: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='kg_c'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let old_id: i64 = {
+            db.execute(
+                "INSERT INTO relationships \
+                   (from_entity_id, to_entity_id, relation_type, valid_at, superseded_at) \
+                 VALUES (?1, ?2, 'held_office', '2020-01-01 00:00:00', '2023-03-01 00:00:00')",
+                params![a, b],
+            )
+            .unwrap();
+            db.query_row(
+                "SELECT id FROM relationships WHERE from_entity_id = ?1",
+                params![a],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        // The current belief supersedes it (valid from 2023, live).
+        db.execute(
+            "INSERT INTO relationships \
+               (from_entity_id, to_entity_id, relation_type, valid_at, superseded_at, created_at) \
+             VALUES (?1, ?2, 'held_office', '2023-01-01 00:00:00', NULL, '2023-03-01 00:00:00')",
+            params![a, b],
+        )
+        .unwrap();
+
+        // The transaction-time current-belief fragment (the at=None branch): a
+        // row is current iff it is live (superseded_at IS NULL) AND no newer
+        // live r2 exists.
+        let sql = "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
+            SELECT from_entity_id, to_entity_id, 1, CAST(from_entity_id AS TEXT), CAST(relation_type AS TEXT) \
+            FROM relationships rs WHERE rs.from_entity_id = ?1 \
+              AND rs.superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = rs.from_entity_id \
+                  AND r2.to_entity_id = rs.to_entity_id \
+                  AND r2.relation_type = rs.relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > rs.id) \
+            UNION ALL \
+            SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, t.path || '->' || CAST(r.from_entity_id AS TEXT), t.edge_path || '|' || r.relation_type \
+            FROM relationships r JOIN traversal t ON r.from_entity_id = t.to_id \
+            WHERE t.depth < ?2 \
+              AND r.superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = r.from_entity_id \
+                  AND r2.to_entity_id = r.to_entity_id \
+                  AND r2.relation_type = r.relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > r.id) \
+        ) SELECT COUNT(*) FROM traversal";
+        let n: i64 = db.query_row(sql, params![a, 2_i64], |r| r.get(0)).unwrap();
+        // Only the current belief survives the walk (1 edge, not 2).
+        assert_eq!(n, 1, "walk must skip the superseded edge");
+        // History is preserved: the old row still exists, retired, with its
+        // valid interval untouched.
+        let rows: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM relationships WHERE from_entity_id = ?1",
+                params![a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2, "supersession never deletes the old row");
+        let (old_sup, old_va): (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT superseded_at, valid_at FROM relationships WHERE id = ?1",
+                params![old_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(old_sup.as_deref(), Some("2023-03-01 00:00:00"));
+        assert_eq!(old_va.as_deref(), Some("2020-01-01 00:00:00"));
+        let new_id: i64 = db
+            .query_row(
+                "SELECT id FROM relationships WHERE from_entity_id = ?1 AND superseded_at IS NULL",
+                params![a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(old_id, new_id, "the two edges are distinct versions");
+    }
+
+    #[test]
+    fn traversal_keeps_oldest_edge_when_no_later_same_typed() {
+        // A lone edge per triple must survive the current-belief predicate
+        // unchanged — this is the M5 byte-identity pin at the predicate level:
+        // a single live row has no same-triple live peer, so both the live
+        // filter and the NOT EXISTS hold and the edge is emitted verbatim.
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES \
+              ('lk_a','thing'),('lk_b','thing')",
+            [],
+        )
+        .unwrap();
+        let a: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='lk_a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='lk_b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // One open edge with an old-but-un-contradicted valid_at.
+        db.execute(
+            "INSERT INTO relationships \
+               (from_entity_id, to_entity_id, relation_type, valid_at, superseded_at) \
+             VALUES (?1, ?2, 'works_at', '2010-01-01 00:00:00', NULL)",
+            params![a, b],
+        )
+        .unwrap();
+        let sql = "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
+            SELECT from_entity_id, to_entity_id, 1, CAST(from_entity_id AS TEXT), CAST(relation_type AS TEXT) \
+            FROM relationships rs WHERE rs.from_entity_id = ?1 \
+              AND rs.superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = rs.from_entity_id \
+                  AND r2.to_entity_id = rs.to_entity_id \
+                  AND r2.relation_type = rs.relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > rs.id) \
+            UNION ALL \
+            SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, t.path || '->' || CAST(r.from_entity_id AS TEXT), t.edge_path || '|' || r.relation_type \
+            FROM relationships r JOIN traversal t ON r.from_entity_id = t.to_id \
+            WHERE t.depth < ?2 \
+              AND r.superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = r.from_entity_id \
+                  AND r2.to_entity_id = r.to_entity_id \
+                  AND r2.relation_type = r.relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > r.id) \
+        ) SELECT COUNT(*) FROM traversal";
+        let n: i64 = db.query_row(sql, params![a, 2_i64], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "a lone edge must survive the supersession-skip");
+    }
+
+    #[test]
+    fn edge_history_surfaces_all_versions_with_four_timestamps() {
+        // v1.27.22 M3: the `GET /graph/relationships/{id}/history` data model —
+        // given any one version of a triple, list EVERY version (oldest →
+        // newest), each carrying its four timestamps + a `current` flag, and
+        // mark the current edition. This is the read-side guarantee that
+        // supersession never deletes. The handler resolves the triple from the
+        // requested id and runs the exact SQL below; this pins the row shape it
+        // reads.
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES \
+              ('hist_a','thing'),('hist_b','thing')",
+            [],
+        )
+        .unwrap();
+        let a: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='hist_a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='hist_b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // The relationships.knowledge_id FK points at the knowledge table.
+        db.execute(
+            "INSERT INTO knowledge (content, title) VALUES ('lineage', 'x')",
+            [],
+        )
+        .unwrap();
+        let k1: i64 = db
+            .query_row("SELECT id FROM knowledge LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let k2 = k1 + 1;
+        // Create a second knowledge row for v2's distinct provenance.
+        db.execute(
+            "INSERT INTO knowledge (content, title) VALUES ('lineage2', 'x')",
+            [],
+        )
+        .unwrap();
+        // Build a lineage exactly as the four-timestamp write path does: v1
+        // created, then v2 supersedes it (v1 superseded_at = v2 created_at).
+        db.execute(
+            "INSERT INTO relationships \
+               (from_entity_id, to_entity_id, relation_type, knowledge_id, \
+                valid_at, invalid_at, created_at, superseded_at) VALUES \
+             (?1, ?2, 'employed_by', ?3, '2020-01-01 00:00:00', NULL, \
+              '2020-02-01 00:00:00', '2024-06-01 00:00:00')",
+            params![a, b, k1],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO relationships \
+               (from_entity_id, to_entity_id, relation_type, knowledge_id, \
+                valid_at, invalid_at, created_at, superseded_at) VALUES \
+             (?1, ?2, 'employed_by', ?3, '2024-01-01 00:00:00', NULL, \
+              '2024-06-01 00:00:00', NULL)",
+            params![a, b, k2],
+        )
+        .unwrap();
+
+        // The handler's lineage SQL: all versions, oldest → newest.
+        struct Ver {
+            id: i64,
+            created: Option<String>,
+            superseded: Option<String>,
+            current: bool,
+        }
+        let mut stmt = db
+            .prepare(
+                "SELECT e1.name, e2.name, r.relation_type, r.knowledge_id,
+                        r.valid_at, r.invalid_at, r.created_at, r.superseded_at, r.id
+                 FROM relationships r
+                 JOIN entities e1 ON r.from_entity_id = e1.id
+                 JOIN entities e2 ON r.to_entity_id = e2.id
+                 WHERE r.from_entity_id = ?1 AND r.to_entity_id = ?2
+                   AND r.relation_type = ?3
+                 ORDER BY r.id",
+            )
+            .unwrap();
+        let versions: Vec<Ver> = stmt
+            .query_map(params![a, b, "employed_by"], |r| {
+                let superseded = r.get::<_, Option<String>>(7)?;
+                Ok(Ver {
+                    id: r.get::<_, i64>(8)?,
+                    created: r.get::<_, Option<String>>(6)?,
+                    superseded: superseded.clone(),
+                    current: superseded.is_none(),
+                })
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(versions.len(), 2, "both versions survive (never deleted)");
+        // Oldest first (id order).
+        assert_eq!(versions[0].id + 1, versions[1].id);
+        assert!(
+            versions[0].superseded.is_some(),
+            "v1 is superseded_at (retired)"
+        );
+        assert!(!versions[0].current, "v1 is not current");
+        assert_eq!(versions[1].superseded, None, "v2 is the current belief");
+        assert!(versions[1].current, "v2 is current");
+        // The exact handoff: v1.superseded_at == v2.created_at.
+        assert_eq!(versions[1].created.as_deref(), Some("2024-06-01 00:00:00"));
+        assert_eq!(
+            versions[0].superseded.as_deref(),
+            Some("2024-06-01 00:00:00")
+        );
+        // Resolving from EITHER version id returns the same lineage (the
+        // handler looks up the triple from the requested id).
+        for vid in [versions[0].id, versions[1].id] {
+            let (f, t, k): (i64, i64, String) = db
+                .query_row(
+                    "SELECT from_entity_id, to_entity_id, relation_type
+                     FROM relationships WHERE id = ?1",
+                    params![vid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(f, a);
+            assert_eq!(t, b);
+            assert_eq!(k, "employed_by");
+        }
+    }
+
+    #[test]
+    fn at_window_composes_on_the_current_belief() {
+        // The bi-temporal as-of semantics: the valid-time `at` window composes
+        // ON the current belief (the standard SQL:2011 as-of query — current
+        // beliefs whose valid interval contains `at`). A current belief whose
+        // valid interval starts after `at` is NOT returned for `at` (the world
+        // did not hold that fact at that valid time); the same belief IS
+        // returned for a later `at` inside its interval.
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES \
+              ('wk_a','thing'),('wk_b','thing')",
+            [],
+        )
+        .unwrap();
+        let a: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='wk_a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='wk_b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // The current belief: valid from 2023, live. A superseded 2020 version
+        // exists too (retired), so the old `at` must NOT resurrect it.
+        db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, valid_at, invalid_at, superseded_at) \
+             VALUES (?1, ?2, 'held_office', '2020-01-01 00:00:00', '2025-01-01 00:00:00', '2023-03-01 00:00:00')",
+            params![a, b],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, valid_at, superseded_at) \
+             VALUES (?1, ?2, 'held_office', '2023-01-01 00:00:00', NULL)",
+            params![a, b],
+        )
+        .unwrap();
+        // The full fragment (at present): valid window + current-belief live
+        // filter + newer-live anti-join.
+        let sql = "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
+            SELECT from_entity_id, to_entity_id, 1, CAST(from_entity_id AS TEXT), CAST(relation_type AS TEXT) \
+            FROM relationships WHERE from_entity_id = ?1 \
+              AND (valid_at IS NULL OR valid_at <= ?3) AND (invalid_at IS NULL OR invalid_at > ?3) \
+              AND superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = from_entity_id \
+                  AND r2.to_entity_id = to_entity_id \
+                  AND r2.relation_type = relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > id) \
+            UNION ALL \
+            SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, t.path || '->' || CAST(r.from_entity_id AS TEXT), t.edge_path || '|' || r.relation_type \
+            FROM relationships r JOIN traversal t ON r.from_entity_id = t.to_id \
+            WHERE t.depth < ?2 \
+              AND (r.valid_at IS NULL OR r.valid_at <= ?3) AND (r.invalid_at IS NULL OR r.invalid_at > ?3) \
+              AND r.superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = r.from_entity_id \
+                  AND r2.to_entity_id = r.to_entity_id \
+                  AND r2.relation_type = r.relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > r.id) \
+        ) SELECT COUNT(*) FROM traversal";
+        // at 2022: the current belief is valid from 2023 (not yet at 2022) and
+        // the retired 2020 version is not resurrected by the live filter → 0.
+        let at_2022: i64 = db
+            .query_row(sql, params![a, 2_i64, "2022-06-01 00:00:00"], |r| r.get(0))
+            .unwrap();
+        assert_eq!(at_2022, 0, "at 2022 the current belief is not yet valid");
+        // at 2024: the current belief is valid → 1.
+        let at_2024: i64 = db
+            .query_row(sql, params![a, 2_i64, "2024-06-01 00:00:00"], |r| r.get(0))
+            .unwrap();
+        assert_eq!(at_2024, 1, "at 2024 the current belief is returned");
+    }
+
+    #[test]
+    fn legacy_double_open_converges_to_newest_live_edition() {
+        // A pre-v1.27.22 (or corrupt) DB may hold multiple live rows for one
+        // triple (the supersession invariant was historically enforced by the
+        // UNIQUE index, and direct legacy writes bypass `resolve_edge_insert`).
+        // The current-belief anti-join must deterministically converge on the
+        // newest live edition rather than emit both.
+        let db = test_db();
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES \
+              ('dg_a','thing'),('dg_b','thing')",
+            [],
+        )
+        .unwrap();
+        let a: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='dg_a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: i64 = db
+            .query_row("SELECT id FROM entities WHERE name='dg_b'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, valid_at, superseded_at) VALUES \
+             (?1, ?2, 'works_at', '2010-01-01 00:00:00', NULL), \
+             (?1, ?2, 'works_at', '2022-01-01 00:00:00', NULL), \
+             (?1, ?2, 'works_at', '2024-01-01 00:00:00', NULL)",
+            params![a, b],
+        )
+        .unwrap();
+        let sql = "WITH RECURSIVE traversal(from_id, to_id, depth, path, edge_path) AS (\
+            SELECT rs.from_entity_id, rs.to_entity_id, 1, CAST(rs.from_entity_id AS TEXT), CAST(rs.relation_type AS TEXT) \
+            FROM relationships rs WHERE rs.from_entity_id = ?1 \
+              AND rs.superseded_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM relationships r2 \
+                WHERE r2.from_entity_id = rs.from_entity_id \
+                  AND r2.to_entity_id = rs.to_entity_id \
+                  AND r2.relation_type = rs.relation_type \
+                  AND r2.superseded_at IS NULL AND r2.id > rs.id) \
+        ) SELECT from_id || '->' || to_id FROM traversal";
+        // Only the newest live edition (2024, the highest id) survives.
+        let edges: Vec<String> = db
+            .prepare(sql)
+            .unwrap()
+            .query_map(params![a], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            edges.len(),
+            1,
+            "legacy double-open converges to one edition"
+        );
+        let kept_va: String = db
+            .query_row(
+                "SELECT valid_at FROM relationships r
+                 WHERE r.from_entity_id = ?1 AND r.id = (
+                     SELECT MAX(id) FROM relationships
+                     WHERE from_entity_id = ?1 AND relation_type = 'works_at'
+                       AND superseded_at IS NULL)",
+                params![a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_va, "2024-01-01 00:00:00");
     }
 
     #[test]
@@ -8966,10 +9624,12 @@ Final paragraph after the rule.";
         // v1.27.1 for the clients table (the BPO operating register).
         // v1.27.8 for the proposals.owner + proposals.qa_note columns (QaQueue);
         // v1.27.18 for the index add/drop pass (Groundwork).
+        // v1.27.22 for the relationships.superseded_at column + idx_rels_bt
+        // (the write-once idx_rels_unique dropped → true bi-temporal edges).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_18),
-            "schema_version must be recorded as 1.27.18 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_22),
+            "schema_version must be recorded as 1.27.22 after migration"
         );
 
         // the preset tables exist and the 12 ship-with
@@ -9046,6 +9706,39 @@ Final paragraph after the rule.";
                 > 0;
             assert!(present, "proposals.{col} column must exist after migration");
         }
+
+        // the bi-temporal edge column + bt index exist (v1.27.22).
+        // The transaction-time END `superseded_at` and the plain `idx_rels_bt`
+        // (replacing the write-once `idx_rels_unique`) are what make the edge
+        // table truly bi-temporal; a regression here silently reverts to the
+        // single-row-per-triple model.
+        let has_superseded_at: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('relationships') WHERE name='superseded_at'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        assert!(has_superseded_at, "relationships.superseded_at must exist");
+        let unique_dropped: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_rels_unique'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unique_dropped, 0, "idx_rels_unique must be dropped");
+        let bt_indexed: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_rels_bt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bt_indexed, 1, "idx_rels_bt must exist");
 
         // the feedback ledger exists with its audit columns.
         // Append-only by construction; this is the smallest check that fails
@@ -10156,6 +10849,7 @@ Final paragraph after the rule.";
             "/graph/entity/{name}",
             "/graph/relations",
             "/graph/traverse",
+            "/graph/relationships/{id}/history",
             "/recall",
             "/ingest",
             "/memory/{id}",
@@ -11173,6 +11867,7 @@ Final paragraph after the rule.";
             ("/graph/entity/{name}", "Read"),
             ("/graph/relations", "Read"),
             ("/graph/traverse", "Read"),
+            ("/graph/relationships/{id}/history", "Read"),
             ("/recall", "Read"),
             ("/ingest", "Write"),
             ("/memory/{id}", "Admin"),

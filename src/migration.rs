@@ -1457,11 +1457,62 @@ pub fn run_migration_with_store_dim(
          DROP INDEX IF EXISTS idx_evidence_links_from;",
     )?;
 
+    // ── v1.27.22 "Cascade": the edge table becomes TRULY bi-temporal. ─────
+    // v1.4.0 gave relationships the valid-time axis (valid_at/invalid_at) and
+    // created_at (transaction-time START). What was missing was the
+    // transaction-time END: the instant the system stopped believing a fact.
+    // `superseded_at` is the fourth timestamp (SQL:2011 / Snodgrass bi-temporal
+    // model, matching Graphiti's EntityEdge valid_at/invalid_at + created_at/
+    // expired_at). A superseded belief is a *different version* of the same
+    // (from_entity_id, to_entity_id, relation_type) triple, not a mutation of
+    // the valid interval: `superseded_at IS NULL` marks the current belief;
+    // a non-NULL value records when that version was retired. The retired
+    // version keeps its valid interval + created_at for historical/as-of reads.
+    //
+    // This replaces the write-once UNIQUE index `idx_rels_unique`, which forced
+    // single-row-per-triple semantics — a corrected belief could never coexist
+    // with the version it supersedes (see ingest.rs, the old INSERT OR IGNORE
+    // no-op). Bi-temporal versioning requires multiple rows per triple; the
+    // plain bt index `idx_rels_bt` serves the same per-triple lookup (the
+    // current-belief resolution in graph_supersede + the traversal current-edge
+    // predicate) without the uniqueness. Idempotent + additive on existing DBs:
+    // pre-v1.27.22 edges have superseded_at NULL (current), so default reads are
+    // byte-identical.
+    {
+        let col = "superseded_at";
+        let def = "TIMESTAMP";
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('relationships') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE relationships ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+    // Drop the write-once UNIQUE index (versioned edges need many rows per
+    // triple); the bt index serves the per-triple lookups without the
+    // uniqueness that forbids supersession.
+    db.execute_batch(
+        "DROP INDEX IF EXISTS idx_rels_unique;
+         CREATE INDEX IF NOT EXISTS idx_rels_bt
+             ON relationships(from_entity_id, to_entity_id, relation_type);",
+    )?;
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork" (M3): indexes added/dropped → 1.27.18.
+    // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.18')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.18';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.22')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.22';",
         [],
     )?;
 

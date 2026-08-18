@@ -59,6 +59,12 @@ pub mod register_sqlite_vec;
 // `screen.rs` re-exports these so `crate::screen::*` paths stay unchanged.
 pub mod strip_invisible;
 
+// Edge supersession: the pure write-path core that makes
+// `relationships` true to the bi-temporal contract `trace` documents (the
+// v1.27.22 BUG-1 fix). Lives in the lib so a bare-`Connection` unit test can
+// drive it (the `page_decayed` idiom) and so the server handler only wires.
+pub mod graph_supersede;
+
 // The shared untrusted-fence primitives: the
 // sentinel constants + the markdown-ref strip the MCP binary and CLI wrap
 // agent-bound text with. `src/gate.rs` re-exports `strip_markdown_refs` so

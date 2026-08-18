@@ -562,6 +562,18 @@ pub(crate) async fn ingest_one(
             .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
             .unwrap_or(0);
 
+        // The transaction timestamp for the four-timestamp edge model. Fetched
+        // once per transaction (not per relation) so every relation corrected in
+        // one ingest shares the same transaction-time END, and so
+        // old.superseded_at == new.created_at exactly on each supersession.
+        let tx_now: String = tx
+            .query_row(
+                "SELECT strftime('%Y-%m-%d %H:%M:%S','now','utc')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| HandlerError::internal(format!("resolve tx timestamp failed: {e}")))?;
+
         let content_hash = format!("{:016x}", xxh3_64(content.as_bytes()));
 
         // Idempotent dedup: if this exact content already exists, report duplicate.
@@ -700,17 +712,56 @@ pub(crate) async fn ingest_one(
                 let via: Option<&str> = explicit_via
                     .as_deref()
                     .or(content_interval.invalid_at.as_deref());
-                // INSERT OR IGNORE so re-ingesting the same (from,to,kind) is a
-                // no-op; the temporal columns are set on first insert. Updating
-                // them on a later ingest would require a separate UPDATE path,
-                // intentionally not wired (re-ingest = idempotent no-op by design).
-                tx.execute(
-                    "INSERT OR IGNORE INTO relationships \
-                        (from_entity_id, to_entity_id, relation_type, knowledge_id, valid_at, invalid_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    rusqlite::params![from_id, to_id, kind, id, va, via],
+                // v1.27.22 "Cascade" (BUG-1 fix): wire edge supersession into the
+                // existing machinery — this replaces the write-once `INSERT OR
+                // IGNORE` (a documented-but-unimplemented behavior, the `trace`
+                // contract said a corrected belief supersedes the old edge).
+                // `resolve_edge_insert` is the pure, truly-bi-temporal core: an
+                // unchanged re-ingest is a SameWindow no-op (history not churned);
+                // a changed window retires the old version at `tx_now`
+                // (superseded_at = transaction-time END, old row preserved
+                // verbatim) and inserts the corrected version as the new current
+                // belief. Fail-closed: an inability to resolve declines the write
+                // rather than half-close.
+                let action = crate::graph_supersede::resolve_edge_insert(
+                    &tx,
+                    from_id,
+                    to_id,
+                    kind,
+                    id,
+                    (va, via),
+                    &tx_now,
                 )
-                .map_err(|e| HandlerError::internal(format!("insert relation failed: {e}")))?;
+                .map_err(|e| HandlerError::internal(format!("resolve relation insert failed: {e}")))?;
+                // Transaction-time evidence rides the existing hash-chained audit
+                // log (AuditKind::Ingest, actor = the owner resolution from the
+                // principal; target = the edge id; best-effort, never fails the
+                // ingest). A supersession additionally records the corrected edge
+                // id so the /graph/relationships/{id}/history surface resolves
+                // the old→new handoff.
+                match &action {
+                    crate::graph_supersede::EdgeAction::Created { id: eid } => {
+                        crate::audit::record(
+                            &tx,
+                            crate::audit::AuditKind::Ingest,
+                            owner.as_deref().unwrap_or("auto"),
+                            &eid.to_string(),
+                            crate::audit::AuditStatus::Ok,
+                            "created",
+                        );
+                    }
+                    crate::graph_supersede::EdgeAction::Superseded { old_id, new_id } => {
+                        crate::audit::record(
+                            &tx,
+                            crate::audit::AuditKind::Ingest,
+                            owner.as_deref().unwrap_or("auto"),
+                            &old_id.to_string(),
+                            crate::audit::AuditStatus::Ok,
+                            &format!("superseded:{old_id}->:{new_id}"),
+                        );
+                    }
+                    crate::graph_supersede::EdgeAction::SameWindow { .. } => {}
+                }
             }
         }
 

@@ -66,6 +66,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | GET | `/graph/entity/{name}` | Entity + 1-hop relations |
 | GET | `/graph/relations?from=&to=` | Relations between entities |
 | GET | `/graph/traverse?start=&max_depth=&explain=&kind=` | Bounded walk (depth ≤ 4); `explain=true` returns structured hop paths; `kind=` filters by edge type |
+| GET | `/graph/relationships/{id}/history` (Admin) | Edge supersession lineage — every version of an edge triple (v1.27.22) |
 
 ---
 

@@ -289,6 +289,7 @@ fn expand_to_chunks(
         let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT knowledge_id FROM relationships \
              WHERE (from_entity_id = ?1 OR to_entity_id = ?1) \
+               AND superseded_at IS NULL \
                AND knowledge_id IS NOT NULL",
         )?;
         let chunk_ids: Vec<i64> = stmt
@@ -336,6 +337,7 @@ pub fn graph_retrieve(
         "SELECT from_entity_id, to_entity_id, relation_type, COUNT(DISTINCT knowledge_id) \
          FROM relationships \
          WHERE knowledge_id IS NOT NULL \
+           AND superseded_at IS NULL \
          GROUP BY from_entity_id, to_entity_id, relation_type",
     )?;
     let mut pair_w: HashMap<(i64, i64), f64> = HashMap::new();
@@ -598,7 +600,8 @@ mod tests {
                  from_entity_id INTEGER NOT NULL,
                  to_entity_id INTEGER NOT NULL,
                  relation_type TEXT NOT NULL,
-                 knowledge_id INTEGER
+                 knowledge_id INTEGER,
+                 superseded_at TIMESTAMP
              );
              CREATE TABLE knowledge (
                  id INTEGER PRIMARY KEY,
@@ -637,25 +640,25 @@ mod tests {
         }
         // Seed → hub (semantic, chunk 101).
         conn.execute(
-            "INSERT INTO relationships VALUES (1, 2, 'manages', 101)",
+            "INSERT INTO relationships VALUES (1, 2, 'manages', 101, NULL)",
             [],
         )
         .unwrap();
         // Hub → 2 semantic neighbors, both backed by chunk 102.
         conn.execute(
-            "INSERT INTO relationships VALUES (2, 3, 'works_at', 102)",
+            "INSERT INTO relationships VALUES (2, 3, 'works_at', 102, NULL)",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO relationships VALUES (2, 4, 'works_at', 102)",
+            "INSERT INTO relationships VALUES (2, 4, 'works_at', 102, NULL)",
             [],
         )
         .unwrap();
         // Hub → 100 tag neighbors, one tagged chunk 103.
         for i in 0..100 {
             conn.execute(
-                "INSERT INTO relationships VALUES (2, ?1, 'tagged_with', 103)",
+                "INSERT INTO relationships VALUES (2, ?1, 'tagged_with', 103, NULL)",
                 rusqlite::params![11 + i],
             )
             .unwrap();
@@ -668,5 +671,64 @@ mod tests {
             pos(102) < pos(103),
             "semantic-neighbor chunk (102) must rank above the tagged_with cloud (103)"
         );
+    }
+
+    #[test]
+    fn superseded_edges_are_not_counted_in_adjacency() {
+        // Read-path sweep: the graph-PPR adjacency aggregation filters
+        // `superseded_at IS NULL` (current beliefs only). A retired version of
+        // an edge contributes neither weight nor a reachable neighbor.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE relationships (
+                 from_entity_id INTEGER NOT NULL,
+                 to_entity_id INTEGER NOT NULL,
+                 relation_type TEXT NOT NULL,
+                 knowledge_id INTEGER,
+                 superseded_at TIMESTAMP
+             );
+             CREATE TABLE knowledge (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT,
+                 content TEXT NOT NULL,
+                 valid_to TEXT,
+                 flagged INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .unwrap();
+        for (id, name) in [(1, "seed"), (2, "live"), (3, "dead")] {
+            conn.execute(
+                "INSERT INTO entities (id, name) VALUES (?1, ?2)",
+                rusqlite::params![id, name],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO knowledge (id, title, content) VALUES (100, 'c', 'c')",
+            [],
+        )
+        .unwrap();
+        // seed → live is current (anchors chunk 100); seed → dead is retired.
+        conn.execute(
+            "INSERT INTO relationships VALUES (1, 2, 'relates_to', 100, NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO relationships VALUES (1, 3, 'relates_to', 100, '2025-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+        let res = graph_retrieve(&conn, "seed signal", 8, false).unwrap();
+        // The retired edge seeded no adjacency, so `dead` never reaches a chunk
+        // — chunk 100 is reachable only via the live edge (the retired edge's
+        // knowledge_id is not aggregated). 100 still appears (live edge).
+        assert_eq!(res[0].id, 100);
+        // Both rows survive (supersession never deletes).
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
     }
 }

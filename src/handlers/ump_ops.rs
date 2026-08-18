@@ -354,7 +354,8 @@ fn relations_for_chunk(conn: &rusqlite::Connection, id: i64) -> Result<Vec<Value
                FROM relationships r
                JOIN entities e1 ON r.from_entity_id = e1.id
                JOIN entities e2 ON r.to_entity_id = e2.id
-              WHERE r.knowledge_id = ?1",
+              WHERE r.knowledge_id = ?1
+                AND r.superseded_at IS NULL",
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     let rows = stmt

@@ -176,7 +176,7 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 | POST | `/recall` | Structured recall, the primary endpoint. |
 | POST | `/ingest` · `/ingest/markdown` · `/ingest/memory` | Ingest structured, markdown, or memory. |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunks by id. |
-| GET | `/graph/entity/{name}` · `/graph/relations` · `/graph/traverse` | Knowledge-graph queries (bounded walks, hop explanations). |
+| GET | `/graph/entity/{name}` · `/graph/relations` · `/graph/traverse` · `/graph/relationships/{id}/history` | Knowledge-graph queries (bounded walks, hop explanations, edge supersession lineage). |
 | POST | `/verify` | Claim span verification. |
 | POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization and decision rules. |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint. |

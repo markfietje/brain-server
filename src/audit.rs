@@ -63,6 +63,11 @@ pub enum AuditKind {
     /// later onboard/dpa/dsar/hold/termination writes) — every client-level
     /// action is hash-chained.
     Client,
+    /// the edge-history surface (`GET /graph/relationships/{id}/history`).
+    /// A read of the supersession lineage (retired versions carry entity names
+    /// that a "current belief" read would redact) is itself evidence; the read
+    /// is invokable by a Read-granted principal but the ROW level is Admin.
+    GraphRead,
 }
 
 impl AuditKind {
@@ -80,6 +85,7 @@ impl AuditKind {
             AuditKind::Breach => "breach",
             AuditKind::Transfer => "transfer",
             AuditKind::Client => "client",
+            AuditKind::GraphRead => "graph_read",
         }
     }
 }

@@ -526,7 +526,74 @@ paths:
                                   name: { type: string }
                         depth: { type: integer }
                         domain: { type: string }
-                  visited: { type: integer }
+                    visited: { type: integer }
+  /graph/relationships/{id}/history:
+    get:
+      summary: Edge supersession lineage
+      operationId: getEdgeHistory
+      description: >
+        v1.27.22 Cascade: the full version history of a
+        (from_entity, to_entity, relation_type) triple, given any one version's
+        id. Returns every version in order (oldest → newest), each carrying its
+        four timestamps (valid_at, invalid_at, created_at, superseded_at) and a
+        `current` flag (superseded_at IS NULL). This is the read-side guarantee
+        that supersession never deletes: retired versions are preserved verbatim
+        and can always be reconstructed here, even though "current belief"
+        reads hide them. Admin-gated at the row level (operator evidence) and
+        audit-recorded.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+          description: Any version id of the triple.
+      responses:
+        "200":
+          description: The lineage (all versions of the triple).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  relation_id: { type: integer }
+                  from_entity: { type: string }
+                  to_entity: { type: string }
+                  relation_type: { type: string }
+                  current:
+                    type: object
+                    nullable: true
+                    description: The current version, if any.
+                    properties:
+                      id: { type: integer }
+                      relation_id: { type: integer }
+                      from_entity: { type: string }
+                      to_entity: { type: string }
+                      relation_type: { type: string }
+                      knowledge_id: { type: integer, nullable: true }
+                      valid_at: { type: string, nullable: true }
+                      invalid_at: { type: string, nullable: true }
+                      created_at: { type: string, nullable: true }
+                      superseded_at: { type: string, nullable: true }
+                      current: { type: boolean }
+                  versions:
+                    type: array
+                    description: All versions, oldest → newest.
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        relation_id: { type: integer }
+                        from_entity: { type: string }
+                        to_entity: { type: string }
+                        relation_type: { type: string }
+                        knowledge_id: { type: integer, nullable: true }
+                        valid_at: { type: string, nullable: true }
+                        invalid_at: { type: string, nullable: true }
+                        created_at: { type: string, nullable: true }
+                        superseded_at: { type: string, nullable: true }
+                        current: { type: boolean }
+        "404":
+          description: Relationship id not found
   /get/{id}:
     get:
       summary: Fetch a single chunk by id (stable reference)
