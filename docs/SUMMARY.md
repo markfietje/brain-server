@@ -81,6 +81,7 @@
 - [The honest ceiling](./blog/07-honest-ceiling.md)
 - [From twelve products to one (a preview of Profiles)](./blog/08-profiles-preview.md)
 - [Agent memory for a contact center](./blog/09-contact-center-vertex.md)
+- [DeepSeek Harness (dsh) meets Brain Server](./blog/10-dsh-deepseek-harness.md)
 
 # Regulation & trust
 

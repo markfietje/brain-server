@@ -123,8 +123,88 @@ contract those tools implement.
 - There is no separate credential; whoever can invoke the binary acts as the
   configured principal on the server.
 
+## DeepSeek Harness (dsh)
+
+DeepSeek Harness (`dsh`) uses an **everything-is-a-plugin** architecture built on
+Cordis. Rather than ship one bespoke adapter per memory system, it exposes a
+generic **MCP client bridge** (`@deepseek-ai/dsh-mcp-client`) and lets you pick
+the memory server — the documented slot for a "third-party memory MCP server"
+(its own `examples/mcp-memory` ship Memorix, MCP Reference Memory, and Engram
+this way). Brain Server's `mcp` binary is a drop-in for that slot.
+
+**Alignment with dsh's expectations**
+
+- **Protocol.** dsh's bridge targets the modern (2026-07-28) MCP spec with
+  `server/discover`. `mcp` implements that *and* the legacy (2025-11-25)
+  handshake, advertising `supportedVersions: ["2026-07-28","2025-11-25"]`, so
+  discovery and `tools/list` work under either era. Tools register in dsh as
+  `mcp__brain-server__<tool>`.
+- **Responsibility boundary.** dsh starts the server process and discovers tools;
+  the provider owns install, storage, and supervision. `mcp` is clientside only
+  (no listening, no network binds) and inherits the server's auth, PII masking,
+  and audit — exactly the thin, provider-owned component dsh expects.
+- **Standard.** The `ump.*` tools implement the
+  [Universal Memory Protocol](./universal-memory-protocol.md) at **UMP 1.0 / L3**
+  (13/13 reference checks, CI-pinned), so dsh-written memory is portable and
+  verifiable, not locked to this store.
+
+### Pinned install
+
+dsh starts the binary but is **not a package manager** — you must install and
+pin `mcp` yourself:
+
+```bash
+# 1. Build the MCP binary from this repo (same Cargo.toml as the server).
+cargo build --release --bin mcp
+
+# 2. Install next to the other binaries.
+install -m 0755 target/release/mcp ~/.local/bin/mcp
+
+# 3. macOS only: strip the Gatekeeper provenance xattr that SIGKILLs (exit 137)
+#    on first exec of a freshly-copied executable, or reinstall via
+#    scripts/install-service.sh.
+xattr -dr com.apple.provenance ~/.local/bin/mcp 2>/dev/null || true
+
+# 4. Confirm it answers the modern handshake before wiring into dsh.
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' \
+  | ~/.local/bin/mcp
+```
+
+### dsh overlay
+
+dsh wires a memory server in with a one-file Cordis overlay that inserts a single
+`@deepseek-ai/dsh-mcp-client` row (the shape dsh ships for its own memory
+examples). Save as e.g. `brain-server.cordis.yml` and select it via
+`--config`:
+
+```yaml
+# brain-server.cordis.yml — one memory MCP server for a running brain-server.
+- insert:
+    - id: memory-brain-server
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: brain-server
+        transport: stdio
+        command: mcp                    # or an absolute path to the pinned binary
+        args: []
+        cwd: !!js process.cwd()
+        # env is inherited from the ambient environment (dsh scrubs DSH_* and
+        # credential-shaped vars). Add overrides only as needed:
+        #   BRAIN_URL: http://127.0.0.1:8765   # default; set if server is elsewhere
+        #   BRAIN_TOKEN_FILE: /path/to/0600-secret   # or BRAIN_TOKEN
+```
+
+Prerequisites before it will discover tools: a **running brain-server** on
+`BRAIN_URL` (default `http://127.0.0.1:8765`), and if it requires auth, a bearer
+resolvable via the CLI ladder (`BRAIN_TOKEN_FILE` → `BRAIN_TOKEN` →
+`~/.config/brain-server/auth-token`). With the server reachable, dsh discovers
+the 12 tools (`brain_search`, `brain_recall`, `brain_ingest` + nine `ump.*`) and
+registers them as `mcp__brain-server__*`.
+
 ## Next steps
 
 - **[Universal Memory Protocol](./universal-memory-protocol.md)** — the `ump.*` contract.
 - **[API reference](./api.md)** — every endpoint the tools forward to.
 - **[OpenClaw integration](./openclaw-integration.md)** — the agent-facing plugin surface.
+- **[DeepSeek Harness (dsh) and Brain Server](./blog/10-dsh-deepseek-harness.md)** — the background post.
