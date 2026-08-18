@@ -118,6 +118,20 @@ scripts/install-service.sh
 
 ## MCP & agent-harness integration
 
+**Try it — paste this, get your MCP memory server talking in ~2 seconds:**
+
+```bash
+curl -L -o mcp https://github.com/markfietje/brain-server/releases/latest/download/mcp-darwin-arm64 \
+  && chmod +x mcp \
+  && echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}' | ./mcp
+```
+
+You'll see `"name":"brain-server-mcp"` + the `tools` capability — that's your MCP
+memory server answering the modern protocol, ready for any harness (including
+dsh). Swap `darwin-arm64` for `darwin-x86_64` / `linux-x86_64` / `linux-aarch64`.
+(`mcp` forwards to a running brain-server — start one first if you want a live
+recall; discovery works standalone.)
+
 Brain Server ships a **Model Context Protocol (MCP) server** (`mcp`): a
 line-delimited JSON-RPC 2.0 / stdio binary that translates MCP tool calls
 (`brain_search`, `brain_recall`, `brain_ingest` + nine `ump.*` governance tools)
