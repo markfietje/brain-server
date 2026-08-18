@@ -60,7 +60,7 @@ so it stays with an honest reason rather than the stale "stubs for future
 versions" comment. M3 closes the one genuine poisoning-control swallow the
 sweep surfaced (`breach::row_from` `serde_json` → `FromSqlConversionFailure`),
 pinned by `row_decode_fails_closed_on_corrupt_jurisdictions`. Tests: server bin
-**690** passed / 6 ignored (+1), lib **133** passed / 1 ignored; clippy
+**689** passed / 6 ignored (+1), lib **133** passed / 1 ignored; clippy
 `-D warnings` clean on default + bench + otel; fmt clean; `connector-github`
 feature still compiles. **Honest ceiling:** the lipstyk de-slop audit targeted
 zero diagnostics; this release delivers the headline dead-code + fail-closed
