@@ -202,7 +202,7 @@ impl WebhookQueue {
         } else {
             // Record the delivery in the replay-window table so a post-drain
             // replay is still rejected until the window elapses.
-// was `let _ =` — a failed seen-write would
+            // was `let _ =` — a failed seen-write would
             // let a replay within the window double-deliver to the sink.
             conn.execute(
                 "INSERT OR IGNORE INTO webhook_seen(delivery_hash) VALUES (?1)",
@@ -271,6 +271,11 @@ impl WebhookQueue {
 pub fn egress_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        // F-50: a stalled sink must not wedge the drain worker or accumulate
+        // ignored hangs. Connect is bounded (5 s) and the whole request
+        // (F-36's native default) to (15 s).
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .expect("hardened egress client has no invalid defaults")
 }
