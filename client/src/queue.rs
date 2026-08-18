@@ -456,11 +456,7 @@ pub fn take_replayable() -> Vec<QueuedAction> {
 /// v1.28.1 M4 pure: the destructive subset — the review banner's rows. Since
 /// v1.27.21 (N5) this is the whole parked set: destructive OR retry-exhausted.
 pub fn parked(queue: &[QueuedAction]) -> Vec<QueuedAction> {
-    queue
-        .iter()
-        .filter(|a| a.is_parked())
-        .cloned()
-        .collect()
+    queue.iter().filter(|a| a.is_parked()).cloned().collect()
 }
 
 /// v1.28.1 M4: replace the queue's parked subset with `kept` (the review
@@ -799,10 +795,7 @@ mod tests {
             digest_salted("s2", "a@b.c"),
             "the salt must not be a no-op"
         );
-        assert_ne!(
-            digest_salted("s1", "a@b.c"),
-            digest_salted("s1", "a@b.d")
-        );
+        assert_ne!(digest_salted("s1", "a@b.c"), digest_salted("s1", "a@b.d"));
         // Empty salt == plain SHA-256(subject) — the pre-salt form.
         assert_eq!(
             digest_salted("", "a@b.c"),

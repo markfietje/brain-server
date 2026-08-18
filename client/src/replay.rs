@@ -112,9 +112,8 @@ fn DestructiveRow(
         DsarGate::Mismatch => Some(crate::i18n::t("replay_subject_mismatch")),
         DsarGate::Ready => None,
     };
-    let retry_note = (act.retries() >= crate::queue::MAX_REPLAY_RETRIES).then(|| {
-        crate::i18n::t_fmt("replay_retry_parked", &[act.retries().to_string()])
-    });
+    let retry_note = (act.retries() >= crate::queue::MAX_REPLAY_RETRIES)
+        .then(|| crate::i18n::t_fmt("replay_retry_parked", &[act.retries().to_string()]));
 
     let cause_replay = move |_| {
         let api = api;
@@ -131,9 +130,7 @@ fn DestructiveRow(
                 // v1.27.21 (N8): the owner replays with the ids — it is the
                 // erasure's scope, not optional commentary.
                 Purge {
-                    chunk_ids,
-                    owner,
-                    ..
+                    chunk_ids, owner, ..
                 } => api().purge(chunk_ids, owner.as_deref()).await.map(|_| ()),
                 Dsar {
                     subject_hash: _,
@@ -150,16 +147,12 @@ fn DestructiveRow(
                 }
                 // (N5): a retry-exhausted row replays by hand here — the same
                 // calls the auto-replay loop makes.
-                Approve {
-                    id, supersedes, ..
-                } => api()
+                Approve { id, supersedes, .. } => api()
                     .approve_proposal(*id, *supersedes, None)
                     .await
                     .map(|_| ()),
                 Reject { id, .. } => api().reject_proposal(*id, None).await.map(|_| ()),
-                Edit { id, content, .. } => {
-                    api().edit_proposal(*id, content).await.map(|_| ())
-                }
+                Edit { id, content, .. } => api().edit_proposal(*id, content).await.map(|_| ()),
             };
             busy.set(false);
             if crate::queue::replay_applied(&res) {
@@ -352,12 +345,21 @@ mod tests {
             "whitespace-only is empty"
         );
         // A different install's salt cannot verify (the salt is per-install).
-        assert_eq!(dsar_gate(true, &hash, "right@x", "other"), DsarGate::Mismatch);
+        assert_eq!(
+            dsar_gate(true, &hash, "right@x", "other"),
+            DsarGate::Mismatch
+        );
         // Legacy unsalted rows: any non-empty retype is enough — there is no
         // verification form, and replay must never be permanently blocked.
         let legacy_hash = digest_salted("", "old@x");
-        assert_eq!(dsar_gate(false, &legacy_hash, "anything@x", salt), DsarGate::Ready);
-        assert_eq!(dsar_gate(false, &legacy_hash, "", salt), DsarGate::NeedSubject);
+        assert_eq!(
+            dsar_gate(false, &legacy_hash, "anything@x", salt),
+            DsarGate::Ready
+        );
+        assert_eq!(
+            dsar_gate(false, &legacy_hash, "", salt),
+            DsarGate::NeedSubject
+        );
     }
 
     /// N9: a corrupt stored hash with multi-byte chars must truncate on char
@@ -396,9 +398,15 @@ mod tests {
             queued_at: 6,
             retries: 0,
         };
-        assert!(!kept_drifted(&[a.clone(), b.clone()], &[a.clone(), b.clone()]));
+        assert!(!kept_drifted(
+            &[a.clone(), b.clone()],
+            &[a.clone(), b.clone()]
+        ));
         // Same length, different row — the old length check missed this.
-        assert!(kept_drifted(std::slice::from_ref(&a), std::slice::from_ref(&b)));
+        assert!(kept_drifted(
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&b)
+        ));
         // A retry bump alone is NOT drift (identity excludes volatile fields).
         let mut bumped = b.clone();
         if let QueuedAction::Reject { retries, .. } = &mut bumped {
