@@ -131,7 +131,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
     Subcommand { name: "domains-recompute", json: false, run: cmd_domains_recompute, usage: "brain domains-recompute" },
     Subcommand { name: "undo-resolve", json: false, run: cmd_undo_resolve, usage: "brain undo-resolve <old_id> [<old_id> ...]" },
     Subcommand { name: "check-consistency", json: false, run: cmd_check_consistency, usage: "brain check-consistency" },
-    Subcommand { name: "source-delete", json: false, run: cmd_source_delete, usage: "brain source-delete <id>" },
+    Subcommand { name: "source-delete", json: false, run: cmd_source_delete, usage: "brain source-delete <id> [--yes]" },
     Subcommand { name: "suggest", json: true, run: cmd_suggest, usage: "brain suggest \"<context>\" [--exclude id[,id...]] [--k N] [--domain D] [--session S]" },
     Subcommand { name: "suggest-feedback", json: false, run: cmd_suggest_feedback, usage: "brain suggest-feedback <chunk_id> accept|dismiss [--reason \"...\"] [--session S]" },
     Subcommand { name: "suggest-metrics", json: true, run: cmd_suggest_metrics, usage: "brain suggest-metrics [--session S] [--since DATE]" },
@@ -655,11 +655,13 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
         let score = h.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
         // recalled text is agent-facing — strip the same
         // invisible-Unicode class the server screen + client strip.
-// + markdown-ref strip + control chars
+        // + markdown-ref strip + control chars
         // (parity with the MCP `tool_result_payload` seam).
         let title = brain_server::fence::strip_markdown_refs(
-            &brain_server::strip_invisible::strip_invisible(
-                &json_str(h, "title").unwrap_or_else(|| "(untitled)".into()),
+            &brain_server::strip_invisible::strip_control_chars(
+                &brain_server::strip_invisible::strip_invisible(
+                    &json_str(h, "title").unwrap_or_else(|| "(untitled)".into()),
+                ),
             ),
         );
         let source = h
@@ -671,7 +673,11 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
             .get("snippet")
             .and_then(|x| x.as_str())
             .map(|s| s.replace('\n', " "))
-            .map(|s| brain_server::strip_invisible::strip_invisible(&s))
+            .map(|s| {
+                brain_server::strip_invisible::strip_control_chars(
+                    &brain_server::strip_invisible::strip_invisible(&s),
+                )
+            })
             .map(|s| brain_server::fence::strip_markdown_refs(&s))
             .unwrap_or_default();
 
@@ -763,7 +769,7 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
     println!("  {:-<60}", "");
     // the CLI is an agent-facing surface — strip the same
     // invisible-Unicode class the server screen + client strip.
-// + markdown-ref + control-char parity.
+    // + markdown-ref + control-char parity.
     let content = brain_server::strip_invisible::strip_control_chars(
         &brain_server::fence::strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
             &json_str(&v, "content").unwrap_or_default(),
@@ -811,7 +817,9 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
     }
 
     if files.is_empty() {
-        println!("no ingestable text/markdown files found in {path}");
+        if !json_mode() {
+            println!("no ingestable text/markdown files found in {path}");
+        }
         return Ok(());
     }
 
@@ -829,7 +837,9 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
         let content = match std::fs::read_to_string(f) {
             Ok(c) => c,
             Err(e) => {
-                println!("  skip {}: {e}", rel.display());
+                if !json_mode() {
+                    println!("  skip {}: {e}", rel.display());
+                }
                 skipped += 1;
                 continue;
             }
@@ -854,12 +864,14 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
                 .as_ref()
                 .map(|d| format!("{meta}, domain={d}"))
                 .unwrap_or(meta);
-            println!(
-                "  [dry-run] {} -> {} ({} bytes{meta})",
-                rel.display(),
-                target,
-                content.len(),
-            );
+            if !json_mode() {
+                println!(
+                    "  [dry-run] {} -> {} ({} bytes{meta})",
+                    rel.display(),
+                    target,
+                    content.len(),
+                );
+            }
             continue;
         }
 
@@ -913,25 +925,41 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
                 let ok = status == 200 && !body.contains("\"success\":false");
                 if ok {
                     ingested += 1;
-                    println!("  ok   {} -> {}", rel.display(), summarize_ingest(&body));
+                    if !json_mode() {
+                        println!("  ok   {} -> {}", rel.display(), summarize_ingest(&body));
+                    }
                 } else {
                     failed += 1;
-                    println!(
-                        "  fail {} ({}): {}",
-                        rel.display(),
-                        status,
-                        truncate(&body, 120)
-                    );
+                    if !json_mode() {
+                        println!(
+                            "  fail {} ({}): {}",
+                            rel.display(),
+                            status,
+                            truncate(&body, 120)
+                        );
+                    }
                 }
             }
             Err(e) => {
                 failed += 1;
-                println!("  error {}: {e}", rel.display());
+                if !json_mode() {
+                    println!("  error {}: {e}", rel.display());
+                }
             }
         }
     }
 
-    println!("\ningest-dir complete: {ingested} ingested, {skipped} skipped, {failed} failed");
+    if !json_mode() {
+        println!("\ningest-dir complete: {ingested} ingested, {skipped} skipped, {failed} failed");
+    }
+    // all-fail must exit non-zero in BOTH modes — checked before the `--json`
+    // ok-envelope emit so a JSON consumer also sees `ok:false` + exit 1.
+    if !files.is_empty() && ingested == 0 && failed > 0 {
+        let msg =
+            format!("every file failed: {failed} failed, {skipped} skipped, {ingested} ingested");
+        emit_json_err("ingest-dir", "all_files_failed", &msg);
+        return Err(msg);
+    }
     if json_mode() {
         return emit_json_ok(
             "ingest-dir",
@@ -943,12 +971,6 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
                 "dry_run": dry_run,
             }),
         );
-    }
-    if !files.is_empty() && ingested == 0 && failed > 0 {
-        let msg =
-            format!("every file failed: {failed} failed, {skipped} skipped, {ingested} ingested");
-        emit_json_err("ingest-dir", "all_files_failed", &msg);
-        return Err(msg);
     }
     Ok(())
 }
@@ -1353,11 +1375,21 @@ fn cmd_check_consistency(_args: &[String]) -> Result<(), String> {
 /// for one-off deletes (a vault file you want forgotten without rescanning
 /// the whole directory).
 fn cmd_source_delete(args: &[String]) -> Result<(), String> {
-    let (positionals, _flags) = parse_flags(args)?;
+    let (positionals, flags) = parse_flags(args)?;
     let id_str = require_positional(&positionals, "id")?;
     let id: i64 = id_str
         .parse()
         .map_err(|_| format!("id must be an integer, got '{id_str}'"))?;
+
+    if !flags.contains_key("yes") {
+        let a = read_line(&format!(
+            "Delete source {id} and all its chunks from retrieval? [y/N]"
+        ))?;
+        if !a.eq_ignore_ascii_case("y") {
+            println!("aborted (nothing changed)");
+            return Ok(());
+        }
+    }
 
     let path = format!("/sources/{id}");
     let resp = delete(&base_url(), &path, &[], auth_token().as_deref())?;
@@ -1463,7 +1495,9 @@ fn cmd_suggest(args: &[String]) -> Result<(), String> {
         // recalled payload cannot forge UI text or fence markers.
         let strip = |s: &str| {
             brain_server::fence::strip_markdown_refs(
-                &brain_server::strip_invisible::strip_invisible(s),
+                &brain_server::strip_invisible::strip_control_chars(
+                    &brain_server::strip_invisible::strip_invisible(s),
+                ),
             )
         };
         let title = strip(h["title"].as_str().unwrap_or(""));
@@ -2922,9 +2956,10 @@ fn cmd_backup(args: &[String]) -> Result<(), String> {
     })?;
     let pass = resolve_passphrase(&flags)?;
     let format = match flags.get("format").and_then(|o| o.clone()).as_deref() {
-        None | Some("v2") => brain_server::backup::BackupFormat::V2,
+        None | Some("v3") => brain_server::backup::BackupFormat::V3,
+        Some("v2") => brain_server::backup::BackupFormat::V2,
         Some("v1") => brain_server::backup::BackupFormat::V1,
-        Some(v) => return Err(format!("unknown backup format {v:?} (use v1 or v2)")),
+        Some(v) => return Err(format!("unknown backup format {v:?} (use v1, v2 or v3)")),
     };
     let db = default_db_path();
     brain_server::backup::backup_with_config_dir_and_format(
