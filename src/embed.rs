@@ -179,15 +179,21 @@ pub mod neural {
 
         /// The full dense+sparse+colbert output — v1.30's 4th-leg + rerank seam.
         /// Fails closed to an empty `MultiOutput` on lock/embed failure so a
-        /// recall never panics on a model error.
+        /// recall never panics on a model error — but the failure is `warn!`ed
+        /// (D-1: never certify silence), and the caller's empty-vec guard drops
+        /// the row rather than writing a corrupt embedding.
         pub fn embed_multi(&self, texts: &[&str]) -> MultiOutput {
             let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-            let Ok(mut m) = self.inner.lock() else {
-                return MultiOutput {
-                    dense: vec![],
-                    sparse: vec![],
-                    colbert: vec![],
-                };
+            let mut m = match self.inner.lock() {
+                Ok(m) => m,
+                Err(_) => {
+                    tracing::warn!("embedder mutex poisoned; skipping encode (model outage)");
+                    return MultiOutput {
+                        dense: vec![],
+                        sparse: vec![],
+                        colbert: vec![],
+                    };
+                }
             };
             match m.embed(&owned, None) {
                 Ok(out) => MultiOutput {
@@ -195,11 +201,14 @@ pub mod neural {
                     sparse: out.sparse,
                     colbert: out.colbert,
                 },
-                Err(_) => MultiOutput {
-                    dense: vec![],
-                    sparse: vec![],
-                    colbert: vec![],
-                },
+                Err(e) => {
+                    tracing::warn!("model encode failed; skipping row: {e}");
+                    MultiOutput {
+                        dense: vec![],
+                        sparse: vec![],
+                        colbert: vec![],
+                    }
+                }
             }
         }
     }
@@ -251,12 +260,19 @@ pub mod neural {
     impl Embedder for GteEmbedder {
         fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
             let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-            let Ok(mut m) = self.inner.lock() else {
-                return vec![];
+            let mut m = match self.inner.lock() {
+                Ok(m) => m,
+                Err(_) => {
+                    tracing::warn!("embedder mutex poisoned; skipping encode (model outage)");
+                    return vec![];
+                }
             };
             match m.embed(&owned, None) {
                 Ok(embs) => embs.into_iter().map(|e| e.to_vec()).collect(),
-                Err(_) => vec![],
+                Err(e) => {
+                    tracing::warn!("model encode failed; skipping row: {e}");
+                    vec![]
+                }
             }
         }
         fn store_dim(&self) -> usize {
@@ -419,7 +435,7 @@ mod tests {
             "one colbert vec per input (the rerank)"
         );
         assert!(
-            mo.sparse[0].indices.len() > 0,
+            !mo.sparse[0].indices.is_empty(),
             "sparse must carry lexical weights"
         );
         assert!(

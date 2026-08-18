@@ -1573,59 +1573,20 @@ fn process_rss_mib() -> u64 {
         .unwrap_or(0)
 }
 
-async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let pool = s.pool.clone();
-    let db_path = s.db_path.clone();
-    let snapshot = s.snapshot.clone();
-    let health_future = task::spawn_blocking(move || {
-        let mut sys = System::new();
-        sys.refresh_memory();
-        let pool_state = pool.state();
-        // capacity measurement needs a connection. Best-effort — if the
-        // pool is exhausted, capacity is omitted rather than failing /health.
-        let capacity = pool.get().ok().map(|c| measure_capacity(&c, &db_path));
-        Ok::<_, anyhow::Error>((
-            sys.used_memory() / 1_000_000,
-            sys.total_memory() / 1_000_000,
-            pool_state,
-            capacity,
-            snapshot.read(),
-        ))
-    });
-
-    match timeout(StdDuration::from_secs(3), health_future).await {
-        Ok(Ok(Ok((used_mb, total_mb, pool_state, capacity, snapshot)))) => {
-            let backup = snapshot.to_json();
-            // `capacity` is `Some` when the pool had a connection available,
-            // `None` when the pool was momentarily exhausted — in which case
-            // we omit the field rather than block /health.
-            let cw = s.chain_watch.read();
-            let integrity = serde_json::json!({
-                "chain_ok": cw.chain_ok,
-                "last_checked_at": cw.checked_at,
-                "chain_head": cw.chain_head,
-            });
-            Json(health_body(
-                used_mb,
-                total_mb,
-                pool_state.connections,
-                pool_state.idle_connections,
-                backup,
-                capacity,
-                integrity,
-                crate::audit::audit_commit_failures(),
-            ))
-        }
-        _ => Json(
-            serde_json::json!({ "status": "error", "version": SERVER_VERSION, "error": "Health check failed" }),
-        ),
-    }
+/// Public `/health` — the load-balancer probe shape only (`status`/`version`).
+/// Every deployment-fingerprinting field (model, otel, pool, backup, webhook,
+/// hardening, DPO contact) moved behind the Read gate on `/health/db`
+/// (v1.27.23 "Medicate" M2, the A-02 surface-reduction — same class as the
+/// v1.20.2 F2 `/health/db` carve-out).
+async fn health() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok", "version": SERVER_VERSION }))
 }
 
-/// Build the `/health` response body. Extracted as a pure function so a
-/// regression test can pin the top-level key set — `/health` must never leak
-/// memory content or PII (CVE-2026-29787 class: unauthenticated health-endpoint
-/// information disclosure).
+/// Build the detailed (Read-gated, `/health/db`) health body. Extracted as a
+/// pure function so a regression test can pin the top-level key set — it must
+/// never leak memory content or PII (CVE-2026-29787 class: health-endpoint
+/// information disclosure). Public `/health` (see `health`) no longer carries
+/// any of these fields.
 #[allow(clippy::too_many_arguments)] // 8 health fields; a struct would add ceremony to the single call site
 fn health_body(
     used_mb: u64,
@@ -1673,8 +1634,8 @@ fn health_body(
                 "endpoint": crate::config::otel_endpoint(),
             },
     // the named Data Protection Officer
-            // contact (from BRAIN_DPO_CONTACT) surfaced on the public health
-            // probe + the privacy notice. `null` when unset — the posture never
+            // contact (from BRAIN_DPO_CONTACT) surfaced on the Read-gated
+            // detail + the privacy notice. `null` when unset — the posture never
             // invents a contact. A data-subject / breach event needs a named
             // channel, and this proves the deployment configured one.
             "compliance": {
@@ -1756,37 +1717,67 @@ async fn health_db(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Result<Json<serde_json::Value>, crate::handlers::HandlerError> {
-    // was public (leaked DB size + last-write + pool state); now
-    // Read-gated. `/health` (the load-balancer probe shape) stays public.
+    // Read-gated. Public `/health` stays the minimal probe shape; the detailed
+    // deployment surface (model, otel, pool, backup, webhook, hardening, DPO)
+    // lives here so an unauthenticated network probe cannot fingerprint the
+    // deployment (v1.27.23 M2 / A-02).
     crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
+    let snapshot = s.snapshot.clone();
 
     let db_future = task::spawn_blocking(move || {
-        let conn = pool.get().map_err(|e| anyhow::anyhow!(e))?;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        let pool_state = pool.state();
+        // capacity measurement needs a connection. Best-effort — if the
+        // pool is exhausted, capacity is omitted rather than failing the probe.
+        let conn = pool.get().ok();
+        let capacity = conn.as_ref().map(|c| measure_capacity(c, &db_path));
         let metadata = std::fs::metadata(&db_path).ok();
         let db_size = metadata.map(|m| m.len()).unwrap_or(0);
-        let last_write: Option<String> = conn
-            .query_row("SELECT MAX(created_at) FROM knowledge", [], |r| r.get(0))
-            .ok();
-        let pool_state = pool.state();
-        Ok::<_, anyhow::Error>((db_size, last_write, pool_state))
+        let last_write: Option<String> = conn.as_ref().and_then(|c| {
+            c.query_row("SELECT MAX(created_at) FROM knowledge", [], |r| r.get(0))
+                .ok()
+        });
+        Ok::<_, anyhow::Error>((
+            sys.used_memory() / 1_000_000,
+            sys.total_memory() / 1_000_000,
+            pool_state,
+            capacity,
+            snapshot.read(),
+            db_size,
+            last_write,
+        ))
     });
 
     match timeout(StdDuration::from_secs(3), db_future).await {
-        Ok(Ok(Ok((db_size, last_write, pool_state)))) => Ok(Json(serde_json::json!({
-            "status": "healthy",
-            "database_size_bytes": db_size,
-            "database_size_mb": db_size as f64 / 1_000_000.0,
-            "last_write": last_write,
-            "connection_pool": {
-                "active": pool_state.connections.saturating_sub(pool_state.idle_connections),
-                "idle": pool_state.idle_connections,
-                "max": 20
+        Ok(Ok(Ok((used_mb, total_mb, pool_state, capacity, snapshot, db_size, last_write)))) => {
+            let backup = snapshot.to_json();
+            let cw = s.chain_watch.read();
+            let integrity = serde_json::json!({
+                "chain_ok": cw.chain_ok,
+                "last_checked_at": cw.checked_at,
+                "chain_head": cw.chain_head,
+            });
+            let mut body = health_body(
+                used_mb,
+                total_mb,
+                pool_state.connections,
+                pool_state.idle_connections,
+                backup,
+                capacity,
+                integrity,
+                crate::audit::audit_commit_failures(),
+            );
+            if let serde_json::Value::Object(ref mut m) = body {
+                m.insert("database_size_bytes".to_string(), db_size.into());
+                m.insert("last_write".to_string(), last_write.into());
             }
-        }))),
+            Ok(Json(body))
+        }
         _ => Ok(Json(
-            serde_json::json!({ "status": "error", "error": "Database health check failed" }),
+            serde_json::json!({ "status": "error", "error": "Health check failed" }),
         )),
     }
 }
@@ -13272,6 +13263,129 @@ Final paragraph after the rule.";
             none["compliance"]["dpo_contact"].is_null(),
             "a missing contact degrades to null, never invented"
         );
+    }
+
+    /// A-02 (v1.27.23 M2): the public `/health` probe shrinks to
+    /// `{status, version}` — no deployment-fingerprinting fields for an
+    /// unauthenticated network probe.
+    #[tokio::test]
+    async fn public_health_is_minimal() {
+        let Json(body) = health().await;
+        let obj = body.as_object().expect("health body is an object");
+        assert_eq!(
+            obj.len(),
+            2,
+            "public /health must be the minimal probe shape"
+        );
+        assert_eq!(obj["status"], "ok");
+        assert_eq!(obj["version"], SERVER_VERSION);
+        for leaked in [
+            "model",
+            "otel",
+            "hardening",
+            "webhook",
+            "compliance",
+            "pool",
+        ] {
+            assert!(
+                !obj.contains_key(leaked),
+                "public /health must not expose {leaked}"
+            );
+        }
+    }
+
+    /// A-02 (v1.27.23 M2): the detailed health body (model, otel, pool,
+    /// backup, hardening, DPO) lives on the Read-gated `/health/db` — 401
+    /// without a token, and a valid token sees the detail.
+    #[tokio::test]
+    async fn detailed_health_requires_admin() {
+        use axum::routing::get;
+        use tempfile::TempDir;
+        use tower::ServiceExt;
+
+        register_sqlite_vec();
+        let dir = TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("brain.db");
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .build(SqliteConnectionManager::file(&db_path))
+            .expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+
+        let app_state = Arc::new(AppState {
+            pool: pool.clone(),
+            registry: domain_registry::DomainRegistry::new(pool.clone(), &db_path, true),
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+            ),
+            db_path,
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+
+        let token = "detailed-health-tok";
+        // write the token AFTER `from_file` so the reload sees an advanced mtime
+        // (a pre-written file would be read once at construction and never reload).
+        let f = tempfile::NamedTempFile::new().expect("temp file");
+        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
+        std::fs::write(f.path(), format!("{token}\n")).unwrap();
+        assert!(
+            store.reload_if_changed_from(vec![token.to_string()]),
+            "token must register"
+        );
+
+        let app = axum::Router::new()
+            .route("/health", get(health))
+            .route("/health/db", get(health_db))
+            .layer(middleware::from_fn_with_state(
+                store.clone(),
+                auth_middleware,
+            ))
+            .with_state(app_state);
+
+        let anon = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health/db")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anon.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let authed = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health/db")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authed.status(), axum::http::StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(authed.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(body.get("model").is_some(), "detail carries model");
+        assert!(body.get("hardening").is_some(), "detail carries hardening");
     }
 
     /// every breach event is hash-chained
