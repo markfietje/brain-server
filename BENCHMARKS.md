@@ -280,16 +280,23 @@ reachable. Faster per-core but a different machine; kept for the delta.
 > separated by this set — BGE-M3's sparse/colbert heads aren't even consumed
 > yet (that's v1.30). The real gate is the ≥100-query frozen set.
 
-### v1.27.22 "Cascade" recall-gate re-verification (2026-08-18)
+### v1.27.22 "Cascade" eval (2026-08-18, actual release binary)
 
-> **Byte-identity check for the graph supersession bug-fix.** The release
-> touches the traversal/adjacency read path (superseded-edge skip + adjacency
-> filter) that feeds recall, so the frozen set was re-run on the new build to
-> confirm the default (`superseded_at IS NULL` = no-op on well-formed DBs) is
-> behavior-identical. Same procedure as the CI `recall-gate` job: scratch
-> instance, the 10-doc smoke corpus, 37 judged queries, default profile, this
-> dev host. Gate holds (exit 0) and metrics match the long-standing baseline —
-> the fix did not move recall.
+Two evals ran on the **actual v1.27.22 release binary** (`brain-server`
++ `brain` built `--release --features bench`, version endpoint 1.27.22), each on
+a scratch instance on a non-default port (`BRAIN_DB_PATH`/`BIND_PORT`, so the
+live `~/.openclaw/workspace/brain.db` was never touched).
+
+**Eval 1 — frozen recall gate (byte-identity re-check).** The release touches
+the traversal/adjacency read path (superseded-edge skip + adjacency filter)
+that feeds recall, so the frozen set was re-run on the release binary to
+confirm the default (`superseded_at IS NULL` = no-op on well-formed DBs) is
+behavior-identical. Same procedure as the CI `recall-gate` job: scratch seed of
+the 10-doc smoke corpus via `brain ingest-dir`, then `brain eval --floor
+r5=0.85 --floor r10=0.85 --floor mrr=0.85` over the 37 judged queries
+(`tests/fixtures/eval_queries.md`), default profile, this dev host. Gate holds
+(exit 0) and the metrics match the long-standing baseline — the fix did not
+move recall.
 
 | metric | score |
 |---|---|
@@ -302,6 +309,35 @@ reachable. Faster per-core but a different machine; kept for the delta.
 > Note: nDCG@10 here (0.909) matches the v1.17.4 smoke set's 0.911 within this
 > set's run-to-run variance at n=37; the pinned CI floors (r5/r10/mrr ≥ 0.85)
 > are comfortably held.
+
+**Eval 2 — edge-supersession functional eval (the feature this release
+ships).** An end-to-end behavioral check of the two bug-fixes on the release
+binary, overriding `/ingest` with an explicit entity triple and then poking the
+relationship history + read surfaces:
+
+1. **Initial ingest** of `Alice manages Bob` with a valid window
+   (`valid_at 2020-01-01`, `invalid_at 2023-01-01`) → `created`, one
+   `relationships` row.
+2. **Unchanged re-ingest** of the identical triple (same window) →
+   `duplicate`, **0 writes, same relationship id** — the write-once
+   idempotent no-op is preserved (history is not churned by a repeat).
+3. **Changed-window re-ingest** (`valid_at 2021-01-01`, `invalid_at
+   2025-01-01`) → `created`, a **new** relationship id, and the old row is
+   retired with `superseded_at = <new row's created_at>` (transaction-time
+   END). The handoff is exact: `old.superseded_at == new.created_at`.
+4. **`GET /graph/relationships/{id}/history`** reconstructs the full lineage
+   — `versions: [old, new]`, `current = new`, the old version's `current`
+   flag is `false` and its `superseded_at` is populated — queried from
+   **either** version id (the "given any one version id" contract).
+5. **`GET /graph/relations?from=alice`** returns **only the current edge**
+   (the superseded id is absent — the read surface hides retired edges).
+6. **Traversal** from `alice` yields a single current hop (not both
+   versions).
+7. **Bogus id** (`/graph/relationships/999/history`) → `404`.
+
+Result: all seven assertions held on the release binary. Behavior matches the
+module docs (`src/graph_supersede.rs`, `tests` in the lib suite) and the
+migration's `comments`/plan — the shipped code is true to its docs.
 
 ### Quality (frozen final query set)
 
