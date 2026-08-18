@@ -567,7 +567,6 @@ pub fn did_key(pk: &[u8; 32]) -> String {
 /// operator convenience, not a compat requirement. Read errors are swallowed —
 /// a missing/unreadable key degrades to L2, never a boot failure.
 pub fn operator_signing_key() -> Option<(String, SigningKey)> {
-    use ed25519_dalek::Signer;
     let dir = crate::config::ump_key_dir();
     let seed = std::fs::read_dir(&dir).ok()?.find_map(|e| {
         let e = e.ok()?;

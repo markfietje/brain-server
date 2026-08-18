@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::auth::jwt::{verify_access_token, TokenType};
-use crate::auth::revocation::{record_and_rotate, revoke, revoke_chain, RefreshError};
+use crate::auth::revocation::{record_and_rotate, revoke, RefreshError};
 use crate::auth::{AuthError, Claims};
 use crate::AppState;
 

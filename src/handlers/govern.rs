@@ -569,7 +569,6 @@ mod tests {
     /// still reports the policy kind even at zero rows.
     #[test]
     fn retention_report_matches_policy() -> rusqlite::Result<()> {
-        use rusqlite::OptionalExtension;
         let conn = rusqlite::Connection::open_in_memory()?;
         conn.execute_batch(
             "CREATE TABLE knowledge(

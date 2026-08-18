@@ -388,8 +388,9 @@ pub struct UmpRecallRequest {
     pub filter: Option<UmpRecallFilter>,
     /// Accepted for contract completeness; the brain has no rank steering
     /// (`ponytail:` no learned rerank — `prefer` is a no-op).
-    #[serde(default)]
-    pub ranking_hints: Option<Value>,
+    #[serde(default, rename = "ranking_hints")]
+    #[allow(dead_code)]
+    pub _ranking_hints: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]

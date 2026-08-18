@@ -4,9 +4,6 @@
 //! shapes, validation bounds, and error envelope). These handlers implement the
 //! **wire** contract; the internal logic (embed, centroid routing, sqlite-vec
 
-// Stubs for future versions — suppress dead-code warnings until filled in.
-#![allow(dead_code)]
-#![allow(unused_imports)]
 //! search, KG upsert) is filled in as the roadmap phases land.
 //!
 //! Conventions:
@@ -351,7 +348,7 @@ impl HandlerError {
 /// brain read-only. Callers: every ingest path (`/add`, `/ingest`,
 /// `/ingest/memory`, `/ingest/markdown`). Read routes do NOT call this.
 pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
-    use brain_server::capacity::{capacity_target, CapacityEnvelope, CapacityStatus};
+    use brain_server::capacity::{capacity_target, CapacityEnvelope};
     // Cheap short-circuit: pool state never blocks writes here; we only need a
     // connection to count rows. If the pool is momentarily exhausted, fail open.
     let Some(conn) = state.pool.get().ok() else {
@@ -439,28 +436,6 @@ pub fn can_read_domain(principal: &Option<crate::auth::Principal>, domain: &str)
     match principal {
         None => true,
         Some(p) => crate::auth::is_authorized(p, crate::auth::Action::Read, &p.tenant, domain),
-    }
-}
-
-/// The gate wrapper over [`can_read_domain`]: 403 with the standard
-/// HandlerError shape for the fan-out call sites (recall federation, graph
-/// traverse) that keep the authorize-style error.
-pub fn authorize_read_domain(
-    principal: &Option<crate::auth::Principal>,
-    domain: &str,
-) -> Result<(), HandlerError> {
-    if can_read_domain(principal, domain) {
-        Ok(())
-    } else {
-        let team = principal
-            .as_ref()
-            .map(|p| p.tenant.clone())
-            .unwrap_or_default();
-        Err(HandlerError::forbidden(
-            crate::auth::Action::Read,
-            &team,
-            domain,
-        ))
     }
 }
 

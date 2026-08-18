@@ -15,7 +15,6 @@ use axum::{
     Json,
 };
 use rand::Rng;
-use serde::de::Error as _;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::{

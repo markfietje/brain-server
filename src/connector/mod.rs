@@ -15,11 +15,12 @@
 //! connector logic yet (that's M2.x). The contract documented below is what
 //! `brain-connector-gh` (M2) and future connectors will implement.
 //!
-//! The M1 module is built but not yet wired into the server runtime — the
-//! spawn loop lands with M2.x's "auto-start registered connectors on boot",
-//! and the registration path lands with M3's `brain connect` CLI. Until then,
-//! `#[allow(dead_code)]` keeps clippy quiet.
-
+//! This module is the `brain-connector-gh` binary's library (auth, github
+//! client, supervisor, translate pipeline). It is not reachable from the server
+//! runtime — the server only wires `list_connectors`/`upsert_connector`/
+//! `kind::is_connector_kind` via the `/connectors` routes — so the rest reads
+//! as dead from the server crate's view. Deleting it would remove a shipped,
+//! tested feature binary; keep it as the connector library it is.
 #![allow(dead_code)]
 //!
 //! ## Connector binary contract

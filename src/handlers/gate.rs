@@ -646,12 +646,11 @@ pub async fn approve_proposal(
             source: Option<String>,
             authority: Option<f32>,
             observed_at: Option<i64>,
-            created_at: i64,
             qa_note: Option<String>,
         }
         let p: Option<ProposalRow> = tx
             .query_row(
-                "SELECT kind, content, source, authority, observed_at, created_at, qa_note
+                "SELECT kind, content, source, authority, observed_at, qa_note
                  FROM proposals WHERE id = ?1 AND status = 'pending'",
                 rusqlite::params![id],
                 |r| {
@@ -661,8 +660,7 @@ pub async fn approve_proposal(
                         source: r.get(2)?,
                         authority: r.get(3)?,
                         observed_at: r.get(4)?,
-                        created_at: r.get(5)?,
-                        qa_note: r.get(6)?,
+                        qa_note: r.get(5)?,
                     })
                 },
             )
@@ -678,7 +676,6 @@ pub async fn approve_proposal(
             source,
             authority,
             observed_at,
-            created_at: _,
             qa_note,
         } = p;
 
