@@ -102,8 +102,17 @@ pub async fn remember(
                 // connection, best-effort — a missing audit log must not fail
                 // the request. Detail carries only the declared owner (it is
                 // the handler's own identity assertion, not a secret).
-                if let Ok(audit_conn) = rusqlite::Connection::open(crate::config::brain_db_path()) {
-                    let _ = record_forbidden_scope(&audit_conn, &owner, declared);
+                match rusqlite::Connection::open(crate::config::brain_db_path()) {
+                    Ok(audit_conn) => {
+                        if !record_forbidden_scope(&audit_conn, &owner, declared) {
+                            tracing::warn!(
+                                "forbidden_scope audit record failed: owner={owner} declared={declared}"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("forbidden_scope audit connection failed: {e}");
+                    }
                 }
                 return Err(HandlerError::bad_request_with(
                     "forbidden_scope",

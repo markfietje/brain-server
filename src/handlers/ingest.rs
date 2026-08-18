@@ -652,11 +652,14 @@ pub(crate) async fn ingest_one(
 
         // vec0 (int8 + binary quantized). v0.9.0 DoD: vec0 is the sole vector
         // store; no raw f32 JSON is written to the legacy `embeddings` column.
-        let _ = tx.execute(
+        // A failed vector write would silently store the chunk without its
+        // embedding — a failed embed write is a failed ingest (fail closed).
+        tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
              VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",
             rusqlite::params![id, embedding.as_bytes()],
-        );
+        )
+        .map_err(|e| HandlerError::internal(format!("vec0 insert failed: {e}")))?;
 
         if !quarantined {
             // Entities (idempotent upsert, with optional type).

@@ -52,10 +52,13 @@ pub async fn forget(
             .map(|c| crate::handlers::gate::sha256_hex(&c));
 
         // vec_knowledge is a vec0 table with no FK (no cascade) — delete explicitly.
-        let _ = tx.execute(
+        // Fail closed: a failed vec0 delete would leave vector residue behind a
+        // certified erasure.
+        tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             rusqlite::params![id],
-        );
+        )
+        .map_err(|e| HandlerError::internal(format!("vec0 delete failed: {e}")))?;
 
         // Deleting the row cascades to embeddings, SET NULLs relationships,
         // and the FTS trigger removes the FTS row.

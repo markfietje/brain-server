@@ -1973,10 +1973,8 @@ async fn stats(
         return Json(serde_json::json!({ "success": false, "error": e.inner.message }));
     }
     // resolve per-domain pool from the ?domain= query param.
-    let pool = match handlers::resolve_domain_pool(&s.registry, params.domain.as_deref()) {
-        Ok(p) => p,
-        Err(_) => s.pool.clone(),
-    };
+    let pool = handlers::resolve_domain_pool(&s.registry, params.domain.as_deref())
+        .unwrap_or_else(|_| s.pool.clone());
     let stats_future = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| anyhow::anyhow!(e))?;
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?;
@@ -4220,12 +4218,10 @@ async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
 
     req.headers_mut().insert(
         "x-request-id",
-        request_id
-            .parse()
-            .unwrap_or_else(|_| {
-                axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
-                    .expect("generated uuid is a valid header value")
-            }),
+        request_id.parse().unwrap_or_else(|_| {
+            axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                .expect("generated uuid is a valid header value")
+        }),
     );
     next.run(req).await
 }

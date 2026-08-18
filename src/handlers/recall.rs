@@ -531,28 +531,36 @@ pub(crate) async fn run_recall(
             if let Some(days) = profile_retention.get(domain) {
                 f.retention_days = std::sync::Arc::new(days.clone());
             }
-            if let Ok((mut rs, t)) =
-                crate::perform_search_with_prf(pool, &*model, query.clone(), k, &f)
-            {
-                tel = t;
-                for r in &mut rs {
-                    r.with_snippet(&snippet_q);
+            match crate::perform_search_with_prf(pool, &*model, query.clone(), k, &f) {
+                Ok((mut rs, t)) => {
+                    tel = t;
+                    for r in &mut rs {
+                        r.with_snippet(&snippet_q);
+                    }
+                    // M2.1: enrich with span + source link + highlights per-domain.
+                    // best-effort: a failed pool checkout or enrichment must not
+                    // fail the recall the caller asked for; hits stay un-enriched.
+                    if let Ok(conn) = pool.get() {
+                        let _ = crate::search::SearchResult::enrich_evidence(
+                            &conn,
+                            &mut rs,
+                            &snippet_q,
+                            f.as_of.is_some(),
+                        );
+                    }
+                    // strip snippet/evidence for flagged hits (after
+                    // enrichment) unless the caller opted into flagged rows.
+                    for r in &mut rs {
+                        crate::suppress_flagged_evidence(r, f.include_flagged);
+                    }
+                    per_domain.push((domain.clone(), rs));
                 }
-                // M2.1: enrich with span + source link + highlights per-domain.
-                if let Ok(conn) = pool.get() {
-                    let _ = crate::search::SearchResult::enrich_evidence(
-                        &conn,
-                        &mut rs,
-                        &snippet_q,
-                        f.as_of.is_some(),
-                    );
+                Err(e) => {
+                    // best-effort per-domain: a failing domain is skipped from
+                    // the federation rather than aborting recall, but the failure
+                    // must not certify silence — the operator sees it.
+                    tracing::warn!("per-domain recall failed ({domain}): {e:#}");
                 }
-                // strip snippet/evidence for flagged hits (after
-                // enrichment) unless the caller opted into flagged rows.
-                for r in &mut rs {
-                    crate::suppress_flagged_evidence(r, f.include_flagged);
-                }
-                per_domain.push((domain.clone(), rs));
             }
         }
         let all = rrf_merge_domains(per_domain, k);

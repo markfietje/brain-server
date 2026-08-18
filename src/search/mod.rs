@@ -417,7 +417,15 @@ impl SearchResult {
         }
         // one batched evidence-links lookup for the
         // whole hit set (was one sqlite_master probe + one query per hit).
-        let links_by_chunk = evidence_links_batch_for(conn, &ids).unwrap_or_default();
+        // best-effort: a batch lookup failure must not fail the whole recall,
+        // but it must not certify silence either — log it and enrich without links.
+        let links_by_chunk = match evidence_links_batch_for(conn, &ids) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("evidence-links batch lookup failed; enriching without links: {e}");
+                HashMap::new()
+            }
+        };
         for res in results.iter_mut() {
             // Recompute the verbatim window at the bounded size for a consistent
             // `text`, then derive highlight ranges from snippet_q within it.
@@ -1713,7 +1721,16 @@ fn perform_search_legacy(
         let batch: Vec<SearchResult> = stmt
             .query_map(params![SEARCH_BATCH_SIZE as i64, offset as i64], |row| {
                 let vec_str: String = row.get(3)?;
-                let db_vec: Vec<f32> = serde_json::from_str(&vec_str).unwrap_or_default();
+                // best-effort: a corrupt stored embedding is scored as dissimilar
+                // (cosine 0) rather than dropped, but the corruption must not be
+                // silent — a batch of undecodable rows signals store corruption.
+                let db_vec: Vec<f32> = match serde_json::from_str(&vec_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("legacy embedding row undecodable; scoring 0.0: {e}");
+                        Vec::new()
+                    }
+                };
                 Ok(SearchResult::raw(
                     row.get(0)?,
                     cosine_sim(query_vec, &db_vec),
