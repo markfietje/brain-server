@@ -298,7 +298,7 @@ For security issues, do not open a public issue. Use the GitHub *Report a vulner
 
 Maintained by **Mark Fietje** — connect on
 [LinkedIn](https://www.linkedin.com/in/markfietje/). For project support and
-feature requests, prefer GitHub Issues / Discussions.
+feature requests, prefer GitHub Issues.
 
 ## License
 
