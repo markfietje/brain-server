@@ -327,7 +327,16 @@ impl From<EntityVocabulary> for EntityMatcher {
             .match_kind(MatchKind::LeftmostFirst)
             .ascii_case_insensitive(true)
             .build(&vocab.entities)
-            .expect("Aho-Corasick automaton build failed");
+            .unwrap_or_else(|_| {
+                // Infallible fallback: an empty pattern set always builds, so a
+                // pathological content-derived pattern (an NFA/DFA size limit)
+                // degrades to matching nothing instead of panicking ingest.
+                AhoCorasick::builder()
+                    .match_kind(MatchKind::LeftmostFirst)
+                    .ascii_case_insensitive(true)
+                    .build::<&[&str], _>(&[])
+                    .expect("empty pattern set is infallible")
+            });
         EntityMatcher { ac, entity_names }
     }
 }
@@ -353,6 +362,8 @@ impl EntityMatcher {
             if !has_word_boundaries(content, m.start(), m.end()) {
                 continue;
             }
+            // AhoCorasick was built from `entity_names` (same list, same order),
+            // so every match's pattern index is in-bounds by construction.
             let name = &self.entity_names[m.pattern().as_usize()];
             found.push((m.start(), name));
         }
@@ -380,6 +391,8 @@ impl EntityMatcher {
             if !has_word_boundaries(content, m.start(), m.end()) {
                 continue;
             }
+            // AhoCorasick was built from `entity_names` (same list, same order),
+            // so every match's pattern index is in-bounds by construction.
             let name = &self.entity_names[m.pattern().as_usize()];
             found.push((m.start(), m.end(), name));
         }
@@ -1407,7 +1420,7 @@ Ceph maps OSD failures.
     /// nesting.
     #[test]
     fn mention_dedup_linear_equivalence() {
-        fn reference_dedup(found: &[(usize, usize, &str)]) -> Vec<(usize, usize, &str)> {
+        fn reference_dedup<'a>(found: &[(usize, usize, &'a str)]) -> Vec<(usize, usize, &'a str)> {
             let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
             for m in found {
                 let overlaps = deduped

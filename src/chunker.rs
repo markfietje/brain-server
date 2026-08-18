@@ -604,7 +604,7 @@ mod tests {
         // varying sizes/content and indented code — NO chunk exceeds the hard
         // cap, and non-fenced pieces stay verbatim substrings of the source.
         let mut bodies: Vec<String> = Vec::new();
-        let mut seed = 0xdeadbeefcafe;
+        let mut seed = 0xdeadbeefcafeu64;
         let mut rng = || {
             seed ^= seed >> 12;
             seed ^= seed << 25;
@@ -940,7 +940,7 @@ mod tests {
         // newlines/blank-runs in many layouts. Cheap stand-in for a real
         // fuzzer (no proptest dep) that still hammers the slice sites.
         let glyphs = ["•", "—", "é", "💡", "ç", "🏋️", "ñ"];
-        let mut seed = 0x9e3779b97f4a7c15;
+        let mut seed = 0x9e3779b97f4a7c15u64;
         let mut rng = || {
             // xorshift64* — tiny, no dep, deterministic.
             seed ^= seed >> 12;
