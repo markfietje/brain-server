@@ -304,7 +304,7 @@ pub async fn post_dsar(
         let chain_head = crate::audit::chain_head(&global_conn);
         let certified_at = chrono::Utc::now().to_rfc3339();
         let mut purged_ids = cross_ids;
-        let mut found_count: usize = 0;
+        let mut found_count = 0;
         let mut held: Vec<serde_json::Value> = Vec::new();
         let mut tombstone_root: Option<i64> = None;
         let mut ledger_id: Option<i64> = None;

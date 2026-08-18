@@ -210,7 +210,7 @@ pub async fn list_legal_holds(
     let active_only = q.active.unwrap_or(false);
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let mut holds: Vec<serde_json::Value> = Vec::new();
-        let mut total: i64 = 0;
+        let mut total = 0;
         for d in &domains {
             let pool = super::resolve_domain_pool(&state.registry, Some(d))?;
             let conn = pool

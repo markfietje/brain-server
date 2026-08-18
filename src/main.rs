@@ -2663,7 +2663,7 @@ fn write_markdown_ingest(
     quarantine_flagged: bool,
     owner: &Option<String>,
 ) -> Result<(i64, usize, usize), AppError> {
-    let mut first_id: i64 = 0;
+    let mut first_id = 0;
     let mut inserted = 0usize;
     let mut duplicates = 0usize;
     // collect inserted chunk ids so we can link them to source+revision
@@ -4025,7 +4025,7 @@ async fn traverse_graph(
             JOIN entities e ON t.to_id = e.id"
         );
         let mut all: Vec<serde_json::Value> = Vec::new();
-        let mut total_visited: usize = 0;
+        let mut total_visited = 0;
         for (domain, pool) in &targets {
             // Hard cap on visited nodes across the whole walk (forbidden-list
             // rule: no unbounded graph walks). Stop once breached.

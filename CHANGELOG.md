@@ -19,6 +19,64 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.24] — 2026-08-18
+
+Server-only release (server `Cargo.toml`/lock `1.27.23` → **`1.27.24`**; client +
+plugin unchanged). **"Brushed"** — the dead-code + fail-closed pass from the
+lipstyk de-slop audit: remove the module-wide `#![allow(dead_code)]` escapes
+that hid real dead code, and close the one genuine poisoning-control swallow the
+sweep surfaced. No schema, no migration, no wire change, no telemetry.
+
+### Release notes
+
+**Security fixes**
+
+- **A corrupt breach `jurisdictions` cell now fails the row read instead of
+  silently becoming an empty list.** If the stored JSON on a breach was
+  corrupted, the breach previously read back with zero affected jurisdictions —
+  hiding from the DPO every affected-law notification deadline that the breach
+  carries. That read now errors loudly (fail-closed, the repo's D-1 "never
+  certify silence" invariant) rather than presenting an empty scope.
+
+**Bug fixes**
+
+- **Removed the blanket `#![allow(dead_code)]` + `#![allow(unused_imports)]`
+  on the handlers module** and deleted the real dead code they were hiding
+  (unused imports in `auth`, `recall`, `ump`, `govern`; the never-used
+  `authorize_read_domain`; the never-read `ProposalRow.created_at`; the UMP
+  recall `ranking_hints` request field, now `_ranking_hints` with its wire key
+  preserved). No behavior change — clippy `-D warnings` is now the dead-code
+  watchdog instead of a blanket allow.
+
+### Engineering record
+
+M5 removes the two module-wide allows the audit named. `handlers/mod.rs`:
+removing the allow exposed genuinely-dead items, each deleted or repaired
+(verify-by-reading, not blind-apply). `connector/mod.rs` keeps a **truthful**
+allow: that module is the `brain-connector-gh` binary's library (auth, github
+client, supervisor, translate pipeline) — it is not reachable from the server
+runtime, but deleting it would remove a shipped, tested, feature-gated binary,
+so it stays with an honest reason rather than the stale "stubs for future
+versions" comment. M3 closes the one genuine poisoning-control swallow the
+sweep surfaced (`breach::row_from` `serde_json` → `FromSqlConversionFailure`),
+pinned by `row_decode_fails_closed_on_corrupt_jurisdictions`. Tests: server bin
+**690** passed / 6 ignored (+1), lib **133** passed / 1 ignored; clippy
+`-D warnings` clean on default + bench + otel; fmt clean; `connector-github`
+feature still compiles. **Honest ceiling:** the lipstyk de-slop audit targeted
+zero diagnostics; this release delivers the headline dead-code + fail-closed
+items and **explicitly does not chase the residual heuristic hits**, the bulk of
+which are false positives by inspection — `Option<String>`→`""` wire shapes on
+DB-nullable columns (audit/recall serialization), best-effort cleanup paths
+(`remove_file`/`ROLLBACK`/thread-join where `warn!` would be noise), legitimate
+clones into owned containers/`Arc` handles/moved-into-`spawn_blocking` closures,
+and the feature-gated connector library — and a blind sweep to force "zero"
+would risk behavior changes the hard rule forbids. The genuine error-swallowing
+class (a failure meaning a control silently didn't run) was already swept in
+v1.27.19 and is closed here for the breach read. Rollback is per-file and
+semantics-free.
+
+---
+
 ## [1.27.23] — 2026-08-18
 
 Server-only release (server `Cargo.toml`/lock `1.27.22` → **`1.27.23`**; client +

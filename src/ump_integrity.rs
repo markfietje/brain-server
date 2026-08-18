@@ -22,8 +22,8 @@ pub const URN_UMP_PREFIX: &str = "urn:ump:";
 pub fn base32_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut out = String::with_capacity((bytes.len() * 8).div_ceil(5));
-    let mut acc: u32 = 0;
-    let mut bits: u32 = 0;
+    let mut acc = 0u32;
+    let mut bits = 0u32;
     for &b in bytes {
         acc = (acc << 8) | u32::from(b);
         bits += 8;

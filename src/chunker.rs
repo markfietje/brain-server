@@ -86,14 +86,14 @@ pub fn chunk_markdown(content: &str) -> Vec<Chunk> {
 
     // Current chunk byte range being accumulated. None = no pending content.
     let mut chunk_start: Option<usize> = None;
-    let mut chunk_end: usize = 0;
+    let mut chunk_end = 0;
 
     let mut in_heading = false;
     let mut pending_heading_level: Option<usize> = None;
     let mut heading_title_acc = String::new();
     // Nested code blocks shouldn't happen in well-formed markdown, but depth-
     // count is defensive against any parser quirk.
-    let mut code_block_depth: usize = 0;
+    let mut code_block_depth = 0usize;
 
     for (event, range) in parser.into_offset_iter() {
         let (start, end) = (range.start, range.end);
@@ -604,7 +604,7 @@ mod tests {
         // varying sizes/content and indented code — NO chunk exceeds the hard
         // cap, and non-fenced pieces stay verbatim substrings of the source.
         let mut bodies: Vec<String> = Vec::new();
-        let mut seed: u64 = 0xdeadbeefcafe;
+        let mut seed = 0xdeadbeefcafe;
         let mut rng = || {
             seed ^= seed >> 12;
             seed ^= seed << 25;
@@ -940,7 +940,7 @@ mod tests {
         // newlines/blank-runs in many layouts. Cheap stand-in for a real
         // fuzzer (no proptest dep) that still hammers the slice sites.
         let glyphs = ["•", "—", "é", "💡", "ç", "🏋️", "ñ"];
-        let mut seed: u64 = 0x9e3779b97f4a7c15;
+        let mut seed = 0x9e3779b97f4a7c15;
         let mut rng = || {
             // xorshift64* — tiny, no dep, deterministic.
             seed ^= seed >> 12;

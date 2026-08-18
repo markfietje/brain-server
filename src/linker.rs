@@ -343,11 +343,7 @@ impl EntityMatcher {
     /// Returns entity names (from the vocabulary, lowercased) in order of
     /// appearance. With LeftmostFirst semantics, a longer entity always
     /// wins over a shorter prefix at the same position.
-    pub fn find_mentions<'m>(
-        &'m self,
-        content: &str,
-        code_ranges: &[(usize, usize)],
-    ) -> Vec<&'m str> {
+    pub fn find_mentions(&self, content: &str, code_ranges: &[(usize, usize)]) -> Vec<&str> {
         let mut found: Vec<(usize, &str)> = Vec::new();
 
         for m in self.ac.find_iter(content) {
@@ -370,11 +366,11 @@ impl EntityMatcher {
     /// pair loops in the relationship paths stay bounded on adversarial
     /// sentences (a 1 MiB line that is one giant "sentence" could otherwise
     /// emit ~10¹⁰ pairs).
-    fn find_mentions_with_positions<'m>(
-        &'m self,
+    fn find_mentions_with_positions(
+        &self,
         content: &str,
         code_ranges: &[(usize, usize)],
-    ) -> Vec<(usize, usize, &'m str)> {
+    ) -> Vec<(usize, usize, &str)> {
         let mut found: Vec<(usize, usize, &str)> = Vec::new();
 
         for m in self.ac.find_iter(content) {
@@ -402,7 +398,7 @@ impl EntityMatcher {
     /// against the old scan kept as the test oracle.
     fn dedup_mentions<'m>(found: &[(usize, usize, &'m str)]) -> Vec<(usize, usize, &'m str)> {
         let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
-        let mut last_end: usize = 0;
+        let mut last_end = 0;
         for m in found {
             if m.1 <= last_end {
                 continue;
@@ -682,8 +678,8 @@ impl EntityMatcher {
 pub fn find_code_ranges(content: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut in_code = false;
-    let mut code_start: usize = 0;
-    let mut line_start: usize = 0;
+    let mut code_start = 0;
+    let mut line_start = 0;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -721,7 +717,7 @@ pub fn find_code_ranges(content: &str) -> Vec<(usize, usize)> {
 /// Each matching line is emitted as its own byte range.
 pub fn find_table_ranges(content: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
-    let mut line_start: usize = 0;
+    let mut line_start = 0;
     for line in content.lines() {
         if line.trim().starts_with('|') {
             ranges.push((line_start, line_start + line.len()));
@@ -863,7 +859,7 @@ pub fn extract_vocabulary(content: &str, excluded_ranges: &[(usize, usize)]) -> 
     let mut vocab = EntityVocabulary::default();
 
     // 1. Section headings
-    let mut line_start: usize = 0;
+    let mut line_start = 0;
     for line in content.lines() {
         let line_end = line_start + line.len();
         if !is_in_ranges(line_start, line_end, excluded_ranges) {
@@ -1411,9 +1407,7 @@ Ceph maps OSD failures.
     /// nesting.
     #[test]
     fn mention_dedup_linear_equivalence() {
-        fn reference_dedup<'a>(
-            found: &'a [(usize, usize, &'a str)],
-        ) -> Vec<(usize, usize, &'a str)> {
+        fn reference_dedup(found: &[(usize, usize, &str)]) -> Vec<(usize, usize, &str)> {
             let mut deduped: Vec<(usize, usize, &str)> = Vec::new();
             for m in found {
                 let overlaps = deduped
