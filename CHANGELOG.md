@@ -39,6 +39,12 @@ egress bound) and is re-verified, not re-built.
   regulated BPO deployment. **Intentional surface reduction** (same class as the
   v1.20.2 F2 carve-out): an operator monitor reading the detailed fields must
   switch to the gated `/health/db`.
+- **Dependency hardening: h2 0.4.15 → 0.4.16 (RUSTSEC-2026-0258).** The HTTP/2
+  dependency (reached via the reqwest/hyper client) was bumped to clear the
+  "unbounded empty DATA frames" advisory. `cargo audit` returns exit 0 on both
+  the server and client trees; the two remaining findings are `unmaintained`
+  *warnings* (paste, number_prefix) deep in the HF tokenizers/model2vec stack —
+  not vulnerabilities, and not clearable without a major bump.
 
 ### Bug fixes
 
