@@ -764,7 +764,7 @@ pub fn normalize_since(since: &str) -> Result<String> {
     if let Ok(d) = NaiveDate::parse_from_str(since, "%Y-%m-%d") {
         return Ok(d
             .and_hms_opt(0, 0, 0)
-            .unwrap()
+            .expect("midnight is always valid")
             .format("%Y-%m-%d %H:%M:%S")
             .to_string());
     }

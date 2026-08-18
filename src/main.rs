@@ -4218,8 +4218,15 @@ async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-    req.headers_mut()
-        .insert("x-request-id", request_id.parse().unwrap());
+    req.headers_mut().insert(
+        "x-request-id",
+        request_id
+            .parse()
+            .unwrap_or_else(|_| {
+                axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                    .expect("generated uuid is a valid header value")
+            }),
+    );
     next.run(req).await
 }
 

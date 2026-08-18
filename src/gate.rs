@@ -65,8 +65,9 @@ fn has_email(text: &str) -> bool {
                 .is_some_and(|d| d > 0 && d < domain.len() - 1);
             // A domain must not contain whitespace before its dot (otherwise
             // "at bob@example.com or" is fine but "bob@example .com" is not).
-            let domain_ok =
-                dot && !domain[..domain.find('.').unwrap()].contains(char::is_whitespace);
+            let domain_ok = dot
+                && !domain[..domain.find('.').expect("dot verified present by `dot`")]
+                    .contains(char::is_whitespace);
             if local_ok && domain_ok {
                 return true;
             }
@@ -500,7 +501,10 @@ fn mask_phone(out: &mut String) {
             // `i` is always on a char boundary here (runs are ASCII and we
             // consume full chars below), so slice the whole char — a byte-wise
             // `out[i..i+1]` panics on multi-byte input (e.g. '—').
-            let ch = out[i..].chars().next().unwrap();
+            let ch = out[i..]
+                .chars()
+                .next()
+                .expect("i < out.len() on run boundary");
             result.push(ch);
             i += ch.len_utf8();
         }
