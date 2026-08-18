@@ -223,6 +223,13 @@ fn breach_row(conn: &Connection, id: i64) -> Result<Option<BreachRow>, HandlerEr
 
 fn row_from(r: &rusqlite::Row) -> rusqlite::Result<BreachRow> {
     let jurisdictions: String = r.get(6)?;
+    let jurisdictions = serde_json::from_str(&jurisdictions).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Text,
+            Box::new(e),
+        )
+    })?;
     Ok(BreachRow {
         id: r.get(0)?,
         scope: r.get(1)?,
@@ -230,7 +237,7 @@ fn row_from(r: &rusqlite::Row) -> rusqlite::Result<BreachRow> {
         severity: r.get(3)?,
         discovered_at: r.get(4)?,
         affected_estimate: r.get(5)?,
-        jurisdictions: serde_json::from_str(&jurisdictions).unwrap_or_default(),
+        jurisdictions,
         status: r.get(7)?,
         opened_by: r.get(8)?,
         opened_at: r.get(9)?,
@@ -423,5 +430,39 @@ mod tests {
         assert!(deadlines
             .iter()
             .all(|d| d.deadline == 1000 + d.hours * 3600));
+    }
+
+    /// D-1 "never certify silence": a corrupt `jurisdictions` JSON cell must
+    /// fail the row decode, not silently deserialize to an empty list (the
+    /// pre-v1.27.24 `unwrap_or_default` behaviour hid the corruption).
+    #[test]
+    fn row_decode_fails_closed_on_corrupt_jurisdictions() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO breaches(scope, description, severity, discovered_at, \
+             affected_estimate, jurisdictions, status, opened_by, opened_at) \
+             VALUES ('s','d','high',1,2,'NOT-JSON','open','dpo',1)",
+            [],
+        )
+        .unwrap();
+        let mut stmt = conn.prepare("SELECT * FROM breaches").unwrap();
+        let rows: Vec<_> = stmt
+            .query_map([], |r| {
+                row_from(r)?;
+                Ok(())
+            })
+            .unwrap()
+            .collect();
+        assert!(
+            rows[0].is_err(),
+            "corrupt jurisdictions must surface as a decode error"
+        );
+        // A well-formed cell still decodes.
+        conn.execute("UPDATE breaches SET jurisdictions = '[\"ph\"]'", [])
+            .unwrap();
+        let mut stmt = conn.prepare("SELECT * FROM breaches").unwrap();
+        let ok = stmt.query_map([], |r| row_from(r)).unwrap().next();
+        let row = ok.unwrap().unwrap();
+        assert_eq!(row.jurisdictions, vec!["ph".to_string()]);
     }
 }
