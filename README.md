@@ -111,10 +111,27 @@ scripts/install-service.sh
 | **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |
 | **Product site** | [`docs/product-site/`](./docs/product-site/): landing, install, quickstart, editions. |
 | **Research** | [`docs/research/`](./docs/research/): one scientific explainer per retrieval mechanism (problem → reference → deterministic implementation → ceiling). |
-| **Blog** | [`docs/blog/`](./docs/blog/): one technical-buyer post per hard-won mechanism (compliance-time-bomb framing, deterministic HITL, tamper-evident audit, reference-faithful retrieval, no-lock-in, OWASP 2026 as sales doc, the honest ceiling, Profiles preview). |
+| **Blog** | [`docs/blog/`](./docs/blog/): one technical-buyer post per hard-won mechanism (compliance-time-bomb framing, deterministic HITL, tamper-evident audit, reference-faithful retrieval, no-lock-in, OWASP 2026 as sales doc, the honest ceiling, Profiles preview, DeepSeek Harness integration). |
 | **Media kit** | [`docs/media-kit.md`](./docs/media-kit.md): positioning, one-liners, and a Brain-vs-Mem0/LangGraph/RAG sizing table with honest ceilings. |
 | **Trust / proof map** | [`docs/trust/proof-map.md`](./docs/trust/proof-map.md) + [`docs/trust/reproduce.md`](./docs/trust/reproduce.md): every security/compliance claim mapped to its shipped release and live `curl`/`brain` proof. |
 | **Roadmap** | [`ROADMAP.md`](./ROADMAP.md). |
+
+## MCP & agent-harness integration
+
+Brain Server ships a **Model Context Protocol (MCP) server** (`mcp`): a
+line-delimited JSON-RPC 2.0 / stdio binary that translates MCP tool calls
+(`brain_search`, `brain_recall`, `brain_ingest` + nine `ump.*` governance tools)
+into HTTP calls against a running instance. It targets both the modern
+(2026-07-28, `server/discover`) and legacy (2025-11-25) MCP specs, so it drops
+into any MCP-capable agent harness.
+
+That includes **DeepSeek Harness (`dsh`)**, whose everything-is-a-plugin
+architecture accepts third-party **memory MCP servers** through its generic
+`@deepseek-ai/dsh-mcp-client` bridge — the documented slot Brain Server's `mcp`
+binary fills, backed by the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol)
+at conformance level **L3** (13/13 reference checks, CI-pinned). See the
+[dsh integration guide](./docs/mcp.md#deepseek-harness-dsh) for the pinned
+install + Cordis overlay, and the [background post](./docs/blog/10-dsh-deepseek-harness.md).
 
 ## Client GUI
 
