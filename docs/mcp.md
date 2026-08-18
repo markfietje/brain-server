@@ -16,21 +16,33 @@ retrieval logic in the MCP binary — it forwards, so the honest guarantees of t
 server (deterministic recall, no LLM in the loop, PII read-path masking, audit)
 hold no matter how you reach the store.
 
-## Building & running
+## Install & requirements
 
-`mcp` is built from the same `Cargo.toml` as the server (it is not
-feature-gated).
+The `mcp` binary ships from the same `Cargo.toml` as the server — build it once
+and it lives next to the other binaries:
 
 ```bash
-cargo build --release
-# against a running server on 127.0.0.1:8765 (the default base URL)
-./target/release/mcp
+cargo build --release --bin mcp
 ```
 
-The binary reads the same auth token resolution as the CLI
-(`AUTH_TOKEN_FILE` → `AUTH_TOKEN` → default file) and forwards bearer auth on
-each outgoing request. Point your MCP host at the `stdin`/`stdout` of the `mcp`
-process.
+What you need to run it:
+
+1. **A running brain-server** on loopback (default `http://127.0.0.1:8765`).
+   Override the base URL with `BRAIN_URL` if the server is elsewhere. The MCP
+   binary is **clientside only** — it makes outbound HTTP calls to the server
+   and performs no listening/binds itself.
+2. **Auth (only if the server requires a bearer).** The token resolves via the
+   CLI ladder, in order: `BRAIN_TOKEN_FILE` (path to a 0600 secret file) →
+   `BRAIN_TOKEN` (env) → `~/.config/brain-server/auth-token` (the default
+   install path written by `scripts/install-service.sh`). If none resolve, the
+   binary connects unauthenticated (the server's loopback-only default).
+3. **An MCP-capable host** (Claude Desktop, an IDE, an agent framework). Point
+   it at the `stdin`/`stdout` of the `mcp` process — it's a stdio server, so
+   there is nothing to install into the OS; the host spawns it.
+
+You can smoke-test it from a shell (a modern, stateless request is the example
+further down): pipe one JSON-RPC line into `./target/release/mcp` and read the
+JSON-RPC response on stdout.
 
 ## Protocol surface
 

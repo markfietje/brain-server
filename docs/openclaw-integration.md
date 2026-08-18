@@ -5,6 +5,14 @@ personal AI assistant gateway. The integration is a TypeScript plugin (`brain-se
 that lives in `plugin/` and calls the Rust server over **loopback HTTP**. It plugs into OpenClaw's
 **memory slot** (`kind: "memory"`).
 
+**Plugin version:** the in-tree package is at **0.4.5**. It is published to
+`brain-server-openclaw` (npm) and mirrored at
+`~/Sites/openclaw/extensions/brain-server/` (the openclaw monorepo ships it under
+`extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
+`plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
+`../CHANGELOG.md` (see the **plugin 0.4.x** rows: 0.4.3 provenance, 0.4.4 fence-forgery
+closure, 0.4.5 the `BRAIN_TOKEN_FILE` env-token ladder).
+
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and
 delegates every heavy operation to the server. It never loads a model, never sees a vector, never
@@ -395,7 +403,7 @@ schema is `plugin/openclaw.plugin.json` (`configSchema`). Defaults in parenthese
 | --- | ------- | ------- |
 | `enabled` | `true` | Global switch for recall/capture. |
 | `baseUrl` | `http://127.0.0.1:8765` | Loopback URL of the Rust server. |
-| `authToken` | — | Bearer token; must match the server's `AUTH_TOKEN`/`AUTH_TOKEN_FILE`. Sent as `Authorization: Bearer`. **(This is a token string, not a `tokenFile` path.)** |
+| `authToken` | — | Bearer token sent as `Authorization: Bearer`. **v0.4.5+** resolves it via an env-token ladder and **never writes** a secret to disk: `BRAIN_TOKEN_FILE` (path to a 0600 secret file) → `BRAIN_TOKEN` (env) → this `authToken` config field. The field is a token **string**, not a `tokenFile` path. If none resolve, the plugin connects unauthenticated (the server's loopback-only default). |
 | `agents` | `[]` | Per-agent opt-in allowlist (ids, or `"*"`). Empty ⇒ disabled. |
 | `allowedChatTypes` | `["direct","explicit"]` | Chat kinds permitted. |
 | `allowedChatIds` / `deniedChatIds` | — | Per-chat overrides; deny wins. |

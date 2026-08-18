@@ -4,6 +4,16 @@
 HTTP contract described here correspond to the current source. Forward-looking changes
 are noted in release milestones.
 
+> **Framing note.** This file is the **baseline-retrieval spec** and is kept
+> accurate as a *historical/architecture* reference. The retrieval pipeline
+> (§7), provenance (§7.6), and build (§2) sections are maintained current.
+> The **schema (§4)** and **HTTP API (§5)** tables are a **v1.0-era snapshot**
+> and are **not** the live surface — the current schema and route inventory are
+> far larger and live in `docs/api.md` (routes) + `docs/API_CONTRACT.md`
+> (wire shapes), with the versioned schema guarded by the
+> `test_migration_schema_contract` test in `src/main.rs`. Treat §4/§5 as the
+> historical baseline, not the contract.
+
 ---
 
 ## 1. Overview
@@ -58,26 +68,27 @@ AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 
 ## 2. Package & Dependencies
 
-From `Cargo.toml` (`name = "brain-server"`, `version = "1.1.0"`, `edition = "2021"`):
+From `Cargo.toml` (`name = "brain-server"`, `version = "1.27.22"`, `edition = "2021"`):
 
 | Purpose | Crate | Version |
 |---|---|---|
-| Embeddings | `model2vec-rs` | `0.1.4` |
-| DB | `rusqlite` (feature `bundled`) | `0.38.0` |
-| Pool | `r2d2` / `r2d2_sqlite` | `0.8.10` / `0.32.0` |
-| HTTP | `axum` | `0.8.8` |
-| HTTP engine | `hyper` | `1.8.1` |
-| CORS / middleware | `tower-http` (feature `cors`) | `0.6.8` |
-| Runtime | `tokio` (feature `full`) | `1.49.0` |
-| Serde | `serde` / `serde_json` | `1.0.228` / `1.0.149` |
-| Util | `anyhow`, `xxhash-rust` (`xxh3`), `chrono`, `dirs`, `sysinfo` | latest |
+| Embeddings (default) | `model2vec-rs` | `0.1.4` |
+| Embeddings (neural, optional) | `fastembed-rs` | optional — pulled only by `neural-embed` / `rerank-tier` |
+| DB | `rusqlite` (feature `bundled`) | `0.40.1` |
+| Pool | `r2d2` / `r2d2_sqlite` | `0.8.10` / `0.35.0` |
+| HTTP | `axum` | `0.8.9` |
+| HTTP engine | `hyper` | `1.10.1` |
+| CORS / middleware | `tower-http` (feature `cors`) | `0.6.11` |
+| Runtime | `tokio` (feature `full`) | `1.53.0` |
+| Serde | `serde` / `serde_json` | `1.0.229` / `1.0.150` |
+| Util | `anyhow`, `xxhash-rust` (`xxh3`), `sha2`, `chrono`, `dirs`, `sysinfo` | latest |
 | Annotator deps | `regex`, `toml`, `log` | `1.11` / `0.8` / `0.4` |
 | Tracing | `tracing` / `tracing-subscriber` (`env-filter`) | `0.1` / `0.3` |
 | Dev | `tempfile` | `3` |
 
-**Release profile:** `opt-level = "z"`, `lto = "fat"`, `codegen-units = 1`, `strip = true`,
-`panic = "abort"` (all transitive packages also `opt-level = "z"`). This is correctly tuned for
-minimal binary size on ARM.
+**Release profile:** `opt-level = 2` (speed), `lto = "fat"`, `codegen-units = 1`, `strip = true`,
+`panic = "abort"` (all transitive packages also `opt-level = 2`). This is well-tuned for the
+warm-speed/ARM balance on the shipped binaries.
 
 ---
 
@@ -391,14 +402,21 @@ When `Recommendation::RunPrf`:
 4. Re-search with expanded query → fused with pass 1 via deterministic RRF (`fuse_prf_passes`)
 5. Original-query matches protected from demotion
 
-### 7.5 Optional Cross-Encoder Rerank — REMOVED in v0.9.5 (`3fcac72`)
+### 7.5 Optional Cross-Encoder Rerank — removed in v0.9.5, re-added as an opt-in tier in v1.20.30
 
-The rerank tier was deleted in v0.9.5: the BGE cross-encoder pegged the M1 CPU and
-blew the 8s recall timeout, and was too heavy for the Jetson edge GPU. The `rerank`
-Cargo feature flag and `src/search/rerank.rs` were removed entirely, not stubbed.
-The API fields `rerank_score` / `rerank_truncated` / `rerank_ms` are retained
-(always `null` / `false` / `0`) for contract stability. To re-add the tier on a
-CUDA-GPU deployment, revert `3fcac72`.
+The rerank tier was **deleted in v0.9.5** (`3fcac72`): the BGE cross-encoder pegged the M1 CPU
+and blew the 8s recall timeout, and was too heavy for the Jetson edge GPU. The `rerank`
+Cargo feature and `src/search/rerank.rs` were removed, not stubbed.
+
+**Current state (v1.20.30+):** rerank was **re-introduced as an opt-in tier**, off by default.
+`src/search/rerank.rs` exists again and wires `bge-reranker-v2-m3` via `TextRerank` (the
+`rerank-tier` Cargo feature + `MODEL_PROFILE` opt-in). It is **fail-open** and **boot-warmed**
+(a lazy first-recall load put the download in the request path). The default build (edge/Jetson)
+stays on the static potion model **with no rerank**; neural tiers (`neural-embed`,
+`rerank-tier`) are separate features. See `IMPLEMENTATION_PLAN_v1.20.30_Caliber.md`.
+
+The API fields `rerank_score` / `rerank_truncated` / `rerank_ms` are retained for contract
+stability (always `null` / `false` / `0` unless the rerank tier is active).
 
 Historical record (what §7.5 documented before removal):
 
@@ -493,7 +511,16 @@ The KG (`entities`/`relationships`) is populated at ingest from a **single sourc
 
 ## 10. Security Posture (current)
 
-- **No authentication.** Loopback bind by default; relies on network isolation.
+- **Authentication is on by default in modern releases.** The v0.9.0-era "no
+  authentication, loopback bind" baseline below is **historical**. Current posture:
+  bearer token auth (`AUTH_TOKEN_FILE` → `AUTH_TOKEN`, 0600 secret),
+  **JWT/JWS** verification (RS256/ES256/EdDSA, alg whitelist, `(jti, iss)`
+  revocation, refresh-chain reuse detection), a deny-by-default **AuthZ** layer,
+  per-domain capability tokens, OIDC/JWKS discovery, role-based postures
+  (`admin`/`solo`/`controller`/`dpo`/`qa`/`agent`/`client-auditor`/`bpo-ops`),
+  fail-closed identity (`auth::TokenRead`, poisoned store = 500), and per-IP rate
+  limiting. The default loopback bind is a safety default, **not** the security
+  boundary — auth gates every non-loopback surface.
 - **Prompt-injection pattern detector:** `contains_suspicious_pattern()` rejects inputs
   containing `"ignore previous"`, `"system:"`, `"you are now"`, `"### instruction"`,
   `"### system"`, `"def "`, `"import "`, `"exec("`, `"eval("` (case-insensitive). Applied to
@@ -510,7 +537,8 @@ revocation, refresh-chain reuse detection) + a deny-by-default AuthZ layer + OID
 discovery. v1.3.0 "Bedrock" hardens the binary itself: zero `unwrap`/`expect`/`panic!` in
 production paths, every `unsafe` block documented with a `// SAFETY:` comment, and a
 `hardening` object on `/health` exposing the memory-safety posture (`unsafe_blocks`,
-`panics_caught`, `memory_leaks_detected`).
+`panics_caught`, `memory_leaks_detected`). v1.20.24+ fails closed on misconfigured secrets;
+v1.27.16 + v1.27.21 close the read/identity fail-open gaps (see `CHANGELOG.md`).
 
 ## 11. Known Issues / Debt (carried into ROADMAP Phase 0)
 
