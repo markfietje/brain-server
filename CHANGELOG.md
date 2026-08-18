@@ -19,7 +19,60 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.23] — 2026-08-18
+
+Server-only release (server `Cargo.toml`/lock `1.27.22` → **`1.27.23`**; client +
+plugin unchanged). **"Medicate"** — the three security findings the adversarial
+pass surfaced as still-open, delivered as small, behavior-gated hardening: no
+new schema, no new endpoints, no wire change, no telemetry. Two landed here
+(health surface reduction + fail-closed embed errors); the third (the bounded
+outbound client) was already shipped in v1.27.21 (M9: 5 s connect / 15 s total
+egress bound) and is re-verified, not re-built.
+
+### Security fixes
+
+- **Public `/health` is now the minimal probe shape (A-02).** The load-balancer
+  probe (`status` + `version`) stays public; every deployment-fingerprinting
+  field — `model`, `otel.endpoint`, `pool`, `backup`, `webhook`, `hardening`,
+  `compliance.dpo_contact`, `integrity` — moved behind the existing Read gate on
+  `/health/db`. An unauthenticated network probe can no longer fingerprint a
+  regulated BPO deployment. **Intentional surface reduction** (same class as the
+  v1.20.2 F2 carve-out): an operator monitor reading the detailed fields must
+  switch to the gated `/health/db`.
+
+### Bug fixes
+
+- **Embed failures are no longer silent (A-03).** The feature-gated neural
+  embedders (`bge-m3` / `gte-base-en-v1.5`) logged nothing when the model
+  failed, returning an empty vector the callers silently skipped. Every failure
+  branch now emits a `warn!` (the D-1 "never certify silence" invariant the repo
+  enforces on the audit settle, quarantine flag, and purge residues). Behavior
+  is otherwise unchanged: callers already skip the row on an empty vector, so no
+  corrupt zero-length embedding was ever written — this closes only the missing
+  signal, not the guard.
+
+### Engineering record
+
+M1 egress bound was already shipped (v1.27.21 M9) — no new work. M2 reuses the
+existing `/health/db` Read gate + the pure `health_body` builder (no new route,
+no dead code: the builder stays the detailed body used by the gated route).
+M3 is the minimal fail-closed signal on the two neural failure branches. Tests:
+server bin **688** passed / 6 ignored (+2: `public_health_is_minimal`,
+`detailed_health_requires_admin`), lib **133** passed / 1 ignored; clippy
+`-D warnings` + fmt clean; route-authz + openapi guard tables unchanged (no new
+routes, no openapi response change). Honest ceilings: `/health` shrinking is the
+intended behavior change — public monitors must move to the gated detail; the
+neural warn path is reachable only under `--features neural-embed`
+(enterprise/desktop — the default edge static model is infallible); an embed
+failure still returns an empty vector that the caller skips — it is now loud,
+not silent; `compliance.dpo_contact` stays on the Read-gated detail (the privacy
+notice remains the public subject-contact channel). Rollback is trivial: revert
+M2 to restore the old public body, or M3 to return to the silent-empty behavior.
+
+---
+
 ## [1.27.22] — 2026-08-18
+
 
 Server-only release (server `Cargo.toml`/lock `1.27.21` → **`1.27.22`**; client +
 plugin unchanged). **"Cascade"** — a bug-fix release closing two

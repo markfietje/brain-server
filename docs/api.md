@@ -12,7 +12,8 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health`, `/health/db`, `/ready` | Liveness + capacity + hardening |
+| GET | `/health` | Liveness probe (minimal `{status, version}`; detail on `/health/db`) |
+| GET | `/health/db` | Read-gated detail — capacity, pool, hardening, model, otel, DPO |
 | GET | `/stats`, `/version` | Counts, model, version |
 | GET | `/openapi.yaml` | Full API contract |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint |
