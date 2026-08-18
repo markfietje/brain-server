@@ -2948,11 +2948,11 @@ fn resolve_passphrase(
     std::fs::read(&path).map_err(|e| format!("cannot read passphrase file {path}: {e}"))
 }
 
-/// `brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]`
+/// `brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]`
 fn cmd_backup(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args)?;
     let out = positionals.first().cloned().ok_or_else(|| {
-        "usage: brain backup <out-path> [--passphrase-file PATH] [--format v1|v2]".to_string()
+        "usage: brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]".to_string()
     })?;
     let pass = resolve_passphrase(&flags)?;
     let format = match flags.get("format").and_then(|o| o.clone()).as_deref() {
