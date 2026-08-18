@@ -52,8 +52,6 @@ pub async fn forget(
             .map(|c| crate::handlers::gate::sha256_hex(&c));
 
         // vec_knowledge is a vec0 table with no FK (no cascade) — delete explicitly.
-        // Fail closed: a failed vec0 delete would leave vector residue behind a
-        // certified erasure.
         tx.execute(
             "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
             rusqlite::params![id],

@@ -67,9 +67,6 @@ pub fn strip_markdown_refs(s: &str) -> String {
                 continue;
             }
         }
-        // infallible: `i` is always a UTF-8 char boundary (it only advances by
-        // a full `len_utf8()` or past an ASCII `[`/`]`/`)`), and `i < bytes.len()`
-        // keeps the slice non-empty.
         let ch = s[i..].chars().next().expect("non-empty slice");
         out.push(ch);
         i += ch.len_utf8();

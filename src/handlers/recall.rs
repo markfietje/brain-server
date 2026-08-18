@@ -538,8 +538,6 @@ pub(crate) async fn run_recall(
                         r.with_snippet(&snippet_q);
                     }
                     // M2.1: enrich with span + source link + highlights per-domain.
-                    // best-effort: a failed pool checkout or enrichment must not
-                    // fail the recall the caller asked for; hits stay un-enriched.
                     if let Ok(conn) = pool.get() {
                         let _ = crate::search::SearchResult::enrich_evidence(
                             &conn,
@@ -556,9 +554,6 @@ pub(crate) async fn run_recall(
                     per_domain.push((domain.clone(), rs));
                 }
                 Err(e) => {
-                    // best-effort per-domain: a failing domain is skipped from
-                    // the federation rather than aborting recall, but the failure
-                    // must not certify silence — the operator sees it.
                     tracing::warn!("per-domain recall failed ({domain}): {e:#}");
                 }
             }

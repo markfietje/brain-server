@@ -119,9 +119,6 @@ pub fn run_once(db_path: &Path) -> anyhow::Result<bool> {
     ));
     let conn = Connection::open(db_path)?;
     // Checkpoint WAL first so the snapshot is consistent + WAL is small.
-    // best-effort: a failed checkpoint does not invalidate the snapshot
-    // (VACUUM INTO reads the DB consistently either way); the failure is
-    // logged by SQLite, not silent in the sense of losing a primary write.
     let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     let sql = format!(
         "VACUUM INTO '{}'",
@@ -176,8 +173,6 @@ fn prune(dir: &Path, db_path: &Path, keep: usize) {
     snaps.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
     let drop_count = snaps.len().saturating_sub(keep);
     for p in snaps.iter().take(drop_count) {
-        // best-effort: a failed prune leaves an extra snapshot; the rolling
-        // keep-count simply holds one more copy until the next successful run.
         let _ = std::fs::remove_file(p);
     }
 }

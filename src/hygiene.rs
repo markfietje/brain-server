@@ -44,9 +44,6 @@ pub fn strip_reasoning_blocks(text: &str) -> String {
             }
         } else {
             // Copy one UTF-8 char and advance.
-            // infallible: `i` is always a UTF-8 char boundary (`text`'s bytes;
-            // it only advances by a full `len_utf8()` or past an ASCII `</tag>`),
-            // and the loop guard `i < text.len()` keeps the slice non-empty.
             let ch = text[i..].chars().next().expect("non-empty slice");
             out.push(ch);
             i += ch.len_utf8();

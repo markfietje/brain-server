@@ -417,8 +417,6 @@ impl SearchResult {
         }
         // one batched evidence-links lookup for the
         // whole hit set (was one sqlite_master probe + one query per hit).
-        // best-effort: a batch lookup failure must not fail the whole recall,
-        // but it must not certify silence either — log it and enrich without links.
         let links_by_chunk = match evidence_links_batch_for(conn, &ids) {
             Ok(m) => m,
             Err(e) => {
@@ -1721,9 +1719,6 @@ fn perform_search_legacy(
         let batch: Vec<SearchResult> = stmt
             .query_map(params![SEARCH_BATCH_SIZE as i64, offset as i64], |row| {
                 let vec_str: String = row.get(3)?;
-                // best-effort: a corrupt stored embedding is scored as dissimilar
-                // (cosine 0) rather than dropped, but the corruption must not be
-                // silent — a batch of undecodable rows signals store corruption.
                 let db_vec: Vec<f32> = match serde_json::from_str(&vec_str) {
                     Ok(v) => v,
                     Err(e) => {

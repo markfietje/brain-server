@@ -338,8 +338,7 @@ pub async fn post_dsar(
             ledger_id.ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
 
         // backfill the certificate onto the ledger row committed
-        // with the purge (best-effort — the row + times already prove it;
-        // the in-memory certificate is returned regardless).
+        // with the purge (best-effort — the row + times already prove it).
         if let Err(e) = global_conn.execute(
             "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
             rusqlite::params![certificate, ledger_id],
@@ -592,8 +591,6 @@ pub(crate) async fn run_dsar_subject(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // best-effort certificate backfill (write-through cache of the
-        // in-memory value already returned; the ledger row + times prove it).
         if let Err(e) = conn.execute(
             "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
             rusqlite::params![certificate, ledger_id],

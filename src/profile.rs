@@ -338,8 +338,6 @@ pub fn presets() -> Vec<Profile> {
     PRESETS_RAW
         .iter()
         .map(|(name, json)| {
-            // infallible: every literal in `PRESETS_RAW` (same file) is a
-            // fixed compile-time JSON blob, pinned by `all_presets_parse_and_validate`.
             let mut p: Profile = serde_json::from_str(json).expect("preset JSON parses");
             p.name = (*name).to_string();
             p

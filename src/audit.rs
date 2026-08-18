@@ -324,10 +324,6 @@ pub fn record_read_event(
     let detail = trace_detail.unwrap_or(target);
     let id = record_tenant(conn, kind, actor, target, AuditStatus::Ok, detail, tenant)?;
     if let Some(t) = trace_detail {
-        // best-effort: the audit row is the durable record; the `recall_traces`
-        // side-table insert is the replayable artifact only. A trace-write
-        // failure degrades `/recall/{id}/trace` to `None`, never the read-event
-        // audit itself (the documented "audit failed -> None" contract).
         let _ = conn.execute(
             "INSERT INTO recall_traces(audit_id, trace_json) VALUES (?1, ?2)",
             params![id, t],

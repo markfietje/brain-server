@@ -652,8 +652,6 @@ pub(crate) async fn ingest_one(
 
         // vec0 (int8 + binary quantized). v0.9.0 DoD: vec0 is the sole vector
         // store; no raw f32 JSON is written to the legacy `embeddings` column.
-        // A failed vector write would silently store the chunk without its
-        // embedding — a failed embed write is a failed ingest (fail closed).
         tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
              VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",

@@ -328,9 +328,6 @@ impl From<EntityVocabulary> for EntityMatcher {
             .ascii_case_insensitive(true)
             .build(&vocab.entities)
             .unwrap_or_else(|_| {
-                // Infallible fallback: an empty pattern set always builds, so a
-                // pathological content-derived pattern (an NFA/DFA size limit)
-                // degrades to matching nothing instead of panicking ingest.
                 AhoCorasick::builder()
                     .match_kind(MatchKind::LeftmostFirst)
                     .ascii_case_insensitive(true)
@@ -362,8 +359,6 @@ impl EntityMatcher {
             if !has_word_boundaries(content, m.start(), m.end()) {
                 continue;
             }
-            // AhoCorasick was built from `entity_names` (same list, same order),
-            // so every match's pattern index is in-bounds by construction.
             let name = &self.entity_names[m.pattern().as_usize()];
             found.push((m.start(), name));
         }
@@ -391,8 +386,6 @@ impl EntityMatcher {
             if !has_word_boundaries(content, m.start(), m.end()) {
                 continue;
             }
-            // AhoCorasick was built from `entity_names` (same list, same order),
-            // so every match's pattern index is in-bounds by construction.
             let name = &self.entity_names[m.pattern().as_usize()];
             found.push((m.start(), m.end(), name));
         }

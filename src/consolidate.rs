@@ -113,9 +113,6 @@ pub fn resolve_supersession(
             .ok()
             .flatten();
         let target = loser_hash.as_deref().unwrap_or("unknown");
-        // best-effort: audit settle must never fail the resolution (record_tenant
-        // swallows its own errors by contract; a broken row is preferable to a
-        // rolled-back supersession).
         crate::audit::record_tenant(
             tx,
             crate::audit::AuditKind::Reconcile,
@@ -383,8 +380,6 @@ pub fn undo_supersession(tx: &Transaction<'_>, old_chunk: i64) -> Result<usize> 
             .ok()
             .flatten();
         let target = target_hash.as_deref().unwrap_or("unknown");
-        // best-effort: audit settle must never fail the undo (record_tenant
-        // swallows its own errors by contract).
         crate::audit::record_tenant(
             tx,
             crate::audit::AuditKind::Reconcile,
