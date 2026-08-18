@@ -10,6 +10,7 @@
  * `AUTH_TOKEN_FILE`, preferred). This plugin's `authToken` config must match it
  * verbatim; both are sent as `Authorization: Bearer <token>`.
  */
+import { readFileSync } from "node:fs";
 import { Type, type Static } from "typebox";
 
 export const brainConfigSchema = Type.Object({
@@ -102,10 +103,43 @@ export type ResolvedBrainConfig = {
   proposalTools: boolean;
 };
 
+/**
+ * Resolve the auth token WITHOUT forcing it into the plaintext plugin config
+ * (the remediation for the documented openclaw-config token leak): the
+ * ladder mirrors the `brain` CLI —
+ *   1. `BRAIN_TOKEN_FILE` — path to a 0600 token file (preferred; the token
+ *      never appears in any config, env dump, or process listing argument)
+ *   2. `BRAIN_TOKEN` — the token itself via environment
+ *   3. `authToken` in the plugin config (legacy fallback; still plaintext
+ *      wherever openclaw stores its config — migrate off it)
+ * Config wins ONLY when no env source is set, so an operator rotating via
+ * env does not fight a stale config value.
+ */
+function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
+  const file = process.env.BRAIN_TOKEN_FILE?.trim();
+  if (file) {
+    try {
+      const token = readFileSync(file, "utf8").trim();
+      if (token) {
+        return token;
+      }
+    } catch {
+      // Unreadable token file: fall through to the next rung with a warning —
+      // a broken ladder must not silently degrade to a weaker source.
+      console.warn(`brain plugin: BRAIN_TOKEN_FILE unreadable (${file}); falling back`);
+    }
+  }
+  const envToken = process.env.BRAIN_TOKEN?.trim();
+  if (envToken) {
+    return envToken;
+  }
+  return cfg.authToken?.trim() || undefined;
+}
+
 /** Resolve raw plugin config into a fully-populated, validated config. */
 export function resolveConfig(raw: unknown): ResolvedBrainConfig {
   const cfg = (raw ?? {}) as Partial<BrainConfig>;
-  const authToken = cfg.authToken?.trim() || undefined;
+  const authToken = resolveAuthToken(cfg);
   return {
     enabled: cfg.enabled ?? DEFAULTS.enabled,
     baseUrl: (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl,

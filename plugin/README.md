@@ -73,7 +73,8 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
 ```jsonc
 {
   "baseUrl": "http://127.0.0.1:8765",
-  "authToken": "<AUTH_TOKEN>", // must match the server's AUTH_TOKEN / AUTH_TOKEN_FILE
+  // Token resolution: BRAIN_TOKEN_FILE (path to a 0600 token) > BRAIN_TOKEN > authToken (legacy)
+  "authToken": "<AUTH_TOKEN>", // legacy fallback — prefer an env source; never required
   "agents": ["main"], // per-agent opt-in; empty = disabled
   "allowedChatTypes": ["direct", "explicit"],
   "autoRecall": true, // deterministic per-turn recall
@@ -86,6 +87,14 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
   "proposalTools": false, // expose proposal review tools to the agent
 }
 ```
+
+> **Token resolution (0.4.5):** the plugin never writes a token. It resolves the
+> bearer via a ladder mirroring the `brain` CLI — `BRAIN_TOKEN_FILE` (a 0600 file;
+> the token never appears in config or env dumps) → `BRAIN_TOKEN` (env) →
+> `authToken` in the plugin config (legacy fallback). Config wins only when no env
+> source is set, so rotating via env never fights a stale stored value; an
+> unreadable token file degrades loudly to the next rung, never silently to a
+> weaker source.
 
 ## Tools
 
@@ -158,3 +167,8 @@ What the suite covers (brain-server-specific):
 
 For the full wire contract (request/response shapes, field bounds, error
 envelope), see the brain-server repo's `API_CONTRACT.md` and `GET /openapi.yaml`.
+
+## Changelog
+
+See [`CHANGELOG.md`](./CHANGELOG.md). Released from the openclaw repo at
+`extensions/brain-server`; mirror under `plugin/` in the brain-server repo.

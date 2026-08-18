@@ -235,9 +235,11 @@ export default definePluginEntry({
           if (!result.hits.length) {
             // Calibrated abstention (v1.5): the server returned no hits on
             // purpose because quality was too low. Fail-open — inject nothing.
+            // The log carries the query LENGTH only — openclaw's log is
+            // persistent and the query is user text (privacy: never log it).
             if (result.decision === "low_confidence") {
               api.logger.info?.(
-                `${PLUGIN_ID}: recall abstained (low confidence) for "${query}"; skipping injection`,
+                `${PLUGIN_ID}: recall abstained (low confidence, query ${query.length} chars); skipping injection`,
               );
             }
             return undefined;

@@ -41,10 +41,18 @@ export const MEMORY_BANNER =
  */
 export function provenanceTag(hit: BrainRecallHit): string {
   const parts: string[] = [];
-  if (hit.ingest_kind) parts.push(`src:${hit.ingest_kind}`);
-  if (hit.memory_kind) parts.push(`mk:${hit.memory_kind}`);
-  if (hit.lawful_basis) parts.push(`lb:${hit.lawful_basis}`);
-  if (hit.region) parts.push(`reg:${hit.region}`);
+  if (hit.ingest_kind) {
+    parts.push(`src:${hit.ingest_kind}`);
+  }
+  if (hit.memory_kind) {
+    parts.push(`mk:${hit.memory_kind}`);
+  }
+  if (hit.lawful_basis) {
+    parts.push(`lb:${hit.lawful_basis}`);
+  }
+  if (hit.region) {
+    parts.push(`reg:${hit.region}`);
+  }
   if (parts.length === 0) {
     return "";
   }
@@ -77,9 +85,15 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
     const body = sanitizeForBlock(hit.content);
     return `${i + 1}.${title}${domain}${score}${conflict}${provenanceTag(hit)} ${body}`;
   });
-  // v1.20.28: the unforgeable fence wraps banner + lines. A hit body cannot
-  // break out (sanitizeForBlock strips literal sentinel occurrences first).
-  return `${UNTRUSTED_BEGIN}\n${MEMORY_BANNER}\n${lines.join("\n")}\n${UNTRUSTED_END}`;
+  // v1.20.28: the unforgeable fence wraps banner + lines. v1.27.21 (S2-01):
+  // per-field sanitization is NOT enough — each field is stripped
+  // independently, so a marker split across the title|body boundary (title
+  // ending "…UNTRUSTED_CONTEXT", body starting "END ===") is never present in
+  // any single field and no per-field strip sees it. The sentinel strip must
+  // run on the COMPOSED inner text, at the assembly point, immediately before
+  // the fence is wrapped around it.
+  const inner = `${MEMORY_BANNER}\n${lines.join("\n")}`;
+  return `${UNTRUSTED_BEGIN}\n${stripSentinels(inner)}\n${UNTRUSTED_END}`;
 }
 
 /**
