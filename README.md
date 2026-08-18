@@ -2,7 +2,7 @@
 
 **A local-first semantic memory and knowledge-graph server for AI agents. No cloud, no per-query cost, no LLM in the loop.**
 
-Brain Server gives your agent a second brain that lives on your own device. It is written in Rust and wraps a deterministic retrieval engine, a static local embedding model, and a knowledge graph behind a versioned HTTP API. Recall never calls an LLM or an embedding API, so every query costs nothing and the data never leaves the machine.
+Brain Server gives your agent a second brain that lives on your own device. It is written in Rust and wraps a deterministic retrieval engine, a static local embedding model (with optional neural tiers), and a knowledge graph behind a versioned HTTP API. Recall never calls an LLM or an embedding API, so every query costs nothing and the data never leaves the machine.
 
 ---
 
@@ -56,7 +56,7 @@ That is the whole pitch: zero per-query cost, zero data egress, zero recall late
 - **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it. Approvals bind to the exact bytes the reviewer saw (`content_digest`, mismatch = rejection), so a decision can never bless content that would render differently (v1.27.12).
 - **Governance and compliance.** An append-only SHA-256 audit chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
 - **Universal Memory Protocol (UMP 1.0).** A full implementation of the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) standard for portable agent memory: signed records, capability tokens, HTTP + MCP + file bindings, conformance level L3. Memory written here can be read by any other UMP agent.
-- **One self-contained binary.** Embedded SQLite and sqlite-vec. Runs anywhere Rust compiles.
+- **One daemon, fully embedded.** The `brain-server` daemon bundles SQLite + sqlite-vec (no external services) and runs anywhere Rust compiles; a `brain` CLI, `mcp`, `bench`, and connector binaries ride the same codebase.
 - **Easy to wire up.** OpenAI-compatible embeddings, an MCP server, a `brain` CLI, a Dioxus GUI, and a native OpenClaw memory plugin.
 
 ## Quick start
@@ -168,18 +168,22 @@ The full list is on the [Configuration docs page](docs/configuration.md).
 
 The complete contract is served at `GET /openapi.yaml` and documented in [`API_CONTRACT.md`](./API_CONTRACT.md). Every response carries `X-Api-Version`.
 
-**Core**
+**Probe, core, and ops**
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/health` · `/health/db` · `/ready` · `/version` · `/stats` | Probe (minimal `{status, version}`), Read-gated detail, readiness, version, stats. |
 | POST | `/recall` | Structured recall, the primary endpoint. |
 | POST | `/ingest` · `/ingest/markdown` · `/ingest/memory` | Ingest structured, markdown, or memory. |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunks by id. |
 | GET | `/graph/entity/{name}` · `/graph/relations` · `/graph/traverse` · `/graph/relationships/{id}/history` | Knowledge-graph queries (bounded walks, hop explanations, edge supersession lineage). |
 | POST | `/verify` | Claim span verification. |
-| POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization and decision rules. |
+| POST | `/classify` · `/decision/{id}/evaluate` · `/procedure` · GET `/procedure/{id}/steps` | Deterministic categorization, decision rules, procedural memory + reversal steps. |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint. |
-| POST | `/reindex` · GET `/metrics` · GET `/events` | Index rebuild, Prometheus metrics, SSE event feed. |
+| POST | `/reindex` · GET `/metrics` · GET `/events` · GET `/openapi.yaml` | Index rebuild, Prometheus metrics, SSE event feed, API contract. |
+| POST | `/webhooks/{kind}` | Signed external webhook ingestion. |
+| POST | `/sources/reconcile` · DELETE `/sources/{id}` | Supervised source reconciliation and source deletion. |
+| GET | `/quarantine` · POST `/quarantine/{id}/release` · `/quarantine/{id}/delete` | Prompt-injection quarantine review surface. |
 
 **Governance and write-back**
 
@@ -187,10 +191,10 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 |---|---|---|
 | POST | `/ingest/proposal` · `/proposals/{id}/approve` · `/reject` · `/proposals/{id}/edit` | Human-in-the-loop write-back; approvals bind to the displayed bytes (`content_digest`, v1.27.12). |
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation. |
-| POST | `/dsar` · GET `/tombstones` | DSAR (with dry-run footprint preview) and the deletion registry. |
+| GET/POST | `/dsar` · GET `/tombstones` | DSAR (with dry-run footprint preview) and the deletion registry. |
 | GET | `/dsar/{id}/certificate` · `/recall/{trace_id}/trace` | DSAR certificates and recall decision traces. |
 | GET | `/audit` · `/audit/verify` | Audit log and chain integrity. |
-| POST | `/suggest` · `/suggest/feedback` | Opt-in anticipation. |
+| POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + feedback and recency metrics. |
 | GET | `/export` · POST `/purge` · DELETE `/memory/{id}` | GDPR export and hard, audited deletion. |
 | GET | `/decayed` · `/retention` · `/art30` · `/retention/report` · `/snapshot/status` | Expiry review, per-kind retention, Art 30 register, snapshot self-check. |
 
@@ -234,7 +238,7 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 | GET | `/ump/capabilities` · `/.well-known/ump.json` | UMP discovery. |
 | POST | `/ump/remember` · `/ump/recall` | Portable memory writes and retrieval. |
 | GET | `/ump/memory/{id}` · POST `/ump/revise` · `/ump/forget` | Record reads, updates, and consent-based deletion. |
-| POST | `/ump/feedback` · GET `/ump/audit` | UMP feedback and audit surface. |
+| POST | `/ump/feedback` · GET `/ump/audit` · `/ump/audit/verify` | UMP feedback and audit surface + chain verification. |
 | GET | `/ump/subscribe` | SSE change feed. |
 
 **Auth and discovery (JWT mode)**
@@ -254,7 +258,7 @@ brain ingest-dir ./vault      # ingest a vault
 brain check-consistency       # duplicates, conflicts, stale sources
 brain resolve <new> <old>     # supersede a fact
 brain suggest "<context>"     # opt-in anticipation
-brain backup <out-path> --passphrase-file PATH  # AES-256-GCM encrypted backup (passphrase required; DB taken from BRAIN_DB_PATH/default)
+brain backup <out-path> --passphrase-file PATH  # Argon2id + AES-256-GCM encrypted backup (--format v1|v2|v3, v3 default; passphrase required)
 brain token rotate                          # atomically rotate the bearer token (new 0600 file, old token invalidated on restart)
 ```
 
@@ -267,7 +271,7 @@ brain token rotate                          # atomically rotate the bearer token
 - **Untrusted-evidence boundary.** Every result serializes `untrusted: true` (OWASP LLM01:2025), and recalled context carries per-hit provenance tags (ingest kind, memory kind, lawful basis, region) inside the untrusted-data fence so the model can attribute what it recalls (v1.27.12).
 - **Audited approval integrity.** `/proposals` returns the read-canonical review form plus a stable `content_digest`; approvals with a stale digest are rejected (`409`) — the reviewer's decision binds to the bytes shown.
 - **Rotatable bearer tokens.** `brain token rotate` atomically replaces the auth token; the server refuses to run with group/world-readable secret files (fail-closed).
-- **Encrypted backup.** AES-256-GCM, checksummed, and excludes secrets.
+- **Encrypted backup.** Argon2id KDF + AES-256-GCM (format v3), checksummed, and excludes secrets.
 
 See [`SECURITY.md`](./SECURITY.md) and the [Security docs page](docs/security.md).
 
@@ -277,7 +281,7 @@ Rust · Axum · rusqlite (WAL) · r2d2 · tokio · model2vec (`minishlab/potion-
 
 | | |
 |---|---|
-| **Model** | `minishlab/potion-retrieval-32M` (512-dim, static) |
+| **Model** | Default `minishlab/potion-retrieval-32M` (512-dim, static); neural tiers via `MODEL_PROFILE=enterprise` (BGE-M3, 1024-d) or `MODEL_PROFILE=desktop` (gte-base-en-v1.5, 768-d) |
 | **Latency** | sub-50ms p99 recall |
 | **License** | MIT |
 
