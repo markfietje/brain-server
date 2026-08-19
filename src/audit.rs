@@ -212,8 +212,17 @@ pub fn record_tenant(
         )
     };
     // If the open fails, fall through with autocommit semantics so the audit
-    // row still lands (best-effort contract).
-    let sp_ok = conn.execute(begin_stmt, []).is_ok();
+    // row still lands (best-effort contract). S3-09 (pass-3 audit): the
+    // downgrade is never silent — the BEGIN failure means the tip-read +
+    // INSERT below run unserialized (the chain-fork window), so it bumps the
+    // same `/health` counter the settle-failure path uses.
+    let sp_ok = match conn.execute(begin_stmt, []) {
+        Ok(_) => true,
+        Err(e) => {
+            record_commit_failure(&e);
+            false
+        }
+    };
     // Read the chain tip (the most recent row). Inside the tx this is stable
     // against concurrent writers — and the INSERT below commits/rolls back
     // atomically with it.

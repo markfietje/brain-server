@@ -242,7 +242,12 @@ impl RateLimiter {
             entry.push(now);
             true
         } else {
-            true
+            // S2-50 (pass-3 audit): fail CLOSED on a poisoned lock — the same
+            // posture Drawbridge (v1.27.16 M3) applied to the token/role
+            // stores. A poisoned limiter mutex means a panic raced the hot
+            // path; letting everything through would silently disable the
+            // only request-bound this side of authN.
+            false
         }
     }
 }
@@ -826,17 +831,20 @@ async fn add_chunk(
             // target. The `embeddings` table is retained read-only for one-time
             // backfill of pre-v0.9.0 DBs (see run_migration).
 
-            if let Err(e) = tx.commit() {
-                return AddResponse::error(format!("Commit failed: {}", e));
+            // under Quarantine policy, flag the row IN-TX, BEFORE the
+            // commit (S3-06, pass-3 audit): the flag write is part of the
+            // ingest, so a failure rolls the whole chunk back — the
+            // `/ingest/memory` posture. Previously the flag ran post-commit:
+            // a failed flag write left the injection chunk durably stored
+            // `flagged = 0` and retrievable while the caller was told it
+            // failed. `flag_if_quarantined`'s "never stored clean" doc is
+            // now true on this path too.
+            if let Err(e) = flag_if_quarantined(&tx, chunk_id, quarantine) {
+                return AddResponse::error(format!("quarantine flag failed: {e}"));
             }
 
-            // under Quarantine policy, flag the just-inserted row
-            // (post-commit UPDATE) so it is stored but excluded from retrieval.
-            // fail closed — a requested flag write
-            // that failed surfaces as an ingest error rather than silently
-            // leaving an injection hit cleanly retrievable.
-            if let Err(e) = flag_if_quarantined(&conn, chunk_id, quarantine) {
-                return AddResponse::error(format!("quarantine flag failed: {e}"));
+            if let Err(e) = tx.commit() {
+                return AddResponse::error(format!("Commit failed: {}", e));
             }
 
             // audit successful ingest (hash only, never raw text).
@@ -2229,7 +2237,10 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
         "youarenow",
         "youarean",
         "systemprompt",
-        "developer mode",
+        // S2-44 (pass-3 audit): stored WITHOUT the space — the normalizer
+        // strips all whitespace before matching (see `normalized` above), so
+        // the old "developer mode" entry could never match anything.
+        "developermode",
         "revealprompt",
         "revealyourinstructions",
         "jailbreak",
@@ -3701,10 +3712,14 @@ async fn get_edge_history(
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // AuthZ: Admin-level read (the supersession lineage is operator evidence).
+    // S3-02 (pass-3 audit): the gate was `Action::Read` while every doc
+    // surface (CHANGELOG §1.27.22, openapi.yaml, docs/api.md, this comment)
+    // claims Admin — the retired PII-bearing labels this surface returns are
+    // operator evidence, not a regular read. Code now matches the docs.
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
         &principal.0,
-        crate::auth::Action::Read,
+        crate::auth::Action::Admin,
         "",
         domain.as_deref().unwrap_or("global"),
     )
@@ -3773,15 +3788,21 @@ async fn get_edge_history(
         }
         let current_count = versions.iter().filter(|v| v["current"] == true).count();
         // Audit the read (the retrieval of retired, PII-bearing labels is
-        // evidence). Best-effort: a failed audit must not fail the response.
-        let _ = crate::audit::record(
+        // evidence). Best-effort for the response, never silent for the
+        // operator: a dropped evidence row logs loudly (the D-1 posture —
+        // this surface's own comment says the audit IS the guarantee).
+        if crate::audit::record(
             &conn,
             crate::audit::AuditKind::GraphRead,
             &actor,
             &id.to_string(),
             crate::audit::AuditStatus::Ok,
             &format!("lineage:{from_id}:->:{to_id}:={kind} current={current_count}"),
-        );
+        )
+        .is_none()
+        {
+            tracing::warn!("edge-history audit record dropped (id {id}) — evidence gap");
+        }
         Ok(serde_json::json!({
             "relation_id": versions[0]["relation_id"],
             "from_entity": versions[0]["from_entity"],
@@ -4308,7 +4329,12 @@ async fn rate_limit_middleware(
         req.headers()
             .get("x-forwarded-for")
             .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.split(',').next())
+            // S2-39 (pass-3 audit): take the RIGHTMOST entry — the one the
+            // trusted proxy APPENDED. The leftmost is client-controlled (an
+            // attacker pre-seeds `X-Forwarded-For: 1.2.3.4` and the appending
+            // proxy preserves it), so leftmost-trust allowed bucket evasion
+            // and targeted cross-victim 429s under `BRAIN_TRUST_PROXY=1`.
+            .and_then(|s| s.split(',').next_back())
             .map(|s| s.trim().to_string())
     } else {
         None
@@ -4410,7 +4436,7 @@ async fn jwt_auth_middleware(
         Some(r) if !r.is_empty() => r,
         _ => {
             // No token presented. Audit + 401.
-            audit_auth_failure(&s.db_path, path, "missing_token");
+            audit_auth_failure(&s.db_path, path, "missing_token").await;
             return unauthorized_response("missing_token");
         }
     };
@@ -4464,7 +4490,7 @@ async fn jwt_auth_middleware(
     let result = match result {
         Ok(inner) => inner,
         Err(_) => {
-            audit_auth_failure(&s.db_path, &path_owned, "internal");
+            audit_auth_failure(&s.db_path, &path_owned, "internal").await;
             return unauthorized_response("internal");
         }
     };
@@ -4482,7 +4508,7 @@ async fn jwt_auth_middleware(
             if capability_pass_through(&mut req, &raw_for_fallback, &path_owned) {
                 return next.run(req).await;
             }
-            audit_auth_failure(&s.db_path, &path_owned, &code);
+            audit_auth_failure(&s.db_path, &path_owned, &code).await;
             unauthorized_response(&code)
         }
     }
@@ -4524,17 +4550,27 @@ fn capability_accepted(raw: &str, path: &str, pk: &[u8; 32]) -> bool {
 /// Write an audit row for a failed JWT verification. Best-effort (opens a
 /// fresh connection — failures are rare, the cost is negligible). Records the
 /// path + failure code; never the token.
-fn audit_auth_failure(db_path: &std::path::Path, path: &str, code: &str) {
-    if let Ok(conn) = rusqlite::Connection::open(db_path) {
-        audit::record(
-            &conn,
-            audit::AuditKind::Auth,
-            "api",
-            path,
-            audit::AuditStatus::Denied,
-            code,
-        );
-    }
+/// S3-03 (pass-3 audit): the deny-path audit write runs on
+/// `spawn_blocking` — it opens a fresh connection + INSERT, which must never
+/// block the async runtime thread. Rate of these is bounded by the rate
+/// limiter, which sits OUTSIDE authN (see build_app layer order).
+async fn audit_auth_failure(db_path: &std::path::Path, path: &str, code: &str) {
+    let db_path = db_path.to_path_buf();
+    let path = path.to_string();
+    let code = code.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(conn) = rusqlite::Connection::open(db_path) {
+            audit::record(
+                &conn,
+                audit::AuditKind::Auth,
+                "api",
+                &path,
+                audit::AuditStatus::Denied,
+                &code,
+            );
+        }
+    })
+    .await;
 }
 
 fn unauthorized_response(code: &str) -> Response {
@@ -4646,19 +4682,25 @@ async fn auth_middleware(
         next.run(req).await
     } else {
         // audit denied auth attempts at the trust boundary. The
-        // middleware has no pool, so open a fresh read-only-ish connection
-        // (denials are rare, so the cost is negligible and best-effort — audit
-        // must never fail the action). Pass the request path, never the token.
-        if let Ok(conn) = rusqlite::Connection::open(config::brain_db_path()) {
-            audit::record(
-                &conn,
-                audit::AuditKind::Auth,
-                "api",
-                req.uri().path(),
-                audit::AuditStatus::Denied,
-                "unauthorized",
-            );
-        }
+        // middleware has no pool, so open a fresh connection on
+        // `spawn_blocking` (S3-03: never block the async runtime thread on a
+        // sync DB write; the outer rate limiter bounds how often this runs).
+        // Best-effort — audit must never fail the action. Pass the request
+        // path, never the token.
+        let path_owned = path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = rusqlite::Connection::open(config::brain_db_path()) {
+                audit::record(
+                    &conn,
+                    audit::AuditKind::Auth,
+                    "api",
+                    &path_owned,
+                    audit::AuditStatus::Denied,
+                    "unauthorized",
+                );
+            }
+        })
+        .await;
         (
             axum::http::StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "unauthorized", "code": "unauthorized" })),
@@ -4904,8 +4946,10 @@ async fn main_inner() -> Result<()> {
             info!("Pre-migration backup: VACUUM INTO {:?}", backup_path);
             match pool.get() {
                 Ok(conn) => {
-                    let sql = format!("VACUUM INTO '{}'", backup_path.display());
-                    match conn.execute_batch(&sql) {
+                    // S3-11: through the shared quote-escaping primitive —
+                    // a `'` in the operator's data dir would break out of the
+                    // raw literal.
+                    match brain_server::backup::vacuum_into(&conn, &backup_path) {
                         Ok(_) => {
                             // Touch the marker so we never re-backup.
                             let _ = std::fs::write(&marker, b"v0.9.0 backup complete");
@@ -5001,8 +5045,9 @@ async fn main_inner() -> Result<()> {
             );
             match pool.get() {
                 Ok(conn) => {
-                    let sql = format!("VACUUM INTO '{}'", global_path.display());
-                    match conn.execute_batch(&sql) {
+                    // S3-11: escaped primitive (see the pre-migration backup
+                    // above).
+                    match brain_server::backup::vacuum_into(&conn, &global_path) {
                         Ok(_) => {
                             let _ = std::fs::write(&marker, b"v1.0 legacy cutover complete");
                             info!("v1.0 legacy cutover complete");
@@ -5589,20 +5634,28 @@ async fn main_inner() -> Result<()> {
         .layer(cors)
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(middleware::from_fn_with_state(
-            rate_limiter.clone(),
-            rate_limit_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
             token_store.clone(),
             auth_middleware,
         ))
-        // JWT verification. Outermost auth layer — runs before
-        // `auth_middleware`. In opaque mode (default) it's a no-op pass-through.
+        // JWT verification. Runs before `auth_middleware`.
+        // In opaque mode (default) it's a no-op pass-through.
         // In JWT mode it verifies the JWS, checks revocation, and injects a
         // Principal into extensions (which `auth_middleware` then sees + passes).
         .layer(middleware::from_fn_with_state(
             jwt_middleware_state.clone(),
             jwt_auth_middleware,
+        ))
+        // Rate limiting — OUTERMOST of the security stack (S3-03, pass-3
+        // audit). Previously it sat *inside* both auth layers, so an
+        // unauthenticated flood was 401-rejected before ever consuming a
+        // bucket: the limiter never bounded the very traffic shape it exists
+        // for, and every free 401 performed a synchronous audit write (fresh
+        // Connection::open + INSERT) — an unthrottled DB-write-per-request
+        // DoS amplification. Outside authN, a flood trips 429 before any
+        // token work or audit write happens.
+        .layer(middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            rate_limit_middleware,
         ))
         // Response headers
         .layer(SetResponseHeaderLayer::overriding(
@@ -11863,14 +11916,18 @@ Final paragraph after the rule.";
             ("/graph/entity/{name}", "Read"),
             ("/graph/relations", "Read"),
             ("/graph/traverse", "Read"),
-            ("/graph/relationships/{id}/history", "Read"),
+            ("/graph/relationships/{id}/history", "Admin"),
             ("/recall", "Read"),
             ("/ingest", "Write"),
             ("/memory/{id}", "Admin"),
             ("/domains", "Read"),
             ("/domains/{name}", "Admin"),
             ("/domains/{name}/vacuum", "Admin"),
-            ("/domains/{name}/export", "Read"),
+            // shim mode resolves any name to the ONE shared pool — the
+            // exported bytes are the whole multi-tenant DB, so the gate is
+            // Admin there (Read only in multi-db, where the file IS the
+            // domain; S2-08).
+            ("/domains/{name}/export", "Admin"),
             ("/domains/{name}/import", "Admin"),
             ("/domains/move", "Admin"),
             ("/domains/recompute", "Admin"),
@@ -12702,6 +12759,98 @@ Final paragraph after the rule.";
             1,
             "the alpha label still scopes the pool query"
         );
+    }
+
+    /// S2-09 (pass-3 audit): /verify binds the header domain label in SQL
+    /// (the /get idiom) — a foreign-domain chunk id must read as not-found,
+    /// never as a cross-domain content-confirmation oracle.
+    #[tokio::test]
+    async fn verify_cannot_cross_domain() {
+        use axum::extract::State as AxState;
+        use axum::Json as AxumJson;
+        use handlers::verify::{verify, VerifyRequest};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha renewal terms");
+        let beta_id = seed_chunk(&state, "beta", None, None, "beta renewal terms");
+
+        // Foreign-domain id → probe-blind 404 (not 200-with-ranges).
+        let err = verify(
+            AxState(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            domain_headers("alpha"),
+            AxumJson(VerifyRequest {
+                chunk_id: beta_id,
+                claim: "renewal".to_string(),
+            }),
+        )
+        .await
+        .expect_err("a foreign-domain id must not verify");
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::NOT_FOUND,
+            "foreign id reads as not-found (probe-blind): {:?}",
+            err.inner.message
+        );
+
+        // Own-domain id → served (the claim matches alpha content).
+        let ok = verify(
+            AxState(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            domain_headers("alpha"),
+            AxumJson(VerifyRequest {
+                chunk_id: alpha_id,
+                claim: "renewal".to_string(),
+            }),
+        )
+        .await
+        .expect("own-domain id verifies");
+        assert!(ok.0.supported, "alpha claim must match alpha content");
+    }
+
+    /// S2-10 (pass-3 audit): `GET /ump/memory/{id}` binds the header domain
+    /// label + the record gate — the UMP surface (MCP `ump.get`-reachable)
+    /// must not render foreign-domain rows by bare id.
+    #[tokio::test]
+    async fn ump_get_memory_cannot_cross_domain() {
+        use axum::extract::{Path as AxPath, State as AxState};
+        use handlers::auth::OptCapability;
+        use handlers::ump_ops::get_memory;
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha shared note");
+        let beta_id = seed_chunk(&state, "beta", None, None, "beta shared note");
+
+        // Foreign-domain id → probe-blind 404.
+        let err = get_memory(
+            AxState(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            OptCapability(None),
+            domain_headers("alpha"),
+            AxPath(beta_id.to_string()),
+        )
+        .await
+        .expect_err("a foreign-domain id must not render");
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::NOT_FOUND,
+            "foreign id reads as not-found (probe-blind): {:?}",
+            err.inner.message
+        );
+
+        // Own-domain id → served.
+        let ok = get_memory(
+            AxState(state.clone()),
+            handlers::auth::OptPrincipal(Some(alpha_principal("ana"))),
+            OptCapability(None),
+            domain_headers("alpha"),
+            AxPath(alpha_id.to_string()),
+        )
+        .await
+        .expect("own-domain id renders");
+        assert!(ok.0["record"].is_object(), "record must render");
     }
 
     /// F-04 + M3.2: the record gate runs on /get too — an `agent` role can
@@ -14822,6 +14971,29 @@ Final paragraph after the rule.";
                 resp.status(),
                 axum::http::StatusCode::PAYLOAD_TOO_LARGE,
                 "the 1 MiB global cap still applies to every other route"
+            );
+        }
+
+        /// S3-03 (pass-3 audit): the rate limiter must be OUTSIDE both auth
+        /// layers. Axum semantics: the LAST `.layer()` call in the builder
+        /// chain is the outermost, so the `rate_limit_middleware` registration
+        /// must appear textually AFTER the `jwt_auth_middleware` one in
+        /// `build_app`. Before the fix the limiter sat inside authN — an
+        /// unauthenticated flood was 401-rejected before ever consuming a
+        /// bucket, and every free 401 did a synchronous audit write.
+        #[test]
+        fn rate_limit_layer_is_outside_auth_layers() {
+            let src = include_str!("main.rs");
+            let jwt = src
+                .find("jwt_auth_middleware,\n        ))")
+                .expect("jwt layer registration not found");
+            let rl = src
+                .find("rate_limit_middleware,\n        ))")
+                .expect("rate-limit layer registration not found");
+            assert!(
+                rl > jwt,
+                "rate_limit_middleware must be registered AFTER (outside) jwt_auth_middleware; \
+                 found rate-limit at {rl}, jwt at {jwt}"
             );
         }
     }

@@ -51,6 +51,10 @@ pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
 }
 
 // Re-export the principal types used across handler boundaries.
+// Truthful allows: `auth` is a bin-private module (compiled into the server
+// binary only), so these `pub use` re-exports are crate-internal convenience
+// and the bin does not consume every name (e.g. `ALLOWED_ALGS` is used by the
+// jwt module itself + tests). Deleting the allows breaks `-D warnings`.
 #[allow(unused_imports)]
 pub use jwt::{AuthError, Claims, TokenType, VerifyingKey, ALLOWED_ALGS};
 #[allow(unused_imports)]
