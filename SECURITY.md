@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-08-08 against OWASP Top 10:**2025** + Cheat Sheet Series
+**Last reviewed:** 2026-08-19 against OWASP Top 10:**2025** + Cheat Sheet Series (pass-3 audit refresh: egress inventory truthful; graph-PPR recall leg scoped like the other legs)
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
@@ -532,10 +532,15 @@ the posture itself.
   approval required. The v1.20.1 approval gate **is** that approval for the
   memory-write action; the remaining `[A,B,C]` surfaces (exec/read) are the
   documented G3 envelope stance (`docs/MEMGHOST_MITIGATION.md`).
-- **Egress posture.** Exactly one outbound HTTP path exists — the opt-in Art 19
-  DSAR webhook, HMAC-SHA256-signed (v1.15). Treat that one URI as the network
-  boundary allowlist (the ZT4AI "action boundary" at the network layer). No
-  other egress by default.
+- **Egress posture.** Outbound HTTP is enumerated, opt-in, and bounded (no
+  floating defaults): (1) the Art 19 DSAR + alert webhook sinks,
+  HMAC-SHA256-signed (v1.15; 5 s connect / 15 s total, redirects refused);
+  (2) the Hugging Face model fetch for the feature-gated neural embed tiers
+  (`--features neural-embed`, enterprise/desktop only — the default edge
+  static model never fetches); (3) the feature-gated GitHub connector binary
+  (host-pinned to the GitHub API). Treat the configured webhook URIs as the
+  network boundary allowlist (the ZT4AI "action boundary" at the network
+  layer).
 
 **Continuous verification** (never-trust-always-verify): every write re-checks
 the screen (deterministic blocklist + optional classifier) and the approval

@@ -19,11 +19,36 @@ servers:
 paths:
   /health:
     get:
-      summary: Liveness / system health
+      summary: Liveness probe (minimal, public)
+      description: >-
+        The load-balancer probe shape only: {status, version}. Every
+        deployment-fingerprinting field (model, otel, pool, backup, webhook,
+        hardening, compliance) lives behind the Read gate on /health/db
+        (v1.27.23 M2 surface reduction).
       operationId: getHealth
       responses:
         "200":
           description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string }
+  /health/db:
+    get:
+      summary: Detailed deployment health (Read-gated)
+      description: >-
+        The full health body: model id, system memory, pool, backup snapshot,
+        webhook posture, otel, compliance (DPO contact), hardening counters
+        (incl. audit_commit_failures), capacity envelope, audit-chain
+        integrity, plus database_size_bytes and last_write. Requires a Read
+        credential — the public /health carries none of these.
+      operationId: getHealthDb
+      responses:
+        "200":
+          description: Detailed health (Read-gated)
           content:
             application/json:
               schema:
@@ -44,13 +69,33 @@ paths:
                       connections: { type: integer }
                       idle_connections: { type: integer }
                       busy_connections: { type: integer }
-                  # v0.9.9 "Qualify": capacity envelope status. Present when the
-                  # pool had a connection to measure against; omitted (not null)
-                  # when the pool was momentarily exhausted. `status` is one of
-                  # ok|warning|exceeded. Writes are rejected with HTTP 507 when
-                  # exceeded; reads always return 200.
+                  backup: { type: object, description: Last backup+integrity snapshot state }
+                  webhook:
+                    type: object
+                    properties:
+                      replay_secs: { type: integer }
+                      timestamp_required: { type: boolean }
+                      scheme: { type: string, example: standard-webhooks }
+                  otel:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      endpoint: { type: string }
+                  compliance:
+                    type: object
+                    properties:
+                      dpo_contact: { type: string, nullable: true }
+                  hardening:
+                    type: object
+                    properties:
+                      unsafe_blocks: { type: integer, example: 1 }
+                      panics_caught: { type: integer, example: 0 }
+                      memory_leaks_detected: { type: integer, example: 0 }
+                      audit_commit_failures: { type: integer, example: 0 }
+                      injection_classifier_loaded: { type: boolean }
                   capacity:
                     type: object
+                    description: Present when the pool had a connection to measure; omitted otherwise.
                     properties:
                       target: { type: string, example: jetson }
                       docs: { type: integer }
@@ -60,49 +105,14 @@ paths:
                       rss_mib: { type: integer }
                       max_rss_mib: { type: integer }
                       status: { type: string, example: ok }
-                  # v1.3.0 "Bedrock" M7: memory-safety posture. `unsafe_blocks`
-                  # is the audited count (each carries a SAFETY comment);
-                  # `panics_caught` increments when CatchPanicLayer catches a
-                  # handler panic; `memory_leaks_detected` is reserved for a
-                  # future LSAN integration (always 0 today).
-                  hardening:
-                    type: object
-                    properties:
-                      unsafe_blocks: { type: integer, example: 2 }
-                      panics_caught: { type: integer, example: 0 }
-                      memory_leaks_detected: { type: integer, example: 0 }
-                  # v1.20.10 "Proof": cached audit-chain integrity posture from
-                  # the integrity watcher. `chain_ok` reflects the watcher's last
-                  # full `/audit/verify` scan (default 60s cadence); `chain_head`
-                  # pins the state to a verifiable hash. Never content/PII.
                   integrity:
                     type: object
                     properties:
-                      chain_ok: { type: boolean, example: true }
-                      last_checked_at: { type: integer, example: 1755100000 }
-                      chain_head: { type: string, example: abc123 }
-  /health/db:
-    get:
-      summary: Database health
-      operationId: getHealthDb
-      responses:
-        "200":
-          description: Database health
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status: { type: string }
+                      chain_ok: { type: boolean }
+                      last_checked_at: { type: integer }
+                      chain_head: { type: string }
                   database_size_bytes: { type: integer }
-                  database_size_mb: { type: number }
                   last_write: { type: string, nullable: true }
-                  connection_pool:
-                    type: object
-                    properties:
-                      active: { type: integer }
-                      idle: { type: integer }
-                      max: { type: integer }
   /ready:
     get:
       summary: Readiness probe
@@ -3011,9 +3021,13 @@ paths:
       summary: Stream a consistent snapshot of the domain's .db file
       operationId: exportDomain
       description: >
-        Uses SQLite `VACUUM INTO` for a consistent snapshot — safe under
-        concurrent writes. Returns `application/octet-stream` with a
-        `Content-Disposition: attachment` header.
+        Uses SQLite `VACUUM INTO` (quote-escaped path) for a consistent
+        snapshot — safe under concurrent writes. Returns
+        `application/octet-stream` with a `Content-Disposition: attachment`
+        header. Authorization is layout-dependent (S2-08): Read on the named
+        domain in multi-db mode (the file IS the domain); Admin in shim mode,
+        where the snapshot resolves to the ONE shared pool and therefore
+        contains every tenant's data.
       parameters:
         - name: name
           in: path

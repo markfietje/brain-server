@@ -19,6 +19,129 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.25] — 2026-08-19
+
+Server + plugin release (server `Cargo.toml`/lock `1.27.24` → **`1.27.25`**;
+plugin `0.4.5` behavior fix, no version bump to the published package — the
+`graph` flag change is wire-compatible). **"Scoped"** — the pass-3 audit
+remediation: the graph-PPR recall leg gets the same tenant/owner/scope
+boundary as the other legs BEFORE it ships default-on, and the surviving
+unscoped shim-mode reads get the `/get/{id}` treatment. No schema, no
+migration, no telemetry.
+
+### Release notes
+
+**Security fixes**
+
+- **The graph-PPR third recall leg is now scoped like the vector and FTS
+  legs.** It applies the domain label, `access_scope`, owner, memory-kind and
+  retention predicates via the same shared SQL builder (`push_gate_filters`),
+  and carries `k.pii` into the hit so the read seam redacts graph hits
+  exactly like the other legs. Before this, the leg (unreleased default-on)
+  ignored every filter and hardcoded `pii: false` — a cross-domain,
+  cross-owner, unredacted side door on `/recall`, `/search`, and
+  `/ump/recall` in shim mode (pass-3 S3-01, CRITICAL). Pinned by
+  `graph_leg_scopes_domain_and_owner_s3_01` +
+  `graph_leg_empty_permit_and_pii_carry_s3_01` (two-domain shared-entity
+  fixture — the exact collision shape of the finding).
+- **`/verify` binds the `X-Brain-Domain` label in SQL + the record gate**
+  (the `/get/{id}` idiom): a foreign-domain chunk id now reads as not-found
+  instead of answering "supported" as a cross-domain content-confirmation
+  oracle (S2-09). Pinned by `verify_cannot_cross_domain`.
+- **`GET /ump/memory/{id}` binds the domain label + record gate** — the
+  MCP-reachable (`ump.get`) surface no longer renders any row by bare id
+  under a global read grant (S2-10). Pinned by `ump_get_memory_cannot_cross_domain`.
+- **`GET /procedure/{id}/steps` binds the domain label + record gate** (S2-30).
+- **`GET /domains/{name}/export` requires Admin in shim mode** — the snapshot
+  resolves to the ONE shared pool there (every tenant\'s chunks, owners, the
+  audit chain), which a per-name Read grant must never cover. Multi-db keeps
+  Read (the file IS the domain). The `VACUUM INTO` path now goes through the
+  shared quote-escaping primitive (S2-08/S2-24).
+- **The rate limiter moved OUTSIDE the auth layers.** An unauthenticated
+  flood is now 429-throttled before any token work — previously it
+  401-rejected before ever consuming a bucket, and each free 401 performed a
+  synchronous audit write on a fresh connection (unthrottled
+  DB-write-per-request amplification). The deny-path audit writes now run on
+  `spawn_blocking` (S3-03). Pinned by `rate_limit_layer_is_outside_auth_layers`.
+- **`GET /graph/relationships/{id}/history` gates on `Action::Admin`**,
+  matching what every doc surface (CHANGELOG §1.27.22, openapi.yaml,
+  docs/api.md, its own doc comments) already claimed — the retired
+  PII-bearing entity labels it returns are operator evidence. The read-audit
+  failure is no longer silent (S3-02).
+- **`/add` writes the quarantine flag IN-TX, before the commit** — a failed
+  flag write now rolls the whole chunk back (the `/ingest/memory` posture)
+  instead of leaving the injection chunk durably stored `flagged = 0` while
+  telling the caller it failed (S3-06).
+- **`/suggest` applies the v1.14 scope filter + v1.23 role gate** like
+  `/recall` — an owner-restricted role no longer sees other owners\' private
+  rows as suggestions (S2-29).
+- Smaller hardening: `X-Forwarded-For` trusts the RIGHTMOST entry under
+  `BRAIN_TRUST_PROXY=1` (leftmost is client-spoofable; S2-39); the rate
+  limiter fails CLOSED on a poisoned lock (S2-50); the dead
+  `"developer mode"` blocklist entry now matches (whitespace is stripped
+  pre-match; S2-44); the audit-chain BEGIN-failure path bumps
+  `audit_commit_failures` (it was silent; S3-09); the two boot-time
+  `VACUUM INTO` literals go through the escaped primitive (S3-11).
+
+**Bug fixes**
+
+- **Plugin: `autoRecallGraph: false` disables the graph leg again.** The
+  flag previously OMITTED the `graph` param when false, so the server\'s
+  default-on change silently enabled the leg for every plugin user. The
+  flag is now always sent explicitly; the plugin\'s documented default stays
+  opt-in.
+
+**Improvements**
+
+- `openapi.yaml` `/health` + `/health/db` schemas now match the shipped
+  shapes (the public probe is `{status, version}`; the detailed body is
+  Read-gated on `/health/db`) — the contract previously documented the full
+  fingerprint body on the public route. `SECURITY.md` egress inventory is
+  truthful (three enumerated, bounded, opt-in/gated paths — not "exactly
+  one").
+
+### Engineering record
+
+**M1 (S3-01, the headline):** `graph_retrieve(conn, query, k,
+&SearchFilters)` — the chunk fetch composes `k.domain = ?` +
+`push_gate_filters` (access_scope / owner / memory_kind / retention) with the
+flagged clause, and the SELECT now carries `k.pii` into `SearchResult`
+(previously `SearchResult::raw` hardcoded `pii: false` and the recall read
+seam keyed redaction on that flag — graph hits were structurally
+unredactable). One call site (`perform_search_traced` passes `&gfilters`);
+UMP recall rides `run_recall` → the same path. PPR mass still flows through
+shared entities in shim mode (ranking influence only — no content exposure;
+the entity-name oracle remains the documented S2-41 ceiling).
+
+**M2:** the `/get/{id}` idiom (label in SQL + row-domain re-auth +
+`record_read_gate`) applied to `/verify`, `/ump/memory/{id}`,
+`/procedure/{id}/steps`; `record_read_gate`/`role_retrieval_gate` resolved
+once per request outside the blocking closures (the role gate opens a pool
+connection — calling it inside a closure that holds one can deadlock a
+size-1 pool).
+
+**M3:** layer reorder + `spawn_blocking` deny-audit + source-inspection pin
+(`rate_limit_layer_is_outside_auth_layers`, the F-44 layer-order
+meta-test pattern — axum: the LAST `.layer()` is outermost, so the pin
+asserts the registration order in `build_app`).
+
+Tests: server bin **694** / 6 ignored (+5), lib **133** / 1, brain 18, mcp
+19, bench 5, eval 2, metrics 8; clippy `-D warnings` + fmt clean; release
+build clean. Plugin: no vitest runner in this environment (no node_modules
+— read-only repo); the one-line `graph: c.autoRecallGraph` change is
+type-checked against `RecallOptions.graph?: boolean`.
+
+Honest ceilings: the graph leg\'s PPR mass still crosses domains through
+shared entity names in shim mode (ranking signal only — every emitted hit is
+scoped); `/search`\'s `sources` filter does not constrain the graph leg
+(ingest-kind filtering stays a vector/FTS capability); the audit chain
+remains unkeyed/5-of-8-fields (F-03 — deferred to the audit-repair
+milestone with S2-16/S2-35); restore-path legal holds remain deferred
+(S2-28); `main.rs` grew (~+230 lines — three of the four pass-3 findings
+lived in it).
+
+---
+
 ## [1.27.24] — 2026-08-18
 
 Server-only release (server `Cargo.toml`/lock `1.27.23` → **`1.27.24`**; client +

@@ -25,7 +25,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | GET | `/search` | Semantic search *(deprecated; use `/recall`)* |
 | GET | `/get/{id}` · POST `/multi-get` | Fetch chunk(s) by id |
 | GET | `/recall/{trace_id}/trace` | Recall-trace replay (decision-path evidence) |
-| POST | `/verify` | Span verification — is a claim supported by a chunk's text? |
+| POST | `/verify` | Span verification — is a claim supported by a chunk's text? Binds the `X-Brain-Domain` label in SQL (an id cannot cross domains in shim mode) + the record gate. |
 | POST | `/reindex` | Rebuild indexes |
 | GET | `/metrics` | Prometheus metrics (auth-gated) |
 | GET | `/events` | SSE broadcast of memory events |
@@ -81,7 +81,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + false-positive metric |
 | POST | `/verify` | Claim span verification |
 | POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization / decision rules |
-| POST | `/procedure` · GET `/procedure/{id}/steps` | Ordered procedures |
+| POST | `/procedure` · GET `/procedure/{id}/steps` | Ordered procedures (steps bind the `X-Brain-Domain` label + record gate) |
 
 ---
 
@@ -122,7 +122,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | GET | `/domains` | List known domains (single global pool when multi-db is off) |
 | DELETE | `/domains/{name}?confirm=<name>` | Delete a domain + all its data (echo-confirm guard, `global` protected) |
 | POST | `/domains/{name}/vacuum` | `VACUUM` one domain pool (returns `{name, vacuumed: true}`) |
-| GET | `/domains/{name}/export` | Consistent SQLite snapshot download (`VACUUM INTO`, `attachment; filename="brain-<name>.db"`) |
+| GET | `/domains/{name}/export` | Consistent SQLite snapshot download (`VACUUM INTO`, `attachment; filename="brain-<name>.db"`) — Read in multi-db; **Admin in shim mode** (the snapshot is the whole shared pool there) |
 | POST | `/domains/{name}/import` | Restore a snapshot into a NEW domain (raw bytes body; 201 `{name, imported: true, bytes}`) |
 | POST | `/domains/recompute` | One-shot centroid recompute sweep over every domain (`{recomputed: [[domain, n], …]}`) |
 | POST | `/domains/move` | Move chunks to another domain |
