@@ -295,20 +295,63 @@ pub async fn get_memory(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
     cap: OptCapability,
+    headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, HandlerError> {
-    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // S2-10 (pass-3 audit): the read gate binds the header-resolved domain
+    // label (the /get/{id} idiom) — previously a bare global-read gate +
+    // id lookup, so any principal with a global read grant rendered any
+    // row by id on this MCP-reachable surface (`ump.get`).
+    let domain = crate::handlers::domain_from_headers(&headers);
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )?;
     super::cap_gate(&cap.0, "read")?;
+    let label = domain
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("global")
+        .to_string();
+    let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_principal = principal.0.clone();
     let owner = principal_to_owner(&principal.0);
     let signer = ump::operator_signing_key();
     let pk: Option<[u8; 32]> = signer.as_ref().map(|(_, sk)| sk.verifying_key().to_bytes());
     let id_arg = id.clone();
-    let pool = state.pool.clone();
+    // the /get/{id} pool resolution: multi-db resolves the header domain's own
+    // pool (rows there carry the same label); shim keeps the shared pool where
+    // the label predicate does the scoping.
+    let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
+        .unwrap_or(state.pool.clone());
     let record = tokio::task::spawn_blocking(move || -> Result<Option<Value>, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         let rid = resolve_row_id(&conn, &id_arg)?;
+        // S2-10: belt-and-braces — the row's OWN domain must match the
+        // header label AND the principal must pass the row-domain re-auth +
+        // record gate (probe-blind miss on denial, the /get posture).
+        let row_meta: Option<(String, Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT domain, owner, access_scope FROM knowledge WHERE id = ?1",
+                rusqlite::params![rid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        match row_meta {
+            Some((row_domain, row_owner, row_scope)) => {
+                if row_domain != label
+                    || !crate::handlers::can_read_domain(&gate_principal, &row_domain)
+                    || !record_gate.admits(&row_owner, &row_scope)
+                {
+                    return Ok(None);
+                }
+            }
+            None => return Ok(None),
+        }
         let Some(row) =
             load_knowledge_row(&conn, rid).map_err(|e| HandlerError::internal(e.to_string()))?
         else {

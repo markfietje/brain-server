@@ -333,10 +333,27 @@ pub struct ProcedureStepsResponse {
 pub async fn steps(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
+    headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Json<ProcedureStepsResponse>, HandlerError> {
-    // AuthZ read gate. `None` (no JWT) = superuser.
-    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // AuthZ read gate, scoped to the header domain. `None` (no JWT) = superuser.
+    // S2-30 (pass-3 audit): the label binds into the SQL below (same /get/{id}
+    // idiom) so an id cannot cross domains in shim mode — previously this was
+    // a global-read gate + bare-id read leaking any procedure's full chain.
+    let domain = crate::handlers::domain_from_headers(&headers);
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )?;
+    let label = domain
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("global")
+        .to_string();
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_principal = principal.0.clone();
     let pool = state.pool.clone();
     let procedure_id = id;
     let view =
@@ -346,29 +363,49 @@ pub async fn steps(
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
             // Root must exist + be a procedure.
             let root: Option<(Option<String>, String)> = conn
-            .query_row(
-                "SELECT title, content FROM knowledge WHERE id = ?1 AND node_kind = 'procedure'",
-                rusqlite::params![procedure_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok();
+                .query_row(
+                    "SELECT title, content FROM knowledge \
+                     WHERE id = ?1 AND node_kind = 'procedure' AND domain = ?2",
+                    rusqlite::params![procedure_id, label],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
             let Some((title, content)) = root else {
                 return Err(HandlerError::not_found(format!(
                     "no procedure with id {procedure_id}"
                 )));
             };
-            // Ordered steps via the next_step edges.
+            // belt-and-braces (the /get idiom): re-authorize on the row's own
+            // domain + the record gate before any content leaves.
+            let row_meta: Option<(String, Option<String>, Option<String>)> = conn
+                .query_row(
+                    "SELECT domain, owner, access_scope FROM knowledge WHERE id = ?1",
+                    rusqlite::params![procedure_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .ok();
+            if let Some((row_domain, row_owner, row_scope)) = row_meta {
+                if !crate::handlers::can_read_domain(&gate_principal, &row_domain)
+                    || !record_gate.admits(&row_owner, &row_scope)
+                {
+                    return Err(HandlerError::not_found(format!(
+                        "no procedure with id {procedure_id}"
+                    )));
+                }
+            }
+            // Ordered steps via the next_step edges (same domain label —
+            // steps live with their procedure).
             let mut stmt = conn
                 .prepare(
-                    "SELECT k.id, k.title, k.content, k.node_kind, el.step_index
-                 FROM evidence_links el
-                 JOIN knowledge k ON k.id = el.to_chunk
-                 WHERE el.from_chunk = ?1 AND el.kind = 'next_step'
-                 ORDER BY el.step_index ASC",
+                    "SELECT k.id, k.title, k.content, k.node_kind, el.step_index \
+                     FROM evidence_links el \
+                     JOIN knowledge k ON k.id = el.to_chunk \
+                     WHERE el.from_chunk = ?1 AND el.kind = 'next_step' AND k.domain = ?2 \
+                     ORDER BY el.step_index ASC",
                 )
                 .map_err(|e| HandlerError::internal(format!("prepare failed: {e}")))?;
             let rows = stmt
-                .query_map(rusqlite::params![procedure_id], |r| {
+                .query_map(rusqlite::params![procedure_id, label], |r| {
                     Ok(StepView {
                         id: r.get(0)?,
                         title: r.get(1)?,

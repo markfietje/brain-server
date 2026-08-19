@@ -83,6 +83,19 @@ pub async fn verify(
     // resolve pool from X-Brain-Domain header (same path as /get/{id}).
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
+    // S2-09 (pass-3 audit): the read scope is the header-resolved domain
+    // label, bound into the SQL exactly like /get/{id} so a chunk id can
+    // never cross domains in shim mode (the pool is shared there). The
+    // composite record gate + row-domain re-auth mirror /get too — /verify
+    // answers "does this claim appear in chunk X", a cross-domain
+    // content-confirmation oracle without them.
+    let label = domain
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("global")
+        .to_string();
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_principal = principal.0.clone();
     let chunk_id = req.chunk_id;
     let claim_for_task = claim.clone();
 
@@ -91,12 +104,30 @@ pub async fn verify(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         let r = conn.query_row(
-            "SELECT content FROM knowledge WHERE id = ?1",
-            rusqlite::params![chunk_id],
-            |row| row.get::<_, String>(0),
+            "SELECT k.content, k.domain, k.owner, k.access_scope FROM knowledge k \
+             WHERE k.id = ?1 AND k.domain = ?2",
+            rusqlite::params![chunk_id, label],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
         );
         match r {
-            Ok(c) => Ok(Some(c)),
+            Ok((content, row_domain, row_owner, row_scope)) => {
+                // belt-and-braces: re-authorize on the row's OWN domain + the
+                // record gate, so a predicate loosening can never turn /verify
+                // into a cross-domain oracle. Miss (not leak) on denial.
+                if !crate::handlers::can_read_domain(&gate_principal, &row_domain)
+                    || !record_gate.admits(&row_owner, &row_scope)
+                {
+                    return Ok(None);
+                }
+                Ok(Some(content))
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(HandlerError::internal(format!("query failed: {e}"))),
         }
