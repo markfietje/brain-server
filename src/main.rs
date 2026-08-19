@@ -429,8 +429,10 @@ struct SearchParams {
     #[serde(default)]
     domain: Option<String>,
     /// enable the graph-PPR retriever as a third RRF leg.
-    /// Opt-in; default `false` keeps the two-retriever path unchanged.
-    #[serde(default)]
+    /// Default `true` (the connected multi-hop recall). Callers may pass
+    /// `graph=false` per-request; the kill switch is
+    /// `BRAIN_RECALL_GRAPH_ENABLED=false`.
+    #[serde(default = "crate::config::brain_recall_graph_enabled")]
     graph: bool,
 }
 

@@ -13,7 +13,7 @@ Recall is **hybrid**: two retrieval legs run concurrently and are merged.
         │
         ├────▶ Lexical leg (FTS5 / BM25)
         │
-        └────▶ Graph leg (Personalized PageRank, opt-in ?graph=true)
+         └────▶ Graph leg (Personalized PageRank, default-on; disable with graph=false / BRAIN_RECALL_GRAPH_ENABLED=false)
                      │
                      ▼
             Reciprocal Rank Fusion (RRF, k=60)
@@ -40,9 +40,9 @@ score(result) = Σ over each leg of  1 / (k + rank_in_that_leg)   where k = 60
 
 This is deterministic and needs no learned weights. A result ranked #1 in both legs gets the highest fused score.
 
-### 4. Optional graph leg (v1.11+)
+### 4. Graph leg (default-on, v1.11+)
 
-With `?graph=true`, a third leg runs **Personalized PageRank** over the knowledge graph — the deterministic version of the HippoRAG-2 retrieval approach. It seeds from entities matched to the query and spreads probability mass over connected entities, then expands to the chunks those entities touch. It's fused into the same RRF merge. In v1.12, this leg is noise-aware: taxonomy edges (`tagged_with`) weigh 0.1 and mega-hubs are dampened, so real semantic connections win.
+The graph leg runs **Personalized PageRank** over the knowledge graph by default — the deterministic version of the HippoRAG-2 retrieval approach. It seeds from entities matched to the query and spreads probability mass over connected entities, then expands to the chunks those entities touch. It's fused into the same RRF merge as a third leg (vector + FTS + graph), so connected knowledge surfaces without opting in — a single multi-hop walk links related domains (e.g. VMware↔VxRail↔vSAN↔storage↔fabric). Callers may pass `graph=false` per-request; the process-wide kill switch is `BRAIN_RECALL_GRAPH_ENABLED=false`. In v1.12, this leg is noise-aware: taxonomy edges (`tagged_with`) weigh 0.1 and mega-hubs are dampened, so real semantic connections win.
 
 ### 5. PRF query expansion
 

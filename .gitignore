@@ -72,5 +72,12 @@ marketing/
 /book/
 docs/DOC_ACCURACY_AUDIT_PROMPT.md
 
+# Customer-domain assets moved to the PRIVATE repo markfietje/brain-dell-bpo
+# (case-classification plan, Dell ISG taxonomy, spine builder + outputs).
+# Ignore defensively so accidental regeneration/mirroring never lands here:
+/spine/
+/scripts/build_spine.py
+/scripts/seed_spine.sh
+
 # v1.20.30: local model cache for the fastembed neural tiers (bge-m3, gte-base, bge-reranker) — machine-local, never commit
 .fastembed_cache/

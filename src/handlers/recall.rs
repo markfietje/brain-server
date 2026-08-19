@@ -124,9 +124,12 @@ pub struct RecallRequest {
     #[serde(default)]
     pub gold_answer: Option<String>,
     /// enable the graph-PPR retriever as a third RRF leg.
-    /// Opt-in; default `false` keeps the two-retriever (vector + FTS) path
-    /// unchanged. Deterministic, zero-token, no embeddings.
-    #[serde(default)]
+    /// Default `true` (the connected, best-possible recall — a single
+    /// multi-hop walk links VMware↔VxRail↔vSAN↔storage↔fabric). Callers may
+    /// still pass `graph:false` per-request; the process-wide kill switch is
+    /// `BRAIN_RECALL_GRAPH_ENABLED=false` (see `config::brain_recall_graph_enabled`).
+    /// Deterministic, zero-token, no embeddings.
+    #[serde(default = "default_graph")]
     pub graph: bool,
     /// include decayed chunks (`expires_at` in the past) in
     /// the results, tagged `decayed: true`. Default false — decayed facts are
@@ -152,6 +155,13 @@ pub struct RecallRequest {
 
 fn default_limit() -> u32 {
     DEFAULT_RECALL_LIMIT
+}
+
+/// The graph-PPR third leg's default. Reads the kill switch (default on); a
+/// caller that omits `graph` gets the connected multi-hop recall unless an
+/// operator set `BRAIN_RECALL_GRAPH_ENABLED=false`.
+fn default_graph() -> bool {
+    crate::config::brain_recall_graph_enabled()
 }
 
 /// the shared recall core's return — the tagged (result, domain)

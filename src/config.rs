@@ -544,6 +544,23 @@ pub fn brain_graph_rescue_enabled() -> bool {
     )
 }
 
+/// whether the graph-PPR retriever is a DEFAULT recall leg (the "olderData"
+/// cross-topic hop that links e.g. VMware↔VxRail↔vSAN↔storage↔fabric in one
+/// multi-hop walk). Defaults to `true` — the third PPR leg ships on so callers
+/// get the connected, best-possible recall without opting in. Set
+/// `BRAIN_RECALL_GRAPH_ENABLED=false` to restore the exact two-retriever
+/// (vector + FTS) default. Same kill-switch pattern as
+/// [`brain_graph_rescue_enabled`]/[`brain_recall_routing_enabled`].
+pub fn brain_recall_graph_enabled() -> bool {
+    !matches!(
+        std::env::var("BRAIN_RECALL_GRAPH_ENABLED")
+            .map(|v| v.trim().to_lowercase())
+            .unwrap_or_default()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
 /// whether automatic retrieval routing is live. Defaults to
 /// `true` (the fix ships on); set `BRAIN_RECALL_ROUTING_ENABLED=false` to
 /// restore the exact pre-v1.15.0 shim behavior (recall searches the `global`

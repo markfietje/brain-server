@@ -455,7 +455,7 @@ pub async fn recall(
         at: filter.valid_at,
         max_context_tokens: None,
         gold_answer: None,
-        graph: false,
+        graph: crate::config::brain_recall_graph_enabled(),
         include_decayed: false,
         memory_kind: filter_kind.map(String::from),
         min_relevance: None,

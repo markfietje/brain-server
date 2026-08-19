@@ -71,7 +71,7 @@ even though default reads hide it.
 
 ## The graph as a retrieval leg (v1.11+)
 
-The graph isn't just queryable directly — it also powers a retrieval leg. With `?graph=true` on `/recall`, Brain Server runs **Personalized PageRank** over the graph (HippoRAG-2 style) to retrieve chunks connected to the query's entities. In v1.12 this leg became **noise-aware**: taxonomy edges (`tagged_with`, `alias_of`) weigh 0.1 vs. 1.0 for semantic types, and mega-hubs are dampened, so the real semantic paths surface instead of tag clouds.
+The graph isn't just queryable directly — it also powers a retrieval leg. On `/recall`, `/search`, and `/ump/recall`, Brain Server runs **Personalized PageRank** over the graph (HippoRAG-2 style) as a **third fusion leg (vector + FTS + graph) by default** — so connected knowledge surfaces without opting in. A single multi-hop walk links related domains (e.g. VMware↔VxRail↔vSAN↔storage↔fabric), which is how an engineer in one related skill gets the connected context to resolve a related-skill case. Callers may still pass `graph=false` per-request; the process-wide kill switch is `BRAIN_RECALL_GRAPH_ENABLED=false`. In v1.12 this leg became **noise-aware**: taxonomy edges (`tagged_with`, `alias_of`) weigh 0.1 vs. 1.0 for semantic types, and mega-hubs are dampened, so the real semantic paths surface instead of tag clouds.
 
 ## Self-correction (v1.6)
 
