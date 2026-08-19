@@ -115,7 +115,7 @@ scripts/install-service.sh
 | **Media kit** | [`docs/media-kit.md`](./docs/media-kit.md): positioning, one-liners, and a Brain-vs-Mem0/LangGraph/RAG sizing table with honest ceilings. |
 | **Trust / proof map** | [`docs/trust/proof-map.md`](./docs/trust/proof-map.md) + [`docs/trust/reproduce.md`](./docs/trust/reproduce.md): every security/compliance claim mapped to its shipped release and live `curl`/`brain` proof. |
 | **Roadmap** | [`ROADMAP.md`](./ROADMAP.md). |
-| **StuardOS** | Brain Server is the shipped core (**StuardMem**) of the [StuardOS](https://github.com/markfietje/stuardos) family (private): AI coding / business / support / finance factories on one governed-memory spine — the implementation plans live in that repo's [`plans/`](../stuardos/plans/). |
+| **StuardOS** | Brain Server is the shipped core (**StuardMem**) of the [StuardOS](https://github.com/markfietje/stuardos) family (private): AI coding / business / support / finance factories on one governed-memory spine — the implementation plans live in that repo's [`plans/`](https://github.com/markfietje/stuardos/tree/master/plans). |
 
 ## MCP & agent-harness integration
 
