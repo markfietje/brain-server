@@ -1894,8 +1894,9 @@ pub fn perform_search_traced(
                 Some(scope.spawn(move || -> (Vec<SearchResult>, f32) {
                     let t_g = Instant::now();
                     let res = match gpool.get() {
-                        Ok(conn) => graph_retrieve(&conn, &gq, overfetch, gfilters.include_flagged)
-                            .unwrap_or_default(),
+                        Ok(conn) => {
+                            graph_retrieve(&conn, &gq, overfetch, &gfilters).unwrap_or_default()
+                        }
                         Err(_) => Vec::new(),
                     };
                     (res, t_g.elapsed().as_secs_f32() * 1000.0)

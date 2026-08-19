@@ -42,7 +42,7 @@ This is deterministic and needs no learned weights. A result ranked #1 in both l
 
 ### 4. Graph leg (default-on, v1.11+)
 
-The graph leg runs **Personalized PageRank** over the knowledge graph by default — the deterministic version of the HippoRAG-2 retrieval approach. It seeds from entities matched to the query and spreads probability mass over connected entities, then expands to the chunks those entities touch. It's fused into the same RRF merge as a third leg (vector + FTS + graph), so connected knowledge surfaces without opting in — a single multi-hop walk links related domains (e.g. VMware↔VxRail↔vSAN↔storage↔fabric). Callers may pass `graph=false` per-request; the process-wide kill switch is `BRAIN_RECALL_GRAPH_ENABLED=false`. In v1.12, this leg is noise-aware: taxonomy edges (`tagged_with`) weigh 0.1 and mega-hubs are dampened, so real semantic connections win.
+The graph leg runs **Personalized PageRank** over the knowledge graph by default — the deterministic version of the HippoRAG-2 retrieval approach. It seeds from entities matched to the query and spreads probability mass over connected entities, then expands to the chunks those entities touch. It's fused into the same RRF merge as a third leg (vector + FTS + graph), so connected knowledge surfaces without opting in — a single multi-hop walk links related domains (e.g. VMware↔VxRail↔vSAN↔storage↔fabric). Callers may pass `graph=false` per-request; the process-wide kill switch is `BRAIN_RECALL_GRAPH_ENABLED=false`. The leg applies the same tenant/owner/scope predicates as the vector and FTS legs (domain label, access_scope, owner, PII flag carried on the hit), so enabling it never widens what a principal can read. In v1.12, this leg is noise-aware: taxonomy edges (`tagged_with`) weigh 0.1 and mega-hubs are dampened, so real semantic connections win.
 
 ### 5. PRF query expansion
 
@@ -90,6 +90,6 @@ Chunks can carry `expires_at` (strict decay, default-excludes) and `min_relevanc
 
 ## Next steps
 
-- **[Knowledge Graph](./knowledge-graph.md)** — the graph layer that powers the optional leg.
+- **[Knowledge Graph](./knowledge-graph.md)** — the graph layer that powers the third recall leg (default-on).
 - **[Architecture](./architecture.md)** — where retrieval sits in the whole system.
 - **[API Reference](./api.md)** — the exact request/response contract.

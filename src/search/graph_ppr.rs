@@ -311,11 +311,20 @@ fn expand_to_chunks(
 /// links to no entity (no graph signal — the caller falls back to the other
 /// RRF legs). Never panics, never unbounded: adjacency is capped at
 /// [`MAX_VISITED`] vertices, PPR at [`MAX_PPR_ITER`] iterations.
+///
+/// S3-01 (pass-3 audit): the graph leg is a first-class retriever and applies
+/// the SAME tenant/owner/scope boundary as the vector and FTS legs — `domain`
+/// as a SQL predicate on the chunk fetch (shim mode shares one pool across
+/// domain labels) and the shared `push_gate_filters` set (access_scope,
+/// owner, memory_kind, retention) so the legs cannot drift. The chunk fetch
+/// also carries `k.pii` into the hit so the read seam (`results_to_hits`)
+/// redacts graph hits exactly like the other legs — previously `pii:false`
+/// was hardcoded and graph hits were never redacted.
 pub fn graph_retrieve(
     conn: &Connection,
     query: &str,
     k: usize,
-    include_flagged: bool,
+    filters: &crate::search::SearchFilters,
 ) -> Result<Vec<crate::search::SearchResult>> {
     // 1. Load the entity vocabulary (name → id) for query→seed linking.
     let mut stmt = conn.prepare_cached("SELECT id, name FROM entities")?;
@@ -372,7 +381,10 @@ pub fn graph_retrieve(
     let mut chunks = expand_to_chunks(conn, &graph, &pi, top_n)?;
 
     // 6. Fetch chunk rows, apply the same visibility rules as the other
-    //    retrievers (flagged quarantine + superseded exclusion).
+    //    retrievers (flagged quarantine + superseded exclusion) AND the same
+    //    tenant/owner/scope predicates (S3-01): domain label in shim mode,
+    //    then the shared gate-filter set. Without this the third RRF leg was
+    //    an unscoped side door around every narrowing the other legs apply.
     if chunks.is_empty() {
         return Ok(Vec::new());
     }
@@ -380,24 +392,42 @@ pub fn graph_retrieve(
     let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(",");
-    let mut flag_clause = "k.flagged = 0";
-    if include_flagged {
-        flag_clause = "1";
-    }
-    let sql = format!(
-        "SELECT k.id, k.title, k.content \
+    let flag_clause = if filters.include_flagged {
+        "1"
+    } else {
+        "k.flagged = 0"
+    };
+    let mut sql = format!(
+        "SELECT k.id, k.title, k.content, k.pii \
          FROM knowledge k \
          WHERE k.id IN ({placeholders}) \
            AND k.valid_to IS NULL \
            AND {flag_clause}"
     );
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = ids
+        .iter()
+        .map(|&id| Box::new(id) as Box<dyn rusqlite::ToSql>)
+        .collect();
+    if let Some(domain) = &filters.domain {
+        sql.push_str(" AND k.domain = ?");
+        params_vec.push(Box::new(domain.clone()));
+    }
+    super::push_gate_filters(&mut sql, &mut params_vec, filters);
     let mut stmt = conn.prepare_cached(&sql)?;
-    let mut loaded: HashMap<i64, (Option<String>, String)> = HashMap::new();
-    for row in stmt.query_map(rusqlite::params_from_iter(ids.iter()), |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    })? {
-        let (id, title, content): (i64, Option<String>, String) = row?;
-        loaded.insert(id, (title, content));
+    let mut loaded: HashMap<i64, (Option<String>, String, bool)> = HashMap::new();
+    for row in stmt.query_map(
+        rusqlite::params_from_iter(params_vec.iter().map(|b| b.as_ref())),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        },
+    )? {
+        let (id, title, content, pii): (i64, Option<String>, String, bool) = row?;
+        loaded.insert(id, (title, content, pii));
     }
     chunks.retain(|(id, _)| loaded.contains_key(id));
 
@@ -406,9 +436,10 @@ pub fn graph_retrieve(
     let results = chunks
         .into_iter()
         .filter_map(|(id, score)| {
-            let (title, content) = loaded.get(&id)?;
+            let (title, content, pii) = loaded.get(&id)?;
             let mut r =
                 crate::search::SearchResult::raw(id, score as f32, title.clone(), content.clone());
+            r.pii = *pii;
             r.source = Some(crate::search::SearchSource::Graph);
             Some(r)
         })
@@ -608,7 +639,9 @@ mod tests {
                  title TEXT,
                  content TEXT NOT NULL,
                  valid_to TEXT,
-                 flagged INTEGER NOT NULL DEFAULT 0
+                 flagged INTEGER NOT NULL DEFAULT 0,
+                 expires_at TEXT,
+                 pii INTEGER NOT NULL DEFAULT 0
              );",
         )
         .unwrap();
@@ -664,7 +697,7 @@ mod tests {
             .unwrap();
         }
 
-        let res = graph_retrieve(&conn, "which alpha thing", 8, false).unwrap();
+        let res = graph_retrieve(&conn, "which alpha thing", 8, &Default::default()).unwrap();
         assert_eq!(res[0].id, 101, "seed-backed chunk must win");
         let pos = |id: i64| res.iter().position(|r| r.id == id).unwrap();
         assert!(
@@ -693,7 +726,9 @@ mod tests {
                  title TEXT,
                  content TEXT NOT NULL,
                  valid_to TEXT,
-                 flagged INTEGER NOT NULL DEFAULT 0
+                 flagged INTEGER NOT NULL DEFAULT 0,
+                 expires_at TEXT,
+                 pii INTEGER NOT NULL DEFAULT 0
              );",
         )
         .unwrap();
@@ -720,7 +755,7 @@ mod tests {
             [],
         )
         .unwrap();
-        let res = graph_retrieve(&conn, "seed signal", 8, false).unwrap();
+        let res = graph_retrieve(&conn, "seed signal", 8, &Default::default()).unwrap();
         // The retired edge seeded no adjacency, so `dead` never reaches a chunk
         // — chunk 100 is reachable only via the live edge (the retired edge's
         // knowledge_id is not aggregated). 100 still appears (live edge).
@@ -730,5 +765,171 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 2);
+    }
+
+    /// S3-01 (pass-3 audit): the graph-PPR leg must apply the same tenant /
+    /// owner / scope boundary as the vector and FTS legs. Fixture is a shim-mode
+    /// shape — ONE pool, two domain labels — where entity names are shared
+    /// across domains (entities are a flat, unscoped table). Before the fix,
+    /// `graph_retrieve` ignored every filter and a scoped query pulled the
+    /// other tenant's chunks through the shared entity graph.
+    #[test]
+    fn graph_leg_scopes_domain_and_owner_s3_01() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE relationships (
+                 from_entity_id INTEGER NOT NULL,
+                 to_entity_id INTEGER NOT NULL,
+                 relation_type TEXT NOT NULL,
+                 knowledge_id INTEGER,
+                 superseded_at TIMESTAMP
+             );
+             CREATE TABLE knowledge (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT,
+                 content TEXT NOT NULL,
+                 valid_to TEXT,
+                 flagged INTEGER NOT NULL DEFAULT 0,
+                 expires_at TEXT,
+                 domain TEXT,
+                 owner TEXT,
+                 access_scope TEXT,
+                 pii INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .unwrap();
+        for (id, name) in [(1, "acme"), (2, "renewal")] {
+            conn.execute(
+                "INSERT INTO entities (id, name) VALUES (?1, ?2)",
+                rusqlite::params![id, name],
+            )
+            .unwrap();
+        }
+        // Chunk 10: alpha/alice. Chunk 11: BETA/bob — the cross-tenant row.
+        // Chunk 12: alpha/bob — same tenant, other owner (private).
+        for (id, domain, owner, scope, text) in [
+            (10, "alpha", "alice", "team", "alpha renewal note"),
+            (11, "beta", "bob", "team", "beta renewal secret"),
+            (12, "alpha", "bob", "private", "alpha bob private note"),
+        ] {
+            conn.execute(
+                "INSERT INTO knowledge (id, title, content, domain, owner, access_scope)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, text, text, domain, owner, scope],
+            )
+            .unwrap();
+        }
+        // All three chunks back edges on the shared entity pair, so an
+        // unscoped expansion reaches every one of them.
+        for (from, to, kind, kid) in [
+            (1, 2, "relates_to", 10),
+            (1, 2, "mentions", 11),
+            (2, 1, "references", 12),
+        ] {
+            conn.execute(
+                "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, knowledge_id, superseded_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL)",
+                rusqlite::params![from, to, kind, kid],
+            )
+            .unwrap();
+        }
+
+        let base = crate::search::SearchFilters::default();
+
+        // (1) Domain-scoped: the beta chunk must NOT surface under an alpha
+        // query — this is the exact S3-01 cross-tenant leak.
+        let alpha = crate::search::SearchFilters {
+            domain: Some("alpha".to_string()),
+            ..base.clone()
+        };
+        let res = graph_retrieve(&conn, "acme renewal", 8, &alpha).unwrap();
+        let ids: Vec<i64> = res.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&10), "own-domain hit must surface");
+        assert!(
+            !ids.contains(&11),
+            "cross-domain chunk leaked via graph leg"
+        );
+
+        // (2) Owner-scoped on top: bob's rows drop for an alice-only permit.
+        let alice_only = crate::search::SearchFilters {
+            domain: Some("alpha".to_string()),
+            owner_in: Some(std::sync::Arc::new(vec!["alice".to_string()])),
+            ..base.clone()
+        };
+        let res = graph_retrieve(&conn, "acme renewal", 8, &alice_only).unwrap();
+        let ids: Vec<i64> = res.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![10], "owner filter must narrow the graph leg");
+
+        // (3) Scoping cuts both ways: a beta query sees only the beta chunk.
+        let beta = crate::search::SearchFilters {
+            domain: Some("beta".to_string()),
+            ..base
+        };
+        let res = graph_retrieve(&conn, "acme renewal", 8, &beta).unwrap();
+        let ids: Vec<i64> = res.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![11]);
+    }
+
+    /// S3-01 companion: the graph leg honors the fail-closed empty permit
+    /// (`access_scopes = Some([])` matches nothing, never `IN ()`) and carries
+    /// `k.pii` into the hit so the read seam redacts graph hits like the
+    /// other legs (previously hardcoded `pii: false`).
+    #[test]
+    fn graph_leg_empty_permit_and_pii_carry_s3_01() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE relationships (
+                 from_entity_id INTEGER NOT NULL,
+                 to_entity_id INTEGER NOT NULL,
+                 relation_type TEXT NOT NULL,
+                 knowledge_id INTEGER,
+                 superseded_at TIMESTAMP
+             );
+             CREATE TABLE knowledge (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT,
+                 content TEXT NOT NULL,
+                 valid_to TEXT,
+                 flagged INTEGER NOT NULL DEFAULT 0,
+                 expires_at TEXT,
+                 domain TEXT,
+                 owner TEXT,
+                 access_scope TEXT,
+                 pii INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .unwrap();
+        conn.execute("INSERT INTO entities (id, name) VALUES (1, 'acme')", [])
+            .unwrap();
+        conn.execute("INSERT INTO entities (id, name) VALUES (2, 'other')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (id, title, content, domain, owner, access_scope, pii)
+             VALUES (10, 't', 'acme pii note', 'alpha', 'alice', 'team', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, knowledge_id, superseded_at)
+             VALUES (1, 2, 'relates_to', 10, NULL)",
+            [],
+        )
+        .unwrap();
+
+        // Empty permit → fail closed, zero rows.
+        let empty_permit = crate::search::SearchFilters {
+            access_scopes: Some(std::sync::Arc::new(Vec::new())),
+            ..Default::default()
+        };
+        let res = graph_retrieve(&conn, "acme", 8, &empty_permit).unwrap();
+        assert!(res.is_empty(), "empty permit must match nothing");
+
+        // pii flag rides the hit (drives read-path redaction downstream).
+        let plain = crate::search::SearchFilters::default();
+        let res = graph_retrieve(&conn, "acme", 8, &plain).unwrap();
+        assert_eq!(res.len(), 1);
+        assert!(res[0].pii, "k.pii must carry into the graph hit");
     }
 }
