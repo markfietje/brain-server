@@ -224,8 +224,13 @@ export default definePluginEntry({
               ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
               ...(c.strictDomain ? { strictDomain: true } : {}),
               limit: c.autoRecallTopK,
-              // v0.3.0: optional graph-PPR third leg + token-budgeted packing.
-              ...(c.autoRecallGraph ? { graph: true } : {}),
+              // v0.3.0: optional graph-PPR third leg + token-budgeted
+              // packing. S3-7 (pass-3 audit): ALWAYS send the flag
+              // explicitly — the server default flipped to graph-on
+              // (00a79fe), so omitting it on `false` silently enabled the
+              // leg for every plugin user. The plugin's documented default
+              // stays opt-in (`autoRecallGraph: false`).
+              graph: c.autoRecallGraph,
               ...(c.autoRecallMaxContextTokens !== undefined
                 ? { maxContextTokens: c.autoRecallMaxContextTokens }
                 : {}),

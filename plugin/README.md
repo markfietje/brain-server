@@ -83,7 +83,7 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
   "strictDomain": false, // false = cross-domain fallback on miss
   "autoRecallTopK": 3,
   "autoRecallTimeoutMs": 5000,
-  "autoRecallGraph": false, // add graph-PPR as a third recall leg
+  "autoRecallGraph": false, // opt IN to the graph-PPR third recall leg (sent explicitly: false disables it, whatever the server default)
   "proposalTools": false, // expose proposal review tools to the agent
 }
 ```

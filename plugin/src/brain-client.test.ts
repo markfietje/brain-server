@@ -193,7 +193,7 @@ describe("BrainClient.submitProposal — v1.20.1 M2 review-queue path", () => {
     });
     expect(res).toEqual({ id: 77, status: "pending" });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toMatch(/\/ingest\/proposal$/);
+    expect(url as string).toMatch(/\/ingest\/proposal$/);
     const body = JSON.parse(init?.body as string);
     expect(body.content).toBe("a durable fact");
     expect(body.kind).toBe("fact");

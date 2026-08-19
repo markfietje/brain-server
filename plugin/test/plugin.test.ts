@@ -178,6 +178,36 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
     expect((result as { prependContext: string }).prependContext).toContain("UNTRUSTED");
   });
 
+  test("autoRecallGraph flag is sent EXPLICITLY on /recall (S3-7 pin)", async () => {
+    // The server default flipped to graph-on; omitting the flag on `false`
+    // silently re-enabled the third leg for every plugin user. The param must
+    // now always be present, with the configured value.
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ hits: [] }));
+
+    const off = registerPlugin({ agents: ["main"], autoRecallGraph: false });
+    await getHook(off.hooks, "before_prompt_build")(
+      { prompt: "query one", messages: [{ role: "user", content: "query one please" }] },
+      { agentId: "main" },
+    );
+    let body = JSON.parse(
+      fetchMock.mock.calls.find((c) => (c[0] as string).endsWith("/recall"))![1]?.body as string,
+    );
+    expect(body.graph).toBe(false);
+
+    fetchMock.mockClear();
+    const on = registerPlugin({ agents: ["main"], autoRecallGraph: true });
+    await getHook(on.hooks, "before_prompt_build")(
+      { prompt: "query two", messages: [{ role: "user", content: "query two please" }] },
+      { agentId: "main" },
+    );
+    body = JSON.parse(
+      fetchMock.mock.calls.find((c) => (c[0] as string).endsWith("/recall"))![1]?.body as string,
+    );
+    expect(body.graph).toBe(true);
+  });
+
   test("empty hits => undefined (inject nothing, no banner)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
     const { hooks } = registerPlugin({ agents: ["main"] });
@@ -420,7 +450,7 @@ describe("agent_end — autoCapture to POST /ingest", () => {
     );
     expect(direct.length).toBe(0);
     expect(proposal.length).toBeGreaterThanOrEqual(1);
-    const body = JSON.parse(String(proposal[0]![1]?.body));
+    const body = JSON.parse(proposal[0]![1]?.body as string);
     expect(body.content).toContain("Helix");
     expect(body.source_prompt).toContain("Noted.");
   });
