@@ -160,6 +160,21 @@ pub async fn suggest(
         .filter(|s| !s.is_empty());
     let domain_label = domain.clone();
     let k_for_task = k;
+    // S2-29 (pass-3 audit): resolve the record-level gates ONCE, before the
+    // blocking closure — /suggest returns full chunk content, so the v1.14
+    // scope filter + v1.23 role gate apply exactly like /recall. Previously
+    // `..Default::default()` dropped them and an owner-restricted role saw
+    // other owners' private rows as suggestions /recall itself would gate.
+    // (Outside the closure: role_retrieval_gate opens a pool connection, so
+    // it must not run while the closure holds one.)
+    let mut gate_filters = crate::SearchFilters {
+        access_scopes: crate::handlers::gate::scope_filter(&principal.0).map(std::sync::Arc::new),
+        owner_in: None,
+        ..Default::default()
+    };
+    if let Some(gate) = crate::handlers::gate::role_retrieval_gate(&principal.0, &state.pool) {
+        crate::handlers::gate::apply_role_gate(&mut gate_filters, &gate);
+    }
 
     let suggestions =
         tokio::task::spawn_blocking(move || -> Result<Vec<SuggestionHit>, HandlerError> {
@@ -175,6 +190,8 @@ pub async fn suggest(
                 .min(config::MAX_K as u32) as usize;
             let filters = crate::SearchFilters {
                 domain: domain_label.clone(),
+                access_scopes: gate_filters.access_scopes.clone(),
+                owner_in: gate_filters.owner_in.clone(),
                 ..Default::default()
             };
             // vec0_knn honors the v1.6.0 `valid_to IS NULL` default (current facts
