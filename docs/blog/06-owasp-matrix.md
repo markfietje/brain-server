@@ -61,5 +61,5 @@ matrix where every row is a shipped feature or a named ceiling — and a proof m
 that verifies the claims live. The document that's honest about its limits is
 the one that wins the review.
 
-*See [`OWASP_AGENTIC_2026.md`](../../docs/OWASP_AGENTIC_2026.md) and the
+*See [`OWASP_AGENTIC_2026.md`](../OWASP_AGENTIC_2026.md) and the
 [proof map](../trust/proof-map.md).*

@@ -62,6 +62,8 @@
 - [Hybrid Fusion: RRF over BM25 + quantized vectors](./research/08-hybrid-fusion.md)
 - [Opt-in Anticipation (the Suggest surface)](./research/09-anticipation.md)
 - [Structure-Aware Markdown Chunking](./research/10-chunking.md)
+- [Centroid Domain Auto-Routing](./research/11-domain-routing.md)
+- [Deterministic Consolidation](./research/12-consolidation.md)
 - [Dioxus WASM-split research](dioxus-wasm-split-research.md)
 
 # Trust & verification
