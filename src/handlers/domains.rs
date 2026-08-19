@@ -452,8 +452,19 @@ pub async fn export_domain(
 ) -> Result<Response, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-    // read gate (streams a full DB snapshot). `None` (no JWT) = superuser.
-    super::authorize(&principal.0, crate::auth::Action::Read, "", &name)?;
+    // S2-08 (pass-3 audit): the gate depends on the storage layout. In
+    // multi-db mode the pool IS the named domain's file, so a Read grant on
+    // that domain legitimately covers the snapshot. In SHIM mode
+    // `pool_for(name)` resolves to the ONE shared pool — the exported bytes
+    // are the whole multi-tenant DB (every tenant's chunks, owners, the audit
+    // chain), so a per-name Read grant must never cover it: require Admin.
+    // `None` (no JWT) = superuser.
+    let action = if state.registry.is_multi_db() {
+        crate::auth::Action::Read
+    } else {
+        crate::auth::Action::Admin
+    };
+    super::authorize(&principal.0, action, "", &name)?;
     let pool = state
         .registry
         .pool_for(&name)
@@ -474,7 +485,9 @@ pub async fn export_domain(
             ));
             // VACUUM INTO writes a consistent snapshot to `temp` without holding
             // a write lock on the source. Safe under concurrent writes.
-            conn.execute_batch(&format!("VACUUM INTO '{}';", temp.display()))
+            // S2-24: through the shared quote-escaping primitive — the raw
+            // `format!` literal here could break out on a `'` in TMPDIR.
+            brain_server::backup::vacuum_into(&conn, &temp)
                 .map_err(|e| HandlerError::internal(format!("VACUUM INTO failed: {e}")))?;
             let bytes = std::fs::read(&temp)
                 .map_err(|e| HandlerError::internal(format!("read export: {e}")))?;
