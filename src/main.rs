@@ -242,8 +242,8 @@ impl RateLimiter {
             entry.push(now);
             true
         } else {
-            // S2-50 (pass-3 audit): fail CLOSED on a poisoned lock — the same
-            // posture Drawbridge (v1.27.16 M3) applied to the token/role
+            // Fail CLOSED on a poisoned lock — the same
+            // posture applied to the token/role
             // stores. A poisoned limiter mutex means a panic raced the hot
             // path; letting everything through would silently disable the
             // only request-bound this side of authN.
@@ -327,13 +327,13 @@ pub fn spawn_rss_watchdog() {
 }
 
 struct AppState {
-    // v1.28 "Caliber" M2: the embedding model behind the `Embedder` trait so the
+    // The embedding model behind the `Embedder` trait so the
     // active profile (edge-default potion / enterprise bge-m3 / …) is selected
     // at boot by `embed::embedder_for_profile`, not compiled in. Recall/ingest
     // sites call `model.encode_one(&t)` and are profile-agnostic.
     model: Arc<dyn brain_server::embed::Embedder>,
     pool: Pool,
-    /// Per-domain DB registry (P2). In shim mode (BRAIN_MULTI_DB off) every
+    /// Per-domain DB registry. In shim mode (BRAIN_MULTI_DB off) every
     /// domain resolves to `pool`; the domain-aware write/search paths use this.
     registry: domain_registry::DomainRegistry,
     #[allow(dead_code)]
@@ -411,7 +411,7 @@ struct SearchParams {
     /// Structured query: free-form intent label (recorded for provenance).
     #[serde(default)]
     intent: Option<String>,
-    /// Retrieval profile hint (passthrough in M1).
+    /// Retrieval profile hint (passthrough).
     #[serde(default)]
     profile: Option<String>,
     /// When set, include per-stage telemetry + the query plan in the response.
@@ -623,7 +623,7 @@ pub enum AppError {
     NotFound(&'static str),
     /// HTTP 507 — over capacity envelope.
     InsufficientStorage(String),
-    /// HTTP 403 — AuthZ gate (audit G1). The legacy
+    /// HTTP 403 — AuthZ gate. The legacy
     /// main.rs write handlers use `AppError`, so the JWT AuthZ gate needs a
     /// 403 channel here (the modern `HandlerError` paths already have one).
     Forbidden(String),
@@ -740,7 +740,7 @@ async fn add_chunk(
         )));
     }
 
-    // injection screen. v1.20.3 (G5): now the full two-layer
+    // injection screen. Now the full two-layer
     // screen ([`screen::screen`] = blocklist + optional classifier). `Reject`
     // keeps the old HTTP-400 shape; `Quarantine` ingests then flags post-insert;
     // `Allow` disables the screen. The screen runs inside the blocking closure
@@ -829,10 +829,10 @@ async fn add_chunk(
             // raw f32 vectors are no longer written to the legacy
             // `embeddings` JSON column. vec0 (int8 + binary) is the sole write
             // target. The `embeddings` table is retained read-only for one-time
-            // backfill of pre-v0.9.0 DBs (see run_migration).
+            // backfill of DBs created before the vec0 store existed (see run_migration).
 
             // under Quarantine policy, flag the row IN-TX, BEFORE the
-            // commit (S3-06, pass-3 audit): the flag write is part of the
+            // commit: the flag write is part of the
             // ingest, so a failure rolls the whole chunk back — the
             // `/ingest/memory` posture. Previously the flag ran post-commit:
             // a failed flag write left the injection chunk durably stored
@@ -935,7 +935,7 @@ async fn search(
         }
     };
 
-    // Lower the legacy GET params into the v0.9.5 structured QueryDoc. The old
+    // Lower the legacy GET params into the structured QueryDoc. The old
     // raw `lex` string maps to LexSpec.terms (now FTS5-quoted, strictly safer).
     // The domain label the authorize already validated must also SCOPE the
     // query: in shim mode the pool is shared by every tenant, so without the
@@ -1024,7 +1024,7 @@ async fn search(
         axum::http::StatusCode::OK,
         match timeout(StdDuration::from_secs(8), search_future).await {
             Ok(Ok(Ok((mut results, tel, snippet_q)))) => {
-                // M2.1: enrich each hit with span + source link + highlights via one
+                // Enrich each hit with span + source link + highlights via one
                 // batched join (best-effort; enrichment failure must not fail search).
                 if let Ok(conn) = s.pool.get() {
                     let _ = crate::search::SearchResult::enrich_evidence(
@@ -1084,7 +1084,7 @@ async fn search(
                 }
 
                 if p.explain {
-                    // M2.4 redaction: explain never serializes full `content` beyond
+                    // Redaction: explain never serializes full `content` beyond
                     // the bounded `evidence.text`/`snippet` windows, so the payload
                     // cannot leak unrelated source text. Drop `content` per result.
                     let mut redacted: Vec<serde_json::Value> = results
@@ -1171,7 +1171,7 @@ async fn ingest_memory(
     }
     let content = match to_bytes(body, MAX_REQUEST_SIZE).await {
         Ok(b) => match String::from_utf8(b.to_vec()) {
-            // F-45: invalid UTF-8 no longer collapses to "Empty content" —
+            // Invalid UTF-8 no longer collapses to "Empty content" —
             // it is rejected up front.
             Ok(utf8) => utf8,
             Err(_) => {
@@ -1186,7 +1186,7 @@ async fn ingest_memory(
                 );
             }
         },
-        // F-45: an over-cap body (the request alone exceeds MAX_REQUEST_SIZE)
+        // An over-cap body (the request alone exceeds MAX_REQUEST_SIZE)
         // is a size rejection, not "empty content".
         Err(_) => {
             return (
@@ -1229,12 +1229,12 @@ async fn ingest_memory(
     }
 
     let ingest_future = task::spawn_blocking(move || -> Result<AddResponse, MemoryReject> {
-        // F-53: RAII — the slot releases on EVERY exit (return, panic, or the
+        // RAII — the slot releases on EVERY exit (return, panic, or the
         // 60 s timeout dropping this task), not just the explicit paths.
         let _tracker_entry = TrackerEntry::new(tracker, "ingest_memory");
         let entries = parse_memory_content(&content);
 
-        // F-45: per-entry content cap, the same MAX_CONTENT bound `/ingest`
+        // Per-entry content cap, the same MAX_CONTENT bound `/ingest`
         // and `/add` enforce. All-or-nothing: one oversized entry rejects the
         // whole request with a 400 before any write.
         if let Some(len) = entries
@@ -1295,7 +1295,7 @@ async fn ingest_memory(
             // never dropped, but injection-y content is flagged out of
             // retrieval. A `Quarantine` verdict flags the row; a `Reject`
             // verdict — stricter, still never dropped on this surface — also
-            // flags (F-14): an injection hit the classifier is *confident*
+            // flags: an injection hit the classifier is *confident*
             // about must at minimum be excluded from retrieval under the
             // default Quarantine operational posture, not stored clean.
             // (Explicit `Reject` policy still hard-rejects at the other
@@ -1323,7 +1323,7 @@ async fn ingest_memory(
 
             let chunk_id = tx.last_insert_rowid();
             if chunk_id > 0 {
-                // write to vec0 (int8 + binary quantized). DoD: no raw
+                // write to vec0 (int8 + binary quantized). No raw
                 // f32 JSON is written to the legacy `embeddings` column.
                 // propagate — a chunk stored without
                 // its vector is silently degraded (FTS-only retrieval with no
@@ -1426,7 +1426,7 @@ async fn ingest_memory(
             }
         }
 
-        // F-53: no explicit release — `_tracker_entry` drops on every exit.
+        // No explicit release — `_tracker_entry` drops on every exit.
         Ok(AddResponse {
             success: true,
             status: "completed".to_string(),
@@ -1479,7 +1479,7 @@ async fn ingest_memory(
             Json(serde_json::json!({ "status": "error", "error": "internal error" })),
         ),
         Err(_) => {
-            // F-53: the timed-out clone is dropped here — `_tracker_entry`'s
+            // The timed-out clone is dropped here — `_tracker_entry`'s
             // Drop has ALREADY released the slot (the closure itself exits
             // when the task is dropped), so no leak remains to report.
             // spawn_blocking tasks cannot be cancelled mid-flight (honest
@@ -1586,8 +1586,7 @@ fn process_rss_mib() -> u64 {
 /// Public `/health` — the load-balancer probe shape only (`status`/`version`).
 /// Every deployment-fingerprinting field (model, otel, pool, backup, webhook,
 /// hardening, DPO contact) moved behind the Read gate on `/health/db`
-/// (v1.27.23 "Medicate" M2, the A-02 surface-reduction — same class as the
-/// v1.20.2 F2 `/health/db` carve-out).
+/// (surface-reduction — same class as the `/health/db` carve-out).
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok", "version": SERVER_VERSION }))
 }
@@ -1730,7 +1729,7 @@ async fn health_db(
     // Read-gated. Public `/health` stays the minimal probe shape; the detailed
     // deployment surface (model, otel, pool, backup, webhook, hardening, DPO)
     // lives here so an unauthenticated network probe cannot fingerprint the
-    // deployment (v1.27.23 M2 / A-02).
+    // deployment.
     crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
@@ -1985,7 +1984,7 @@ async fn stats(
     // resolve per-domain pool from the ?domain= query param.
     let pool = handlers::resolve_domain_pool(&s.registry, params.domain.as_deref())
         .unwrap_or_else(|_| s.pool.clone());
-    // S2-43 (pass-3): shim mode binds the label into every count — the pool
+    // Shim mode binds the label into every count — the pool
     // is shared there, so unscoped COUNTs reported another tenant's corpus
     // size to a per-domain reader. Multi-db pools are territory-scoped.
     let shim_label = if s.registry.is_multi_db() {
@@ -2177,7 +2176,7 @@ async fn embeddings(
     }
 }
 
-// === v0.8.0 KNOWLEDGE GRAPH FUNCTIONS ===
+// === KNOWLEDGE GRAPH FUNCTIONS ===
 
 fn parse_annotations(content: &str) -> Vec<(String, String)> {
     let mut results = Vec::new();
@@ -2269,13 +2268,13 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
     // Normalization defeats trivial obfuscation the same way it always did
     // (whitespace runs are collapsed, invisible chars are stripped, case is
     // folded — "ig\u{200b}nore previous" still reads as "ignore previous"),
-    // but matching is now TOKEN-AWARE (v1.27.27 M3, F-61 + S2-44): a multi-word
+    // but matching is now TOKEN-AWARE: a multi-word
     // entry matches a contiguous run of whole tokens, never a substring that
     // crosses a word boundary. The old whole-text-concatenation match made
     // "you are analyzing" contain "youarean" — benign prose quarantined as
-    // injection (the F-61 over-match). Entries are stored in canonical spaced
+    // injection (the over-match). Entries are stored in canonical spaced
     // form ("developer mode"), so a spaced entry can never be dead the way the
-    // pre-v1.27.25 "developer mode" entry was (S2-44: the normalizer now
+    // old "developer mode" entry was (the normalizer now
     // normalizes BOTH sides). The space-free concatenation of each phrase is
     // ALSO matched against each single token, which keeps the no-space
     // obfuscation defense ("ignorepreviousinstructions" as one word) without
@@ -2300,7 +2299,7 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
     // contiguous token run (whitespace-run tolerant); their jammed form is
     // matched inside single tokens (obfuscation tolerant). Single-token
     // entries substring-match within a token (catches "overrides",
-    // "jailbreaks") — kept as-is per the F-61 split.
+    // "jailbreaks") — kept as-is per the split.
     const PHRASES: &[&str] = &[
         "ignore previous",
         "ignore all previous",
@@ -2454,7 +2453,7 @@ async fn ingest_markdown(
     if title.is_empty() {
         return Err(AppError::BadRequest("Title is required"));
     }
-    // injection screen. v1.20.3 (G5): now the full two-layer
+    // injection screen. Now the full two-layer
     // screen ([`screen::screen`] = blocklist + optional classifier). `Reject`
     // keeps HTTP-400; `Quarantine` (default) proceeds to ingest and flags every
     // inserted chunk; `Allow` disables the screen.
@@ -2472,7 +2471,7 @@ async fn ingest_markdown(
     //   - frontmatter tags: note `tagged_with` tag
     //   - frontmatter aliases: alias `alias_of` note
     //   - deterministic linker: auto-discovers entities + typed relationships
-    //     from section headings, bold terms, and sentence patterns (v1.4.0+)
+    //     from section headings, bold terms, and sentence patterns
     let mut kg_edges: Vec<(String, String, String)> = parse_annotations(&content)
         .into_iter()
         .map(|(rel, ent)| (rel, escaped_title.to_lowercase(), ent.to_lowercase()))
@@ -2735,7 +2734,8 @@ async fn ingest_markdown(
 /// `sources::compute_revision` so any change anywhere in the file — including
 /// frontmatter that never reaches the chunks — yields a new revision. Vault
 /// ingests (source_path set) are linked to a `sources`/`source_revisions` row;
-/// interactive adds (no source_path) stay unlinked, matching pre-v0.9.4 behavior.
+/// interactive adds (no source_path) stay unlinked, matching the legacy
+/// behavior (from before source linkage existed).
 //
 // ponytail: 8 positional args is past clippy's 7-arg default. Bundling them into
 // a `MarkdownIngest` struct is pure ceremony here — this is a private fn with one
@@ -2779,8 +2779,9 @@ fn write_markdown_ingest(
         existing.sort();
         if existing == new_hashes {
             // Unchanged file: true no-op on chunks, but still refresh source /
-            // revision observed_at and link any pre-v0.9.4 rows that have NULL
-            // source_id (first v0.9.4 ingest of a file ingested before this release).
+            // revision observed_at and link any legacy rows that have NULL
+            // source_id (the first source-linked ingest of a file ingested before
+            // linkage existed).
             let existing_ids: Vec<i64> = {
                 let mut stmt = tx
                     .prepare("SELECT id FROM knowledge WHERE source_path = ?1 ORDER BY id")
@@ -3008,7 +3009,7 @@ fn link_vault_source(
     Ok(())
 }
 
-/// v1.28 "Caliber": the offline `--re-embed <profile>` body. Loads the TARGET
+/// The offline `--re-embed <profile>` body. Loads the TARGET
 /// profile's embedder, repoints the vec store at its dim (the fail-closed
 /// guard's sanctioned bypass), then re-embeds every chunk — the same loop shape
 /// as the `/reindex` handler, inline here because the handler needs a live
@@ -3086,7 +3087,7 @@ async fn reindex(
             };
             let tx = conn.unchecked_transaction()?;
             // Replace the vec0 row (delete + re-insert, since vec0 has no UPSERT
-            // for changed vectors). v0.9.0 DoD: vec0 is the sole vector store;
+            // for changed vectors). vec0 is the sole vector store;
             // the legacy JSON `embeddings` column is no longer written.
 // was `let _ =`; propagate — a silently
             // lost vector is a silent retrieval regression.
@@ -3256,7 +3257,7 @@ async fn multi_get(
     Json(req): Json<MultiGetRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // AuthZ read gate FIRST (then size check), scoped to the
-    // requested domain. v1.20.2 F3: reorder — auth before size so an unauth'd
+    // requested domain. Reorder — auth before size so an unauth'd
     // caller learns nothing about the request shape.
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
@@ -3407,9 +3408,9 @@ async fn list_quarantined(
     Query(p): Query<QuarantineListParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // AuthZ read gate (operator review surface), scoped to the header domain
-    // (S2-31, pass-3): in shim mode the pool is shared, so the label also
+    // (in shim mode the pool is shared, so the label also
     // scopes the SQL — a `read:<t>/global` grant must not review another
-    // tenant's quarantine queue.
+    // tenant's quarantine queue).
     let domain = handlers::domain_from_headers(&headers);
     crate::handlers::authorize(
         &principal.0,
@@ -3454,7 +3455,7 @@ async fn list_quarantined(
                 "created_at": r.get::<_, Option<String>>(4)?,
             }))
         };
-        // S2-31: shim mode binds the label into the predicate (multi-db pools
+        // Shim mode binds the label into the predicate (multi-db pools
         // are territory-scoped already).
         let mut sql = String::from(
             "SELECT id, title, source, content_hash, created_at \
@@ -3832,7 +3833,7 @@ async fn get_edge_history(
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // AuthZ: Admin-level read (the supersession lineage is operator evidence).
-    // S3-02 (pass-3 audit): the gate was `Action::Read` while every doc
+    // The gate was `Action::Read` while every doc
     // surface (CHANGELOG §1.27.22, openapi.yaml, docs/api.md, this comment)
     // claims Admin — the retired PII-bearing labels this surface returns are
     // operator evidence, not a regular read. Code now matches the docs.
@@ -3909,8 +3910,8 @@ async fn get_edge_history(
         let current_count = versions.iter().filter(|v| v["current"] == true).count();
         // Audit the read (the retrieval of retired, PII-bearing labels is
         // evidence). Best-effort for the response, never silent for the
-        // operator: a dropped evidence row logs loudly (the D-1 posture —
-        // this surface's own comment says the audit IS the guarantee).
+        // operator: a dropped evidence row logs loudly —
+        // this surface's own comment says the audit IS the guarantee.
         if crate::audit::record(
             &conn,
             crate::audit::AuditKind::GraphRead,
@@ -3994,9 +3995,9 @@ async fn traverse_graph(
         .map(|s| s.to_string());
 
     // resolve pool from X-Brain-Domain header. When `cross_domain=true`,
-    // walk edges across every known domain pool (per the plan M3 control).
+    // walk edges across every known domain pool.
     let header_domain = handlers::domain_from_headers(&headers);
-    // F-06 scope label: computed once (the header is moved into the target
+    // Scope label: computed once (the header is moved into the target
     // list below, so the label is materialized before the move).
     let scope_label = header_domain.as_deref().unwrap_or("global").to_string();
     let entity_lower = entity.to_lowercase();
@@ -4050,7 +4051,7 @@ async fn traverse_graph(
         } else {
             ""
         };
-        // v1.27.22 "Cascade" (BUG-2 fix): traversal meets its own doc. The
+        // Traversal meets its own doc. The
         // module doc promised "traversal skips edges that a later same-typed
         // edge has superseded" — the code never did (it filtered only by the
         // valid-time window). This predicate makes an edge a *current belief*
@@ -4378,7 +4379,7 @@ const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action '
 /// ponytail: script-src 'unsafe-eval' is required because wasm-bindgen emits
 /// a `new Function()` for module instantiation — 'wasm-unsafe-eval' alone
 /// permits WASM compile/instantiate but not JS eval(), so the glue throws
-/// "call to Function() blocked by CSP" (v1.16.2 live fix). A build-time hash
+/// "call to Function() blocked by CSP". A build-time hash
 /// or a bundler that emits instantiateStreaming without eval is the upgrade
 /// path. style-src 'unsafe-inline' covers Dioxus runtime <style> injection.
 const CLIENT_CSP: &str = concat!(
@@ -4394,7 +4395,7 @@ const CLIENT_CSP: &str = concat!(
 );
 
 /// Security headers middleware — applies standard hardening headers to every
-/// response. v1.16.2: path-aware CSP (strict for API, WASM-friendly for client).
+/// response. Path-aware CSP (strict for API, WASM-friendly for client).
 async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
     // Read the path BEFORE next.run(req) consumes the request.
     let is_client = req.uri().path().starts_with("/app") || req.uri().path() == "/";
@@ -4430,8 +4431,8 @@ async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response
 }
 
 /// Rate limiter middleware — per-IP sliding window (10 000 req/min default,
-/// bounded key set via `RATE_LIMIT_MAX_KEYS`). v1.27.16 "Drawbridge" (F-07):
-/// the peer `SocketAddr` extension (injected by
+/// bounded key set via `RATE_LIMIT_MAX_KEYS`).
+/// The peer `SocketAddr` extension (injected by
 /// `into_make_service_with_connect_info`) is now guaranteed present, so each
 /// remote address gets its own bucket. `X-Forwarded-For` is still honored
 /// only under `BRAIN_TRUST_PROXY=1`.
@@ -4449,7 +4450,7 @@ async fn rate_limit_middleware(
         req.headers()
             .get("x-forwarded-for")
             .and_then(|h| h.to_str().ok())
-            // S2-39 (pass-3 audit): take the RIGHTMOST entry — the one the
+            // Take the RIGHTMOST entry — the one the
             // trusted proxy APPENDED. The leftmost is client-controlled (an
             // attacker pre-seeds `X-Forwarded-For: 1.2.3.4` and the appending
             // proxy preserves it), so leftmost-trust allowed bucket evasion
@@ -4476,7 +4477,7 @@ async fn rate_limit_middleware(
     next.run(req).await
 }
 
-/// Auth middleware (P4 scaffold, v1.1.0 hot-rotation). When
+/// Auth middleware. When
 /// `AUTH_TOKEN`/`AUTH_TOKEN_FILE` is set, every non-public route requires a
 /// matching `Authorization: Bearer <token>` header. When unset the server is
 /// unauthenticated (safe only behind a loopback/proxy). Public read-only routes
@@ -4578,7 +4579,7 @@ async fn jwt_auth_middleware(
             auth::jwt::TokenType::Access,
         )
         .map_err(|e| e.code().to_string())?;
-        // Revocation check. v1.27.16 "Drawbridge" (M3.3/F-28): denial on ANY
+        // Revocation check. Denial on ANY
         // store failure — the old `if let Ok(conn)` + `unwrap_or(false)` let a
         // pool/SQL error skip the check entirely, precisely during incident
         // response (fail-open on the one path that must fail closed).
@@ -4670,7 +4671,7 @@ fn capability_accepted(raw: &str, path: &str, pk: &[u8; 32]) -> bool {
 /// Write an audit row for a failed JWT verification. Best-effort (opens a
 /// fresh connection — failures are rare, the cost is negligible). Records the
 /// path + failure code; never the token.
-/// S3-03 (pass-3 audit): the deny-path audit write runs on
+/// The deny-path audit write runs on
 /// `spawn_blocking` — it opens a fresh connection + INSERT, which must never
 /// block the async runtime thread. Rate of these is bounded by the rate
 /// limiter, which sits OUTSIDE authN (see build_app layer order).
@@ -4713,7 +4714,7 @@ async fn auth_middleware(
 // OIDC discovery + JWKS are public by design (clients
         // need them to verify tokens; can't require a token to learn how to
         // verify tokens). `/auth/refresh` verifies its own refresh token.
-        // `/auth/logout` is NOT public (v1.27.16 "Drawbridge" M3.4/F-13): it
+        // `/auth/logout` is NOT public: it
         // revokes the presented access token, so the middleware must verify
         // the bearer first — a public logout could revoke nothing and
         // silently "succeed" (the handler reads the principal from the
@@ -4803,7 +4804,7 @@ async fn auth_middleware(
     } else {
         // audit denied auth attempts at the trust boundary. The
         // middleware has no pool, so open a fresh connection on
-        // `spawn_blocking` (S3-03: never block the async runtime thread on a
+        // `spawn_blocking` (never block the async runtime thread on a
         // sync DB write; the outer rate limiter bounds how often this runs).
         // Best-effort — audit must never fail the action. Pass the request
         // path, never the token.
@@ -4881,10 +4882,10 @@ fn worker_threads() -> Option<usize> {
         .filter(|&n| n > 0)
 }
 
-// ── startup bind fail-closed (ATLAS F-5) ────────────────
+// ── startup bind fail-closed ────────────────
 // `handlers/mod.rs` treats a `None` principal as superuser (by-design
 // loopback). The symmetric gap: a non-loopback bind with no AUTH_TOKEN/JWT is
-// an open superuser API. v1.20.24 G3 added fail-closed file-perms; this is the
+// an open superuser API. Fail-closed file-perms checks already exist; this is the
 // matching posture on the bind side. Two pure predicates + one guard, all
 // unit-testable without a live socket.
 //
@@ -4908,7 +4909,7 @@ fn auth_configured(auth_mode: auth::AuthMode) -> bool {
 }
 
 /// Refuse to start if the bind is beyond loopback AND no auth is configured.
-/// The G3 posture applied to the bind side (fail-closed, clear message, exit).
+/// The same posture applied to the bind side (fail-closed, clear message, exit).
 fn enforce_loopback_bind_guard(addr: &SocketAddr, auth_mode: auth::AuthMode) -> Result<()> {
     if !bind_is_loopback(addr) && !auth_configured(auth_mode) {
         return Err(anyhow::anyhow!(
@@ -4921,7 +4922,7 @@ fn enforce_loopback_bind_guard(addr: &SocketAddr, auth_mode: auth::AuthMode) -> 
     Ok(())
 }
 
-/// Entry point. v1.3.0: the runtime is configurable via BRAIN_WORKER_THREADS
+/// Entry point. The runtime is configurable via BRAIN_WORKER_THREADS
 /// (default = cores; Jetson target = 2). Built here instead of `#[tokio::main]`
 /// so the env var is read before the runtime starts.
 fn main() {
@@ -5029,7 +5030,7 @@ async fn main_inner() -> Result<()> {
                 .with_init(|c| c.execute_batch("PRAGMA busy_timeout=5000;")),
         )?;
 
-    // v1.28 "Caliber": offline `--re-embed <profile>` — the fail-closed dim
+    // Offline `--re-embed <profile>` — the fail-closed dim
     // guard's escape hatch. Runs INSTEAD of serving: rebuilds the vector store
     // at the target profile's dim and re-embeds every chunk, then exits.
     // Offline by design (the server can't boot under a dim mismatch).
@@ -5041,8 +5042,8 @@ async fn main_inner() -> Result<()> {
         return run_reembed(&pool, &target).map(|_| ());
     }
 
-    // ── Pre-migration safety backup (plan v0.9.0 M4) ─────────────────────
-    // One-shot `VACUUM INTO` snapshot taken BEFORE the first v0.9.0 migration
+    // ── Pre-migration safety backup ─────────────────────
+    // One-shot `VACUUM INTO` snapshot taken BEFORE the vec0 schema migration
     // touches the DB, so the Rollback section's restore path is always possible.
     // Guarded by a marker file so restarts don't re-copy. Skipped for fresh DBs
     // (no knowledge rows yet) and when the backup already exists.
@@ -5066,7 +5067,7 @@ async fn main_inner() -> Result<()> {
             info!("Pre-migration backup: VACUUM INTO {:?}", backup_path);
             match pool.get() {
                 Ok(conn) => {
-                    // S3-11: through the shared quote-escaping primitive —
+                    // Through the shared quote-escaping primitive —
                     // a `'` in the operator's data dir would break out of the
                     // raw literal.
                     match brain_server::backup::vacuum_into(&conn, &backup_path) {
@@ -5083,10 +5084,10 @@ async fn main_inner() -> Result<()> {
         }
     }
 
-    // P3 retrieval profile → embedder. MUST load before the migration: the
+    // Retrieval profile → embedder. MUST load before the migration: the
     // migration creates `vec_knowledge` at the embedder's `store_dim()` and
     // stamps `embedding_dim` so a later profile switch fails closed instead of
-    // silently cross-dim-comparing. v1.28 "Caliber" M2.
+    // silently cross-dim-comparing.
     let profile = config::model_profile();
     let model_id = config::model_id_for_profile(profile);
     info!("Loading model: {} (profile: {})", model_id, profile);
@@ -5097,10 +5098,10 @@ async fn main_inner() -> Result<()> {
         model.store_dim()
     );
 
-    // v1.28 "Caliber" M1: enable the cross-encoder rerank tier on the profiles
+    // Enable the cross-encoder rerank tier on the profiles
     // whose hardware can afford it (enterprise/desktop). search/mod.rs is lib
     // code and can't read the server-private profile, so the gate is an env var
-    // the boot owns. edge-default/air-gapped stay rerank-free (the v0.9.5 doctrine).
+    // the boot owns. edge-default/air-gapped stay rerank-free.
     if matches!(
         profile,
         config::PROFILE_ENTERPRISE | config::PROFILE_DESKTOP | config::PROFILE_QUALITY_LOCAL
@@ -5122,7 +5123,7 @@ async fn main_inner() -> Result<()> {
     )?;
     info!("Migration complete (embedding_dim = {})", model.store_dim());
 
-    // ── legacy cutover: brain.db → global.db (M6) ─────────────────
+    // ── legacy cutover: brain.db → global.db ─────────────────
     // When `BRAIN_MULTI_DB=true`, the per-domain system needs the legacy
     // single-DB content at `global.db`. We snapshot it ONCE, atomically, with
     // `VACUUM INTO` (consistent copy even under WAL) and stamp a marker so
@@ -5133,8 +5134,8 @@ async fn main_inner() -> Result<()> {
     //   - brain.db has no data (fresh install).
     //
     // ponytail: this is the smallest safe cutover — a one-shot file copy via
-    // SQLite's own consistent-snapshot primitive. The rehearsal tool from
-    // v0.9.9 covers the heavier per-row migration; this is the boot-time
+    // SQLite's own consistent-snapshot primitive. The rehearsal tool
+    // covers the heavier per-row migration; this is the boot-time
     // safety net for the actual cutover day.
     if config::multi_db() {
         let layout = brain_server::storage_layout::StorageLayout::detect()?;
@@ -5165,7 +5166,7 @@ async fn main_inner() -> Result<()> {
             );
             match pool.get() {
                 Ok(conn) => {
-                    // S3-11: escaped primitive (see the pre-migration backup
+                    // Escaped primitive (see the pre-migration backup
                     // above).
                     match brain_server::backup::vacuum_into(&conn, &global_path) {
                         Ok(_) => {
@@ -5459,7 +5460,7 @@ async fn main_inner() -> Result<()> {
         .route("/graph/relations", get(get_relations))
         .route("/graph/traverse", get(traverse_graph))
         .route("/graph/relationships/{id}/history", get(get_edge_history))
-        // Plugin API (contract: API_CONTRACT.md). Wire is locked; bodies land with v0.9.0/v1.0.0.
+        // Plugin API (contract: API_CONTRACT.md). Wire is locked.
         .route("/recall", post(handlers::recall::recall))
         .route("/ingest", post(handlers::ingest::ingest))
         // the UMP 1.0 HTTP ops binding. Capabilities +
@@ -5646,9 +5647,9 @@ async fn main_inner() -> Result<()> {
         .route("/decayed", get(handlers::gate::list_decayed))
         .route("/export", get(handlers::gate::export))
         .route("/purge", post(handlers::gate::purge))
-        // per-kind retention policy (M2), the Art 30
-        // records-of-processing register (M5), and the snapshot self-check
-        // panel (M7). GET /retention reads; POST /retention overrides
+        // per-kind retention policy, the Art 30
+        // records-of-processing register, and the snapshot self-check
+        // panel. GET /retention reads; POST /retention overrides
         // (Admin + audited); /art30 and /snapshot/status are Admin read-only.
         .route("/retention", get(handlers::govern::retention_get))
         .route("/retention", post(handlers::govern::retention_post))
@@ -5678,7 +5679,7 @@ async fn main_inner() -> Result<()> {
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
         // OIDC discovery + JWKS + auth endpoints. These are
         // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
-        // and `/auth/logout` (v1.27.16 "Drawbridge" M3.4/F-13 — the
+        // and `/auth/logout` (the
         // middleware verifies the presented access token, so the handler can
         // revoke its `jti`; an unauthenticated logout would revoke nothing).
         // `/auth/refresh` verifies the presented refresh token itself.
@@ -5765,8 +5766,8 @@ async fn main_inner() -> Result<()> {
             jwt_middleware_state.clone(),
             jwt_auth_middleware,
         ))
-        // Rate limiting — OUTERMOST of the security stack (S3-03, pass-3
-        // audit). Previously it sat *inside* both auth layers, so an
+        // Rate limiting — OUTERMOST of the security stack.
+        // Previously it sat *inside* both auth layers, so an
         // unauthenticated flood was 401-rejected before ever consuming a
         // bucket: the limiter never bounded the very traffic shape it exists
         // for, and every free 401 performed a synchronous audit write (fresh
@@ -5911,7 +5912,7 @@ async fn main_inner() -> Result<()> {
     }
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    // the v1.1.0 `timeout(drain_cap, axum::serve(...))`
+    // the `timeout(drain_cap, axum::serve(...))`
     // was wrapping the ENTIRE serve lifetime, causing a 30s crash-loop on
     // systemd-managed deployments (the server would run for exactly
     // SHUTDOWN_DRAIN_SECS then exit). The timeout was intended to cap only
@@ -12378,6 +12379,439 @@ Final paragraph after the rule.";
                 "{method} {route} (`{handler_name}`) does not enforce Action::{action}"
             );
         }
+    }
+
+    /// Comment hygiene: a non-test comment under `src/` may not reference a
+    /// release version, an implementation-plan milestone, or an audit-finding
+    /// id. Those labels rot — plans get renamed, audit ids mean nothing a
+    /// year later, milestones get conflated with releases — while the
+    /// invariant sentences they prefix stay true; the label goes, the
+    /// sentence stays. Exemptions: version tags inside `src/migration.rs` +
+    /// `src/storage_layout.rs` (those files ARE the versioned schema history:
+    /// migration section headers + the SCHEMA_VERSION contract constants),
+    /// `// SAFETY:` lines, and the `[errata-exempt: reason]` escape hatch
+    /// (honored on the same line or the line below). `#[cfg(test)]` regions
+    /// are skipped — test comments narrate their own pins. Hand-rolled
+    /// matching (no regex dep); the byte scanner is string/comment aware so
+    /// brackets inside string literals cannot fake a test-module boundary.
+    #[test]
+    fn comments_never_reference_versions_plans_audit_ids() {
+        #[derive(PartialEq, Clone, Copy)]
+        enum Lex {
+            Code,
+            Block,
+            Str,
+            Raw(usize),
+        }
+        struct Flags {
+            comment_from: Option<usize>, // offset of the first code-state `//`
+            cfg_test: bool,              // trimmed line starts with `#[cfg(test`
+            delta: i32,                  // net {,[,( from CODE chars only
+            opens_bracket: bool,
+            code_line: bool, // any code content before the comment
+        }
+        fn lex_lines(src: &str) -> Vec<Flags> {
+            let mut st = Lex::Code;
+            let mut block_depth = 0usize;
+            let mut out = Vec::new();
+            for line in src.lines() {
+                let b = line.as_bytes();
+                let started_in_code = st == Lex::Code;
+                let mut f = Flags {
+                    comment_from: None,
+                    cfg_test: false,
+                    delta: 0,
+                    opens_bracket: false,
+                    code_line: false,
+                };
+                if started_in_code {
+                    let t = line.trim_start();
+                    if t.starts_with("#[cfg(test") {
+                        f.cfg_test = true;
+                    }
+                }
+                let mut i = 0usize;
+                while i < b.len() {
+                    match st {
+                        Lex::Code => {
+                            let c = b[i];
+                            if c == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+                                f.comment_from = Some(i);
+                                break; // rest of the line is comment
+                            }
+                            if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+                                st = Lex::Block;
+                                block_depth = 1;
+                                i += 2;
+                                f.code_line = true;
+                                continue;
+                            }
+                            if c == b'"' {
+                                st = Lex::Str;
+                                i += 1;
+                                f.code_line = true;
+                                continue;
+                            }
+                            if c == b'r'
+                                && i + 1 < b.len()
+                                && (b[i + 1] == b'"' || b[i + 1] == b'#')
+                            {
+                                // raw string: r".." or r#".."# (count hashes)
+                                let mut j = i + 1;
+                                let mut hashes = 0usize;
+                                while j < b.len() && b[j] == b'#' {
+                                    hashes += 1;
+                                    j += 1;
+                                }
+                                if j < b.len() && b[j] == b'"' {
+                                    st = Lex::Raw(hashes);
+                                    i = j + 1;
+                                    f.code_line = true;
+                                    continue;
+                                }
+                            }
+                            if c == b'\'' {
+                                // char literal ('x', '\n', '{') vs lifetime ('a)
+                                if i + 1 < b.len()
+                                    && b[i + 1] == b'\\'
+                                    && i + 3 < b.len()
+                                    && b[i + 3] == b'\''
+                                {
+                                    i += 4;
+                                    f.code_line = true;
+                                    continue;
+                                }
+                                if i + 2 < b.len() && b[i + 2] == b'\'' {
+                                    i += 3;
+                                    f.code_line = true;
+                                    continue;
+                                }
+                                // lifetime or digit separator — plain quote
+                                f.code_line = true;
+                                i += 1;
+                                continue;
+                            }
+                            match c {
+                                b'{' | b'[' | b'(' => {
+                                    f.delta += 1;
+                                    f.opens_bracket = true;
+                                    f.code_line = true;
+                                }
+                                b'}' | b']' | b')' => {
+                                    f.delta -= 1;
+                                    f.code_line = true;
+                                }
+                                _ => {
+                                    if !c.is_ascii_whitespace() {
+                                        f.code_line = true;
+                                    }
+                                }
+                            }
+                            i += 1;
+                        }
+                        Lex::Block => {
+                            if c_is(b, i, b'/') && c_is(b, i + 1, b'*') {
+                                block_depth += 1;
+                                i += 2;
+                            } else if c_is(b, i, b'*') && c_is(b, i + 1, b'/') {
+                                block_depth -= 1;
+                                i += 2;
+                                if block_depth == 0 {
+                                    st = Lex::Code;
+                                }
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        Lex::Str => {
+                            if b[i] == b'\\' {
+                                i += 2;
+                            } else if b[i] == b'"' {
+                                st = Lex::Code;
+                                i += 1;
+                            } else {
+                                i += 1;
+                            }
+                        }
+                        Lex::Raw(hashes) => {
+                            if b[i] == b'"' {
+                                let mut j = i + 1;
+                                let mut matched = 0usize;
+                                while j < b.len() && b[j] == b'#' && matched < hashes {
+                                    matched += 1;
+                                    j += 1;
+                                }
+                                if matched == hashes {
+                                    st = Lex::Code;
+                                    i = j;
+                                    continue;
+                                }
+                            }
+                            i += 1;
+                        }
+                    }
+                }
+                out.push(f);
+            }
+            out
+        }
+        fn c_is(b: &[u8], i: usize, c: u8) -> bool {
+            i < b.len() && b[i] == c
+        }
+
+        // pattern matchers (byte-level, case-sensitive)
+        fn has_version_triple(s: &str) -> bool {
+            let b = s.as_bytes();
+            let mut i = 0usize;
+            while i < b.len() {
+                if b[i] == b'v' && i + 1 < b.len() && b[i + 1].is_ascii_digit() {
+                    let mut j = i + 1;
+                    while j < b.len() && b[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    if j < b.len() && b[j] == b'.' {
+                        j += 1;
+                        let n1 = j;
+                        while j < b.len() && b[j].is_ascii_digit() {
+                            j += 1;
+                        }
+                        if j > n1 && j < b.len() && b[j] == b'.' {
+                            j += 1;
+                            let n2 = j;
+                            while j < b.len() && b[j].is_ascii_digit() {
+                                j += 1;
+                            }
+                            if j > n2 {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                i += 1;
+            }
+            false
+        }
+        fn boundary_before(b: &[u8], i: usize) -> bool {
+            i == 0
+                || !(b[i - 1].is_ascii_alphanumeric()
+                    || b[i - 1] == b'_'
+                    || b[i - 1] == b'-'
+                    || b[i - 1] == b'+')
+        }
+        fn boundary_after(b: &[u8], i: usize) -> bool {
+            i >= b.len() || !(b[i].is_ascii_alphanumeric() || b[i] == b'_')
+        }
+        fn has_milestone(s: &str) -> bool {
+            // `M<digits>` — a plan-milestone label. The leading boundary also
+            // rejects `-`, so model ids (`bge-m3` style) never match.
+            let b = s.as_bytes();
+            let mut i = 0usize;
+            while i < b.len() {
+                if b[i] == b'M'
+                    && i + 1 < b.len()
+                    && b[i + 1].is_ascii_digit()
+                    && boundary_before(b, i)
+                {
+                    let mut j = i + 1;
+                    while j < b.len() && b[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                    if boundary_after(b, j) || (j < b.len() && b[j] == b'.') {
+                        return true;
+                    }
+                }
+                i += 1;
+            }
+            false
+        }
+        fn has_audit_id(s: &str) -> bool {
+            // audit-finding / requirement ids: F-45, F2, S2-31, S3-06, D-1,
+            // E-1, G5, N15, R1, BUG-2 (hyphen optional where the repo used
+            // both shapes). `P` and `A` are deliberately NOT matched — they
+            // collide with standard notation (P-256 curves, OWASP A04:2025);
+            // the `+` in the leading boundary keeps Unicode `U+E0000` out.
+            const PREFIXES: [&[u8]; 9] = [b"BUG", b"F", b"S2", b"S3", b"D", b"E", b"G", b"N", b"R"];
+            let b = s.as_bytes();
+            let mut i = 0usize;
+            while i < b.len() {
+                for p in PREFIXES {
+                    if i + p.len() <= b.len() && &b[i..i + p.len()] == p && boundary_before(b, i) {
+                        let mut j = i + p.len();
+                        if j < b.len() && b[j] == b'-' {
+                            j += 1;
+                        }
+                        let n = j;
+                        while j < b.len() && b[j].is_ascii_digit() {
+                            j += 1;
+                        }
+                        if j > n && boundary_after(b, j) {
+                            return true;
+                        }
+                    }
+                }
+                i += 1;
+            }
+            false
+        }
+
+        fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                panic!("cannot read {}", dir.display());
+            };
+            let mut paths: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for p in paths {
+                if p.is_dir() {
+                    collect_rs(&p, out);
+                } else if p.extension().is_some_and(|e| e == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rs(&root, &mut files);
+        assert!(
+            !files.is_empty(),
+            "src tree not found under {}",
+            root.display()
+        );
+
+        // Pass 1: whole-file skips — files included by a `#[cfg(test)] mod X;`
+        // (the include file is entirely test code).
+        let mut skip_files = std::collections::HashSet::new();
+        for p in &files {
+            let Ok(src) = std::fs::read_to_string(p) else {
+                panic!("cannot read {}", p.display());
+            };
+            let lines: Vec<&str> = src.lines().collect();
+            let flags = lex_lines(&src);
+            for (idx, f) in flags.iter().enumerate() {
+                if f.cfg_test {
+                    let mut j = idx + 1;
+                    while j < lines.len()
+                        && (lines[j].trim_start().starts_with("#[")
+                            || lines[j].trim_start().starts_with("///")
+                            || lines[j].trim_start().starts_with("//!"))
+                    {
+                        j += 1;
+                    }
+                    if j < lines.len() {
+                        let t = lines[j].trim_start();
+                        if let Some(rest) = t.strip_prefix("mod ") {
+                            let name: String = rest
+                                .chars()
+                                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                .collect();
+                            if rest[name.len()..].trim_start().starts_with(';') || t.ends_with(';')
+                            {
+                                skip_files.insert(p.parent().unwrap().join(format!("{name}.rs")));
+                                skip_files.insert(p.parent().unwrap().join(name).join("mod.rs"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass 2: scan non-test comment text.
+        let mut violations = Vec::new();
+        for p in &files {
+            if skip_files.contains(p) {
+                continue;
+            }
+            let Ok(src) = std::fs::read_to_string(p) else {
+                panic!("cannot read {}", p.display());
+            };
+            let lines: Vec<&str> = src.lines().collect();
+            let flags = lex_lines(&src);
+            let schema_history = p.ends_with("migration.rs") || p.ends_with("storage_layout.rs");
+            let mut idx = 0usize;
+            while idx < lines.len() {
+                if flags[idx].cfg_test {
+                    // skip the gated item: external `mod X;`, inline `mod X {`,
+                    // or a fn/const/use item (ends at `;` or matching bracket)
+                    let mut j = idx + 1;
+                    while j < lines.len()
+                        && (lines[j].trim_start().starts_with("#[")
+                            || lines[j].trim_start().starts_with("///")
+                            || lines[j].trim_start().starts_with("//!"))
+                    {
+                        j += 1;
+                    }
+                    if j >= lines.len() {
+                        break;
+                    }
+                    let t = lines[j].trim_start();
+                    if let Some(rest) = t.strip_prefix("mod ") {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        if rest[name.len()..].trim_start().starts_with(';') || t.ends_with(';') {
+                            idx = j + 1; // external include: no body here
+                            continue;
+                        }
+                    }
+                    // inline mod or other item: bracket-skip using code deltas
+                    let mut opened = false;
+                    let mut depth = 0i32;
+                    let mut k = j;
+                    while k < lines.len() {
+                        depth += flags[k].delta;
+                        if flags[k].opens_bracket {
+                            opened = true;
+                        }
+                        let semi_terminated =
+                            lines[k].trim_end().ends_with(';') && flags[k].code_line;
+                        if (semi_terminated && !opened) || (opened && depth <= 0) {
+                            break;
+                        }
+                        k += 1;
+                    }
+                    idx = k + 1;
+                    continue;
+                }
+                if let Some(from) = flags[idx].comment_from {
+                    let text = &lines[idx][from..];
+                    let exempt = text.contains("SAFETY:")
+                        || text.contains("errata-exempt:")
+                        || (idx + 1 < lines.len() && lines[idx + 1].contains("errata-exempt:"));
+                    if !exempt {
+                        let mut kinds = Vec::new();
+                        if text.contains("IMPLEMENTATION_PLAN") {
+                            kinds.push("plan reference");
+                        }
+                        if !schema_history && has_version_triple(text) {
+                            kinds.push("release version");
+                        }
+                        if has_milestone(text) {
+                            kinds.push("plan milestone");
+                        }
+                        if has_audit_id(text) {
+                            kinds.push("audit id");
+                        }
+                        if !kinds.is_empty() {
+                            violations.push(format!(
+                                "{}:{}: [{}] {}",
+                                p.display(),
+                                idx + 1,
+                                kinds.join(", "),
+                                lines[idx].trim()
+                            ));
+                        }
+                    }
+                }
+                idx += 1;
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "comments carry version/milestone/audit labels (drop the label, keep the invariant sentence; \
+             schema-history files keep version tags; escape hatch: [errata-exempt: reason]):\n{}",
+            violations.iter().take(40).cloned().collect::<Vec<_>>().join("\n")
+        );
     }
 
     /// every direct-ingest INSERT into `knowledge` writes
