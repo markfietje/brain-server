@@ -1,0 +1,22 @@
+# v1.27.27 "Seal" M5 — the de-slop watchdog config.
+#
+# Contract (CI `lipstyk` job): `lipstyk --diff <base> --exclude-tests` exits
+# non-zero when CHANGED lines introduce a diagnostic — no new code can add a
+# finding. The line-scoped rules are fully armed.
+#
+# The two cross-file rules are disabled because they attribute each finding to
+# EVERY file in a duplicate group (3+ files sharing a block), so they cannot be
+# scoped to changed lines: in --diff mode they fire on untouched baseline files
+# and the gate would fail on code nobody touched. The repo's deliberate
+# duplicate blocks are documented in the v1.27.24 honest ceiling (wire-shape
+# error envelopes, per-sibling screen wrappers). To run the cross-file dedup
+# review manually, bypass this config:
+#   lipstyk --config /dev/null --exclude-tests src client plugin
+[settings]
+exclude_tests = true
+
+[rules.cross-file-duplicate]
+enabled = false
+
+[rules.cross-file-error-pattern]
+enabled = false

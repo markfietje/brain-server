@@ -172,6 +172,46 @@ jobs:
         if: always()
         run: kill "$(cat /tmp/ump-pid)" 2>/dev/null || true
 
+  lipstyk:
+    # v1.27.27 "Seal" M5 — the de-slop watchdog: no NEW code may add a
+    # lipstyk diagnostic. Diff-scoped (changed lines only) against the PR
+    # base (or the previous commit on main pushes), so the documented legacy
+    # baseline (the v1.27.24 honest ceiling: heuristic false-positive classes
+    # on unchanged code) never blocks CI — only changed lines can fail. The
+    # two group-attributed cross-file rules are disabled in .lipstyk.toml
+    # (they cannot be scoped to changed lines and fire on untouched files).
+    # plugin/src is TypeScript — lipstyk scans both languages.
+    name: lipstyk (diff watchdog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install lipstyk
+        run: cargo install lipstyk --version 0.3.0
+      - name: Determine diff base
+        id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "$BASE_REF"
+            echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            # A multi-commit push diffs from the commit BEFORE the push, so
+            # every new commit's lines are in scope (HEAD~1 would only cover
+            # the last one).
+            echo "ref=$BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Watchdog (changed lines must add no diagnostic)
+        run: |
+          lipstyk --diff "${{ steps.base.outputs.ref }}" --exclude-tests src client plugin
+
   recall-gate:
     # Evidence-gated recall ship gate (v1.17.1 M3): seed a scratch instance
     # with the frozen 10-doc smoke corpus, run `brain eval` over the 37
