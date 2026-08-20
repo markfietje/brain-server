@@ -38,12 +38,83 @@ sell is **privacy, control, and provenance** — not just efficiency.
 
 ## Law-following by design
 
-Brain Server is built to **stay current with the latest regulation** — the EU AI Act
-(including the Art 4 AI-literacy obligation), GDPR Art 17 erasure and Art 12 response
-deadlines, the Philippines Data Privacy Act, cross-border transfer rules, and
-jurisdiction-aware DSAR handling. Compliance is enforcement, not documentation: legal
-holds, retention windows, and per-jurisdiction deadlines are actual behaviors the
-software applies, backed by a verifiable audit chain.
+Brain Server is built to **stay current with the latest regulation**. It turns
+compliance into shipped behavior — not a brochure: a jurisdiction table computes
+data-subject response deadlines, legal holds freeze records against every erasure
+path, retention windows are applied per domain and kind, cross-border transfer
+mechanisms are validated at registration, and every write, approval, and erasure
+lands on a tamper-evident SHA-256 audit chain you can verify. The inventory below
+groups the instruments by region and sector; the full row-by-row control map lives
+in [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md)
+and [COMPLIANCE_PH.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE_PH.md).
+**This is a documented engineering posture, not a certification** — ISO/IEC 42001 and
+SOC 2 attestation are organization-level audits outside this repository.
+
+### Europe
+- **EU AI Act — Regulation (EU) 2024/1689.** Art 4 AI-literacy playbook
+  (`docs/AI_LITERACY.md`, served at `/.well-known/ai-literacy`); Art 12 / Art 26(6)
+  logging posture with a configurable retention window (deployers set ≥180 days);
+  Art 22 meaningful-information trace replay (`/recall/{id}/trace`); Art 50 model-vs-human
+  provenance + machine-readable `/.well-known/ai-notice`. GPAI obligations now fully
+  enforceable from **2 Aug 2026** (Regulation (EU) 2026/1744); penalty tiers tracked
+  exactly — Art 99(2) €35M/7% for prohibited practices & GPAI provider duties, Art 99(3)
+  €15M/3% for the Art 50 transparency line, up to €7.5M/1% for general infractions.
+- **GDPR — Regulation (EU) 2016/679.** Art 15 access, Art 17 erasure (the DSAR
+  locate→export→purge path, human-executed, audited), Art 19 onward-notification
+  (HMAC-signed webhook), Art 12 response deadline clock, Art 22 logic-explanation
+  trace, Art 26(6) retention guidance, Art 30 register (`GET /art30`), Art 28 DPA.
+- **EU Standard Contractual Clauses 2021** and **EU-U.S. Data Privacy Framework**
+  (adequacy, live since 10 Jul 2023) — both mechanisms in the validated transfer register.
+
+### UK
+- **UK GDPR** + **ICO International Data Transfer Agreement (IDTA) / Addendum** —
+  the UK's standard clauses, distinct from the EU SCCs and treated independently
+  (the UK's DPF adequacy extension is a separate instrument from the EU's).
+
+### United States
+- **California Consumer Privacy Act / California Privacy Rights Act (CCPA/CPRA) +
+  California's Automated Decision-Making Technology Regulation (ADMT).** Data portability
+  (`/export`), erasure, and a logic-explanation trace that folds into the
+  right-to-know / ADMT disclosure expectations.
+- **HIPAA (45 CFR Part 164)** — Security Rule + §164.502(g). Access + audit + integrity
+  + minimum-necessary controls, PHI tokenization via strict-mode masking, legal
+  hold for litigation/breach deferral, and storage-limitation reporting.
+- **SOX (17 CFR §229 / PCAOB AS 2201).** Immutable audit trail, supersede-not-delete,
+  records preservation, and erasure refusal under legal hold.
+
+### Philippines (home jurisdiction)
+- **RA 10173 — Data Privacy Act of 2012** + **NPC advisories** (2024-04 AI; 2026-01
+  data scraping) + **EO 119** (2026, government-data residency). Data subject rights
+  through the DSAR surface, 72-hour breach-notification workflow (DPO-gated), lawful-basis
+  provenance for scraped data, and a pre-filled PIA template. **HB 7396** (a risk-based
+  AI bill) is pending, not enacted — the profile/retention/role primitives are structured
+  to absorb it, with no pre-implementation.
+
+### APAC (cross-border register + provenance)
+- **Singapore — Personal Data Protection Act 2012** (incl. the 2026 Amendment
+  Regulations aligning APEC CBPR / Global CBPR cross-border systems).
+- **Australia — Privacy Act 1988 / Australian Privacy Principles** (incl. the
+  automated-decision transparency obligations starting 10 Dec 2026) and the
+  **Japan — Act on the Protection of Personal Information (APPI)**, both surfaced
+  through jurisdiction-aware DSAR handling, plus the cross-border transfer register
+  (`scc-eu-2021`, `uk-idta`, `dpf-us`, `cbpr`, `bcr`, `adequacy`).
+
+### Sector & frameworks the buyer will ask about
+- **FedRAMP / FISMA (NIST 800-53 control posture)** — AC, AU, SC-7/SC-28, SI-12, and
+  IR families mapped to shipped evidence.
+- **ISO/IEC 42001, NIST AI RMF, SOC 2** — documented control-by-control posture across
+  identity, change management, monitoring, logging, and data lifecycle.
+- **EU Cyber Resilience Act (Art 13/14)** — a CycloneDX SBOM ships with every release
+  for supply-chain evidence.
+- **OWASP ASI06 (Memory & Context Poisoning)** — provenance at write time, a human
+  approval gate, hash-chained memory-change audit, and a tombstone path — the controls
+  the MemGhost / GhostWriter disclosures found missing.
+
+Compliance is enforced, not documented: the same single binary that serves recall
+applies legal holds, retention windows, region residency stamps, and jurisdiction-aware
+deadlines — all of it auditable. For the honest ceilings (single-node audit chain, no
+PII-at-rest encryption without operator full-disk encryption, posture-not-certification),
+see [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
 
 This directory is the public, informational documentation for Brain Server. For
 the technical contract and engineering records, see the linked files in the repo
