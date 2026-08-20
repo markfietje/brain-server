@@ -2,9 +2,25 @@
 //!
 //! Sits after `rrf_fuse` (the rank-fusion stage in [`crate::search`]) and writes
 //! into the reserved `rerank_score` / `rerank_truncated` slots on
-//! [`crate::search::SearchResult`] provenance. Default model: `bge-reranker-v2-m3`
-//! (FastEmbed-rs `BGERerankerV2M3`, the current local-SOTA cross-encoder — NOT
-//! the 2021 `ms-marco-MiniLM-L-6-v2`).
+//! [`crate::search::SearchResult`] provenance.
+//!
+//! Model resolution (highest quality first):
+//!   1. `mixedbread-ai/mxbai-rerank-large-v1` — the golden pick (Apache-2.0,
+//!      DeBERTa-v2 single-label cross-encoder → `logits[:, 0]` score, which is the
+//!      exact contract fastembed's `UserDefinedRerankingModel` seam expects). It is
+//!      NOT in the FastEmbed registry enum (which only ships bge-reranker-base /
+//!      bge-reranker-v2-m3 / jina v1-turbo / jina v2), so it's loaded through the
+//!      BYO-ONNX seam from a local dir. Default location: `models/mxbai-rerank-large-v1/`
+//!      (override with `BRAIN_RERANK_MODEL_DIR`). Uses the official int8
+//!      `onnx/model_quantized.onnx` for CPU/footprint-friendly inference.
+//!   2. Fallback: `bge-reranker-v2-m3` (FastEmbed-rs `BGERerankerV2M3`, in-enum,
+//!      auto-downloads) when the mxbai files are absent or fail to load.
+//!
+//! Qwen3-Reranker-0.6B is deliberately NOT wired here: it is `Qwen3ForCausalLM`
+//! (ChatML template, last-token logit scoring) — architecturally incompatible with
+//! fastembed's rerank seam, which feeds bare `(query, doc)` pairs and reads
+//! `logits[:, 0]`. It would load, run, and return meaningless scores. Using it
+//! requires a real LLM runtime (llama.cpp / vLLM / TEI), out of scope for the seam.
 //!
 //! Profile gate: active only on `enterprise`/`desktop`. The Jetson/edge path
 //! stays rerank-free (the v0.9.5 doctrine; the tier was removed for the 8 s
@@ -18,9 +34,18 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
+use fastembed::{
+    OnnxSource, RerankInitOptions, RerankInitOptionsUserDefined, RerankerModel, TextRerank,
+    TokenizerFiles, UserDefinedRerankingModel,
+};
 
 use crate::search::{SearchResult, SearchTelemetry};
+
+/// Directory (relative to CWD or absolute) containing the mxbai-rerank-large-v1
+/// files fastembed's BYO-ONNX seam needs: `onnx/model_quantized.onnx`,
+/// `tokenizer.json`, `config.json`, `special_tokens_map.json`,
+/// `tokenizer_config.json`. Override with `BRAIN_RERANK_MODEL_DIR`.
+const DEFAULT_MXBAI_DIR: &str = "models/mxbai-rerank-large-v1";
 
 /// The process-wide reranker handle, loaded lazily on first recall iff
 /// `BRAIN_RERANK_ENABLED=1`. The server boot sets that env var when the active
@@ -39,7 +64,7 @@ static RERANKER: LazyLock<Option<Reranker>> = LazyLock::new(|| {
         .unwrap_or(50);
     match Reranker::new(top_n) {
         Ok(r) => {
-            tracing::info!("reranker loaded: bge-reranker-v2-m3 (top_n={top_n})");
+            tracing::info!("reranker loaded: {} (top_n={top_n})", r.model_id());
             Some(r)
         }
         Err(e) => {
@@ -75,6 +100,8 @@ pub fn warmup() {
 /// (same pattern as `embed::NeuralEmbedder` and `screen::onnx::OnnxScorer`).
 pub struct Reranker {
     inner: Mutex<TextRerank>,
+    /// The model id actually loaded (mxbai-rerank-large-v1 or bge-reranker-v2-m3).
+    model_id: std::sync::Arc<str>,
     /// The max candidates scored per call. Reranking more than ~50–100 costs
     /// latency for diminishing rank-quality gain (IronCurtain's own cascade
     /// discipline uses ~50). Larger candidate sets are truncated and the
@@ -83,15 +110,68 @@ pub struct Reranker {
 }
 
 impl Reranker {
-    /// Load `bge-reranker-v2-m3`. Override the model + top-N via the config.
+    /// `model_id() -> &str` reports which reranker actually loaded.
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    /// Try the golden `mxbai-rerank-large-v1` (BYO-ONNX seam, dir from
+    /// `BRAIN_RERANK_MODEL_DIR` or the default), falling back to the in-registry
+    /// `bge-reranker-v2-m3` when the XML files are absent or the load fails.
+    /// Fail-open sits with the caller (`LazyLock` → `None`), so a missing model
+    /// dir degrades to the in-enum model, never to a boot failure.
     pub fn new(top_n: usize) -> anyhow::Result<Self> {
-        let options = RerankInitOptions::new(RerankerModel::BGERerankerV2M3)
-            .with_show_download_progress(true);
-        let inner = TextRerank::try_new(options)?;
-        Ok(Self {
-            inner: Mutex::new(inner),
-            top_n,
-        })
+        // Prefer the user-defined model: mxbai-rerank-large-v1 (golden).
+        match Self::new_mxbai_user_defined(top_n) {
+            Ok(inner) => Ok(Self {
+                inner: Mutex::new(inner),
+                model_id: std::sync::Arc::from("mixedbread-ai/mxbai-rerank-large-v1"),
+                top_n,
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    "mxbai-rerank-large-v1 via user-defined seam unavailable \
+                     ({e}); falling back to bge-reranker-v2-m3"
+                );
+                let options = RerankInitOptions::new(RerankerModel::BGERerankerV2M3)
+                    .with_show_download_progress(true);
+                let inner = TextRerank::try_new(options)?;
+                Ok(Self {
+                    inner: Mutex::new(inner),
+                    model_id: std::sync::Arc::from("BAAI/bge-reranker-v2-m3"),
+                    top_n,
+                })
+            }
+        }
+    }
+
+    /// Load mxbai-rerank-large-v1 (int8) through fastembed's BYO-ONNX seam.
+    /// Requires `onnx/model_quantized.onnx` + the 4 tokenizer files in the model
+    /// dir. Errors (rather than panics) if any file is missing — the caller falls
+    /// back to bge-reranker-v2-m3. `_top_n` is reserved for a future per-call
+    /// max_length cap; model_max_length (512) bounds the tokenizer today.
+    fn new_mxbai_user_defined(_top_n: usize) -> anyhow::Result<TextRerank> {
+        let dir = std::env::var("BRAIN_RERANK_MODEL_DIR")
+            .unwrap_or_else(|_| DEFAULT_MXBAI_DIR.to_string());
+        let model = UserDefinedRerankingModel::new(
+            OnnxSource::File(std::path::PathBuf::from(&dir).join("onnx").join("model_quantized.onnx")),
+            TokenizerFiles {
+                tokenizer_file: std::fs::read(std::path::PathBuf::from(&dir).join("tokenizer.json"))
+                    .map_err(|e| anyhow::anyhow!("missing tokenizer.json in {dir}: {e}"))?,
+                config_file: std::fs::read(std::path::PathBuf::from(&dir).join("config.json"))
+                    .map_err(|e| anyhow::anyhow!("missing config.json in {dir}: {e}"))?,
+                special_tokens_map_file: std::fs::read(
+                    std::path::PathBuf::from(&dir).join("special_tokens_map.json"),
+                )
+                .map_err(|e| anyhow::anyhow!("missing special_tokens_map.json in {dir}: {e}"))?,
+                tokenizer_config_file: std::fs::read(
+                    std::path::PathBuf::from(&dir).join("tokenizer_config.json"),
+                )
+                .map_err(|e| anyhow::anyhow!("missing tokenizer_config.json in {dir}: {e}"))?,
+            },
+        );
+        let options = RerankInitOptionsUserDefined::new();
+        TextRerank::try_new_from_user_defined(model, options)
     }
 
     /// Rerank the fused candidates in place. Sets `rerank_score` on each
