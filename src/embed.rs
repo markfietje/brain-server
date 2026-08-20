@@ -78,7 +78,7 @@ pub trait Embedder: Send + Sync {
 
 /// The default embedder. Wraps `model2vec_rs::StaticModel` and delegates
 /// verbatim — this is the no-behavior-change backend for `edge-default`,
-/// `quality-local`, `air-gapped`, and `multilingual`. The golden-vector test
+/// `quality-local`, `air-gapped`, and `compact` (formerly `multilingual`). The golden-vector test
 /// (`static_embedder_matches_model2vec_golden`, #[ignore] — operator-run, HF
 /// fetch) proves byte-identical output to the pre-trait `StaticModel.encode`.
 pub struct StaticEmbedder {
@@ -228,7 +228,7 @@ pub mod neural {
         }
     }
 
-    /// The desktop-profile embedder: `Alibaba-NLP/gte-base-en-v1.5` (149M, 768-d,
+    /// The desktop-profile embedder: `Alibaba-NLP/gte-base-en-v1.5` (~137M, 768-d,
     /// FastEmbed `GTEBaseENV15`). Dense-only (no sparse/colbert heads — pair with
     /// the rerank tier for precision). 54.09 MTEB-retrieval / strong English at
     /// ~1/4 the BGE-M3 footprint — the laptop/AMD-desktop tier.
@@ -289,7 +289,7 @@ pub mod neural {
 /// Resolve the embedder for the active profile. Mirrors `config::model_id_for_profile`
 /// but returns the typed backend. `edge-default` / `quality-local` / `air-gapped`
 /// → static potion (the Jetson contract, byte-identical to today); `enterprise`
-/// → BGE-M3 (feature-gated); `multilingual` → static potion-base-2M.
+/// → BGE-M3 (feature-gated); `compact` (legacy `multilingual`) → static potion-base-2M.
 ///
 /// Profile + model-id constants live server-side in `config.rs`; this lib-level
 /// factory hardcodes the three model ids (the same literals config uses) so the
@@ -307,7 +307,9 @@ pub fn embedder_for_profile(profile: &str) -> Result<Arc<dyn Embedder>, EmbedErr
         "desktop" => Ok(Arc::new(neural::GteEmbedder::new(
             "Alibaba-NLP/gte-base-en-v1.5",
         )?)),
-        "multilingual" => Ok(Arc::new(StaticEmbedder::new("minishlab/potion-base-2M")?)),
+        "compact" | "multilingual" => {
+            Ok(Arc::new(StaticEmbedder::new("minishlab/potion-base-2M")?))
+        }
         _ => Ok(Arc::new(StaticEmbedder::new(
             "minishlab/potion-retrieval-32M",
         )?)),

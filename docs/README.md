@@ -44,7 +44,12 @@ forward pass — ideal for Jetson/RPi/edge). Opt-in retrieval profiles swap in l
 |---|---|---|
 | `enterprise` | `BAAI/bge-m3` | 1024 |
 | `desktop` | `Alibaba-NLP/gte-base-en-v1.5` | 768 |
-| `multilingual` | `minishlab/potion-base-2M` | 512 |
+| `compact` (was `multilingual`) | `minishlab/potion-base-2M` | 512 |
+
+> The old `multilingual` label was wrong — `potion-base-2M` is an **English**
+> model (distilled from `BAAI/bge-base-en-v1.5`), not multilingual. Renamed to
+> **`compact`** (the smallest, fastest static model); `MODEL_PROFILE=multilingual`
+> still resolves to the same profile for backward compatibility.
 
 An optional cross-encoder **rerank tier** (armed on `enterprise` / `desktop` /
 `quality-local`) refines the fused order with `mixedbread-ai/mxbai-rerank-large-v1`

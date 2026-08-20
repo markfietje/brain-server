@@ -160,6 +160,18 @@ pub const CORS_MAX_AGE_SECS: u64 = 3600;
 /// opt-in and change the model footprint and rerank behaviour.
 pub const PROFILE_EDGE_DEFAULT: &str = "edge-default";
 pub const PROFILE_QUALITY_LOCAL: &str = "quality-local";
+/// The lightweight English static profile — `minishlab/potion-base-2M`, the
+/// smallest/fastest model in the pack (2M params, local, no transformer).
+/// Formerly named `multilingual` — that label was wrong: potion-base is an
+/// English model (distilled from `BAAI/bge-base-en-v1.5`), not multilingual.
+/// `PROFILE_MULTILINGUAL` remains as a deprecated alias so existing configs
+/// resolve to the same profile instead of silently falling back to edge-default.
+pub const PROFILE_COMPACT: &str = "compact";
+#[doc(hidden)]
+/// Deprecated alias for the compact profile. The `multilingual` label was
+/// wrong: `potion-base-2M` is an English model (distilled from
+/// `BAAI/bge-base-en-v1.5`), not multilingual. Kept so existing configs that
+/// used `MODEL_PROFILE=multilingual` keep resolving to the same profile.
 pub const PROFILE_MULTILINGUAL: &str = "multilingual";
 pub const PROFILE_AIR_GAPPED: &str = "air-gapped";
 /// v1.28 "Caliber": the enterprise profile selects the neural tier (BGE-M3 via
@@ -808,7 +820,7 @@ pub fn model_profile() -> &'static str {
         .as_deref()
     {
         Some(PROFILE_QUALITY_LOCAL) => PROFILE_QUALITY_LOCAL,
-        Some(PROFILE_MULTILINGUAL) => PROFILE_MULTILINGUAL,
+        Some(PROFILE_COMPACT) | Some(PROFILE_MULTILINGUAL) => PROFILE_COMPACT,
         Some(PROFILE_AIR_GAPPED) => PROFILE_AIR_GAPPED,
         Some(PROFILE_ENTERPRISE) => PROFILE_ENTERPRISE,
         Some(PROFILE_DESKTOP) => PROFILE_DESKTOP,
@@ -816,14 +828,15 @@ pub fn model_profile() -> &'static str {
     }
 }
 
-/// Resolve the embedding model id for the active profile. `multilingual` swaps
-/// the static model; `enterprise`/`desktop` select the neural tiers (feature-
-/// gated — they fall back to the static default when `neural-embed` is not
-/// compiled in). The others keep the static model and instead enable heavier
+/// Resolve the embedding model id for the active profile. `compact` (formerly
+/// `multilingual` — an English model, mislabeled) swaps in the smallest static
+/// model; `enterprise`/`desktop` select the neural tiers (feature-gated — they
+/// fall back to the static default when `neural-embed` is not compiled in). The
+/// others keep the default static model and instead enable heavier
 /// rerank/expansion (documented trade-off).
 pub fn model_id_for_profile(profile: &str) -> &'static str {
     match profile {
-        PROFILE_MULTILINGUAL => "minishlab/potion-base-2M", // multilingual static alternative
+        PROFILE_COMPACT | PROFILE_MULTILINGUAL => "minishlab/potion-base-2M", // compact static alternative (English; legacy alias keeps the old label working)
         PROFILE_ENTERPRISE => "BAAI/bge-m3", // v1.28 neural tier (1024-d, dense+sparse+colbert)
         PROFILE_DESKTOP => "Alibaba-NLP/gte-base-en-v1.5", // v1.28 desktop tier (768-d, dense)
         _ => MODEL_ID, // edge-default / quality-local / air-gapped keep the default static model

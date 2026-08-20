@@ -6,7 +6,7 @@
 //!
 //! Model resolution (highest quality first):
 //!   1. `mixedbread-ai/mxbai-rerank-large-v1` — the golden pick (Apache-2.0,
-//!      DeBERTa-v2 single-label cross-encoder → `logits[:, 0]` score, which is the
+//!      DeBERTa-v3-large single-label cross-encoder → `logits[:, 0]` score, which is the
 //!      exact contract fastembed's `UserDefinedRerankingModel` seam expects). It is
 //!      NOT in the FastEmbed registry enum (which only ships bge-reranker-base /
 //!      bge-reranker-v2-m3 / jina v1-turbo / jina v2), so it's loaded through the

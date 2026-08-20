@@ -310,7 +310,7 @@ Rust · Axum · rusqlite (WAL) · r2d2 · tokio · model2vec (`minishlab/potion-
 
 | | |
 |---|---|
-| **Model** | Default `minishlab/potion-retrieval-32M` (512-dim, static); neural tiers via `MODEL_PROFILE=enterprise` (BGE-M3, 1024-d), `MODEL_PROFILE=desktop` (gte-base-en-v1.5, 768-d) or `MODEL_PROFILE=multilingual` (potion-base-2M); opt-in cross-encoder rerank tier: `mixedbread-ai/mxbai-rerank-large-v1` (fallback `bge-reranker-v2-m3`) on enterprise/desktop/quality-local |
+| **Model** | Default `minishlab/potion-retrieval-32M` (512-dim, static); neural tiers via `MODEL_PROFILE=enterprise` (BGE-M3, 1024-d), `MODEL_PROFILE=desktop` (gte-base-en-v1.5, 768-d), or `MODEL_PROFILE=compact` (potion-base-2M — light English static, formerly the mislabeled `multilingual`); opt-in cross-encoder rerank tier: `mixedbread-ai/mxbai-rerank-large-v1` (fallback `bge-reranker-v2-m3`) on enterprise/desktop/quality-local |
 | **Latency** | sub-50ms p99 recall |
 | **License** | MIT |
 

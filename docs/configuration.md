@@ -45,13 +45,16 @@ Brain Server is configured entirely through **environment variables**, all resol
 ### Retrieval profiles & embedding models
 
 `MODEL_PROFILE` (also `BRAIN_MODEL_PROFILE`) selects the retrieval profile. Each resolves to an
-embedding model via `config::model_id_for_profile` + `embed::embedder_for_profile`:
+embedding model via `config::model_id_for_profile` + `embed::embedder_for_profile`. Note: the old
+`multilingual` profile name is wrong — `potion-base-2M` is an **English** model (distilled from
+`BAAI/bge-base-en-v1.5`), not multilingual. It was renamed **`compact`** (the smallest static
+model); `MODEL_PROFILE=multilingual` still resolves to the same profile for backward compatibility.
 
 | Profile | Embedding model | Dim | Backend | Rerank tier armed at boot |
 |---|---|---|---|---|
 | `edge-default` (default) | `minishlab/potion-retrieval-32M` | 512 | static `model2vec` | no |
 | `quality-local` | `minishlab/potion-retrieval-32M` | 512 | static `model2vec` | yes |
-| `multilingual` | `minishlab/potion-base-2M` | 512 | static `model2vec` | no |
+| `compact` (was `multilingual`) | `minishlab/potion-base-2M` | 512 | static `model2vec` | no |
 | `air-gapped` | `minishlab/potion-retrieval-32M` | 512 | static `model2vec` | no |
 | `enterprise` | `BAAI/bge-m3` (`--features neural-embed`) | 1024 | FastEmbed `BGEM3Q` | yes |
 | `desktop` | `Alibaba-NLP/gte-base-en-v1.5` (`--features neural-embed`) | 768 | FastEmbed `GTEBaseENV15` | yes |

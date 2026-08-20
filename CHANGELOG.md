@@ -50,6 +50,13 @@ seam). No schema, no migration, no wire change.
   (`new_mxbai_user_defined`), warns + falls back to `BGERerankerV2M3` on any miss;
   `model_id()` reports which model actually loaded. Boot log names the real model
   (was: `loading bge-reranker-v2-m3…`).
+- **Model-truth corrections**: the `multilingual` retrieval profile was mislabeled —
+  `minishlab/potion-base-2M` is an **English** model (distilled from
+  `BAAI/bge-base-en-v1.5`), not multilingual. Renamed to **`compact`**
+  (`PROFILE_COMPACT`); the old `PROFILE_MULTILINGUAL`/`MODEL_PROFILE=multilingual`
+  remains as a deprecated alias resolving to the same profile (no behavior change).
+  Also corrected `mxbai-rerank-large-v1` to DeBERTa-**v3**-large (~435M, was
+  misstated as v2) and `gte-base-en-v1.5` to ~137M (was 149M).
 - Model binaries are gitignored (downloaded per the plan, never committed).
 - Docs aligned to source truth: `docs/configuration.md` gains the retrieval-profiles
   model matrix + `BRAIN_RERANK_MODEL_DIR` / `BRAIN_RERANK_TOP_N`; `docs/SPECS.md`

@@ -414,8 +414,9 @@ when the active `MODEL_PROFILE` is `enterprise`, `desktop`, or `quality-local`).
 (edge/Jetson) stays on the static potion model **with no rerank**.
 
 `src/search/rerank.rs` loads, in order of preference:
-1. **`mixedbread-ai/mxbai-rerank-large-v1`** — the golden pick (Apache-2.0, DeBERTa-v2
-   single-label cross-encoder → `logits[:, 0]`). Not in the FastEmbed in-enum registry, so it is
+1. **`mixedbread-ai/mxbai-rerank-large-v1`** — the golden pick (Apache-2.0,
+   DeBERTa-v3-large, ~435M params, single-label cross-encoder → `logits[:, 0]`).
+   Not in the FastEmbed in-enum registry, so it is
    loaded through the BYO-ONNX `UserDefinedRerankingModel` seam from a local dir (default
    `models/mxbai-rerank-large-v1/`, override `BRAIN_RERANK_MODEL_DIR`), using the official int8
    `onnx/model_quantized.onnx`.
