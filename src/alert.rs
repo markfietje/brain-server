@@ -372,6 +372,32 @@ mod tests {
         assert_eq!(r.chain_head, "abc");
     }
 
+    /// v1.27.27 M1 (F-26 class): a POISONED chain-watch lock must read as the
+    /// fail-closed posture (`chain_ok = false`), never as "the last known good
+    /// check still holds" — `/health`'s integrity claim degrades to not-ok.
+    /// The `unwrap_or_default()` on the read is load-bearing precisely here.
+    #[test]
+    fn poisoned_chain_watch_reads_as_not_ok() {
+        let s = ChainWatchState::default();
+        s.set(ChainStatus {
+            chain_ok: true,
+            checked_at: 1_700_000_000,
+            chain_head: "abc".into(),
+        });
+        assert!(s.read().chain_ok, "sanity: healthy before poisoning");
+        // Poison: panic while holding the write guard (caught in-place — the
+        // guard drops during the unwind, which is what poisons the lock).
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = s.inner.write().expect("lock before panic");
+            panic!("poison the chain-watch lock");
+        }));
+        let r = s.read();
+        assert!(
+            !r.chain_ok,
+            "a poisoned watch must report NOT ok (fail closed)"
+        );
+    }
+
     #[test]
     fn alert_kinds_are_fixed_curated_set() {
         // 2026 alert-fatigue guard: the signal set is fixed & hand-curated; adding a kind is a deliberate code change, never config.

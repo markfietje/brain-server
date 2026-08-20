@@ -290,6 +290,29 @@ mod tests {
         assert_eq!(r.last_backup, "2026-07-28T00:00:00Z");
     }
 
+    /// v1.27.27 M1 (F-26 class): a POISONED snapshot lock must read as the
+    /// fail-closed posture (`integrity_ok = false`) — `/health`'s backup/
+    /// integrity claim degrades to not-ok, never keeps certifying the last
+    /// healthy cycle. Companion to `alert::poisoned_chain_watch_reads_as_not_ok`.
+    #[test]
+    fn poisoned_snapshot_reads_as_not_ok() {
+        let s = SnapshotState::default();
+        s.set(Snapshot {
+            last_backup: "2026-07-28T00:00:00Z".into(),
+            integrity_ok: true,
+        });
+        assert!(s.read().integrity_ok, "sanity: healthy before poisoning");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = s.inner.write().expect("lock before panic");
+            panic!("poison the snapshot lock");
+        }));
+        let r = s.read();
+        assert!(
+            !r.integrity_ok,
+            "a poisoned snapshot must report NOT ok (fail closed)"
+        );
+    }
+
     /// Civil-date sanity: epoch 0 = 1970-01-01T00:00:00Z.
     #[test]
     fn epoch_zero_is_1970_01_01() {

@@ -273,29 +273,41 @@ pub async fn retention_report(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     // Server-wide effective policy (code defaults + persisted overrides).
+    // F-26 class (v1.27.27 M1): this is compliance evidence — the
+    // storage-limitation report HIPAA/SOX reviewers read. A pool/SQL failure
+    // previously fell back to the code defaults SILENTLY, certifying a report
+    // that could misstate the real retention policy. Distinguish "no overrides
+    // stored" from "overrides unreadable": fail closed on the latter.
     let mut policy = crate::config::retention_kind_days();
-    if let Ok(conn) = state.pool.get() {
-        if let Ok(mut stmt) = conn.prepare("SELECT kind, days FROM retention_policy ORDER BY kind")
+    {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut stmt = conn
+            .prepare("SELECT kind, days FROM retention_policy ORDER BY kind")
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        for (k, d) in stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| HandlerError::internal(e.to_string()))?
+            .flatten()
         {
-            for (k, d) in stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map_err(|e| HandlerError::internal(e.to_string()))?
-                .flatten()
-            {
-                policy.insert(k, d);
-            }
+            policy.insert(k, d);
         }
     }
     // Per-domain policies from the bound profiles (the /decayed resolution).
+    // Same fail-closed rule: an unreadable profile store must not silently
+    // narrow the report to the server-wide defaults.
+    let conn = state
+        .pool
+        .get()
+        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
     let per_domain: std::collections::HashMap<String, std::collections::BTreeMap<String, i64>> =
-        match state.pool.get() {
-            Ok(conn) => brain_server::profile::domain_profiles(&conn)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
-                .collect(),
-            Err(_) => std::collections::HashMap::new(),
-        };
+        brain_server::profile::domain_profiles(&conn)
+            .map_err(|e| HandlerError::internal(format!("domain profile store: {e}")))?
+            .into_iter()
+            .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
+            .collect();
     let domains: Vec<String> = if state.registry.is_multi_db() {
         state.registry.known_domains()
     } else {

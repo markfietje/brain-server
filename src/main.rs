@@ -13305,6 +13305,171 @@ Final paragraph after the rule.";
         assert!(!gate.admits(&None, &None), "deny-all on store failure");
     }
 
+    /// v1.27.27 M1 (F-27 class, the Ok-side complement of the test above): a
+    /// principal whose role NAMES resolve to nothing (typo'd, deleted, or
+    /// minted by an issuer the role store never seeded) degrades to NO ACCESS,
+    /// never to "no narrowing". `resolve` returns Ok(vec![]) here — the empty
+    /// lookup is not an error, and the deny-by-default `effective_filter` must
+    /// still yield a permit that matches nothing.
+    #[tokio::test]
+    async fn role_lookup_empty_degrades_to_no_access() {
+        crate::register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(2).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+
+        // A role name that exists in NO store row.
+        let ghost = role_p("gus", &["no-such-role"], &[]);
+        let gate = handlers::gate::record_read_gate(&Some(ghost), &pool);
+        assert!(
+            !gate.admits(&Some("gus".to_string()), &Some("private".to_string())),
+            "an unresolved role must narrow to nothing, not open"
+        );
+        assert!(!gate.admits(&None, &None), "deny-all when no role resolves");
+
+        // Contrast: the SEEDED agent role does resolve (scopes ["private"],
+        // owner "self") — the empty-lookup denial is not a blanket outage.
+        let agent = role_p("ana", &["agent"], &[]);
+        let resolved = handlers::gate::record_read_gate(&Some(agent), &pool);
+        assert!(
+            resolved.admits(&Some("ana".to_string()), &Some("private".to_string())),
+            "the seeded agent role admits its own private rows (sanity)"
+        );
+        assert!(
+            !resolved.admits(
+                &Some("someone-else".to_string()),
+                &Some("private".to_string())
+            ),
+            "and still narrows to its own rows (sanity)"
+        );
+    }
+
+    /// v1.27.27 M1 (F-28 class): a revocation STORE ERROR must deny — never
+    /// `unwrap_or(false)`-skip the check. A cryptographically valid token over
+    /// a pool whose connections cannot open maps to 401 at the middleware
+    /// (the deny path), not to a pass-through.
+    #[tokio::test]
+    async fn revocation_lookup_error_denies() {
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        // Same broken-pool construction as `revoke_reports_failure`: the file
+        // manager points into a nonexistent dir, so every `pool.get()` fails
+        // AFTER the JWT signature verifies — isolating the revocation seam.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+        use std::os::unix::fs::PermissionsExt;
+        let mut rng = rand::thread_rng();
+        let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("test keypair");
+        let pub_pem = rsa::RsaPublicKey::from(&priv_key)
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
+        let priv_pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        std::fs::create_dir_all(tmp.path().join("keys")).unwrap();
+        std::fs::write(tmp.path().join("keys/k.pem"), pub_pem.as_bytes()).unwrap();
+        std::fs::write(tmp.path().join("keys/k.key"), priv_pem.as_bytes()).unwrap();
+        std::fs::set_permissions(
+            tmp.path().join("keys/k.key"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let raw = mint_test_token(
+            &priv_key,
+            "jti-store-err",
+            "user:carol",
+            "team-alpha",
+            &["read:team-alpha/*"],
+            &[],
+            600,
+        );
+
+        let gone = tmp.path().join("no-such-dir");
+        let mgr = SqliteConnectionManager::file(gone.join("db.sqlite"));
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .max_size(1)
+            .min_idle(Some(0))
+            .build(mgr)
+            .expect("pool builds lazily");
+        let state = Arc::new(JwtMiddlewareState {
+            auth_mode: auth::AuthMode::Jwt,
+            key_store: auth::jwks::KeyStore::load(&tmp.path().join("keys")).expect("keys"),
+            jwt_issuer: "https://brain.test/".to_string(),
+            jwt_audience: "brain-server".to_string(),
+            pool,
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            db_path: tmp.path().join("db.sqlite"),
+        });
+
+        let app = axum::Router::new()
+            .route("/private", get(|| async { "ok" }))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(state, jwt_auth_middleware));
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .header("authorization", format!("Bearer {raw}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "a revocation store error must DENY, not skip the check"
+        );
+    }
+
+    /// v1.27.27 M1 (F-26 class, consolidated pin): every shared-state read that
+    /// feeds an authorization, scope, or security-posture decision must fail
+    /// CLOSED when its lock is poisoned or its store unreadable. The behavior
+    /// pins live next to each gate (TokenStore poisoning →
+    /// `poisoned_token_store_reads_as_read_failed` + the 500 arm asserted
+    /// below; chain-watch/snapshot poisoning → their module tests); this pin
+    /// holds the source shapes so a refactor cannot silently drop an arm.
+    #[test]
+    fn poisoned_lock_denies_every_gate() {
+        let src = include_str!("main.rs");
+        // 1. Opaque middleware: ReadFailed is a 500 deny, never a pass-through.
+        assert!(
+            src.contains("auth::TokenRead::ReadFailed =>"),
+            "auth_middleware must keep the ReadFailed arm"
+        );
+        assert!(
+            src.contains("\"auth_store_unavailable\""),
+            "the poisoned token store must answer auth_store_unavailable"
+        );
+        // 2. JWT middleware: the revocation lookup propagates its error into
+        // the deny path (mapped by revocation_lookup_error_denies above).
+        assert!(
+            src.contains("revocation store unavailable"),
+            "a revocation store error must surface as a denial"
+        );
+        // 3. Domain registry: a poisoned registry lock is a typed error, not a
+        // silent fallthrough to the global pool.
+        let reg = include_str!("domain_registry.rs");
+        assert!(
+            reg.contains("DomainRegistryError::Poisoned"),
+            "pool_for must propagate lock poisoning"
+        );
+        // 4. Health posture signals: the poisoned-lock reads default to the
+        // NOT-ok posture (chain_ok / integrity_ok false), pinned by behavior
+        // in alert::tests and integrity::tests.
+        let alert_src = include_str!("alert.rs");
+        assert!(
+            alert_src.contains("Default `chain_ok=false` until the first check"),
+            "the chain-watch default must be the fail-closed posture"
+        );
+        let integrity_src = include_str!("integrity.rs");
+        assert!(
+            integrity_src.contains("integrity_ok: false"),
+            "the snapshot failure path must report not-ok"
+        );
+    }
+
     /// §5.2: the capability-token acceptance decision. A token
     /// signed by the operator key passes on the UMP surface (`/ump/*`,
     /// `/export`) and nowhere else; a wrong-key or expired token never
