@@ -123,6 +123,40 @@ jobs:
           name: dist-darwin
           path: dist/
 
+  docs-deploy:
+    # Rebuild + redeploy the mdBook site from the TAGGED revision. docs.yml
+    # only triggers on `main` path-pushes (docs/**, book.toml, theme/**), so a
+    # release tag push would otherwise leave the published docs pointing at an
+    # older commit — the docs must reflect the shipped binary's revision. Same
+    # build+deploy shape as docs.yml, same `pages` concurrency lock, so a doc
+    # deploy from a main push and from a tag cannot race.
+    name: Build & deploy docs (tagged revision)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: "pages"
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install mdBook
+        run: cargo install mdbook --version 0.5.4 --locked
+      - name: Build
+        run: mdbook build
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./book
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
   release:
     name: Assemble release + notes
     runs-on: ubuntu-latest

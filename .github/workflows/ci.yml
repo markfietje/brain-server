@@ -96,6 +96,22 @@ jobs:
       - name: cargo build --release
         run: cargo build --release
 
+  docs:
+    # mdBook docs build: the docs/ source feeds the GitHub Pages site via
+    # docs.yml (deploy) and release.yml (tagged revision deploy). This job
+    # validates the build on every PR + main push so a broken mdBook source
+    # (bad link, missing file, new-style preprocessor) is caught in CI instead
+    # of failing the deploy.
+    name: mdBook docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install mdBook
+        run: cargo install mdbook --version 0.5.4 --locked
+      - name: Build
+        run: mdbook build
+
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
