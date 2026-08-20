@@ -7,7 +7,7 @@
 //! the prior one. Every knowledge chunk links to a source + revision so a result
 //! can be traced to the exact document version it came from.
 //!
-//! Source-aware uniqueness (plan M1): same source + same revision is a no-op;
+//! Source-aware uniqueness: same source + same revision is a no-op;
 //! changed content → new revision atomically supersedes the old chunks.
 //!
 //! All functions take a `rusqlite::Transaction` so callers compose them into a
@@ -133,22 +133,16 @@ pub fn link_chunks(
 }
 
 /// temporal authority for a chunk. Source-authority is a
-/// documented tie-breaker only (M2.4); it is never fed into RRF/BM25 scores.
+/// documented tie-breaker only; it is never fed into RRF/BM25 scores.
 /// Defaults chosen so the common ingest kinds are distinguishable without
 /// per-source tuning.
 pub const AUTHORITY_MANUAL: f32 = 1.0;
 pub const AUTHORITY_VAULT: f32 = 0.8;
-// ponytail: connector ingests currently flow through the vault ingest path
-// (they set `source_path`), so they are stamped with AUTHORITY_VAULT today.
-// This constant is reserved for when the connector path is split out;
-// keep it so the documented authority tiers stay explicit.
-#[allow(dead_code)]
-pub const AUTHORITY_CONNECTOR: f32 = 0.6;
 
 /// Stamp the temporal window + authority for a freshly-linked chunk. Pure
 /// w.r.t. the tx; called once per chunk inside the existing ingest transaction
-/// (vault, manual, connector). All three temporal columns were added in v0.9.1
-/// but never populated — this is the write side of M1.1.
+/// (vault, manual, connector). The three temporal columns shipped in the schema
+/// unused before this function existed — this is their write side.
 ///
 /// `observed_at` is when brain-server learned the fact (ingest/sync time).
 /// `valid_from` is when the fact became true in the world (file mtime, issue
@@ -173,7 +167,7 @@ pub fn stamp_evidence(
     .map_err(Into::into)
 }
 
-/// Reconciliation report (plan M2): which sources fell out of the live set.
+/// Reconciliation report: which sources fell out of the live set.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
     pub deleted_sources: usize,
@@ -241,7 +235,7 @@ pub fn chunk_ids_for_source(tx: &Transaction<'_>, source_id: i64) -> Result<Vec<
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// Delete a single source by id (plan M2 explicit delete). Sweeps chunks and
+/// Delete a single source by id (explicit delete). Sweeps chunks and
 /// marks the source + active revision tombstoned. Returns false if the source
 /// id does not exist.
 pub fn delete_source(tx: &Transaction<'_>, source_id: i64) -> Result<bool> {
