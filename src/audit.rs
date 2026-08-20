@@ -216,16 +216,22 @@ pub fn record_tenant(
             "ROLLBACK TO SAVEPOINT audit_link",
         )
     };
-    // If the open fails, fall through with autocommit semantics so the audit
-    // row still lands (best-effort contract). S3-09 (pass-3 audit): the
-    // downgrade is never silent — the BEGIN failure means the tip-read +
-    // INSERT below run unserialized (the chain-fork window), so it bumps the
-    // same `/health` counter the settle-failure path uses.
+    // F-23 (pass-2 audit, the v1.27.26 "Notarize" fix): a failed
+    // BEGIN/SAVEPOINT must NOT fall through to the autocommit tip-read +
+    // INSERT. Running the read-modify-write unserialized is the exact
+    // chain-fork window that BEGIN IMMEDIATE exists to prevent — two
+    // writers could read the same tip and insert divergent rows with
+    // identical `prev_hash`, a permanent false-alarm chain-branch that
+    // `verify_chain` then reports forever. Dropping the row is FAIL-SAFE: the
+    // primary action still succeeds, and the missing row is itself evidence
+    // (an absent audit entry reads as a gap, never as a forged continuation).
+    // The failure is never silent — `record_commit_failure` bumps the same
+    // `/health counter` and warns at error level.
     let sp_ok = match conn.execute(begin_stmt, []) {
         Ok(_) => true,
         Err(e) => {
             record_commit_failure(&e);
-            false
+            return None;
         }
     };
     // Read the chain tip (the most recent row). Inside the tx this is stable
@@ -1104,12 +1110,10 @@ mod tests {
             "d",
             "team-a",
         );
-        assert_eq!(
-            audit_commit_failures(),
-            before + 1,
+        assert!(
+            audit_commit_failures() > before,
             "a failed settle must bump the /health counter"
         );
-        assert!(audit_commit_failures() > before, "monotonic counter");
         // The caller-facing contract still holds: a failed settle returns a row
         // id (best-effort), never panics, never corrupts.
         holder.execute_batch("ROLLBACK;").expect("release holder");
@@ -1443,5 +1447,78 @@ mod tests {
             verify_chain(&c),
             "chain verifies after concurrent autocommit writers — no fork"
         );
+    }
+
+    /// F-23 (v1.27.26 "Notarize"): a failed BEGIN IMMEDIATE must NOT fall
+    /// through to an unserialized tip-read + INSERT. Two writers reading the
+    /// same tip under autocommit would insert rows sharing a `prev_hash` —
+    /// a permanent fork `verify_chain` reports forever. Dropping the row is
+    /// fail-safe (a missing entry reads as a gap, never as a forge), and the
+    /// failure is surfaced via `audit_commit_failures` + `warn!`.
+    #[test]
+    fn begin_immediate_failure_skips_and_warns_not_forks() {
+        // File-backed DB so a second connection can hold a conflicting write
+        // lock (an in-memory DB is private to its connection).
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("audit_f23_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let blocker = Connection::open(&path).expect("open blocker connection");
+        blocker
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS audit_events(
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                   kind TEXT NOT NULL,
+                   actor TEXT,
+                   target_hash TEXT,
+                   status TEXT,
+                   detail_hash TEXT,
+                   tenant_id TEXT NOT NULL DEFAULT 'global',
+                   prev_hash TEXT
+                 );",
+            )
+            .expect("create audit_events");
+        // The writer connection must FAIL its BEGIN IMMEDIATE: busy_timeout 0
+        // so a held write lock makes BEGIN IMMEDIATE error immediately.
+        let writer = Connection::open(&path).expect("open writer connection");
+        writer
+            .execute_batch("PRAGMA busy_timeout=0;")
+            .expect("set busy_timeout");
+
+        // Seed one row first so a tip exists.
+        record(
+            &writer,
+            AuditKind::Auth,
+            "api",
+            "pre",
+            AuditStatus::Ok,
+            "seed",
+        )
+        .expect("seed row should write (no lock held yet)");
+
+        // Now the blocker takes an IMMEDIATE write lock and holds it.
+        blocker
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("blocker holds the write lock");
+        let before = audit_commit_failures();
+        let id = record(&writer, AuditKind::Auth, "api", "t", AuditStatus::Ok, "d");
+        blocker
+            .execute_batch("ROLLBACK;")
+            .expect("release the blocker lock");
+
+        assert!(id.is_none(), "a forking write must be refused, not emitted");
+        assert!(
+            audit_commit_failures() > before,
+            "the refused audit write must bump the /health counter"
+        );
+        let count: i64 = writer
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "only the seed row exists — no partial fork row");
+        assert!(
+            verify_chain(&writer),
+            "the chain still verifies after the refused write"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
