@@ -805,6 +805,8 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     }
 
     // safety snapshot of the live DB
+    let mut active_holds: Vec<(i64, String, String)> = Vec::new();
+    let mut tombstoned: Vec<i64> = Vec::new();
     if db_path.exists() {
         let bak = db_path.with_file_name(format!(
             "{}.bak",
@@ -829,6 +831,30 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
             .with_context(|| format!("open live DB {db_path:?}"))?;
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
             .context("wal_checkpoint before safety snapshot")?;
+        // S2-28 (pass-3): harvest the ACTIVE legal holds BEFORE the snapshot —
+        // restoring a pre-hold backup previously dropped every hold row, and
+        // a frozen-for-litigation id silently became purgable. The holds are
+        // re-applied to the restored DB below. Best-effort read (a missing
+        // table on an unmigrated file = no holds).
+        active_holds = conn
+            .prepare(
+                "SELECT knowledge_id, reason, placed_by FROM legal_holds \
+                  WHERE released_at IS NULL",
+            )
+            .and_then(|mut s| {
+                let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default();
+        // S2-28 companion: the tombstone ids — after restore we check which
+        // purged ids the backup resurrects (the WORM-lite disclosure).
+        tombstoned = conn
+            .prepare("SELECT DISTINCT knowledge_id FROM tombstones")
+            .and_then(|mut s| {
+                let rows = s.query_map([], |r| r.get(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap_or_default();
         // S2-26: create the .bak exclusively at 0600, then VACUUM INTO the
         // pre-created empty file — no umask window, no write-through of a
         // pre-planted file or symlink.
@@ -842,8 +868,64 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     // S2-27: temp + fsync + rename (crash mid-write never leaves a corrupt DB)
     // then fsync the directory so the rename itself is durable.
     write_atomic(db_path, &snapshot).with_context(|| format!("write restored DB {db_path:?}"))?;
+    // S2-28 (pass-3): re-apply the pre-restore ACTIVE holds to the restored
+    // DB (fresh rows; the freeze is on the knowledge id, not the rowid) and
+    // disclose any tombstoned content the backup resurrected. Best-effort for
+    // the restore itself, but never silent.
+    reapply_holds_and_disclose_resurrections(db_path, &active_holds, &tombstoned);
     audit_backup(db_path, AuditStatus::Ok, "restore complete");
     Ok(())
+}
+
+/// S2-28 (pass-3): post-restore hold re-application + resurrection disclosure.
+/// Holds are re-inserted for the SAME knowledge ids (a freeze binds the id, not
+/// the rowid); tombstoned ids that came back with the backup are counted +
+/// logged loudly (the WORM-lite posture: the operator must know a purge was
+/// undone, even when the restore itself is legitimate).
+fn reapply_holds_and_disclose_resurrections(
+    db_path: &Path,
+    active_holds: &[(i64, String, String)],
+    tombstoned: &[i64],
+) {
+    let Ok(conn) = rusqlite::Connection::open(db_path) else {
+        return;
+    };
+    for (kid, reason, placed_by) in active_holds {
+        // INSERT OR IGNORE: a hold row for the id may already exist in the
+        // restored data (the backup predates the RELEASE, not the hold).
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO legal_holds (knowledge_id, reason, placed_by, created_at) \
+             SELECT ?1, ?2, ?3, datetime('now') \
+             WHERE NOT EXISTS (SELECT 1 FROM legal_holds WHERE knowledge_id = ?1)",
+            rusqlite::params![kid, reason, placed_by],
+        );
+    }
+    if !active_holds.is_empty() {
+        tracing::warn!(
+            "restore: re-applied {} active legal hold(s) from the pre-restore DB \
+             (a pre-hold backup no longer silently unfreezes them)",
+            active_holds.len()
+        );
+    }
+    if !tombstoned.is_empty() {
+        let ph = std::iter::repeat_n("?", tombstoned.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT COUNT(*) FROM knowledge WHERE id IN ({ph})");
+        let resurrected: i64 = conn
+            .prepare(&sql)
+            .and_then(|mut s| {
+                s.query_row(rusqlite::params_from_iter(tombstoned.iter()), |r| r.get(0))
+            })
+            .unwrap_or(0);
+        if resurrected > 0 {
+            tracing::warn!(
+                "restore: {resurrected} previously-purged (tombstoned) chunk(s) are BACK in \
+                 the restored data — a DSAR/erasure was undone by this restore. \
+                 Re-run the purge or keep the disclosure on record."
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -896,6 +978,79 @@ mod tests {
         let _ = fs::remove_file(&src);
         let _ = fs::remove_file(&out);
         let _ = fs::remove_file(&dst);
+    }
+
+    /// S2-28 (pass-3): a restore of a PRE-HOLD backup must not silently drop
+    /// the live DB's active legal holds — the freeze is on the knowledge id
+    /// and outlives the restore. Also pins the resurrection disclosure path
+    /// (tombstoned ids that come back are counted; here: none, so no noise).
+    #[test]
+    fn restore_reapplies_active_legal_holds() {
+        let src = tmp_path("hold-src");
+        let out =
+            std::env::temp_dir().join(format!("brain-backup-hold-{}.enc", std::process::id()));
+        let dst = tmp_path("hold-dst");
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&dst);
+        let _ = fs::remove_file(dst.with_file_name("hold-dst.bak"));
+
+        // Backup source: PRE-hold state (no holds) + the chunk that will be held.
+        make_db(&src, "held evidence").unwrap();
+        {
+            let conn = rusqlite::Connection::open(&src).unwrap();
+            conn.execute(
+                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY, knowledge_id INTEGER, \
+                   reason TEXT, placed_by TEXT, created_at TEXT, released_at TEXT)",
+                [],
+            )
+            .unwrap();
+            conn.close().map_err(|(_, e)| e).unwrap();
+        }
+        backup(&src, &out, b"pass".as_slice()).unwrap();
+
+        // Live DB (pre-restore): migrated shape + an ACTIVE hold on id 1 + a
+        // tombstone for a purged id (99) that the backup does NOT contain.
+        make_db(&dst, "current state").unwrap();
+        {
+            let conn = rusqlite::Connection::open(&dst).unwrap();
+            conn.execute(
+                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY, knowledge_id INTEGER, \
+                   reason TEXT, placed_by TEXT, created_at TEXT, released_at TEXT)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE tombstones(knowledge_id INTEGER, content_hash TEXT, purged_at INTEGER)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO legal_holds(knowledge_id, reason, placed_by, created_at) \
+                 VALUES (1, 'litigation freeze', 'dpo', datetime('now'))",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO tombstones VALUES (99, 'h', 0)", [])
+                .unwrap();
+            conn.close().map_err(|(_, e)| e).unwrap();
+        }
+
+        restore(&out, &dst, b"pass".as_slice()).unwrap();
+
+        let conn = rusqlite::Connection::open(&dst).unwrap();
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM legal_holds WHERE knowledge_id = 1 AND released_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 1, "the ACTIVE hold survives the pre-hold restore");
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&dst);
+        let _ = fs::remove_file(dst.with_file_name("hold-dst.bak"));
     }
 
     #[test]

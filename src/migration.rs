@@ -308,12 +308,16 @@ pub fn run_migration_with_store_dim(
     }
 
     // ── v0.9.1: FTS5 vocabulary table for PRF term weighting ───────────
-    // `fts5vocab='instance'` exposes one row per (term, document, column) with
-    // a `cnt` (occurrence count). PRF query expansion joins this against the
-    // top-K rowids to rank expansion terms by corpus-weighted frequency
-    // (BM25-style signal), replacing the naive in-memory DF heuristic.
+    // `fts5vocab='instance'` exposes one row per OCCURRENCE:
+    // `(term, doc, col, offset)` — NO `cnt`/`rowid` columns (that was the
+    // pre-3.40 shape; the v0.9.1 query built against it silently fell back to
+    // the unweighted path until the v1.27.18 fix). PRF weights come from
+    // `COUNT(*)` per term scoped `doc IN (window)` + a corpus-df round-trip
+    // for the selected terms only (capped at MAX_DF_TERMS).
     //   ponytail: per-instance vocab; for a very large corpus switch to
     //   'row' mode (one row per term+doc). Ceiling: ~corpus-size rows.
+    //   S2-37 (pass-3): the step-1 `doc IN (…)` probe only indexes `term=` —
+    //   a full vocab scan per PRF call remains the documented perf ceiling.
     db.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts_vocab USING fts5vocab(
             knowledge_fts, 'instance'
@@ -1507,12 +1511,37 @@ pub fn run_migration_with_store_dim(
              ON relationships(from_entity_id, to_entity_id, relation_type);",
     )?;
 
+    // ── v1.27.25 "Scoped": the open-row invariant becomes STRUCTURAL. ─────
+    // S3-08 (pass-3 audit): "at most one open (superseded_at IS NULL) row per
+    // triple" was conventional only — a SELECT-then-INSERT race (or legacy
+    // corrupt data) could leave two open versions, and BOTH then render
+    // `current:true` on the history surface. First deterministically close
+    // every open row that is not the newest of its triple (same newest-wins
+    // rule `resolve_edge_insert` applies), then enforce it with a PARTIAL
+    // UNIQUE INDEX — a racing double-insert now fails at the DB (the ingest
+    // tx rolls back, fail-closed) instead of corrupting the lineage.
+    db.execute_batch(
+        "UPDATE relationships SET superseded_at = datetime('now')
+          WHERE superseded_at IS NULL
+            AND id NOT IN (
+                SELECT MAX(id) FROM relationships
+                WHERE superseded_at IS NULL
+                GROUP BY from_entity_id, to_entity_id, relation_type
+            );",
+    )?;
+    db.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_rels_open_unique
+             ON relationships(from_entity_id, to_entity_id, relation_type)
+            WHERE superseded_at IS NULL;",
+    )?;
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork" (M3): indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
+    // v1.27.25 "Scoped": idx_rels_open_unique partial unique index (+ dedup) → 1.27.25.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.22')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.22';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.25')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.25';",
         [],
     )?;
 

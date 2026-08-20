@@ -7559,7 +7559,14 @@ mod tests {
         // UNIQUE index, and direct legacy writes bypass `resolve_edge_insert`).
         // The current-belief anti-join must deterministically converge on the
         // newest live edition rather than emit both.
+        //
+        // v1.27.25 (S3-08): `idx_rels_open_unique` now makes this state
+        // UNREACHABLE via INSERT — the corrupt fixture requires dropping the
+        // index first (exactly what a pre-index legacy DB looked like). The
+        // anti-join stays the read-side defense for such DBs/files.
         let db = test_db();
+        db.execute_batch("DROP INDEX idx_rels_open_unique;")
+            .unwrap();
         db.execute(
             "INSERT INTO entities (name, entity_type) VALUES \
               ('dg_a','thing'),('dg_b','thing')",
@@ -9675,10 +9682,11 @@ Final paragraph after the rule.";
         // v1.27.18 for the index add/drop pass (Groundwork).
         // v1.27.22 for the relationships.superseded_at column + idx_rels_bt
         // (the write-once idx_rels_unique dropped → true bi-temporal edges).
+        // v1.27.25 for idx_rels_open_unique (structural open-row invariant).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_22),
-            "schema_version must be recorded as 1.27.22 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_25),
+            "schema_version must be recorded as 1.27.25 after migration"
         );
 
         // the preset tables exist and the 12 ship-with
@@ -9788,6 +9796,45 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(bt_indexed, 1, "idx_rels_bt must exist");
+        // v1.27.25 (S3-08): the open-row invariant is structural — a partial
+        // UNIQUE index on the triple WHERE superseded_at IS NULL. A racing
+        // double-insert (or a future writer bypassing resolve_edge_insert)
+        // fails at the DB instead of corrupting the lineage.
+        let open_unique: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name='idx_rels_open_unique'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open_unique, 1, "idx_rels_open_unique must exist");
+        // And it BITES: a second open row for the same triple is rejected.
+        db.execute(
+            "INSERT INTO entities (name, entity_type) VALUES ('iu_a','thing'),('iu_b','thing')",
+            [],
+        )
+        .unwrap();
+        let (ia, ib): (i64, i64) = db
+            .query_row(
+                "SELECT (SELECT id FROM entities WHERE name='iu_a'), (SELECT id FROM entities WHERE name='iu_b')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type) VALUES (?1, ?2, 'works_at')",
+            params![ia, ib],
+        )
+        .unwrap();
+        let dup = db.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type) VALUES (?1, ?2, 'works_at')",
+            params![ia, ib],
+        );
+        assert!(
+            dup.is_err(),
+            "the partial unique index must reject a second open row for the same triple"
+        );
 
         // the feedback ledger exists with its audit columns.
         // Append-only by construction; this is the smallest check that fails
@@ -10798,28 +10845,43 @@ Final paragraph after the rule.";
     #[test]
     fn test_observe_audit_retention_prunes_and_reanchors() {
         let db = test_db();
-        for i in 0..4 {
-            crate::audit::record(
-                &db,
-                crate::audit::AuditKind::Ingest,
-                "api",
-                &format!("old-{i}"),
-                crate::audit::AuditStatus::Ok,
-                "manual",
-            );
+        // v1.27.25 (S2-16): the prune now VERIFES the chain first, and `ts` is
+        // part of the link — the old fixture aged rows by rewriting ts AFTER
+        // record() chained them, which is now (correctly) refused as tamper.
+        // Instead the aged rows are written pre-v1.1-style (NULL backrefs —
+        // the legal chain prefix) with old timestamps from the start.
+        for i in 0..3 {
+            db.execute(
+                "INSERT INTO audit_events(ts, kind, actor, target_hash, status, detail_hash, prev_hash) \
+                 VALUES (datetime('now', '-400 days'), 'ingest', 'api', ?1, 'ok', 'd', NULL)",
+                rusqlite::params![format!("old-{i}")],
+            )
+            .unwrap();
         }
-        // Age the first three rows past the window (ts is SQLite
-        // CURRENT_TIMESTAMP text; the cutoff compares lexicographically).
-        db.execute_batch(
-            "UPDATE audit_events SET ts = datetime('now', '-400 days') WHERE id IN (1, 2, 3)",
-        )
-        .unwrap();
+        crate::audit::record(
+            &db,
+            crate::audit::AuditKind::Ingest,
+            "api",
+            "fresh-window",
+            crate::audit::AuditStatus::Ok,
+            "manual",
+        );
         let pruned = crate::audit::prune_audit_retention(&db, 30).expect("prune");
         assert_eq!(pruned, 3, "expired rows pruned");
         let remaining: i64 = db
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(remaining, 1, "retained window kept");
+        // v1.27.25 (S2-16): the prune writes its OWN evidence row — the
+        // retained window is the survivor + the retention event.
+        assert_eq!(remaining, 2, "retained window kept + the prune event");
+        let events: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'retention'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 1, "the prune recorded its evidence row");
         assert!(
             crate::audit::verify_chain(&db),
             "re-anchored chain verifies after pruning"

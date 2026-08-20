@@ -82,14 +82,16 @@ pub fn resolve_edge_insert(
     now: &str,
 ) -> Result<EdgeAction, rusqlite::Error> {
     // The current version of this triple, if any. At most one row has
-    // `superseded_at IS NULL` (the supersession invariant); the guard orders
-    // by id so a legacy corrupt DB (multiple open) still resolves
-    // deterministically to the newest.
+    // `superseded_at IS NULL` per triple — STRUCTURAL since v1.27.25 via the
+    // partial unique index `idx_rels_open_unique` (S3-08): a racing
+    // double-insert fails at the DB and rolls back the whole ingest
+    // (fail-closed). The `ORDER BY id DESC` guard stays for pre-index legacy
+    // rows a migrated file may still hold (deterministic newest-wins).
     let open: Option<(i64, Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT id, valid_at, invalid_at FROM relationships
-              WHERE from_entity_id = ?1 AND to_entity_id = ?2 AND relation_type = ?3
-                AND superseded_at IS NULL
+            "SELECT id, valid_at, invalid_at FROM relationships \
+              WHERE from_entity_id = ?1 AND to_entity_id = ?2 AND relation_type = ?3 \
+                AND superseded_at IS NULL \
               ORDER BY id DESC LIMIT 1",
             params![from_id, to_id, kind],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),

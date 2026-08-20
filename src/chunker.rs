@@ -212,12 +212,35 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
     let text: &str = &chunk.text;
     let is_fenced = text.starts_with("```") || text.starts_with("~~~");
     let all_lines: Vec<&str> = text.split('\n').collect();
-    let (opener, closer, body): (Option<&str>, Option<&str>, &[&str]) = if is_fenced {
+    // S2-19 (pass-3): the last line is the closer ONLY when it really is one —
+    // a trimmed line starting with the same fence marker. An UNTERMINATED
+    // oversized block has code as its last line: previously that code line was
+    // excluded from the body and then glued onto EVERY piece as a fake closer,
+    // duplicating the source's final line into every stored chunk (silent
+    // evidence corruption). Unterminated → no closer: body keeps every line
+    // and pieces stay unterminated (verbatim fidelity over re-fencing).
+    let fence_marker = if text.starts_with("```") {
+        "```"
+    } else if text.starts_with("~~") {
+        "~~~"
+    } else {
+        ""
+    };
+    let last_is_closer = is_fenced
+        && all_lines
+            .last()
+            .is_some_and(|l| l.trim_start().starts_with(fence_marker))
+        && all_lines.len() >= 2;
+    let (opener, closer, body): (Option<&str>, Option<&str>, &[&str]) = if last_is_closer {
         (
             all_lines.first().copied(),
             all_lines.last().copied(),
-            &all_lines[1..all_lines.len().saturating_sub(1)],
+            &all_lines[1..all_lines.len() - 1],
         )
+    } else if is_fenced {
+        // Unterminated fence: keep the opener (pieces re-open it) but every
+        // line after it is body.
+        (all_lines.first().copied(), None, &all_lines[1..])
     } else {
         (None, None, &all_lines[..])
     };
@@ -237,11 +260,19 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
         // Degenerate: one single line longer than the cap. The newline-
         // boundary rule has no boundary to respect — split by byte (char-
         // boundary-safe) and keep the parts as their own one-line pieces.
+        // S2-20 (pass-3): fenced pieces keep a trailing newline so a
+        // re-attached closer lands at a line start; PROSE pieces stay strict
+        // verbatim substrings of the source (no synthesis on the non-fenced
+        // path — the invariant `no_chunk_exceeds_hard_cap` pins).
         if add > MAX_CODE_CHUNK_BYTES {
             let mut rest = *line;
             while !rest.is_empty() {
                 let cut = rest.floor_char_boundary(MAX_CODE_CHUNK_BYTES.min(rest.len()));
-                raw.push(rest[..cut].to_string());
+                if opener.is_some() {
+                    raw.push(format!("{}\n", &rest[..cut]));
+                } else {
+                    raw.push(rest[..cut].to_string());
+                }
                 rest = &rest[cut..];
             }
             continue;
@@ -260,8 +291,12 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
     let mut out = Vec::with_capacity(raw.len());
     let mut next_line = chunk.line_start;
     for piece in raw {
+        // S2-19/S2-20: with an opener, every piece re-opens the fence; the
+        // closer is re-attached only when the block had one, and pieces now
+        // end with a newline so it sits at a line start.
         let piece_text = match (opener, closer) {
             (Some(op), Some(cl)) => format!("{op}\n{piece}{cl}"),
+            (Some(op), None) => format!("{op}\n{piece}"),
             _ => piece,
         };
         let body_lines = piece_text.matches('\n').count().max(1);
@@ -596,6 +631,54 @@ mod tests {
             2,
             "both fences intact, byte-sliced verbatim"
         );
+    }
+
+    /// S2-19 (pass-3): an UNTERMINATED oversized fenced block — the final
+    /// line is CODE, not a closer. The old code excluded it from the body and
+    /// glued it onto EVERY piece as a fake closer, duplicating the source's
+    /// last line into every stored chunk (silent evidence corruption).
+    #[test]
+    fn unterminated_fenced_oversized_block_does_not_duplicate_last_line() {
+        let body_line = format!("let x = 1; // {}", "a".repeat(MAX_CODE_CHUNK_BYTES));
+        let md = format!("```rust\n{body_line}\nFINAL_CODE_LINE();\n");
+        let chunks = chunk_markdown(&md);
+        assert!(chunks.len() > 1, "oversized block must split");
+        let dup_count = chunks
+            .iter()
+            .filter(|c| c.text.contains("FINAL_CODE_LINE();"))
+            .count();
+        assert_eq!(
+            dup_count, 1,
+            "the final code line must appear in exactly ONE piece, not every piece"
+        );
+        // And no piece carries a fake closer (the block never had one).
+        assert!(
+            chunks.iter().all(|c| !c.text.trim_end().ends_with("```)")),
+            "no synthesized fence closer on an unterminated block"
+        );
+    }
+
+    /// S2-20 (pass-3): degenerate single-line-over-cap pieces inside a FENCED
+    /// block end with a newline so the re-attached closer sits at a line
+    /// start; prose pieces stay verbatim (pinned by no_chunk_exceeds_hard_cap).
+    #[test]
+    fn fenced_degenerate_pieces_keep_closer_on_own_line() {
+        let giant = "x".repeat(MAX_CODE_CHUNK_BYTES + 4096);
+        let md = format!("```\n{giant}\n```\n");
+        let chunks = chunk_markdown(&md);
+        assert!(chunks.len() >= 2);
+        // Terminated block: every piece re-closes. The closer must be at a
+        // line start (preceded by a newline), never glued onto code bytes.
+        for c in &chunks {
+            if let Some(pos) = c.text.rfind("```") {
+                let before = c.text[..pos].chars().next_back();
+                assert!(
+                    before == Some('\n') || pos == 0,
+                    "closer must start on its own line: {:?}",
+                    &c.text[pos.saturating_sub(12)..(pos + 3).min(c.text.len())]
+                );
+            }
+        }
     }
 
     #[test]

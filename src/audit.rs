@@ -68,6 +68,10 @@ pub enum AuditKind {
     /// that a "current belief" read would redact) is itself evidence; the read
     /// is invokable by a Read-granted principal but the ROW level is Admin.
     GraphRead,
+    /// audit-retention prune events (S2-16, pass-3 audit): the deletion of
+    /// audit evidence must itself be evidenced — a prune writes one row
+    /// recording the cutoff + pruned count.
+    Retention,
 }
 
 impl AuditKind {
@@ -85,7 +89,8 @@ impl AuditKind {
             AuditKind::Breach => "breach",
             AuditKind::Transfer => "transfer",
             AuditKind::Client => "client",
-            AuditKind::GraphRead => "graph_read",
+            AuditKind::GraphRead => "graphread",
+            AuditKind::Retention => "retention",
         }
     }
 }
@@ -394,6 +399,18 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     if expired == 0 {
         return Some(0);
     }
+    // S2-16 (pass-3 audit): VERIFY BEFORE PRUNE — the re-anchor below
+    // recomputes every survivor's prev_hash, which would re-bless a tampered
+    // chain into a freshly-verifying one (evidence laundering). A chain that
+    // does not verify is preserved verbatim for forensics; pruning it is
+    // refused and the operator sees the warning.
+    if !verify_chain(conn) {
+        tracing::warn!(
+            "audit retention prune REFUSED: chain does not verify \
+             ({expired} expired rows preserved for forensics)"
+        );
+        return None;
+    }
     // IMMEDIATE (not the default DEFERRED that `unchecked_transaction`
     // uses) so the re-anchor's read-then-rewrite of every survivor's prev_hash
     // is serialized against concurrent `record_tenant` writers. Without this,
@@ -468,10 +485,18 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
                 prev.as_deref().unwrap_or(""),
             ))
         };
-        let _ = conn.execute(
+        // S2-35 (pass-3 audit): a failed re-anchor UPDATE propagates —
+        // swallowing it here and COMMITting anyway would persist a
+        // half-rewritten chain that then fails verify (the exact `let _ =`
+        // residue the v1.27.19 sweep was meant to end).
+        if let Err(e) = conn.execute(
             "UPDATE audit_events SET prev_hash = ?1 WHERE id = ?2",
             params![new_prev, id],
-        );
+        ) {
+            let _ = conn.execute("ROLLBACK", []);
+            tracing::warn!("audit retention prune: re-anchor UPDATE failed (id {id}): {e}");
+            return None;
+        }
         prev = new_prev;
     }
     // sweep orphaned trace artifacts. `recall_traces` is keyed by the
@@ -493,6 +518,22 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     if conn.execute("COMMIT", []).is_err() {
         let _ = conn.execute("ROLLBACK", []);
         return None;
+    }
+    // S2-16 (pass-3 audit): the deletion of audit evidence is itself
+    // evidenced — one row on the (re-anchored) chain recording cutoff + count.
+    // Best-effort (a failure here must not unwind the committed prune) but
+    // never silent.
+    if record(
+        conn,
+        AuditKind::Retention,
+        "system",
+        &cutoff,
+        AuditStatus::Ok,
+        &format!("pruned:{expired}"),
+    )
+    .is_none()
+    {
+        tracing::warn!("audit retention prune: prune-event record failed (count {expired})");
     }
     Some(expired)
 }
@@ -527,9 +568,12 @@ pub fn chain_head(conn: &Connection) -> Option<String> {
 /// migrated DB may have thousands of them, followed by the first v1.1 row that
 /// links back to the last NULL row's recomputed link.
 ///
-/// ponytail: O(n) full-table scan. Adequate for the multi-thousand-row audit
-/// volumes brain-server targets; a >1M-row audit log would want a periodic
-/// checkpoint (store the verified tip hash in `schema_meta`).
+/// F-03 (pass-3 audit, the no-hash-change half): NULL `prev_hash` is legal
+/// only as a PREFIX. `record_tenant` always writes a non-NULL backref once a
+/// tip exists, and the retention prune re-anchors to a single leading genesis
+/// NULL — so a NULL appearing AFTER the first non-NULL row can only be the
+/// result of tampering (an attacker erasing a row's link to its predecessor).
+/// The prefix rule makes that detectable without changing any stored hash.
 pub fn verify_chain(conn: &Connection) -> bool {
     let mut stmt = match conn.prepare(
         "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events \
@@ -552,17 +596,29 @@ pub fn verify_chain(conn: &Connection) -> bool {
     };
     // `prev_link` is the chain link computed from the prior row; the next row's
     // stored `prev_hash` (if it has one) must equal it. NULL `prev_hash` rows
-    // are pre-v1.1.0 (or the very first row) and carry no backref to verify —
-    // they only contribute their own link to the next row. A migrated DB has
-    // arbitrarily many consecutive NULL rows, so NULL must never fail.
+    // are pre-v1.1.0 (or the very first row / the prune genesis) and carry no
+    // backref to verify — they only contribute their own link to the next row.
+    // A migrated DB has arbitrarily many consecutive NULL rows at the head, so
+    // a leading NULL run never fails. F-03: once a row carries a non-NULL
+    // backref, the chain has started — any LATER NULL is tamper.
     let mut prev_link: Option<String> = None;
+    let mut chain_started = false;
     for row in rows.flatten() {
-        if let Some(got) = &row.prev_hash {
-            match &prev_link {
-                Some(want) if want == got => {}
-                Some(_) => return false, // tampered or out-of-order v1.1 row
-                None => {}               // first row overall — chain origin
+        match &row.prev_hash {
+            Some(got) => {
+                chain_started = true;
+                match &prev_link {
+                    Some(want) if want == got => {}
+                    Some(_) => return false, // tampered or out-of-order v1.1 row
+                    None => {}               // first row overall — chain origin
+                }
             }
+            None if chain_started => {
+                // F-03: a NULL backref after the chain started. Legitimate
+                // writers always chain from the tip once one exists.
+                return false;
+            }
+            None => {}
         }
         // Advance: every row contributes its link, including NULL ones (the
         // first v1.1 row after a NULL run links back to the last NULL row).
@@ -1067,14 +1123,33 @@ mod tests {
         // mid-call isn't feasible without a different schema, so we verify the
         // positive invariant instead: caller work before + after a successful
         // audit survives a commit. This test exists to pin the savepoint shape.
+        //
+        // F-03 (pass-3): the caller rows are written CHAINED (genesis NULL,
+        // then backrefs) — a raw mid-chain NULL insert is now tamper by the
+        // verify prefix rule, and production writers never produce one.
         let db = db();
         let tx = db.unchecked_transaction().unwrap();
         tx.execute(
-            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
-             VALUES ('ingest', 'before', 'before-audit', 'ok', 'd')",
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, prev_hash)
+             VALUES ('ingest', 'before', 'before-audit', 'ok', 'd', NULL)",
             [],
         )
         .unwrap();
+        let before_link: Option<String> = tx
+            .query_row(
+                "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE actor = 'before'",
+                [],
+                |r| {
+                    Ok(chain_link(
+                        &r.get::<_, String>(0)?,
+                        &r.get::<_, String>(1)?,
+                        &r.get::<_, String>(2)?,
+                        &r.get::<_, String>(3)?,
+                        r.get::<_, Option<String>>(4)?.unwrap_or_default().as_str(),
+                    ))
+                },
+            )
+            .ok();
         record(
             &tx,
             AuditKind::Ingest,
@@ -1083,12 +1158,28 @@ mod tests {
             AuditStatus::Ok,
             "d",
         );
+        let audit_link: Option<String> = tx
+            .query_row(
+                "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE target_hash = ?1",
+                params![crate::audit::hash("audit-event")],
+                |r| {
+                    Ok(chain_link(
+                        &r.get::<_, String>(0)?,
+                        &r.get::<_, String>(1)?,
+                        &r.get::<_, String>(2)?,
+                        &r.get::<_, String>(3)?,
+                        r.get::<_, Option<String>>(4)?.unwrap_or_default().as_str(),
+                    ))
+                },
+            )
+            .ok();
         tx.execute(
-            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
-             VALUES ('ingest', 'after', 'after-audit', 'ok', 'd')",
-            [],
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, prev_hash)
+             VALUES ('ingest', 'after', 'after-audit', 'ok', 'd', ?1)",
+            params![audit_link],
         )
         .unwrap();
+        let _ = before_link;
         tx.commit().unwrap();
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
@@ -1098,6 +1189,96 @@ mod tests {
             "caller work before + audit + caller work after all landed"
         );
         assert!(verify_chain(&db));
+    }
+
+    /// F-03 (pass-3): a NULL backref after the chain started is tamper —
+    /// the prefix rule. Leading NULLs (pre-v1.1 rows / genesis) stay legal.
+    #[test]
+    fn hash_chain_rejects_mid_chain_null_backref() {
+        let db = db();
+        // Leading NULL (pre-v1.1-style) is fine…
+        db.execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, prev_hash)
+             VALUES ('ingest', 'api', 'legacy', 'ok', 'd', NULL)",
+            [],
+        )
+        .unwrap();
+        assert!(verify_chain(&db), "leading NULLs are the legal prefix");
+        // …then chained rows (what record() writes)…
+        record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+        record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+        assert!(verify_chain(&db), "NULL-prefix then chained rows verifies");
+        // …then erase the LAST row's backref mid-chain (the tamper the rule
+        // exists for — a prior non-NULL backref exists, so the prefix is over).
+        db.execute(
+            "UPDATE audit_events SET prev_hash = NULL WHERE target_hash = ?1",
+            params![crate::audit::hash("c2")],
+        )
+        .unwrap();
+        assert!(
+            !verify_chain(&db),
+            "a NULL backref after the chain started must fail verify"
+        );
+    }
+
+    /// S2-16 (pass-3): the retention prune (a) REFUSES to run on a chain that
+    /// does not verify (no evidence laundering) and (b) records a prune event
+    /// on the chain when it does run.
+    #[test]
+    fn retention_prune_refuses_tampered_chain_and_records_event() {
+        let db = db();
+        // The prune sweeps orphaned `recall_traces` rows — the minimal audit
+        // fixture needs the table to exist.
+        db.execute(
+            "CREATE TABLE recall_traces(audit_id INTEGER PRIMARY KEY, trace_json TEXT)",
+            [],
+        )
+        .unwrap();
+        // Two old rows + one fresh, chained via record().
+        db.execute_batch(
+            "INSERT INTO audit_events(id, ts, kind, actor, target_hash, status, detail_hash, prev_hash)
+             VALUES (1, datetime('now', '-30 days'), 'recall', 'alice', 't1', 'ok', 'd1', NULL),
+                    (2, datetime('now', '-29 days'), 'recall', 'alice', 't2', 'ok', 'd2', NULL);",
+        )
+        .unwrap();
+        record(
+            &db,
+            AuditKind::Recall,
+            "alice",
+            "fresh",
+            AuditStatus::Ok,
+            "d3",
+        );
+        // Tamper: break row 2's fields without re-chaining.
+        db.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 2", [])
+            .unwrap();
+        assert!(!verify_chain(&db));
+        // The prune must REFUSE (rows preserved).
+        assert!(
+            prune_audit_retention(&db, 7).is_none(),
+            "tampered chain: prune refused"
+        );
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "nothing pruned on a tampered chain");
+
+        // Repair (restore the field) → prune runs and records its event.
+        db.execute("UPDATE audit_events SET actor = 'alice' WHERE id = 2", [])
+            .unwrap();
+        assert!(verify_chain(&db));
+        let pruned = prune_audit_retention(&db, 7).expect("prune on healthy chain");
+        assert_eq!(pruned, 2, "the two old rows expired");
+        let events: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'retention'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 1, "the prune wrote its evidence row");
+        // And the re-anchored chain still verifies (event chains from genesis).
+        assert!(verify_chain(&db), "chain verifies after prune + event");
     }
 
     #[test]

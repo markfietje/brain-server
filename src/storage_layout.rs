@@ -83,6 +83,10 @@ pub const SCHEMA_VERSION_V1_27_18: &str = "1.27.18";
 /// Graphiti), `idx_rels_unique` (write-once UNIQUE) is replaced by the plain
 /// `idx_rels_bt` (versioned edges may hold many rows per triple).
 pub const SCHEMA_VERSION_V1_27_22: &str = "1.27.22";
+/// v1.27.25 "Scoped": the open-edge invariant becomes structural —
+/// `idx_rels_open_unique` (partial UNIQUE on the triple WHERE superseded_at IS
+/// NULL, with a deterministic newest-wins dedup of legacy double-open rows).
+pub const SCHEMA_VERSION_V1_27_25: &str = "1.27.25";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
