@@ -57,6 +57,36 @@ An optional cross-encoder **rerank tier** (armed on `enterprise` / `desktop` /
 required, no token spend. See [Configuration](./configuration.md) for the full
 profile matrix and the `BRAIN_RERANK_*` variables.
 
+## Minimum hardware requirements
+
+The retrieval profile you pick drives the hardware you need. **compact** uses a
+static 512-d model (no transformer forward pass — it will run on a Raspberry Pi
+or a Jetson); **desktop** and **enterprise** load a neural embedding model via
+ONNX (FastEmbed), which needs real RAM and CPU. All figures are honest
+**minimums for a single host running the server only**, and already include
+headroom for the operating system, your agent application, and background
+services — not a bare-bones, swap-thrashing floor. They assume a modern 64-bit
+CPU (ARM64 or x86_64) with no GPU anywhere in the path.
+
+| | `compact` (edge) | `desktop` | `enterprise` |
+|---|---|---|---|
+| Embedding model | `minishlab/potion-base-2M` (512-d, static) | `Alibaba-NLP/gte-base-en-v1.5` (768-d, ONNX) | `BAAI/bge-m3` (1024-d, ONNX) |
+| RAM | **2 GB** | **8 GB** | **16 GB** |
+| CPU | 2 cores | 4 cores | 8 cores |
+| Free disk (server + DB + model cache) | **4 GB** | **8 GB** | **12 GB** |
+| Device example | Raspberry Pi 4 / Jetson Nano | x86_64 mini-PC or Mac | server-class x86_64 / Mac |
+| Typical process RSS | ~200 MB | ~0.8–1 GB | ~1 GB |
+| OS headroom (included above) | Linux on 4 GB is comfortable | comfortable | comfortable |
+
+Why the jumps look large next to the modest RSS figures: the ONNX embedder
+**warms up its working set at boot** (never in the request path), and the
+measured RSS is the server process alone. Add the OS, an agent process that
+queries it, and occasional embedding bursts, and the real-world floor is what
+the table states. On constrained ARM edge hardware, set
+`BRAIN_WORKER_THREADS=2` and the RSS ceiling is bounded (`CAPACITY_MAX_RSS_MIB`,
+default 512 MiB on a 4 GB device). See [Deployment — edge](./deployment.md#edge-deployment-jetson-nano--raspberry-pi)
+and [Configuration](./configuration.md) for the knobs.
+
 ## Who it is for
 
 - **Anyone who wants their agent's memory private** — your conversation history and
