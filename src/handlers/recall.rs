@@ -254,10 +254,7 @@ pub(crate) async fn run_recall(
     let query = validate_recall(&req)?;
     // `domain` is validated for shape in validate_recall; re-normalize here for
     // the response label. Legacy behavior: the single DB answers every domain as-is.
-    let forced_domain = match &req.domain {
-        Some(d) => Some(normalize_domain(d)?),
-        None => None,
-    };
+    let forced_domain: Option<String> = req.domain.as_deref().map(normalize_domain).transpose()?;
     // AuthZ read gate, scoped to the requested domain.
     // `None` (no JWT) = superuser.
     super::authorize(

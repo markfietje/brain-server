@@ -398,10 +398,7 @@ pub(crate) async fn ingest_one(
     req.expires_at = ttl_days_to_expires(req.expires_at, req.ttl_days)?;
 
     // Forced domain (auto-route when omitted)
-    let forced_domain: Option<String> = match &req.domain {
-        Some(d) => Some(normalize_domain(d)?),
-        None => None,
-    };
+    let forced_domain: Option<String> = req.domain.as_deref().map(normalize_domain).transpose()?;
     // write gate at handler entry, scoped to the actual
     // target domain (forced, else "global"). Back-compat — `None` principal
     // (no JWT) is superuser.
