@@ -849,6 +849,42 @@ fn export_audit_segment(
     for row in rows.flatten() {
         writeln!(out, "{row}")?;
     }
+    // S2-21 (pass-3): the deletion registry is evidence too — tombstones
+    // (SHA-256 content digests of purged chunks) + evidence_links were
+    // previously destroyed by the delete the segment was supposed to
+    // memorialize. Append them to the same operator artifact.
+    let mut ts = tx.prepare(
+        "SELECT knowledge_id, document_id, content_hash, reason, origin_id, deleted_at, purged_at \
+           FROM tombstones ORDER BY knowledge_id",
+    )?;
+    let ts_rows = ts.query_map([], |r| {
+        Ok(serde_json::json!({
+            "knowledge_id": r.get::<_, i64>(0)?,
+            "document_id": r.get::<_, Option<String>>(1)?,
+            "content_hash": r.get::<_, Option<String>>(2)?,
+            "reason": r.get::<_, Option<String>>(3)?,
+            "origin_id": r.get::<_, Option<i64>>(4)?,
+            "deleted_at": r.get::<_, Option<String>>(5)?,
+            "purged_at": r.get::<_, Option<i64>>(6)?,
+        }))
+    })?;
+    for row in ts_rows.flatten() {
+        writeln!(out, "{{\"segment\":\"tombstones\",\"row\":{row}}}")?;
+    }
+    let mut el = tx.prepare(
+        "SELECT from_chunk, to_chunk, kind, created_at FROM evidence_links ORDER BY from_chunk, to_chunk",
+    )?;
+    let el_rows = el.query_map([], |r| {
+        Ok(serde_json::json!({
+            "from_chunk": r.get::<_, i64>(0)?,
+            "to_chunk": r.get::<_, i64>(1)?,
+            "kind": r.get::<_, Option<String>>(2)?,
+            "created_at": r.get::<_, Option<String>>(3)?,
+        }))
+    })?;
+    for row in el_rows.flatten() {
+        writeln!(out, "{{\"segment\":\"evidence_links\",\"row\":{row}}}")?;
+    }
     Ok(path)
 }
 

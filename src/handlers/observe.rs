@@ -1098,18 +1098,25 @@ fn run_dsar_pool(
         .ok()
         .flatten()
         .is_some_and(|p| p.pii_strict());
-    let remanence = if strict {
-        "secure_delete+checkpoint (backup files excepted)".to_string()
-    } else {
-        "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
-    };
+    // S2-18 (pass-3): the remanence claim must reflect the pragma ATTEMPT,
+    // not just the profile flag — on a failed `secure_delete=ON` the
+    // certificate must downgrade to the disclosed logical posture instead of
+    // asserting an overwrite that never happened. Dry-run/export-only keep
+    // the would-be posture (the pragma only runs on a live purge).
+    let mut secure_delete_active = strict;
     if strict && !dry_run && matches!(action, "purge" | "both") {
         // was `let _ =` — a failed secure_delete
         // weakens the remanence claim on the certificate; warn, don't certify.
         if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
             tracing::warn!("secure_delete=ON failed for DSAR purge: {e}");
+            secure_delete_active = false;
         }
     }
+    let remanence = if secure_delete_active {
+        "secure_delete+checkpoint (backup files excepted)".to_string()
+    } else {
+        "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
+    };
     let tx = conn
         .transaction()
         .map_err(|e| HandlerError::internal(e.to_string()))?;

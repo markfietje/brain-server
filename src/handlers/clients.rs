@@ -92,7 +92,18 @@ pub async fn list_clients(
             super::authorize(&principal.0, crate::auth::Action::Read, "", &g[0])?
         }
         None => super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?,
-        _ => {}
+        // S2-15 wrinkle (pass-3): an auditor token with an EMPTY grant set
+        // previously skipped the gate entirely (falling through to the row
+        // filter, which yields nothing). "Some([]) denies all" — deny at the
+        // gate too, not just at the rows: the surface is closed to this
+        // principal, loudly.
+        Some(_) => {
+            return Err(HandlerError::forbidden(
+                crate::auth::Action::Read,
+                "",
+                "clients",
+            ))
+        }
     }
     let pool_for = pool.clone();
     let rows = tokio::task::spawn_blocking(
@@ -1337,14 +1348,12 @@ mod tests {
                 manages: vec![],
             }))
         };
-        let list = list_clients(State(state.clone()), auditor())
-            .await
-            .expect("empty-grant auditor list runs");
-        assert_eq!(
-            list["clients"].as_array().unwrap().len(),
-            0,
-            "deny-by-default: no granted client-domain sees nothing"
-        );
+        let list = list_clients(State(state.clone()), auditor()).await;
+        // v1.27.25 (S2-15): "Some([]) denies all" now denies at the GATE too —
+        // an empty-grant auditor gets 403, not a silent 200-empty (the
+        // row-filter equivalent was probe-food; the surface is closed).
+        let denied_list = list.expect_err("empty-grant auditor must be denied at the gate");
+        assert_eq!(denied_list.status, StatusCode::FORBIDDEN);
         let denied = get_client(State(state.clone()), auditor(), Path("acme".to_string()))
             .await
             .expect_err("no granted domain denies the lookup");

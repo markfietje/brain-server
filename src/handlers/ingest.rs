@@ -506,6 +506,14 @@ pub(crate) async fn ingest_one(
         let centroids = crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
         crate::domain_router::route_domain_label(&forced_domain, &embedding, &centroids)
     };
+    // S2-33 (pass-3): re-authorize on the ACTUAL target. The gate above ran on
+    // forced-or-global; auto-routing can then resolve any domain with a
+    // centroid, which previously let a `write:<t>/global`-only principal
+    // contaminate another tenant's domain (and poison its centroid). Loud 403
+    // on a foreign target — the caller must force a domain it holds.
+    if domain_label != gate_domain {
+        super::authorize(principal, crate::auth::Action::Write, "", &domain_label)?;
+    }
     // Resolve the domain's pool via the registry (shim mode → global pool).
     // registered-only in multi-db — an unregistered label
     // 404s (`domain_unknown`); creation happens only in `POST /domains`.

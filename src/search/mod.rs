@@ -571,6 +571,13 @@ fn evidence_links_batch_for(
     })?;
     for row in rows {
         let Ok((from, to, kind)) = row else { continue };
+        // S2-38 (pass-3): a self-link (from == to) satisfies BOTH placeholder
+        // groups of the `IN (…) OR IN (…)` query, so it was pushed into the
+        // same bucket twice — a duplicated EvidenceLinkRef in API responses.
+        // A chunk citing itself carries no evidence semantics; skip.
+        if from == to {
+            continue;
+        }
         if let Some(b) = buckets.get_mut(&from) {
             b.push(EvidenceLinkRef {
                 to_chunk: to,

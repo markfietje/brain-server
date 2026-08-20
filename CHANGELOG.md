@@ -24,10 +24,12 @@ been run, it is marked **pending** rather than asserted.
 Server + plugin release (server `Cargo.toml`/lock `1.27.24` → **`1.27.25`**;
 plugin `0.4.5` behavior fix, no version bump to the published package — the
 `graph` flag change is wire-compatible). **"Scoped"** — the pass-3 audit
-remediation: the graph-PPR recall leg gets the same tenant/owner/scope
-boundary as the other legs BEFORE it ships default-on, and the surviving
-unscoped shim-mode reads get the `/get/{id}` treatment. No schema, no
-migration, no telemetry.
+remediation, both waves: the graph-PPR recall leg gets the same
+tenant/owner/scope boundary as the other legs BEFORE it ships default-on, the
+surviving unscoped shim-mode reads get the `/get/{id}` treatment, and the
+audit-chain/restore/evidence hardening lands with one additive migration
+(schema stamp **1.27.22 → 1.27.25**: the `idx_rels_open_unique` partial unique
+index + legacy double-open dedup). No telemetry.
 
 ### Release notes
 
@@ -83,6 +85,53 @@ migration, no telemetry.
   `audit_commit_failures` (it was silent; S3-09); the two boot-time
   `VACUUM INTO` literals go through the escaped primitive (S3-11).
 
+**Security fixes (wave 2 — the deferred items)**
+
+- **The audit retention prune now VERIFIES before it prunes** and records a
+  `retention` evidence row for what it deleted — previously the re-anchor
+  would have re-blessed a tampered chain into a freshly-verifying one
+  (evidence laundering), and the deletion of audit evidence was itself
+  unevidenced. A failed re-anchor UPDATE now rolls the whole prune back
+  instead of committing a half-rewritten chain (S2-16 + S2-35).
+- **`verify_chain` enforces the NULL-prefix rule** (F-03, the no-hash-change
+  half): a NULL `prev_hash` is legal only before the chain starts. Legitimate
+  writers always chain from the tip once one exists, so a mid-chain NULL is
+  tamper — previously it was skipped silently at any position. No stored hash
+  changes.
+- **`brain restore` re-applies ACTIVE legal holds** from the pre-restore DB
+  and loudly discloses tombstoned content the backup resurrected — a pre-hold
+  backup no longer silently unfreezes litigation-held ids, and an undone
+  DSAR purge is on the record (S2-28).
+- **The open-edge invariant is structural**: `idx_rels_open_unique` (partial
+  UNIQUE on the triple `WHERE superseded_at IS NULL`, after a deterministic
+  newest-wins dedup of legacy double-open rows) — a racing double-insert now
+  fails at the DB and rolls back the ingest instead of corrupting the
+  lineage (S3-08; schema → 1.27.25).
+- **The remaining shim-mode reads are scoped**: `/decayed` + `/quarantine`
+  bind the `X-Brain-Domain` label in SQL; `/stats` counts by domain label
+  (entities/relationships via their chunk linkage); `/consolidate/propose`
+  requires Admin in shim mode (its five detection scans are corpus-wide);
+  the domain-registry `domain_invalid` error no longer embeds the
+  `known_domains` inventory (S2-31/43/32).
+- **Ingest auto-routing re-authorizes on the ACTUAL target** — a
+  `write:<t>/global`-only principal can no longer contaminate another
+  tenant's domain through centroid routing (S2-33).
+- **`/clients` denies empty-grant auditors at the gate** (403, not a silent
+  200-empty — "Some([]) denies all" now means the surface too; S2-15).
+- **The DSAR certificate's remanence claim follows the pragma attempt** — on
+  a failed `secure_delete=ON` it downgrades to the disclosed logical posture
+  instead of certifying an overwrite that never ran (S2-18).
+- **Chunker fidelity**: an UNTERMINATED oversized fenced block no longer
+  duplicates its final code line into every stored piece (the last line was
+  treated as a closer it wasn't); degenerate over-cap lines inside fences end
+  with a newline so re-attached closers sit at line starts; prose pieces stay
+  strict verbatim (S2-19/S2-20).
+- **Evidence self-links are skipped** in the batched enrichment (a
+  `from == to` row satisfied both `IN (…)` groups and duplicated into API
+  responses; S2-38). **Domain delete now archives tombstones +
+  evidence_links** into the pre-delete segment alongside the audit rows — the
+  deletion registry is evidence and no longer dies with the domain (S2-21).
+
 **Bug fixes**
 
 - **Plugin: `autoRecallGraph: false` disables the graph leg again.** The
@@ -125,11 +174,14 @@ size-1 pool).
 meta-test pattern — axum: the LAST `.layer()` is outermost, so the pin
 asserts the registration order in `build_app`).
 
-Tests: server bin **694** / 6 ignored (+5), lib **133** / 1, brain 18, mcp
-19, bench 5, eval 2, metrics 8; clippy `-D warnings` + fmt clean; release
-build clean. Plugin: no vitest runner in this environment (no node_modules
-— read-only repo); the one-line `graph: c.autoRecallGraph` change is
-type-checked against `RecallOptions.graph?: boolean`.
+Tests: server bin **696** / 6 ignored (+7: the two graph-scoping pins, the
+layer-order pin, the /verify + /ump domain pins, the NULL-prefix + prune-event
+audit pins, the restore-holds pin, the chunker pins, the partial-index bite in
+the schema contract), lib **136** / 1, brain 18, mcp 19, bench 5, eval 2,
+metrics 8; clippy `-D warnings` + fmt clean; release build clean. Plugin: the
+full openclaw extension suite ran green in the openclaw workspace — **145
+passed** (144 + the new `autoRecallGraph` explicit-send pin), oxlint 0/0,
+tsc + tsgo clean; the rebuilt dist bundle carries the fix.
 
 Honest ceilings: the graph leg\'s PPR mass still crosses domains through
 shared entity names in shim mode (ranking signal only — every emitted hit is

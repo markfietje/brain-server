@@ -542,6 +542,13 @@ the posture itself.
   network boundary allowlist (the ZT4AI "action boundary" at the network
   layer).
 
+**Loopback caveat (S2-40):** on the default loopback deployment every local
+client shares one `127.0.0.1` bucket — the per-IP limiter is per-machine there,
+not per-process. Loopback is only reachable by local processes (and any
+forwarding proxy the operator runs), so this is the designed trust boundary;
+an Internet-exposed bind should always sit behind a proxy that supplies
+`X-Forwarded-For` (with `BRAIN_TRUST_PROXY=1`, the rightmost entry is trusted).
+
 **Continuous verification** (never-trust-always-verify): every write re-checks
 the screen (deterministic blocklist + optional classifier) and the approval
 gate; every read verifies the UMP integrity block and applies the scope filter

@@ -1985,18 +1985,70 @@ async fn stats(
     // resolve per-domain pool from the ?domain= query param.
     let pool = handlers::resolve_domain_pool(&s.registry, params.domain.as_deref())
         .unwrap_or_else(|_| s.pool.clone());
+    // S2-43 (pass-3): shim mode binds the label into every count — the pool
+    // is shared there, so unscoped COUNTs reported another tenant's corpus
+    // size to a per-domain reader. Multi-db pools are territory-scoped.
+    let shim_label = if s.registry.is_multi_db() {
+        None
+    } else {
+        Some(
+            params
+                .domain
+                .clone()
+                .unwrap_or_else(|| "global".to_string()),
+        )
+    };
     let stats_future = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| anyhow::anyhow!(e))?;
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?;
-        let embed_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
-            .unwrap_or(0);
-        let entities: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
-            .unwrap_or(0);
-        let relationships: i64 = conn
-            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
-            .unwrap_or(0);
+        let (count, embed_count): (i64, i64) = match &shim_label {
+            Some(label) => (
+                conn.query_row(
+                    "SELECT COUNT(*) FROM knowledge WHERE domain = ?1",
+                    [&label],
+                    |r| r.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM vec_knowledge v JOIN knowledge k ON k.id = v.knowledge_id
+                     WHERE k.domain = ?1",
+                    [&label],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            ),
+            None => (
+                conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?,
+                conn.query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
+                    .unwrap_or(0),
+            ),
+        };
+        // Entities/relationships are linked to chunks; scope by the chunk's
+        // domain in shim mode (edges with no chunk link are unscopable — the
+        // documented NULL-knowledge_id graph ceiling).
+        let (entities, relationships): (i64, i64) = match &shim_label {
+            Some(label) => (
+                conn.query_row(
+                    "SELECT COUNT(DISTINCT e.id) FROM entities e
+                     WHERE EXISTS (
+                       SELECT 1 FROM relationships r JOIN knowledge k ON k.id = r.knowledge_id
+                        WHERE (r.from_entity_id = e.id OR r.to_entity_id = e.id) AND k.domain = ?1)",
+                    [&label],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+                conn.query_row(
+                    "SELECT COUNT(*) FROM relationships r JOIN knowledge k ON k.id = r.knowledge_id
+                     WHERE k.domain = ?1",
+                    [&label],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            ),
+            None => (
+                conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap_or(0),
+                conn.query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
+                    .unwrap_or(0),
+            ),
+        };
         Ok::<_, anyhow::Error>((count, embed_count, entities, relationships))
     });
 
@@ -3323,11 +3375,32 @@ struct QuarantineListParams {
 async fn list_quarantined(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
+    headers: axum::http::HeaderMap,
     Query(p): Query<QuarantineListParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // AuthZ read gate (operator review surface).
-    crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")
-        .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // AuthZ read gate (operator review surface), scoped to the header domain
+    // (S2-31, pass-3): in shim mode the pool is shared, so the label also
+    // scopes the SQL — a `read:<t>/global` grant must not review another
+    // tenant's quarantine queue.
+    let domain = handlers::domain_from_headers(&headers);
+    crate::handlers::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )
+    .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    let shim_label = if state.registry.is_multi_db() {
+        None
+    } else {
+        Some(
+            domain
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("global")
+                .to_string(),
+        )
+    };
     let limit = p.limit.unwrap_or(100).clamp(1, config::MAX_MULTI_GET);
     let pool = state.pool.clone();
     // the /quarantine list is the reviewer-facing
@@ -3337,24 +3410,43 @@ async fn list_quarantined(
     let principal_for_rows = principal.0.clone();
     let rows = task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
+        // the /quarantine list is the reviewer-facing
+        // surface for flagged content — exactly where bidi smuggling is most
+        // dangerous. Run title/source through the read seam. The principal is
+        // copied in (loopback/opaque stay unmasked like every read surface).
+        let principal_ref = &principal_for_rows;
+        let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<serde_json::Value> {
+            let title = r.get::<_, Option<String>>(1)?;
+            let source = r.get::<_, Option<String>>(2)?;
+            Ok(serde_json::json!({
+                "id": r.get::<_, i64>(0)?,
+                "title": crate::gate::sanitize_read_opt(title, true, principal_ref),
+                "source": crate::gate::sanitize_read_opt(source, true, principal_ref),
+                "content_hash": r.get::<_, Option<String>>(3)?,
+                "created_at": r.get::<_, Option<String>>(4)?,
+            }))
+        };
+        // S2-31: shim mode binds the label into the predicate (multi-db pools
+        // are territory-scoped already).
+        let mut sql = String::from(
+            "SELECT id, title, source, content_hash, created_at \
+             FROM knowledge WHERE flagged = 1",
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(label) = &shim_label {
+            sql.push_str(" AND domain = ?");
+            bind.push(Box::new(label.clone()));
+        }
+        sql.push_str(" ORDER BY id DESC LIMIT ?");
+        bind.push(Box::new(limit as i64));
         let mut stmt = conn
-            .prepare(
-                "SELECT id, title, source, content_hash, created_at
-                 FROM knowledge WHERE flagged = 1 ORDER BY id DESC LIMIT ?1",
-            )
+            .prepare(&sql)
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let out = stmt
-            .query_map(params![limit as i64], |r| {
-                let title = r.get::<_, Option<String>>(1)?;
-                let source = r.get::<_, Option<String>>(2)?;
-                Ok(serde_json::json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "title": crate::gate::sanitize_read_opt(title, true, &principal_for_rows),
-                    "source": crate::gate::sanitize_read_opt(source, true, &principal_for_rows),
-                    "content_hash": r.get::<_, Option<String>>(3)?,
-                    "created_at": r.get::<_, Option<String>>(4)?,
-                }))
-            })
+        let out: Vec<serde_json::Value> = stmt
+            .query_map(
+                rusqlite::params_from_iter(bind.iter().map(|b| b.as_ref())),
+                map_row,
+            )
             .map_err(|e| AppError::Internal(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();

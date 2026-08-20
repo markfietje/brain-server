@@ -1391,10 +1391,28 @@ pub(crate) fn review_digest_matches(content: &str, want: Option<&str>) -> bool {
 pub async fn list_decayed(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
+    headers: axum::http::HeaderMap,
     Query(page): Query<DecayedQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, HandlerError> {
-    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
-    let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
+    // S2-31 (pass-3): the header domain scopes the surface (the /get idiom).
+    // In shim mode the label also narrows the SQL superset; in multi-db the
+    // pool resolution is the scope already.
+    let domain = crate::handlers::domain_from_headers(&headers);
+    super::authorize(
+        &principal.0,
+        crate::auth::Action::Read,
+        "",
+        domain.as_deref().unwrap_or("global"),
+    )?;
+    let shim_label = if state.registry.is_multi_db() {
+        None
+    } else {
+        domain
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    };
+    let pool = super::resolve_domain_pool(&state.registry, domain.as_deref())?;
     let now = chrono::Utc::now().timestamp();
     // bounded page; the Rust-side expiry filter runs BEFORE
     // the page split so a boundary never splits the "is it expired?" decision.
@@ -1446,7 +1464,7 @@ pub async fn list_decayed(
             // chronologically lexicographic; served by
             // `idx_knowledge_kind_created`). ponytail: the exact filter still
             // lives in `page_decayed` — the SQL never decides a row's fate.
-            let (sql, params) = decayed_superset_sql(now, &sql_policy);
+            let (sql, params) = decayed_superset_sql(now, &sql_policy, shim_label.as_deref());
             let mut stmt = conn
                 .prepare(&sql)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1508,6 +1526,7 @@ pub async fn list_decayed(
 fn decayed_superset_sql(
     now: i64,
     retention_days: &std::collections::BTreeMap<String, i64>,
+    domain: Option<&str>,
 ) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let mut sql = String::from(
         "SELECT id, content_hash, expires_at, node_kind, \
@@ -1533,6 +1552,14 @@ fn decayed_superset_sql(
             .map(|t| t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
         params.push(Box::new(cutoff));
+    }
+    // S2-31 (pass-3): shim-mode scope — the label narrows the superset to the
+    // caller's domain (the Rust arbiter `page_decayed` is domain-agnostic, so
+    // the narrowing is exact, never a false positive).
+    if let Some(label) = domain {
+        let idx = params.len() + 1;
+        sql.push_str(&format!(" AND domain = ?{idx}"));
+        params.push(Box::new(label.to_string()));
     }
     (sql, params)
 }
@@ -2566,7 +2593,7 @@ mod tests {
         let mut retention = std::collections::BTreeMap::new();
         retention.insert("note".to_string(), 90);
         retention.insert("fact".to_string(), 180);
-        let (sql, params) = decayed_superset_sql(now, &retention);
+        let (sql, params) = decayed_superset_sql(now, &retention, None);
 
         let mut stmt = conn.prepare(&sql).unwrap();
         let sql_ids: std::collections::BTreeSet<i64> = stmt
@@ -2634,7 +2661,7 @@ mod tests {
         );
 
         // Empty policy → branch A only: NULL-expiry rows are never selected.
-        let (sql_a, params_a) = decayed_superset_sql(now, &std::collections::BTreeMap::new());
+        let (sql_a, params_a) = decayed_superset_sql(now, &std::collections::BTreeMap::new(), None);
         let mut stmt_a = conn.prepare(&sql_a).unwrap();
         let sql_a_ids: std::collections::BTreeSet<i64> = stmt_a
             .query_map(

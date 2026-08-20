@@ -70,7 +70,16 @@ pub async fn propose(
 ) -> Result<Json<ConsolidateProposal>, HandlerError> {
     // AuthZ read gate (detection surface, zero mutation).
     // `None` (no JWT) = superuser.
-    super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // S2-31 (pass-3): layout-dependent gate — the five detection scans are
+    // corpus-wide by nature (cross-chunk comparisons). In multi-db the pool
+    // IS the domain (scoped by construction); in shim mode the shared pool
+    // is every tenant's corpus, so the surface requires Admin there.
+    let action = if state.registry.is_multi_db() {
+        crate::auth::Action::Read
+    } else {
+        crate::auth::Action::Admin
+    };
+    super::authorize(&principal.0, action, "", "global")?;
     let pool = state.pool.clone();
     let (exact_duplicates, conflicts, unresolved, stale, near_dups) =
         tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {

@@ -536,7 +536,7 @@ paths:
                                   name: { type: string }
                         depth: { type: integer }
                         domain: { type: string }
-                    visited: { type: integer }
+                  visited: { type: integer, description: "total distinct entities visited (bounded)" }
   /graph/relationships/{id}/history:
     get:
       summary: Edge supersession lineage
@@ -1852,7 +1852,7 @@ paths:
         origin OR destination), `dataset`. Admin read.
       responses:
         "200":
-          description: {transfers: [...]}
+          description: "The transfer register rows as {transfers: [...]}"
           content:
             application/json:
               schema:
@@ -1933,7 +1933,7 @@ paths:
         The full BPO client register, ordered by name. Admin read.
       responses:
         "200":
-          description: {clients: [...]}
+          description: "The client register rows as {clients: [...]}"
           content:
             application/json:
               schema:
