@@ -285,6 +285,30 @@ reachable. Faster per-core but a different machine; kept for the delta.
 > separated by this set — BGE-M3's sparse/colbert heads aren't even consumed
 > yet (that's v1.30). The real gate is the ≥100-query frozen set.
 
+### v1.27.27 "Seal" eval (2026-08-20, actual release binary)
+
+The release rewrites `contains_suspicious_pattern` (the F-61 + S2-44
+phrase-aware blocklist matcher), which feeds `SearchResult::raw()`'s
+`blocklist_hit` flag — the flag the PRF term extractors consume — and the
+`/recall` query screen. The frozen set was therefore re-run on the release
+binary to confirm the matcher change did not move recall. Same procedure as
+the CI `recall-gate` job: scratch seed of the 10-doc smoke corpus via `brain
+ingest-dir`, then `brain eval --floor r5=0.85,r10=0.85,mrr=0.85` over the 37
+judged queries, default profile, this dev host. Gate holds (exit 0) and the
+metrics match the long-standing baseline exactly — the corpus is benign, so
+no hit was blocklist-flagged before or after (PRF behavior unchanged on this
+set); the matcher's behavioral deltas are pinned by the unit tests
+(`blocklist_matches_multi_word_phrases`,
+`normalization_does_not_kill_phrase_entries`), not by this smoke.
+
+| metric | score |
+|---|---|
+| recall@5 | 0.919 |
+| recall@10 | 0.919 |
+| nDCG@10 | 0.909 |
+| MRR | 0.905 |
+| precision@5 / @10 | 0.276 / 0.138 |
+
 ### v1.27.22 "Cascade" eval (2026-08-18, actual release binary)
 
 Two evals ran on the **actual v1.27.22 release binary** (`brain-server`

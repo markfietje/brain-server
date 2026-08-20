@@ -19,6 +19,115 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.27] — 2026-08-20
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.26 → **1.27.27**;
+client + plugin unchanged). "Seal" is the capstone of the 1.27.21→1.27.27
+hardening lineage: the remaining fail-closed degradations the pass-1/pass-2
+ledgers left OPEN are closed or pinned, the blocklist matcher gets the
+phrase-aware rewrite that fixes both the dead-entry class and the F-61
+benign-over-match class, the lipstyk de-slop watchdog lands in CI, and the
+total verification gate (fmt/clippy/test/lipstyk-diff/recall floors) runs as
+the release criterion. **No schema, no migration, no new endpoints, no wire
+change, no telemetry.**
+
+### Release notes
+
+**Security fixes**
+
+- **`GET /retention/report` no longer silently degrades to code defaults**
+  (F-26 class). A pool/profile-store read failure previously produced the
+  report from built-in defaults without a word — compliance evidence
+  (the storage-limitation report HIPAA/SOX reviewers read) could misstate the
+  real retention policy. Read failures now surface as `500 internal`:
+  distinguish "no overrides stored" from "overrides unreadable", fail closed
+  on the latter.
+- **The prompt-injection blocklist matcher is now phrase-aware** (F-61 +
+  S2-44). Entries are stored in canonical spaced form ("developer mode") and
+  matched against normalized tokens, so a spaced entry can never be dead (the
+  pre-1.27.25 class) AND a concatenated entry can no longer cross a word
+  boundary: benign "you are analyzing" / "you are nowhere near" are no longer
+  quarantined as "you are an" / "you are now". The space-free jammed form of
+  each phrase is still matched inside single tokens, so removing-whitespace
+  obfuscation ("ignorepreviousinstructions") gains nothing. Single-token
+  entries (`override`, `jailbreak`) keep their stem-tolerant behavior.
+
+**Improvements**
+
+- The fail-closed posture of every shared-state gate is now pinned by tests:
+  a revocation **store error** denies (never `unwrap_or(false)`-skips), an
+  unresolvable role narrows to no access (deny-by-default), a poisoned
+  chain-watch/snapshot lock reads as NOT-ok, and the consolidated
+  `poisoned_lock_denies_every_gate` pin holds the source shapes so a refactor
+  cannot silently drop an arm. The UMP soft-forget branch gets its held-chunk
+  pin (soft flags, never purges — the hold freezes erasure, not flagging).
+- **lipstyk de-slop watchdog in CI** (new `lipstyk` job): diff-scoped against
+  the PR base, strict — any diagnostic introduced on changed lines fails the
+  build ("no new code can add a finding"). The two group-attributed cross-file
+  rules are disabled in `.lipstyk.toml` (they fire on untouched baseline
+  files and cannot be line-scoped); everything else stays armed for Rust and
+  TypeScript across `src/`, `client/`, `plugin/`.
+
+### Engineering record
+
+- **M1** (fail-closed extension): the sweep over every
+  `unwrap_or_default()`/`pool.get().ok()?`/`RwLock` read feeding an
+  authorization/scope/posture decision found the named gates already closed
+  by v1.27.16/21/25 (TokenRead tri-state, revocation deny-on-error, role
+  empty-permit, registry `Poisoned`, webhook-secret fail-closed,
+  `guard_capacity`'s availability fail-open is documented + out of authz
+  scope). The one genuine residual was `govern.rs::retention_report` (fixed
+  above). New pins: `revocation_lookup_error_denies` (middleware-level, valid
+  JWS over a broken pool → 401), `role_lookup_empty_degrades_to_no_access`
+  (the Ok-side complement of `role_gate_error_degrades_to_empty_not_open`:
+  `resolve` → `Ok(vec![])` → empty permit),
+  `poisoned_chain_watch_reads_as_not_ok` +
+  `poisoned_snapshot_reads_as_not_ok` (real `catch_unwind` poisoning), and
+  `poisoned_lock_denies_every_gate` (source-shape pin across the five seams).
+- **M2** (S2-03): verified shipped — `/ump/forget {"hard":true}` runs
+  `refuse_if_held` in-tx (v1.27.21) AND `purge_chunk_ids` carries the
+  structural backstop fence, so the property holds of the function, not of
+  call-site discipline. Added the plan's soft-branch pin
+  `ump_forget_soft_flags_but_not_held_chunks`.
+- **M3** (F-61 + S2-44): `contains_suspicious_pattern` rewritten —
+  token-stream normalization (`split_whitespace` + per-token invisible-strip +
+  case fold), 13 canonical spaced phrases matched as contiguous token runs,
+  jammed-form matching inside single tokens, `jailbreak`/`override` as
+  single-token entries, tier-2 line-anchored markers unchanged. The four
+  pre-existing `suspicious_pattern_*` tests pass unchanged; new:
+  `blocklist_matches_multi_word_phrases`,
+  `normalization_does_not_kill_phrase_entries`. NOTE: the matcher feeds
+  `SearchResult::raw()`'s `blocklist_hit` (PRF term exclusion), so the recall
+  gate was re-run — floors held at the long-standing baseline (see
+  BENCHMARKS.md §1.27.27).
+- **M4** (S2-04/S2-21): verified shipped — the ingest-replace/vault sweeps
+  run `refuse_if_held` in-tx (main.rs `ingest_markdown`/
+  `write_markdown_ingest`), and domain delete archives tombstones +
+  evidence_links (v1.27.25 wave 2, pinned by `domain_delete_archives_*`).
+  No new code; recorded here as the plan's verification milestone.
+- **M5** (lipstyk): the watchdog is the enforcement mechanism (above). The
+  absolute-zero target across the tree is **not** claimed: full-mode counts
+  ~918 diagnostics (~425 `redundant-clone`), the same false-positive classes
+  the v1.27.24 honest ceiling documented (Arc clones into `spawn_blocking`
+  moves, wire-shape `Option` handling, best-effort cleanup) — forcing them to
+  zero would require behavior changes the release rules forbid. What IS
+  enforced: changed lines add zero (this release's own code passed the strict
+  gate — three initial findings on new code were fixed to get there).
+- **M6** (total gate): fmt + clippy `-D warnings` (default, bench, otel) +
+  full test suite + lipstyk strict-diff + `badges.sh --selfcheck` + the
+  recall floors on the frozen smoke set — all in one run. Tests: server bin
+  **704** / 6 ignored (+8), lib **137** / 1, brain 18, mcp 19, bench 8.
+- Honest ceilings: the retention-report fix is read-time enforcement (the
+  stored policy is the source of truth); the blocklist remains a deterministic
+  first layer (obfuscation ceiling unchanged — punctuation splitting still
+  evades; the layer-2 classifier is the upgrade path); lipstyk's absolute
+  count is documented, not zeroed (see M5); LOC grew by the pinned tests
+  (+~330 test/comment lines; `src/` ≈ 67.7k — the plan's 66,400 cap was
+  already superseded by v1.27.26's shipped additions; the enforceable line is
+  the watchdog, not a number).
+
+---
+
 ## [1.27.26] — 2026-08-20
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.25 → **1.27.26**;
