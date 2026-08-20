@@ -1,29 +1,36 @@
 # Brain Server — Documentation
 
-**The governed memory layer for AI agents — private, deterministic, and auditable.**
+**The governed memory layer for AI agents — deployed on your infrastructure, audited to the letter.**
 
-Brain Server is a **local-first semantic-memory and knowledge-graph server** that
-gives an AI agent a durable second brain on hardware you own. It pairs a
-**deterministic, zero-token retrieval pipeline** (no LLM decides whether to recall,
-no embedding API is billed per query) with an **enterprise-grade governance layer**:
-human-gated write-back, a tamper-evident append-only audit chain, prompt-injection
-quarantine, per-domain knowledge graphs, legal-hold and retention controls, and
-GDPR-grade export, purge, and DSAR subject workflows.
+Brain Server is a **self-hosted semantic-memory and knowledge-graph engine** that gives
+your AI agents a durable, deterministic second brain — **entirely on hardware your
+organization controls**. Where every other memory framework puts an LLM or an embedding
+API between you and every read and write (metered per query, egressing your data to a
+vendor's datacenter), Brain Server does recall with **zero token cost, zero data egress,
+and zero network latency** — while wrapping that retrieval in a governance layer built
+for regulated production: human-gated write-back, a tamper-evident append-only audit
+chain, prompt-injection quarantine, per-domain knowledge graphs, legal-hold and
+retention controls, and GDPR-grade export, purge, and DSAR subject workflows.
 
-It is not "a RAG for a low-power device" — it is a **sovereign memory substrate** that
-happens to run on a 4 GB ARM box drawing under 5 W. The same single Rust binary
-powering an edge deployment carries the compliance and evidence machinery regulated
-organizations (BPOs, finance, healthcare, legal, government) need, so the story you
-sell is **privacy, control, and provenance** — not just efficiency.
+This is not a toy or a "local RAG." It is the compliance-grade memory substrate that
+enterprises — **BPOs, in-house contact and support centers, healthcare providers,
+financial institutions, legal, and government** — deploy when memory *must* be private,
+explainable, and provably audited. Backed by an **Enterprise edition** that meets
+procurement where it lives: enterprise JWT/JWS authentication with OIDC discovery and
+JWKS, deny-by-default authorization, per-tenant capability tokens, OTel observability,
+and a SOC 2 evidence kit with contract-level support. See **[Editions](./product-site/editions.md)**.
 
+- **Enterprise-authenticated, least-privilege, by default** — enterprise JWT/JWS +
+  OIDC/JWKS, deny-by-default multi-role authorization, per-tenant capability tokens.
 - **Zero per-query cost** — static local embeddings; no cloud, no GPU, no token spend.
-- **Zero data egress** — the agent's memory never leaves your device or datacenter.
+- **Zero data egress** — the agent's memory never leaves your tenant boundary.
 - **Deterministic, explainable recall** — hybrid vector + lexical + graph, with
-  per-hit provenance you can audit.
-- **Human-gated memory** — nothing is written permanently without an operator's
+  per-hit provenance and a replayable trace for every retrieval.
+- **Human-gated memory** — nothing enters permanent memory without an operator's
   explicit approval; every decision lands in a hash-chained audit log.
-- **Regulatory posture** — ISO 42001 / NIST AI RMF / SOC 2 controls, DSAR, retention,
-  jurisdiction, legal holds, and a MemGhost (memory-poisoning) mitigation.
+- **Regulatory posture** — ISO 42001 / NIST AI RMF / SOC 2, HIPAA, GDPR & EU AI Act,
+  DSAR, retention, jurisdiction, legal holds, and a MemGhost (memory-poisoning)
+  mitigation. Compliance is shipped behavior, not a brochure.
 
 ## Who it is for
 
