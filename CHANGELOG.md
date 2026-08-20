@@ -19,6 +19,49 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [Unreleased]
+
+**Rerank-tier model retune (server).** The opt-in cross-encoder rerank tier now
+prefers **`mixedbread-ai/mxbai-rerank-large-v1`** — the golden pick (Apache-2.0,
+DeBERTa-v2 single-label cross-encoder → `logits[:, 0]`), loaded via fastembed's
+BYO-ONNX `UserDefinedRerankingModel` seam from a local dir (`BRAIN_RERANK_MODEL_DIR`,
+default `models/mxbai-rerank-large-v1/`, official int8 `onnx/model_quantized.onnx`).
+It falls back to the in-enum **`BAAI/bge-reranker-v2-m3`** when the files are absent
+or fail to load, so the tier never fails to boot. Same **fail-open** (a fault leaves
+the RRF order untouched) + **boot-warmed** + top-50 (`BRAIN_RERANK_TOP_N`) contract as
+before. `Qwen3-Reranker-0.6B` and `mxbai-rerank-large-v2` are documented exclusions
+(causal-LM / ChatML + last-token logit, incompatible with the `logits[:, 0]` rerank
+seam). No schema, no migration, no wire change.
+
+### Release notes
+
+**Improvements**
+
+- The cross-encoder rerank tier (armed on the `enterprise` / `desktop` /
+  `quality-local` retrieval profiles) now uses `mixedbread-ai/mxbai-rerank-large-v1`
+  as its primary model, with `BAAI/bge-reranker-v2-m3` as the automatic in-enum
+  fallback. The official int8 ONNX keeps CPU footprint low; no config change is
+  required unless you host the model files outside the default
+  `models/mxbai-rerank-large-v1/` dir (then set `BRAIN_RERANK_MODEL_DIR`).
+
+### Engineering record
+
+- `src/search/rerank.rs`: `Reranker::new` tries the mxbai user-defined seam first
+  (`new_mxbai_user_defined`), warns + falls back to `BGERerankerV2M3` on any miss;
+  `model_id()` reports which model actually loaded. Boot log names the real model
+  (was: `loading bge-reranker-v2-m3…`).
+- Model binaries are gitignored (downloaded per the plan, never committed).
+- Docs aligned to source truth: `docs/configuration.md` gains the retrieval-profiles
+  model matrix + `BRAIN_RERANK_MODEL_DIR` / `BRAIN_RERANK_TOP_N`; `docs/SPECS.md`
+  §7.5 current-state rewritten; `docs/BENCHMARKS.md` v1.28 smoke annotated as
+  pre-retune (it exercised bge-reranker-v2-m3); README model row lists all profiles
+  + the reranker.
+- Honest ceiling: the v1.28 n=37 smoke numbers stand directionally — the mxbai
+  re-run on the ≥100-query frozen set is still `PENDING` (v1.31 "Proven"). No parity
+  claim is made.
+
+---
+
 ## [1.27.25] — 2026-08-19
 
 Server + plugin release (server `Cargo.toml`/lock `1.27.24` → **`1.27.25`**;

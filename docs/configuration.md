@@ -16,7 +16,7 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_CHAIN_CHECK_SECS` | `60` | How often the background audit-chain integrity check runs |
 | `BRAIN_MULTI_DB` | — | Enables per-domain SQLite files (multi-DB mode) |
 | `BRAIN_CONTROLLER_NAME` | — | Operator/controller identity label |
-| `MODEL_PROFILE` | — | Model profile selector (affects embedding defaults) |
+| `MODEL_PROFILE` | `edge-default` | Retrieval profile selector → embedding model + rerank arming. See [Retrieval profiles & embedding models](#retrieval-profiles--embedding-models). |
 | `DOMAIN_MIN_COUNT` | — | Minimum chunk count for a domain to be listed/used |
 
 ## Authentication
@@ -41,6 +41,39 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `PRF_MAX_RANK` | `5` | Max rank for expansion candidates |
 | `BRAIN_RECALL_ROUTING_ENABLED` | `true` | Automatic retrieval routing (v1.13.1). `false` restores legacy shim behavior. |
 | `BRAIN_GRAPH_RESCUE_ENABLED` | `true` | Complexity-gated graph rescue pass on abstention (v1.12) |
+
+### Retrieval profiles & embedding models
+
+`MODEL_PROFILE` (also `BRAIN_MODEL_PROFILE`) selects the retrieval profile. Each resolves to an
+embedding model via `config::model_id_for_profile` + `embed::embedder_for_profile`:
+
+| Profile | Embedding model | Dim | Backend | Rerank tier armed at boot |
+|---|---|---|---|---|
+| `edge-default` (default) | `minishlab/potion-retrieval-32M` | 512 | static `model2vec` | no |
+| `quality-local` | `minishlab/potion-retrieval-32M` | 512 | static `model2vec` | yes |
+| `multilingual` | `minishlab/potion-base-2M` | 512 | static `model2vec` | no |
+| `air-gapped` | `minishlab/potion-retrieval-32M` | 512 | static `model2vec` | no |
+| `enterprise` | `BAAI/bge-m3` (`--features neural-embed`) | 1024 | FastEmbed `BGEM3Q` | yes |
+| `desktop` | `Alibaba-NLP/gte-base-en-v1.5` (`--features neural-embed`) | 768 | FastEmbed `GTEBaseENV15` | yes |
+
+`enterprise`/`desktop` require the `neural-embed` Cargo feature (pulls `fastembed`); without it they
+fall back to the static default model. The migration creates `vec_knowledge` at the active
+embedder's `store_dim()` and stamps `embedding_dim` — switching profiles across dimensions fails
+closed (a 1024-d DB refuses an `edge-default` start with the `--re-embed` instruction).
+
+### Rerank tier
+
+The cross-encoder rerank tier (`rerank-tier` Cargo feature) runs **after** RRF fusion on the profiles
+that arm it (see table above); it is **off by default** (edge stays pure-static, the v0.9.5
+doctrine). The server sets `BRAIN_RERANK_ENABLED=1` at boot for those profiles. It is **fail-open**
+(a model/output fault leaves the RRF order untouched) and **boot-warmed** (never downloaded in the
+request path). Model resolution, in order: the golden **`mixedbread-ai/mxbai-rerank-large-v1`**
+(BYO-ONNX, int8) loaded from a local dir, falling back to the in-enum **`BAAI/bge-reranker-v2-m3`**.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BRAIN_RERANK_MODEL_DIR` | `models/mxbai-rerank-large-v1/` | Local dir holding the mxbai-rerank-large-v1 files (`onnx/model_quantized.onnx` + the 4 tokenizer files) for the BYO-ONNX seam. |
+| `BRAIN_RERANK_TOP_N` | `50` | Max candidates scored per rerank call; beyond this the provenance `rerank_truncated` flag reports the drop honestly. |
 
 ## Write-back gating (v1.14)
 

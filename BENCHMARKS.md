@@ -267,7 +267,12 @@ reachable. Faster per-core but a different machine; kept for the delta.
 > corpus ingested via `/add`, `brain eval` (37 queries, `/recall`, k=10), this
 > dev host (M1 Pro), debug build, cached models. Desktop = gte-base-en-v1.5
 > (768-d) + bge-reranker-v2-m3; Enterprise = BGE-M3 (1024-d) + the same
-> reranker; both built `--features neural-embed,rerank-tier`.
+> reranker; both built `--features neural-embed,rerank-tier`. This run predates
+> the reranker retune (`8166b1b`), so it exercised **`BAAI/bge-reranker-v2-m3`**.
+> The tier's primary is now **`mixedbread-ai/mxbai-rerank-large-v1`** (BYO-ONNX,
+> int8) with bge-reranker-v2-m3 as the in-enum fallback — same fail-open + top-50
+> contract, so these *directionally valid* n=37 numbers stand until an mxbai
+> smoke is re-run on the ≥100-query frozen set.
 
 | Profile | recall@5 | recall@10 | nDCG@10 | MRR | precision@k | note |
 |---|---|---|---|---|---|---|

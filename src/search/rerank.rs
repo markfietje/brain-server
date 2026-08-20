@@ -154,10 +154,16 @@ impl Reranker {
         let dir = std::env::var("BRAIN_RERANK_MODEL_DIR")
             .unwrap_or_else(|_| DEFAULT_MXBAI_DIR.to_string());
         let model = UserDefinedRerankingModel::new(
-            OnnxSource::File(std::path::PathBuf::from(&dir).join("onnx").join("model_quantized.onnx")),
+            OnnxSource::File(
+                std::path::PathBuf::from(&dir)
+                    .join("onnx")
+                    .join("model_quantized.onnx"),
+            ),
             TokenizerFiles {
-                tokenizer_file: std::fs::read(std::path::PathBuf::from(&dir).join("tokenizer.json"))
-                    .map_err(|e| anyhow::anyhow!("missing tokenizer.json in {dir}: {e}"))?,
+                tokenizer_file: std::fs::read(
+                    std::path::PathBuf::from(&dir).join("tokenizer.json"),
+                )
+                .map_err(|e| anyhow::anyhow!("missing tokenizer.json in {dir}: {e}"))?,
                 config_file: std::fs::read(std::path::PathBuf::from(&dir).join("config.json"))
                     .map_err(|e| anyhow::anyhow!("missing config.json in {dir}: {e}"))?,
                 special_tokens_map_file: std::fs::read(

@@ -816,9 +816,11 @@ pub fn model_profile() -> &'static str {
     }
 }
 
-/// Resolve the embedding model id for the active profile. Only `edge-default`
-/// and `multilingual` change the model today; the others keep the static model
-/// and instead enable heavier rerank/expansion (documented trade-off).
+/// Resolve the embedding model id for the active profile. `multilingual` swaps
+/// the static model; `enterprise`/`desktop` select the neural tiers (feature-
+/// gated — they fall back to the static default when `neural-embed` is not
+/// compiled in). The others keep the static model and instead enable heavier
+/// rerank/expansion (documented trade-off).
 pub fn model_id_for_profile(profile: &str) -> &'static str {
     match profile {
         PROFILE_MULTILINGUAL => "minishlab/potion-base-2M", // multilingual static alternative

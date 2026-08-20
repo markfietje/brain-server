@@ -408,11 +408,28 @@ The rerank tier was **deleted in v0.9.5** (`3fcac72`): the BGE cross-encoder peg
 and blew the 8s recall timeout, and was too heavy for the Jetson edge GPU. The `rerank`
 Cargo feature and `src/search/rerank.rs` were removed, not stubbed.
 
-**Current state (v1.20.30+):** rerank was **re-introduced as an opt-in tier**, off by default.
-`src/search/rerank.rs` exists again and wires `bge-reranker-v2-m3` via `TextRerank` (the
-`rerank-tier` Cargo feature + `MODEL_PROFILE` opt-in). It is **fail-open** and **boot-warmed**
-(a lazy first-recall load put the download in the request path). The default build (edge/Jetson)
-stays on the static potion model **with no rerank**; neural tiers (`neural-embed`,
+**Current state (v1.20.30+, retuned post-v1.27.25):** rerank is an **opt-in tier**, off by
+default (the `rerank-tier` Cargo feature; the server arms it at boot — sets `BRAIN_RERANK_ENABLED=1` —
+when the active `MODEL_PROFILE` is `enterprise`, `desktop`, or `quality-local`). The default build
+(edge/Jetson) stays on the static potion model **with no rerank**.
+
+`src/search/rerank.rs` loads, in order of preference:
+1. **`mixedbread-ai/mxbai-rerank-large-v1`** — the golden pick (Apache-2.0, DeBERTa-v2
+   single-label cross-encoder → `logits[:, 0]`). Not in the FastEmbed in-enum registry, so it is
+   loaded through the BYO-ONNX `UserDefinedRerankingModel` seam from a local dir (default
+   `models/mxbai-rerank-large-v1/`, override `BRAIN_RERANK_MODEL_DIR`), using the official int8
+   `onnx/model_quantized.onnx`.
+2. **`BAAI/bge-reranker-v2-m3`** — the in-enum fallback (FastEmbed `TextRerank` +
+   `RerankerModel::BGERerankerV2M3`) when the mxbai files are absent or fail to load, so the tier
+   never fails to boot.
+
+It is **fail-open** (a model/output fault leaves the RRF order untouched, `rerank_score = None`)
+and **boot-warmed** (`search::rerank::warmup()` force-loads at boot so the first recall never pays
+the download in the request path). Top-N is `BRAIN_RERANK_TOP_N` (default 50). `Qwen3-Reranker-0.6B`
+and `mxbai-rerank-large-v2` are deliberately **not** wired: they are causal-LM (ChatML + last-token
+logit scoring), architecturally incompatible with fastembed's `(query, doc)` → `logits[:, 0]`
+rerank seam — they would load, run, and return meaningless scores (v1.30's ColBERT rerank, and
+real LLM runtimes, are the paths that can consume them). Neural tiers (`neural-embed`,
 `rerank-tier`) are separate features. See `IMPLEMENTATION_PLAN_v1.20.30_Caliber.md`.
 
 The API fields `rerank_score` / `rerank_truncated` / `rerank_ms` are retained for contract

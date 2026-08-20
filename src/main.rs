@@ -5078,7 +5078,7 @@ async fn main_inner() -> Result<()> {
         config::PROFILE_ENTERPRISE | config::PROFILE_DESKTOP | config::PROFILE_QUALITY_LOCAL
     ) {
         std::env::set_var("BRAIN_RERANK_ENABLED", "1");
-        info!("rerank tier armed (profile={profile}); loading bge-reranker-v2-m3…");
+        info!("rerank tier armed (profile={profile}); loading mxbai-rerank-large-v1 (fallback bge-reranker-v2-m3)…");
         // Warm at boot, not on first recall: the lazy load would otherwise put
         // the model download inside the request path (observed: first-query 503
         // `recall timed out` while the reranker downloaded).
