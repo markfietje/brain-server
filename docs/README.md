@@ -25,6 +25,26 @@ sell is **privacy, control, and provenance** — not just efficiency.
 - **Regulatory posture** — ISO 42001 / NIST AI RMF / SOC 2 controls, DSAR, retention,
   jurisdiction, legal holds, and a MemGhost (memory-poisoning) mitigation.
 
+## Who it is for
+
+- **Anyone who wants their agent's memory private** — your conversation history and
+  working knowledge stay on your own device, never in a vendor's datacenter.
+- **Knowledge workers** — health, business, code, and more kept as separate brains
+  (domains) that cross-reference on a miss.
+- **Healthcare professionals & hospitals** — patient-adjacent working memory under
+  strict access, retention, and audit control.
+- **Contact / call centers & BPOs** — governed, domain-scoped agent memory with a
+  reviewer in the loop so nothing is written without human approval.
+
+## Law-following by design
+
+Brain Server is built to **stay current with the latest regulation** — the EU AI Act
+(including the Art 4 AI-literacy obligation), GDPR Art 17 erasure and Art 12 response
+deadlines, the Philippines Data Privacy Act, cross-border transfer rules, and
+jurisdiction-aware DSAR handling. Compliance is enforcement, not documentation: legal
+holds, retention windows, and per-jurisdiction deadlines are actual behaviors the
+software applies, backed by a verifiable audit chain.
+
 This directory is the public, informational documentation for Brain Server. For
 the technical contract and engineering records, see the linked files in the repo
 root.
