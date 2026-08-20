@@ -19,11 +19,31 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [Unreleased]
+## [1.27.26] — 2026-08-20
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.25 → **1.27.26**;
+client + plugin unchanged). "Notarize" is the audit-integrity follow-up: the
+fail-closed fix for the one remaining chain-fork window (F-23) ships now, and
+the format-breaking pieces (F-03 full hash + HMAC) are deferred to the
+audit-repair milestone with an operator announcement — an audit chain is
+evidence; its format changes only with explicit re-anchor. **No schema, no
+migration, no telemetry.**
+
+**M5 (F-23, shipped now — drop, don't fork):** `record_tenant` no longer falls
+through to an unserialized tip-read + INSERT when `BEGIN IMMEDIATE`/
+`SAVEPOINT` fails. That fall-through was the exact fork window the
+read-modify-write exists to prevent — two writers could read the same tip and
+insert rows sharing a `prev_hash`, which `verify_chain` then reports forever.
+The row is now skipped (fail-safe: an absent entry reads as a gap, never as a
+forged continuation), the `/health` `audit_commit_failures` counter is bumped,
+and an error log fires. Pinned by `begin_immediate_failure_skips_and_warns_not_forks`:
+a real file-backed two-connection lock conflict (busy_timeout 0 + held write
+lock) → the write is refused, no partial fork row lands, the counter increments,
+and the surviving chain still verifies.
 
 **Rerank-tier model retune (server).** The opt-in cross-encoder rerank tier now
 prefers **`mixedbread-ai/mxbai-rerank-large-v1`** — the golden pick (Apache-2.0,
-DeBERTa-v2 single-label cross-encoder → `logits[:, 0]`), loaded via fastembed's
+DeBERTa-v3-large cross-encoder → `logits[:, 0]`), loaded via fastembed's
 BYO-ONNX `UserDefinedRerankingModel` seam from a local dir (`BRAIN_RERANK_MODEL_DIR`,
 default `models/mxbai-rerank-large-v1/`, official int8 `onnx/model_quantized.onnx`).
 It falls back to the in-enum **`BAAI/bge-reranker-v2-m3`** when the files are absent
@@ -31,9 +51,16 @@ or fail to load, so the tier never fails to boot. Same **fail-open** (a fault le
 the RRF order untouched) + **boot-warmed** + top-50 (`BRAIN_RERANK_TOP_N`) contract as
 before. `Qwen3-Reranker-0.6B` and `mxbai-rerank-large-v2` are documented exclusions
 (causal-LM / ChatML + last-token logit, incompatible with the `logits[:, 0]` rerank
-seam). No schema, no migration, no wire change.
+seam). No wire change.
 
 ### Release notes
+
+**Security fixes**
+
+- A failed audit-chain transaction start no longer falls through to an
+  unserialized write: the audit row is skipped instead of risking a permanent
+  chain fork, and the failure is surfaced on `/health` (`audit_commit_failures`)
+  and in the error log.
 
 **Improvements**
 
@@ -46,6 +73,9 @@ seam). No schema, no migration, no wire change.
 
 ### Engineering record
 
+- `src/audit.rs`: `record_tenant` returns `None` on `BEGIN IMMEDIATE`/`SAVEPOINT`
+  failure instead of proceeding unterminated + `record_commit_failure` bump;
+  the fork-window comment documents the F-23 rationale (drop > fork).
 - `src/search/rerank.rs`: `Reranker::new` tries the mxbai user-defined seam first
   (`new_mxbai_user_defined`), warns + falls back to `BGERerankerV2M3` on any miss;
   `model_id()` reports which model actually loaded. Boot log names the real model
@@ -62,10 +92,16 @@ seam). No schema, no migration, no wire change.
   model matrix + `BRAIN_RERANK_MODEL_DIR` / `BRAIN_RERANK_TOP_N`; `docs/SPECS.md`
   §7.5 current-state rewritten; `docs/BENCHMARKS.md` v1.28 smoke annotated as
   pre-retune (it exercised bge-reranker-v2-m3); README model row lists all profiles
-  + the reranker.
+  + the reranker; `docs/README.md` (the mdBook index) gains the minimum-hardware
+  table for the compact/desktop/enterprise tiers.
 - Honest ceiling: the v1.28 n=37 smoke numbers stand directionally — the mxbai
   re-run on the ≥100-query frozen set is still `PENDING` (v1.31 "Proven"). No parity
-  claim is made.
+  claim is made. The audit chain's remaining integrity gaps — full-field hashing
+  (F-03) and keyed verification (HMAC) — are deferred to the announced audit-repair
+  milestone (`IMPLEMENTATION_PLAN_v1.27.31_AuditRepair.md`) because both change the
+  chain format and require an operator re-anchor; this release only closes the
+  fork window that needed no format change. Tests: server bin **696**/6 ignored
+  (+1), lib **137**/1.
 
 ---
 
