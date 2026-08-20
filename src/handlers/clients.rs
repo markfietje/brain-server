@@ -1580,6 +1580,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ump_forget_soft_flags_but_not_held_chunks() {
+        // S2-03 complement (v1.27.27 M2): the SOFT branch is not an erasure —
+        // it flags (quarantine-style) + tombstones, so a held chunk may be
+        // soft-forgotten (still retrievable with include_flagged) but is
+        // NEVER purged by it. The hold freezes erasure, not flagging.
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (_sid, cid) = seed_source_chunk(&state, "/v/hold.md", "vault", "litigation evidence");
+        hold(&state.pool, &[cid]);
+        let cid_s = cid.to_string();
+
+        let resp = crate::handlers::ump_ops::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            Json(crate::handlers::ump_ops::ForgetRequest {
+                id: cid_s,
+                reason: Some("ump_forget".to_string()),
+                hard: false,
+            }),
+        )
+        .await
+        .expect("soft forget of a held chunk proceeds (it is not an erasure)");
+        assert_eq!(resp.0["result"], "tombstoned");
+
+        let (chunks, flagged): (i64, i64) = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*), MAX(flagged) FROM knowledge WHERE id = ?1",
+                rusqlite::params![cid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (chunks, flagged),
+            (1, 1),
+            "the held chunk survives soft forget (no purge) and is flagged"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_live_set_requires_explicit_allow_empty() {
         // S2/N1: an empty live_uris retires EVERY active source of the kind —
         // indistinguishable on the wire from a caller whose listing failed, so
