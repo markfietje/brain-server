@@ -1,4 +1,4 @@
-//! v1.28 "Caliber" M1 — the profile-gated cross-encoder reranker.
+//! The profile-gated cross-encoder reranker.
 //!
 //! Sits after `rrf_fuse` (the rank-fusion stage in [`crate::search`]) and writes
 //! into the reserved `rerank_score` / `rerank_truncated` slots on
@@ -23,7 +23,7 @@
 //! requires a real LLM runtime (llama.cpp / vLLM / TEI), out of scope for the seam.
 //!
 //! Profile gate: active only on `enterprise`/`desktop`. The Jetson/edge path
-//! stays rerank-free (the v0.9.5 doctrine; the tier was removed for the 8 s
+//! stays rerank-free (the tier was removed for the 8 s
 //! recall timeout — re-added here only where the hardware can afford it).
 //!
 //! Fail-open contract: a model load failure or a per-call ONNX error leaves the

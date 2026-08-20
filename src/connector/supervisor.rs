@@ -1,22 +1,24 @@
 //! Connector process spawn helper.
 //!
-//! M1 scope is narrow: spawn a connector binary once, return the handle.
-//! The full restart-with-backoff loop lands in M2.x when the server starts
-//! auto-launching registered connectors on boot. M1 needs only the testable
-//! primitives (`spawn_once`, `next_backoff`) so M2 has its building blocks.
+//! Scope is narrow: spawn a connector binary once, return the handle.
+//! The full restart-with-backoff loop lands when the server starts
+//! auto-launching registered connectors on boot. For now only the testable
+//! primitives (`spawn_once`, `next_backoff`) are needed, so the restart
+//! loop has its building blocks.
 //!
-//! The primitives are intentionally not called from the server runtime in
-//! M1 — `#![allow(dead_code)]` in `mod.rs` covers the warning until M2.x
-//! wires `supervise` into the boot path.
+//! The primitives are intentionally not called from the server runtime —
+//! `#![allow(dead_code)]` in `mod.rs` covers the warning until `supervise`
+//! is wired into the boot path.
 //!
 //! `ponytail:` ceilings:
 //! - **No jitter** on the backoff schedule. Single local supervisor, no
 //!   thundering-herd risk. Revisit if we ever run >3 concurrent connectors.
 //! - **`kill_on_drop(true)`** instead of an explicit shutdown channel. When
 //!   the supervisor task is dropped on server shutdown, the child is SIGKILLed
-//!   by the OS. Drain lands in M3 when `brain disconnect` is wired.
+//!   by the OS. Drain lands when `brain disconnect` is wired.
 //! - **`spawn_once` returns a `Child`**, not a wrapped handle. Callers compose
-//!   their own loops; we keep M1 free of concurrency-control plumbing.
+//!   their own loops; the current scope stays free of concurrency-control
+//!   plumbing.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -26,7 +28,7 @@ use tokio::process::{Child, Command};
 
 use super::ConnectorManifest;
 
-/// Maximum backoff between restart attempts. 60s matches the v0.9.6 plan ceiling.
+/// Maximum backoff between restart attempts. 60s matches the planned ceiling.
 pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Compute the backoff before the next restart attempt. Pure exponential
@@ -46,7 +48,7 @@ pub fn next_backoff(attempt: u32) -> Duration {
 }
 
 /// Spawn one instance of the connector binary. Does NOT supervise — callers
-/// composing their own restart loop use this; otherwise prefer the (M2.x)
+/// composing their own restart loop use this; otherwise prefer the future
 /// `supervise` wrapper.
 ///
 /// The child inherits the parent's environment (so `BRAIN_TOKEN_FILE` etc.
@@ -66,7 +68,7 @@ pub async fn spawn_once(
     cmd.stderr(Stdio::piped());
     // kill_on_drop ensures the child is reaped if the supervisor task is
     // dropped (e.g. on server shutdown) before wait() returns. Crude but
-    // correct for M1; drain lands in M3.
+    // correct for now; drain lands later.
     cmd.kill_on_drop(true);
     let child = cmd
         .spawn()

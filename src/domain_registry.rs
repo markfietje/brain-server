@@ -1,4 +1,4 @@
-//! Per-domain database registry (P2 foundation).
+//! Per-domain database registry.
 //!
 //! Maps a domain name to a SQLite connection pool, lazily. This is the seam for
 //! per-domain isolation: in **multi-db mode** (`BRAIN_MULTI_DB=true`) each
@@ -33,8 +33,8 @@ pub enum DomainRegistryError {
     /// Domain name failed validation (unsafe as a filename / not a real domain).
     Invalid(String),
     /// The domain is valid but NOT registered (multi-db mode only): `pool_for`
-    /// refuses to create files for unregistered names (v1.27.16 "Drawbridge"
-    /// M5/F-41) — no lazy unbounded disk fill from an attacker-probeable API.
+    /// refuses to create files for unregistered names
+    /// — no lazy unbounded disk fill from an attacker-probeable API.
     Unknown(String),
     /// The registration cap (`BRAIN_MAX_DOMAIN_DBS`) was reached.
     Capacity(usize),
@@ -118,7 +118,7 @@ impl DomainRegistry {
     /// returns the shared global pool. In multi-db mode a non-global domain
     /// resolves ONLY if it is registered ([`Self::register`] or seeded from the
     /// on-disk file set); anything else is [`DomainRegistryError::Unknown`] and
-    /// NEVER creates a file (v1.27.16 "Drawbridge" M5/F-41).
+    /// NEVER creates a file.
     pub fn pool_for(&self, domain: &str) -> Result<BrainPool, DomainRegistryError> {
         if !Self::is_valid_domain(domain) {
             return Err(DomainRegistryError::Invalid(domain.to_string()));

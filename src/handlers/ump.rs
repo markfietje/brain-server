@@ -12,9 +12,9 @@
 //! projection (§6.3). Spec: the Universal Memory Protocol v1.0
 //! (github.com/edihasaj/universal-memory-protocol, `SPEC.md`).
 //!
-//! The L0 record codec below (`to_ump`/`from_ump`/`um_kind`/`brain_kind`) is
-//! unchanged from v1.17.1 — it stays the canonical shape mapping. v1.17.3 M1
-//! layers the engine on top: [`emit_record`] (L3 render: content-addressed id
+//! The L0 record codec below (`to_ump`/`from_ump`/`um_kind`/`brain_kind`)
+//! stays the canonical shape mapping. The engine is layered on top:
+//! [`emit_record`] (L3 render: content-addressed id
 //! + integrity + consent/redact + meta overlay) and [`verify_record`] (§5.3
 //!
 //! drop-unverifiable enforcement) and the §6.3 markdown projection
@@ -345,10 +345,10 @@ pub fn emit_record(
 /// record (minus `integrity`), require it to match `integrity.content_hash`
 /// (reference §2.8 format), and when a signature + operator key are both
 /// present, verify the EdDSA signature over BLAKE3 of the hash string.
-/// Hash-only records verify without a key. The legacy v1.17.3 format
+/// Hash-only records verify without a key. The legacy format
 /// (`algo`/`hash`(hex)/`key`/`sig`, hash over the record with `id` +
 /// `integrity` nulled, signature over the raw hash) is still accepted so
-/// records signed by a v1.17.3 peer verify — the emit side writes only the
+/// records signed by a legacy-format peer verify — the emit side writes only the
 /// reference format. Returns false on any malformed input — the read path
 /// drops unverifiable records.
 pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
@@ -528,7 +528,7 @@ pub fn record_from_markdown(text: &str) -> Result<Value, String> {
 }
 
 /// Lowercase hex, hand-rolled (the codebase carries no hex dep; 3 lines).
-/// Legacy v1.17.3 format hex encoding — the decode half stays live for the
+/// Legacy-format hex encoding — the decode half stays live for the
 /// legacy-verify path; the encode half is exercised by the hex round-trip
 /// test and kept so a future `algo`/`hash` re-emission has a peer.
 #[allow(dead_code)]

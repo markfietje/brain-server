@@ -212,8 +212,8 @@ pub async fn create_domain(
 
 /// `DELETE /domains/{name}?confirm=<name>` — delete a domain and all its data.
 ///
-/// Drops all data for the domain. The `global` domain is protected. Per the
-/// plan M5, the caller must echo the domain name as `?confirm=<name>` so a
+/// Drops all data for the domain. The `global` domain is protected. The
+/// caller must echo the domain name as `?confirm=<name>` so a
 /// typoed URL or replay can't destroy data by accident.
 pub async fn delete_domain(
     State(state): State<Arc<AppState>>,
@@ -302,7 +302,7 @@ pub async fn delete_domain(
             // scoped to this domain — clear them all. Order respects FKs:
             // evidence_links → relationships → knowledge (FK target) → rest.
             // `audit_events` is deliberately NOT deleted: the immutible chain
-            // must survive a domain delete (F-02).
+            // must survive a domain delete.
             tx.execute_batch(
                 "DELETE FROM evidence_links;
                  DELETE FROM relationships;
@@ -452,7 +452,7 @@ pub async fn export_domain(
 ) -> Result<Response, HandlerError> {
     use super::normalize_domain;
     let name = normalize_domain(&name)?;
-    // S2-08 (pass-3 audit): the gate depends on the storage layout. In
+    // The gate depends on the storage layout. In
     // multi-db mode the pool IS the named domain's file, so a Read grant on
     // that domain legitimately covers the snapshot. In SHIM mode
     // `pool_for(name)` resolves to the ONE shared pool — the exported bytes
@@ -485,7 +485,7 @@ pub async fn export_domain(
             ));
             // VACUUM INTO writes a consistent snapshot to `temp` without holding
             // a write lock on the source. Safe under concurrent writes.
-            // S2-24: through the shared quote-escaping primitive — the raw
+            // Through the shared quote-escaping primitive — the raw
             // `format!` literal here could break out on a `'` in TMPDIR.
             brain_server::backup::vacuum_into(&conn, &temp)
                 .map_err(|e| HandlerError::internal(format!("VACUUM INTO failed: {e}")))?;
@@ -517,7 +517,7 @@ pub async fn export_domain(
 /// `POST /domains/{name}/import` — restore a `.db` snapshot into a NEW domain.
 ///
 /// The body is the raw bytes of a previously-exported `brain-<domain>.db`.
-/// Safety constraints (per plan M5 — "the server trusts the caller's graph data
+/// Safety constraints ("the server trusts the caller's graph data
 /// after validation; never echo raw content in error messages"):
 /// - Target domain must NOT already exist on disk (no overwrite of live data).
 /// - Domain name validated before the file is written (path-traversal proof).
@@ -626,7 +626,7 @@ pub async fn import_domain(
 ///
 /// Guards: `to` may not be `global` (the fallback bucket); moving rows OUT of
 /// `global` requires `?confirm=global` (typo-replay protection, mirror of the
-/// v1.0 delete guard). Each id must exist. Bounded by `MAX_MULTI_GET`/call.
+/// delete guard). Each id must exist. Bounded by `MAX_MULTI_GET`/call.
 pub async fn move_domains(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -696,9 +696,9 @@ pub async fn move_domains(
     }))
 }
 
-/// `POST /domains/recompute` — v1.13.0 M4: one-shot recompute of every known
-/// domain's centroid from the corrected M1 source. The post-migration catch-up
-/// that makes M2's auto-route meaningful (until real centroids exist, `route()`
+/// `POST /domains/recompute` — one-shot recompute of every known
+/// domain's centroid from the corrected vector source. The post-migration catch-up
+/// that makes auto-route meaningful (until real centroids exist, `route()`
 /// only ever sees `global`). Runs on the caller's pool in a blocking task.
 /// Admin-gated.
 pub async fn recompute_domains(
@@ -822,7 +822,7 @@ fn export_audit_segment(
     )?;
     let rows = stmt.query_map([], |r| {
         // NULLable columns read as Option — the chain's FIRST row has a NULL
-        // prev_hash (and pre-v1.1 rows NULL actors); a bare String read would
+        // prev_hash (and legacy rows NULL actors); a bare String read would
         // drop it at the flatten boundary. Nulls serialize as JSON null.
         Ok(serde_json::json!({
             "id": r.get::<_, i64>(0)?,
@@ -849,7 +849,7 @@ fn export_audit_segment(
     for row in rows.flatten() {
         writeln!(out, "{row}")?;
     }
-    // S2-21 (pass-3): the deletion registry is evidence too — tombstones
+    // The deletion registry is evidence too — tombstones
     // (SHA-256 content digests of purged chunks) + evidence_links were
     // previously destroyed by the delete the segment was supposed to
     // memorialize. Append them to the same operator artifact.

@@ -60,8 +60,8 @@ pub mod register_sqlite_vec;
 pub mod strip_invisible;
 
 // Edge supersession: the pure write-path core that makes
-// `relationships` true to the bi-temporal contract `trace` documents (the
-// v1.27.22 BUG-1 fix). Lives in the lib so a bare-`Connection` unit test can
+// `relationships` true to the bi-temporal contract `trace` documents.
+// Lives in the lib so a bare-`Connection` unit test can
 // drive it (the `page_decayed` idiom) and so the server handler only wires.
 pub mod graph_supersede;
 
@@ -72,7 +72,7 @@ pub mod graph_supersede;
 pub mod fence;
 
 // The embedding abstraction: the trait + the static
-// (default) backend + the feature-gated neural (BGE-M3) backend. Lives in the
+// (default) backend + the feature-gated neural (bge-m3) backend. Lives in the
 // lib so `bench` consumes it without a #[path] include, same pattern as
 // `eval`/`capacity`. `AppState` rewiring is the gated follow-up.
 pub mod embed;

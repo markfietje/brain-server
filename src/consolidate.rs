@@ -7,8 +7,8 @@
 //!
 //! Subject-key limitation (documented ceiling): conflict detection groups by
 //! `COALESCE(title, heading_path)` only — no NER. Two chunks about "the API key"
-//! with different titles will not be flagged. The v1.0.0 upgrade path feeds the
-//! `entities` table into the subject key (see the plan).
+//! with different titles will not be flagged. The upgrade path feeds the
+//! `entities` table into the subject key.
 
 use anyhow::Result;
 use rusqlite::{params, Connection, Transaction};
@@ -52,8 +52,8 @@ pub fn link_evidence(
     )?)
 }
 
-/// atomic supersession resolution. The mandatory
-/// Carry-forward from `IMPLEMENTATION_PLAN_v1.6.0_Reconcile.md`: a typed
+/// atomic supersession resolution.
+/// A typed
 /// `supersedes` link must actually *expire* the prior fact, not just record
 /// the relationship. Graphiti's `resolve_edge_contradictions` (Context7,
 /// verified 2026-08-01) is the canonical pattern — old facts get
@@ -70,7 +70,7 @@ pub fn link_evidence(
 /// The `valid_to` population is what makes the existing `/recall` bi-temporal
 /// filter `(k.valid_to IS NULL OR k.valid_to > ?at)` exclude the old chunk by
 /// default while `?at=<before-resolution>` still returns it. No new retrieval
-/// code, no new schema — the v0.9.8 + v1.4.0 plumbing already does the right
+/// code, no new schema — the existing bi-temporal plumbing already does the right
 /// thing once `valid_to` is set.
 ///
 /// Returns the number of chunks newly expired (0 or 1). The link insert is
@@ -134,7 +134,7 @@ pub fn resolve_supersession(
 /// returns pairs for the proposal endpoint + `brain check-consistency`.
 ///
 /// ponytail: this is the only consistency check that needs new code. The
-/// attached v1.6 plan also lists orphan entities + derived_from cycles, but
+/// Orphan entities + derived_from cycles were also considered, but
 /// those either already have a surface (orphans show up as 0-relation entities
 /// in `/graph/entity`) or are vanishingly rare on a local-first store
 /// (derived_from chains are operator-created and short). Ship the one check
@@ -163,7 +163,7 @@ pub fn find_unresolved_contradictions(conn: &Connection) -> Result<Vec<(i64, i64
 
 // ── — reviewable proposals + undo ─────────────────────
 //
-// Roadmap v1.8: "duplicate and stale-source proposals, resumable batches,
+// "duplicate and stale-source proposals, resumable batches,
 // review UI/API contract, and recovery rehearsal." Exit: reviewers accept
 // proposals at a measured precision target, and reject or undo them without
 // retrieval regression. Everything below is detection (proposals) or
@@ -249,8 +249,8 @@ pub fn find_near_duplicates(
     max_pairs: usize,
 ) -> Result<Vec<NearDupPair>> {
     // Collect current chunks with their quantized embeddings straight from the
-    // vec0 index. v1.8.0 originally read the legacy `embeddings` JSON table,
-    // but that table froze at v0.9.0 — production ingests write only
+    // vec0 index. This originally read the legacy `embeddings` JSON table,
+    // but that table froze when vec0 became the store — production ingests write only
     // vec_knowledge, so the scan silently covered ~0% of chunks on a live DB.
     // decode_embedding dequantizes the int8 blob back to f32; the quantization
     // error is bounded and the 0.95 threshold tolerates it. The KNN query

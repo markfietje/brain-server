@@ -12,7 +12,7 @@
 //! (a Rust port must normalize to a probability distribution). Edge weights are
 //! `node_to_node_stats` co-occurrence counts (symmetric, both directions).
 //!
-//! brain-server's wedge (per the v1.11.0 plan): HippoRAG's expensive pieces
+//! brain-server's wedge: HippoRAG's expensive pieces
 //! (LLM OpenIE triple extraction, LLM entity linking, offline KG construction)
 //! are already replaced by the deterministic linker + existing
 //! `entities`/`relationships` tables. This module is the retrieval side: PPR
@@ -41,7 +41,7 @@ pub const MAX_PPR_ITER: usize = 50;
 /// Passage-node weight used by HippoRAG 2 (`passage_node_weight=0.05`). A
 /// faithful port would scale dense-retrieval passage scores by this before
 /// adding them to the seed. brain-server has no per-query DPR passage scores
-/// in the graph leg (the plan forbids an embedding in this leg), so this
+/// in the graph leg (by design, this leg carries no embedding), so this
 /// constant documents the ceiling rather than tuning a value.
 #[allow(dead_code)] // ponytail: reserved for the DPR-passage-seed upgrade path.
 pub const PASSAGE_NODE_WEIGHT: f64 = 0.05;
@@ -60,7 +60,7 @@ pub const HUB_DAMPING_THETA: f64 = 50.0;
 /// frontmatter tags, `alias_of` from aliases) are weak association signals
 /// that dilute PPR mass, so their evidence counts weigh 0.1; semantic
 /// relation types keep full weight. Static (no query-conditioning — the
-/// MemORAI-style learned weights are v2.x; see the v1.12.0 plan).
+/// MemORAI-style learned weights are a v2.x ceiling).
 pub fn type_base_weight(rel_type: &str) -> f64 {
     match rel_type {
         "tagged_with" | "alias_of" => 0.1,
@@ -73,9 +73,9 @@ pub fn type_base_weight(rel_type: &str) -> f64 {
 /// Vertices are `entities.id`; an edge `(a, b, w)` exists for every distinct
 /// `(from_entity_id, to_entity_id)` pair in `relationships`, with weight =
 /// the type-weighted sum of `COUNT(DISTINCT knowledge_id)` per relation type
-/// (v1.12.0 "Discern": taxonomy types weigh 0.1 via [`type_base_weight`]) —
+/// (taxonomy types weigh 0.1 via [`type_base_weight`]) —
 /// the count of distinct chunks providing evidence for that pair (the same
-/// "edge has evidence" signal v0.9.8 uses). This is HippoRAG 2's
+/// "edge has evidence" signal the evidence layer uses). This is HippoRAG 2's
 /// `node_to_node_stats` fact-edge count at the pair level.
 pub struct SparseGraph {
     /// CSR-style adjacency. `adj[i]` = `(neighbor_vertex, weight)`.
@@ -312,7 +312,7 @@ fn expand_to_chunks(
 /// RRF legs). Never panics, never unbounded: adjacency is capped at
 /// [`MAX_VISITED`] vertices, PPR at [`MAX_PPR_ITER`] iterations.
 ///
-/// S3-01 (pass-3 audit): the graph leg is a first-class retriever and applies
+/// The graph leg is a first-class retriever and applies
 /// the SAME tenant/owner/scope boundary as the vector and FTS legs — `domain`
 /// as a SQL predicate on the chunk fetch (shim mode shares one pool across
 /// domain labels) and the shared `push_gate_filters` set (access_scope,
@@ -338,7 +338,7 @@ pub fn graph_retrieve(
     }
 
     // 2. Load the weighted adjacency restricted to entities that share at
-    //    least one evidence chunk. v1.12.0 "Discern": the aggregation keeps
+    //    least one evidence chunk. The aggregation keeps
     //    `relation_type` so each pair's evidence count is scaled by
     //    [`type_base_weight`] before summing — taxonomy edges contribute
     //    a tenth of semantic ones. Bounded by SQLite's own row limit.
@@ -364,7 +364,7 @@ pub fn graph_retrieve(
     edge_rows.sort_by_key(|x| (x.0, x.1));
 
     // 3. Build the bounded graph. Prune to the component reachable from the
-    //    seeds and cap total vertices at MAX_VISITED. v1.12.0 "Discern": hub
+    //    seeds and cap total vertices at MAX_VISITED. Hub
     //    dampening must run AFTER the reachable prune (degree reflects the
     //    bounded graph).
     let mut graph = build_graph(&edge_rows);
@@ -382,7 +382,7 @@ pub fn graph_retrieve(
 
     // 6. Fetch chunk rows, apply the same visibility rules as the other
     //    retrievers (flagged quarantine + superseded exclusion) AND the same
-    //    tenant/owner/scope predicates (S3-01): domain label in shim mode,
+    //    tenant/owner/scope predicates: domain label in shim mode,
     //    then the shared gate-filter set. Without this the third RRF leg was
     //    an unscoped side door around every narrowing the other legs apply.
     if chunks.is_empty() {

@@ -271,9 +271,9 @@ impl WebhookQueue {
 pub fn egress_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        // F-50: a stalled sink must not wedge the drain worker or accumulate
+        // A stalled sink must not wedge the drain worker or accumulate
         // ignored hangs. Connect is bounded (5 s) and the whole request
-        // (F-36's native default) to (15 s).
+        // is capped at (15 s).
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(15))
         .build()

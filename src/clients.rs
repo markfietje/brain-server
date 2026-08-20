@@ -151,7 +151,7 @@ pub(crate) fn set_dpa_terms(
 }
 
 /// Audit-chain-preserving termination: flip the client row to `archived` (the
-/// WORM-lite posture — nothing is DELETEd, R1 `status` is the only change).
+/// WORM-lite posture — nothing is DELETEd, `status` is the only change).
 /// `Ok(false)` = already archived (handler maps to 409) or unknown (404).
 pub(crate) fn archive(tx: &Transaction, name: &str, now: i64) -> Result<bool, HandlerError> {
     let n = tx
@@ -187,7 +187,7 @@ const CLIENT_SELECT: &str =
     "SELECT name, domain, jurisdiction, profile, dpa_terms, status, created_at, archived_at FROM clients";
 
 /// The full register, ordered by name (a small operator table — no paging seam
-/// yet; the R10 dashboard reads it whole).
+/// yet; the dashboard reads it whole).
 pub(crate) fn list(conn: &Connection) -> Result<Vec<Client>, HandlerError> {
     let mut stmt = conn
         .prepare(&format!("{CLIENT_SELECT} ORDER BY name"))
@@ -221,8 +221,8 @@ pub(crate) fn scaffold_and_register(
     now: i64,
 ) -> Result<(), HandlerError> {
     // Scaffold the client's domain before writing the row — `register` creates
-    // + migrates the domain DB (multi-db, cap-bounded — v1.27.16 "Drawbridge"
-    // M5/F-41) or touches the shared pool (shim). `validate_new_client` already
+    // + migrates the domain DB (multi-db, cap-bounded)
+    // or touches the shared pool (shim). `validate_new_client` already
     // rejected malformed names above, so the remaining failure modes surface
     // as 404/507 via the shared mapping seam.
     registry

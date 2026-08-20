@@ -1,13 +1,14 @@
 //! Storage layout abstraction.
 //!
 //! Every on-disk path brain-server touches, derived from one root. The point
-//! is to make the v1.0.0 multi-domain cutover addressable *before* it happens:
-//! today the runtime reads `legacy_db()`; v1.0 will read `global_domain_db()`
-//! and per-domain files via `domain_db(name)`. Both are derived from the same
-//! root, so the cutover is a path rename, not a code change.
+//! is to make the multi-domain cutover addressable *before* it happens:
+//! today the runtime reads `legacy_db()`; the multi-db target reads
+//! `global_domain_db()` and per-domain files via `domain_db(name)`. Both are
+//! derived from the same root, so the cutover is a path rename, not a code
+//! change.
 //!
-//! The default root preserves the v0.9.x install location
-//! (`~/.openclaw/workspace`); `BRAIN_DATA_ROOT` is the v1.0 relocation knob.
+//! The default root preserves the historical install location
+//! (`~/.openclaw/workspace`); `BRAIN_DATA_ROOT` is the relocation knob.
 //! No file is moved at construction — paths are computed lazily on demand.
 //!
 //! Security: a domain name becomes a filename, so [`StorageLayout::domain_db`]
@@ -188,8 +189,8 @@ impl StorageLayout {
     }
 
     /// Resolve the root from the environment, in priority order:
-    /// 1. `BRAIN_DATA_ROOT` — the v1.0 knob (new in v0.9.9).
-    /// 2. The parent of `BRAIN_DB_PATH` — preserves the v0.9.x install layout.
+    /// 1. `BRAIN_DATA_ROOT` — the relocation knob.
+    /// 2. The parent of `BRAIN_DB_PATH` — preserves the install layout.
     /// 3. `~/.openclaw/workspace` — the historical default.
     ///
     /// Fails closed on a non-absolute `BRAIN_DATA_ROOT`.
@@ -231,8 +232,8 @@ impl StorageLayout {
     }
 
     /// The legacy global DB path. Byte-identical to `config::brain_db_path()`
-    /// when `BRAIN_DB_PATH` is set (the v0.9.x back-compat invariant); v1.0.0
-    /// renames this file to `global.db` and points the runtime at
+    /// when `BRAIN_DB_PATH` is set (the back-compat invariant); the multi-db
+    /// cutover renames this file to `global.db` and points the runtime at
     /// [`StorageLayout::global_domain_db`] instead.
     pub fn legacy_db(&self) -> PathBuf {
         if let Ok(raw) = std::env::var("BRAIN_DB_PATH") {
@@ -244,9 +245,9 @@ impl StorageLayout {
         self.root.join("brain.db")
     }
 
-    /// The v1.0.0 global domain file. In v0.9.9 this is where the rehearsal
-    /// tool's *candidate* `global.db` lands — the live runtime still reads
-    /// [`StorageLayout::legacy_db`].
+    /// The global domain file (the multi-db target's shared pool). Historically
+    /// the rehearsal tool's *candidate* `global.db` landed here — the live
+    /// runtime still reads [`StorageLayout::legacy_db`].
     pub fn global_domain_db(&self) -> PathBuf {
         self.root.join("global.db")
     }
@@ -267,8 +268,8 @@ impl StorageLayout {
         self.root.join("backups")
     }
 
-    /// v1.0.0 registry DB (maps domain → file path). Created lazily; does not
-    /// exist in v0.9.9 unless `BRAIN_MULTI_DB=true`.
+    /// Registry DB (maps domain → file path). Created lazily; does not
+    /// exist unless `BRAIN_MULTI_DB=true`.
     pub fn registry_db(&self) -> PathBuf {
         self.root.join("registry.db")
     }

@@ -12,7 +12,7 @@ pub const MAX_QUERY_LENGTH: usize = 2000;
 /// max distinct client-IP buckets the rate limiter tracks
 /// before evicting the oldest 25%. Bounds memory against an attacker cycling
 /// spoofed `X-Forwarded-For` values. ponytail: in-process LRU — multi-instance
-/// rate limiting needs a shared store (v2.1).
+/// rate limiting needs a shared store (deferred).
 pub const RATE_LIMIT_MAX_KEYS: usize = 10_000;
 
 /// the maximum number of per-domain DB files a
@@ -29,7 +29,7 @@ pub const MAX_SUGGEST_K: u32 = 20;
 pub const MAX_SUGGEST_EXCLUDE: usize = 100;
 pub const DEFAULT_SUGGEST_K: u32 = 5;
 
-/// M2 evidence quality: bounded snippet window (chars) and the redaction cap
+/// Evidence quality: bounded snippet window (chars) and the redaction cap
 /// on `explain` payloads so they can never leak unbounded source text.
 pub const MAX_SNIPPET_CHARS: usize = 240;
 pub const SNIPPET_CONTEXT_CHARS: usize = 60;
@@ -156,7 +156,7 @@ pub const CORS_DEFAULT_METHODS: &str = "GET,POST,PUT,DELETE,OPTIONS";
 pub const CORS_DEFAULT_HEADERS: &str = "content-type,authorization";
 pub const CORS_MAX_AGE_SECS: u64 = 3600;
 
-/// Retrieval profiles (P3). The default keeps the edge budget; the others are
+/// Retrieval profiles. The default keeps the edge budget; the others are
 /// opt-in and change the model footprint and rerank behaviour.
 pub const PROFILE_EDGE_DEFAULT: &str = "edge-default";
 pub const PROFILE_QUALITY_LOCAL: &str = "quality-local";
@@ -174,11 +174,11 @@ pub const PROFILE_COMPACT: &str = "compact";
 /// used `MODEL_PROFILE=multilingual` keep resolving to the same profile.
 pub const PROFILE_MULTILINGUAL: &str = "multilingual";
 pub const PROFILE_AIR_GAPPED: &str = "air-gapped";
-/// v1.28 "Caliber": the enterprise profile selects the neural tier (BGE-M3 via
+/// The enterprise profile selects the neural tier (bge-m3 via
 /// FastEmbed-rs, `--features neural-embed`) when compiled in, else falls back to
 /// the static default. See `embed::embedder_for_profile`.
 pub const PROFILE_ENTERPRISE: &str = "enterprise";
-/// v1.28 "Caliber": the desktop profile (laptop/AMD-desktop) selects
+/// The desktop profile (laptop/AMD-desktop) selects
 /// `gte-base-en-v1.5` (768-d) — the light-English neural tier. Same feature
 /// gate as enterprise.
 pub const PROFILE_DESKTOP: &str = "desktop";
@@ -194,7 +194,7 @@ pub const PROFILE_DESKTOP: &str = "desktop";
 /// CORS policy in production. Dev origins (localhost:3000/8080) are allowed
 /// because they are loopback.
 ///
-/// Audit G4: `*` is never a valid CORS origin and is stripped from
+/// `*` is never a valid CORS origin and is stripped from
 /// whatever source the list came from. The layer exact-matches origin strings
 /// (see `build_app`), so a literal `*` entry would otherwise silently match
 /// nothing — a deployer who writes `CORS_ORIGINS=*` deserves an error, not a
@@ -249,7 +249,7 @@ pub fn cors_headers() -> String {
     std::env::var("CORS_HEADERS").unwrap_or_else(|_| CORS_DEFAULT_HEADERS.to_string())
 }
 
-// ── v1.3.0 "Bedrock" fix: SHUTDOWN_DRAIN_SECS was removed. The v1.1.0
+// ── SHUTDOWN_DRAIN_SECS was removed. The original
 // implementation wrapped the ENTIRE `axum::serve(...)` future in a timeout,
 // capping total server lifetime at 30s — not just the drain phase. This
 // caused a 30s crash-loop on systemd deployments. Fixed: the server now runs
@@ -359,7 +359,7 @@ pub fn injection_threshold_low() -> f32 {
 }
 
 /// Database file path. Reads `BRAIN_DB_PATH`; falls back to
-/// `~/.openclaw/workspace/brain.db`. v0.9.9: delegates to
+/// `~/.openclaw/workspace/brain.db`. Delegates to
 /// `StorageLayout::detect()?.legacy_db()` so this path and the layout's path
 /// are byte-identical (the back-compat invariant locked by
 /// `storage_layout::tests::legacy_db_matches_brain_db_path_env_when_set`).
@@ -501,7 +501,7 @@ pub fn auth_token_misconfigured() -> Option<String> {
     ))
 }
 
-/// Whether per-domain database isolation is active (P2). When false (default),
+/// Whether per-domain database isolation is active. When false (default),
 /// every domain resolves to the shared global DB (legacy single-DB back-compat).
 /// When true, non-`global` domains get their own `brain-<domain>.db` file.
 pub fn multi_db() -> bool {
@@ -542,7 +542,7 @@ pub fn brain_suggest_enabled() -> bool {
 
 /// whether the complexity-gated graph rescue is live.
 /// Defaults to `true` (the feature ships on); set `BRAIN_GRAPH_RESCUE_ENABLED
-/// =false` to restore exact v1.11.0 abstention behavior (a `ClarifyQuery`
+/// =false` to restore exact pre-graph-rescue abstention behavior (a `ClarifyQuery`
 /// query always returns the empty `low_confidence` envelope). Same pattern as
 /// [`brain_suggest_enabled`]: an operator who measures an unacceptable
 /// rescue-latency cost can disable it without a rebuild.
@@ -575,7 +575,7 @@ pub fn brain_recall_graph_enabled() -> bool {
 
 /// whether automatic retrieval routing is live. Defaults to
 /// `true` (the fix ships on); set `BRAIN_RECALL_ROUTING_ENABLED=false` to
-/// restore the exact pre-v1.15.0 shim behavior (recall searches the `global`
+/// restore the exact legacy shim behavior (recall searches the `global`
 /// pool only, no centroid routing). Same kill-switch pattern as
 /// [`brain_suggest_enabled`]/[`brain_graph_rescue_enabled`]: an operator who
 /// measures a routing regression can disable it without a rebuild.
@@ -618,7 +618,7 @@ pub fn otel_endpoint() -> String {
 // ── per-kind retention ─────────────────────────────
 
 /// Default retention (days) per `memory_kind` for chunks with no explicit
-/// `expires_at`. v1.14 made per-chunk `expires_at` the decay primitive; M2 adds
+/// `expires_at`. Per-chunk `expires_at` is the decay primitive; this adds
 /// a kind-level default so a retention policy can govern whole classes of
 /// memory without per-row authoring. `ponytail:` these are defaults — a chunk
 /// with its own `expires_at` always wins, and the policy is query-time only
@@ -632,7 +632,7 @@ pub const DEFAULT_RETENTION_KIND_DAYS: &[(&str, i64)] = &[
 ];
 
 /// Whether per-kind retention is live. Defaults to `true`; set
-/// `BRAIN_RETENTION_ENABLED=false` to restore exact pre-v1.17.1 behavior (only
+/// `BRAIN_RETENTION_ENABLED=false` to restore exact legacy behavior (only
 /// per-chunk `expires_at` governs decay). Same kill-switch pattern as
 /// [`brain_suggest_enabled`].
 pub fn brain_retention_enabled() -> bool {
@@ -702,7 +702,7 @@ pub fn brain_trust_proxy() -> bool {
 /// Whether read events (`/recall`, `/search`, `/get`, `/multi-get`) are
 /// appended to the audit hash chain. `BRAIN_AUDIT_READ_EVENTS` explicit value
 /// wins; when unset the default follows the posture: **on in JWT mode** (the
-/// enterprise posture — the plan's "default on for JWT"), **off for loopback/
+/// enterprise posture — "default on for JWT"), **off for loopback/
 /// opaque personal use** (noise + the personal-use contract). Read events are
 /// hash-only (chunk id + scores + decision; never content) and never change
 /// the primary action — best-effort by construction.
@@ -809,7 +809,7 @@ pub fn dpo_contact() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Active retrieval profile (P3). Reads `MODEL_PROFILE`; falls back to
+/// Active retrieval profile. Reads `MODEL_PROFILE`; falls back to
 /// `edge-default`. Unknown values fall back to `edge-default`.
 pub fn model_profile() -> &'static str {
     match std::env::var("MODEL_PROFILE")
@@ -837,8 +837,8 @@ pub fn model_profile() -> &'static str {
 pub fn model_id_for_profile(profile: &str) -> &'static str {
     match profile {
         PROFILE_COMPACT | PROFILE_MULTILINGUAL => "minishlab/potion-base-2M", // compact static alternative (English; legacy alias keeps the old label working)
-        PROFILE_ENTERPRISE => "BAAI/bge-m3", // v1.28 neural tier (1024-d, dense+sparse+colbert)
-        PROFILE_DESKTOP => "Alibaba-NLP/gte-base-en-v1.5", // v1.28 desktop tier (768-d, dense)
+        PROFILE_ENTERPRISE => "BAAI/bge-m3", // neural tier (1024-d, dense+sparse+colbert)
+        PROFILE_DESKTOP => "Alibaba-NLP/gte-base-en-v1.5", // desktop tier (768-d, dense)
         _ => MODEL_ID, // edge-default / quality-local / air-gapped keep the default static model
     }
 }

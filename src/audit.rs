@@ -3,10 +3,9 @@
 //! Every audit row stores **identifiers and hashes only** — never raw indexed
 //! content, token values, or secret-file contents. The `record` helper is a
 //! one-liner callers use at trust boundaries (auth, ingest, webhook verification,
-//! reconcile, backup). Hashing uses SHA-256 (v1.20.25: upgraded from xxh3-64 so
+//! reconcile, backup). Hashing uses SHA-256 (upgraded from xxh3-64 so
 //! a stored `target_hash`/`detail_hash`/`query_hash` derived from low-entropy
-//! content is not offline-recoverable — the tail the v1.20.24 "Sweep" G6 left on
-//! the audit + trace paths).
+//! content is not offline-recoverable).
 //!
 //! Security hardening columns:
 //! - `tenant_id` column (default 'global') enables per-tenant scoping at the
@@ -28,8 +27,8 @@
 //!   target_hash TEXT,       -- SHA-256 of the affected uri/id (NOT the content)
 //!   status TEXT,            -- 'ok'|'denied'|'error'
 //!   detail_hash TEXT,       -- SHA-256 of a short detail string (no secrets)
-//!   tenant_id TEXT NOT NULL DEFAULT 'global',  -- v1.1.0 per-tenant scoping
-//!   prev_hash TEXT          -- v1.1.0 tamper-evidence chain link
+//!   tenant_id TEXT NOT NULL DEFAULT 'global',  -- per-tenant scoping
+//!   prev_hash TEXT          -- tamper-evidence chain link
 //! );
 //! ```
 
@@ -68,7 +67,7 @@ pub enum AuditKind {
     /// that a "current belief" read would redact) is itself evidence; the read
     /// is invokable by a Read-granted principal but the ROW level is Admin.
     GraphRead,
-    /// audit-retention prune events (S2-16, pass-3 audit): the deletion of
+    /// audit-retention prune events: the deletion of
     /// audit evidence must itself be evidenced — a prune writes one row
     /// recording the cutoff + pruned count.
     Retention,
@@ -117,7 +116,7 @@ impl AuditStatus {
 /// stores the raw value (content, token, uri-with-secret, etc.). The value fed
 /// in may itself be a pre-computed digest; the SHA-256 wrapper guarantees the
 /// stored form is not a fast non-cryptographic fingerprint of low-entropy data
-/// (v1.20.25 — see the module doc).
+/// (see the module doc).
 pub fn hash(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
@@ -140,7 +139,8 @@ fn chain_link(ts: &str, kind: &str, actor: &str, target_hash: &str, prev_hash: &
     format!("{:x}", h.finalize())
 }
 
-/// Default tenant id for rows written before v1.1.0 and for callers that don't
+/// Default tenant id for rows written before the tenant column existed and for
+/// callers that don't
 /// track tenancy. Kept as a constant so every defaulting site uses the same
 /// spelling; the migration's `DEFAULT 'global'` matches it byte-for-byte.
 pub const DEFAULT_TENANT: &str = "global";
@@ -179,7 +179,7 @@ pub fn record(
 ///   connection): use `BEGIN IMMEDIATE` so the read-modify-write serializes
 ///   at `BEGIN`. SQLite's single-writer rule guarantees the second writer
 ///   blocks until the first commits, then re-reads the fresh tip. This is
-///   the v1.20.2 fix for the chain-fork race (the v1.1.1 SAVEPOINT fix only
+///   the fix for the chain-fork race (the earlier SAVEPOINT fix only
 ///   covered the inside-caller-tx case; on an autocommit caller SAVEPOINT
 ///   is equivalent to `BEGIN DEFERRED`, which does NOT serialize readers).
 /// - **Inside a caller's transaction** (`delete_quarantine` etc.): use a
@@ -216,7 +216,7 @@ pub fn record_tenant(
             "ROLLBACK TO SAVEPOINT audit_link",
         )
     };
-    // F-23 (pass-2 audit, the v1.27.26 "Notarize" fix): a failed
+    // A failed
     // BEGIN/SAVEPOINT must NOT fall through to the autocommit tip-read +
     // INSERT. Running the read-modify-write unserialized is the exact
     // chain-fork window that BEGIN IMMEDIATE exists to prevent — two
@@ -405,7 +405,7 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     if expired == 0 {
         return Some(0);
     }
-    // S2-16 (pass-3 audit): VERIFY BEFORE PRUNE — the re-anchor below
+    // VERIFY BEFORE PRUNE — the re-anchor below
     // recomputes every survivor's prev_hash, which would re-bless a tampered
     // chain into a freshly-verifying one (evidence laundering). A chain that
     // does not verify is preserved verbatim for forensics; pruning it is
@@ -491,10 +491,10 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
                 prev.as_deref().unwrap_or(""),
             ))
         };
-        // S2-35 (pass-3 audit): a failed re-anchor UPDATE propagates —
+        // A failed re-anchor UPDATE propagates —
         // swallowing it here and COMMITting anyway would persist a
         // half-rewritten chain that then fails verify (the exact `let _ =`
-        // residue the v1.27.19 sweep was meant to end).
+        // residue pattern).
         if let Err(e) = conn.execute(
             "UPDATE audit_events SET prev_hash = ?1 WHERE id = ?2",
             params![new_prev, id],
@@ -525,7 +525,7 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
         let _ = conn.execute("ROLLBACK", []);
         return None;
     }
-    // S2-16 (pass-3 audit): the deletion of audit evidence is itself
+    // The deletion of audit evidence is itself
     // evidenced — one row on the (re-anchored) chain recording cutoff + count.
     // Best-effort (a failure here must not unwind the committed prune) but
     // never silent.
@@ -568,13 +568,14 @@ pub fn chain_head(conn: &Connection) -> Option<String> {
     row.map(|(ts, kind, actor, th, prev)| chain_link(&ts, &kind, &actor, &th, &prev))
 }
 
-/// Verify the audit hash chain end-to-end. Returns `false` if any v1.1 row's
+/// Verify the audit hash chain end-to-end. Returns `false` if any chained row's
 /// stored `prev_hash` disagrees with the link recomputed from the prior row.
-/// Pre-v1.1.0 rows (NULL `prev_hash`) carry no backref and are skipped — a
-/// migrated DB may have thousands of them, followed by the first v1.1 row that
-/// links back to the last NULL row's recomputed link.
+/// Legacy rows (NULL `prev_hash`, written before the chain existed) carry no
+/// backref and are skipped — a migrated DB may have thousands of them, followed
+/// by the first chained row that links back to the last NULL row's recomputed
+/// link.
 ///
-/// F-03 (pass-3 audit, the no-hash-change half): NULL `prev_hash` is legal
+/// NULL `prev_hash` is legal
 /// only as a PREFIX. `record_tenant` always writes a non-NULL backref once a
 /// tip exists, and the retention prune re-anchors to a single leading genesis
 /// NULL — so a NULL appearing AFTER the first non-NULL row can only be the
@@ -602,10 +603,10 @@ pub fn verify_chain(conn: &Connection) -> bool {
     };
     // `prev_link` is the chain link computed from the prior row; the next row's
     // stored `prev_hash` (if it has one) must equal it. NULL `prev_hash` rows
-    // are pre-v1.1.0 (or the very first row / the prune genesis) and carry no
+    // are legacy rows (or the very first row / the prune genesis) and carry no
     // backref to verify — they only contribute their own link to the next row.
     // A migrated DB has arbitrarily many consecutive NULL rows at the head, so
-    // a leading NULL run never fails. F-03: once a row carries a non-NULL
+    // a leading NULL run never fails. Once a row carries a non-NULL
     // backref, the chain has started — any LATER NULL is tamper.
     let mut prev_link: Option<String> = None;
     let mut chain_started = false;
@@ -615,19 +616,19 @@ pub fn verify_chain(conn: &Connection) -> bool {
                 chain_started = true;
                 match &prev_link {
                     Some(want) if want == got => {}
-                    Some(_) => return false, // tampered or out-of-order v1.1 row
+                    Some(_) => return false, // tampered or out-of-order chained row
                     None => {}               // first row overall — chain origin
                 }
             }
             None if chain_started => {
-                // F-03: a NULL backref after the chain started. Legitimate
+                // A NULL backref after the chain started. Legitimate
                 // writers always chain from the tip once one exists.
                 return false;
             }
             None => {}
         }
         // Advance: every row contributes its link, including NULL ones (the
-        // first v1.1 row after a NULL run links back to the last NULL row).
+        // first chained row after a NULL run links back to the last NULL row).
         prev_link = Some(chain_link(
             &row.ts,
             &row.kind,
@@ -640,7 +641,7 @@ pub fn verify_chain(conn: &Connection) -> bool {
 }
 
 /// Walk-time shape for [`verify_chain`] — `prev_hash` is nullable because
-/// pre-v1.1 rows have NULL and start the chain.
+/// legacy rows have NULL and start the chain.
 struct ChainWalkRow {
     ts: String,
     kind: String,

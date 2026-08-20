@@ -1,17 +1,17 @@
 //! a Role is a **named bundle of scopes + default panel
-//! visibility + an action `can` allowlist**, reused on the *existing* v1.14.2
+//! visibility + an action `can` allowlist**, reused on the *existing* scope
 //! `access_scope`/`owner` mechanism ("same dashboard, scoped per role"). No new
 //! data filter: a role's `scopes` map straight onto the `access_scope` WHERE
 //! clause; `owner_filter` (self/reports/all) narrows by the `owner` column.
 //!
-//! The principal's role names come from the v1.19.0 SSO JWT `roles` claim. The
+//! The principal's role names come from the SSO JWT `roles` claim. The
 //! role *definitions* live in the `roles` store (presets, editable) so the
 //! server can enforce the data filter + the action gate server-side; the client
 //! hides panels / disables buttons as defense-in-depth only (never the sole
 //! gate). A principal with **no** roles claim is byte-identical to pre-v1.23
 //! behavior (the back-compat invariant, test-pinned).
 //!
-//! Honest ceiling (carried to v1.24.0): roles are named scope bundles, not a
+//! Honest ceiling: roles are named scope bundles, not a
 //! general ACL engine (per-record ownership, groups, arbitrary perms = v2.0
 //! Cortex RBAC). The `reports` agent-tree needs a source (`manages` JWT claim or
 //! a small table); large hierarchies may need a managed directory (v2.x SCIM).
@@ -95,7 +95,7 @@ pub struct Role {
     /// Panels hidden unconditionally (e.g. capacity from non-admins).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panels_hidden: Option<Vec<String>>,
-    /// M5: the MCP `ump.*` tools this role may invoke. **Stored + surfaced**
+    /// The MCP `ump.*` tools this role may invoke. **Stored + surfaced**
     /// via the role API now; enforcement at the MCP surface is v1.24 (the
     /// `connectors_allowed` deferred-enforcement precedent). `"*"` = all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,7 +286,7 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
     }
 }
 
-// ── M2 — the 10 ship-with roles (curated from USE_CASES.md) ─────────────────
+// ── the 10 ship-with roles (curated from USE_CASES.md) ─────────────────
 
 /// Ship-with roles as (name, json) — the exact bytes `migration` seeds and the
 /// parse test validates. Seeded INSERT OR IGNORE so operator edits survive a

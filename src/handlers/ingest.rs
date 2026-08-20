@@ -2,15 +2,15 @@
 //!
 //! Per `API_CONTRACT.md` §3. The server trusts the caller's graph data after
 //! validation; entities/relations are upserted idempotently into the
-//! resolved domain's knowledge graph. The TOML annotation engine is retired
-//! in v0.9.0; this is the primary KG write path.
+//! resolved domain's knowledge graph. The TOML annotation engine is retired;
+//! this is the primary KG write path.
 //!
 //! Implementation status:
 //!   - Request/response serde ✅
 //!   - Validation ✅ (bounds, regex, type, dedup-hash boundary)
 //!   - Heavy logic: embed + insert + KG upsert is wired to the existing
-//!     `add_chunk` and KG code paths. v0.9.0 swaps the JSON-vector storage
-//!     for sqlite-vec; v1.0.0 adds the domain-router/centroid piece.
+//!     `add_chunk` and KG code paths. The JSON-vector storage was swapped
+//!     for sqlite-vec; the domain-router/centroid piece came later.
 
 use axum::{
     extract::{Query, State},
@@ -70,7 +70,7 @@ pub struct IngestRequest {
     /// UMP-lowered overlays persisted onto the knowledge row
     /// (node_kind/assertion_kind/confidence/access_scope/expires_at/observed_at/
     /// valid_from/valid_to/ump_meta). Absent for legacy callers → column
-    /// defaults/NULL — byte-identical behavior to v1.17.2. `ump_meta` is
+    /// defaults/NULL — byte-identical to the pre-existing behavior. `ump_meta` is
     /// `Some` exactly when this request came from a UMP record (drives the
     /// computed `ump_id` write).
     #[serde(default)]
@@ -119,13 +119,13 @@ pub struct IngestQuery {
     pub format: Option<String>,
 }
 
-/// `POST /ingest` — v1.17.1 "Govern" M4 adds `?format=ump`: the body is a UMP
+/// `POST /ingest` with `?format=ump`: the body is a UMP
 /// envelope (`{"ump":"1.0","records":[…]}`) lowered into the same structured-
-/// ingest path. v1.17.3 "UMP" M2 lifts the one-record ceiling: any number of
+/// ingest path. The one-record ceiling is lifted: any number of
 /// records, each processed through the identical single-record core with
 /// per-record status — one failure never aborts the batch. A single record
-/// (the v1.17.1 shape) keeps its plain `IngestResponse` reply; a multi-record
-/// batch returns `{"ump":"1.0","results":[…],…}`. v1.17.3 M4 adds
+/// (the legacy single-record shape) keeps its plain `IngestResponse` reply;
+/// a multi-record batch returns `{"ump":"1.0","results":[…],…}`. There is also
 /// `?format=ump-md`: the raw §6.3 markdown projection (records joined by
 /// `\n---\n`) — the file binding's import path.
 pub async fn ingest(
@@ -327,7 +327,7 @@ pub(crate) async fn ingest_one(
     }
 
     // screen this shared write core exactly like its
-    // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). v1.20.3 (G5):
+    // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). Runs
     // the full two-layer screen (blocklist + optional classifier). `Reject`
     // keeps the HTTP-400; `Quarantine` (default) ingests then flags post-insert
     // so a flagged plant is excluded from retrieval and its KG edges are
@@ -397,7 +397,7 @@ pub(crate) async fn ingest_one(
     // absolute expiry always wins (the row-wins invariant).
     req.expires_at = ttl_days_to_expires(req.expires_at, req.ttl_days)?;
 
-    // Forced domain (auto-route when omitted; v1.0.0)
+    // Forced domain (auto-route when omitted)
     let forced_domain: Option<String> = match &req.domain {
         Some(d) => Some(normalize_domain(d)?),
         None => None,
@@ -506,7 +506,7 @@ pub(crate) async fn ingest_one(
         let centroids = crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
         crate::domain_router::route_domain_label(&forced_domain, &embedding, &centroids)
     };
-    // S2-33 (pass-3): re-authorize on the ACTUAL target. The gate above ran on
+    // Re-authorize on the ACTUAL target. The gate above ran on
     // forced-or-global; auto-routing can then resolve any domain with a
     // centroid, which previously let a `write:<t>/global`-only principal
     // contaminate another tenant's domain (and poison its centroid). Loud 403
@@ -525,7 +525,7 @@ pub(crate) async fn ingest_one(
     // apply the bound domain profile's ingest
     // defaults (the pure core is `apply_profile_ingest` — unit-tested there).
     // A domain with no bound profile skips straight through (byte-identical
-    // pre-v1.21 behavior). An unreadable bound profile fails CLOSED — a
+    // legacy behavior). An unreadable bound profile fails CLOSED — a
     // strict-posture domain must not silently ingest raw PII.
     let profile = {
         let conn = state
@@ -654,11 +654,11 @@ pub(crate) async fn ingest_one(
         // injection screen is stored but flagged (excluded from retrieval) and
         // its KG edges are skipped so a quarantined plant can't pollute the
         // graph. `flag_if_quarantined` returns true only when it flagged. Fails
-        // closed (F-15): a quarantine that can't be recorded aborts the ingest.
+        // closed: a quarantine that can't be recorded aborts the ingest.
         let quarantined = crate::flag_if_quarantined(&tx, id, quarantine_flagged)
             .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
 
-        // vec0 (int8 + binary quantized). v0.9.0 DoD: vec0 is the sole vector
+        // vec0 (int8 + binary quantized) is the sole vector
         // store; no raw f32 JSON is written to the legacy `embeddings` column.
         tx.execute(
             "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
@@ -721,7 +721,7 @@ pub(crate) async fn ingest_one(
                 let via: Option<&str> = explicit_via
                     .as_deref()
                     .or(content_interval.invalid_at.as_deref());
-                // v1.27.22 "Cascade" (BUG-1 fix): wire edge supersession into the
+                // Wire edge supersession into the
                 // existing machinery — this replaces the write-once `INSERT OR
                 // IGNORE` (a documented-but-unimplemented behavior, the `trace`
                 // contract said a corrected belief supersedes the old edge).
@@ -853,7 +853,7 @@ pub(crate) fn ttl_days_to_expires(
 /// auto-routing, so the quantized vec0 embedding + caller-declared entity
 /// names derive from the raw text (neither practically invertible; entities
 /// were always stored verbatim). The HITL /ingest/proposal flow keeps its
-/// v1.14 posture (binding the gate flow is v1.22 work).
+/// legacy posture (binding the gate flow is future work).
 pub(crate) fn apply_profile_ingest(
     profile: Option<&brain_server::profile::Profile>,
     title: String,

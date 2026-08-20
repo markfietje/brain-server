@@ -1,4 +1,4 @@
-//! Structure-aware Markdown chunker (v0.9.4: CommonMark-compliant via pulldown-cmark).
+//! Structure-aware Markdown chunker (CommonMark-compliant via pulldown-cmark).
 //!
 //! Splits a Markdown document into bounded chunks that respect document
 //! structure: chunks break at heading boundaries, code blocks are kept intact
@@ -69,7 +69,7 @@ pub struct Chunk {
 /// Accumulate a chunk byte-range by extending it to cover every event whose
 /// source bytes should appear in chunk text. Heading events close the current
 /// chunk (and contribute their text to the breadcrumb instead of to the chunk
-/// text — matching pre-v0.9.4 behavior). Code blocks set a "don't split" flag
+/// text — matching the legacy chunker's behavior). Code blocks set a "don't split" flag
 /// so a fence is never broken mid-block. On flush, the chunk's text is sliced
 /// verbatim from the source `content[chunk_start..chunk_end]`.
 pub fn chunk_markdown(content: &str) -> Vec<Chunk> {
@@ -101,7 +101,7 @@ pub fn chunk_markdown(content: &str) -> Vec<Chunk> {
         match event {
             // ── Headings: close the current chunk, collect title for breadcrumb ──
             // Heading source bytes are NOT added to any chunk's text (they become
-            // the breadcrumb). Matches the pre-v0.9.4 chunker's behavior.
+            // the breadcrumb). Matches the legacy chunker's behavior.
             Event::Start(Tag::Heading { level, .. }) => {
                 flush_buf(
                     content,
@@ -212,7 +212,7 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
     let text: &str = &chunk.text;
     let is_fenced = text.starts_with("```") || text.starts_with("~~~");
     let all_lines: Vec<&str> = text.split('\n').collect();
-    // S2-19 (pass-3): the last line is the closer ONLY when it really is one —
+    // The last line is the closer ONLY when it really is one —
     // a trimmed line starting with the same fence marker. An UNTERMINATED
     // oversized block has code as its last line: previously that code line was
     // excluded from the body and then glued onto EVERY piece as a fake closer,
@@ -260,7 +260,7 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
         // Degenerate: one single line longer than the cap. The newline-
         // boundary rule has no boundary to respect — split by byte (char-
         // boundary-safe) and keep the parts as their own one-line pieces.
-        // S2-20 (pass-3): fenced pieces keep a trailing newline so a
+        // Fenced pieces keep a trailing newline so a
         // re-attached closer lands at a line start; PROSE pieces stay strict
         // verbatim substrings of the source (no synthesis on the non-fenced
         // path — the invariant `no_chunk_exceeds_hard_cap` pins).
@@ -291,7 +291,7 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
     let mut out = Vec::with_capacity(raw.len());
     let mut next_line = chunk.line_start;
     for piece in raw {
-        // S2-19/S2-20: with an opener, every piece re-opens the fence; the
+        // With an opener, every piece re-opens the fence; the
         // closer is re-attached only when the block had one, and pieces now
         // end with a newline so it sits at a line start.
         let piece_text = match (opener, closer) {
@@ -336,7 +336,7 @@ fn extend_buf(chunk_start: &mut Option<usize>, chunk_end: &mut usize, start: usi
 }
 
 /// Flush the pending byte range into a chunk. Trims leading/trailing blank
-/// lines (matches pre-v0.9.4 behavior — a chunk's text never starts or ends
+/// lines (matches the legacy chunker's behavior — a chunk's text never starts or ends
 /// with a blank line). Computes 1-indexed line spans from the trimmed range.
 fn flush_buf(
     content: &str,
@@ -413,7 +413,7 @@ fn flush_buf(
 
     // Also strip a single trailing newline if present (the source slice often
     // ends just past the last content line's '\n'). This matches the
-    // pre-v0.9.4 join-with-'\n' which never appended a trailing newline.
+    // legacy join-with-'\n' which never appended a trailing newline.
     if end > start && content.as_bytes().get(end - 1) == Some(&b'\n') {
         end -= 1;
     }

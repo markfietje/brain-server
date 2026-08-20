@@ -5,6 +5,7 @@
 //! resolves it. Read routes (`/search`, `/recall`, `/get`) are NEVER blocked —
 //! an over-capacity brain must still answer. The numbers are documented in
 //! `BENCHMARKS.md` §v0.9.9 and are measured, not estimated.
+//! [errata-exempt: §v0.9.9 is a BENCHMARKS.md section anchor, not a release label]
 //!
 //! Lives in the lib (not server-private `config.rs`) so the `bench` and
 //! `brain-migrate-rehearse` binaries can assert against the same envelope the

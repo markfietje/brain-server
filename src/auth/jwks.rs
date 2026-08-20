@@ -1,4 +1,4 @@
-//! JWT signing key management + JWKS (v1.2.0 "AuthN" M4 + M5).
+//! JWT signing key management + JWKS.
 //!
 //! Loads RSA/EC/Ed25519 public keys from `BRAIN_JWT_KEY_DIR` (default
 //! `~/.config/brain-server/keys/`, mode 0700). Each key is a PEM file named
@@ -164,7 +164,7 @@ impl KeyStore {
                 source: e,
             })?;
             let (alg, verifying) = parse_public_pem(&kid, &public_pem)?;
-            // Optional matching private key alongside. v1.20.24 "Sweep": a
+            // Optional matching private key alongside. A
             // signing key with group/world read bits is a leaked secret — the
             // load fails (same shape as any other key-read failure, which the
             // startup already reports loudly).

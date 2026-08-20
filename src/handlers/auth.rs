@@ -1,4 +1,4 @@
-//! Auth route handlers (v1.2.0 "AuthN" M2 + M5).
+//! Auth route handlers.
 //!
 //! - `POST /auth/refresh` — exchange a refresh token for a new access token
 //!   + rotate the refresh token (reuse detection revokes the chain).

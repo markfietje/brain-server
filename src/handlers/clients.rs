@@ -16,7 +16,7 @@ use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
 use crate::AppState;
 
-/// `POST /clients` body. `profile` is optional (the bound profile is an R2+
+/// `POST /clients` body. `profile` is optional (the bound profile is a later
 /// concern; here it is recorded verbatim when supplied).
 #[derive(Debug, Deserialize)]
 pub struct CreateClientRequest {
@@ -92,7 +92,7 @@ pub async fn list_clients(
             super::authorize(&principal.0, crate::auth::Action::Read, "", &g[0])?
         }
         None => super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?,
-        // S2-15 wrinkle (pass-3): an auditor token with an EMPTY grant set
+        // An auditor token with an EMPTY grant set
         // previously skipped the gate entirely (falling through to the row
         // filter, which yields nothing). "Some([]) denies all" — deny at the
         // gate too, not just at the rows: the surface is closed to this
@@ -361,7 +361,7 @@ pub async fn coach_proposal(
 
 /// `GET /clients/{name}/proposals` — the supervisor QA queue for a client:
 /// the client's pending review items, owner-scoped to the supervisor's
-/// `manages` set (R1 role; empty manages = the whole queue), each with its
+/// `manages` set (empty manages = the whole queue), each with its
 /// `qa_score`. Admin. 404 unknown client; 409 archived.
 pub async fn client_proposals(
     State(state): State<Arc<AppState>>,

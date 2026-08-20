@@ -44,13 +44,6 @@ use crate::search::SearchResult;
 ///   the model2vec tokenizer in if measured budgets drift.
 pub const CHARS_PER_TOKEN: usize = 4;
 
-/// Default token budget matching the paper's hot-spot (~160 tokens).
-/// ponytail: the recall handler takes `Option<usize>` and only packs when set;
-/// this documents the reference default that `brain query --pack` passes when
-/// no explicit budget is given.
-#[allow(dead_code)]
-pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 160;
-
 /// Default objective weights (relevance, coverage, representativeness, diversity).
 pub const DEFAULT_WEIGHTS: Weights = Weights {
     relevance: 0.4,

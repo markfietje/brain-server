@@ -1,7 +1,7 @@
 //! a Profile is a typed JSON bundle of *existing* knob
 //! defaults (access_scope, PII posture, per-kind retention, audit level, kind
 //! vocabulary), stored as one row per name and bound to a domain. No new
-//! governance primitives: every field configures a v1.14/v1.15/v1.17.1 seam.
+//! governance primitives: every field configures an existing seam.
 //!
 //! Apply semantics (the invariant): **the profile sets defaults, the row
 //! wins.** An explicit per-row value (access_scope, expires_at/ttl_days) is
@@ -11,8 +11,8 @@
 //! PII modes: `off` (no change), `standard` (the v1.14 read-time output
 //! redaction — unchanged), `strict` (write-time masking via the existing
 //! `screen_source_prompt` maskers: email/phone/card placeholders are stored,
-//! raw values never land in the DB). Deliberately NOT a vault: v1.20.19
-//! "Vault" established that a fetchable placeholder→raw map would increase
+//! raw values never land in the DB). Deliberately NOT a vault: a
+//! fetchable placeholder→raw map would increase
 //! the personal-data surface, so strict masking is one-way (irreversible).
 //! ponytail: ceiling — the write-time mask runs after auto-routing (the route
 //! needs the embedding), so the quantized vec0 embedding and the
@@ -328,7 +328,7 @@ pub fn audit_read_events_for(
     }
 }
 
-// ── M2 — the 12 ship-with presets (curated from USE_CASES.md) ──────────────
+// ── the 12 ship-with presets (curated from USE_CASES.md) ──────────────
 //
 // Starting points, not locked: every field is editable via POST /profiles.
 // Migration seeds them with INSERT OR IGNORE, so operator edits survive a

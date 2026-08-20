@@ -191,7 +191,7 @@ fn check_envelope(
 }
 
 /// Process RSS (MB) the server reports via `/health` → `capacity.rss_mib`.
-/// This is the *process's own* resident memory (v0.9.9: measured via sysinfo's
+/// This is the *process's own* resident memory (measured via sysinfo's
 /// Process API on the server), NOT system-wide memory. The envelope check
 /// compares against this; using `system.memory_used_mb` (whole-host) would
 /// always exceed the per-process ceiling on any machine with real workload.
@@ -203,8 +203,8 @@ fn read_rss_mb(base: &str) -> Result<u64, String> {
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("/health non-JSON body: {e}"))?;
     // prefer the process RSS from the capacity object (accurate).
-    // Fall back to system.memory_used_mb if the server predates v0.9.9 (no
-    // capacity field yet) so the harness still works against older servers.
+    // Fall back to system.memory_used_mb when the capacity field is absent
+    // (older servers) so the harness still works against them.
     v.get("capacity")
         .and_then(|c| c.get("rss_mib"))
         .and_then(|m| m.as_u64())

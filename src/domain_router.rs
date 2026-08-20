@@ -1,4 +1,4 @@
-//! Centroid routing for per-domain recall (P2).
+//! Centroid routing for per-domain recall.
 //!
 //! Each domain's mean embedding vector (centroid) is stored in the global DB.
 //! At query time the query vector is compared (cosine) to every domain
@@ -65,7 +65,7 @@ pub fn route(query: &[f32], centroids: &[(String, Vec<f32>)]) -> Option<String> 
 /// Resolve the target domain for an ingest. A caller-forced domain always
 /// wins; otherwise auto-route the chunk embedding against the stored
 /// centroids, falling back to `global` when no centroid clears the confidence
-/// threshold. v1.13.0 M2. Pure + deterministic — the same `route()` recall uses.
+/// threshold. Pure + deterministic — the same `route()` recall uses.
 pub fn route_domain_label(
     forced: &Option<String>,
     embedding: &[f32],
@@ -139,11 +139,11 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
 }
 
 /// one-shot recompute of every known domain's centroid from the
-/// corrected M1 source. Domain set = `DISTINCT knowledge.domain` ∪ existing
+/// corrected vector source. Domain set = `DISTINCT knowledge.domain` ∪ existing
 /// `domain_centroids` rows (so a domain that emptied out also gets its stale
 /// centroid cleaned). In shim mode all domains share the global pool. Returns
 /// `(domain, vector_count)` per domain — the post-migration catch-up sweep
-/// that makes M2's auto-route meaningful (until real centroids exist, `route()`
+/// that makes auto-route meaningful (until real centroids exist, `route()`
 /// only ever sees `global`).
 pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)>> {
     let conn = global_pool
@@ -169,8 +169,8 @@ pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)
 }
 
 /// Read a domain's current (non-superseded) chunk vectors from the live vec0
-/// index. v1.13.0 fix: was reading the frozen legacy `embeddings` JSON table
-/// (2 rows since v0.9.0), which silently zeroed every centroid. Now reads
+/// index. Previously read the frozen legacy `embeddings` JSON table
+/// (2 rows since the vec0 cutover), which silently zeroed every centroid. Now reads
 /// `vec_knowledge`, matching `find_near_duplicates` (consolidate.rs:260), and
 /// dequantizes via `decode_embedding`. `valid_to IS NULL` excludes superseded
 /// chunks (the loser of a contradiction resolution) so a centroid isn't pulled

@@ -1,9 +1,9 @@
 //! observability + compliance-workflow handlers.
 //!
-//! M1/M2: the recall read-event trace endpoint (`/recall/{id}/trace`) replays
+//! The recall read-event trace endpoint (`/recall/{id}/trace`) replays
 //! the decision path of a recorded read event (the audit row is hash-only; the
 //! non-content trace metadata lives in `recall_traces`).
-//! M3: DSAR orchestration on top of the v1.14 `/export` + `/purge` primitives —
+//! DSAR orchestration on top of the `/export` + `/purge` primitives —
 //! `POST /dsar` (locate → export → purge → certificate), `GET /tombstones`
 //! (the queryable deletion registry), `GET /dsar/{id}/certificate` (chain-
 //! verifiable), and the opt-in Art 19 onward-notification webhook.
@@ -27,7 +27,7 @@ const DERIVED_MAX_DEPTH: usize = 8;
 const MAX_TOMBSTONES: i64 = 1000;
 
 // ---------------------------------------------------------------------------
-// M2 — recall trace
+// recall trace
 // ---------------------------------------------------------------------------
 
 /// `GET /recall/{trace_id}/trace` — replay the decision path of a recorded
@@ -63,7 +63,7 @@ pub async fn get_trace(
 }
 
 // ---------------------------------------------------------------------------
-// M3 — DSAR orchestration
+// DSAR orchestration
 // ---------------------------------------------------------------------------
 
 /// `POST /dsar` request. `subject` is the owner/principal being actioned;
@@ -188,7 +188,7 @@ pub async fn post_dsar(
     // registered domain, not just the global pool. In multi-db mode each
     // `brain-<domain>.db` runs its own locate + purge tx; in shim mode the
     // list is exactly the global pool (whose owner query already covers every
-    // row of the one shared DB — byte-identical behavior to v1.20.23).
+    // row of the one shared DB — byte-identical to the legacy shim behavior).
     // ponytail: per-domain txs, not one cross-file tx — a crash mid-run can
     // leave some domains purged with the ledger written last (erasure-safe
     // direction; the ledger under-reports rather than over-reports); the
@@ -243,7 +243,7 @@ pub async fn post_dsar(
         }
 
         // 3. Aggregate digest for the global ledger row: in shim mode this is
-        //    the single local bundle (byte-identical hash to v1.20.23); in
+        //    the single local bundle (byte-identical to the legacy hash); in
         //    multi-db mode it is SHA-256 over the joined per-domain bundles.
         let aggregate_hash = if !dry_run && pools.len() > 1 && !cross_bundle.is_empty() {
             Some(crate::handlers::gate::sha256_hex(
@@ -254,7 +254,7 @@ pub async fn post_dsar(
         };
 
         // 4. The global pool: locate + purge + the ledger row (atomic in its
-        //    own tx, as v1.20.17 M5 requires).
+        //    own tx, as the ledger-atomicity invariant requires).
         let global_run = run_dsar_pool(
             &pools[global_idx].1,
             "global",
@@ -622,7 +622,7 @@ pub(crate) async fn run_dsar_subject(
 }
 
 // ---------------------------------------------------------------------------
-// M3.1 — DSAR ledger list
+// DSAR ledger list
 // ---------------------------------------------------------------------------
 
 /// `GET /dsar?limit=&offset=` query.
@@ -655,7 +655,7 @@ pub struct DsarLedger {
     pub total: i64,
 }
 
-/// `GET /dsar` — the v1.20.22 "Clocks" ledger list (Admin). Past DSAR requests
+/// `GET /dsar` — the DSAR ledger list (Admin). Past DSAR requests
 /// were only visible via the `/audit` side-channel; this is the first-class
 /// registry the client countdown renders. Bounded (default 100, clamped to
 /// `MAX_MULTI_GET`), newest-first (`ORDER BY id DESC`), the audit pagination
@@ -1098,7 +1098,7 @@ fn run_dsar_pool(
         .ok()
         .flatten()
         .is_some_and(|p| p.pii_strict());
-    // S2-18 (pass-3): the remanence claim must reflect the pragma ATTEMPT,
+    // The remanence claim must reflect the pragma ATTEMPT,
     // not just the profile flag — on a failed `secure_delete=ON` the
     // certificate must downgrade to the disclosed logical posture instead of
     // asserting an overwrite that never happened. Dry-run/export-only keep
@@ -1233,7 +1233,7 @@ fn run_dsar_pool(
         purged_ids.extend(free(&roots).iter().copied());
     }
 
-    // trace residue sweep. Since v1.20.17 M3 the trace no longer
+    // trace residue sweep. The trace no longer
     // stores the raw query (only its xxh3-64 hash), so the subject can't
     // appear in it — this sweep remains as a defensive net against any
     // future field that does embed personal data. Best-effort (short
@@ -1261,7 +1261,7 @@ fn run_dsar_pool(
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     }
 
-    // 4. v1.20.17 M1: store the export's SHA-256 (v1.20.24 "Sweep": replacing
+    // 4. Store the export's SHA-256 (replacing
     //    the brute-forceable xxh3-64 digest of a DELETED-content payload),
     //    never the raw bundle — the ledger's job is to prove the purge
     //    happened, not to keep a copy of the erasure payload.

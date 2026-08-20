@@ -29,8 +29,8 @@
 //! — stable across edits, unique per issue.
 //!
 //! `ponytail:` ceilings:
-//! - **No labels / assignees / comments.** M2.2 ships issue title + body
-//!   only. Comments land in M2.5+ (needs a separate sub-resource cursor).
+//! - **No labels / assignees / comments.** The connector ships issue title + body
+//!   only. Comments land later (needs a separate sub-resource cursor).
 //! - **No HTML → Markdown conversion.** GitHub issue bodies are already
 //!   Markdown (per their API contract), so we pass through verbatim.
 

@@ -160,9 +160,9 @@ pub async fn suggest(
         .filter(|s| !s.is_empty());
     let domain_label = domain.clone();
     let k_for_task = k;
-    // S2-29 (pass-3 audit): resolve the record-level gates ONCE, before the
-    // blocking closure — /suggest returns full chunk content, so the v1.14
-    // scope filter + v1.23 role gate apply exactly like /recall. Previously
+    // Resolve the record-level gates ONCE, before the
+    // blocking closure — /suggest returns full chunk content, so the
+    // scope filter + role gate apply exactly like /recall. Previously
     // `..Default::default()` dropped them and an owner-restricted role saw
     // other owners' private rows as suggestions /recall itself would gate.
     // (Outside the closure: role_retrieval_gate opens a pool connection, so
@@ -194,8 +194,8 @@ pub async fn suggest(
                 owner_in: gate_filters.owner_in.clone(),
                 ..Default::default()
             };
-            // vec0_knn honors the v1.6.0 `valid_to IS NULL` default (current facts
-            // only) and the v0.9.7 flagged-row exclusion — superseded + quarantined
+            // vec0_knn honors the `valid_to IS NULL` default (current facts
+            // only) and the flagged-row exclusion — superseded + quarantined
             // chunks are never suggested.
             let mut results = crate::search::vec0_knn(&conn, &qvec, overfetch, &filters)
                 .map_err(|e| HandlerError::internal(format!("vec0_knn failed: {e}")))?;
@@ -378,7 +378,7 @@ pub async fn feedback(
 /// `/suggest/feedback` handler so the `/ump/feedback` binding shares it. The
 /// optional `ump_outcome` carries the granular UMP outcome (`followed`/
 /// `overridden`/`ignored`/`contradicted`) in its own column; the suggest path
-/// passes `None` (column stays NULL — byte-identical to v1.17.2).
+/// passes `None` (column stays NULL).
 #[allow(clippy::too_many_arguments)] // 8 positional params, 2 call sites; a struct would be ceremony for a private fn
 pub(crate) fn record_feedback(
     conn: &rusqlite::Connection,

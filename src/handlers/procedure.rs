@@ -115,9 +115,9 @@ pub async fn create(
             Ok((t, c, kind))
         })
         .collect::<Result<_, _>>()?;
-    // v1.20.1 "Shield" M1 (extended to /procedure in v1.20.2): screen this
+    // Screen this
     // sibling write core exactly like `ingest_one`, `/add`, `/ingest/memory`,
-    // `/ingest/markdown`. v1.20.3 (G5): the full two-layer screen (blocklist +
+    // `/ingest/markdown` — the full two-layer screen (blocklist +
     // optional classifier). `Reject` → 400; `Quarantine` (default) → flag each
     // inserted chunk + skip the `next_step` edges so a quarantined plant can't
     // pollute the graph. The screen runs against the root content + title AND
@@ -208,7 +208,7 @@ pub async fn create(
             // actually quarantined are flagged (a benign step in a quarantined
             // procedure stays clean).
             // occurrence in a quarantined
-            // procedure stays clean). Fails closed (F-15): a step that must be
+            // procedure stays clean). Fails closed: a step that must be
             // flagged but can't be is a stop-the-write condition.
             crate::flag_if_quarantined(&tx, step_id, step_quarantine[idx])
                 .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
@@ -337,7 +337,7 @@ pub async fn steps(
     Path(id): Path<i64>,
 ) -> Result<Json<ProcedureStepsResponse>, HandlerError> {
     // AuthZ read gate, scoped to the header domain. `None` (no JWT) = superuser.
-    // S2-30 (pass-3 audit): the label binds into the SQL below (same /get/{id}
+    // The label binds into the SQL below (same /get/{id}
     // idiom) so an id cannot cross domains in shim mode — previously this was
     // a global-read gate + bare-id read leaking any procedure's full chain.
     let domain = crate::handlers::domain_from_headers(&headers);

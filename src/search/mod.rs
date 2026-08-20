@@ -133,7 +133,7 @@ pub struct EvidenceLinkRef {
     pub kind: String,
 }
 
-/// Structured, faithful evidence for a retrieved chunk (M2.1). `text` is always
+/// Structured, faithful evidence for a retrieved chunk. `text` is always
 /// a verbatim substring of the chunk `content`; `highlights` are byte-offset
 /// ranges *within* `text` (never the full content) so a client can render its
 /// own markers without the server injecting HTML. `source_uri` + `revision_id`
@@ -142,7 +142,7 @@ pub struct EvidenceLinkRef {
 pub struct Evidence {
     /// Verbatim window of the chunk content around the first query-term match.
     pub text: String,
-    /// 1-indexed source line span of the chunk (from the v0.9.x chunker).
+    /// 1-indexed source line span of the chunk (from the chunker).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_start: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -151,7 +151,7 @@ pub struct Evidence {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading_path: Option<String>,
     /// Canonical source URI (`sources.uri`), e.g. `manual://{hash}` or a
-    /// vault file path. `None` for pre-v0.9.4 chunks with no source linkage.
+    /// vault file path. `None` for legacy chunks with no source linkage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_uri: Option<String>,
     /// Immutable source revision id (`source_revisions.id`). `None` if unlinked.
@@ -161,7 +161,7 @@ pub struct Evidence {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub highlights: Vec<[usize; 2]>,
     /// when the fact became true in the world (file mtime, issue
-    /// created_at, …). RFC3339; `None` for pre-v0.9.8 rows (treated as observed).
+    /// created_at, …). RFC3339; `None` for legacy rows (treated as observed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<String>,
     /// when the fact ceased to be true. `None` ⇒ still current.
@@ -531,7 +531,7 @@ fn evidence_links_batch_for(
     if ids.is_empty() {
         return Ok(buckets);
     }
-    // Guard: the table may be absent on a DB that hasn't run the v0.9.8
+    // Guard: the table may be absent on a DB that hasn't run the
     // migration yet (older live DBs). `sqlite_master` check is cheap and keeps
     // enrichment non-fatal.
     let exists: bool = conn
@@ -571,7 +571,7 @@ fn evidence_links_batch_for(
     })?;
     for row in rows {
         let Ok((from, to, kind)) = row else { continue };
-        // S2-38 (pass-3): a self-link (from == to) satisfies BOTH placeholder
+        // A self-link (from == to) satisfies BOTH placeholder
         // groups of the `IN (…) OR IN (…)` query, so it was pushed into the
         // same bucket twice — a duplicated EvidenceLinkRef in API responses.
         // A chunk citing itself carries no evidence semantics; skip.
@@ -668,7 +668,7 @@ pub struct SearchFilters {
     /// on every hit even when the caller did not request `provenance`. Purely a
     /// serialization switch on top of `enrich_evidence`.
     pub evidence: bool,
-    /// deterministic freshness tie-break (M2.4). Within equal
+    /// deterministic freshness tie-break. Within equal
     /// RRF-score buckets, prefer newer `observed_at` then higher `authority`.
     /// Never blended into `fused_score` (would distort lexical/vector semantics).
     pub freshness_tiebreak: bool,
@@ -717,7 +717,7 @@ pub struct SearchFilters {
     /// time: when `include_decayed` is false, a chunk whose *effective* expiry
     /// (own `expires_at`, else kind-default from `created_at`) is in the past is
     /// excluded, exactly like a per-chunk `expires_at`. Empty = no kind policy
-    /// (the v1.14-only behavior).
+    /// (the legacy behavior).
     /// `Arc` for cell-cheap filter clones.
     pub retention_days: Arc<Vec<(String, i64)>>,
 }
@@ -756,7 +756,7 @@ impl Default for SearchFilters {
 /// filter cannot degrade into a silent lexical string comparison.
 ///
 /// Accepts: RFC3339 (`2024-03-01T12:00:00Z`), `YYYY-MM-DD HH:MM:SS`, and bare
-/// `YYYY-MM-DD` (v1.4.0 Calibrate: the bi-temporal `at` filter commonly uses
+/// `YYYY-MM-DD` (the bi-temporal `at` filter commonly uses
 /// date-only form, e.g. `?at=2015-06-01`). A bare date is padded to
 /// `00:00:00` so SQLite's lexicographic comparison is well-defined.
 ///
@@ -1046,7 +1046,7 @@ pub fn prf_extract_terms(
     let mut tf: HashMap<String, usize> = HashMap::new();
     for hit in hits {
         // Negative-feedback: never mine expansion terms from quarantined
-        // (`flagged`) or blocklist-tripping content (v1.27.19 D-8: the screen
+        // (`flagged`) or blocklist-tripping content (the screen
         // ran once at construction; the flag is read here).
         if hit.flagged || hit.blocklist_hit {
             continue;
@@ -1075,8 +1075,8 @@ pub fn prf_extract_terms(
     ranked.into_iter().take(max_terms).map(|(w, _)| w).collect()
 }
 
-/// Extract PRF expansion terms weighted by the FTS5 vocabulary index (v0.9.1
-/// M4.1). This is the preferred live path: it ranks candidate terms by a
+/// Extract PRF expansion terms weighted by the FTS5 vocabulary index.
+/// This is the preferred live path: it ranks candidate terms by a
 /// BM25-style score derived from the FTS5 `instance` vocab table (term × doc
 /// × col × cnt), giving corpus-statistics-aware weighting instead of the naive
 /// in-memory document frequency used by the DB-free [`prf_extract_terms`].
@@ -1129,7 +1129,7 @@ pub fn prf_extract_terms_fts(
         .collect();
 
     // two narrow vocab queries instead of one
-    // corpus-wide scan. The pre-E-1 query materialized `corpus` as a full
+    // corpus-wide scan. The original query materialized `corpus` as a full
     // `GROUP BY term` over the ENTIRE vocab table, then JOINed the selected
     // terms into it — the df side cost grew with the corpus, not with the
     // query. Now: (1) per-term counts restricted to the selected hit docs
@@ -1142,13 +1142,13 @@ pub fn prf_extract_terms_fts(
     // REAL-SCHEMA NOTE (2026-08-16, found by `prf_df_matches_legacy_corpus_scan`):
     // the bundled SQLite 3.53.2 fts5vocab 'instance' table exposes
     // `(term, doc, col, offset)` — one row per OCCURRENCE (`offset`), not the
-    // pre-3.40 `(term, col, rowid, cnt)` aggregate shape. The pre-E-1 query
+    // pre-3.40 `(term, col, rowid, cnt)` aggregate shape. The original query
     // referenced `cnt`/`rowid`, so every PRF call silently errored into the
-    // pure-DF fallback; the corpus-df weighting never actually ran. The E-1
+    // pure-DF fallback; the corpus-df weighting never actually ran. The
     // queries here use the real columns: per-term occurrence counts
     // (`COUNT(*)`, the old `SUM(cnt)` analog) and `COUNT(DISTINCT doc)` (the
     // old `COUNT(DISTINCT rowid)` df). Semantics: byte-identical to the
-    // mathematically-intended pre-E-1 query.
+    // mathematically-intended original query.
 
     // Step 1: local counts within the selected hits.
     let local_sql = format!(
@@ -1339,7 +1339,7 @@ fn env_usize(key: &str, default: usize) -> usize {
 /// a document strong for the unexpanded query keeps its pass-1 rank
 /// contribution even if query drift pushed it down in pass-2. Deterministic;
 /// no comparison of incomparable raw scores across passes.
-/// Shared two-pass RRF fuse (v1.12.0 "Discern": also used by the graph
+/// Shared two-pass RRF fuse (also used by the graph
 /// rescue, so the `prf_expanded` flag is NOT set here — see
 /// [`fuse_prf_passes`]). Deterministic: dedup by id, per-pass RRF
 /// contributions `1/(k+rank)` summed, original-pass order wins ties.
@@ -1554,7 +1554,7 @@ pub fn vec0_knn(
     // bi-temporal valid-time
     // filter. Two modes:
     //   - `at` = None (default recall): exclude EXPIRED chunks only
-    //     (valid_to IS NULL). v1.6.0 fix — before this, superseded chunks
+    //     (valid_to IS NULL). Before this, superseded chunks
     //     were still returned by default recall because the filter only fired
     //     when `at` was set. That broke the Reconcile exit criterion.
     //   - `at` = Some(t): full bi-temporal window
@@ -1571,7 +1571,7 @@ pub fn vec0_knn(
         }
         None => {
             // Default recall: only current facts. A chunk with valid_to set
-            // has been superseded (v1.6.0 resolve_supersession) and must not
+            // has been superseded (resolve_supersession) and must not
             // appear unless the caller asks for historical `?at=` recall.
             sql.push_str(" AND k.valid_to IS NULL");
         }
@@ -1805,7 +1805,7 @@ pub fn perform_search_traced(
     // or `at` fails fast instead of producing a silently wrong lexical
     // comparison against SQLite's fixed-width `YYYY-MM-DD HH:MM:SS` format.
     // Both are normalized independently: a caller may set either, both, or
-    // neither. v1.4.0 "Calibrate" M1: `at` is the bi-temporal valid-time
+    // neither. `at` is the bi-temporal valid-time
     // filter (distinct from `as_of` transaction-time recall).
     let normalized_since = filters.since.as_deref().map(normalize_since).transpose()?;
     let normalized_at = filters.at.as_deref().map(normalize_since).transpose()?;
@@ -1984,7 +1984,7 @@ pub fn perform_search_traced(
     // deterministic freshness tie-break. Within equal fused-score
     // buckets, prefer newer `observed_at` then higher `authority`. This is a
     // post-fusion stable sort that NEVER reorders across distinct scores, so it
-    // cannot distort lexical/vector retrieval semantics (plan forbids that).
+    // cannot distort lexical/vector retrieval semantics.
     // ponytail: stable sort over ≤ k.max(RRF_OVERFETCH) items — O(n log n),
     // bounded and cheap.
     if filters.freshness_tiebreak {
@@ -2171,7 +2171,7 @@ pub fn perform_search_with_prf(
 
     let t_rr = Instant::now();
     candidates.truncate(k);
-    // v1.28 "Caliber" M1: rerank the survivors iff the profile loaded a
+    // Rerank the survivors iff the profile loaded a
     // reranker (enterprise/desktop). No-op on edge — RRF order stands. Fail-open.
     #[cfg(feature = "rerank-tier")]
     rerank::maybe_rerank(&q, &mut candidates, &mut tel);
@@ -2195,7 +2195,7 @@ pub fn perform_search_with_prf(
 // ── structured query document ─────────────────────────────────────
 pub mod query;
 
-// v1.28 "Caliber" M1: the profile-gated cross-encoder reranker. Feature-gated
+// The profile-gated cross-encoder reranker. Feature-gated
 // (`rerank-tier`) and further gated at runtime by `BRAIN_RERANK_ENABLED` (set
 // by the server boot for enterprise/desktop). Loads bge-reranker-v2-m3 and
 // writes the reserved `rerank_score`/`rerank_truncated` provenance slots.

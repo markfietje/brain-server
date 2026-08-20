@@ -1,11 +1,11 @@
-//! The embedding abstraction (v1.28 "Caliber" M2).
+//! The embedding abstraction.
 //!
 //! isolates the model behind a trait so the active profile selects the backend
 //! without every call site changing its model choice. The default impl delegates
 //! to `model2vec_rs::StaticModel` (`potion-retrieval-32M` — the edge/Jetson
 //! contract, byte-identical to today). The `neural-embed` feature adds a
 //! transformer impl (`BAAI/bge-m3` via FastEmbed-rs) for the `enterprise`
-//! profile, with its native sparse + ColBERT outputs exposed for v1.30's 4th
+//! profile, with its native sparse + ColBERT outputs exposed for a future 4th
 //! RRF leg + late-interaction rerank.
 //!
 //! Why a trait, not a struct: `AppState` holds `Arc<dyn Embedder>`, so a recall
@@ -18,7 +18,7 @@
 //! in isolation. The `neural-embed` path is feature-gated and compiles only
 //! with `--features neural-embed` (pulls `fastembed`). `AppState` rewiring +
 //! the ~10 call-site edits are the gated follow-up (the wide-blast-radius step
-//! the v1.28 plan protypes-before-commit) — this module is the prototype.
+//! to prototype before committing) — this module is the prototype.
 
 #![deny(unsafe_code)]
 
@@ -63,7 +63,7 @@ pub trait Embedder: Send + Sync {
 
     /// Store dimension — profile-derived, NOT a fixed 512. The edge static
     /// model is 512 (matches the current `vec0 int8[512]` store); a neural
-    /// backend overrides this to its native dim (1024 for BGE-M3). The
+    /// backend overrides this to its native dim (1024 for bge-m3). The
     /// migration creates `vec_knowledge` at the active embedder's `store_dim`.
     fn store_dim(&self) -> usize {
         512
@@ -110,9 +110,9 @@ impl Embedder for StaticEmbedder {
     }
 }
 
-// ── Neural backend: BGE-M3 via FastEmbed-rs (feature-gated) ─────────────────
+// ── Neural backend: bge-m3 via FastEmbed-rs (feature-gated) ─────────────────
 //
-// BGE-M3 (verified via FastEmbed-rs docs + the BAAI card, 2026-08-14): emits
+// bge-m3 (verified via FastEmbed-rs docs + the BAAI card, 2026-08-14): emits
 // dense + sparse + ColBERT from ONE forward pass. FastEmbed-rs exposes this as
 // `Bgem3Embedding::embed(&mut self, texts, batch) -> Bgem3EmbeddingOutput {
 // dense, sparse, colbert }`. The `&mut self` requirement (ONNX session scratch)
@@ -125,15 +125,15 @@ pub mod neural {
     use super::{EmbedError, Embedder};
     use std::sync::Mutex;
 
-    /// All three BGE-M3 outputs from one forward pass. v1.30 consumes `sparse`
-    /// (a 4th RRF leg, BM25-like) and `colbert` (a late-interaction rerank),
-    /// at zero extra model load.
+    /// All three bge-m3 outputs from one forward pass. A future consumer
+    /// gets `sparse` (a 4th RRF leg, BM25-like) and `colbert` (a
+    /// late-interaction rerank) at zero extra model load.
     pub struct MultiOutput {
         /// Dense vectors (1024-d) — the vector leg, same as `Embedder::encode`.
         pub dense: Vec<Vec<f32>>,
-        /// Sparse lexical weights — a 4th RRF leg (v1.30).
+        /// Sparse lexical weights — a future 4th RRF leg.
         pub sparse: Vec<fastembed::SparseEmbedding>,
-        /// Per-token ColBERT vectors — the late-interaction rerank (v1.30).
+        /// Per-token ColBERT vectors — a future late-interaction rerank.
         pub colbert: Vec<Vec<Vec<f32>>>,
     }
 
@@ -147,7 +147,7 @@ pub mod neural {
     }
 
     impl NeuralEmbedder {
-        /// Load BGE-M3. fastembed 5.17.4 ships the quantized `BGEM3Q` variant
+        /// Load bge-m3. fastembed 5.17.4 ships the quantized `BGEM3Q` variant
         /// (2-3× CPU speedup, the only published variant) — the Jetson-friendly
         /// choice that also runs on desktop. `intra_threads` can be capped via
         /// `new_with_threads`; the default uses all cores.
@@ -177,10 +177,10 @@ pub mod neural {
             })
         }
 
-        /// The full dense+sparse+colbert output — v1.30's 4th-leg + rerank seam.
+        /// The full dense+sparse+colbert output — the 4th-leg + rerank seam.
         /// Fails closed to an empty `MultiOutput` on lock/embed failure so a
         /// recall never panics on a model error — but the failure is `warn!`ed
-        /// (D-1: never certify silence), and the caller's empty-vec guard drops
+        /// (never certify silence), and the caller's empty-vec guard drops
         /// the row rather than writing a corrupt embedding.
         pub fn embed_multi(&self, texts: &[&str]) -> MultiOutput {
             let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
@@ -231,7 +231,7 @@ pub mod neural {
     /// The desktop-profile embedder: `Alibaba-NLP/gte-base-en-v1.5` (~137M, 768-d,
     /// FastEmbed `GTEBaseENV15`). Dense-only (no sparse/colbert heads — pair with
     /// the rerank tier for precision). 54.09 MTEB-retrieval / strong English at
-    /// ~1/4 the BGE-M3 footprint — the laptop/AMD-desktop tier.
+    /// ~1/4 the bge-m3 footprint — the laptop/AMD-desktop tier.
     ///
     /// Why not `gte-modernbert-base` (55.33, the slightly-better model)? It's
     /// NOT in FastEmbed's enum — it needs the custom-ONNX path
@@ -289,7 +289,7 @@ pub mod neural {
 /// Resolve the embedder for the active profile. Mirrors `config::model_id_for_profile`
 /// but returns the typed backend. `edge-default` / `quality-local` / `air-gapped`
 /// → static potion (the Jetson contract, byte-identical to today); `enterprise`
-/// → BGE-M3 (feature-gated); `compact` (legacy `multilingual`) → static potion-base-2M.
+/// → bge-m3 (feature-gated); `compact` (legacy `multilingual`) → static potion-base-2M.
 ///
 /// Profile + model-id constants live server-side in `config.rs`; this lib-level
 /// factory hardcodes the three model ids (the same literals config uses) so the

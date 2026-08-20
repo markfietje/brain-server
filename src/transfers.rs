@@ -1,7 +1,7 @@
 //! the multi-jurisdiction evidence layer for a PH BPO
 //! serving US/UK/EU/AU/SG/CA clients.
 //!
-//! Honest framing (mirrors the plan): a PH BPO is a sub-processor; it must
+//! Honest framing: a PH BPO is a sub-processor; it must
 //! satisfy RA 10173 AND the client country's law (GDPR Art 46 SCCs + TIA, UK
 //! IDTA, US DPF/HIPAA-BAA, AU APPs, SG PDPA, CA PIPEDA). This module ships the
 //! **evidence + tagging** layer on existing primitives (DSAR, region-pin,
@@ -10,11 +10,11 @@
 //! client stays controller; the BPO + brain-server are processors/
 //! sub-processors).
 //!
-//! M1 — the Art 30 + Art 46 cross-border transfer register (`transfers`
-//! table). M2 — per-jurisdiction DSAR deadlines + rights (`JurisdictionRule`).
-//! M3 — `lawful_basis`/`purpose` tagging (the data-minimization +
+//! The Art 30 + Art 46 cross-border transfer register (`transfers`
+//! table). Per-jurisdiction DSAR deadlines + rights (`JurisdictionRule`).
+//! `lawful_basis`/`purpose` tagging (the data-minimization +
 //! purpose-limitation evidence; a strict-mode record without a basis is
-//! flagged). M4 — the TIA (Schrems II) + DPA (Art 28) evidence templates,
+//! flagged). The TIA (Schrems II) + DPA (Art 28) evidence templates,
 //! pre-filled from the register. Jurisdiction rules + destination-surveillance
 //! postures are a **curated, versioned table** — law evolves; a human (DPO/
 //! legal) signs the artifacts this module pre-fills.
@@ -180,7 +180,7 @@ pub fn destination_posture(code: &str) -> Option<&'static SurveillancePosture> {
     SURVEILLANCE.iter().find(|p| p.country == c)
 }
 
-/// M3: the purpose-limitation + data-minimization flag. A record ingested into
+/// The purpose-limitation + data-minimization flag. A record ingested into
 /// a **strict-mode domain** without a documented `lawful_basis` is flagged
 /// (NPC 2024-04 + GDPR Art 5/6). `None`/blank basis → flagged; a non-strict
 /// domain never flags (the operator chose a lighter posture).
@@ -404,7 +404,7 @@ pub(crate) fn transfer_by_id(conn: &Connection, id: i64) -> Result<Option<Transf
     .map_err(|e| HandlerError::internal(e.to_string()))
 }
 
-/// M4 — the Transfer Impact Assessment (Schrems II) template, pre-filled from
+/// The Transfer Impact Assessment (Schrems II) template, pre-filled from
 /// the register row + the destination jurisdiction's law + surveillance
 /// posture. An **evidence artifact**: a human (DPO/legal) reviews + signs it.
 #[derive(Debug, serde::Serialize)]
@@ -479,7 +479,7 @@ pub(crate) fn tia_from(conn: &Connection, id: i64) -> Result<Option<TiaTemplate>
     }))
 }
 
-/// M4 — the DPA (Art 28 sub-processor terms) fields, pre-filled from the
+/// The DPA (Art 28 sub-processor terms) fields, pre-filled from the
 /// register row + mechanism defaults. Exported as the evidence a client's
 /// controller demands before authorizing the sub-processor.
 pub(crate) fn dpa_fields(t: &Transfer) -> serde_json::Value {

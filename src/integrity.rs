@@ -1,8 +1,8 @@
 //! scheduled rolling backups + integrity self-check.
 //!
 //! The encrypted-bundle path in `backup.rs` is for off-host transport
-//! (`brain backup` CLI, manual operator action). M3 adds the always-on,
-//! zero-config rolling backup the plan asks for: a periodic task that
+//! (`brain backup` CLI, manual operator action). This module adds the
+//! always-on, zero-config rolling backup: a periodic task that
 //! snapshots the live DB with `VACUUM INTO`, runs `PRAGMA integrity_check`
 //! on the snapshot, keeps the last N copies, and exposes the result via
 //! `/health`. Plain SQLite files (not encrypted bundles) — these are

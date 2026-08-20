@@ -306,7 +306,7 @@ impl EntityVocabulary {
             return;
         }
         let lower = name.to_lowercase();
-        // F-31: O(1) sidecar membership (was `entities.contains`, linear per
+        // O(1) sidecar membership (was `entities.contains`, linear per
         // call — quadratic on adversarial repeated-entity documents).
         if self.seen.insert(lower.clone()) {
             self.entities.push(lower);

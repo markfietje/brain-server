@@ -133,7 +133,7 @@ impl Scope {
 /// (action, team, domain) tuple. Used by `handlers::authorize` which wraps this
 /// with the `Option<Principal>` back-compat path.
 ///
-/// Audit G2: an authenticated principal with zero valid scopes is
+/// An authenticated principal with zero valid scopes is
 /// deny-all — a token that carried no grants grants nothing. Explicit
 /// superuser requires `admin:*/*` (the `*:*/*` scope). The `None`-principal
 /// path (opaque-token/no-JWT back-compat) stays superuser in

@@ -748,7 +748,7 @@ fn tool_brain_recall(args: &serde_json::Value) -> Result<String, String> {
     Ok(format_response(resp.status, &resp.body))
 }
 
-/// Lower an MCP tool's arguments into the v0.9.5 structured `QueryDoc` body for
+/// Lower an MCP tool's arguments into the structured `QueryDoc` body for
 /// `POST /recall`. Both `brain_search` and `brain_recall` share this so the MCP
 /// surface mirrors the HTTP contract exactly.
 fn recall_body(args: &serde_json::Value, query: &str) -> Result<String, String> {
@@ -803,7 +803,7 @@ fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
 
     // v1.0 primary path: POST /ingest with structured fields. Triggered when
     // the caller supplies entities/relations/domain — the agent did extraction
-    // client-side, per the plan M4.
+    // client-side.
     if has_structured || domain.is_some() {
         let mut body = serde_json::json!({ "content": content });
         if let Some(t) = title {

@@ -70,7 +70,7 @@ pub async fn propose(
 ) -> Result<Json<ConsolidateProposal>, HandlerError> {
     // AuthZ read gate (detection surface, zero mutation).
     // `None` (no JWT) = superuser.
-    // S2-31 (pass-3): layout-dependent gate — the five detection scans are
+    // Layout-dependent gate — the five detection scans are
     // corpus-wide by nature (cross-chunk comparisons). In multi-db the pool
     // IS the domain (scoped by construction); in shim mode the shared pool
     // is every tenant's corpus, so the surface requires Admin there.
@@ -242,7 +242,7 @@ pub struct UndoResponse {
     pub rejected: Vec<String>,
 }
 
-/// `POST /consolidate/undo` — v1.8.0: reverse prior supersession resolutions.
+/// `POST /consolidate/undo` — reverse prior supersession resolutions.
 /// Roadmap exit criterion: "reject or undo them without retrieval regression."
 /// For each `old_chunk`, clears `valid_to` back to NULL + removes the
 /// `supersedes` evidence_link, atomically in one tx. Audited. Idempotent.

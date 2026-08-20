@@ -1,4 +1,4 @@
-//! GitHub REST API client (issues only for M2.2 MVP).
+//! GitHub REST API client (issues only for the MVP).
 //!
 //! Wraps `reqwest::blocking::Client` with:
 //! - Auth header injection (installation token from `GitHubAppProvider`).
@@ -38,7 +38,7 @@ const RATE_LIMIT_SLEEP_CAP: Duration = Duration::from_secs(60);
 /// The only host this client is ever allowed to send the installation bearer
 /// to. The `rel="next"` pagination URL comes from GitHub's own `Link` header,
 /// but a compromised/forged response could point anywhere; refusing non-API
-/// hosts closes F-30 (token exfiltration via Link-header redirect).
+/// hosts closes token exfiltration via Link-header redirect.
 const GITHUB_API_HOST: &str = "api.github.com";
 
 /// Reject any URL that is not `https://api.github.com/...`. Called by every
@@ -84,7 +84,7 @@ impl GitHubClient {
     /// the rate-limit sleep (capped). Returns the raw response value parsed
     /// as JSON. Errors on non-2xx.
     fn get_authed(&self, url: &str, bearer: &str) -> Result<reqwest::blocking::Response> {
-        // F-30: a GitHub responses's `Link: rel="next"` header (the only
+        // A GitHub responses's `Link: rel="next"` header (the only
         // user-influenced URL this client follows) must never carry the
         // installation bearer to a forged host. Verified centrally so every
         // future endpoint inherits the guard.

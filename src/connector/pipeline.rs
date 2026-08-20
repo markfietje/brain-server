@@ -1,8 +1,8 @@
 //! the shared translate+ingest template.
 //!
 //! Every vertical connector is "translate a source record → a `ConnectorDoc`,
-//! then feed it to the existing `/ingest/markdown` (source/revision linkage,
-//! v0.9.4) and its URI set to `/sources/reconcile`". The per-strong
+//! then feed it to the existing `/ingest/markdown` (source/revision
+//! linkage) and its URI set to `/sources/reconcile`". The per-strong
 //! system's transport (page fetch, auth refresh, rate limits) is
 //! connector-specific — that is the documented v1.24 honest ceiling (the
 //! GitHub connector, `connector/github`, is the tested network template). This
@@ -21,7 +21,7 @@
 pub struct ConnectorDoc {
     /// Stable connector-defined URI (e.g. `crm://acme/opp/123`) — the chunk
     /// `source_path`. Must be idempotent: unchanged source → same URI + same
-    /// content, so the v0.9.4 dedup makes re-ingest a no-op.
+    /// content, so the dedup makes re-ingest a no-op.
     pub uri: String,
     pub title: String,
     pub markdown: String,

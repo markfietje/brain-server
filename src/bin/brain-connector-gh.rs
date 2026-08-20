@@ -1,9 +1,9 @@
-//! `brain-connector-gh` — v0.9.6 M2.2 reference connector for GitHub.
+//! `brain-connector-gh` — the reference connector for GitHub.
 //!
 //! Reads its config from `~/.config/brain-server/connectors/github-{instance}.json`
 //! (per the connector-binary contract), backfills the configured repos'
 //! issues into brain-server, and exits. Designed to be spawned + supervised
-//! by the server's connector runner (M2.x), but usable standalone:
+//! by the server's connector runner, but usable standalone:
 //!
 //! ```sh
 //! brain-connector-gh \
@@ -140,8 +140,8 @@ fn main() -> Result<()> {
     // Reconcile AFTER all repos backfilled. The server's `sources::reconcile`
     // is kind-scoped, so passing the union of URIs across all configured repos
     // sweeps any GitHub source whose URI is no longer live (deleted issue,
-    // uninstalled repo, transfer to another org). This is the DoD-2 converge
-    // path: even without webhooks (which are optional in v0.9.6), periodic
+    // uninstalled repo, transfer to another org). This is the convergence
+    // path: even without webhooks (which are optional), periodic
     // sync runs converge to the truth.
     emit_log(
         "info",

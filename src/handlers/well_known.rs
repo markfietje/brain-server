@@ -107,7 +107,7 @@ pub async fn ai_literacy() -> Response {
 }
 
 /// `GET /.well-known/cop-notice` (EU AI Act Code of Practice marker).
-/// Public/no-auth sibling of `ai-notice` + `ai-literacy` (v1.16.8).
+/// Public/no-auth sibling of `ai-notice` + `ai-literacy`.
 /// Machine-readable self-attested conformity state the client's CoP icon lane
 /// renders; declarative only — asserts posture, not certification.
 pub async fn cop_notice() -> Response {

@@ -9,7 +9,7 @@
 //! block list forms Obsidian emits (`tags: [a, b]` and `tags:\n  - a`). Does
 //! NOT handle nested mappings, flow maps, multi-doc, or quoted scalars with
 //! embedded colons. Every real Obsidian vault uses one of the two supported
-//! forms for these keys, so this is sufficient for v0.9.2 / v1.4.x.
+//! forms for these keys, so this is sufficient.
 
 #![deny(unsafe_code)]
 

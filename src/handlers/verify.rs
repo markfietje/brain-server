@@ -83,7 +83,7 @@ pub async fn verify(
     // resolve pool from X-Brain-Domain header (same path as /get/{id}).
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
-    // S2-09 (pass-3 audit): the read scope is the header-resolved domain
+    // The read scope is the header-resolved domain
     // label, bound into the SQL exactly like /get/{id} so a chunk id can
     // never cross domains in shim mode (the pool is shared there). The
     // composite record gate + row-domain re-auth mirror /get too — /verify

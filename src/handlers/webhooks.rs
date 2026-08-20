@@ -146,7 +146,7 @@ pub async fn receive(
         .unwrap_or("")
         .to_string();
 
-    // Timestamp check (plan M1 "timestamp check"): GitHub sends a standard HTTP
+    // Timestamp check: GitHub sends a standard HTTP
     // `Date` header on every request. If present and parseable, enforce the
     // replay window against it; if absent/unparseable we fall back to the
     // delivery-id idempotency + `webhook_seen` window (GitHub has no signed

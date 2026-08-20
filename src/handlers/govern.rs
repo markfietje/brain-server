@@ -1,16 +1,16 @@
 //! retention lifecycle + compliance exports + snapshot checks.
 //!
-//! M2 — per-kind retention policy: `GET /retention` (current policy + per-kind
+//! Per-kind retention policy: `GET /retention` (current policy + per-kind
 //! counts) and `POST /retention` (operator override, Admin + audited). The
 //! override is persisted in `retention_policy` so it survives restart; the
 //! default policy ships in code. Nothing here runs autonomously — retention is
 //! applied at query time by the retriever, never by a sweeper.
 //!
-//! M5 — Art 30 records-of-processing register: `GET /art30` is a projection of
+//! Art 30 records-of-processing register: `GET /art30` is a projection of
 //! existing tables (categories of data, purpose, retention, recipients, DSAR
 //! history, chunk lifecycle) — the register every controller must maintain.
 //!
-//! M7 — snapshot self-check panel: `GET /snapshot/status` inspects every
+//! Snapshot self-check panel: `GET /snapshot/status` inspects every
 //! `VACUUM INTO` `.bak` snapshot in the DB directory — exists, 0600, size,
 //! `PRAGMA integrity_check`, and audit-chain verification of its log.
 
@@ -27,7 +27,7 @@ use crate::AppState;
 type KindMap = std::collections::BTreeMap<String, i64>;
 
 // ---------------------------------------------------------------------------
-// M2 — /retention
+// /retention
 // ---------------------------------------------------------------------------
 
 /// `GET /retention` — the effective per-kind retention policy (code defaults
@@ -176,7 +176,7 @@ pub async fn retention_post(
 }
 
 // ---------------------------------------------------------------------------
-// M6 — /retention/report
+// /retention/report
 // ---------------------------------------------------------------------------
 
 /// the report window — rows whose effective expiry falls inside
@@ -273,7 +273,7 @@ pub async fn retention_report(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     // Server-wide effective policy (code defaults + persisted overrides).
-    // F-26 class (v1.27.27 M1): this is compliance evidence — the
+    // This is compliance evidence — the
     // storage-limitation report HIPAA/SOX reviewers read. A pool/SQL failure
     // previously fell back to the code defaults SILENTLY, certifying a report
     // that could misstate the real retention policy. Distinguish "no overrides
@@ -337,7 +337,7 @@ pub async fn retention_report(
 }
 
 // ---------------------------------------------------------------------------
-// M5 — /art30
+// /art30
 // ---------------------------------------------------------------------------
 
 /// `GET /art30` — the Art 30 records-of-processing register, projected from
@@ -475,7 +475,7 @@ pub async fn art30(
 }
 
 // ---------------------------------------------------------------------------
-// M7 — /snapshot/status
+// /snapshot/status
 // ---------------------------------------------------------------------------
 
 /// `GET /snapshot/status` — inspect every `VACUUM INTO` `.bak` snapshot in the

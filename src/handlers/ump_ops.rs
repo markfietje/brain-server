@@ -126,7 +126,7 @@ pub async fn remember(
     }
     // §5.3 L3: a signed record must verify against the operator key before
     // it is stored. (Hash-only records always pass — L2.) Both the reference
-    // (`signature`/`signer`/`content_hash`) and legacy v1.17.3 (`sig`/`key`/
+    // (`signature`/`signer`/`content_hash`) and legacy (`sig`/`key`/
     // `hash`) integrity shapes count as signed; `verify_record` dual-reads.
     if rec["integrity"]["signature"].is_string() || rec["integrity"]["sig"].is_string() {
         let Some((_, sk)) = ump::operator_signing_key() else {
@@ -232,8 +232,8 @@ async fn stored_ump_id(pool: &crate::Pool, id: i64) -> Result<String, HandlerErr
 /// recall/search surface applies. The export path (`render_ump` in gate.rs)
 /// deliberately stays byte-faithful (DSAR portability), so this helper is only
 /// used by `/ump/memory/{id}` + `/ump/recall`. A later pass extends the field set
-/// to `assertion_kind` (free text at ingest — the one text column the v1.27.14
-/// pass missed). It mutates a CLONE of the row, then `emit_record` hashes the
+/// to `assertion_kind` (free text at ingest — the one text column the earlier
+/// sanitization pass missed). It mutates a CLONE of the row, then `emit_record` hashes the
 /// sanitized text — so the emitted record's `integrity.content_hash` stays
 /// self-consistent and `verify_record` still passes (§2.8/§5.3 unaffected).
 fn sanitize_ump_row_for_read(row: Value) -> Value {
@@ -298,7 +298,7 @@ pub async fn get_memory(
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, HandlerError> {
-    // S2-10 (pass-3 audit): the read gate binds the header-resolved domain
+    // The read gate binds the header-resolved domain
     // label (the /get/{id} idiom) — previously a bare global-read gate +
     // id lookup, so any principal with a global read grant rendered any
     // row by id on this MCP-reachable surface (`ump.get`).
@@ -331,7 +331,7 @@ pub async fn get_memory(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         let rid = resolve_row_id(&conn, &id_arg)?;
-        // S2-10: belt-and-braces — the row's OWN domain must match the
+        // Belt-and-braces — the row's OWN domain must match the
         // header label AND the principal must pass the row-domain re-auth +
         // record gate (probe-blind miss on denial, the /get posture).
         let row_meta: Option<(String, Option<String>, Option<String>)> = conn
@@ -533,7 +533,7 @@ pub async fn recall(
             };
             let meta = UmpMeta::parse(row["ump_meta"].as_str());
             // Owned copy: `sanitize_ump_row_for_read(row)` moves `row` below, so
-            // the owner comparison must not borrow it (F-10 read sanitization).
+            // the owner comparison must not borrow it (read sanitization).
             let row_owner: Option<String> = row["owner"]
                 .as_str()
                 .map(str::to_owned)
@@ -557,7 +557,7 @@ pub async fn recall(
             if !ump::verify_record(&record, pk.as_ref()) {
                 continue;
             }
-            // §3.2 signals from the existing telemetry (plan M2): the fused
+            // §3.2 signals from the existing telemetry: the fused
             // score, decay (recency), stored confidence (salience), owner
             // match, and evidence-link depth.
             let score = r.provenance.fused_score.unwrap_or(r.score);
@@ -697,7 +697,7 @@ pub async fn revise(
 }
 
 /// §3.4 `forget` — soft (quarantine-style flag + tombstone, still retrievable
-/// with `include_flagged`) or hard (`purge_chunk_ids` — the v1.14 erase path).
+/// with `include_flagged`) or hard (`purge_chunk_ids` — the chunk-erase path).
 /// `id` is the numeric row id or the `urn:ump:…` content id.
 #[derive(Debug, Deserialize)]
 pub struct ForgetRequest {

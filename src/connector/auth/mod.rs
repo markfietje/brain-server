@@ -6,8 +6,8 @@
 //! - [`StaticTokenProvider`] — fixed token, used by the stub connector and
 //!   by tests. No external dependencies, always available.
 //! - `GitHubAppProvider` (in `github_app.rs`, feature-gated on
-//!   `connector-github`) — JWT → installation-token flow. Lands with M2.1.
-//! - `OAuthProvider` (TODO v0.9.7) — standard OAuth 2.0 + PKCE + refresh.
+//!   `connector-github`) — JWT → installation-token flow.
+//! - `OAuthProvider` (TODO) — standard OAuth 2.0 + PKCE + refresh.
 //!   Lands when the first non-GitHub SaaS connector does.
 //!
 //! ## Why a trait, not a struct

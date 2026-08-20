@@ -24,7 +24,7 @@ use std::process::exit;
 const DEFAULT_URL: &str = "http://127.0.0.1:8765";
 
 /// walk bounds for `ingest-dir`. Guards against pathological vaults
-/// blowing the ingest budget. 50k files / 500 MiB matches the plan's RSS ceiling
+/// blowing the ingest budget. 50k files / 500 MiB matches the documented RSS ceiling
 /// with headroom for the model + index. ponytail ceiling: a vault larger than
 /// this needs the paid live-sync tier (streaming ingest), not one-shot ingest.
 const MAX_INGEST_FILES: usize = 50_000;
@@ -466,7 +466,7 @@ fn multi_flag(args: &[String], name: &str) -> Vec<String> {
     out
 }
 
-/// Build a v0.9.5 structured `QueryDoc` body from the parsed CLI flags, lowering
+/// Build a structured `QueryDoc` body from the parsed CLI flags, lowering
 /// the lexical controls into the `LexSpec` the server compiles (FTS5-quoted,
 /// injection-safe). Returns the JSON body string.
 fn build_query_doc(
@@ -615,7 +615,7 @@ fn cmd_explain(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Print the unified `/recall` telemetry block (the M3 envelope that folds the
+/// Print the unified `/recall` telemetry block (the envelope that folds the
 /// old `/search` `query_plan` into one shape). Mirrors the real `SearchTelemetry`
 /// struct in `src/search/mod.rs` — only fields the server actually emits are
 /// listed, so nothing printed is fabricated.
@@ -986,7 +986,7 @@ fn cmd_ingest_dir(args: &[String]) -> Result<(), String> {
 ///
 /// ponytail: this is a one-shot walk, not a watch. A real vault workflow should
 /// invoke `brain reconcile <vault>` after `brain ingest-dir <vault>` on every
-/// sync. Live incremental reconcile needs the streaming-sync tier (P3+).
+/// sync. Live incremental reconcile needs the streaming-sync tier (future work).
 fn cmd_reconcile(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args)?;
     let path = require_positional(&positionals, "path")?;
@@ -1212,10 +1212,11 @@ fn cmd_domain_move(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `brain domains-recompute`: v1.13.0 M4 — one-shot recompute of every known
+/// `brain domains-recompute`: one-shot recompute of every known
 /// domain's centroid via `POST /domains/recompute`. Run once right after
-/// deploying v1.13.0 (before any auto-routed ingest accumulates) so M2's
-/// auto-route sees real centroids, and again after `domain-move` passes.
+/// the centroid source is corrected (before any auto-routed ingest
+/// accumulates) so auto-route sees real centroids, and again after
+/// `domain-move` passes.
 fn cmd_domains_recompute(_args: &[String]) -> Result<(), String> {
     let resp = post(
         &base_url(),
@@ -1248,7 +1249,7 @@ fn cmd_domains_recompute(_args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `brain undo-resolve <old_id> [<old_id> ...]`: v1.8.0 — reverse prior
+/// `brain undo-resolve <old_id> [<old_id> ...]`: reverse prior
 /// supersession resolutions. The roadmap exit criterion's undo arm: "reject
 /// or undo them without retrieval regression." For each `old_id`, clears
 /// `valid_to` back to NULL + removes the `supersedes` link, restoring the
@@ -1298,7 +1299,7 @@ fn cmd_undo_resolve(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `brain check-consistency`: v1.6.0 M5 — surface unresolved contradictions.
+/// `brain check-consistency`: surface unresolved contradictions.
 /// Calls `/consolidate/propose` and reports the `unresolved_contradictions`
 /// list (contradicts links with no paired supersedes). Never auto-fixes;
 /// operator uses `brain resolve <new> <old>` to act on each.
@@ -1569,7 +1570,7 @@ fn cmd_suggest_feedback(args: &[String]) -> Result<(), String> {
 }
 
 /// `brain suggest-metrics`: the false-positive rate over the feedback ledger.
-/// This is the v1.9 roadmap exit criterion, made queryable. Optional
+/// This is the roadmap exit criterion, made queryable. Optional
 /// `--session` / `--since` filter the window.
 fn cmd_suggest_metrics(args: &[String]) -> Result<(), String> {
     let (_positionals, flags) = parse_flags(args)?;
@@ -2665,7 +2666,7 @@ fn cmd_evaluate(args: &[String]) -> Result<(), String> {
 /// ponytail: this is a thin file-authoring command. No server roundtrip —
 /// the server has no `/connectors` POST route (registration is local-file).
 /// Adding a server route would be appropriate when connectors are managed
-/// remotely; v0.9.6 keeps the operator surface on the host that runs them.
+/// remotely; the operator surface stays on the host that runs them.
 fn cmd_connect(args: &[String]) -> Result<(), String> {
     let (_positionals, flags) = parse_flags(args)?;
     let kind = flags
@@ -2829,7 +2830,7 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
 ///
 /// ponytail: spawns the binary, doesn't try to be a long-running supervisor.
 /// Long-running supervision (restart on crash, periodic schedule) lands with
-/// the server-side auto-start in v0.9.7+.
+/// server-side auto-start.
 fn cmd_sync(args: &[String]) -> Result<(), String> {
     let (_positionals, flags) = parse_flags(args)?;
     let kind = flags
@@ -2992,7 +2993,7 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
 // ── JWT signing key management ──────────────────────────────
 // Local-file operations — no server roundtrip. The server picks up new keys
 // on restart (hot-reload via KeyStore::reload is a follow-up; the rotation
-// watcher pattern from v1.1's TokenStore is the template).
+// watcher pattern from the old token store is the template).
 
 /// Resolve the key directory: explicit `--dir`, else `BRAIN_JWT_KEY_DIR`,
 /// else the platform default `~/.config/brain-server/keys/`.
@@ -3753,7 +3754,7 @@ fn cmd_bench() -> Result<(), String> {
     Ok(())
 }
 
-/// `brain eval [--floor r5=0.85 r10=0.9]` — v1.17.1 "Govern" M3: run the frozen
+/// `brain eval [--floor r5=0.85 r10=0.9]` — run the frozen
 /// judged corpus (`tests/fixtures/eval_queries.md`) against `/recall`, report
 /// the metrics, and exit non-zero when any `--floor` is breached. The fixture
 /// ships in the repo so the gate is reproducible on any machine with a live
@@ -3854,7 +3855,7 @@ fn run_eval(endpoint: &str, floors: &[(String, f32)]) -> Result<bool, String> {
     let mut sums = [0.0_f32; 5]; // r5, r10, p5, p10, mrr
     let mut ndcg_sum = 0.0_f32;
     for q in &queries {
-        // GET /search reads `q`+`k` (the pre-v0.9.5 params); POST /recall is a
+        // GET /search reads `q`+`k` (the legacy params); POST /recall is a
         // JSON body (`query`+`limit`) — it was added as POST-only, so a GET
         // returns 405.
         let resp = if endpoint == "/search" {

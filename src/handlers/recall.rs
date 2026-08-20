@@ -7,8 +7,8 @@
 //! Implementation status:
 //!   - Request/response serde ✅ (wire is locked)
 //!   - Validation ✅ (bounds, regex, types)
-//!   - Heavy logic: v0.9.0 Phase 1 (sqlite-vec) + Phase 2 (hybrid + RRF),
-//!     and v1.0.0 Phase 3 (per-domain DBs + centroid routing).
+//!   - Heavy logic: Phase 1 (sqlite-vec) + Phase 2 (hybrid + RRF),
+//!     and Phase 3 (per-domain DBs + centroid routing).
 
 use axum::{
     extract::{Query, State},
@@ -23,7 +23,7 @@ use tokio::{
 };
 
 /// Deserialize `lex` from either a bare string (legacy: treated as one term)
-/// or a full `LexSpec` object (v0.9.5 structured form). Keeps the OpenClaw
+/// or a full `LexSpec` object (the structured form). Keeps the OpenClaw
 /// plugin's `{"lex":"foo"}` working while enabling phrases/exclusions/code.
 fn lex_from_string_or_struct<'de, D>(
     deserializer: D,
@@ -90,7 +90,7 @@ pub struct RecallRequest {
     /// Empty = unrestricted. Document/source-URI scoping is a future param.
     #[serde(default)]
     pub sources: Vec<String>,
-    /// Retrieval profile hint (passthrough in M1).
+    /// Retrieval profile hint (passthrough).
     #[serde(default)]
     pub profile: Option<String>,
     /// when true, include quarantined (`flagged`) chunks in the
@@ -191,7 +191,7 @@ pub struct RecallSourceQuery {
 /// single-DB treated as the `global` domain. Reuses the proven
 /// `perform_search` path (sqlite-vec int8 KNN with a brute-force fallback,
 /// model2vec local embeddings). Per-domain centroid routing + cross-domain
-/// fallback + hybrid RRF fusion land in v1.0.0 / v0.9.1; the `domain`/
+/// fallback + hybrid RRF fusion land in later phases; the `domain`/
 /// `strict`/`provenance` fields are accepted and honored to the extent the
 /// single-DB model allows, so the contract stays stable as those phases ship.
 ///
@@ -253,7 +253,7 @@ pub(crate) async fn run_recall(
     // the handler can never drift apart.
     let query = validate_recall(&req)?;
     // `domain` is validated for shape in validate_recall; re-normalize here for
-    // the response label. Pre-v1.0.0 the single DB answers every domain as-is.
+    // the response label. Legacy behavior: the single DB answers every domain as-is.
     let forced_domain = match &req.domain {
         Some(d) => Some(normalize_domain(d)?),
         None => None,
@@ -300,7 +300,7 @@ pub(crate) async fn run_recall(
         None if !multi_db => {
             // automatic retrieval routing in shim mode. The
             // old code pushed the `global` pool and skipped centroid routing
-            // entirely — so after v1.13.0 moved rows into a non-global label,
+            // entirely — so once rows moved into a non-global label,
             // they became unreachable by default recall (a `k.domain='global'`-
             // scoped search). Routing here makes the matched domain reachable
             // AND stops a bulk domain from dominating un-routed queries.
@@ -409,7 +409,7 @@ pub(crate) async fn run_recall(
         source_query.source.as_deref(),
     )
     .map_err(|e| HandlerError::unprocessable("invalid_source", e.to_string()))?;
-    // Lower the request into the shared v0.9.5 structured QueryDoc so recall
+    // Lower the request into the shared structured QueryDoc so recall
     // and search use one lexical compiler + validation path. The bare `query`
     // is the embedding/lexical fallback; structured `lex`/`vec`/`hyde` override.
     let doc = crate::QueryDoc {
@@ -467,8 +467,8 @@ pub(crate) async fn run_recall(
         crate::handlers::gate::scope_filter(principal).map(std::sync::Arc::new);
     // a JWT principal with a `roles` claim is scoped by its
     // role bundles (narrowed access_scopes + an owner predicate for
-    // self/reports). No roles → the v1.14 scope path above applies unchanged.
-    // The gate (resolved once, below) also feeds the v1.27.7 "Qa" scope-violation
+    // self/reports). No roles → the scope path above applies unchanged.
+    // The gate (resolved once, below) also feeds the scope-violation
     // detection so it does not re-resolve it for every recall.
     let mut role_restricted = false;
     if let Some(gate) = crate::handlers::gate::role_retrieval_gate(principal, &state.pool) {
@@ -547,7 +547,7 @@ pub(crate) async fn run_recall(
                     for r in &mut rs {
                         r.with_snippet(&snippet_q);
                     }
-                    // M2.1: enrich with span + source link + highlights per-domain.
+                    // Enrich with span + source link + highlights per-domain.
                     if let Ok(conn) = pool.get() {
                         let _ = crate::search::SearchResult::enrich_evidence(
                             &conn,
@@ -616,11 +616,11 @@ pub(crate) async fn run_recall(
     // Calibrated abstention. The
     // existing `HeuristicEstimator` classified this query via overlap + gap +
     // lexical density into a `Recommendation`. When it says `ClarifyQuery`,
-    // the retrieval is too weak to support a claim — but v1.12.0 gave the
-    // graph leg a chance first (the rescue pass inside `perform_search_with_prf`
+    // the retrieval is too weak to support a claim — but the graph leg
+    // gets a chance first (the rescue pass inside `perform_search_with_prf`
     // already ran and fused its hits in). Abstention is now scoped to the
     // FINAL outcome: `ClarifyQuery` + zero hits → the empty `low_confidence`
-    // envelope (v1.5.0 contract, unchanged); `ClarifyQuery` + rescued hits →
+    // envelope (the established contract, unchanged); `ClarifyQuery` + rescued hits →
     // `ok`. NOT a magic score cutoff; driven by the calibrated multi-signal
     // `Recommendation`, which is what the evidence-gated roadmap requires
     // ("no fixed universal confidence threshold until held-out benefit is
@@ -676,7 +676,7 @@ pub(crate) async fn run_recall(
                 Some(
                     serde_json::json!({
                         // the trace records a bounded hash of the
-                        // query (SHA-256, v1.20.25), never the raw text — a recall query
+                        // query (SHA-256), never the raw text — a recall query
                         // can itself be personal data of the subject (the DSAR
                         // residue-sweep in observe.rs relies on this too).
                         "query_hash": crate::audit::hash(&trace_query),
@@ -798,7 +798,7 @@ fn shim_routing_targets(route: Option<&str>) -> Vec<String> {
 
 /// Map the final outcome to the recall decision: abstain (`low_confidence`)
 /// only when the calibrated estimator said `ClarifyQuery` AND the retrieval
-/// still produced zero hits (v1.12.0 "Discern": a graph-rescue pass may have
+/// still produced zero hits (a graph-rescue pass may have
 /// turned a ClarifyQuery into real hits — those return `ok`). Pure.
 fn abstention_decision(
     recommendation: Option<crate::Recommendation>,
@@ -807,7 +807,7 @@ fn abstention_decision(
     // ponytail: the only signal that triggers abstention is the calibrated
     // `ClarifyQuery` recommendation, which already encodes overlap + gap +
     // lexical-density gates. A single-score threshold here would duplicate the
-    // estimator's job and drift from it; v1.6+ may add a learned threshold once
+    // estimator's job and drift from it; a learned threshold may be added once
     // the judged-query baseline (Carry-forward) is recorded.
     match recommendation {
         Some(crate::Recommendation::ClarifyQuery) if hits_empty => {
@@ -892,8 +892,8 @@ fn map_source(src: Option<crate::SearchSource>) -> HitSource {
     }
 }
 
-/// Merge per-domain ranked result lists via Reciprocal Rank Fusion (per the
-/// v1.0 plan M3: "Merge across domains with the same RRF from v0.9.1").
+/// Merge per-domain ranked result lists via Reciprocal Rank Fusion
+/// ("merge across domains with the same RRF").
 ///
 /// Each domain's list is treated as one retriever; a chunk that appears in
 /// multiple domains accumulates RRF contributions from each. RRF is rank-based,
@@ -966,7 +966,7 @@ pub(super) fn validate_recall(req: &RecallRequest) -> Result<String, HandlerErro
             serde_json::json!({ "min": MIN_LIMIT, "max": MAX_LIMIT }),
         ));
     }
-    // domain shape is validated; the per-domain registry check is v1.0.0.
+    // domain shape is validated; the per-domain registry check is left to the handler.
     if let Some(d) = &req.domain {
         normalize_domain(d)?;
     }

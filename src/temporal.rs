@@ -274,7 +274,8 @@ pub fn extract_interval_now(text: &str) -> TemporalInterval {
 ///   AND (invalid_at IS NULL OR invalid_at > at)  (still true at `at`)
 ///
 /// NULL valid_at means "origin unknown" ⇒ treated as always-valid (visible),
-/// matching the additive-migration default for pre-v1.4 edges.
+/// matching the additive-migration default for edges created before the
+/// bi-temporal columns existed.
 ///
 /// ponytail: the search/retrieve paths inline their own valid-interval filter
 /// (chunk-level valid_from/valid_to). This edge-level constant is the reference

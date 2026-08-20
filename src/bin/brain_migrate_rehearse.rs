@@ -4,7 +4,7 @@
 //!
 //! Feature-gated (`--features migrate`). Runs the
 //! legacy `brain.db` → candidate `global.db` cutover against a *copy* of the
-//! live DB so the v1.0.0 split can be rehearsed before it happens. The live
+//! live DB so the domain split can be rehearsed before it happens. The live
 //! runtime is never touched — every phase writes only to `dest` + sidecars.
 //!
 //! **Why a binary, not a `brain` subcommand?** It must run against a *stopped*
@@ -34,8 +34,8 @@ use brain_server::migration::run_migration;
 use brain_server::register_sqlite_vec::register_sqlite_vec;
 use brain_server::storage_layout::StorageLayout;
 
-/// Tables covered by the row-count parity check. Matches the v0.9.4–v0.9.8
-/// schema surface (the tables `run_migration` creates). A new table added to
+/// Tables covered by the row-count parity check. Matches the schema
+/// surface (the tables `run_migration` creates). A new table added to
 /// the migration must be added here too — `test_migration_schema_contract`
 /// guards the migration side, this list guards the verify side.
 const PARITY_TABLES: &[&str] = &[
@@ -233,7 +233,7 @@ fn phase_copy(args: &ResolvedArgs) -> Result<()> {
 
     // VACUUM INTO runs from a connection open on SOURCE and writes to dest.
     // This is the existing primitive `run_migration` uses for pre-migration
-    // backup since v0.9.1 — defragmented, WAL-flattened.
+    // backup — defragmented, WAL-flattened.
     {
         let src_conn = Connection::open(&args.source)
             .with_context(|| format!("open source {}", args.source.display()))?;
@@ -246,8 +246,8 @@ fn phase_copy(args: &ResolvedArgs) -> Result<()> {
     }
 
     // Now open dest separately and bring it up to current schema. This is the
-    // exact code path v1.0.0 will run on cutover — rehearsing it now is the
-    // point. Idempotent: a no-op if the copy already records 0.9.9.
+    // exact code path the cutover will run — rehearsing it now is the
+    // point. Idempotent: a no-op if the copy already records the current schema.
     let mut dest_conn = Connection::open(&args.dest)
         .with_context(|| format!("open dest {}", args.dest.display()))?;
     run_migration(&mut dest_conn, 256).context("run_migration on dest")?;
@@ -363,7 +363,7 @@ fn phase_verify(args: &ResolvedArgs) -> Result<VerifyReport> {
     }
 
     // 2. FTS5 row count (separate because it's a virtual table — included in
-    //    PARITY_TABLES already, but called out explicitly in the plan).
+    //    PARITY_TABLES already).
     // (Already covered above via "rows:knowledge_fts" if we add it to the list.
     //  We keep knowledge_fts out of PARITY_TABLES and check it explicitly here
     //  so the table label is unambiguous.)
@@ -425,7 +425,7 @@ fn phase_verify(args: &ResolvedArgs) -> Result<VerifyReport> {
         let d = read_schema_version(&args.dest)?;
         let ok = match (s.as_deref(), d.as_deref()) {
             (Some(a), Some(b)) => schema_ge(b, a),
-            // Source with no schema_meta is a pre-v0.9.9 DB; any dest version is fine.
+            // Source with no schema_meta predates schema stamping; any dest version is fine.
             (None, _) => true,
             (Some(_), None) => false,
         };
@@ -549,7 +549,7 @@ fn fetch_vec_blob(conn: &Connection, id: &i64) -> Result<Option<Vec<u8>>> {
 
 /// Compare two dotted schema versions. Returns true if `b >= a` (dest >= source).
 /// ponytail: naive lexicographic-per-component compare; assumes both are
-/// "major.minor.patch" numerics. Sufficient for the v0.9.x → v1.0.0 cutover.
+/// "major.minor.patch" numerics. Sufficient for the legacy → domain-split cutover.
 fn schema_ge(b: &str, a: &str) -> bool {
     let pa: Vec<u64> = a.split('.').filter_map(|s| s.parse().ok()).collect();
     let pb: Vec<u64> = b.split('.').filter_map(|s| s.parse().ok()).collect();

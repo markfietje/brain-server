@@ -1,4 +1,4 @@
-//! Database schema migration (extracted from `main.rs` for v0.9.9 "Qualify" M2).
+//! Database schema migration (extracted from `main.rs`).
 //!
 //! `run_migration` is idempotent, additive-only, and runs unchanged on every
 //! per-domain file (shim mode today, multi-db in v1.0.0). Extracted to the lib
@@ -109,8 +109,8 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
-    // v0.9.1: additive domain + temporal columns (P2 domain isolation + temporal
-    // memory scaffold) and structure-aware chunk metadata (P1 chunking). Idempotent.
+    // v0.9.1: additive domain + temporal columns (domain isolation + temporal
+    // memory scaffold) and structure-aware chunk metadata. Idempotent.
     for (col, def) in [
         ("domain", "TEXT NOT NULL DEFAULT 'global'"),
         ("observed_at", "TIMESTAMP"), // ALTER TABLE cannot use non-constant default; CREATE TABLE keeps CURRENT_TIMESTAMP
@@ -166,7 +166,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // v0.9.1: per-domain centroids for centroid routing (P2). One row per
+    // v0.9.1: per-domain centroids for centroid routing. One row per
     // domain holding the mean embedding vector (f32 little-endian blob).
     db.execute(
         "CREATE TABLE IF NOT EXISTS domain_centroids (
@@ -316,7 +316,7 @@ pub fn run_migration_with_store_dim(
     // for the selected terms only (capped at MAX_DF_TERMS).
     //   ponytail: per-instance vocab; for a very large corpus switch to
     //   'row' mode (one row per term+doc). Ceiling: ~corpus-size rows.
-    //   S2-37 (pass-3): the step-1 `doc IN (…)` probe only indexes `term=` —
+    //   The step-1 `doc IN (…)` probe only indexes `term=` —
     //   a full vocab scan per PRF call remains the documented perf ceiling.
     db.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts_vocab USING fts5vocab(
@@ -371,7 +371,7 @@ pub fn run_migration_with_store_dim(
     // ── v0.9.0 Phase 1: sqlite-vec vec0 virtual table ────────────────────
     // Replaces the old JSON-text vector storage in `embeddings.vector`. The
     // dimension is the active embedder's `store_dim` (512 edge / 768 desktop /
-    // 1024 enterprise) — NOT a hardcoded 512. v1.28 "Caliber" M2.
+    // 1024 enterprise) — NOT a hardcoded 512.
     //
     // Schema per Context7-verified sqlite-vec docs (July 2026):
     //   embedding_int8  int8[{dim}] distance_metric=cosine — default search tier
@@ -495,7 +495,7 @@ pub fn run_migration_with_store_dim(
         info!("Migration complete: {legacy_count} vectors quantized to int8 + binary");
     }
 
-    // ── v0.9.4: canonical sources + revisions (M1) ─────────────────────
+    // ── v0.9.4: canonical sources + revisions ─────────────────────
     // A `source` is a stable identity for an external document (vault file,
     // connector doc): identified by canonical `uri`, typed by `kind`. A
     // `source_revision` is an immutable snapshot; a new revision supersedes
@@ -620,7 +620,7 @@ pub fn run_migration_with_store_dim(
          CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts);",
     )?;
 
-    // v1.1.0 Harden M2: per-tenant scoping + tamper-evidence. Additive columns
+    // v1.1.0 Harden: per-tenant scoping + tamper-evidence. Additive columns
     // on `audit_events`. `tenant_id` defaults to 'global' for back-compat with
     // every pre-v1.1 row; `prev_hash` is backfilled NULL and the chain starts
     // fresh from the next inserted row (a documented upgrade-path ceiling).
@@ -673,7 +673,7 @@ pub fn run_migration_with_store_dim(
          CREATE INDEX IF NOT EXISTS idx_webhook_seen_at ON webhook_seen(seen_at);",
     )?;
 
-    // ── v0.9.8 "Evidence" M2.2: typed provenance links between chunks ──
+    // ── v0.9.8 "Evidence": typed provenance links between chunks ──
     // Flat additive table (NOT the entities/relationships KG — see the plan's
     // v1.0.0 upgrade-path note). Records supports/supersedes/contradicts/
     // references/derived_from relationships so a contradictory or superseded
@@ -691,7 +691,7 @@ pub fn run_migration_with_store_dim(
          CREATE INDEX IF NOT EXISTS idx_evidence_links_to ON evidence_links(to_chunk);",
     )?;
 
-    // ── v0.9.9 "Qualify" M1.2 / v1.1.0 "Harden": record the schema version so
+    // ── v0.9.9 "Qualify" / v1.1.0 "Harden": record the schema version so
     // the rehearsal tool (and future migrations) can read it. Idempotent.
     // ── v1.2.0 "AuthN": token revocation + refresh-chain tracking ────
     // Two additive tables. Both are new (no ALTER TABLE on existing tables
@@ -723,7 +723,7 @@ pub fn run_migration_with_store_dim(
          CREATE INDEX IF NOT EXISTS idx_refresh_chain ON refresh_chains(chain_id, iss);",
     )?;
 
-    // ── v1.4.0 "Calibrate" M1: bi-temporal edges (Graphiti model). ───────
+    // ── v1.4.0 "Calibrate": bi-temporal edges (Graphiti model). ───────
     // Every relationship carries a valid-time interval [valid_at, invalid_at):
     //   valid_at   = when the fact BECAME TRUE in the world (event time)
     //   invalid_at = when the fact STOPPED BEING TRUE (NULL ⇒ still current)
@@ -759,7 +759,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // ── v1.4.0 "Calibrate" M3: TRACE hierarchical node reservation. ───────
+    // ── v1.4.0 "Calibrate": TRACE hierarchical node reservation. ───────
     // node_kind defaults to 'fact' (every declarative chunk is a fact). The
     // column was originally reserved as 'event'/'session'/'topic' for a worker
     // that never shipped; v1.10.0 "Procedural" repurposed it as the Mem0-style
@@ -882,11 +882,11 @@ pub fn run_migration_with_store_dim(
     // All additive; defaults preserve current behavior exactly. Columns:
     //   access_scope  — private(default)|domain|team|public; enforced only in
     //                   JWT mode (loopback trusts localhost, SECURITY.md).
-    //   assertion_kind — stated(default)|observed|inferred (M3 provenance).
-    //   confidence    — 0..1 deterministic derivation, default 1.0 (M3).
-    //   expires_at    — unix ts, NULL = no decay (M2; default off).
-    //   pii           — 1 when the ingest-time pattern scanner flagged PII (M4).
-    //   owner         — creating principal TEXT, NULL for legacy/loopback (M4).
+    //   assertion_kind — stated(default)|observed|inferred (provenance).
+    //   confidence    — 0..1 deterministic derivation, default 1.0.
+    //   expires_at    — unix ts, NULL = no decay (default off).
+    //   pii           — 1 when the ingest-time pattern scanner flagged PII.
+    //   owner         — creating principal TEXT, NULL for legacy/loopback.
     for (col, def) in [
         ("access_scope", "TEXT NOT NULL DEFAULT 'private'"),
         ("assertion_kind", "TEXT NOT NULL DEFAULT 'stated'"),
@@ -916,7 +916,7 @@ pub fn run_migration_with_store_dim(
     // longer exists to be re-created before this drop).
     db.execute("DROP TABLE IF EXISTS pii_map", [])?;
 
-    // Purge audit trail (M2/GDPR). Append-only; keeps the audit chain
+    // Purge audit trail (GDPR). Append-only; keeps the audit chain
     // verifiable (knowledge_id + content_hash + purged_at, no raw content).
     // The v0.9.1 tombstones table already exists, so we ADD the two purge
     // columns idempotently (CREATE TABLE IF NOT EXISTS would be a silent
@@ -942,7 +942,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // ── v1.14.0 M1 "Write-back gate": the proposal review queue. ─────────
+    // ── v1.14.0 "Write-back gate": the proposal review queue. ─────────
     // A proposal stores a *candidate* memory — scored deterministically
     // (novelty / conflict / salience) — with NO `knowledge` row until a human
     // approves. status: pending|approved|rejected. decided_at set on decision.
@@ -968,7 +968,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // ── v1.15.0 "Observe" M1/M3: read-event trace + DSAR ledger. ────────
+    // ── v1.15.0 "Observe": read-event trace + DSAR ledger. ────────
     // `recall_traces` holds the replayable decision-path artifact for a recall
     // read event, keyed by the audit row id (hash-only chain stays in
     // `audit_events`; the trace is non-content metadata: ids, scores, ranks,
@@ -1041,7 +1041,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // v1.17.1 "Govern" M2: persisted per-kind retention overrides. The default
+    // v1.17.1 "Govern": persisted per-kind retention overrides. The default
     // policy ships in code (`config::DEFAULT_RETENTION_KIND_DAYS`); a
     // `POST /retention` override is upserted here so it survives restart. Empty
     // table = defaults only. `days` is a positive integer; a future kind key is
@@ -1136,7 +1136,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // ── v1.20.1 "Shield" M2: proposal provenance from the auto-capture path. ─
+    // ── v1.20.1 "Shield": proposal provenance from the auto-capture path. ─
     // `source_prompt` (a) tells a reviewer which autocapture the proposal came
     // from so they can context-check it before approving, and (b) lets the
     // proposal surface re-run the injection screen against the caller-provided
@@ -1153,7 +1153,7 @@ pub fn run_migration_with_store_dim(
         db.execute("ALTER TABLE proposals ADD COLUMN source_prompt TEXT", [])?;
     }
 
-    // ── v1.20.14 "Steer" M1: edit provenance on pending proposals. ──────────
+    // ── v1.20.14 "Steer": edit provenance on pending proposals. ──────────
     // `edited_at` is a nullable unix timestamp set when a reviewer rewrites a
     // pending proposal's content via POST /proposals/{id}/edit. The review
     // badge and read-time view key off it; `None` = never edited. Additive +
@@ -1215,7 +1215,7 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
-    // ── v1.22.0 "Regulated" M1: legal holds ────────────────────────────
+    // ── v1.22.0 "Regulated": legal holds ────────────────────────────
     // One row per (chunk, hold): multiple concurrent holds are allowed
     // (litigation + retention audit) and an id stays frozen against every
     // erasure path (decay skip, /purge 409, DSAR deferral) until EVERY hold on
@@ -1239,9 +1239,9 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // ── v1.25.0 "PH-Compliant" M1: breach-notification workflow ────────
-    // The DPO-opened incident ledger + its append-only event log (the M2
-    // "one genuinely new primitive"). Lives in every domain file (the shared
+    // ── v1.25.0 "PH-Compliant": breach-notification workflow ────────
+    // The DPO-opened incident ledger + its append-only event log (the one
+    // "genuinely new primitive" of the release). Lives in every domain file (the shared
     // migration) like legal_holds; the breach handler operates on the `global`
     // pool — an incident is operator data, not domain-scoped memory. The
     // tamper-evident *record* is the audit chain (kind='breach') this handler
@@ -1281,7 +1281,7 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
-    // ── v1.22.0 "Regulated" M3: region pin (data residency) ───────────
+    // ── v1.22.0 "Regulated": region pin (data residency) ───────────
     // `knowledge.region` is stamped at INSERT by the trigger below (all current
     // + future ingest paths, incl. connector/UMP/import, with zero per-site
     // churn), then surfaced on /export + the DSAR certificate. Read-only
@@ -1348,7 +1348,7 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
-    // ── v1.26.0 "Cross-Border" M1/M3: the transfer register + tagging ────
+    // ── v1.26.0 "Cross-Border": the transfer register + tagging ────
     // `transfers` is the Art 30 processing-activities + Art 46 transfer-
     // safeguard evidence: every cross-border data flow as a row. The `knowledge`
     // columns (`lawful_basis`, `purpose`) carry the Art 5/6 purpose-limitation
@@ -1442,7 +1442,7 @@ pub fn run_migration_with_store_dim(
         }
     }
 
-    // v1.27.18 "Groundwork" (E-5): serve the queried columns, drop the dead.
+    // v1.27.18 "Groundwork": serve the queried columns, drop the dead.
     // Adds: `domain` (domain delete + full-domain scans), `owner` (DSAR subject
     // resolution — the regulated hot path), `(title, heading_path)` (the
     // per-proposal write-gate dedup). Drops (write-cost only, query-equivalent
@@ -1512,7 +1512,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // ── v1.27.25 "Scoped": the open-row invariant becomes STRUCTURAL. ─────
-    // S3-08 (pass-3 audit): "at most one open (superseded_at IS NULL) row per
+    // "At most one open (superseded_at IS NULL) row per
     // triple" was conventional only — a SELECT-then-INSERT race (or legacy
     // corrupt data) could leave two open versions, and BOTH then render
     // `current:true` on the history surface. First deterministically close
@@ -1536,7 +1536,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
-    // v1.27.18 "Groundwork" (M3): indexes added/dropped → 1.27.18.
+    // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
     // v1.27.25 "Scoped": idx_rels_open_unique partial unique index (+ dedup) → 1.27.25.
     db.execute(
@@ -1604,7 +1604,7 @@ pub fn rebuild_vec_store_at_dim(db: &mut Connection, store_dim: usize) -> Result
     Ok(())
 }
 
-/// Reversibility path for the v0.9.0 migration (plan M4).
+/// Reversibility path for the v0.9.0 migration.
 ///
 /// Drops the v0.9.0+ structures (vec0, FTS5, vocab, schema markers), leaving
 /// the DB in its pre-v0.9.0 shape: `knowledge` + `embeddings` (JSON f32) intact.
@@ -1623,7 +1623,7 @@ pub fn migrate_down_0_9_0(db: &mut Connection) -> Result<()> {
          DROP TRIGGER IF EXISTS knowledge_au;
          DELETE FROM schema_meta WHERE key = 'vec_metric';",
     )?;
-    // E-8: the vec0 store is gone — the search path must probe again.
+    // The vec0 store is gone — the search path must probe again.
     VEC0_READY.store(false, Ordering::Relaxed);
     info!("migrate_down_0_9_0: dropped vec0 + FTS5 structures; embeddings table preserved");
     Ok(())

@@ -4,8 +4,8 @@
 //! statute yet. AI is governed by RA 10173 (Data Privacy Act 2012) + NPC
 //! advisories + EO 119 (gov-data residency); **HB 7396 (risk-based AI) is a
 //! pending bill, not law**. This module ships the decision logic the posture
-//! needs *now* — the breach-notification clock (M2), the scraping provenance
-//! rule (M3), and the RA 10173 control cross-reference map (M1) — all layered
+//! needs *now* — the breach-notification clock, the scraping provenance
+//! rule, and the RA 10173 control cross-reference map — all layered
 //! on the existing profile/role/region primitives. It deliberately implements
 //! nothing HB 7396 requires until the bill is enacted (the `HB7396_FORWARD`
 //! note below is the structure-absorbs-it marker).
@@ -54,7 +54,7 @@ pub const DPA_CONTROLS: &[(&str, &str)] = &[
 pub const CROSSREF_MARKER: &str = "Feature:";
 
 /// A scraped record whose provenance carries no documented lawful basis must
-/// not be stored as memory — it is quarantined (reuse the v0.9.7 quarantine
+/// not be stored as memory — it is quarantined (reusing the quarantine
 /// flag), not silently ingested. Kept pure so `handlers::ingest` and the unit
 /// test share the same rule.
 pub enum ScrapePosture {

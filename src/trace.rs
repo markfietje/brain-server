@@ -2,7 +2,7 @@
 //!
 //! Models conversations as a hierarchical graph with typed relations over the
 //! existing `relationships` + `evidence_links` tables. Traversal is
-//! validity-aware and current-belief-aware (v1.27.22): an edge whose
+//! validity-aware and current-belief-aware: an edge whose
 //! `superseded_at` is set (a corrected belief has replaced it, transaction-time
 //! END per the bi-temporal model) is skipped at query time.
 //!

@@ -1,5 +1,5 @@
-//! HTTP handlers for write-back gating (M1), decay + GDPR
-//! lifecycle (M2). The pure logic lives in `src/gate.rs`; this module does the
+//! HTTP handlers for write-back gating, decay + GDPR
+//! lifecycle. The pure logic lives in `src/gate.rs`; this module does the
 //! HTTP + transaction wiring, reusing the existing ingest / consolidate /
 //! sources machinery instead of re-implementing it.
 //!
@@ -162,7 +162,7 @@ pub async fn ingest_proposal(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // Deterministic scoring (M1): novelty via vec0 KNN, conflict via the
+        // Deterministic scoring: novelty via vec0 KNN, conflict via the
         // consolidate machinery, salience via the length/entity heuristic.
         let embedding = model.encode_one(&content_for_task);
         if embedding.is_empty() {
@@ -348,19 +348,19 @@ pub struct ProposalView {
     /// unix ts of the decision (approve/reject/expire),
     /// `None` while the proposal is still pending. Exposed so a consumer can
     /// compute a decision-latency (`decided_at - created_at`) — the reviewer
-    /// calibration signal. The column was written since v1.14.0 but never read.
+    /// calibration signal. The column was written but never read (until this reader).
     #[serde(default)]
     pub decided_at: Option<i64>,
     /// the agent whose interaction produced the candidate.
     /// `None` for loopback/opaque (unowned) writes. Keys the supervisor's owner
-    /// scope (R1 role `manages`).
+    /// scope (role `manages`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
     /// the supervisor's coaching note (set via the coach
     /// verb). `None` until coached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qa_note: Option<String>,
-    /// the R7 QA scorecard composed from the proposal's
+    /// the QA scorecard composed from the proposal's
     /// owner + trace signals. Advisory (never gates approve).
     #[serde(default)]
     pub qa_score: i64,
@@ -425,7 +425,7 @@ pub async fn list_proposals(
         // source_prompt (provenance) + qa_note
         // (reviewer note) are reviewer-facing stored text — run them through
         // the same read seam, and `source` too: it is client
-        // free-text on the write side with no vocabulary gate. F-16 caution:
+        // free-text on the write side with no vocabulary gate. Caution:
         // these are NOT what feeds `review_digest` (that stays content-only,
         // digest stable).
         p.source = crate::gate::sanitize_read_opt(p.source.take(), pii, &principal.0);
@@ -517,7 +517,7 @@ pub(crate) fn list_proposals_page(
 }
 
 /// narrow a proposal page to the owners a supervisor
-/// manages (R1 role `owner IN manages`). Empty `manages` → the whole page
+/// manages (role `owner IN manages`). Empty `manages` → the whole page
 /// (an admin who manages no agents sees the unrestricted queue).
 pub(crate) fn owner_in_filtered(rows: Vec<ProposalView>, manages: &[String]) -> Vec<ProposalView> {
     if manages.is_empty() {
@@ -844,7 +844,7 @@ pub struct ApproveQuery {
 
 /// The owner string recorded on a chunk at ingest: the principal's subject when
 /// a JWT principal exists, else NULL (loopback/opaque = unowned, the documented
-/// legacy default). v1.17.1: now `pub` so the direct-ingest insert sites write it
+/// legacy default). Now `pub` so the direct-ingest insert sites write it
 /// (fixing the DSAR locate gap — a real DSAR could find nothing by subject).
 pub fn principal_to_owner(p: &Option<crate::auth::Principal>) -> Option<String> {
     p.as_ref().map(|pr| pr.sub.clone())
@@ -879,13 +879,13 @@ pub fn scope_filter(p: &Option<crate::auth::Principal>) -> Option<Vec<String>> {
 
 /// the record-level retrieval gate when a JWT principal
 /// carries a `roles` claim. `None` when the principal has no roles (the
-/// v1.14 `scope_filter` path applies unchanged). Otherwise resolves the role
+/// `scope_filter` path applies unchanged). Otherwise resolves the role
 /// bundles and returns the narrowed `access_scopes` + the `owner_in` set
 /// (self/reports).
 ///
 /// degradation is now fail-closed. A
 /// pool/role-store error returns the *empty permit* (matches nothing) with a
-/// `warn!` — never `None` (which the v1.14 caller reads as "no narrowing").
+/// `warn!` — never `None` (which the caller reads as "no narrowing").
 /// The old availability-first fallback was a fail-open data gate: incident
 /// response is precisely when role enforcement must not wobble.
 pub fn role_retrieval_gate(
@@ -929,7 +929,7 @@ pub fn role_retrieval_gate(
 /// the composite record-level read gate by-id
 /// read surfaces apply — the same (access_scopes, owner_in) pair `/recall`
 /// enforces via SQL, so a direct `/get/{id}`/`/multi-get` cannot bypass the
-/// v1.14 scope / v1.23 role boundary. `unrestricted` for loopback/opaque
+/// scope / role boundary. `unrestricted` for loopback/opaque
 /// (omniscient, unchanged); `empty_permit` (matches nothing) on role-store
 /// failure — fail closed, never "all rows".
 #[derive(Debug, Clone)]
@@ -975,9 +975,9 @@ impl RecordReadGate {
     }
 }
 
-/// Resolve the composite record gate for a principal: the v1.23 role gate
-/// when it carries roles, else the v1.14 scope filter. Errors inside either
-/// degrade to the empty permit (fail closed — v1.27.16 M3.2).
+/// Resolve the composite record gate for a principal: the role gate
+/// when it carries roles, else the scope filter. Errors inside either
+/// degrade to the empty permit (fail closed).
 pub fn record_read_gate(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
@@ -1315,7 +1315,7 @@ pub async fn edit_proposal(
     // the edit response is a reviewer-facing view
     // — run the stored-text fields through the read seam, exactly like
     // list_proposals ahead exposed content + source raw; both now route the read seam.
-    // F-16 caution: content_digest was already computed on the raw content and
+    // Caution: content_digest was already computed on the raw content and
     // is left untouched.
     if let Ok(mut v) = res {
         let pii = !crate::gate::scan_pii(&v.content).is_empty();
@@ -1378,7 +1378,7 @@ pub(crate) fn review_digest_matches(content: &str, want: Option<&str>) -> bool {
     want.is_none() || review_digest(content) == want.unwrap_or("")
 }
 
-// ── M2: decay + GDPR lifecycle ─────────────────────────────────────────────
+// ── decay + GDPR lifecycle ──────────────────────────────────────────────
 
 /// `GET /decayed` — list decayed chunks (id, content_hash, expires_at, reason)
 /// for operator review. `brain sweep --list` wraps it. Nothing is ever deleted
@@ -1394,7 +1394,7 @@ pub async fn list_decayed(
     headers: axum::http::HeaderMap,
     Query(page): Query<DecayedQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, HandlerError> {
-    // S2-31 (pass-3): the header domain scopes the surface (the /get idiom).
+    // The header domain scopes the surface (the /get idiom).
     // In shim mode the label also narrows the SQL superset; in multi-db the
     // pool resolution is the scope already.
     let domain = crate::handlers::domain_from_headers(&headers);
@@ -1421,7 +1421,7 @@ pub async fn list_decayed(
         .unwrap_or(crate::config::MAX_DECAYED)
         .clamp(1, crate::config::MAX_DECAYED);
     let offset = page.offset.unwrap_or(0).max(0);
-    // Kind policy (empty when disabled → per_chunk only, exact v1.14 behavior).
+    // Kind policy (empty when disabled → per_chunk only, the legacy behavior).
     let retention_days = if crate::config::brain_retention_enabled() {
         crate::config::retention_kind_days()
     } else {
@@ -1518,11 +1518,11 @@ pub async fn list_decayed(
 /// is ever excluded: `created < now - days_k` implies `created < now -
 /// min_days`). Extracted so the superset property is unit-testable: the
 /// Rust-side `page_decayed` filter remains the arbiter; this clause only
-/// narrows the scan. Note `unixepoch()` (INTEGER): the pre-v1.20.24
+/// narrows the scan. Note `unixepoch()` (INTEGER): the legacy
 /// `strftime('%s', ...)` returns TEXT, so `get::<i64>` silently dropped
-/// every row and `/decayed` was always empty — this release's regression
+/// every row and `/decayed` was always empty — the regression
 /// test caught it. ponytail: with an empty kind policy the clause is branch
-/// A alone — byte-identical to the v1.20.23 query.
+/// A alone — byte-identical to the prior query.
 fn decayed_superset_sql(
     now: i64,
     retention_days: &std::collections::BTreeMap<String, i64>,
@@ -1553,7 +1553,7 @@ fn decayed_superset_sql(
             .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
         params.push(Box::new(cutoff));
     }
-    // S2-31 (pass-3): shim-mode scope — the label narrows the superset to the
+    // Shim-mode scope — the label narrows the superset to the
     // caller's domain (the Rust arbiter `page_decayed` is domain-agnostic, so
     // the narrowing is exact, never a false positive).
     if let Some(label) = domain {
@@ -1576,7 +1576,7 @@ pub struct DecayedQuery {
 }
 
 /// A loaded `/decayed` row: (id, content_hash, expires_at, node_kind,
-/// created_at_unix, domain) — v1.21.0 adds the domain so the Rust filter can
+/// created_at_unix, domain) — the domain is carried so the Rust filter can
 /// resolve the per-domain profile policy.
 type DecayedRow = (i64, Option<String>, Option<i64>, String, i64, String);
 
@@ -1683,7 +1683,7 @@ pub async fn purge(
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let now = chrono::Utc::now().timestamp();
 
-        // Resolve target ids: explicit list, or owner-anchored (M4).
+        // Resolve target ids: explicit list, or owner-anchored.
         let ids: Vec<i64> = if let Some(owner) = &req.owner {
             let mut stmt = tx
                 .prepare("SELECT id FROM knowledge WHERE owner = ?1")
@@ -1786,7 +1786,7 @@ pub(crate) fn purge_chunk_ids(
             }
         }
         // Capture a SHA-256 of the row content for the tombstone before
-        // deletion (v1.20.24 "Sweep": the deletion registry's digest of
+        // deletion (the deletion registry's digest of
         // DELETED content must not be an offline-brute-forceable xxh3-64 —
         // low-entropy personal values are recoverable from 64-bit hashes).
         // ponytail: still a one-way digest, not a secrecy mechanism — a full
@@ -1801,7 +1801,7 @@ pub(crate) fn purge_chunk_ids(
             .map(|c| sha256_hex(&c));
         // Graph edges are removed by their knowledge link (the FK on
         // `relationships.knowledge_id` only SET NULLs, it does not delete, so
-        // the row must go explicitly). v1.20.25: the old clause also referenced
+        // the row must go explicitly). The old clause also referenced
         // `entities.knowledge_id`, a column that does NOT exist — that subquery
         // raised "no such column" and silently aborted the whole DELETE, so
         // relationships (and with them their PII-bearing entity names) survived
@@ -1974,7 +1974,7 @@ pub async fn export(
     // export paths require the `export` verb (§5.2).
     super::cap_gate(&cap.0, "export")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
-    // M2: resolved before the `move` closure so the export path can redact
+    // Resolved before the `move` closure so the export path can redact
     // records the principal doesn't own (§2.7).
     let redact_owner = principal.0.as_ref().map(|p| p.sub.clone());
     // the closure redacts rows it doesn't own; an owned String
@@ -2123,7 +2123,7 @@ pub async fn export(
 
     // `?format=ump` re-renders the payload as signed/redactable
     // UMP records (per-chunk graph included, name-based, so a UMP peer can
-    // restore it). M5 wires the operator signer here.
+    // restore it). The operator signer is not yet wired here.
     if let Some(fmt) = q.format.as_deref() {
         if fmt == "ump" || fmt == "ump-md" {
             let rendered = render_ump(&body, redact_owner.as_deref(), None);
@@ -2153,7 +2153,7 @@ pub async fn export(
     Ok(Json(body))
 }
 
-/// Pure M4 renderer (M2-hardened): `/export` body → UMP envelope. Relation
+/// Pure renderer: `/export` body → UMP envelope. Relation
 /// names are resolved through the entity map; a dangling id drops (defensive).
 /// Every record goes through `emit_record` (content-addressed id + integrity +
 /// §2.7 redaction for non-owner principals: a JWT subject only ever exports
@@ -2161,7 +2161,7 @@ pub async fn export(
 /// Shared §2.7 redaction rule: a row is redacted when an exporter principal is
 /// present (non-None) AND the row is not owned by that principal. A row with
 /// no owner is personal + shared → redacted; `redact_owner == None` (loopback/
-/// opaque) sees everything. Used by the JSON `/export` body (M2) and the UMP
+/// opaque) sees everything. Used by the JSON `/export` body and the UMP
 /// renderer — one rule, two consumers.
 fn should_redact(row_owner: Option<&str>, redact_owner: Option<&str>) -> bool {
     redact_owner.is_some() && row_owner.map(|o| Some(o) != redact_owner).unwrap_or(true)

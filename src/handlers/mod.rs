@@ -562,7 +562,7 @@ pub fn resolve_domain_pool(
     // `known_domains` detail list survives only for malformed names.
     registry.pool_for(d).map_err(|e| match e {
         crate::domain_registry::DomainRegistryError::Invalid(_) => {
-            // S2-32 (pass-3): no `known_domains` inventory in the error detail —
+            // No `known_domains` inventory in the error detail —
             // a probe with a malformed header must not receive the full on-disk
             // domain list (the probe-blind posture every other domain error
             // takes; the register listing on GET /domains is the legitimate

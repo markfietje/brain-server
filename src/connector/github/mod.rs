@@ -29,7 +29,7 @@ use crate::connector::auth::AccessToken;
 use crate::connector::github::client::{GitHubClient, Page};
 use crate::connector::github::translate::translate_issue;
 
-/// Hard cap on docs per repo per backfill. The v0.9.6 plan ceiling.
+/// Hard cap on docs per repo per backfill.
 pub const MAX_DOCS_PER_REPO: usize = 10_000;
 
 /// One backfill pass: walk issues for one repo from the cursor forward,
@@ -69,7 +69,7 @@ pub fn backfill_issues_for_repo(
     while let Some(current) = page.take() {
         for issue in &current.items {
             // PRs appear in the issues endpoint (they ARE issues with extra
-            // fields). Skip them here; the PR backfill path lands in M2.5+.
+            // fields). Skip them here; the PR backfill path lands later.
             if issue.get("pull_request").is_some() {
                 continue;
             }

@@ -6,11 +6,11 @@
 //! registered kinds are the ones a profile's `connectors_allowed` gates against
 //! (see `profile::connector_allowed`).
 //!
-//! `github` predates the v1.24 set; it is preserved so the v0.9.6 connector
-//! keeps working. Everything else is a v1.24 vertical.
+//! `github` predates the vertical set; it is preserved so the original
+//! connector keeps working. Everything else is a vertical.
 
-/// Shipped connector kinds. `github` is the v0.9.6 original; the rest are the
-/// v1.24 vertical set (read-only; each is a translate+ingest module).
+/// Shipped connector kinds. `github` is the original; the rest are the
+/// vertical set (read-only; each is a translate+ingest module).
 pub const CONNECTOR_KINDS: &[&str] = &[
     "github",
     "crm-salesforce",

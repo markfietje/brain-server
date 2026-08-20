@@ -201,7 +201,7 @@ pub fn novelty(conn: &Connection, embedding: &[f32]) -> Option<f32> {
     best.map(|d| (1.0 - d).clamp(0.0, 1.0)).map(|sim| 1.0 - sim)
 }
 
-/// Deterministic confidence (M3). Base 1.0, each factor is a stored,
+/// Deterministic confidence. Base 1.0, each factor is a stored,
 /// the model-vs-human origin marker. `source` is the
 /// ingest kind; `origin` says who produced the memory. Manual/interactive →
 /// human, auto-capture/assistant (`memory`) → model, bulk import + everything
@@ -238,7 +238,7 @@ pub fn confidence(source: Option<&str>, has_conflict: bool, assertion: &str) -> 
     c.clamp(0.0, 1.0)
 }
 
-/// A relevance tier from a fused RRF score (M3). Score bands are corpus-
+/// A relevance tier from a fused RRF score. Score bands are corpus-
 /// calibrated; `low` is the "poison the context window" band that
 /// `min_relevance` drops.
 pub fn relevance_tier(score: f32) -> &'static str {
@@ -291,7 +291,7 @@ pub fn retention_reason(expires_at: Option<i64>, effective: Option<i64>) -> Opti
     }
 }
 
-/// True when a principal may read resolved PII (M4). `None` (opaque/loopback)
+/// True when a principal may read resolved PII. `None` (opaque/loopback)
 /// always may (trusts localhost, SECURITY.md posture). In JWT mode, an
 /// `admin:*/*` scope is the `pii:read` capability for v1.14 — the full
 /// `<action>:<team>/<domain>` grammar can't express a `pii:read` action yet.
@@ -371,8 +371,8 @@ pub use brain_server::fence::strip_markdown_refs;
 /// invisible-Unicode strip (bidi / zero-width / tag-block smuggling) to EVERY
 /// text field a chunk may emit — content, title, snippet, evidence, heading —
 /// not just `content`. The HTTP surface (recall/search, /get, /multi-get) feeds
-/// every field through this, closing the raw-invisible-Unicode gap the v1.20.24
-/// Sweep left on the HTTP JSON boundary. Idempotent; safe where clients re-strip.
+/// every field through this, closing the raw-invisible-Unicode gap
+/// on the HTTP JSON boundary. Idempotent; safe where clients re-strip.
 ///
 /// redact (PII spans) →
 /// strip_invisible (bidi/ZW) → strip_markdown_refs (drop remote refs).

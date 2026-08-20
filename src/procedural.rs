@@ -32,7 +32,7 @@ pub enum MemoryKind {
     /// ("If HIPAA-relevant → recommend BAA-reviewed tools").
     Decision,
     /// a dated event record where `observed_at` is
-    /// first-class (an episodic memory). The natural TTL candidate (M2).
+    /// first-class (an episodic memory). The natural TTL candidate.
     Episodic,
 }
 

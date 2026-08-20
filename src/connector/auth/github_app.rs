@@ -7,16 +7,16 @@
 //!
 //! - **Per-installation repository scoping** via the optional `repositories`
 //!   body field on `POST /app/installations/{id}/access_tokens`. This is the
-//!   least-privilege mechanism that enforces DoD-1 ("a GitHub App limited to
-//!   two repos cannot index a third") at the API level.
+//!   least-privilege mechanism that enforces "a GitHub App limited to
+//!   two repos cannot index a third" at the API level.
 //! - **Fine-grained permissions** (Issues: Read, Pull requests: Read, …)
 //!   instead of OAuth Apps' coarse scopes (`repo`, `public_repo`).
 //! - **Independent of any user** — installation tokens work even if the user
 //!   who installed the app leaves the org.
 //!
 //! For SaaS sources that *do* use standard OAuth 2.0 (Salesforce, Slack,
-//! Linear, Notion, HubSpot, …), the `OAuthProvider` impl (deferred to
-//! v0.9.7) will cover them. The `AuthProvider` trait is the unified surface.
+//! Linear, Notion, HubSpot, …), the `OAuthProvider` impl (deferred)
+//! will cover them. The `AuthProvider` trait is the unified surface.
 //!
 //! ## Flow (Context7-verified 2026-07-20, `/websites/github_en_rest`)
 //!
@@ -76,11 +76,11 @@ pub struct GitHubAppConfig {
     /// Absolute path to the App's RSA private key (PEM). Mode 0600.
     pub private_key_path: String,
     /// Optional: absolute path to the webhook secret file. Mode 0600.
-    /// Used by the webhook-ingress handler (M2.4) for HMAC verification.
+    /// Used by the webhook-ingress handler for HMAC verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook_secret_path: Option<String>,
     /// Optional: restrict the installation token to specific repo names.
-    /// This is the API-level least-privilege mechanism (DoD-1). When `None`,
+    /// This is the API-level least-privilege mechanism. When `None`,
     /// the token covers every repo the installation can see.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repositories: Vec<String>,

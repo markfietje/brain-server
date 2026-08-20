@@ -3,17 +3,17 @@
 //! A *connector* is an out-of-process binary that pulls documents from an
 //! external source (GitHub, …) into brain-server's existing source/revision
 //! model via the HTTP API. The server's job is narrow: register instances,
-//! surface status, and (in M2.x) spawn connector binaries via `supervisor`.
+//! surface status, and (eventually) spawn connector binaries via `supervisor`.
 //! All outbound HTTP to the external source happens in the connector binary,
 //! never in the server process — historically the server had no outbound HTTP
 //! client dep (constraint #1, see `bin_common/http.rs` line 4). That constraint
-//! was deliberately broken in v1.15.0 "Observe" (the DSAR Art 19 webhook is an
+//! was deliberately broken (the DSAR Art 19 webhook is an
 //! always-on outbound surface), so `reqwest` is now a required server dep; the
 //! connector binary reuses it.
 //!
-//! M1 scope: manifest + spawn primitive + a stub binary + migration. No real
-//! connector logic yet (that's M2.x). The contract documented below is what
-//! `brain-connector-gh` (M2) and future connectors will implement.
+//! Current scope: manifest + spawn primitive + a stub binary + migration. No
+//! real connector logic yet. The contract documented below is what
+//! `brain-connector-gh` and future connectors will implement.
 //!
 //! This module is the `brain-connector-gh` binary's library (auth, github
 //! client, supervisor, translate pipeline). It is not reachable from the server
@@ -60,7 +60,7 @@ use serde::{Deserialize, Serialize};
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 /// Connector manifest. Loaded from `~/.config/brain-server/connectors/*.toml`
-/// in M2.x; in M1 we construct these in-process for the stub.
+/// eventually; for now these are constructed in-process for the stub.
 ///
 /// `binary` is the connector binary name (resolved via `$PATH` at spawn time)
 /// or an absolute path. `scopes` are declared capabilities (informational; the
@@ -82,8 +82,8 @@ pub struct ConnectorManifest {
 }
 
 impl ConnectorManifest {
-    /// Construct a manifest for the M1 stub connector. Used by tests and by
-    /// `brain connect` (when it lands in M3) to register the stub.
+    /// Construct a manifest for the stub connector. Used by tests and by
+    /// `brain connect` (when it lands) to register the stub.
     pub fn stub() -> Self {
         Self {
             kind: "stub".to_string(),

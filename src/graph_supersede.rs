@@ -24,8 +24,8 @@
 //! version (old `valid_at`/`invalid_at`/`created_at` are preserved verbatim —
 //! that is the point of versioning), and the corrected version is inserted with
 //! its own window + `superseded_at = NULL`. This is the fail-closed upgrade of
-//! the v1.4.0 `INSERT OR IGNORE` no-op (pre-v1.27.22, a corrected belief could
-//! not coexist with the version it supersedes — the v1.27.22 BUG-1).
+//! the legacy `INSERT OR IGNORE` no-op (previously, a corrected belief could
+//! not coexist with the version it supersedes).
 //!
 //! [`resolve_edge_insert`] is the pure, unit-testable core (the
 //! `page_decayed` idiom — a bare [`Connection`] drives every test). It returns
@@ -56,7 +56,7 @@ pub enum EdgeAction {
 ///
 /// * No current version → insert → [`EdgeAction::Created`].
 /// * Current version, identical window → [`EdgeAction::SameWindow`] (no write;
-///   the pre-v1.27.22 no-op behavior on unchanged data, preserved).
+///   the legacy no-op behavior on unchanged data, preserved).
 /// * Current version, differing window → [`EdgeAction::Superseded`]: retire the
 ///   current version at `now` (transaction-time END, old row preserved
 ///   verbatim) and insert the corrected version as the new current belief
@@ -70,7 +70,7 @@ pub enum EdgeAction {
 ///
 /// `knowledge_id` anchors the new version to the memory chunk that produced it.
 /// Fail-closed: any SQL error propagates (the caller rolls back the whole
-/// ingest — the D-1 "never certify silence" rule applied to the graph); a
+/// ingest — never certify silence on the graph); a
 /// supersession is never a silent half-write.
 pub fn resolve_edge_insert(
     conn: &Connection,
@@ -82,8 +82,8 @@ pub fn resolve_edge_insert(
     now: &str,
 ) -> Result<EdgeAction, rusqlite::Error> {
     // The current version of this triple, if any. At most one row has
-    // `superseded_at IS NULL` per triple — STRUCTURAL since v1.27.25 via the
-    // partial unique index `idx_rels_open_unique` (S3-08): a racing
+    // `superseded_at IS NULL` per triple — STRUCTURAL, enforced via the
+    // partial unique index `idx_rels_open_unique`: a racing
     // double-insert fails at the DB and rolls back the whole ingest
     // (fail-closed). The `ORDER BY id DESC` guard stays for pre-index legacy
     // rows a migrated file may still hold (deterministic newest-wins).

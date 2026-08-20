@@ -19,7 +19,7 @@
 //! the config and any referenced secret files; the boundary is "filesystem
 //! access" not "memory access". Adding AES-GCM with a master key file would
 //! narrow the threat to "config-file backup leak" only — a real but narrow
-//! case that doesn't justify the ~200 LOC of crypto plumbing in v0.9.6.
+//! case that doesn't justify the ~200 LOC of crypto plumbing.
 //! `ponytail:` revisit if brain-server is ever deployed multi-tenant.
 
 use anyhow::{Context, Result};
@@ -68,8 +68,8 @@ where
 
     /// Save the config back to its source path. Atomic on POSIX via
     /// `std::fs::rename` — write to a sibling temp file then rename. Used by
-    /// OAuth refresh-token rotation (v0.9.7+) and by `brain connect` writing
-    /// the initial config (M3).
+    /// OAuth refresh-token rotation and by `brain connect` writing
+    /// the initial config.
     ///
     /// `ponytail:` uses a sibling tempfile + `std::fs::rename` instead of
     /// `tempfile::NamedTempFile::persist` to avoid promoting `tempfile` from

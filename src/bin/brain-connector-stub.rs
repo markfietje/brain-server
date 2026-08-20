@@ -1,6 +1,6 @@
-//! `brain-connector-stub` — M1 reference connector binary.
+//! `brain-connector-stub` — reference connector binary.
 //!
-//! Proves the v0.9.6 Bridge connector contract end-to-end without any
+//! Proves the connector contract end-to-end without any
 //! real external source. Spawns, reads its argv (`--config`, `--checkpoint`),
 //! emits the JSON-lines event stream the supervisor expects, ingests one doc
 //! via the server's existing `/ingest/markdown` route, then exits 0.
@@ -8,7 +8,7 @@
 //! Used by:
 //! - `connector::supervisor::tests::test_spawn_once_runs_stub_binary_and_returns_zero`
 //!   (verifies spawn + clean exit)
-//! - the M2.x `brain connect` smoke test (verifies end-to-end ingest)
+//! - the future `brain connect` smoke test (verifies end-to-end ingest)
 //!
 //! This is a *binary*, not a library module. It pulls in the shared
 //! dependency-free HTTP client via `#[path]` to avoid a `reqwest` dep on the
@@ -78,7 +78,7 @@ fn main() {
         Err(e) => {
             // The supervisor will restart us on non-zero exit. The `retry`
             // flag in the error event is informational — the supervisor
-            // doesn't parse it in M1.
+            // doesn't parse it yet.
             emit_error(&format!("HTTP request failed: {e}"), true);
             std::process::exit(1);
         }
@@ -113,7 +113,7 @@ fn auth_token() -> Option<String> {
 
 /// Emit one JSON-lines event to stdout (the connector → supervisor protocol).
 /// Uses serde_json so we never have to hand-escape strings — the supervisor's
-/// parser will be serde-based too in M2.x.
+/// parser will be serde-based too.
 fn emit_log(level: &str, msg: &str) {
     let _ = serde_json::to_writer(
         std::io::stdout(),

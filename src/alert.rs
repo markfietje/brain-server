@@ -2,7 +2,7 @@
 //!
 //! Decision-critical events (pending/expiry/injection/chain-verify) publish on a
 //! bounded `AppState` broadcast and stream to the `/ops` panel via SSE; the same
-//! events feed an optional `BRAIN_ALERT_WEBHOOK_URL` (v1.20.4 Webhooks handshake).
+//! events feed an optional `BRAIN_ALERT_WEBHOOK_URL` (the webhooks handshake).
 //!
 //! Invariants (2026 alert-fatigue + PII): the signal set is **fixed & hand-curated**
 //! (no rules engine); `AlertEvent.payload` is a fixed small object — **never content,
@@ -27,7 +27,7 @@ pub use crate::config::{
     ALERT_KIND_CHAIN, ALERT_KIND_EXPIRY, ALERT_KIND_PENDING, ALERT_KIND_SCREEN,
 };
 
-/// The v1.20.6 ops-clock SLA tier (mirrors the client clock). `Ok` → `Warn` →
+/// The ops-clock SLA tier (mirrors the client clock). `Ok` → `Warn` →
 /// `Critical` as the remaining proposal lifetime shrinks.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub enum Tier {

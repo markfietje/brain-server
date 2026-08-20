@@ -57,7 +57,7 @@ pub struct QueryDoc {
     /// Result count. `None` → route default (`DEFAULT_K` / `DEFAULT_RECALL_LIMIT`).
     #[serde(default)]
     pub k: Option<u32>,
-    /// Retrieval profile hint (passthrough in M1; no rerank plumbing yet).
+    /// Retrieval profile hint (passthrough; no rerank plumbing yet).
     #[serde(default)]
     pub profile: Option<String>,
     /// When true, responses include the query plan / telemetry / provenance.

@@ -6,9 +6,9 @@
 //! ciphertext plus a `.sha256` checksum file. `restore` reverses it, taking a
 //! safety `VACUUM INTO` snapshot of the current DB first. `verify` is read-only.
 //!
-//! # Format v2 (v1.27.17 "Strongbox", M1/F-08)
+//! # Format v2
 //!
-//! The v0.9.7 format derived both key and nonce from the passphrase
+//! The legacy v1 format derived both key and nonce from the passphrase
 //! (`SHA-256(passphrase)` + `SHA-256(passphrase || created_at)[..12]`) — an
 //! unsalted, fast KDF (offline brute-forceable) with a second-granularity
 //! deterministic nonce (same passphrase + same second = catastrophic GCM nonce
@@ -29,7 +29,7 @@
 //! backups stay restorable; v2 is what we write. `brain backup --format v1` is
 //! the documented "legacy, weaker" escape hatch.
 //!
-//! # Format v3 (2026-08-17 audit, S2-13)
+//! # Format v3
 //!
 //! The v2 header was NOT covered by the GCM tag — any header bit could be
 //! flipped without failing authentication (only the KDF-string and salt/nonce
@@ -111,7 +111,7 @@ struct Header {
     manifest: Manifest,
 }
 
-/// Bounds for header-supplied Argon2id parameters (S2-14): the header is
+/// Bounds for header-supplied Argon2id parameters: the header is
 /// attacker-controllable, so a crafted `m` must fail validation — not drive a
 /// multi-TiB allocation. 8 MiB..1 GiB of KiB units / t 1..=64 / p 1..=8 spans
 /// every parameter set this project has ever written, with generous headroom.
@@ -151,7 +151,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-/// Legacy v1 key derivation — READ-ONLY since v1.27.17 ("Strongbox" M1):
+/// Legacy v1 key derivation — READ-ONLY:
 /// unsalted + fast, kept only to restore pre-v2 backups. v2 uses [`kdf_v2`].
 fn derive_key_v1(passphrase: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -198,7 +198,7 @@ pub fn default_connector_config_dir() -> PathBuf {
     PathBuf::from(home).join(".config/brain-server/connectors")
 }
 
-/// `VACUUM INTO` with proper SQLite literal escaping (M5/F-49). SQLite DDL
+/// `VACUUM INTO` with proper SQLite literal escaping. SQLite DDL
 /// cannot bind the path — escape `'` → `''` and refuse NUL/non-UTF-8. The one
 /// place a path becomes SQL; both the backup snapshot and the restore safety
 /// snapshot go through it.
@@ -241,9 +241,9 @@ fn set_permissions_0600(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The M2 (F-29) snapshot recipe. SQLite's `VACUUM INTO` REFUSES an existing
+/// The snapshot recipe. SQLite's `VACUUM INTO` REFUSES an existing
 /// target ("output file already exists" — verified empirically), so the
-/// plan's literal "create_new then vacuum over it" cannot work. The same
+/// literal "create_new then vacuum over it" sequence cannot work. The same
 /// security properties are reached as:
 ///
 /// 1. probe-create the path 0600 with `create_new` — a pre-planted file or
@@ -266,7 +266,7 @@ pub fn vacuum_into_private(conn: &rusqlite::Connection, path: &Path) -> Result<(
     Ok(())
 }
 
-/// S2-25/S2-26: own the target with `O_CREAT|O_EXCL` at 0600 BEFORE the
+/// Own the target with `O_CREAT|O_EXCL` at 0600 BEFORE the
 /// vacuum, then let SQLite write into that pre-created EMPTY file (the
 /// overwrite check is `sz > 0` after open — pinned by
 /// `vacuum_into_writes_into_precreated_empty_file`). There is no remove step
@@ -323,7 +323,7 @@ fn encrypt_v1(bundle: &[u8], passphrase: &[u8], created_at: &str) -> Result<Vec<
 /// v2/v3 encryption: `BSBK | u16 version | u32 header_len | header JSON |
 /// ciphertext`. Salt and nonce are `rand::random()` per backup — nonce
 /// uniqueness by RNG, never by construction. v3 additionally binds the exact
-/// header bytes as GCM AAD (S2-13); v2 keeps the legacy no-AAD ciphertext so
+/// header bytes as GCM AAD; v2 keeps the legacy no-AAD ciphertext so
 /// files written by older builds stay bit-stable.
 fn encrypt_versioned(
     manifest: &Manifest,
@@ -379,7 +379,7 @@ fn encrypt_versioned(
 }
 
 /// Reject header-supplied Argon2id parameters outside the documented bounds
-/// (S2-14) BEFORE any allocation: argon2 derives its key only after this
+/// BEFORE any allocation: argon2 derives its key only after this
 /// passes, so a crafted `m = u32::MAX` errors here instead of OOMing.
 fn validate_kdf_params(header: &Header) -> Result<()> {
     if !(KDF_M_MIN..=KDF_M_MAX).contains(&header.m)
@@ -573,7 +573,7 @@ fn backup_inner(
     format: BackupFormat,
 ) -> Result<()> {
     let created_at = now_iso();
-    // S2-52: a leftover <db>.bak is the pre-restore evidence of a previous
+    // A leftover <db>.bak is the pre-restore evidence of a previous
     // restore. Refusing to back up over it (fail-closed) makes the changelog's
     // "refuses while a stale .bak exists" claim true; symlink_metadata sees a
     // dangling symlink where `exists()` would report false.
@@ -598,9 +598,9 @@ fn backup_inner(
             .unwrap_or(0)
     ));
 
-    // S2-25: the guard is armed BEFORE the snapshot is written, so a failure
+    // The guard is armed BEFORE the snapshot is written, so a failure
     // inside snapshot_db (chmod, disk-full VACUUM) still removes the partial
-    // plaintext file rather than leaking it. F-29 (M2): the plaintext copy
+    // plaintext file rather than leaking it. The plaintext copy
     // must never outlive this call, success or failure.
     let _guard = SnapshotGuard(snapshot_path.clone());
     snapshot_db(db_path, &snapshot_path).with_context(|| "snapshot live DB failed")?;
@@ -733,7 +733,7 @@ pub fn verify(cipher_path: &Path, passphrase: &[u8]) -> Result<Manifest> {
 /// Write `data` to `path` via an in-directory temp file: write → fsync →
 /// rename, then fsync the directory so the rename is durable. A crash at any
 /// point leaves either the old file or the fully-written new file, never a
-/// truncated in-place overwrite (S2-27). The temp name is derived from the
+/// truncated in-place overwrite. The temp name is derived from the
 /// target; leftover temps from a killed restore on a read-only-overwrite
 /// failure are reclaimed by the next `write_atomic` on the same target.
 fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
@@ -831,7 +831,7 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
             .with_context(|| format!("open live DB {db_path:?}"))?;
         conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
             .context("wal_checkpoint before safety snapshot")?;
-        // S2-28 (pass-3): harvest the ACTIVE legal holds BEFORE the snapshot —
+        // Harvest the ACTIVE legal holds BEFORE the snapshot —
         // restoring a pre-hold backup previously dropped every hold row, and
         // a frozen-for-litigation id silently became purgable. The holds are
         // re-applied to the restored DB below. Best-effort read (a missing
@@ -846,7 +846,7 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
                 rows.collect::<rusqlite::Result<Vec<_>>>()
             })
             .unwrap_or_default();
-        // S2-28 companion: the tombstone ids — after restore we check which
+        // The tombstone ids — after restore we check which
         // purged ids the backup resurrects (the WORM-lite disclosure).
         tombstoned = conn
             .prepare("SELECT DISTINCT knowledge_id FROM tombstones")
@@ -855,7 +855,7 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
                 rows.collect::<rusqlite::Result<Vec<_>>>()
             })
             .unwrap_or_default();
-        // S2-26: create the .bak exclusively at 0600, then VACUUM INTO the
+        // Create the .bak exclusively at 0600, then VACUUM INTO the
         // pre-created empty file — no umask window, no write-through of a
         // pre-planted file or symlink.
         vacuum_into_exclusive(&conn, &bak)?;
@@ -865,10 +865,10 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     if let Some(parent) = db_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
-    // S2-27: temp + fsync + rename (crash mid-write never leaves a corrupt DB)
+    // Temp + fsync + rename (crash mid-write never leaves a corrupt DB)
     // then fsync the directory so the rename itself is durable.
     write_atomic(db_path, &snapshot).with_context(|| format!("write restored DB {db_path:?}"))?;
-    // S2-28 (pass-3): re-apply the pre-restore ACTIVE holds to the restored
+    // Re-apply the pre-restore ACTIVE holds to the restored
     // DB (fresh rows; the freeze is on the knowledge id, not the rowid) and
     // disclose any tombstoned content the backup resurrected. Best-effort for
     // the restore itself, but never silent.
@@ -877,7 +877,7 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     Ok(())
 }
 
-/// S2-28 (pass-3): post-restore hold re-application + resurrection disclosure.
+/// Post-restore hold re-application + resurrection disclosure.
 /// Holds are re-inserted for the SAME knowledge ids (a freeze binds the id, not
 /// the rowid); tombstoned ids that came back with the backup are counted +
 /// logged loudly (the WORM-lite posture: the operator must know a purge was
