@@ -19,6 +19,65 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.28] — 2026-08-20
+
+**Server-only correctness release** (server `Cargo.toml`/lock 1.27.27 →
+**1.27.28**; client + plugin unchanged). "Errata" removes false and dead code
+documentation: stale comment references and a never-used constant are removed
+(or de-versioned — invariant sentences kept verbatim, only the review label
+dropped), and a source-scan guard makes the class non-recurring. **No schema,
+no migration, no new endpoints, no wire change, no telemetry.**
+
+### Release notes
+
+**Improvements**
+
+- **A dead, never-referenced constant was removed.** `AUTHORITY_CONNECTOR`
+  sat behind a comment reserving it for a connector split that shipped years
+  ago and never used it. It is gone, and `clippy -D warnings` now proves
+  nothing unreferenced survives.
+- **~1,480 comments de-versioned.** Comments that carried release/milestone
+  or audit-finding ids (e.g. `v1.28.1 "Holdall" M1 (F-02):`) lost the label,
+  keeping only the invariant sentence they were documenting — the code's
+  docs now match the code's behavior, and the migration module's version
+  strings (which ARE the schema-contract audit trail) were preserved.
+- **A comment-hygiene guard ships.** A source-scan test fails the build if a
+  `//` comment in `src/` cites a version tag, a milestone, or an audit id
+  again (allow-listing the migration-version enums + `SAFETY:` lines that must
+  persist), so the class cannot return silently.
+- **CI edge fixed.** The lipstyk diff watchdog was re-baselined across a
+  comment-only reformat that had re-attributed ~34 pre-existing baseline
+  diagnostics; the two genuine findings it surfaced (a `forced_domain` match
+  reducible to `then`/`transpose`) were collapsed to the cleaner form.
+
+### Engineering record
+
+- **M1** — deleted `AUTHORITY_CONNECTOR` (`src/sources.rs`, dead since the
+  connector shipped) plus its false reserved-for comment; swept for other
+  `#[allow(dead_code)]` items whose comment claimed a purpose the code does
+  not fulfill, deleting only genuinely-unreferenced ones (schema-contract
+  constants kept, comment corrected to say *why* they persist).
+- **M2/M3** — de-versioned ~1,480 `src/` comments (keep the meaning, drop the
+  `v1.27.x "name" M# (F-##)` label), collapsing duplicate re-assertions to one
+  authoritative site; `src/migration.rs` kept every migration/DDL version
+  string because the schema-contract test reads them. Never removed a
+  `// SAFETY:`, a migration version, a wire-contract note, or a fail-closed
+  invariant. No blind regex strip — every line reviewed in isolation.
+- **M4** — `comments_never_reference_versions_plans_audit_ids` source-scan
+  guard (the repo's `no_raw_strings_in_rsx`-style test pattern).
+- **M5** — verification gate: fmt, clippy `-D warnings` (default + bench +
+  otel), full suite, lipstyk strict-diff, `badges.sh --selfcheck` all clean in
+  one pass. CI follow-up (`9662584`): the `forced_domain` two-arm match in
+  ingest/recall → `req.domain.as_deref().map(normalize_domain).transpose()?`
+  (behavior-identical); this re-baselined the lipstyk diff base so the
+  confirmed-baseline heuristic diagnostics re-touched by the churn no longer
+  gate the build (main CI green, incl. the `lipstyk` job).
+- Honest ceilings: this is comment + dead-code **correctness**, not the
+  LOC/de-slop trim (that stays v1.27.25 "Shrink"); the ~918 documented
+  baseline heuristic diagnostics remain accepted and diff-scoped, not zeroed.
+
+---
+
 ## [1.27.27] — 2026-08-20
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.26 → **1.27.27**;
