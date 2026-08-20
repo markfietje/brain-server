@@ -32,6 +32,26 @@ and a SOC 2 evidence kit with contract-level support. See **[Editions](./product
   DSAR, retention, jurisdiction, legal holds, and a MemGhost (memory-poisoning)
   mitigation. Compliance is shipped behavior, not a brochure.
 
+## Retrieval models
+
+Recall runs on **local embeddings with zero token cost** — nothing is sent to an
+embedding API in any profile. By default (`MODEL_PROFILE=edge-default`) that's the
+static `minishlab/potion-retrieval-32M` model (512-d, `model2vec`, no transformer
+forward pass — ideal for Jetson/RPi/edge). Opt-in retrieval profiles swap in larger
+**local** models without changing the API:
+
+| Profile | Embedding model | Dim |
+|---|---|---|
+| `enterprise` | `BAAI/bge-m3` | 1024 |
+| `desktop` | `Alibaba-NLP/gte-base-en-v1.5` | 768 |
+| `multilingual` | `minishlab/potion-base-2M` | 512 |
+
+An optional cross-encoder **rerank tier** (armed on `enterprise` / `desktop` /
+`quality-local`) refines the fused order with `mixedbread-ai/mxbai-rerank-large-v1`
+(fallback `BAAI/bge-reranker-v2-m3`). All models run locally — no cloud, no GPU
+required, no token spend. See [Configuration](./configuration.md) for the full
+profile matrix and the `BRAIN_RERANK_*` variables.
+
 ## Who it is for
 
 - **Anyone who wants their agent's memory private** — your conversation history and

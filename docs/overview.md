@@ -6,9 +6,9 @@ device — private, offline-capable, and deterministic.
 
 The core idea is simple: **recall that never has to think.** Instead of asking a
 language model whether to recall, and instead of paying an embedding API on every
-read and write, Brain Server uses a **static, local embedding model** (`model2vec`
-/ `minishlab/potion-retrieval-32M`) and a **deterministic retrieval pipeline**. No
-LLM decides, no token is spent, no data leaves the device.
+read and write, Brain Server uses a **static, local embedding model** (default
+profile: `model2vec` / `minishlab/potion-retrieval-32M`) and a **deterministic
+retrieval pipeline**. No LLM decides, no token is spent, no data leaves the device.
 
 ---
 
@@ -52,10 +52,16 @@ decides whether to recall, and no LLM extracts memories on write. Token accounti
 **0 decision tokens, 0 embedding tokens.** Only the capped returned snippets cost
 context.
 
-### ② Local static embeddings — offline, private, ~free on CPU
-`potion-retrieval-32M` via `model2vec` is a **static** model — no transformer
-forward pass, just token lookup. It runs in-process with no GPU and no network.
-There is **no embedding API dependency**: embeddings are a local library call.
+### ② Local embeddings — offline, private, ~free on CPU
+The default profile uses `potion-retrieval-32M` via `model2vec` — a **static**
+model, no transformer forward pass, just token lookup — running in-process with
+no GPU and no network. There is **no embedding API dependency** in any profile:
+embeddings are always a local library call. Opt-in `MODEL_PROFILE=enterprise`
+(`BAAI/bge-m3`, 1024-d) or `MODEL_PROFILE=desktop` (`gte-base-en-v1.5`, 768-d)
+swap in larger **local** transformer embeddings — still zero-API, zero-egress — and
+an optional cross-encoder rerank tier (`mixedbread-ai/mxbai-rerank-large-v1`,
+fallback `bge-reranker-v2-m3`) fine-tunes the fused order on the profiles that
+arm it.
 
 ### ③ Per-domain knowledge graphs with automatic routing
 Memories live in scoped domains (health, business, code, …), each with its own

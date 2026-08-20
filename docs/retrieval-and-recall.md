@@ -19,12 +19,28 @@ Recall is **hybrid**: two retrieval legs run concurrently and are merged.
             Reciprocal Rank Fusion (RRF, k=60)
                      │
                      ▼
+            [optional] Cross-encoder rerank
+            (enterprise / desktop / quality-local:
+             mxbai-rerank-large-v1, fallback bge-reranker-v2-m3)
+                     │
+                     ▼
               rank + provenance
 ```
 
+The optional rerank stage is **off by default** (the edge profile stays rerank-free,
+the v0.9.5 doctrine) and is **fail-open** — a reranker fault leaves the RRF order
+untouched. See [Configuration](./configuration.md) for the profile matrix and
+`BRAIN_RERANK_*` variables.
+
 ### 1. The vector leg
 
-Embeddings are computed in-process by the static `model2vec` model — no transformer forward pass, just token lookup. Vectors are stored in a SQLite `vec0` table, int8/binary quantized (4–32× smaller) so the whole index stays small on edge hardware. KNN (k-nearest-neighbors) finds the closest vectors to the query embedding.
+Embeddings are computed in-process — by the static `model2vec` model (default
+profile: no transformer forward pass, just token lookup) or, on the opt-in
+`enterprise` / `desktop` profiles, by local transformer embeddings (`BAAI/bge-m3`
+1024-d / `gte-base-en-v1.5` 768-d) through the same pipeline. Vectors are stored
+in a SQLite `vec0` table, int8/binary quantized (4–32× smaller) so the whole
+index stays small on edge hardware. KNN (k-nearest-neighbors) finds the closest
+vectors to the query embedding.
 
 ### 2. The lexical leg
 

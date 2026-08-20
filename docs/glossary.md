@@ -29,7 +29,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## E
 
-- **Embedding** — a numeric vector representing text, such that semantically similar texts are close in vector space. Brain Server uses *static* embeddings (`model2vec`) — no transformer forward pass.
+- **Embedding** — a numeric vector representing text, such that semantically similar texts are close in vector space. Brain Server's *default* profile uses *static* embeddings (`model2vec`, no transformer forward pass); the opt-in `enterprise` / `desktop` profiles use local transformer embeddings (`BGE-M3` / `gte-base-en-v1.5`).
 - **Egress** — data leaving your device/network. Brain Server has no data egress by default.
 - **Evidence** — the verbatim snippet, line span, source link, and highlight ranges attached to a retrieved chunk — what a result is *actually* based on.
 
@@ -91,7 +91,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 ## S
 
 - **Span verification** — `POST /verify` checks whether a claim is literally supported by a chunk's text (deterministic lexical match, no LLM).
-- **Static embedding model** — a model with no transformer forward pass, just token lookup (`model2vec` / `potion-retrieval-32M`). Cheap on CPU.
+- **Static embedding model** — a model with no transformer forward pass, just token lookup (`model2vec` / `potion-retrieval-32M`). Cheap on CPU. This is the default embedder; the opt-in neural tiers (`BGE-M3`, `gte-base-en-v1.5`) are transformer models.
 - **Supersede** — marking a new fact as replacing an old one. Atomically expires the old fact from current recall; historical recall still returns it.
 - **SQLite vec0** — a SQLite extension for vector search (KNN over quantized embeddings).
 
