@@ -19,6 +19,37 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.29] — 2026-08-21
+
+**Server-only scaffold release** (server `Cargo.toml`/lock 1.27.28 →
+**1.27.29**; client + plugin untouched). "Survey" ships the engine-crate
+workspace — where the ported engines will live — before the substrate they write
+through exists. **No schema, no migration, no endpoints, no server code change.**
+
+### Release notes
+
+**Improvements**
+
+- **The `crates/` engine workspace scaffold lands.** Five intentionally-empty
+  crates — `brain-interview-core`, `brain-consensus-core`, `brain-executor-core`,
+  `brain-troubleshoot-core`, `legal-rules-db` — as their own workspace node
+  (the wasm-client convention), `edition 2024`, `rust-version 1.97`, clippy
+  `-D warnings` clean with zero dependencies. The workspace builds green now and
+  fills crate-by-crate in the upcoming engine ports; the driver harness stays in
+  `tools/steward-harness/` (the cores are harness-independent).
+
+### Engineering record
+
+- Built and gated on rustc **1.97.1** stable; the server package keeps edition
+  2021 (an edition flip is its own release, never a rider). Zero new server
+  dependencies — the node is self-contained.
+- Verification: crates workspace clippy `-D warnings` + fmt + test green; the
+  server suite untouched.
+
+---
+
+---
+
 ## [1.27.28] — 2026-08-20
 
 **Server-only correctness release** (server `Cargo.toml`/lock 1.27.27 →

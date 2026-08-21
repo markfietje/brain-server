@@ -1,0 +1,10 @@
+[package]
+name = "brain-troubleshoot-core"
+version = "1.27.29"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The universal troubleshooting engine core (turn/step loop, gate waterfall, vendor-neutral evidence vocabulary) on the brain-server governed-workflow substrate. Spec: private; deliberately empty until its port milestone. until its port milestone."
+publish = false
+
+[dependencies]

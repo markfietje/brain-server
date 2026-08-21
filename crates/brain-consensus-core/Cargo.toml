@@ -1,0 +1,10 @@
+[package]
+name = "brain-consensus-core"
+version = "1.27.29"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The Steward consensus-planning engine core (Planner → Architect → Critic deliberation); writes through the brain-server governed-workflow substrate (src/workflow/). Port spec: private; deliberately empty until the 1.27.33 port."
+publish = false
+
+[dependencies]

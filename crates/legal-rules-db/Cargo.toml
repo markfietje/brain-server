@@ -1,0 +1,10 @@
+[package]
+name = "legal-rules-db"
+version = "1.27.29"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The (jurisdiction, date, amount) -> then-in-force legal-rule resolver for the Steward rulebook vertical; filled in 1.27.36 (IMPLEMENTATION_PLAN_v1.27.36_Rulebook.md). Empty scaffold until then."
+publish = false
+
+[dependencies]

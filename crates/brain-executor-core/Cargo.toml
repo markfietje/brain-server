@@ -1,0 +1,10 @@
+[package]
+name = "brain-executor-core"
+version = "1.27.29"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The Steward goal-tracked execution engine core (checkpointed, quality-gated); writes through the brain-server governed-workflow substrate (src/workflow/). Port spec: private; deliberately empty until the 1.27.34 port."
+publish = false
+
+[dependencies]

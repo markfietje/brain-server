@@ -1,0 +1,24 @@
+[workspace]
+# The engine-crate workspace node (separate from the server + client nodes, the
+# same "separate workspace node" convention as the wasm client). Hosts the
+# `*-core` engine crates that write through the server's governed-workflow
+# substrate (src/workflow/) and the legal-rule resolver. Members are
+# intentionally empty scaffolds so the workspace builds green without the
+# engines; the port specs (private; not distributed) fill them crate by
+# crate (1.27.32-1.27.34), legal-rules-db in 1.27.37. The driver harness
+# lives in tools/steward-harness/ (1.27.35), NOT here — the cores stay
+# harness-independent.
+resolver = "2"
+
+members = [
+    "brain-interview-core",
+    "brain-consensus-core",
+    "brain-executor-core",
+    "brain-troubleshoot-core",
+    "legal-rules-db",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
