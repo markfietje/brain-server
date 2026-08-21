@@ -58,7 +58,10 @@ pub struct Turn {
 
 impl Turn {
     pub fn new() -> Self {
-        Self { steps: Vec::new(), closed: false }
+        Self {
+            steps: Vec::new(),
+            closed: false,
+        }
     }
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
@@ -78,7 +81,9 @@ pub struct SteeringInbox {
 
 impl SteeringInbox {
     pub fn new() -> Self {
-        Self { queue: std::collections::VecDeque::new() }
+        Self {
+            queue: std::collections::VecDeque::new(),
+        }
     }
     pub fn push(&mut self, msg: String) {
         if self.queue.len() >= MAX_STEERING_QUEUE_SIZE {

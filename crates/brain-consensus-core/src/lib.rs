@@ -99,7 +99,9 @@ pub fn advance(
     state.history.push(state.artifact);
     state.artifact = next;
     state.iteration += 1;
-    state.status = ConsensusStatus::InProgress { iteration: state.iteration };
+    state.status = ConsensusStatus::InProgress {
+        iteration: state.iteration,
+    };
     Ok(state)
 }
 
@@ -117,19 +119,36 @@ pub fn stage_writer(artifacts: &[Artifact], kinds: &[&str]) -> (Vec<StageFile>, 
         let name = format!("stage-{:02}-{}.md", i + 1, kind);
         let sha256 = hex::encode(Sha256::digest(art.content.as_bytes()));
         let content = format!("# {}\n\n{}\n", art.id, art.content);
-        index_lines.push(format!("{{\"name\":\"{}\",\"sha256\":\"{}\"}}", name, sha256));
-        files.push(StageFile { name, content, sha256 });
+        index_lines.push(format!(
+            "{{\"name\":\"{}\",\"sha256\":\"{}\"}}",
+            name, sha256
+        ));
+        files.push(StageFile {
+            name,
+            content,
+            sha256,
+        });
     }
     let pending = StageFile {
         name: "pending-approval.md".into(),
-        content: artifacts.last().map(|a| a.content.clone()).unwrap_or_default(),
-        sha256: artifacts.last().map(|a| hex::encode(Sha256::digest(a.content.as_bytes()))).unwrap_or_default(),
+        content: artifacts
+            .last()
+            .map(|a| a.content.clone())
+            .unwrap_or_default(),
+        sha256: artifacts
+            .last()
+            .map(|a| hex::encode(Sha256::digest(a.content.as_bytes())))
+            .unwrap_or_default(),
     };
     files.push(pending);
     (files, index_lines.join("\n"))
 }
 
-pub fn intent_reconciliation(spec_hash: &str, prior_hashes: &[String], confirmed: bool) -> Result<(), String> {
+pub fn intent_reconciliation(
+    spec_hash: &str,
+    prior_hashes: &[String],
+    confirmed: bool,
+) -> Result<(), String> {
     if prior_hashes.contains(&spec_hash.to_string()) {
         return Ok(());
     }
@@ -147,15 +166,27 @@ pub fn approval_gate(status: &ConsensusStatus) -> bool {
 mod tests {
     use super::*;
 
-    fn art(id: &str) -> Artifact { Artifact::new(id, format!("content-{}", id)) }
+    fn art(id: &str) -> Artifact {
+        Artifact::new(id, format!("content-{}", id))
+    }
 
     #[test]
     fn review_join_gate_requires_same_artifact() {
         let a1 = art("a1");
         let a2 = art("a2");
         let reviews = vec![
-            Review { reviewer: "architect".into(), artifact_id: a1.id.clone(), verdict: Verdict::Approve, notes: "".into() },
-            Review { reviewer: "critic".into(), artifact_id: a2.id.clone(), verdict: Verdict::Approve, notes: "".into() },
+            Review {
+                reviewer: "architect".into(),
+                artifact_id: a1.id.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
+            Review {
+                reviewer: "critic".into(),
+                artifact_id: a2.id.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
         ];
         assert!(review_join_gate(&reviews).is_err());
     }
@@ -166,10 +197,20 @@ mod tests {
         for i in 0..5 {
             let cur_id = state.artifact.id.clone();
             let reviews = vec![
-                Review { reviewer: "architect".into(), artifact_id: cur_id.clone(), verdict: Verdict::Revise, notes: "".into() },
-                Review { reviewer: "critic".into(), artifact_id: cur_id, verdict: Verdict::Revise, notes: "".into() },
+                Review {
+                    reviewer: "architect".into(),
+                    artifact_id: cur_id.clone(),
+                    verdict: Verdict::Revise,
+                    notes: "".into(),
+                },
+                Review {
+                    reviewer: "critic".into(),
+                    artifact_id: cur_id,
+                    verdict: Verdict::Revise,
+                    notes: "".into(),
+                },
             ];
-            let next = Artifact::new(format!("v{}", i+1), "next");
+            let next = Artifact::new(format!("v{}", i + 1), "next");
             state = advance(state, reviews, Some(next)).unwrap();
         }
         assert_eq!(state.status, ConsensusStatus::Stuck);
@@ -177,7 +218,10 @@ mod tests {
 
     #[test]
     fn persisted_planner_resumes_with_consolidated_feedback() {
-        let lineage = vec!["rev1: architect feeedback".into(), "rev1: critic feedback".into()];
+        let lineage = vec![
+            "rev1: architect feeedback".into(),
+            "rev1: critic feedback".into(),
+        ];
         let state = ConsensusState::new(art("v1")).with_lineage(lineage.clone());
         assert_eq!(state.resume_lineage, lineage);
     }
@@ -207,7 +251,9 @@ mod tests {
 
     #[test]
     fn plan_approval_gate_blocks_execution() {
-        assert!(!approval_gate(&ConsensusStatus::InProgress { iteration: 0 }));
+        assert!(!approval_gate(&ConsensusStatus::InProgress {
+            iteration: 0
+        }));
         assert!(approval_gate(&ConsensusStatus::Approved));
         assert!(!approval_gate(&ConsensusStatus::Stuck));
     }
@@ -217,8 +263,18 @@ mod tests {
         let mut state = ConsensusState::new(art("spec-1"));
         let cur = state.artifact.id.clone();
         let reviews = vec![
-            Review { reviewer: "architect".into(), artifact_id: cur.clone(), verdict: Verdict::Approve, notes: "".into() },
-            Review { reviewer: "critic".into(), artifact_id: cur, verdict: Verdict::Approve, notes: "".into() },
+            Review {
+                reviewer: "architect".into(),
+                artifact_id: cur.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
+            Review {
+                reviewer: "critic".into(),
+                artifact_id: cur,
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
         ];
         state = advance(state, reviews, None).unwrap();
         assert!(approval_gate(&state.status));

@@ -14,10 +14,22 @@ dependencies = [
 [[package]]
 name = "brain-consensus-core"
 version = "1.27.29"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "brain-executor-core"
 version = "1.27.29"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "brain-interview-core"

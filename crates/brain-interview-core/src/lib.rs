@@ -7,4 +7,4 @@ pub mod repair;
 pub mod state;
 
 pub use ambiguity::*;
-pub use state::{InterviewError, InterviewState, InterviewEnvelope};
+pub use state::{InterviewEnvelope, InterviewError, InterviewState};

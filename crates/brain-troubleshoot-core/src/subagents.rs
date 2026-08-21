@@ -25,11 +25,21 @@ pub struct DelegationPlan {
 
 impl DelegationPlan {
     pub fn validate(&self) -> Result<(), String> {
-        let parallel_reads = self.tasks.iter().filter(|t| t.kind == TaskKind::Read).count();
+        let parallel_reads = self
+            .tasks
+            .iter()
+            .filter(|t| t.kind == TaskKind::Read)
+            .count();
         if parallel_reads > MAX_PARALLEL_TASKS {
-            return Err(format!("too many parallel reads: {parallel_reads} > {MAX_PARALLEL_TASKS}"));
+            return Err(format!(
+                "too many parallel reads: {parallel_reads} > {MAX_PARALLEL_TASKS}"
+            ));
         }
-        let mutations = self.tasks.iter().filter(|t| t.kind == TaskKind::Mutate).count();
+        let mutations = self
+            .tasks
+            .iter()
+            .filter(|t| t.kind == TaskKind::Mutate)
+            .count();
         if mutations > 1 {
             return Err("mutations must run serially, one per step".into());
         }
@@ -37,8 +47,18 @@ impl DelegationPlan {
     }
 
     pub fn execution_order(&self) -> Vec<Vec<Task>> {
-        let reads: Vec<Task> = self.tasks.iter().filter(|t| t.kind == TaskKind::Read).cloned().collect();
-        let mutates: Vec<Task> = self.tasks.iter().filter(|t| t.kind == TaskKind::Mutate).cloned().collect();
+        let reads: Vec<Task> = self
+            .tasks
+            .iter()
+            .filter(|t| t.kind == TaskKind::Read)
+            .cloned()
+            .collect();
+        let mutates: Vec<Task> = self
+            .tasks
+            .iter()
+            .filter(|t| t.kind == TaskKind::Mutate)
+            .cloned()
+            .collect();
         let mut batches = Vec::new();
         for chunk in reads.chunks(MAX_PARALLEL_TASKS) {
             batches.push(chunk.to_vec());
@@ -54,7 +74,8 @@ impl DelegationPlan {
 }
 
 pub fn validate_schema_strict(json: &str, required_fields: &[&str]) -> Result<(), String> {
-    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("invalid json: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid json: {e}"))?;
     for f in required_fields {
         if v.get(f).is_none() {
             return Err(format!("missing required field: {f}"));

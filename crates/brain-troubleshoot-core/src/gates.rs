@@ -85,7 +85,11 @@ pub fn gate_corroborate(supporting_lines: usize) -> GateResult {
 }
 
 pub fn gate_bundle(fields: &[(&str, bool)]) -> GateResult {
-    let missing: Vec<String> = fields.iter().filter(|(_, present)| !present).map(|(k, _)| k.to_string()).collect();
+    let missing: Vec<String> = fields
+        .iter()
+        .filter(|(_, present)| !present)
+        .map(|(k, _)| k.to_string())
+        .collect();
     if missing.is_empty() {
         GateResult::Pass
     } else {
