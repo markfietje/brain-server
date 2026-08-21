@@ -19,6 +19,31 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.39] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.38 → **1.27.39**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Workflow assist surface: read APIs for runs and steps, steering inbox, and grounded suggestions over the workflow's domain.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- Four workflow routes (`GET /workflow/runs/{id}`, `GET /workflow/runs/{id}/steps`, `POST /workflow/runs/{id}/steering`, `GET /workflow/runs/{id}/suggestions`), domain-scoped with audit, steering bounded at 100 (drop-oldest) and PII-screened, suggestions abstain with a findings row when no playbook matches.
+- Tests: lib 147, clippy `-D warnings` + fmt clean.
+
+---
+
 ## [1.27.36] — 2026-08-21
 
 **Server + client release** (server `Cargo.toml`/lock 1.27.35 → **1.27.36**, client `Cargo.toml` 1.27.21 `edition 2024`/`rust-version 1.98`; `crates` workspace `1.98`, `fuzz`/`tools/steward-harness` `edition 2024`; no schema change).

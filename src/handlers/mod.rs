@@ -41,6 +41,7 @@ pub mod ump_ops;
 pub mod verify;
 pub mod webhooks;
 pub mod well_known;
+pub mod workflow;
 
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;

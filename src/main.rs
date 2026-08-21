@@ -5886,6 +5886,19 @@ async fn main_inner() -> Result<()> {
         .route("/auth/logout", post(handlers::auth::logout))
         .route("/auth/revoke", post(handlers::auth::revoke_handler))
         .route("/audit", get(list_audit))
+        .route("/workflow/runs/{id}", get(handlers::workflow::get_run))
+        .route(
+            "/workflow/runs/{id}/steps",
+            get(handlers::workflow::list_steps),
+        )
+        .route(
+            "/workflow/runs/{id}/steering",
+            post(handlers::workflow::post_steering),
+        )
+        .route(
+            "/workflow/runs/{id}/suggestions",
+            get(handlers::workflow::get_suggestions),
+        )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // serve the built client SPA from client/dist.
