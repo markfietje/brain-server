@@ -834,15 +834,22 @@ paths:
                     items: { type: string }
   /audit:
     get:
-      summary: Operator audit-log diagnostics (v0.9.7 Guard; v1.1.0 tenant filter)
+      summary: Operator audit-log diagnostics (v0.9.7 Guard; v1.1.0 tenant filter; v1.27.31 multi-domain)
       operationId: listAudit
+      description: >
+        v1.27.31 "AuditRepair" (M4/F-22): in multi-db mode the list covers
+        EVERY registered domain's chain (rows carry their `domain` tag,
+        merged newest-first); shim mode stays the single shared pool with
+        every row tagged `global`.
       parameters:
         - name: kind
           in: query
           required: false
           schema:
             type: string
-          description: Filter by audit kind (auth|ingest|webhook|reconcile|backup|connector)
+          description: >
+            Filter by audit kind (auth|ingest|webhook|reconcile|backup|connector|
+            recall|search|get|breach|transfer|client|graphread|retention|workflow|anchor)
         - name: tenant
           in: query
           required: false
@@ -875,19 +882,32 @@ paths:
                       $ref: '#/components/schemas/AuditRow'
   /audit/verify:
     get:
-      summary: Verify the audit hash chain (v1.1.0 Harden)
+      summary: Verify the audit hash chain (v1.1.0 Harden; v1.27.31 multi-domain)
       operationId: verifyAuditChain
+      description: >
+        v1.27.31 "AuditRepair" (M4/F-22): verifies EVERY registered domain's
+        chain, not just the global pool — `ok` is the all-domains aggregate
+        and `domains` names each chain (a broken second-domain chain is
+        reported, never silently absorbed). Chain verification is epoch-
+        aware: a DB re-anchored via `brain-server --re-audit` verifies its
+        HMAC-SHA256 links + head pin; a DB without its chain key reads as
+        not-ok (fail-closed — cannot attest what it cannot compute).
       responses:
         "200":
-          description: Chain integrity result
+          description: Chain integrity result (all registered domains)
           content:
             application/json:
               schema:
                 type: object
+                example: {"ok": true, "domains": {"global": true, "health": true}}
                 properties:
                   ok:
                     type: boolean
-                    description: true when every row's recomputed link matches its stored prev_hash
+                    description: true when every registered domain's recomputed chain matches its stored links + head pin
+                  domains:
+                    type: object
+                    additionalProperties: { type: boolean }
+                    description: v1.27.31 — per-domain verification breakdown
   /metrics:
     get:
       summary: Prometheus text-format exporter (v1.1.0 Harden M5)
@@ -2444,20 +2464,22 @@ paths:
                 description: 'tenant-scoped: a non-superuser admin sees only their tenant; limit defaults to 100, clamped to MAX_MULTI_GET'
   /ump/audit/verify:
     get:
-      summary: Fresh full-chain verification (v1.17.3 M2, UMP §9)
+      summary: Fresh full-chain verification (v1.17.3 M2, UMP §9; v1.27.31 multi-domain)
       operationId: umpAuditVerify
       description: >
         Authoritative full scan of the audit hash chain (unlike the TTL-cached
-        `/metrics` signal). Admin.
+        `/metrics` signal). Admin. v1.27.31 "AuditRepair" (M4/F-22): verifies
+        EVERY registered domain's chain — `ok` is the all-domains aggregate
+        and `domains` names each chain.
       responses:
         "200":
-          description: "{ok: bool}"
+          description: "{ok: bool, domains: {name: bool}}"
           content:
             application/json:
               schema:
                 type: object
-                example: {"ok": true}
-                description: 'authoritative full scan of the audit hash chain'
+                example: {"ok": true, "domains": {"global": true}}
+                description: 'authoritative full scan of every registered domain''s audit hash chain'
   /.well-known/ump.json:
     get:
       summary: UMP discovery document (v1.17.3 M2)
@@ -4155,23 +4177,30 @@ components:
       required: [id, kind, instance, domain]
     AuditRow:
       type: object
-      description: A single audit event (v0.9.7 Guard). Contains only hashes — no raw content or secrets.
+      description: >
+        A single audit event (v0.9.7 Guard). Contains only hashes — no raw
+        content or secrets. v1.27.31 "AuditRepair": rows from `GET /audit`
+        carry the `domain` they live in (multi-db mode lists every registered
+        domain's chain; shim mode tags every row `global`).
       properties:
         id: { type: integer }
         ts: { type: string }
         kind:
           type: string
-          enum: [auth, ingest, webhook, reconcile, backup, connector]
+          enum: [auth, ingest, webhook, reconcile, backup, connector, recall, search, get, breach, transfer, client, graphread, retention, workflow, anchor]
         actor: { type: string }
-        target_hash: { type: string, description: xxh3 of the affected uri/id }
+        target_hash: { type: string, description: SHA-256 of the affected uri/id }
         status:
           type: string
           enum: [ok, denied, error]
-        detail_hash: { type: string, description: xxh3 of a short detail string }
+        detail_hash: { type: string, description: SHA-256 of a short detail string }
         tenant_id:
           type: string
           description: v1.1.0 — tenant this row belongs to ('global' for pre-v1.1 rows)
           default: global
+        domain:
+          type: string
+          description: v1.27.31 — the domain chain this row lives in (`GET /audit` only)
       required: [id, ts, kind, actor, target_hash, status, detail_hash, tenant_id]
     ConsolidateProposal:
       type: object

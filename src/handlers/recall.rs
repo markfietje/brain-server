@@ -699,6 +699,10 @@ pub(crate) async fn run_recall(
             let actor = principal_label(principal);
             let tenant = principal_tenant(principal);
             let event_query = trace_query.clone();
+            // The read-event cadence prunes EVERY
+            // registered domain's chain, not just the global pool — collected
+            // here (owned) so the blocking closure stays 'static.
+            let prune_targets = crate::handlers::domain_pools(&state.registry, &pool);
             task::spawn_blocking(move || {
                 if let Ok(conn) = pool.get() {
                     let id = crate::audit::record_read_event(
@@ -713,7 +717,13 @@ pub(crate) async fn run_recall(
                         // No-op on failure — prunes are fail-safe (retention
                         // lingers; it never false-deletes); the warning
                         // is logged inside the helper.
-                        crate::audit::prune_audit_retention(&conn, days);
+                        for (_, domain_pool) in &prune_targets {
+                            if let Some(dp) = domain_pool {
+                                if let Ok(c) = dp.get() {
+                                    crate::audit::prune_audit_retention(&c, days);
+                                }
+                            }
+                        }
                     }
                     // piggyback the DSAR ledger retention on the
                     // same read-event prune cadence (no dedicated timer).

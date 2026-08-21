@@ -12,10 +12,32 @@
 //!   SQL layer (`WHERE tenant_id = ?`), so forgetting the param cannot leak
 //!   cross-tenant audit rows.
 //! - `prev_hash` column implements a tamper-evident hash chain. Each row stores
-//!   SHA-256 over the prior row's `(ts, kind, actor, target_hash, prev_hash)`.
-//!   Reads verify the chain; `verify_chain` returns false on any break. The
-//!   chain is computed inside the same tx as the insert, so SQLite's
-//!   single-writer serializes the read-modify-write atomically.
+//!   a link over the prior row's fields. Reads verify the chain;
+//!   `verify_chain` returns false on any break. The chain is computed inside
+//!   the same tx as the insert, so SQLite's single-writer serializes the
+//!   read-modify-write atomically.
+//!
+//! Two evidence-format layers sit on top of the original chain (both gated
+//! on a per-DB **epoch** stamped in `schema_meta`: absent/`legacy` = the
+//! historical 5-field SHA-256 link, byte-identical to every chain written
+//! before the epoch system existed; `hmac256` = the re-anchored scheme):
+//! - **8-field keyed links:** the `hmac256` link is HMAC-SHA256 over
+//!   the prior row's `(id, ts, kind, actor, target_hash, status, detail_hash,
+//!   prev_hash)` — the full row — so a recomputed chain must reproduce every
+//!   field, and a reconstructed chain from attacker-chosen content cannot
+//!   verify without the key. The key never lives in the DB it protects
+//!   (`BRAIN_AUDIT_CHAIN_KEY` / `BRAIN_AUDIT_CHAIN_KEY_FILE` / a 0600
+//!   `audit-chain.key` beside the DB; see [`init_chain_key`]).
+//! - **Head pin:** `schema_meta.audit_chain_head` pins `(id, hash, epoch)`
+//!   of the chain head on every commit; `verify_chain` compares it against
+//!   the recomputed head, so truncation/extension of an otherwise-valid chain
+//!   is detected, and `backup::restore` compares pre/post pins to disclose a
+//!   rolled-back chain.
+//!
+//! An existing chain is NEVER silently converted — the format flips only via
+//! the offline `brain-server --re-audit` re-anchor (see [`reanchor_to_hmac`]);
+//! a fresh (row-less) DB bootstraps directly to `hmac256` when a key is
+//! available ([`bootstrap_epoch`]).
 //!
 //! Schema (additive migration in `main.rs::run_migration`):
 //! ```sql
@@ -32,9 +54,12 @@
 //! );
 //! ```
 
+use hmac::{Hmac, Mac};
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use tracing::error;
 
 /// Audit event categories.
@@ -76,6 +101,10 @@ pub enum AuditKind {
     /// row so the evidence tables are derivable from the audit, never the
     /// other way (the `AuditKind::Breach` precedent).
     Workflow,
+    /// chain-format re-anchor events: the
+    /// `--re-audit` epoch flip writes one row on the NEW chain recording
+    /// the scheme change, so the evidence epoch boundary is itself evidence.
+    Anchor,
 }
 
 impl AuditKind {
@@ -96,6 +125,7 @@ impl AuditKind {
             AuditKind::GraphRead => "graphread",
             AuditKind::Retention => "retention",
             AuditKind::Workflow => "workflow",
+            AuditKind::Anchor => "anchor",
         }
     }
 }
@@ -143,6 +173,434 @@ fn chain_link(ts: &str, kind: &str, actor: &str, target_hash: &str, prev_hash: &
     h.update(b"|");
     h.update(prev_hash.as_bytes());
     format!("{:x}", h.finalize())
+}
+
+// ── chain epochs, keyed links, head pin ──────────────────────────────
+//
+// The chain's FORMAT is per-DB state stamped in `schema_meta`: the epoch.
+// `legacy` (or absent) keeps the byte-identical 5-field SHA-256 link every
+// release before 1.27.31 wrote; `hmac256` is the re-anchored 8-field
+// HMAC-SHA256 link. Nothing flips an existing chain implicitly — only
+// [`reanchor_to_hmac`] (the offline `--re-audit`) or [`bootstrap_epoch`]
+// (row-less fresh DB, key available) writes the epoch stamp.
+
+/// `schema_meta` key holding the chain epoch (`legacy` | `hmac256`).
+pub const EPOCH_META_KEY: &str = "audit_chain_epoch";
+/// `schema_meta` key holding the head pin (JSON [`HeadPin`]).
+pub const HEAD_PIN_META_KEY: &str = "audit_chain_head";
+/// Epoch value: the historical 5-field SHA-256 link (default when unstamped).
+pub const EPOCH_LEGACY: &str = "legacy";
+/// Epoch value: HMAC-SHA256 over the full 8-field row.
+pub const EPOCH_HMAC: &str = "hmac256";
+
+/// The chain epoch a DB is currently written under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainEpoch {
+    /// 5-field SHA-256 links — byte-identical to pre-1.27.31 chains.
+    Legacy,
+    /// 8-field HMAC-SHA256 links — requires [`chain_key`].
+    Hmac256,
+}
+
+/// Read the DB's chain epoch. Tolerant by design: a missing `schema_meta`
+/// table, a missing key, or an unrecognized value all read as `Legacy` (the
+/// historical default — every chain in existence before 1.27.31 is legacy,
+/// so absence IS the legacy answer). An unrecognized non-empty value is
+/// warned about: it can only come from tampering or a newer binary.
+fn read_epoch(conn: &Connection) -> ChainEpoch {
+    let v: Option<String> = conn
+        .query_row(
+            &format!("SELECT value FROM schema_meta WHERE key = '{EPOCH_META_KEY}'"),
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    match v.as_deref() {
+        Some(EPOCH_HMAC) => ChainEpoch::Hmac256,
+        Some(EPOCH_LEGACY) | None => ChainEpoch::Legacy,
+        Some(other) => {
+            tracing::warn!("audit chain epoch '{other}' unrecognized — reading as legacy");
+            ChainEpoch::Legacy
+        }
+    }
+}
+
+/// The link scheme a chain is computed under.
+#[derive(Clone)]
+enum Scheme {
+    /// Historical 5-field SHA-256.
+    Legacy,
+    /// 8-field HMAC-SHA256 keyed by the process chain key.
+    Hmac(Arc<[u8; 32]>),
+}
+
+/// The epoch string a scheme corresponds to (pin stamping).
+fn scheme_epoch(scheme: &Scheme) -> &'static str {
+    match scheme {
+        Scheme::Legacy => EPOCH_LEGACY,
+        Scheme::Hmac(_) => EPOCH_HMAC,
+    }
+}
+
+/// Resolve the DB's epoch into a computable scheme. `None` = the DB is on
+/// `hmac256` but no key is available in this process — callers fail closed
+/// (verify returns false, writes/prunes are refused): a keyed chain cannot
+/// be attested or extended without its key.
+fn current_scheme(conn: &Connection) -> Option<Scheme> {
+    match read_epoch(conn) {
+        ChainEpoch::Legacy => Some(Scheme::Legacy),
+        ChainEpoch::Hmac256 => chain_key().map(Scheme::Hmac),
+    }
+}
+
+/// Every field a `hmac256` link commits (the full row — id, ts, kind,
+/// actor, target_hash, status, detail_hash, prev_hash). `prev_hash` is
+/// `Option` because leading NULL backrefs (legacy prefix / genesis) carry no
+/// link input (NULL ≡ "" in the link, same as the legacy computation).
+#[derive(Debug, Clone)]
+struct ChainRowFull {
+    id: i64,
+    ts: String,
+    kind: String,
+    actor: String,
+    target_hash: String,
+    status: String,
+    detail_hash: String,
+    prev_hash: Option<String>,
+}
+
+/// The link for `row` under `scheme` — the value the NEXT row stores in its
+/// `prev_hash`, and the value the head pin pins.
+fn row_link(scheme: &Scheme, row: &ChainRowFull) -> String {
+    match scheme {
+        Scheme::Legacy => chain_link(
+            &row.ts,
+            &row.kind,
+            &row.actor,
+            &row.target_hash,
+            row.prev_hash.as_deref().unwrap_or(""),
+        ),
+        Scheme::Hmac(key) => chain_link_hmac(key.as_ref(), row),
+    }
+}
+
+/// HMAC-SHA256 over the FULL row. Length-prefixed fields (u64 LE
+/// byte-length before each field) make the input unambiguous — no separator
+/// an attacker-controlled `actor`/`kind` string could shift. `id` is included
+/// as raw LE bytes so a renumbered restore cannot keep its links.
+fn chain_link_hmac(key: &[u8], row: &ChainRowFull) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(&row.id.to_le_bytes());
+    for field in [
+        row.ts.as_bytes(),
+        row.kind.as_bytes(),
+        row.actor.as_bytes(),
+        row.target_hash.as_bytes(),
+        row.status.as_bytes(),
+        row.detail_hash.as_bytes(),
+        row.prev_hash.as_deref().unwrap_or("").as_bytes(),
+    ] {
+        mac.update(&(field.len() as u64).to_le_bytes());
+        mac.update(field);
+    }
+    format!("{:x}", mac.finalize().into_bytes())
+}
+
+// ── the chain key ─────────────────────────────────────────────────────
+
+/// Process-wide chain key. Set once at binary boot via [`init_chain_key`]
+/// (server `main_inner`, `brain` CLI) — never env-sniffed lazily, so unit
+/// tests and library consumers stay deterministic-legacy unless they
+/// explicitly opt in.
+static CHAIN_KEY: RwLock<Option<Arc<[u8; 32]>>> = RwLock::new(None);
+
+/// Failures of [`init_chain_key`] — all refuse the key (the caller decides
+/// whether that is fatal; writes to an `hmac256` DB fail closed without it).
+#[derive(Debug)]
+pub enum ChainKeyError {
+    /// `BRAIN_AUDIT_CHAIN_KEY` is not 64 hex chars.
+    InvalidHex,
+    /// The key file exists but cannot be read.
+    Unreadable(String),
+    /// The key file is group/world-readable (the auth-secret posture).
+    BadPermissions(u32),
+    /// A new key could not be persisted.
+    WriteFailed(String),
+}
+
+impl std::fmt::Display for ChainKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChainKeyError::InvalidHex => {
+                write!(f, "BRAIN_AUDIT_CHAIN_KEY must be 64 hex chars (32 bytes)")
+            }
+            ChainKeyError::Unreadable(e) => write!(f, "audit chain key file unreadable: {e}"),
+            ChainKeyError::BadPermissions(mode) => write!(
+                f,
+                "audit chain key file is group/world-readable (mode {mode:o}) — chmod 600 it"
+            ),
+            ChainKeyError::WriteFailed(e) => write!(f, "audit chain key could not be written: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ChainKeyError {}
+
+/// Resolve + install the process chain key. Resolution order:
+/// 1. `BRAIN_AUDIT_CHAIN_KEY` (64 hex chars) — secret-manager deployments.
+/// 2. `BRAIN_AUDIT_CHAIN_KEY_FILE` — a 0600 file of 64 hex chars.
+/// 3. `<default_dir>/audit-chain.key` — read if present, otherwise generated
+///    (32 random bytes) and written 0600 create-new.
+///
+/// The key DELIBERATELY never lives inside a DB it protects: an attacker who
+/// can rewrite `audit_events` (the threat the keyed chain exists for) cannot
+/// read the key from it. Losing the key makes an `hmac256` chain unverifiable
+/// — by design; the pre-anchor backup stays readable under `legacy`.
+pub fn init_chain_key(default_dir: &Path) -> Result<(), ChainKeyError> {
+    let key: [u8; 32] = if let Some(hex) = std::env::var("BRAIN_AUDIT_CHAIN_KEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        parse_key_hex(&hex)?
+    } else if let Some(path) = std::env::var("BRAIN_AUDIT_CHAIN_KEY_FILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+    {
+        read_key_file(&path)?
+    } else {
+        let path = default_dir.join("audit-chain.key");
+        if path.exists() {
+            read_key_file(&path)?
+        } else {
+            let key = generate_key();
+            write_key_file(&path, &key)?;
+            tracing::info!("generated audit chain key at {:?}", path);
+            key
+        }
+    };
+    if let Ok(mut slot) = CHAIN_KEY.write() {
+        *slot = Some(Arc::new(key));
+    }
+    Ok(())
+}
+
+/// The installed process chain key, if any.
+pub fn chain_key() -> Option<Arc<[u8; 32]>> {
+    CHAIN_KEY.read().ok().and_then(|k| k.clone())
+}
+
+fn parse_key_hex(s: &str) -> Result<[u8; 32], ChainKeyError> {
+    let bytes = hex::decode(s).map_err(|_| ChainKeyError::InvalidHex)?;
+    bytes.try_into().map_err(|_| ChainKeyError::InvalidHex)
+}
+
+fn read_key_file(path: &Path) -> Result<[u8; 32], ChainKeyError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| ChainKeyError::Unreadable(e.to_string()))?
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(ChainKeyError::BadPermissions(mode));
+        }
+    }
+    let raw =
+        std::fs::read_to_string(path).map_err(|e| ChainKeyError::Unreadable(e.to_string()))?;
+    parse_key_hex(raw.trim())
+}
+
+fn generate_key() -> [u8; 32] {
+    use rand::RngCore;
+    let mut key = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    key
+}
+
+fn write_key_file(path: &Path, key: &[u8; 32]) -> Result<(), ChainKeyError> {
+    // create_new + 0600 in one open (no umask window, no write-through of a
+    // pre-planted file/symlink) — the backup module's primitive owns the path;
+    // the write itself goes through a reopen (perms are already 0600).
+    crate::backup::create_private_file(path)
+        .map_err(|e| ChainKeyError::WriteFailed(e.to_string()))?;
+    let body = format!("{}\n", hex::encode(key));
+    std::fs::write(path, body).map_err(|e| ChainKeyError::WriteFailed(e.to_string()))?;
+    std::fs::File::open(path)
+        .and_then(|f| f.sync_all())
+        .map_err(|e| ChainKeyError::WriteFailed(e.to_string()))?;
+    Ok(())
+}
+
+// ── the head pin ─────────────────────────────────────────────────────
+
+/// The pinned chain head: `(id, hash, epoch)` of the last committed row's
+/// link. Written in the same tx as every audit row ([`record_tenant`]),
+/// re-written by the retention prune's re-anchor, and compared by
+/// [`verify_chain`] (truncation/extension detection) and `backup::restore`
+/// (rollback disclosure).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeadPin {
+    /// Row id of the pinned tip.
+    pub id: i64,
+    /// Link hash of the pinned tip (the value the next row chains from).
+    pub hash: String,
+    /// Epoch the pin was computed under (`legacy` | `hmac256`).
+    pub epoch: String,
+}
+
+/// Read the head pin. `None` when unstamped (fresh DB, pre-1.27.31 DB the
+/// migration has not pinned, or `schema_meta` absent). A present-but-corrupt
+/// value warns and reads as `None` — the pin is a detector, not evidence
+/// itself; the walk in [`verify_chain`] remains the authority.
+pub fn read_head_pin(conn: &Connection) -> Option<HeadPin> {
+    let raw: Option<String> = conn
+        .query_row(
+            &format!("SELECT value FROM schema_meta WHERE key = '{HEAD_PIN_META_KEY}'"),
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    let raw = raw?;
+    match serde_json::from_str(&raw) {
+        Ok(pin) => Some(pin),
+        Err(e) => {
+            tracing::warn!("audit head pin unparseable ({e}) — treating as absent");
+            None
+        }
+    }
+}
+
+/// Persist the head pin. Creates `schema_meta` when absent (unit-test DBs and
+/// pre-v0.9 fixtures) so the pin never silently skips. Best-effort at the
+/// call sites that cannot fail their primary action (the audit row itself);
+/// callers inside a tx get atomicity for free.
+fn write_head_pin(conn: &Connection, pin: &HeadPin) -> bool {
+    let Ok(json) = serde_json::to_string(pin) else {
+        return false;
+    };
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);")
+        .is_ok()
+        && conn
+            .execute(
+                &format!(
+                    "INSERT INTO schema_meta(key, value) VALUES ('{HEAD_PIN_META_KEY}', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = ?1"
+                ),
+                params![json],
+            )
+            .is_ok()
+}
+
+/// The legacy-scheme pin for a DB's CURRENT tip — used by the
+/// migration to stamp the initial pin on upgrade (an existing chain is
+/// pre-re-anchor by definition). `None` when the chain is empty or unreadable.
+pub fn initial_head_pin(conn: &Connection) -> Option<HeadPin> {
+    tip_row(conn).map(|tip| HeadPin {
+        id: tip.id,
+        hash: row_link(&Scheme::Legacy, &tip),
+        epoch: EPOCH_LEGACY.to_string(),
+    })
+}
+
+/// The current tip as a full row (the fields a link commits).
+fn tip_row(conn: &Connection) -> Option<ChainRowFull> {
+    conn.query_row(
+        "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
+          FROM audit_events ORDER BY id DESC LIMIT 1",
+        [],
+        map_full_row,
+    )
+    .ok()
+}
+
+fn map_full_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRowFull> {
+    Ok(ChainRowFull {
+        id: r.get(0)?,
+        ts: r.get(1)?,
+        kind: r.get(2)?,
+        actor: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        target_hash: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        status: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+        detail_hash: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        prev_hash: r.get(7)?,
+    })
+}
+
+/// Recompute + persist the pin for the current tip under the DB's own epoch.
+/// Returns the refreshed pin. Used by paths that legitimately rewrite the
+/// chain shape in-tx (retention prune, re-anchor).
+fn refresh_head_pin(conn: &Connection, scheme: &Scheme) -> Option<HeadPin> {
+    match tip_row(conn) {
+        Some(tip) => {
+            let pin = HeadPin {
+                id: tip.id,
+                hash: row_link(scheme, &tip),
+                epoch: scheme_epoch(scheme).to_string(),
+            };
+            write_head_pin(conn, &pin);
+            Some(pin)
+        }
+        None => {
+            // Empty chain carries no pin (the first write re-pins).
+            let _ = conn.execute(
+                &format!("DELETE FROM schema_meta WHERE key = '{HEAD_PIN_META_KEY}'"),
+                [],
+            );
+            None
+        }
+    }
+}
+
+/// How a restore changed the pinned head. Pure — `backup::restore`
+/// logs/audits from this, tests pin it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeadComparison {
+    /// The live DB had no pin (fresh, or pre-1.27.31 unpinned).
+    NoPrePin,
+    /// The restored DB has no pin (a pre-1.27.31 backup, or an empty chain).
+    NoPostPin,
+    /// Same id + hash — the restore landed on the same chain position.
+    Match,
+    /// The restored chain is OLDER (pre-id < post-id is false and ids differ
+    /// downward) — the restore rewound evidence; the pre-restore `.bak`
+    /// retains the newer chain.
+    RolledBack { pre_id: i64, post_id: i64 },
+    /// A different head at or beyond the pre-pin (a newer backup restored, or
+    /// a divergent chain) — still a change of the evidence position.
+    Diverged { pre_id: i64, post_id: i64 },
+}
+
+/// Compare pre-restore vs post-restore head pins. Rolled-back vs diverged is
+/// decided by id ORDER (the monotonic rowid): a restored head with a smaller
+/// id rewound the chain; an equal-or-larger id with a different hash is a
+/// divergence (side-ways or forward), disclosed but not classified as a
+/// rollback.
+pub fn classify_restored_head(pre: Option<&HeadPin>, post: Option<&HeadPin>) -> HeadComparison {
+    use HeadComparison::*;
+    match (pre, post) {
+        (None, _) => NoPrePin,
+        (Some(_), None) => NoPostPin,
+        (Some(pre), Some(post)) => {
+            if pre.id == post.id && pre.hash == post.hash {
+                Match
+            } else if post.id < pre.id {
+                RolledBack {
+                    pre_id: pre.id,
+                    post_id: post.id,
+                }
+            } else {
+                Diverged {
+                    pre_id: pre.id,
+                    post_id: post.id,
+                }
+            }
+        }
+    }
 }
 
 /// Default tenant id for rows written before the tenant column existed and for
@@ -240,28 +698,30 @@ pub fn record_tenant(
             return None;
         }
     };
+    // Resolve the chain scheme INSIDE the tx (BEGIN IMMEDIATE
+    // serializes against any concurrent epoch flip). An hmac256-epoch DB
+    // without its key REFUSES the row — an unkeyed link on a keyed chain
+    // would be a silent format downgrade, the exact thing the epoch exists
+    // to prevent. Dropped, not forged (the missing row reads as a gap), and
+    // never silent: the /health counter + error log fire.
+    let scheme = match current_scheme(conn) {
+        Some(s) => s,
+        None => {
+            note_chain_health_failure(
+                "audit chain key unavailable on an hmac256-epoch chain — row refused",
+            );
+            let _ = conn.execute(rollback_stmt, []);
+            if !autocommit {
+                let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
+            }
+            return None;
+        }
+    };
     // Read the chain tip (the most recent row). Inside the tx this is stable
     // against concurrent writers — and the INSERT below commits/rolls back
     // atomically with it.
-    let tip: Option<ChainTip> = conn
-        .query_row(
-            "SELECT ts, kind, actor, target_hash, prev_hash \
-              FROM audit_events ORDER BY id DESC LIMIT 1",
-            [],
-            |r| {
-                Ok(ChainTip {
-                    ts: r.get(0)?,
-                    kind: r.get(1)?,
-                    actor: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    target_hash: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    prev_hash: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                })
-            },
-        )
-        .ok();
-    let prev_hash = tip
-        .as_ref()
-        .map(|t| chain_link(&t.ts, &t.kind, &t.actor, &t.target_hash, &t.prev_hash));
+    let tip: Option<ChainRowFull> = tip_row(conn);
+    let prev_hash: Option<String> = tip.map(|t| row_link(&scheme, &t));
     let inserted = conn
         .execute(
             "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash)
@@ -282,6 +742,39 @@ pub fn record_tenant(
     } else {
         -1
     };
+    // Head pin: pin the new tip in the SAME tx so row + pin commit
+    // atomically (a pin that lags its row would false-alarm verify). Only
+    // `ts` is DB-assigned — everything else is in hand. Best-effort (a failed
+    // pin write must not unwind the audit row) but warned, never silent.
+    if inserted {
+        let ts: Option<String> = conn
+            .query_row(
+                "SELECT ts FROM audit_events WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(ts) = ts {
+            let row = ChainRowFull {
+                id,
+                ts,
+                kind: kind_str.to_string(),
+                actor: actor.to_string(),
+                target_hash: target_hash.to_string(),
+                status: status_str.to_string(),
+                detail_hash: detail_hash.to_string(),
+                prev_hash: prev_hash.clone(),
+            };
+            let pin = HeadPin {
+                id,
+                hash: row_link(&scheme, &row),
+                epoch: scheme_epoch(&scheme).to_string(),
+            };
+            if !write_head_pin(conn, &pin) {
+                tracing::warn!("audit head pin write failed (row {id}) — truncation detection degraded until the next write");
+            }
+        }
+    }
     if sp_ok {
         // Commit/release on success; roll back on failure so a partial write
         // doesn't leave a dangling tip. Rolling back a SAVEPOINT does NOT
@@ -305,28 +798,26 @@ pub fn record_tenant(
 
 /// Settle-failure counter: the audit chain's "the row may not be durable"
 /// signal. Incremented by [`record_tenant`] when the COMMIT/ROLLBACK of a
-/// best-effort audit row fails; read by `/health` so the absence is visible
-/// to operators, not just the log.
+/// best-effort audit row fails — or when an hmac256-epoch chain's key is
+/// unavailable and the row is refused; read by `/health` so the absence is
+/// visible to operators, not just the log.
 static COMMIT_FAILURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-fn record_commit_failure(e: &rusqlite::Error) {
+fn note_chain_health_failure(msg: &str) {
     COMMIT_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    error!("audit chain tx settle failed — the audit row may not be durable: {e}");
+    error!("audit chain health failure — {msg}");
+}
+
+fn record_commit_failure(e: &rusqlite::Error) {
+    note_chain_health_failure(&format!(
+        "tx settle failed — the audit row may not be durable: {e}"
+    ));
 }
 
 /// Number of failed audit-tx settles since process start (see
 /// [`record_tenant`]). Monotonic; surfaced on the gated `/health` body.
 pub fn audit_commit_failures() -> usize {
     COMMIT_FAILURES.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Decoded prior-row fields needed to compute the chain link for the next row.
-struct ChainTip {
-    ts: String,
-    kind: String,
-    actor: String,
-    target_hash: String,
-    prev_hash: String,
 }
 
 /// record a read event AND persist its replayable
@@ -411,6 +902,15 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     if expired == 0 {
         return Some(0);
     }
+    // The re-anchor below recomputes links under the DB's OWN
+    // epoch — an hmac256 epoch without its key refuses the prune (a keyless
+    // rewrite would downgrade the chain format).
+    let Some(scheme) = current_scheme(conn) else {
+        tracing::warn!(
+            "audit retention prune REFUSED: chain key unavailable on an hmac256-epoch chain"
+        );
+        return None;
+    };
     // VERIFY BEFORE PRUNE — the re-anchor below
     // recomputes every survivor's prev_hash, which would re-bless a tampered
     // chain into a freshly-verifying one (evidence laundering). A chain that
@@ -467,35 +967,23 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     }
     let mut prev: Option<String> = None;
     for (i, id) in ids.iter().enumerate() {
-        let row: Option<(String, String, String, String, Option<String>)> = conn
+        let row: Option<ChainRowFull> = conn
             .query_row(
-                "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE id = ?1",
+                "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
+                  FROM audit_events WHERE id = ?1",
                 params![id],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                        r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                        r.get(4)?,
-                    ))
-                },
+                map_full_row,
             )
             .ok();
-        let Some((ts, kind, actor, th, _old_prev)) = row else {
+        let Some(full) = row else {
             let _ = conn.execute("ROLLBACK", []);
             return None;
         };
-        let new_prev = if i == 0 {
-            None // genesis
+        let old_prev = full.prev_hash.clone();
+        let new_prev = if i == 0 || old_prev.is_none() {
+            None // genesis / leading legacy NULL run keeps its NULL backref
         } else {
-            Some(chain_link(
-                &ts,
-                &kind,
-                &actor,
-                &th,
-                prev.as_deref().unwrap_or(""),
-            ))
+            Some(prev.clone().unwrap_or_default())
         };
         // A failed re-anchor UPDATE propagates —
         // swallowing it here and COMMITting anyway would persist a
@@ -509,8 +997,13 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
             tracing::warn!("audit retention prune: re-anchor UPDATE failed (id {id}): {e}");
             return None;
         }
-        prev = new_prev;
+        let mut linked = full;
+        linked.prev_hash = new_prev;
+        prev = Some(row_link(&scheme, &linked));
     }
+    // Refresh the head pin INSIDE the prune tx — the re-anchor moved the
+    // tip, and a pin that lags its commit would false-alarm the next verify.
+    refresh_head_pin(conn, &scheme);
     // sweep orphaned trace artifacts. `recall_traces` is keyed by the
     // audit row id with no FK; retention-pruned audit rows would otherwise
     // leave their replay traces behind forever. Delete any trace whose audit
@@ -550,32 +1043,21 @@ pub fn prune_audit_retention(conn: &Connection, retention_days: u32) -> Option<i
     Some(expired)
 }
 
-/// The current hash-chain head: the link a new audit row would chain from
-/// (SHA-256 hex of the newest row's `(ts, kind, actor, target_hash, prev_hash)`).
+/// The current hash-chain head: the link a new audit row would chain from.
 /// Used by DSAR certificates as the `chain_head` evidence of a valid chain at
-/// certification time.
+/// certification time. Epoch-aware; `None` on an empty chain or when an
+/// hmac256-epoch chain has no key in this process (cannot attest what it
+/// cannot compute).
 pub fn chain_head(conn: &Connection) -> Option<String> {
-    let row: Option<(String, String, String, String, String)> = conn
-        .query_row(
-            "SELECT ts, kind, actor, target_hash, prev_hash \
-              FROM audit_events ORDER BY id DESC LIMIT 1",
-            [],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                    r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                ))
-            },
-        )
-        .ok();
-    row.map(|(ts, kind, actor, th, prev)| chain_link(&ts, &kind, &actor, &th, &prev))
+    let scheme = current_scheme(conn)?;
+    tip_row(conn).map(|tip| row_link(&scheme, &tip))
 }
 
 /// Verify the audit hash chain end-to-end. Returns `false` if any chained row's
-/// stored `prev_hash` disagrees with the link recomputed from the prior row.
+/// stored `prev_hash` disagrees with the link recomputed from the prior row —
+/// under the DB's OWN epoch (legacy chains verify exactly as they always
+/// did; hmac256 chains verify against the keyed 8-field link, and fail
+/// closed when the key is unavailable: an unverifiable chain is not `ok`).
 /// Legacy rows (NULL `prev_hash`, written before the chain existed) carry no
 /// backref and are skipped — a migrated DB may have thousands of them, followed
 /// by the first chained row that links back to the last NULL row's recomputed
@@ -587,23 +1069,27 @@ pub fn chain_head(conn: &Connection) -> Option<String> {
 /// NULL — so a NULL appearing AFTER the first non-NULL row can only be the
 /// result of tampering (an attacker erasing a row's link to its predecessor).
 /// The prefix rule makes that detectable without changing any stored hash.
+///
+/// After the walk passes, the head pin is compared against the
+/// recomputed head — every legitimate mutation (record, prune re-anchor,
+/// re-anchor) rewrites the pin in the same tx, so a pin that disagrees with
+/// the chain means rows were added or removed OUTSIDE those paths: truncation
+/// or extension of an otherwise-internally-valid chain, detected.
 pub fn verify_chain(conn: &Connection) -> bool {
+    let Some(scheme) = current_scheme(conn) else {
+        tracing::warn!(
+            "audit chain verify: hmac256-epoch chain has no key in this process — not ok"
+        );
+        return false;
+    };
     let mut stmt = match conn.prepare(
-        "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events \
+        "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash FROM audit_events \
           ORDER BY id ASC",
     ) {
         Ok(s) => s,
         Err(_) => return false,
     };
-    let rows = match stmt.query_map([], |r| {
-        Ok(ChainWalkRow {
-            ts: r.get(0)?,
-            kind: r.get(1)?,
-            actor: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-            target_hash: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-            prev_hash: r.get::<_, Option<String>>(4)?,
-        })
-    }) {
+    let rows = match stmt.query_map([], map_full_row) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -614,14 +1100,14 @@ pub fn verify_chain(conn: &Connection) -> bool {
     // A migrated DB has arbitrarily many consecutive NULL rows at the head, so
     // a leading NULL run never fails. Once a row carries a non-NULL
     // backref, the chain has started — any LATER NULL is tamper.
-    let mut prev_link: Option<String> = None;
+    let mut prev_link: Option<(i64, String)> = None;
     let mut chain_started = false;
     for row in rows.flatten() {
         match &row.prev_hash {
             Some(got) => {
                 chain_started = true;
                 match &prev_link {
-                    Some(want) if want == got => {}
+                    Some((_, want)) if want == got => {}
                     Some(_) => return false, // tampered or out-of-order chained row
                     None => {}               // first row overall — chain origin
                 }
@@ -635,25 +1121,175 @@ pub fn verify_chain(conn: &Connection) -> bool {
         }
         // Advance: every row contributes its link, including NULL ones (the
         // first chained row after a NULL run links back to the last NULL row).
-        prev_link = Some(chain_link(
-            &row.ts,
-            &row.kind,
-            &row.actor,
-            &row.target_hash,
-            row.prev_hash.as_deref().unwrap_or(""),
-        ));
+        let id = row.id;
+        prev_link = Some((id, row_link(&scheme, &row)));
+    }
+    // Pin check — only when a pin exists (fresh/unpinned DBs skip).
+    if let Some(pin) = read_head_pin(conn) {
+        match prev_link {
+            Some((tip_id, tip_link)) if tip_id == pin.id && tip_link == pin.hash => {}
+            Some((tip_id, _)) => {
+                tracing::error!(
+                    "audit chain head pin mismatch: pin=(id {}, hash {}..) tip=(id {tip_id}) \
+                     — rows were added or removed outside the audited write paths",
+                    pin.id,
+                    &pin.hash[..pin.hash.len().min(8)]
+                );
+                return false;
+            }
+            // A pin with zero rows: the chain was fully truncated below its
+            // own pinned genesis — tamper by any reading.
+            None => {
+                tracing::error!(
+                    "audit chain head pin exists (id {}) but the chain is empty — full truncation",
+                    pin.id
+                );
+                return false;
+            }
+        }
     }
     true
 }
 
-/// Walk-time shape for [`verify_chain`] — `prev_hash` is nullable because
-/// legacy rows have NULL and start the chain.
-struct ChainWalkRow {
-    ts: String,
-    kind: String,
-    actor: String,
-    target_hash: String,
-    prev_hash: Option<String>,
+/// The offline `--re-audit` body: replay an existing chain under the
+/// hmac256 scheme — every non-NULL `prev_hash` is recomputed as the keyed
+/// 8-field link, the epoch stamp flips, and the head pin is rewritten. The
+/// leading NULL run (legacy migration prefix) keeps its NULL backrefs, exactly
+/// as [`verify_chain`]'s prefix rule expects.
+///
+/// GUARDS:
+/// - Refuses a chain that does not verify under its CURRENT epoch (replaying
+///   a broken chain would launder it into a freshly-verifying one — the same
+///   rule the retention prune enforces).
+/// - Refuses when no key is available (an unkeyed "re-anchor" is a no-op that
+///   lies about the format).
+/// - Idempotent: a chain already on hmac256 verifies, refreshes its pin, and
+///   returns `Ok(0)`.
+///
+/// Returns the number of rows whose links were rewritten. The caller records
+/// the `AuditKind::Anchor` evidence row on the NEW chain.
+pub fn reanchor_to_hmac(conn: &Connection) -> anyhow::Result<usize> {
+    use anyhow::Context;
+    let key = chain_key().context(
+        "audit chain key unavailable — set BRAIN_AUDIT_CHAIN_KEY / BRAIN_AUDIT_CHAIN_KEY_FILE \
+         or make the DB directory writable so audit-chain.key can be created",
+    )?;
+    if read_epoch(conn) == ChainEpoch::Hmac256 {
+        if !verify_chain(conn) {
+            anyhow::bail!(
+                "chain already hmac256 but does not verify — refusing to touch it \
+                 (restore the pre-anchor snapshot and retry)"
+            );
+        }
+        refresh_head_pin(conn, &Scheme::Hmac(key));
+        return Ok(0);
+    }
+    if !verify_chain(conn) {
+        anyhow::bail!(
+            "legacy chain does not verify — refusing to re-anchor a broken chain \
+             (evidence-laundering guard; repair or restore from the pre-anchor snapshot first)"
+        );
+    }
+    // Collect the full rows first (the walk borrows the connection; the
+    // UPDATE loop needs it back).
+    let rows: Vec<ChainRowFull> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
+              FROM audit_events ORDER BY id ASC",
+        )?;
+        let mapped = stmt.query_map([], map_full_row)?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+    if conn.execute("BEGIN IMMEDIATE", []).is_err() {
+        anyhow::bail!("re-anchor: BEGIN IMMEDIATE failed");
+    }
+    let mut prev_link: Option<String> = None;
+    let mut rewritten = 0usize;
+    for row in &rows {
+        let new_prev = if row.prev_hash.is_none() {
+            None // leading legacy NULL run keeps its NULL backrefs
+        } else {
+            prev_link.clone()
+        };
+        if new_prev != row.prev_hash {
+            if let Err(e) = conn.execute(
+                "UPDATE audit_events SET prev_hash = ?1 WHERE id = ?2",
+                params![new_prev, row.id],
+            ) {
+                let _ = conn.execute("ROLLBACK", []);
+                anyhow::bail!("re-anchor UPDATE failed (id {}): {e}", row.id);
+            }
+            rewritten += 1;
+        }
+        let mut linked = row.clone();
+        linked.prev_hash = new_prev;
+        prev_link = Some(row_link(&Scheme::Hmac(key.clone()), &linked));
+    }
+    // Flip the epoch + rewrite the pin in the SAME tx as the replay: a crash
+    // mid-re-anchor leaves either the old epoch fully intact or the new one
+    // fully consistent — never a half-converted chain.
+    if let Err(e) = conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO schema_meta(key, value) VALUES ('{EPOCH_META_KEY}', '{EPOCH_HMAC}')
+         ON CONFLICT(key) DO UPDATE SET value = '{EPOCH_HMAC}';"
+    )) {
+        let _ = conn.execute("ROLLBACK", []);
+        anyhow::bail!("re-anchor epoch stamp failed: {e}");
+    }
+    refresh_head_pin(conn, &Scheme::Hmac(key));
+    if conn.execute("COMMIT", []).is_err() {
+        let _ = conn.execute("ROLLBACK", []);
+        anyhow::bail!("re-anchor COMMIT failed");
+    }
+    // Post-condition: the replayed chain must verify under the new scheme
+    // before the caller stamps the Anchor evidence row onto it.
+    if !verify_chain(conn) {
+        anyhow::bail!("re-anchor post-condition failed: replayed chain does not verify");
+    }
+    Ok(rewritten)
+}
+
+/// Fresh-DB epoch bootstrap: a DB with ZERO audit rows may start directly on
+/// hmac256 when a key is available. A DB with even one row keeps its legacy
+/// epoch until the explicit [`reanchor_to_hmac`] — an audit chain is
+/// evidence, and its format changes only with the announced re-anchor.
+/// Called at boot (global pool) and at lazy domain-pool open; a no-op in every
+/// test context that never installs a key. Returns whether the stamp landed.
+pub fn bootstrap_epoch(conn: &Connection) -> bool {
+    if chain_key().is_none() {
+        return false;
+    }
+    if read_epoch(conn) != ChainEpoch::Legacy {
+        return false;
+    }
+    let rows: i64 = match conn.query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0)) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    if rows > 0 {
+        return false;
+    }
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO schema_meta(key, value) VALUES ('{EPOCH_META_KEY}', '{EPOCH_HMAC}')
+         ON CONFLICT(key) DO UPDATE SET value = '{EPOCH_HMAC}';"
+    ))
+    .is_ok()
+}
+
+#[cfg(test)]
+mod test_key_gate {
+    /// Serializes every test that installs a process-global chain key. The
+    /// key is visible to concurrently-running tests (fresh-DB bootstraps,
+    /// hmac writes), so keyed tests must hold this mutex for their whole
+    /// scenario and clear the key on exit.
+    pub(super) static KEY_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+}
+
+#[cfg(test)]
+pub(crate) fn set_chain_key_for_test(key: Option<[u8; 32]>) {
+    let mut slot = CHAIN_KEY.write().expect("chain key lock poisoned");
+    *slot = key.map(Arc::new);
 }
 
 /// Read recent audit events (operator diagnostics only). Bounded by `limit`.
@@ -1192,6 +1828,11 @@ mod tests {
         .unwrap();
         let _ = before_link;
         tx.commit().unwrap();
+        // v1.27.31: the manual chained insert above bypassed `record_tenant`,
+        // so the head pin still points at the audit row — re-pin before
+        // verify (the contract every production writer gets for free; manual
+        // chained writes must re-pin or read as truncation/extension).
+        refresh_head_pin(&db, &Scheme::Legacy);
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
             .unwrap();
@@ -1527,5 +2168,339 @@ mod tests {
             "the chain still verifies after the refused write"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── v1.27.31 "AuditRepair" ────────────────────────────────────────────
+
+    /// audit_events + schema_meta (the pin/epoch live in schema_meta; the bare
+    /// `db()` helper exercises the missing-table tolerance instead).
+    fn db_with_meta() -> Connection {
+        let db = db();
+        db.execute_batch("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);")
+            .expect("create schema_meta");
+        db
+    }
+
+    /// Every keyed test holds this for its whole scenario: the chain key is
+    /// process-global, and a key visible to a concurrently-running fresh-DB
+    /// bootstrap would flip that test's epoch. Hold → set → … → clear.
+    fn key_gate() -> std::sync::MutexGuard<'static, ()> {
+        test_key_gate::KEY_GATE.lock().expect("key gate poisoned")
+    }
+
+    /// M2: the hmac256 link commits the FULL row — mutating any one field of a
+    /// prior row (ts, kind, actor, target_hash, status, detail_hash) breaks
+    /// the next row's backref, and renumbering `id` breaks it too.
+    #[test]
+    fn chain_hash_includes_all_fields() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let tampers: [(&str, &str); 7] = [
+            (
+                "ts",
+                "UPDATE audit_events SET ts = '1999-01-01 00:00:00' WHERE id = 1",
+            ),
+            (
+                "kind",
+                "UPDATE audit_events SET kind = 'webhook' WHERE id = 1",
+            ),
+            (
+                "actor",
+                "UPDATE audit_events SET actor = 'mallory' WHERE id = 1",
+            ),
+            (
+                "target_hash",
+                "UPDATE audit_events SET target_hash = 'deadbeef' WHERE id = 1",
+            ),
+            (
+                "status",
+                "UPDATE audit_events SET status = 'denied' WHERE id = 1",
+            ),
+            (
+                "detail_hash",
+                "UPDATE audit_events SET detail_hash = 'deadbeef' WHERE id = 1",
+            ),
+            ("id", "UPDATE audit_events SET id = 999 WHERE id = 1"),
+        ];
+        for (label, sql) in tampers {
+            let db = db_with_meta();
+            assert!(
+                bootstrap_epoch(&db),
+                "fresh db bootstraps to hmac256 with a key"
+            );
+            record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+            record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+            record(&db, AuditKind::Ingest, "api", "c3", AuditStatus::Ok, "d3");
+            assert!(verify_chain(&db), "[{label}] unmodified chain must verify");
+            db.execute(sql, []).unwrap();
+            assert!(
+                !verify_chain(&db),
+                "[{label}] mutating a committed field must break verify"
+            );
+        }
+        set_chain_key_for_test(None);
+    }
+
+    /// M6: a reconstructed chain from attacker-chosen content cannot verify —
+    /// neither by recomputing the 8-field links with PLAIN SHA-256 (no key) nor
+    /// by signing with the WRONG key.
+    #[test]
+    fn keyed_chain_rejects_attacker_content() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let db = db_with_meta();
+        assert!(bootstrap_epoch(&db));
+        record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+        record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+        record(&db, AuditKind::Ingest, "api", "c3", AuditStatus::Ok, "d3");
+        assert!(verify_chain(&db));
+
+        // The attacker's link constructions — both computed from the REAL
+        // (tampered) row 2, so the only thing missing is the key:
+        // (a) plain SHA-256 over the same length-prefixed 8-field payload
+        //     `chain_link_hmac` feeds the MAC;
+        // (b) HMAC with the WRONG key.
+        let tampered_row = |actor: &str| {
+            db.query_row(
+                "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
+                  FROM audit_events WHERE id = 2",
+                [],
+                |r| {
+                    let mut row = map_full_row(r).unwrap();
+                    row.actor = actor.to_string();
+                    Ok(row)
+                },
+            )
+            .unwrap()
+        };
+        let unkeyed_link = |row: &ChainRowFull| {
+            let mut h = Sha256::new();
+            h.update(row.id.to_le_bytes());
+            for f in [
+                row.ts.as_bytes(),
+                row.kind.as_bytes(),
+                row.actor.as_bytes(),
+                row.target_hash.as_bytes(),
+                row.status.as_bytes(),
+                row.detail_hash.as_bytes(),
+                row.prev_hash.as_deref().unwrap_or("").as_bytes(),
+            ] {
+                h.update((f.len() as u64).to_le_bytes());
+                h.update(f);
+            }
+            format!("{:x}", h.finalize())
+        };
+
+        // Attacker rewrites row 2's actor and re-signs row 3's backref with
+        // each keyless construction. The walk compares stored backrefs
+        // against the KEYED link — both forgeries must fail.
+        let mallory = tampered_row("mallory");
+        for forge in [
+            unkeyed_link(&mallory),
+            chain_link_hmac(&[9u8; 32], &mallory),
+        ] {
+            db.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 2", [])
+                .unwrap();
+            db.execute(
+                "UPDATE audit_events SET prev_hash = ?1 WHERE id = 3",
+                params![forge],
+            )
+            .unwrap();
+            assert!(
+                !verify_chain(&db),
+                "an attacker-recomputed link must never verify"
+            );
+            // Reset for the next variant.
+            db.execute("UPDATE audit_events SET actor = 'api' WHERE id = 2", [])
+                .unwrap();
+        }
+        // The pin also survived pointing at the true head — restore the true
+        // backref and the chain verifies again.
+        let true_link = {
+            let row = db
+                .query_row(
+                    "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
+                      FROM audit_events WHERE id = 2",
+                    [],
+                    map_full_row,
+                )
+                .unwrap();
+            row_link(&Scheme::Hmac(std::sync::Arc::new([7u8; 32])), &row)
+        };
+        db.execute(
+            "UPDATE audit_events SET prev_hash = ?1 WHERE id = 3",
+            params![true_link],
+        )
+        .unwrap();
+        assert!(
+            verify_chain(&db),
+            "the true keyed link restores verification"
+        );
+        set_chain_key_for_test(None);
+    }
+
+    /// M3: every committed row re-pins the head — id, hash (== `chain_head`),
+    /// epoch — in the same transaction.
+    #[test]
+    fn head_pin_updates_on_commit() {
+        let db = db_with_meta();
+        assert!(read_head_pin(&db).is_none(), "fresh DB carries no pin");
+        record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+        let pin1 = read_head_pin(&db).expect("pin after first write");
+        assert_eq!(pin1.id, 1);
+        assert_eq!(pin1.hash, chain_head(&db).expect("head"));
+        assert_eq!(pin1.epoch, EPOCH_LEGACY);
+        record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+        let pin2 = read_head_pin(&db).expect("pin after second write");
+        assert_eq!(pin2.id, 2, "the pin follows the tip");
+        assert_eq!(pin2.hash, chain_head(&db).expect("head"));
+        assert_ne!(pin1.hash, pin2.hash);
+        assert!(verify_chain(&db));
+    }
+
+    /// M3: truncation of an internally-valid chain is detected by the stale
+    /// pin (the prefix still walks clean — the pin is what notices the tail is
+    /// gone). Removing the pin removes the detection (proving the source).
+    #[test]
+    fn verify_detects_truncation_via_stale_pin() {
+        let db = db_with_meta();
+        record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+        record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+        record(&db, AuditKind::Ingest, "api", "c3", AuditStatus::Ok, "d3");
+        assert!(verify_chain(&db));
+        // Truncate the tail (a row deleted outside every audited path).
+        db.execute("DELETE FROM audit_events WHERE id = 3", [])
+            .unwrap();
+        assert!(
+            !verify_chain(&db),
+            "truncation must be detected via the stale pin"
+        );
+        // Control: drop the pin and the same (shorter) chain verifies — the
+        // pin is the detector, not the walk.
+        db.execute(
+            &format!("DELETE FROM schema_meta WHERE key = '{HEAD_PIN_META_KEY}'"),
+            [],
+        )
+        .unwrap();
+        assert!(verify_chain(&db));
+    }
+
+    /// Fail-closed posture of an hmac256 epoch whose key is unavailable in
+    /// this process: writes are refused (never unkeyed), verify is not-ok.
+    #[test]
+    fn hmac_epoch_without_key_fails_closed() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let db = db_with_meta();
+        assert!(bootstrap_epoch(&db));
+        assert!(record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1").is_some());
+        set_chain_key_for_test(None);
+        let before = audit_commit_failures();
+        assert!(record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2").is_none());
+        assert!(
+            audit_commit_failures() > before,
+            "the refused write must bump the /health counter"
+        );
+        assert!(
+            !verify_chain(&db),
+            "cannot attest a keyed chain without the key"
+        );
+        set_chain_key_for_test(Some([7u8; 32]));
+        assert!(verify_chain(&db), "key restored — chain attests again");
+        set_chain_key_for_test(None);
+    }
+
+    /// M6 re-anchor: the legacy chain replays under hmac256, keeps its leading
+    /// NULL prefix, verifies, continues to grow under the keyed links, and the
+    /// second run is an idempotent no-op.
+    #[test]
+    fn reanchor_replays_legacy_chain_under_hmac() {
+        let _gate = key_gate();
+        // Legacy chain (no key installed → legacy epoch default).
+        let db = db_with_meta();
+        db.execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, prev_hash)
+             VALUES ('ingest', 'legacy-api', 'l1', 'ok', 'd', NULL)",
+            [],
+        )
+        .unwrap();
+        record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+        record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+        let legacy_head = chain_head(&db).expect("legacy head");
+        assert_eq!(read_epoch(&db), ChainEpoch::Legacy);
+
+        set_chain_key_for_test(Some([7u8; 32]));
+        let rewritten = reanchor_to_hmac(&db).expect("re-anchor");
+        // Row 1 keeps its NULL genesis; rows 2..3 were rewritten keyed.
+        assert_eq!(rewritten, 2, "the two chained rows were replayed");
+        assert_eq!(read_epoch(&db), ChainEpoch::Hmac256);
+        assert!(verify_chain(&db), "replayed chain verifies under hmac256");
+        let pin = read_head_pin(&db).expect("pin after re-anchor");
+        assert_eq!(pin.epoch, EPOCH_HMAC);
+        assert_eq!(pin.hash, chain_head(&db).expect("hmac head"));
+        assert_ne!(pin.hash, legacy_head, "the epoch change moved the head");
+
+        // New growth continues under keyed links + re-pins.
+        record(&db, AuditKind::Ingest, "api", "c3", AuditStatus::Ok, "d3");
+        assert!(verify_chain(&db));
+        assert_eq!(read_head_pin(&db).unwrap().id, 4);
+
+        // Idempotent: a second run verifies + refreshes, rewrites nothing.
+        assert_eq!(reanchor_to_hmac(&db).expect("idempotent re-anchor"), 0);
+        assert!(verify_chain(&db));
+        set_chain_key_for_test(None);
+    }
+
+    /// The re-anchor refuses a broken chain (evidence laundering guard — the
+    /// same rule the retention prune enforces).
+    #[test]
+    fn reanchor_refuses_broken_chain() {
+        let _gate = key_gate();
+        let db = db_with_meta();
+        record(&db, AuditKind::Ingest, "api", "c1", AuditStatus::Ok, "d1");
+        record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
+        db.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 1", [])
+            .unwrap();
+        assert!(!verify_chain(&db));
+        set_chain_key_for_test(Some([7u8; 32]));
+        assert!(
+            reanchor_to_hmac(&db).is_err(),
+            "a broken chain must not be replayed"
+        );
+        set_chain_key_for_test(None);
+    }
+
+    /// Fresh-DB bootstrap: only a row-less DB with a key available starts on
+    /// hmac256; anything with history stays legacy until --re-audit.
+    #[test]
+    fn bootstrap_epoch_only_for_fresh_dbs_with_key() {
+        let _gate = key_gate();
+        // No key → never bootstraps.
+        let no_key = db_with_meta();
+        assert!(!bootstrap_epoch(&no_key));
+        assert_eq!(read_epoch(&no_key), ChainEpoch::Legacy);
+
+        // Key + empty DB → bootstraps.
+        set_chain_key_for_test(Some([7u8; 32]));
+        let fresh = db_with_meta();
+        assert!(bootstrap_epoch(&fresh));
+        assert_eq!(read_epoch(&fresh), ChainEpoch::Hmac256);
+        // Already stamped → idempotent no-op.
+        assert!(!bootstrap_epoch(&fresh));
+
+        // Key + rows → stays legacy (evidence format changes only via
+        // --re-audit).
+        let historical = db_with_meta();
+        record(
+            &historical,
+            AuditKind::Ingest,
+            "api",
+            "c1",
+            AuditStatus::Ok,
+            "d1",
+        );
+        assert!(!bootstrap_epoch(&historical));
+        assert_eq!(read_epoch(&historical), ChainEpoch::Legacy);
+        set_chain_key_for_test(None);
     }
 }

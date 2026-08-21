@@ -162,7 +162,20 @@ fn main() {
         print_usage();
         exit(0);
     }
-    // `--json` is a global mode: `brain --json recall "…"` or per-subcommand.
+    // Resolve the audit-chain HMAC key before any
+    // subcommand touches a DB — restore certification, connector events and
+    // `doctor` chain checks on an hmac256-epoch DB all need it. Env > key
+    // file > a generated 0600 `audit-chain.key` beside the DB; a failure is a
+    // warning (legacy-epoch DBs need no key — their writes fail closed per-
+    // write with a visible /health counter, not a broken CLI).
+    if let Err(e) = brain_server::audit::init_chain_key(
+        default_db_path()
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+    ) {
+        eprintln!("warning: audit chain key unavailable ({e})");
+    }
+    // `--json` is a global mode: `brain --json recall "…" or per-subcommand.
     if args.iter().any(|a| a == "--json") {
         JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
         args.retain(|a| a != "--json");

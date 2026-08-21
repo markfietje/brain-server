@@ -19,6 +19,96 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.31] — 2026-08-21
+
+**Server-only security release** (server `Cargo.toml`/lock 1.27.30 →
+**1.27.31**; schema 1.27.30 → **1.27.31** — schema_meta keys only, no
+tables/columns; client + plugin unchanged). "AuditRepair" is the announced
+audit-chain re-anchor: the items deliberately deferred from v1.27.26
+"Notarize" because they change what an audit row MEANS once stored. An audit
+chain is evidence; its format flips only under the documented operator
+re-anchor — never silently.
+
+### Release notes
+
+**Security fixes**
+
+- **Keyed chain (length-extension/forge hardening).** Re-anchored chains
+  (`hmac256` epoch) link rows with HMAC-SHA256 over the FULL row — id, ts,
+  kind, actor, target_hash, status, detail_hash, prev_hash — under a 32-byte
+  key that never lives in the DB it protects (`BRAIN_AUDIT_CHAIN_KEY` /
+  `BRAIN_AUDIT_CHAIN_KEY_FILE` / a generated 0600 `audit-chain.key` beside
+  the DB). A reconstructed chain from attacker-chosen content can no longer
+  pass verify even when every hash recomputes; a DB-only attacker cannot
+  forge links. Mutating ANY committed field — including renumbering ids —
+  breaks verification.
+- **Truncation/extension detection.** The chain head `(id, hash, epoch)` is
+  pinned in `schema_meta` in the same transaction as every audit row; verify
+  compares the pin against the recomputed head, so deleting or appending rows
+  outside the audited write paths fails `/audit/verify` even though the
+  surviving prefix walks clean.
+- **Restore attestation.** `restore` verifies the restored chain before
+  certifying the restore (a backup whose chain does not verify is refused —
+  the `.bak` keeps the pre-restore state) and compares pre/post head pins: a
+  restore that ROLLS BACK the evidence chain is disclosed at error level and
+  the `restore complete (head=…)` row records where the chain landed.
+- **Multi-domain chain coverage.** `/audit/verify`, `/audit`, `/metrics`,
+  `/ump/audit/verify` and the retention prune now cover EVERY registered
+  domain's chain, not just the global pool — `ok` is the all-domains aggregate
+  and the per-domain breakdown names the failing chain (a broken
+  second-domain chain is reported, never silently absorbed).
+
+**Improvements**
+
+- **`brain-server --re-audit`** — the offline re-anchor: verifies each
+  domain's chain BEFORE replaying it (no evidence laundering), rewrites every
+  link under hmac256, flips the epoch, rewrites the head pin, and writes an
+  `anchor` evidence row on the NEW chain per domain. Idempotent; per-domain
+  failures fail the run. Fresh (row-less) DBs bootstrap straight to `hmac256`
+  when a key resolves — existing chains stay legacy until the operator
+  re-anchors.
+- **Fixed `--re-embed` exiting 2** in the argv guard (the flag predates the
+  strict unknown-flag rejection and had no passthrough arm).
+
+### Engineering record
+
+- **Epoch model** — the format is per-DB state (`schema_meta.audit_chain_epoch`:
+  absent/`legacy` = the historical 5-field SHA-256 link, byte-identical to
+  every prior release; `hmac256` = keyed 8-field links). Nothing flips an
+  existing chain implicitly: only `--re-audit` or the fresh-DB bootstrap
+  writes the stamp. Writes to an `hmac256` DB without its key fail closed
+  (row refused, `/health` counter bumps, verify reads not-ok) — never an
+  unkeyed downgrade.
+- **Migration** — stamps the initial legacy head pin for existing chains only
+  (fresh DBs pin on first write); the epoch key is runtime-written, never by
+  the migration. Schema-contract test pins 1.27.31 + the fresh-DB key
+  absence.
+- **Fail-closed seams** — `verify_chain` on a keyed chain without its key is
+  not-ok (cannot attest what it cannot compute); restore of a chainless
+  (pre-audit-schema) snapshot skips attestation rather than failing.
+- Tests: server bin **717** / 6 ignored (+2: `audit_verify_covers_all_domains`,
+  `multi_db_chain_broken_reported`), lib **147** / 1 ignored (+10: full-row
+  commitment per field, keyed-chain attacker rejection (unkeyed + wrong
+  key), pin-on-commit, truncation detection, keyless fail-closed, re-anchor
+  replay/idempotence/refusal, fresh-DB bootstrap, restore rollback
+  classification + refusal); clippy `-D warnings` + fmt clean on
+  `--all-targets --features bench`.
+- **Live smoke** — `--re-audit` exercised end-to-end on a real DB: key file
+  generated 0600, epoch + head pin stamped, `anchor` rows chained under the
+  keyed links, second run idempotent, a tampered row refuses the re-anchor
+  with the no-laundering message.
+- Honest ceilings: legacy chains keep their 5-field links until the operator
+  runs `--re-audit` (the announced protocol: snapshot → quiesce → re-anchor →
+  verify every domain → snapshot the new baseline); the head pin detects
+  truncation/extension at the NEXT verify, not at write time; the chain
+  watcher behind `/health`'s `chain_ok` still watches the global chain only
+  (`/audit/verify` is the authoritative multi-domain surface); the
+  `hmac256` key is part of the backup baseline — a restore on a host without
+  it refuses certification (copy `audit-chain.key` with the DR kit); key
+  rotation is re-anchoring under the new key, not an in-place key swap.
+
+---
+
 ## [1.27.29] — 2026-08-21
 
 **Server-only scaffold release** (server `Cargo.toml`/lock 1.27.28 →

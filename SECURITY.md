@@ -121,6 +121,7 @@ ownership... log access control failures."
 | `alg` whitelist + reject `none` + reject algorithm confusion | JWT verifier | ✅ v1.2 |
 | AES-256-GCM for backups (v0.9.7) | `backup.rs` | ✅ |
 | HMAC-SHA256 for webhook verification (v0.9.7) | `webhook.rs` | ✅ |
+| Keyed audit chain (v1.27.31 "AuditRepair"): links are HMAC-SHA256 over the FULL row (id, ts, kind, actor, target_hash, status, detail_hash, prev_hash) under a key that never lives in the DB — a DB-only attacker cannot forge links; head pin `(id, hash)` detects truncation/extension; the format flips only via the announced `--re-audit` re-anchor (an audit chain is evidence) | `audit.rs` | ✅ v1.27.31 |
 | Webhook replay window (opt-in, v1.20.4 G6): `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1` demands the Standard Webhooks header set (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}` in constant time — the timestamp rides inside the HMAC, so a replay cannot re-stamp it. **GitHub's replay protection is `x-github-delivery` idempotency, not a timestamp** (its sender is a trusted third party); first-party senders opt into the hard window via the spec headers + flag. Default unchanged (legacy `sha256=` path). | `verify_standard_signature` + `receive_standard` | ✅ |
 | SQLCipher at rest (AES-256 per-page) | KMS trait | 🚧 v3.7 |
 | No hardcoded secrets (env / file / KMS) | all of `config.rs` | ✅ |
@@ -448,6 +449,18 @@ OWASP Secrets Management Cheat Sheet (Context7-verified 2026-07-26):
    - `FileKeyProvider` (default; mode 0600 keys)
    - `VaultKeyProvider` (HashiCorp Vault; transit secret engine)
    - `AwsKmsKeyProvider` (AWS KMS; envelope encryption)
+4. **Audit-chain HMAC key (v1.27.31 "AuditRepair")**: a 32-byte key that
+   signs the re-anchored (`hmac256`-epoch) audit chain's links so a
+   reconstructed chain from attacker-chosen content cannot pass verify even
+   when every SHA-256 recomputes. Resolution: `BRAIN_AUDIT_CHAIN_KEY` (hex) →
+   `BRAIN_AUDIT_CHAIN_KEY_FILE` → `<db-dir>/audit-chain.key` (generated 0600
+   `create_new` on first boot; wide modes refused, the auth-secret posture).
+   The key NEVER lives in a DB it protects — an attacker who can rewrite
+   `audit_events` cannot read the key from it. Losing it makes an `hmac256`
+   chain unverifiable BY DESIGN (fail-closed); DR copies it with the backup
+   baseline. Legacy-epoch chains (everything pre-`--re-audit`) need no key.
+   Rotation = `--re-audit` again under the new key (the old-key archive stays
+   readable as evidence via the pre-anchor snapshot).
 
 ### Bring Your Own Key (BYOK)
 
@@ -604,6 +617,7 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.27.31 | 2026-08-21 | "AuditRepair": the announced audit-chain re-anchor — links commit the FULL row (8 fields) under HMAC-SHA256 keyed by a 32-byte key that never lives in the DB it protects (`BRAIN_AUDIT_CHAIN_KEY`/`_KEY_FILE`/`audit-chain.key` 0600); the head pin `(id, hash, epoch)` is written in the same tx as every audit row and detects truncation/extension; restore verifies the restored chain before certifying + discloses rolled-back heads (F-09); `/audit/verify`, `/audit`, `/metrics`, `/ump/audit/verify` and the retention prune cover EVERY registered domain (F-22); the format flips only via the offline `brain-server --re-audit` (verify-before-replay, per-domain `anchor` evidence row, new head epoch) — fresh DBs bootstrap straight to `hmac256` when a key resolves. Fixed `--re-embed` exiting 2 in the argv guard. |
 | 1.27.12 | 2026-08-15 | "ReviewArmour · Rotate · Provenance": HITL approvals bind to the displayed bytes — `/proposals` serves the read-canonical review form (`sanitize_read`: PII redact → markdown-ref → invisible strip) + a principal-independent `content_digest`; `approve_proposal` accepts the digest and `409`s on any drift, checked inside the `BEGIN IMMEDIATE` tx. `brain token rotate` atomically replaces the bearer token (0600 temp + `create_new`, fsync, rename) and refuses wide secret modes; startup warns on unsigned webhook sinks + wide UMP signing keys. Retrievers thread `source`/`node_kind`/`lawful_basis`/`region` through fusion into `RecallHit` and the plugin renders a deterministic `[src: · mk: · lb: · reg:]` line inside the `UNTRUSTED_*` fence (`sanitizeForBlock` closes fence-marker forging). |---|
 | 1.20.3 | 2026-08-11 | "Classify" (G5): two-layer injection screen — layer 1 deterministic blocklist (always on) + optional feature-gated local ONNX classifier (layer 2, off by default; the blocklist + `flagged`/`untrusted` stay the always-on defense). Canonical invisible-char predicate shared by screen/classifier/client-render boundary (client strips invisible smuggling chars from displayed hits; raw bytes never rewritten). `screen_verdict` review badge recomputed at read. Policy + thresholds read per call |
 | 1.16.7 | 2026-08-08 | Client "Integrated": deep links + PWA (offline shell caches app shell only — never the API, no content caching) + paginated audit + command palette + recall debounce + hardening (drawer focus trap, aria-live, `dir="auto"`). Client-only; server + API contract unchanged |

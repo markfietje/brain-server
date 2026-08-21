@@ -94,6 +94,12 @@ pub const SCHEMA_VERSION_V1_27_25: &str = "1.27.25";
 /// domain file (the per-DB migration), hash-chained via `AuditKind::Workflow`
 /// so the tables are derivable from the audit, never the other way.
 pub const SCHEMA_VERSION_V1_27_30: &str = "1.27.30";
+/// v1.27.31 "AuditRepair": the audit head pin
+/// (`schema_meta.audit_chain_head`) stamped for existing chains; the
+/// chain-epoch key (`audit_chain_epoch`) is runtime-written (absent = legacy)
+/// and the hmac256 format flips only via the offline `--re-audit` re-anchor.
+/// No tables, no columns.
+pub const SCHEMA_VERSION_V1_27_31: &str = "1.27.31";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

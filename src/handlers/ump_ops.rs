@@ -955,7 +955,9 @@ pub async fn audit(
 }
 
 /// §9 `GET /ump/audit/verify` — fresh full-chain verification (authoritative,
-/// unlike the TTL-cached `/metrics` signal).
+/// unlike the TTL-cached `/metrics` signal). Verifies EVERY
+/// registered domain's chain, not just the global pool — `ok` is the
+/// all-domains aggregate; the per-domain breakdown names a failing chain.
 pub async fn audit_verify(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -964,16 +966,16 @@ pub async fn audit_verify(
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     // Admin surface: capability tokens can never grant it.
     super::cap_gate(&cap.0, "admin")?;
-    let pool = state.pool.clone();
-    let ok = tokio::task::spawn_blocking(move || -> bool {
-        match pool.get() {
-            Ok(conn) => crate::audit::verify_chain(&conn),
-            Err(_) => false,
-        }
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
-    Ok(Json(json!({ "ok": ok })))
+    let targets = super::domain_pools(&state.registry, &state.pool);
+    let results = tokio::task::spawn_blocking(move || super::verify_domain_targets(targets))
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+    let ok = results.iter().all(|(_, ok)| *ok);
+    let domains: serde_json::Map<String, Value> = results
+        .into_iter()
+        .map(|(d, ok)| (d, Value::Bool(ok)))
+        .collect();
+    Ok(Json(json!({ "ok": ok, "domains": domains })))
 }
 
 #[cfg(test)]

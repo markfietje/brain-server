@@ -271,6 +271,11 @@ fn open_with_migration(path: &Path) -> Result<BrainPool, DomainRegistryError> {
         .map_err(|e| DomainRegistryError::Open(e.to_string()))?;
     brain_server::migration::run_migration(&mut conn, config::DB_MMAP_SIZE_MIB)
         .map_err(|e| DomainRegistryError::Migration(e.to_string()))?;
+    // A FRESH domain DB (zero audit rows) starts
+    // directly on the hmac256 chain epoch when the process holds a chain key
+    // (the server inits it before any pool opens). A no-op everywhere else —
+    // in particular every unit test that never installs a key.
+    brain_server::audit::bootstrap_epoch(&conn);
     Ok(pool)
 }
 

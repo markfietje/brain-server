@@ -1626,11 +1626,55 @@ pub fn run_migration_with_store_dim(
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
     // v1.27.25 "Scoped": idx_rels_open_unique partial unique index (+ dedup) → 1.27.25.
     // v1.27.30 "Spine": the five governed-workflow tables → 1.27.30.
+    // v1.27.31 "AuditRepair": the audit head pin (`schema_meta.audit_chain_head`)
+    // stamped for existing chains; the epoch key (`audit_chain_epoch`) is
+    // runtime-only (absent = legacy) — the format itself flips only via the
+    // offline `--re-audit` re-anchor. No tables, no columns.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.30')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.30';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.31')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.31';",
         [],
     )?;
+
+    // ── v1.27.31 "AuditRepair": initial audit head pin. ────────────
+    // Pin the CURRENT chain head (id + legacy link hash) so a later restore
+    // that rolls the chain back is detectable and truncation/extension of an
+    // otherwise-valid chain fails verify. Legacy scheme by definition — an
+    // existing chain is pre-re-anchor; `--re-audit` rewrites links AND pin
+    // under hmac256. Fresh DBs (no rows) get their pin on the first audit
+    // write (`record_tenant` re-pins per commit). Best-effort with a warning:
+    // a failed stamp only degrades truncation detection until the next write
+    // re-pins — it must not fail the whole migration.
+    {
+        let pinned: Option<String> = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'audit_chain_head'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        if pinned.is_none() {
+            let rows: i64 = db
+                .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+                .unwrap_or(0);
+            if rows > 0 {
+                if let Some(pin) = crate::audit::initial_head_pin(db) {
+                    match serde_json::to_string(&pin) {
+                        Ok(json) => {
+                            if let Err(e) = db.execute(
+                                "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_head', ?1)
+                                 ON CONFLICT(key) DO UPDATE SET value = ?1;",
+                                params![json],
+                            ) {
+                                warn!("audit head pin stamp failed (truncation detection deferred): {e}");
+                            }
+                        }
+                        Err(e) => warn!("audit head pin serialize failed: {e}"),
+                    }
+                }
+            }
+        }
+    }
 
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise

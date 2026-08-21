@@ -1823,19 +1823,48 @@ async fn list_audit(
     let limit = params.limit.unwrap_or(100).min(config::MAX_MULTI_GET);
     let kind = params.kind.clone();
     let tenant = tenant_scope;
-    let pool = s.pool.clone();
-    let rows = task::spawn_blocking(move || -> Vec<audit::AuditRow> {
-        match pool.get() {
-            Ok(conn) => audit::recent_tenant(
+    // The operator audit list covers EVERY registered
+    // domain's chain in multi-db mode (rows carry their domain tag), not just
+    // the global pool. Shim mode stays the single shared pool. Merged rows
+    // sort newest-first across domains (ts text sort + id tiebreak — ids are
+    // per-DB, only meaningful within their domain).
+    let targets = crate::handlers::domain_pools(&s.registry, &s.pool);
+    let offset = params.offset;
+    let rows = task::spawn_blocking(move || -> Vec<serde_json::Value> {
+        let mut merged: Vec<serde_json::Value> = Vec::new();
+        for (domain, pool) in &targets {
+            let Some(pool) = pool else {
+                continue; // an unopenable domain contributes no rows; the
+                          // chain-verify surfaces report it as not-ok (fail-closed
+                          // lives there — a row listing cannot attest anything).
+            };
+            let Ok(conn) = pool.get() else {
+                continue;
+            };
+            if let Ok(page) = audit::recent_tenant(
                 &conn,
                 kind.as_deref(),
                 tenant.as_deref(),
-                limit,
-                params.offset,
-            )
-            .unwrap_or_default(),
-            Err(_) => Vec::new(),
+                limit.saturating_add(offset),
+                0,
+            ) {
+                for r in page {
+                    let mut v = serde_json::to_value(&r).unwrap_or_default();
+                    v["domain"] = serde_json::Value::String(domain.clone());
+                    merged.push(v);
+                }
+            }
         }
+        merged.sort_by(|a, b| {
+            let ts_a = a["ts"].as_str().unwrap_or("");
+            let ts_b = b["ts"].as_str().unwrap_or("");
+            ts_b.cmp(ts_a).then_with(|| {
+                let id_a = a["id"].as_i64().unwrap_or(0);
+                let id_b = b["id"].as_i64().unwrap_or(0);
+                id_b.cmp(&id_a)
+            })
+        });
+        merged.into_iter().skip(offset).take(limit).collect()
     })
     .await
     .unwrap_or_default();
@@ -1876,6 +1905,9 @@ async fn metrics(
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
     let audit_cache = s.audit_chain_cache.clone();
+    // The gauge aggregates EVERY registered domain's chain —
+    // collected here (owned) so the blocking closure stays 'static.
+    let chain_targets = crate::handlers::domain_pools(&s.registry, &pool);
     let body = task::spawn_blocking(move || -> String {
         let pool_state = pool.state();
         let busy = pool_state
@@ -1895,8 +1927,8 @@ async fn metrics(
             .unwrap_or("unknown");
         let chain_ok = {
             // /metrics path: use the TTL cache so a scrape doesn't trigger a
-            // full O(n) chain scan. /audit/verify bypasses this for the
-            // authoritative answer.
+            // full O(n) chain scan (now × N domains). /audit/verify bypasses
+            // this for the authoritative answer.
             let now = std::time::Instant::now();
             let cached = audit_cache.lock().ok().and_then(|g| *g).filter(|(ts, _)| {
                 now.duration_since(*ts).as_secs() < config::AUDIT_CHAIN_CACHE_TTL_SECS
@@ -1904,7 +1936,9 @@ async fn metrics(
             match cached {
                 Some((_, ok)) => ok,
                 None => {
-                    let fresh = pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false);
+                    let fresh = crate::handlers::verify_domain_targets(chain_targets)
+                        .iter()
+                        .all(|(_, ok)| *ok);
                     if let Ok(mut g) = audit_cache.lock() {
                         *g = Some((now, fresh));
                     }
@@ -1934,7 +1968,7 @@ async fn metrics(
             _ => 0,
         };
         out.push_str(&format!("brain_capacity_status {cap_num}\n"));
-        out.push_str("# HELP brain_audit_chain_ok 1=chain verifies, 0=tamper detected.\n");
+        out.push_str("# HELP brain_audit_chain_ok 1=every registered domain's chain verifies, 0=tamper detected.\n");
         out.push_str("# TYPE brain_audit_chain_ok gauge\n");
         out.push_str(&format!("brain_audit_chain_ok {}\n", u8::from(chain_ok)));
         out
@@ -1945,9 +1979,12 @@ async fn metrics(
 }
 
 /// `GET /audit/verify` — read-only check that the audit hash
-/// chain is intact. Returns `{ "ok": bool }`. Exposed separately from
-/// `GET /audit` because the chain check is a full-table scan and shouldn't run
-/// on every list call.
+/// chain is intact. Returns `{ "ok": bool, "domains": {name: bool} }`.
+/// Exposed separately from `GET /audit` because the chain check is a
+/// full-table scan and shouldn't run on every list call.
+/// Verifies EVERY registered domain's chain, not just the global
+/// pool — `ok` is the all-domains aggregate and a per-domain breakdown is
+/// attached so the failing domain is named, never silent.
 async fn verify_audit_chain(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -1958,17 +1995,30 @@ async fn verify_audit_chain(
     {
         return Json(serde_json::json!({ "error": e.inner.message }));
     }
-    let pool = s.pool.clone();
-    let ok = task::spawn_blocking(move || -> bool {
-        pool.get().map(|c| audit::verify_chain(&c)).unwrap_or(false)
-    })
-    .await
-    .unwrap_or(false);
-    // a failed chain verify is a decision-critical alert.
+    let targets = crate::handlers::domain_pools(&s.registry, &s.pool);
+    let results = task::spawn_blocking(move || crate::handlers::verify_domain_targets(targets))
+        .await
+        .unwrap_or_default();
+    let ok = results.iter().all(|(_, ok)| *ok);
+    // a failed chain verify is a decision-critical alert —
+    // the payload names the failing domains.
     if !ok {
-        alert::publish(&s, alert::ALERT_KIND_CHAIN, serde_json::json!({}));
+        let failing: Vec<&str> = results
+            .iter()
+            .filter(|(_, ok)| !ok)
+            .map(|(d, _)| d.as_str())
+            .collect();
+        alert::publish(
+            &s,
+            alert::ALERT_KIND_CHAIN,
+            serde_json::json!({ "failing_domains": failing }),
+        );
     }
-    Json(serde_json::json!({ "ok": ok }))
+    let domains: serde_json::Map<String, serde_json::Value> = results
+        .into_iter()
+        .map(|(d, ok)| (d, serde_json::Value::Bool(ok)))
+        .collect();
+    Json(serde_json::json!({ "ok": ok, "domains": domains }))
 }
 
 async fn stats(
@@ -3057,6 +3107,81 @@ fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
     }
     println!(
         "re-embed complete: {reembedded} re-embedded, {skipped} skipped — boot with BRAIN_MODEL_PROFILE={target_profile}"
+    );
+    Ok(())
+}
+
+/// The offline `--re-audit` body. Re-anchors
+/// the audit chain of EVERY database — the global pool plus every registered
+/// per-domain file — under the hmac256 scheme: full 8-field rows,
+/// HMAC-SHA256 links, a fresh head pin, and one `AuditKind::Anchor` evidence
+/// row per domain on the NEW chain. Runs INSTEAD of serving (the chain is
+/// evidence; its format flips only under the documented operator protocol:
+/// snapshot → quiesce writes → --re-audit → verify every domain → snapshot the
+/// new evidence baseline). Per-domain failures are reported and fail the run —
+/// never silent.
+fn run_reaudit(pool: &Pool, db_path: &std::path::Path) -> Result<()> {
+    use brain_server::audit;
+    println!("re-audit → scheme=hmac256 (8-field rows, HMAC-SHA256 links, head pin)");
+    println!(
+        "operator protocol: `brain backup` FIRST (the pre-anchor chain stays readable \
+         under the legacy scheme as the historical archive), writes quiesced, then re-anchor"
+    );
+    // Targets: the global pool + every registered domain pool (multi-db).
+    // Shim mode collapses to the single shared pool.
+    let registry = domain_registry::DomainRegistry::new(pool.clone(), db_path, config::multi_db());
+    let targets = handlers::domain_pools(&registry, pool);
+    let mut all_ok = true;
+    for (name, pool_or) in &targets {
+        let Some(domain_pool) = pool_or else {
+            all_ok = false;
+            eprintln!("  [{name}] FAILED: domain pool could not be opened");
+            continue;
+        };
+        let Ok(conn) = domain_pool.get() else {
+            all_ok = false;
+            eprintln!("  [{name}] FAILED: connection could not be acquired");
+            continue;
+        };
+        match audit::reanchor_to_hmac(&conn) {
+            Ok(rewritten) => {
+                // Evidence row ON the new chain: the epoch boundary itself is
+                // audited (kind=anchor, target carries the rewrite count). A
+                // failed Anchor row fails the run — it is the record of the
+                // format change, not a best-effort side note.
+                if audit::record(
+                    &conn,
+                    audit::AuditKind::Anchor,
+                    "system",
+                    &format!("reanchor:hmac256:rewritten={rewritten}"),
+                    audit::AuditStatus::Ok,
+                    "chain format re-anchored (8-field HMAC-SHA256 links)",
+                )
+                .is_none()
+                {
+                    all_ok = false;
+                    eprintln!("  [{name}] FAILED: the anchor evidence row could not be written");
+                    continue;
+                }
+                let ok = audit::verify_chain(&conn);
+                println!("  [{name}] re-anchored ({rewritten} link(s) rewritten) — verify: {ok}");
+                all_ok &= ok;
+            }
+            Err(e) => {
+                all_ok = false;
+                eprintln!("  [{name}] FAILED: {e:#}");
+            }
+        }
+    }
+    if !all_ok {
+        anyhow::bail!(
+            "re-audit completed with failures — no domain was left half-converted; \
+             resolve the reported domains and re-run (the pre-anchor snapshot is the fallback)"
+        );
+    }
+    println!(
+        "re-audit complete — run `brain backup` now: the post-anchor snapshot is the new \
+         evidence baseline (head epoch hmac256)"
     );
     Ok(())
 }
@@ -4865,10 +4990,15 @@ fn handle_cli_args() {
                 println!("  brain-server                start server on $BIND_HOST:$BIND_PORT");
                 println!("  brain-server --version      print version and exit");
                 println!("  brain-server --help         print this help and exit");
+                println!("  brain-server --re-embed <profile>  rebuild the vector store at a profile's dim, then exit");
+                println!("  brain-server --re-audit     re-anchor the audit chain under hmac256 (v1.27.31), then exit");
                 println!();
                 println!("Env: BIND_HOST, BIND_PORT, BRAIN_DB_PATH, AUTH_TOKEN_FILE, RUST_LOG");
+                println!("      BRAIN_AUDIT_CHAIN_KEY / BRAIN_AUDIT_CHAIN_KEY_FILE (audit chain HMAC key)");
                 std::process::exit(0);
             }
+            // Offline one-shot modes handled later in main_inner — passthrough.
+            "--re-embed" | "--re-audit" => {}
             other if other.starts_with('-') => {
                 eprintln!("brain-server: unknown flag '{other}'");
                 eprintln!("  pass --help for usage, or run with no args to start the server");
@@ -5022,6 +5152,20 @@ async fn main_inner() -> Result<()> {
     }
     info!("Database path: {:?}", db_path);
 
+    // ── the audit-chain HMAC key ──────────────────────────────────
+    // Resolved BEFORE any pool opens (lazy domain opens consult it for the
+    // fresh-DB epoch bootstrap). Env > key file > a generated 0600
+    // `audit-chain.key` beside the DB. A resolution failure is a loud warning,
+    // not a boot refusal — a legacy-epoch deployment needs no key; writes to
+    // an hmac256 DB fail closed per-write until it resolves.
+    if let Err(e) = audit::init_chain_key(
+        db_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(".")),
+    ) {
+        warn!("audit chain key unavailable ({e}) — hmac256-epoch chains will fail closed");
+    }
+
     let pool = r2d2::Pool::builder()
         .max_size(POOL_MAX_SIZE)
         .min_idle(Some(POOL_MIN_IDLE))
@@ -5126,6 +5270,25 @@ async fn main_inner() -> Result<()> {
         model.store_dim(),
     )?;
     info!("Migration complete (embedding_dim = {})", model.store_dim());
+
+    // ── offline --re-audit + fresh-DB bootstrap ────────────────────
+    // The re-anchor runs INSTEAD of serving (writes must be quiesced — an
+    // audit chain is evidence and its format flips only under the documented
+    // operator protocol: snapshot → quiesce → --re-audit → verify → snapshot).
+    if std::env::args()
+        .nth(1)
+        .map(|a| a == "--re-audit")
+        .unwrap_or(false)
+    {
+        return run_reaudit(&pool, &db_path).map(|_| ());
+    }
+    // A FRESH global DB (zero audit rows) starts directly on hmac256 when the
+    // key resolved above; a DB with history stays legacy until --re-audit.
+    if let Ok(conn) = pool.get() {
+        if audit::bootstrap_epoch(&conn) {
+            info!("audit chain: fresh DB bootstrapped to the hmac256 epoch");
+        }
+    }
 
     // ── legacy cutover: brain.db → global.db ─────────────────
     // When `BRAIN_MULTI_DB=true`, the per-domain system needs the legacy
@@ -9886,10 +10049,36 @@ Final paragraph after the rule.";
         // (the write-once idx_rels_unique dropped → true bi-temporal edges).
         // v1.27.25 for idx_rels_open_unique (structural open-row invariant).
         // v1.27.30 for the five governed-workflow tables (the Spine substrate).
+        // v1.27.31 for the audit head pin schema_meta stamp (AuditRepair M3).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_30),
-            "schema_version must be recorded as 1.27.30 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_31),
+            "schema_version must be recorded as 1.27.31 after migration"
+        );
+
+        // v1.27.31 "AuditRepair": the migration stamps the initial head pin
+        // ONLY for a chain with rows (a fresh DB pins on its first audit
+        // write). This contract DB is fresh — the pin must be absent and the
+        // epoch key absent (absent = legacy; the format flips only via the
+        // offline --re-audit re-anchor, never in the migration).
+        let pin: Option<String> = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'audit_chain_head'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert!(pin.is_none(), "fresh DB carries no head pin");
+        let epoch: Option<String> = db
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'audit_chain_epoch'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        assert!(
+            epoch.is_none(),
+            "the migration never stamps the chain epoch"
         );
 
         // the preset tables exist and the 12 ship-with
@@ -11417,6 +11606,185 @@ Final paragraph after the rule.";
                     .get(0),)
                 .unwrap(),
             "the two domains must not see each other's data"
+        );
+    }
+
+    /// v1.27.31 "AuditRepair" (M4/F-22): the chain-verify sweep covers EVERY
+    /// registered domain — global + each per-domain file — not just
+    /// `state.pool`. A healthy multi-db deployment verifies green across all
+    /// domains.
+    #[test]
+    fn audit_verify_covers_all_domains() {
+        use tempfile::TempDir;
+        register_sqlite_vec();
+        let dir = TempDir::new().expect("temp dir");
+        let global_path = dir.path().join("brain.db");
+        let mgr = SqliteConnectionManager::file(&global_path);
+        let global_pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("global pool");
+        run_migration(&mut global_pool.get().unwrap(), config::DB_MMAP_SIZE_MIB)
+            .expect("global migration");
+        let reg = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true);
+
+        // Audit rows on the global chain AND on two registered domain chains.
+        audit::record(
+            &global_pool.get().unwrap(),
+            audit::AuditKind::Ingest,
+            "api",
+            "g1",
+            audit::AuditStatus::Ok,
+            "d",
+        );
+        for name in ["health", "business"] {
+            let pool = reg.register(name).expect("register domain");
+            audit::record(
+                &pool.get().unwrap(),
+                audit::AuditKind::Ingest,
+                "api",
+                &format!("{name}-1"),
+                audit::AuditStatus::Ok,
+                "d",
+            );
+        }
+
+        let results = handlers::verify_domain_targets(handlers::domain_pools(&reg, &global_pool));
+        let names: Vec<&str> = results.iter().map(|(d, _)| d.as_str()).collect();
+        assert!(
+            names.contains(&"global") && names.contains(&"health") && names.contains(&"business"),
+            "the sweep must cover every registered domain, got {names:?}"
+        );
+        assert!(
+            results.iter().all(|(_, ok)| *ok),
+            "a healthy multi-db deployment verifies green everywhere: {results:?}"
+        );
+
+        // Shim mode collapses to the single shared pool.
+        let shim = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, false);
+        let shim_results =
+            handlers::verify_domain_targets(handlers::domain_pools(&shim, &global_pool));
+        assert_eq!(
+            shim_results.len(),
+            1,
+            "shim mode verifies the one shared pool"
+        );
+        assert!(shim_results[0].1);
+    }
+
+    /// v1.27.31 (M4/F-22): a broken SECOND-domain chain is reported — the
+    /// aggregate goes false and the failing domain is named — instead of an
+    /// ok global pool silently absorbing it. Exercises the /audit/verify
+    /// handler's response body end-to-end.
+    #[tokio::test]
+    async fn multi_db_chain_broken_reported() {
+        use tempfile::TempDir;
+        register_sqlite_vec();
+        let dir = TempDir::new().expect("temp dir");
+        let global_path = dir.path().join("brain.db");
+        let mgr = SqliteConnectionManager::file(&global_path);
+        let global_pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("global pool");
+        run_migration(&mut global_pool.get().unwrap(), config::DB_MMAP_SIZE_MIB)
+            .expect("global migration");
+        let reg = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true);
+
+        let health_pool = reg.register("health").expect("register health");
+        audit::record(
+            &health_pool.get().unwrap(),
+            audit::AuditKind::Ingest,
+            "api",
+            "h1",
+            audit::AuditStatus::Ok,
+            "d",
+        );
+        audit::record(
+            &health_pool.get().unwrap(),
+            audit::AuditKind::Ingest,
+            "api",
+            "h2",
+            audit::AuditStatus::Ok,
+            "d",
+        );
+        let biz_pool = reg.register("business").expect("register business");
+        audit::record(
+            &biz_pool.get().unwrap(),
+            audit::AuditKind::Ingest,
+            "api",
+            "b1",
+            audit::AuditStatus::Ok,
+            "d",
+        );
+        audit::record(
+            &biz_pool.get().unwrap(),
+            audit::AuditKind::Ingest,
+            "api",
+            "b2",
+            audit::AuditStatus::Ok,
+            "d",
+        );
+        // Global chain healthy + a row of its own.
+        audit::record(
+            &global_pool.get().unwrap(),
+            audit::AuditKind::Ingest,
+            "api",
+            "g1",
+            audit::AuditStatus::Ok,
+            "d",
+        );
+
+        // Break ONLY the business chain (rewrite a committed field without
+        // re-chaining) — the exact tamper the multi-db sweep exists to catch.
+        biz_pool
+            .get()
+            .unwrap()
+            .execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 1", [])
+            .unwrap();
+
+        // The handler's full response: aggregate false + the failing domain
+        // named in the breakdown (and health/global still true).
+        let state = Arc::new(AppState {
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+            ),
+            registry: domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true),
+            pool: global_pool.clone(),
+            db_path: global_path.clone(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::default(),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(16).0,
+            alert_events: tokio::sync::broadcast::channel(16).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+        let Json(body) = verify_audit_chain(
+            axum::extract::State(state),
+            crate::handlers::auth::OptPrincipal(None),
+        )
+        .await;
+        assert_eq!(
+            body["ok"],
+            serde_json::json!(false),
+            "the aggregate must fail"
+        );
+        assert_eq!(
+            body["domains"]["business"],
+            serde_json::json!(false),
+            "the failing domain is named"
+        );
+        assert_eq!(
+            body["domains"]["health"],
+            serde_json::json!(true),
+            "a healthy sibling domain still verifies"
+        );
+        assert_eq!(
+            body["domains"]["global"],
+            serde_json::json!(true),
+            "the healthy global chain no longer absorbs the break"
         );
     }
 

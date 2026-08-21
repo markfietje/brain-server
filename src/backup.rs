@@ -804,6 +804,14 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
         );
     }
 
+    // Capture the pre-restore head pin BEFORE the overwrite —
+    // the restored chain is compared against it after the restore so a
+    // rollback (or divergence) of the evidence chain is disclosed, not just
+    // silently accepted.
+    let pre_pin: Option<audit::HeadPin> = rusqlite::Connection::open(db_path)
+        .ok()
+        .and_then(|c| audit::read_head_pin(&c));
+
     // safety snapshot of the live DB
     let mut active_holds: Vec<(i64, String, String)> = Vec::new();
     let mut tombstoned: Vec<i64> = Vec::new();
@@ -873,8 +881,86 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     // disclose any tombstoned content the backup resurrected. Best-effort for
     // the restore itself, but never silent.
     reapply_holds_and_disclose_resurrections(db_path, &active_holds, &tombstoned);
-    audit_backup(db_path, AuditStatus::Ok, "restore complete");
+    // Verify the restored chain BEFORE certifying the
+    // restore — a backup whose audit chain does not verify is untrustworthy
+    // evidence, and the restore must say so. The pre-restore state remains
+    // recoverable in <db>.bak. Then compare the restored head pin against the
+    // pre-restore pin: a mismatch means the restore moved the evidence
+    // position (typically a rollback — an older backup restored over a newer
+    // chain), which is DISCLOSED loudly + recorded on the restore row, then
+    // the `restore complete (head=…)` evidence row is written on the restored
+    // chain (re-pinning it via `record_tenant`).
+    let restored = verify_restored_chain_and_pin(db_path, pre_pin.as_ref())?;
+    let head_detail = match &restored.0 {
+        Some(pin) => format!("restore complete (head={}:{}…)", pin.id, &pin.hash[..16]),
+        None => "restore complete (head=unpinned)".to_string(),
+    };
+    audit_backup(db_path, AuditStatus::Ok, &head_detail);
     Ok(())
+}
+
+/// Post-restore chain attestation + head-pin comparison. Bails when the
+/// restored chain does not verify (fail-closed: the operator keeps the .bak);
+/// otherwise returns the restored pin + the pin comparison (logged here,
+/// returned for tests/callers that need the disclosure programmatically).
+fn verify_restored_chain_and_pin(
+    db_path: &Path,
+    pre_pin: Option<&audit::HeadPin>,
+) -> Result<(Option<audit::HeadPin>, audit::HeadComparison)> {
+    let conn = rusqlite::Connection::open(db_path)
+        .with_context(|| format!("open restored DB {db_path:?}"))?;
+    // A restored DB with no audit_events table predates the audit chain
+    // (pre-audit-schema fixtures, foreign snapshots) — nothing to attest, not a
+    // failure. A DB WITH the table that does not verify is untrustworthy
+    // evidence and the restore refuses to certify it.
+    let has_table: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_events'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_table {
+        tracing::info!("restore: DB predates the audit chain — nothing to verify");
+        return Ok((None, audit::HeadComparison::NoPostPin));
+    }
+    if !audit::verify_chain(&conn) {
+        anyhow::bail!(
+            "restored DB's audit chain does not verify — refusing to certify the restore \
+             (the pre-restore state is preserved in <db>.bak; inspect before retrying)"
+        );
+    }
+    let post_pin = audit::read_head_pin(&conn);
+    let comparison = audit::classify_restored_head(pre_pin, post_pin.as_ref());
+    match &comparison {
+        audit::HeadComparison::Match => {
+            tracing::info!("restore: audit chain head matches the pre-restore pin")
+        }
+        audit::HeadComparison::NoPrePin => {
+            tracing::info!("restore: live DB carried no head pin (fresh or pre-1.27.31)")
+        }
+        audit::HeadComparison::NoPostPin => {
+            tracing::warn!(
+                "restore: restored chain predates head pinning — truncation detection \
+                 starts at the next audit write"
+            )
+        }
+        audit::HeadComparison::RolledBack { pre_id, post_id } => {
+            tracing::error!(
+                "restore ROLLED BACK the audit chain: head id {pre_id} → {post_id}. The \
+                 pre-restore (newer) chain is preserved in <db>.bak — this restore rewound \
+                 evidence and the rewind is now on record"
+            )
+        }
+        audit::HeadComparison::Diverged { pre_id, post_id } => {
+            tracing::warn!(
+                "restore moved the audit chain to a different head: id {pre_id} → {post_id} \
+                 (a newer backup restored, or a divergent chain) — disclosed"
+            )
+        }
+    }
+    Ok((post_pin, comparison))
 }
 
 /// Post-restore hold re-application + resurrection disclosure.
@@ -1534,5 +1620,145 @@ mod tests {
         // create_new: a second create on the same path must refuse.
         let res = create_private_file(&p);
         assert!(res.is_err(), "create_new must refuse an existing path");
+    }
+
+    // ── v1.27.31 "AuditRepair" (M3/F-09) ───────────────────────────────
+
+    /// A DB with a real audit chain (audit_events + schema_meta) grown through
+    /// the real writer, so pins + links are live.
+    fn make_audit_db(path: &Path, rows: usize) {
+        let _ = fs::remove_file(path);
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE audit_events(
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               ts TEXT DEFAULT CURRENT_TIMESTAMP,
+               kind TEXT NOT NULL,
+               actor TEXT,
+               target_hash TEXT,
+               status TEXT,
+               detail_hash TEXT,
+               tenant_id TEXT NOT NULL DEFAULT 'global',
+               prev_hash TEXT);
+             CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+        for i in 0..rows {
+            audit::record(
+                &conn,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+    }
+
+    /// The pure detector: every arm of the pre/post pin comparison.
+    #[test]
+    fn restore_with_rolled_back_head_is_detected() {
+        use audit::HeadComparison::*;
+        let pin = |id: i64| audit::HeadPin {
+            id,
+            hash: format!("{id:064x}"),
+            epoch: "legacy".into(),
+        };
+        assert_eq!(classify_unit(None, None), NoPrePin);
+        assert_eq!(classify_unit(None, Some(pin(3))), NoPrePin);
+        assert_eq!(classify_unit(Some(pin(3)), None), NoPostPin);
+        assert_eq!(classify_unit(Some(pin(3)), Some(pin(3))), Match);
+        // Same id, different hash — a divergence, not a rollback.
+        let mut drifted = pin(3);
+        drifted.hash = "d".repeat(64);
+        assert_eq!(
+            classify_unit(Some(pin(3)), Some(drifted)),
+            Diverged {
+                pre_id: 3,
+                post_id: 3
+            }
+        );
+        // An OLDER head restored over a newer chain — the rollback.
+        assert_eq!(
+            classify_unit(Some(pin(5)), Some(pin(2))),
+            RolledBack {
+                pre_id: 5,
+                post_id: 2
+            }
+        );
+        // A NEWER backup restored over an older chain — disclosed divergence.
+        assert_eq!(
+            classify_unit(Some(pin(2)), Some(pin(7))),
+            Diverged {
+                pre_id: 2,
+                post_id: 7
+            }
+        );
+    }
+
+    /// Thin wrapper so the table above reads as the public seam.
+    fn classify_unit(
+        pre: Option<audit::HeadPin>,
+        post: Option<audit::HeadPin>,
+    ) -> audit::HeadComparison {
+        audit::classify_restored_head(pre.as_ref(), post.as_ref())
+    }
+
+    /// F-09: a restore that rolls the chain back to an older snapshot is
+    /// DETECTED (the helper reports RolledBack) and a restore of a broken
+    /// chain refuses to certify. Exercises the real helper on a real
+    /// rolled-back file (an older VACUUM snapshot written over a newer DB).
+    #[test]
+    fn verify_after_restore_detects_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        // The OLDER chain (2 rows) → snapshot file.
+        let older = dir.path().join("older.db");
+        make_audit_db(&older, 2);
+        let older_snap = dir.path().join("older-snap.db");
+        {
+            let conn = rusqlite::Connection::open(&older).unwrap();
+            vacuum_into(&conn, &older_snap).unwrap();
+        }
+        // The LIVE DB — same chain grown to 5 rows (pin at id 5).
+        let live = dir.path().join("live.db");
+        make_audit_db(&live, 5);
+        let pre_pin = {
+            let conn = rusqlite::Connection::open(&live).unwrap();
+            audit::read_head_pin(&conn).expect("live pin")
+        };
+        assert_eq!(pre_pin.id, 5);
+        // The restore: older snapshot written over the live DB (the same
+        // write_atomic restore_inner performs), then the attestation helper.
+        let snapshot_bytes = fs::read(&older_snap).unwrap();
+        write_atomic(&live, &snapshot_bytes).unwrap();
+        let (post_pin, comparison) =
+            verify_restored_chain_and_pin(&live, Some(&pre_pin)).expect("attest");
+        assert_eq!(post_pin.as_ref().map(|p| p.id), Some(2));
+        assert_eq!(
+            comparison,
+            audit::HeadComparison::RolledBack {
+                pre_id: 5,
+                post_id: 2
+            },
+            "an older snapshot restored over a newer chain is a detected rollback"
+        );
+
+        // A restore of a chain that does NOT verify refuses to certify.
+        let broken = dir.path().join("broken.db");
+        make_audit_db(&broken, 3);
+        {
+            let conn = rusqlite::Connection::open(&broken).unwrap();
+            conn.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 1", [])
+                .unwrap();
+        }
+        let refused = verify_restored_chain_and_pin(&broken, None);
+        let err = match refused {
+            Err(e) => format!("{e:#}"),
+            Ok(_) => panic!("a broken restored chain must refuse certification"),
+        };
+        assert!(
+            err.contains("does not verify"),
+            "error must name the verify failure: {err}"
+        );
     }
 }

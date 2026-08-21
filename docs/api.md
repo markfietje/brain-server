@@ -107,7 +107,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | GET | `/dsar` | DSAR ledger (admin, newest-first, per-row deadline) |
 | GET | `/tombstones?subject=&since=` | Deletion registry |
 | GET | `/dsar/{id}/certificate` | Re-fetch certificate + live chain check |
-| GET | `/audit` · `/audit/verify` | Append-only audit log + chain integrity |
+| GET | `/audit` · `/audit/verify` | Append-only audit log + chain integrity (v1.27.31: verify covers every registered domain; rows carry their `domain` tag in multi-db mode) |
 | GET | `/quarantine` · `/quarantine/{id}/release` · `/delete` | Injection review |
 | GET | `/retention` · POST `/retention` · GET `/art30` · GET `/retention/report` | Per-kind retention policy + Art 30 record + per-domain×kind retention report |
 | GET | `/snapshot/status` | Point-in-time snapshot state |

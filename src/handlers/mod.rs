@@ -593,6 +593,53 @@ pub fn domain_unknown(domain: &str) -> HandlerError {
     }
 }
 
+/// EVERY registered domain's pool, not just
+/// `state.pool` — the multi-db chain sweep primitive. Shim mode collapses to
+/// the single shared global pool (the domain label is a column there, not a
+/// file). A domain whose pool cannot open is carried as `None` — callers
+/// MUST treat that as not-ok (fail-closed, never silent) rather than skipping
+/// the domain.
+pub fn domain_pools(
+    registry: &crate::domain_registry::DomainRegistry,
+    global: &crate::Pool,
+) -> Vec<(String, Option<crate::Pool>)> {
+    if !registry.is_multi_db() {
+        return vec![("global".to_string(), Some(global.clone()))];
+    }
+    registry
+        .known_domains()
+        .into_iter()
+        .map(|d| {
+            let pool = registry
+                .pool_for(&d)
+                .map_err(|e| tracing::warn!("audit domain sweep: pool for '{d}' unavailable: {e}"))
+                .ok();
+            (d, pool)
+        })
+        .collect()
+}
+
+/// Verify EVERY registered domain's audit chain — `true` only when
+/// every domain opens AND verifies. A broken
+/// second-domain chain is reported, not silently absorbed by an ok global
+/// pool; a domain whose pool cannot open counts as NOT ok (fail-closed, never
+/// silent). This is the blocking half — it takes the already-collected
+/// `(domain, pool?)` targets (see [`domain_pools`]) so async callers can
+/// gather pools on the runtime thread and move the owned vec into
+/// `spawn_blocking` (a `&DomainRegistry` is not `'static`).
+pub fn verify_domain_targets(targets: Vec<(String, Option<crate::Pool>)>) -> Vec<(String, bool)> {
+    targets
+        .into_iter()
+        .map(|(d, pool)| {
+            let ok = pool
+                .and_then(|p| p.get().ok())
+                .map(|c| crate::audit::verify_chain(&c))
+                .unwrap_or(false);
+            (d, ok)
+        })
+        .collect()
+}
+
 /// map a registry resolution error onto the
 /// wire shape — the single seam every `pool_for`/`register` call site uses:
 /// 404 `domain_unknown` for unregistered names, 400 `domain_invalid` for
