@@ -6,7 +6,9 @@
 //! without an ABI change — engines never see a driver type. The SDK never
 //! opens a database; it never even names one.
 
-mod tx;
+/// Backend adapters implement [`tx::HostTxHandle`] to power their
+/// [`HostTx`] guards.
+pub mod tx;
 
 pub use tx::HostTx;
 

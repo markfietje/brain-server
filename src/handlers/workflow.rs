@@ -119,7 +119,10 @@ pub async fn post_steering(
         }
         let now = chrono::Utc::now().timestamp();
         let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
-        crate::workflow::outbox::enqueue(&conn, id, "steering", &payload, &key, now).map_err(|e| format!("{e}"))?;
+        use brain_engine_sdk::host::WorkflowHost as _;
+        crate::workflow::host::SqliteWorkflowHost::new(pool.clone())
+            .enqueue(id, "steering", &payload, &key)
+            .map_err(|e| format!("{e}"))?;
         crate::audit::record_tenant(&conn, crate::audit::AuditKind::Workflow, "api", &format!("workflow:{id}"), crate::audit::AuditStatus::Ok, "steering", &domain);
         Ok(())
     }).await.map_err(|e| HandlerError::internal(format!("{e}")))?.map_err(|e| if e=="forbidden" { HandlerError::forbidden(crate::auth::Action::Write, "", "workflow") } else if e=="workflow run not found" { HandlerError::not_found(e) } else { HandlerError::internal(e) })?;

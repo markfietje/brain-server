@@ -26,6 +26,7 @@ pub(crate) mod consensus;
 pub(crate) mod driver;
 pub(crate) mod executor;
 pub(crate) mod frontdoor;
+pub(crate) mod host;
 pub(crate) mod interview;
 pub(crate) mod outbox;
 pub(crate) mod state;

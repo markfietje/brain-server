@@ -1,4 +1,4 @@
-pub use brain_engine_sdk::policy::{Envelope, Priority, stamp_envelope};
+use brain_engine_sdk::policy::Envelope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntentClass {
@@ -125,8 +125,10 @@ pub fn gap_action(similarity_units: i32) -> Option<DraftKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain_engine_sdk::policy::{Priority as SdkPriority, stamp_envelope};
+
     fn env() -> Envelope {
-        stamp_envelope(1000, Priority::P2)
+        stamp_envelope(1000, SdkPriority::P2)
     }
     #[test]
     fn closed_vocab_resolves() {
@@ -192,9 +194,9 @@ mod tests {
     }
     #[test]
     fn sla_clock_stamped() {
-        let e = stamp_envelope(0, Priority::P1);
+        let e = stamp_envelope(0, SdkPriority::P1);
         assert_eq!(e.sla_deadline, 4 * 3600);
-        let e2 = stamp_envelope(0, Priority::P4);
+        let e2 = stamp_envelope(0, SdkPriority::P4);
         assert!(e2.sla_deadline > e.sla_deadline);
     }
 }

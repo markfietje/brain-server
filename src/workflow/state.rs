@@ -3,30 +3,18 @@
 //! Governed workflow is an optimistic-locking problem: the `*-core` engine
 //! crates hold a local `state_revision`, mutate their `state_json`, and write
 //! it back — but only if the stored revision still matches. [`cas_update`]
-//! is that compare-and-swap in one statement, returning the same conflict
-//! vocabulary the crates expose (`DI_*_CONFLICT`-style): `Stale` when a
+//! is that compare-and-swap in one statement, returning the SDK's conflict
+//! vocabulary ([`brain_engine_sdk::host::CasError`]): `Stale` when a
 //! concurrent writer advanced the run, `Gone` when the run no longer exists.
+
+pub use brain_engine_sdk::host::CasError;
 
 use super::audit_write;
 use crate::audit::AuditStatus;
 use rusqlite::{Connection, params};
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum CasError {
-    /// The run was deleted between read and write.
-    Gone,
-    /// `expected_revision` did not match the stored `state_revision` — a
-    /// concurrent transition won; the caller must re-read and re-diff.
-    Stale { actual_revision: i64 },
-    /// The underlying SQLite write failed (not a conflict — an infrastructure
-    /// error the caller should surface, not retry optimistically).
-    Database(String),
-}
-
-impl From<rusqlite::Error> for CasError {
-    fn from(e: rusqlite::Error) -> Self {
-        CasError::Database(e.to_string())
-    }
+fn db_err(e: rusqlite::Error) -> CasError {
+    CasError::Database(e.to_string())
 }
 
 /// Atomically advance a run's state iff the caller's view is current.
@@ -39,12 +27,14 @@ pub(crate) fn cas_update(
     new_status: &str,
     now: i64,
 ) -> Result<i64, CasError> {
-    let updated = conn.execute(
-        "UPDATE workflow_runs
+    let updated = conn
+        .execute(
+            "UPDATE workflow_runs
             SET state_json = ?3, status = ?4, state_revision = ?2 + 1, updated_at = ?5
           WHERE id = ?1 AND state_revision = ?2",
-        rusqlite::params![run_id, expected_revision, new_state_json, new_status, now],
-    )?;
+            rusqlite::params![run_id, expected_revision, new_state_json, new_status, now],
+        )
+        .map_err(db_err)?;
     if updated == 0 {
         // Nothing matched. Distinguish deleted from stale for a useful conflict.
         let actual: Option<i64> = conn

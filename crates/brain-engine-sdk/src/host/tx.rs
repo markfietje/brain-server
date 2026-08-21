@@ -9,7 +9,8 @@ use super::HostError;
 use core::fmt;
 
 /// Backend-private finish hook: `commit == true` commits, `false` rolls back.
-pub(crate) trait HostTxHandle: Send {
+/// Implemented by host adapters; never called by engines.
+pub trait HostTxHandle: Send {
     fn finish(self: Box<Self>, commit: bool) -> Result<(), HostError>;
 }
 
@@ -19,7 +20,8 @@ pub struct HostTx {
 }
 
 impl HostTx {
-    pub(crate) fn new(handle: Box<dyn HostTxHandle>) -> Self {
+    /// Adapters only: wrap a backend finish hook into a guard.
+    pub fn new(handle: Box<dyn HostTxHandle>) -> Self {
         HostTx {
             handle: Some(handle),
         }
