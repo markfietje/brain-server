@@ -1821,7 +1821,7 @@ async fn list_audit(
         Err(e) => return Json(serde_json::json!({ "error": e.inner.message })),
     };
     let limit = params.limit.unwrap_or(100).min(config::MAX_MULTI_GET);
-    let kind = params.kind.clone();
+    let kind = params.kind;
     let tenant = tenant_scope;
     // The operator audit list covers EVERY registered
     // domain's chain in multi-db mode (rows carry their domain tag), not just
@@ -1849,8 +1849,8 @@ async fn list_audit(
                 0,
             ) {
                 for r in page {
-                    let mut v = serde_json::to_value(&r).unwrap_or_default();
-                    v["domain"] = serde_json::Value::String(domain.clone());
+                    let mut v = serde_json::to_value(&r).unwrap_or(serde_json::Value::Null);
+                    v["domain"] = serde_json::Value::String(domain.to_owned());
                     merged.push(v);
                 }
             }
@@ -1867,7 +1867,10 @@ async fn list_audit(
         merged.into_iter().skip(offset).take(limit).collect()
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        tracing::warn!("audit list join failed: {e}");
+        Vec::new()
+    });
     Json(serde_json::json!({ "events": rows }))
 }
 
@@ -1903,8 +1906,8 @@ async fn metrics(
         return (axum::http::StatusCode::FORBIDDEN, e.inner.message);
     }
     let pool = s.pool.clone();
-    let db_path = s.db_path.clone();
-    let audit_cache = s.audit_chain_cache.clone();
+    let db_path = s.db_path.to_owned();
+    let audit_cache = std::sync::Arc::clone(&s.audit_chain_cache);
     // The gauge aggregates EVERY registered domain's chain —
     // collected here (owned) so the blocking closure stays 'static.
     let chain_targets = crate::handlers::domain_pools(&s.registry, &pool);
@@ -1998,7 +2001,10 @@ async fn verify_audit_chain(
     let targets = crate::handlers::domain_pools(&s.registry, &s.pool);
     let results = task::spawn_blocking(move || crate::handlers::verify_domain_targets(targets))
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("verify chain join failed: {e}");
+            Vec::new()
+        });
     let ok = results.iter().all(|(_, ok)| *ok);
     // a failed chain verify is a decision-critical alert —
     // the payload names the failing domains.
@@ -5152,7 +5158,7 @@ async fn main_inner() -> Result<()> {
     }
     info!("Database path: {:?}", db_path);
 
-    // ── the audit-chain HMAC key ──────────────────────────────────
+    // ── audit chain key bootstrap (env → file → generated 0600) ──
     // Resolved BEFORE any pool opens (lazy domain opens consult it for the
     // fresh-DB epoch bootstrap). Env > key file > a generated 0600
     // `audit-chain.key` beside the DB. A resolution failure is a loud warning,

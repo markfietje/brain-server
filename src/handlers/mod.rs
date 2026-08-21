@@ -628,7 +628,7 @@ pub fn domain_pools(
 /// gather pools on the runtime thread and move the owned vec into
 /// `spawn_blocking` (a `&DomainRegistry` is not `'static`).
 pub fn verify_domain_targets(targets: Vec<(String, Option<crate::Pool>)>) -> Vec<(String, bool)> {
-    targets
+    let out: Vec<(String, bool)> = targets
         .into_iter()
         .map(|(d, pool)| {
             let ok = pool
@@ -637,7 +637,8 @@ pub fn verify_domain_targets(targets: Vec<(String, Option<crate::Pool>)>) -> Vec
                 .unwrap_or(false);
             (d, ok)
         })
-        .collect()
+        .collect();
+    out
 }
 
 /// map a registry resolution error onto the

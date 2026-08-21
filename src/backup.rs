@@ -909,10 +909,9 @@ fn verify_restored_chain_and_pin(
 ) -> Result<(Option<audit::HeadPin>, audit::HeadComparison)> {
     let conn = rusqlite::Connection::open(db_path)
         .with_context(|| format!("open restored DB {db_path:?}"))?;
-    // A restored DB with no audit_events table predates the audit chain
-    // (pre-audit-schema fixtures, foreign snapshots) — nothing to attest, not a
-    // failure. A DB WITH the table that does not verify is untrustworthy
-    // evidence and the restore refuses to certify it.
+    // A restored DB with no audit_events table predates the audit chain (pre-audit-schema
+    // fixtures) — nothing to attest. A DB WITH the table that does not verify is
+    // untrustworthy evidence and the restore refuses to certify it.
     let has_table: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_events'",
@@ -1664,15 +1663,15 @@ mod tests {
             hash: format!("{id:064x}"),
             epoch: "legacy".into(),
         };
-        assert_eq!(classify_unit(None, None), NoPrePin);
-        assert_eq!(classify_unit(None, Some(pin(3))), NoPrePin);
-        assert_eq!(classify_unit(Some(pin(3)), None), NoPostPin);
-        assert_eq!(classify_unit(Some(pin(3)), Some(pin(3))), Match);
+        assert_eq!(audit::classify_restored_head(None, None), NoPrePin);
+        assert_eq!(audit::classify_restored_head(None, Some(pin(3)).as_ref()), NoPrePin);
+        assert_eq!(audit::classify_restored_head(Some(pin(3)).as_ref(), None), NoPostPin);
+        assert_eq!(audit::classify_restored_head(Some(pin(3)).as_ref(), Some(pin(3)).as_ref()), Match);
         // Same id, different hash — a divergence, not a rollback.
         let mut drifted = pin(3);
         drifted.hash = "d".repeat(64);
         assert_eq!(
-            classify_unit(Some(pin(3)), Some(drifted)),
+            audit::classify_restored_head(Some(pin(3)).as_ref(), Some(drifted).as_ref()),
             Diverged {
                 pre_id: 3,
                 post_id: 3
@@ -1680,7 +1679,7 @@ mod tests {
         );
         // An OLDER head restored over a newer chain — the rollback.
         assert_eq!(
-            classify_unit(Some(pin(5)), Some(pin(2))),
+            audit::classify_restored_head(Some(pin(5)).as_ref(), Some(pin(2)).as_ref()),
             RolledBack {
                 pre_id: 5,
                 post_id: 2
@@ -1688,7 +1687,7 @@ mod tests {
         );
         // A NEWER backup restored over an older chain — disclosed divergence.
         assert_eq!(
-            classify_unit(Some(pin(2)), Some(pin(7))),
+            audit::classify_restored_head(Some(pin(2)).as_ref(), Some(pin(7)).as_ref()),
             Diverged {
                 pre_id: 2,
                 post_id: 7
@@ -1696,13 +1695,7 @@ mod tests {
         );
     }
 
-    /// Thin wrapper so the table above reads as the public seam.
-    fn classify_unit(
-        pre: Option<audit::HeadPin>,
-        post: Option<audit::HeadPin>,
-    ) -> audit::HeadComparison {
-        audit::classify_restored_head(pre.as_ref(), post.as_ref())
-    }
+    // inlined: direct audit::classify_restored_head calls above (wrapper removed to satisfy lint)
 
     /// F-09: a restore that rolls the chain back to an older snapshot is
     /// DETECTED (the helper reports RolledBack) and a restore of a broken
