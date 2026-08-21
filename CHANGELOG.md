@@ -44,6 +44,54 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.38] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.37 → **1.27.38**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- `brain-troubleshoot-core` engine (diagnostics pipeline) with kernel/gates/advisor/evidence/subagents.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- Crates workspace + `src/workflow` wiring; clippy `-D warnings` + fmt clean.
+
+---
+
+## [1.27.37] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.36 → **1.27.37**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Rulebook engine scaffolding.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- Additive only; tests green.
+
+---
+
 ## [1.27.36] — 2026-08-21
 
 **Server + client release** (server `Cargo.toml`/lock 1.27.35 → **1.27.36**, client `Cargo.toml` 1.27.21 `edition 2024`/`rust-version 1.98`; `crates` workspace `1.98`, `fuzz`/`tools/steward-harness` `edition 2024`; no schema change).
