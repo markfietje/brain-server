@@ -79,6 +79,17 @@ docs/DOC_ACCURACY_AUDIT_PROMPT.md
 /scripts/build_spine.py
 /scripts/seed_spine.sh
 
+# MemorySteward private IP docs (2026-08-21) — the Steward architecture,
+# harness audit, state mapping, the Governed Diagnostic Loop, port specs,
+# rubric pin. Live in the PRIVATE repo brain-steward-ip; never commit here.
+/docs/ARCHITECTURE_steward.md
+/docs/HARNESS_G0_AUDIT.md
+/docs/WORKFLOW_STATE_MAPPING.md
+/docs/WORKFLOW_TROUBLESHOOTING.md
+/docs/port-spec-*.md
+/docs/rubric-pin-*.md
+/docs/STEWARD_COMPLIANCE.md
+
 # v1.20.30: local model cache for the fastembed neural tiers (bge-m3, gte-base, bge-reranker) — machine-local, never commit
 .fastembed_cache/
 
