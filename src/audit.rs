@@ -71,6 +71,11 @@ pub enum AuditKind {
     /// audit evidence must itself be evidenced — a prune writes one row
     /// recording the cutoff + pruned count.
     Retention,
+    /// governed-workflow writes: every
+    /// workflow run/step/outbox/finding/contradiction mutation hash-chains a
+    /// row so the evidence tables are derivable from the audit, never the
+    /// other way (the `AuditKind::Breach` precedent).
+    Workflow,
 }
 
 impl AuditKind {
@@ -90,6 +95,7 @@ impl AuditKind {
             AuditKind::Client => "client",
             AuditKind::GraphRead => "graphread",
             AuditKind::Retention => "retention",
+            AuditKind::Workflow => "workflow",
         }
     }
 }

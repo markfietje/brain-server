@@ -88,6 +88,12 @@ pub const SCHEMA_VERSION_V1_27_22: &str = "1.27.22";
 /// `idx_rels_open_unique` (partial UNIQUE on the triple WHERE superseded_at IS
 /// NULL, with a deterministic newest-wins dedup of legacy double-open rows).
 pub const SCHEMA_VERSION_V1_27_25: &str = "1.27.25";
+/// v1.27.30 "Spine": the governed-workflow tables (`workflow_runs`,
+/// `workflow_steps`, `outbox`, `findings`, `contradictions`) — the durable
+/// evidence substrate the `*-core` engine crates write through. Live in every
+/// domain file (the per-DB migration), hash-chained via `AuditKind::Workflow`
+/// so the tables are derivable from the audit, never the other way.
+pub const SCHEMA_VERSION_V1_27_30: &str = "1.27.30";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

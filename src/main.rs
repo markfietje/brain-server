@@ -82,6 +82,10 @@ mod sources;
 mod trace;
 mod vault;
 mod webhook;
+// the governed-workflow substrate (durable-step primitives
+// + evidence-reducer; no engine code) — write-through durability for the
+// `*-core` crates.
+mod workflow;
 // OTLP trace export. Feature-gated so the default
 // build compiles none of it (see Cargo.toml `otel` feature).
 #[cfg(feature = "otel")]
@@ -9681,6 +9685,12 @@ Final paragraph after the rule.";
             "transfers",
             // the BPO operating register (global-operator rows).
             "clients",
+            // v1.27.30 "Spine": the governed-workflow substrate.
+            "workflow_runs",
+            "workflow_steps",
+            "outbox",
+            "findings",
+            "contradictions",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -9875,10 +9885,11 @@ Final paragraph after the rule.";
         // v1.27.22 for the relationships.superseded_at column + idx_rels_bt
         // (the write-once idx_rels_unique dropped → true bi-temporal edges).
         // v1.27.25 for idx_rels_open_unique (structural open-row invariant).
+        // v1.27.30 for the five governed-workflow tables (the Spine substrate).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_25),
-            "schema_version must be recorded as 1.27.25 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_30),
+            "schema_version must be recorded as 1.27.30 after migration"
         );
 
         // the preset tables exist and the 12 ship-with

@@ -48,6 +48,71 @@ through exists. **No schema, no migration, no endpoints, no server code change.*
 
 ---
 
+## [1.27.30] — 2026-08-21
+
+**Server-only foundation release** (server `Cargo.toml`/lock 1.27.29 →
+**1.27.30**; schema 1.27.25 → **1.27.30**; client + plugin unchanged).
+"Spine" ships the governed-workflow substrate — the Phase 0 gates, the workflow
++ evidence tables, the durable-step primitives, and the evidence-reducer
+(the engine-crate workspace shipped in 1.27.29 "Survey"). **No engine code,
+no new endpoints, no wire change, no telemetry.** The `*-core` engine crates
+that write through this substrate land in 1.27.32–1.27.34.
+
+### Release notes
+
+**Improvements**
+
+- **The governed-workflow substrate ships.** Five additive tables
+  (`workflow_runs`, `workflow_steps`, `outbox`, `findings`, `contradictions`)
+  in every domain DB — the durable, domain-scoped surface the interview /
+  plan / execute engines will write through. Existing endpoints, wire shapes,
+  and stored rows are byte-identical.
+- **Every workflow write is evidence.** The substrate primitives themselves
+  emit `AuditKind::Workflow` rows — audit-per-write holds of the FUNCTION, not
+call-site discipline: a transition and its audit row commit atomically in one
+  `WorkflowTx` (SAVEPOINT-nested) and roll back together; a rejected CAS
+  transition audits `denied`; the tables stay derivable from the audit chain,
+  never the other way.
+- **Idempotent event delivery by key, not retry count.** The outbox enqueues
+  `INSERT OR IGNORE` against a `UNIQUE idempotency_key` and delivers via a
+  single `UPDATE … RETURNING` — a replayed key is a no-op receipt, so
+  at-least-once delivery has at-most-once effect.
+- **The evidence-reducer ships with its oracle pins.** Pure `reduce()` groups
+  findings by canonical claim, dedups by evidence (O(n) seen-set), and surfaces
+  differently-evidenced members as contradictions — never merged. The
+  false-merge guard, contradiction surfacing, and deterministic order are each
+  pinned by test; `normalize` stays oracle-pinned, not mathematically closed.
+
+### Engineering record
+
+- **M1/M2** — the Phase 0 gates were recorded 2026-08-20 (harness decision:
+  adopt the pi_agent_rust fork, execution in 1.27.35); the oracle-fixture
+  commits into `crates/*/tests/oracle/` are deliberately deferred to the port
+  milestones — this release freezes the *possibility* of parity, not the claim.
+- **M3** — the migration is additive-only (five tables, three indexes:
+  partial `idx_workflow_runs_active`, `idx_workflow_steps_run`, the inline
+  `outbox.idempotency_key UNIQUE`); `test_migration_schema_contract` extended
+  to pin tables + the ingest→FTS→vec0 roundtrip unchanged.
+- **M4/M5** — `src/workflow/{tx,outbox,state,evidence}.rs`; 11 tests
+  including `audit_rolls_back_with_the_transition` and
+  `outbox_enqueue_audits_once_not_on_replay`. `deliver` uses
+  `UPDATE … RETURNING run_id` (no second lookup); `cas_update` distinguishes
+  `Stale { actual_revision }` from `Gone` for the engines' `DI_*_CONFLICT`
+  mapping.
+- **Toolchain** — built and tested on rustc **1.97.1** stable (the engine
+  workspace and its edition-2024/rust-1.97 pins shipped in 1.27.29). The
+  server package keeps edition 2021 (an edition flip is its own release).
+  Zero new dependencies — the substrate wires onto existing `rusqlite` + the
+  audit chain only.
+- Tests: server bin **715** / 6 ignored (+11), lib **137** / 1, brain 18,
+  mcp 19, bench 8, eval 2, metrics 8; clippy `-D warnings` + fmt clean on
+  both workspaces.
+- Honest ceilings: no engine code — the substrate's consumers land next
+  release; the audit-per-write guarantee covers the primitives (handler-emitted
+  workflow writes, when they exist, follow the breach precedent); the
+  reducer's `normalize` is oracle-pinned, not proven false-merge-free; G0 is
+  an audit + written decision — the fork execution lands in 1.27.34.
+
 ---
 
 ## [1.27.28] — 2026-08-20

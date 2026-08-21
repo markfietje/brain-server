@@ -1535,13 +1535,100 @@ pub fn run_migration_with_store_dim(
             WHERE superseded_at IS NULL;",
     )?;
 
+    // ── v1.27.30 "Spine": the governed-workflow substrate. ─────────────
+    // The durable evidence tables the `*-core` engine crates (interview/consensus/
+    // executor ports) will write THROUGH — no engine code ships here, only the
+    // storage + primitives (src/workflow/) that make the ports provable later.
+    // Lives in every domain file (the per-DB migration) like legal_holds; each
+    // run is domain-scoped. Every write below emits a matching `AuditKind::Workflow`
+    // row (the breach precedent) — the tables are derivable from the audit chain,
+    // never the other way.
+    //
+    // workflow_runs    — one governed run (an interview, a plan, an execute).
+    //   state_json     = OPAQUE to the server: the `*-core` crates own the shape.
+    //     state_revision = the CAS token for `cas_update` (optimistic locking).
+    // workflow_steps   — the run's step plan, rendered gate-by-gate.
+    //   parent_step_id   = mid-case branching/handoff (resume at current_step).
+    // outbox           — exactly-once event delivery, idempotent BY KEY not retry-count.
+    // findings         — the loop's input valve; evidence pinned per claim (closed
+    //                     schema at write, so the reducer can prove non-merge).
+    // contradictions  — surfaced findings (A vs B), resolved by a later finding.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS workflow_runs(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain          TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            state_json      TEXT NOT NULL,
+            state_revision  INTEGER NOT NULL DEFAULT 0,
+            status          TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            updated_at      INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS workflow_steps(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id          INTEGER NOT NULL,
+            phase           TEXT NOT NULL,
+            step_key        TEXT NOT NULL,
+            state_json      TEXT NOT NULL,
+            revision        INTEGER NOT NULL DEFAULT 0,
+            parent_step_id  INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS outbox(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id          INTEGER NOT NULL,
+            topic           TEXT NOT NULL,
+            payload_json    TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            idempotency_key TEXT NOT NULL UNIQUE,
+            created_at      INTEGER NOT NULL,
+            delivered_at    INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS findings(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      INTEGER NOT NULL,
+            claim       TEXT NOT NULL,
+            evidence    TEXT NOT NULL,
+            source      TEXT NOT NULL,
+            confidence  REAL NOT NULL,
+            ts          INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS contradictions(
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id                  INTEGER NOT NULL,
+            finding_a_id            INTEGER NOT NULL,
+            finding_b_id            INTEGER NOT NULL,
+            state                   TEXT NOT NULL,
+            resolved_by_finding_id  INTEGER
+         );",
+        [],
+    )?;
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_workflow_runs_active
+             ON workflow_runs(domain, status);
+         CREATE INDEX IF NOT EXISTS idx_workflow_steps_run
+             ON workflow_steps(run_id, phase, step_key);",
+    )?;
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
     // v1.27.25 "Scoped": idx_rels_open_unique partial unique index (+ dedup) → 1.27.25.
+    // v1.27.30 "Spine": the five governed-workflow tables → 1.27.30.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.25')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.25';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.30')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.30';",
         [],
     )?;
 
