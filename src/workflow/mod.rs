@@ -22,6 +22,7 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod consensus;
 pub(crate) mod evidence;
 pub(crate) mod interview;
 pub(crate) mod outbox;

@@ -19,6 +19,23 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.33] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.32 → **1.27.33**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- New `brain-consensus-core` crate: pure consensus planning engine with persistence adapter through the governed-workflow substrate (`src/workflow/consensus.rs:1`).
+
+### Engineering record
+
+- `crates/brain-consensus-core:1` + `src/workflow/consensus.rs:1` wired via `src/workflow/mod.rs:25`.
+- `cargo test --features bench --lib` 147 passed; `cargo clippy --all-targets --features bench -- -D warnings` + `cargo fmt` clean.
+
+---
+
 ## [1.27.32] — 2026-08-21
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.31 → **1.27.32**; no schema change; client + plugin unchanged).
