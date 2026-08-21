@@ -33,6 +33,30 @@ jobs:
         # The bench feature gates the bench binary + its 4 unit tests.
         run: cargo test --all-targets --features bench
 
+  engine-crates:
+    # The engine-crate workspace node must stay decoupled from the server:
+    # cores depend on brain-engine-sdk only (the stable ABI), never on
+    # brain-server itself. A path dep back into the crate root would invert
+    # the dependency direction the SDK line exists to establish.
+    name: engine crates decoupled + green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            crates
+      - name: no engine imports brain-server (grep gate)
+        run: '! grep -r "brain-server" crates/*/Cargo.toml'
+      - name: fmt
+        run: cargo fmt --manifest-path crates/Cargo.toml --all -- --check
+      - name: clippy
+        run: cargo clippy --manifest-path crates/Cargo.toml --all-targets -- -D warnings
+      - name: test
+        run: cargo test --manifest-path crates/Cargo.toml --all-targets
+
   otel-gate:
     # v1.20.7 M1 — the `otel` feature (instrumented decision cores) must not
     # rot: the OTLP deps, the #[cfg_attr] spans, and the cfg-gated tests are

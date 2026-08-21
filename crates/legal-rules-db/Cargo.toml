@@ -8,4 +8,6 @@ description = "The (jurisdiction, date, amount) -> then-in-force legal-rule reso
 publish = false
 
 [dependencies]
+# The stable engine ABI: pure cores, policy vocabulary, WorkflowHost seam.
+brain-engine-sdk = { path = "../brain-engine-sdk" }
 serde = { version = "1", features = ["derive"] }

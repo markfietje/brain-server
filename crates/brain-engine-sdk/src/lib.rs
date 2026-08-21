@@ -12,6 +12,8 @@
 //! never open a database.
 
 #![forbid(unsafe_code)]
+// Tests assert via unwrap/expect; production code keeps the deny.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod host;
 pub mod policy;

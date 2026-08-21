@@ -4,10 +4,12 @@ version = "1.27.32"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The Steward deep-interview engine core; writes through the brain-server governed-workflow substrate (src/workflow/). Port spec: private; deliberately empty until the 1.27.32 port."
+description = "The deep-interview engine core; pure decision logic over the brain-engine-sdk ABI (WorkflowHost seam, sdk::pure cores)."
 publish = false
 
 [dependencies]
+# The stable engine ABI: pure cores, policy vocabulary, WorkflowHost seam.
+brain-engine-sdk = { path = "../brain-engine-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
