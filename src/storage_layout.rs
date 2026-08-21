@@ -100,6 +100,7 @@ pub const SCHEMA_VERSION_V1_27_30: &str = "1.27.30";
 /// and the hmac256 format flips only via the offline `--re-audit` re-anchor.
 /// No tables, no columns.
 pub const SCHEMA_VERSION_V1_27_31: &str = "1.27.31";
+pub const SCHEMA_VERSION_V1_27_38: &str = "1.27.38";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

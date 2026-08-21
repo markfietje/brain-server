@@ -1635,8 +1635,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.37')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.37';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.38')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.38';",
         [],
     )?;
 

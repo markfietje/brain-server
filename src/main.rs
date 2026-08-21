@@ -10063,8 +10063,8 @@ Final paragraph after the rule.";
         // v1.27.31 for the audit head pin schema_meta stamp (AuditRepair M3).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_31),
-            "schema_version must be recorded as 1.27.31 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_38),
+            "schema_version must be recorded as 1.27.38 after migration"
         );
 
         // v1.27.31 "AuditRepair": the migration stamps the initial head pin

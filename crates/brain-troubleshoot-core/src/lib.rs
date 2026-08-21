@@ -1,3 +1,8 @@
-//! Scaffold placeholder. The port milestone (spec: private) fills this
-//! crate — writing through the brain-server governed-workflow substrate
-//! (src/workflow/) only.
+#![deny(unsafe_code)]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+pub mod advisor;
+pub mod evidence;
+pub mod gates;
+pub mod kernel;
+pub mod subagents;
