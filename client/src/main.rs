@@ -44,6 +44,14 @@ mod replay;
 // web). save/load (connect + auto-reconnect) and delete (v1.16.7 M7.1 logout)
 // each have a caller in every cfg variant, so no `allow(dead_code)`.
 mod storage;
+// 1.28.4 M1-M3 scaffolds (steward-ip plan): the api_proxy envelope seam, the
+// slot registry, and the conversation assembler land ahead of their UI
+// consumers — same truthful-allow posture as the workflow substrate (the
+// connector-module precedent). Each is `#[cfg(test)]`-covered now; the
+// dead-code watchdog re-flags if a scaffold ships without its consumer.
+mod api_proxy;
+mod conversation;
+mod slots;
 // v1.20.15 "Clock": the shared proposal-deadline clock core (tier + format
 // math), consumed by the review cards, the detail page, and /ops.
 mod time_budget;
