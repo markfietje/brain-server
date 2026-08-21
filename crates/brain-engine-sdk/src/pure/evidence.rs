@@ -1,20 +1,15 @@
 //! The evidence-reducer.
 //!
-//! Pure module: normalizes raw findings *before* storage so only
-//! claim-grouped, deduplicated, contradiction-surfaced evidence ever reaches
-//! the `findings`/`contradictions` tables. The whole Steward thesis rests on
-//! this being conservative — a reducer that merges near-identical claims
-//! together is a reducer that lets the self-learning loop compound errors.
-//!
-//! Honest ceiling (§G of the architecture doc): `normalize` can never be PROVEN
-//! false-merge-free. It is oracle-pinned, not mathematically closed — the three
-//! oracle tests below are the contract the `*-core` crates inherit.
+//! Normalizes raw findings *before* storage so only claim-grouped,
+//! deduplicated, contradiction-surfaced evidence ever reaches the findings and
+//! contradictions tables. Output order is deterministic (claim-sorted).
 
 use std::collections::{BTreeMap, HashSet};
 
-/// One normalized finding, claim-grouped and evidence-pinned.
+/// One normalized finding, claim-grouped and evidence-pinned. Callers
+/// construct; the reducer only reads.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Finding {
+pub struct Finding {
     pub claim: String,
     pub evidence: String,
     pub source: String,
@@ -24,16 +19,17 @@ pub(crate) struct Finding {
 
 /// The output of [`reduce`] over a raw finding batch.
 #[derive(Debug, PartialEq)]
-pub(crate) struct Reduction {
+#[non_exhaustive]
+pub struct Reduction {
     pub findings: Vec<Finding>,
     /// Pairs of finding indexes that claim the same thing but disagree — the
     /// contradictions that must be surfaced, never merged.
     pub contradictions: Vec<(usize, usize)>,
 }
 
-/// Canonicalize a claim for grouping: ASCII-lowercase, collapse whitespace.
-/// ASCII-only lowering keeps the key deterministic and allocation-free beyond
-/// the one output `String` (claims are compared, not displayed).
+/// Canonicalize a claim for grouping: collapse whitespace, ASCII-lowercase.
+/// ASCII-only lowering keeps the key deterministic (claims are compared, not
+/// displayed).
 fn normalize_claim(claim: &str) -> String {
     let mut out = String::with_capacity(claim.len());
     for word in claim.split_whitespace() {
@@ -53,13 +49,9 @@ fn normalize_claim(claim: &str) -> String {
 /// - rows with *different* evidence are kept SEPARATE (the false-merge guard) —
 ///   near-identical claims with different provenance must not be glued;
 /// - the highest-confidence row of a differently-evidenced group becomes the
-///   canonical member, and every other member surfaces as a contradiction
-///   against it (evidence disagreeing on the same claim is a live conflict).
-///
-/// Output order is deterministic (claim-sorted) so the oracle is stable.
-pub(crate) fn reduce(raw: Vec<Finding>) -> Reduction {
-    // Group by canonical claim (computed once per finding), preserving
-    // insertion order -> deterministic.
+///   canonical member; every other member surfaces as a contradiction against
+///   it (evidence disagreeing on the same claim is a live conflict).
+pub fn reduce(raw: Vec<Finding>) -> Reduction {
     let mut groups: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
     for f in raw {
         groups.entry(normalize_claim(&f.claim)).or_default().push(f);
@@ -68,9 +60,8 @@ pub(crate) fn reduce(raw: Vec<Finding>) -> Reduction {
     let mut findings = Vec::new();
     let mut contradictions = Vec::new();
     for (_, mut members) in groups {
-        // Dedup: keep the highest-confidence row per distinct evidence string
-        // (the group already shares one canonical claim, so evidence alone is
-        // the identity) — O(n) via the seen-set.
+        // Dedup: keep the highest-confidence row per distinct evidence string —
+        // O(n) via the seen-set.
         members.sort_by(|a, b| {
             b.confidence
                 .total_cmp(&a.confidence)

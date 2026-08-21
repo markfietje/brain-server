@@ -363,6 +363,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-engine-sdk"
+version = "1.28.0"
+
+[[package]]
 name = "brain-server"
 version = "1.27.42"
 dependencies = [
@@ -373,6 +377,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "blake3",
+ "brain-engine-sdk",
  "bs58",
  "chrono",
  "dirs",

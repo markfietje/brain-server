@@ -1,3 +1,5 @@
+pub use brain_engine_sdk::policy::{Envelope, Priority, stamp_envelope};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntentClass {
     Auth,
@@ -5,14 +7,6 @@ pub enum IntentClass {
     PolicyAnswer,
     Booking,
     BoundedDiagnostic,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Priority {
-    P1,
-    P2,
-    P3,
-    P4,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,27 +24,6 @@ pub struct Handoff {
     pub is_not_seed: String,
     pub sla_deadline: i64,
     pub plan_so_far: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct Envelope {
-    pub p_class: Priority,
-    pub sla_deadline: i64,
-    pub created_at: i64,
-}
-
-pub fn stamp_envelope(created_at: i64, p_class: Priority) -> Envelope {
-    let ttl = match p_class {
-        Priority::P1 => 4 * 3600,
-        Priority::P2 => 24 * 3600,
-        Priority::P3 => 72 * 3600,
-        Priority::P4 => 168 * 3600,
-    };
-    Envelope {
-        p_class,
-        sla_deadline: created_at + ttl,
-        created_at,
-    }
 }
 
 fn is_escape(input: &str) -> bool {
@@ -144,10 +117,9 @@ pub fn post_call_drafts(steps: &[String]) -> Vec<Draft> {
 }
 
 pub fn gap_action(similarity_units: i32) -> Option<DraftKind> {
-    crate::workflow::qa_score::gap_decision(similarity_units).map(|g| match g {
-        crate::workflow::qa_score::GapAction::ProposeNew
-        | crate::workflow::qa_score::GapAction::ProposeUpdate => DraftKind::Knowledge,
-    })
+    use brain_engine_sdk::pure::qa_score::gap_decision;
+    // Every gap action funnels to the same HITL surface: a knowledge draft.
+    gap_decision(similarity_units).map(|_| DraftKind::Knowledge)
 }
 
 #[cfg(test)]

@@ -1,7 +1,13 @@
-const SCALE: i32 = 10_000;
+//! The quality-intelligence scorer: integer ten-thousandths (0..=10000) so a
+//! score is exact, orderable, and wire-stable — never a lossy float. Every
+//! scored question carries its justification and evidence refs; the flywheel
+//! yields PROPOSALS only (the type system offers no path to a direct write).
+
+/// Score scale: 10000 units == 100%.
+pub const SCALE: i32 = 10_000;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RunArtifacts {
+pub struct RunArtifacts {
     pub steps: Vec<StepRow>,
     pub findings: Vec<String>,
     pub contradictions: usize,
@@ -13,7 +19,7 @@ pub(crate) struct RunArtifacts {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StepRow {
+pub struct StepRow {
     pub expected: String,
     pub actual: String,
     pub skipped_verify: bool,
@@ -22,7 +28,8 @@ pub(crate) struct StepRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ScoredQuestion {
+#[non_exhaustive]
+pub struct ScoredQuestion {
     pub id: String,
     pub score_units: i32,
     pub justification: String,
@@ -30,18 +37,20 @@ pub(crate) struct ScoredQuestion {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct QaScore {
+#[non_exhaustive]
+pub struct QaScore {
     pub total_units: i32,
     pub questions: Vec<ScoredQuestion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Cause {
+#[non_exhaustive]
+pub enum Cause {
     Agent,
     System,
 }
 
-pub(crate) fn score_run(a: &RunArtifacts) -> QaScore {
+pub fn score_run(a: &RunArtifacts) -> QaScore {
     let qs = vec![
         score_resolution(a),
         score_correctness(a),
@@ -134,7 +143,7 @@ fn score_trust(a: &RunArtifacts) -> ScoredQuestion {
     }
 }
 
-pub(crate) fn classify_cause(a: &RunArtifacts) -> Cause {
+pub fn classify_cause(a: &RunArtifacts) -> Cause {
     if a.steps.iter().any(|s| s.skipped_verify) {
         return Cause::Agent;
     }
@@ -144,7 +153,7 @@ pub(crate) fn classify_cause(a: &RunArtifacts) -> Cause {
     Cause::Agent
 }
 
-pub(crate) fn override_rate(steps: &[StepRow]) -> i32 {
+pub fn override_rate(steps: &[StepRow]) -> i32 {
     if steps.is_empty() {
         return 0;
     }
@@ -152,7 +161,14 @@ pub(crate) fn override_rate(steps: &[StepRow]) -> i32 {
     diverged * SCALE / steps.len() as i32
 }
 
-pub(crate) fn gap_decision(similarity_units: i32) -> Option<GapAction> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GapAction {
+    ProposeNew,
+    ProposeUpdate,
+}
+
+pub fn gap_decision(similarity_units: i32) -> Option<GapAction> {
     if similarity_units < 4000 {
         Some(GapAction::ProposeNew)
     } else if similarity_units < 8000 {
@@ -162,26 +178,18 @@ pub(crate) fn gap_decision(similarity_units: i32) -> Option<GapAction> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum GapAction {
-    ProposeNew,
-    ProposeUpdate,
-}
-
-pub(crate) fn repeater_detected(count_same_30d: usize) -> bool {
+pub fn repeater_detected(count_same_30d: usize) -> bool {
     count_same_30d >= 3
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FlywheelProposal {
+#[non_exhaustive]
+pub enum FlywheelProposal {
     Gap(GapAction),
     Rca,
 }
 
-pub(crate) fn flywheel_proposals(
-    similarity_units: i32,
-    repeater_count: usize,
-) -> Vec<FlywheelProposal> {
+pub fn flywheel_proposals(similarity_units: i32, repeater_count: usize) -> Vec<FlywheelProposal> {
     let mut out = Vec::new();
     if let Some(g) = gap_decision(similarity_units) {
         out.push(FlywheelProposal::Gap(g));
@@ -193,7 +201,8 @@ pub(crate) fn flywheel_proposals(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Scoreboard {
+#[non_exhaustive]
+pub struct Scoreboard {
     pub fcr_units: i32,
     pub repeat_contact_rate_units: i32,
     pub correctness_units: i32,
@@ -206,7 +215,7 @@ pub(crate) struct Scoreboard {
     pub escalation_honored_units: i32,
 }
 
-pub(crate) fn scoreboard(runs: &[RunArtifacts]) -> Scoreboard {
+pub fn scoreboard(runs: &[RunArtifacts]) -> Scoreboard {
     if runs.is_empty() {
         return Scoreboard {
             fcr_units: 0,

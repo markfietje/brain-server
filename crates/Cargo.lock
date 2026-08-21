@@ -22,6 +22,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-engine-sdk"
+version = "1.28.0"
+
+[[package]]
 name = "brain-executor-core"
 version = "1.27.29"
 dependencies = [

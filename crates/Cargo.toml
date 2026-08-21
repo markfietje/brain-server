@@ -11,6 +11,7 @@
 resolver = "2"
 
 members = [
+    "brain-engine-sdk",
     "brain-interview-core",
     "brain-consensus-core",
     "brain-executor-core",

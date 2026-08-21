@@ -617,19 +617,10 @@ pub fn otel_endpoint() -> String {
 
 // ── per-kind retention ─────────────────────────────
 
-/// Default retention (days) per `memory_kind` for chunks with no explicit
-/// `expires_at`. Per-chunk `expires_at` is the decay primitive; this adds
-/// a kind-level default so a retention policy can govern whole classes of
-/// memory without per-row authoring. `ponytail:` these are defaults — a chunk
-/// with its own `expires_at` always wins, and the policy is query-time only
-/// (no sweeper; nothing is deleted autonomously).
-pub const DEFAULT_RETENTION_KIND_DAYS: &[(&str, i64)] = &[
-    ("fact", 365),
-    ("episodic", 30),
-    ("procedure", 730),
-    ("step", 730),
-    ("decision", 730),
-];
+/// Default retention (days) per `memory_kind` — the policy truth lives in
+/// `brain-engine-sdk` so engines read the same table; env overrides below
+/// layer on top of it.
+pub use brain_engine_sdk::policy::DEFAULT_RETENTION_KIND_DAYS;
 
 /// Whether per-kind retention is live. Defaults to `true`; set
 /// `BRAIN_RETENTION_ENABLED=false` to restore exact legacy behavior (only
