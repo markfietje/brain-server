@@ -8,12 +8,13 @@
 // generic server. The "..." keeps other servers (e.g. tailwindcss-language-server
 // for class completion). No input.css changes needed.
 //
-// rust-analyzer: this repo holds TWO cargo workspaces — the server crate at the
-// root (brain-server + its bins) and the Dioxus client at client/ (brain-client,
-// its own Cargo.lock). Without `linkedProjects` rust-analyzer attaches to only
-// the one it finds first, so the other tree shows as plain text with no
-// diagnostics. Listing BOTH manifests attaches one analysis session per
-// workspace.
+// rust-analyzer: this repo holds multiple Cargo workspaces — the server crate at
+// the root (brain-server + its bins), the Dioxus client at client/ (brain-client,
+// its own Cargo.lock), and the standalone engine crates under crates/* (each its
+// own Cargo.toml, not members of the root workspace). Without `linkedProjects`
+// rust-analyzer attaches to only the one it finds first, so the other trees show
+// as plain text with no diagnostics. Listing every manifest attaches one analysis
+// session per workspace.
 {
   "languages": {
     "CSS": {
@@ -27,7 +28,15 @@
   "lsp": {
     "rust-analyzer": {
       "initialization_options": {
-        "linkedProjects": ["./Cargo.toml", "./client/Cargo.toml"]
+        "linkedProjects": [
+          "./Cargo.toml",
+          "./client/Cargo.toml",
+          "./crates/brain-consensus-core/Cargo.toml",
+          "./crates/brain-executor-core/Cargo.toml",
+          "./crates/brain-interview-core/Cargo.toml",
+          "./crates/brain-troubleshoot-core/Cargo.toml",
+          "./crates/legal-rules-db/Cargo.toml"
+        ]
       }
     }
   }
