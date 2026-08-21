@@ -40,3 +40,15 @@ name = "fuzz_validator"
 path = "fuzz_targets/fuzz_validator.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_evidence_reduce"
+path = "fuzz_targets/fuzz_evidence_reduce.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_qa_score"
+path = "fuzz_targets/fuzz_qa_score.rs"
+test = false
+doc = false

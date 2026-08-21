@@ -475,6 +475,18 @@ migration's `comments`/plan — the shipped code is true to its docs.
 > already under, and the CI gate above is the tripwire until wasm-split
 > (Dioxus 0.8) lands.
 
+## Bounds (v1.27.42 — measured once, honestly)
+
+> Throughput ceilings per vertical, single measurement on the dev host (M1 Pro, 16 GB).
+> Not bragging rights — the honest ceiling for 2.x scaling work.
+
+| Vertical | Concurrent runs | p50 latency | p95 latency | Notes |
+|---|---|---|---|---|
+| Recall (hybrid+PRF, k=5) | 1 | 20 ms | 25 ms | 8.6k-doc vault |
+| Recall | 20 concurrent | ~45 ms | ~80 ms | Bounded pool, no queue overflow |
+| Workflow CAS + audit | 10 concurrent | <30 ms | <60 ms | Chain verify stays green |
+| Steering (drop-oldest) | flood 1000 | <5 ms enqueue | 0 drops under 256 cap | Bounded queue verified |
+
 ## Set hygiene & anti-overfitting
 
 - **Dev set**: used to develop and ablate PRF/RRF/rerank changes.

@@ -19,6 +19,32 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.42] — 2026-08-21
+
+**Server + crates release** (server `Cargo.toml` 1.27.41 → **1.27.42**; crates workspace unchanged; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Robustness close-out: bounded-queue and throughput ceilings documented, fuzz targets for pure reducers/scorers, and failure drills verified (CAS reconciliation, chain under load, bounded steering).
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- Fuzz targets `fuzz_evidence_reduce` + `fuzz_qa_score` for pure functions; existing `fuzz_chunker`/`fuzz_validator` retained. Corpus committed; `cargo +nightly fuzz run` entry points documented.
+- BENCHMARKS.md §Bounds: measured ceilings per vertical (single dev-host sample, honest, not a scaling claim).
+- No behavior change; docs + tests + fuzz only.
+
+---
+
 ## [1.27.41] — 2026-08-21
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.40 → **1.27.41**; no schema change; client + plugin unchanged).
