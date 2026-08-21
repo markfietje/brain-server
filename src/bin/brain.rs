@@ -151,6 +151,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
     Subcommand { name: "key", json: false, run: cmd_key, usage: "brain key generate [--kid ID] [--alg RS256] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]" },
     Subcommand { name: "ump", json: false, run: cmd_ump, usage: "brain ump export [--format md|ump] [--out FILE]\n  brain ump import <file>\n  brain ump keygen [--dir PATH]" },
     Subcommand { name: "token", json: false, run: cmd_token, usage: "brain token rotate" },
+    Subcommand { name: "workflow", json: true, run: cmd_workflow, usage: "brain workflow status <run>\n  brain workflow answer <run> <id> <text>\n  brain workflow approve <run> <step>" },
     Subcommand { name: "bench", json: false, run: |_| cmd_bench(), usage: "brain bench" },
     Subcommand { name: "status", json: true, run: |_| cmd_status(), usage: "brain status" },
     Subcommand { name: "doctor", json: false, run: cmd_doctor, usage: "brain doctor [--backup <path> [--passphrase-file PATH]]" },
@@ -4313,4 +4314,13 @@ fn setup_render_knobs_shows_every_set_knob() {
     let e: serde_json::Value =
         serde_json::from_str(r#"{"name":"smb-simple","retention":{}}"#).unwrap();
     assert!(render_knobs(&e).join("\n").contains("no decay"));
+}
+
+fn cmd_workflow(args: &[String]) -> Result<(), String> {
+    if args.is_empty() { return Err("usage: brain workflow status|answer|approve ...".into()); }
+    let sub = args[0].as_str();
+    let msg = format!("workflow {sub} — harness at tools/steward-harness (line-delimited JSON RPC)");
+    if json_mode() { return emit_json_ok("workflow", serde_json::json!({"sub":sub,"note":msg})); }
+    println!("{msg}");
+    Ok(())
 }
