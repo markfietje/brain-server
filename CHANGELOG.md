@@ -19,6 +19,27 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.32] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.31 → **1.27.32**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Bug fixes**
+
+- Fixed client `clippy::let_and_return` failures blocking CI (`client/src/main.rs:2014`).
+
+**Improvements**
+
+- New `brain-interview-core` crate: pure interview state machine with persistence adapter through the governed-workflow substrate (`src/workflow/interview.rs:1`).
+
+### Engineering record
+
+- `crates/brain-interview-core:1` (`src/ambiguity.rs:1`, `src/state.rs:1`, `src/payload.rs:1`, `src/draft.rs:1`, `src/inspect.rs:1`, `src/recorder.rs:1`, `src/repair.rs:1`) + `src/workflow/interview.rs:1` wired via `src/workflow/mod.rs:25`.
+- CI: `cargo fmt --all` + `cargo clippy --all-targets --features bench/otel` + client wasm gate green; recall eval gate failure was transient model-download TLS reset (no code change).
+
+---
+
 ## [1.27.31] — 2026-08-21
 
 **Server-only security release** (server `Cargo.toml`/lock 1.27.30 →

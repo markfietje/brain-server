@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod evidence;
+pub(crate) mod interview;
 pub(crate) mod outbox;
 pub(crate) mod state;
 pub(crate) mod tx;

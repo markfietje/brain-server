@@ -1664,9 +1664,18 @@ mod tests {
             epoch: "legacy".into(),
         };
         assert_eq!(audit::classify_restored_head(None, None), NoPrePin);
-        assert_eq!(audit::classify_restored_head(None, Some(pin(3)).as_ref()), NoPrePin);
-        assert_eq!(audit::classify_restored_head(Some(pin(3)).as_ref(), None), NoPostPin);
-        assert_eq!(audit::classify_restored_head(Some(pin(3)).as_ref(), Some(pin(3)).as_ref()), Match);
+        assert_eq!(
+            audit::classify_restored_head(None, Some(pin(3)).as_ref()),
+            NoPrePin
+        );
+        assert_eq!(
+            audit::classify_restored_head(Some(pin(3)).as_ref(), None),
+            NoPostPin
+        );
+        assert_eq!(
+            audit::classify_restored_head(Some(pin(3)).as_ref(), Some(pin(3)).as_ref()),
+            Match
+        );
         // Same id, different hash — a divergence, not a rollback.
         let mut drifted = pin(3);
         drifted.hash = "d".repeat(64);

@@ -2012,21 +2012,19 @@ fn Drawer() -> Element {
 }
 
 fn conn_dot(conn: Conn) -> &'static str {
-    let cls = match conn {
+    match conn {
         Conn::Connected => "text-ok",
         Conn::Reconnecting => "text-warn",
         Conn::Unknown => "text-ink-faint",
-    };
-    cls
+    }
 }
 
 fn conn_label(conn: Conn) -> &'static str {
-    let label = match conn {
+    match conn {
         Conn::Connected => "connected",
         Conn::Reconnecting => "reconnecting",
         Conn::Unknown => "…",
-    };
-    label
+    }
 }
 
 /// v1.17.6 M2.6: the landing route component.
