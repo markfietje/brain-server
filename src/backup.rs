@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Encrypted, checksummed backup & restore.
 //!
 //! `backup` snapshots the live sqlite DB via `VACUUM INTO`, records a manifest
@@ -47,8 +48,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::{
-    aead::{generic_array::GenericArray, Aead, KeyInit, Payload},
     Aes256Gcm,
+    aead::{Aead, KeyInit, Payload, generic_array::GenericArray},
 };
 use sha2::{Digest, Sha256};
 use xxhash_rust::xxh3::xxh3_64;
@@ -189,10 +190,10 @@ fn kdf_v2(passphrase: &[u8], salt: &[u8], m: u32, t: u32, p: u32) -> Result<[u8;
 /// Default connector config dir: `$BRAIN_CONNECTOR_CONFIG_DIR`, else
 /// `~/.config/brain-server/connectors`. Mirrors `connector::auth::store`.
 pub fn default_connector_config_dir() -> PathBuf {
-    if let Ok(s) = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR") {
-        if !s.trim().is_empty() {
-            return PathBuf::from(s);
-        }
+    if let Ok(s) = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR")
+        && !s.trim().is_empty()
+    {
+        return PathBuf::from(s);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".config/brain-server/connectors")
@@ -458,7 +459,8 @@ fn decrypt_versioned(
     let nonce = *aes_gcm::aead::Nonce::<Aes256Gcm>::from_slice(&nonce_raw);
     // v3: the header bytes are the AAD — any header bit-flip fails here.
     // v2: legacy no-AAD decrypt (read-compat with pre-v3 writers).
-    let plain = if version == VERSION_V3 {
+
+    if version == VERSION_V3 {
         cipher
             .decrypt(
                 &nonce,
@@ -474,8 +476,7 @@ fn decrypt_versioned(
         cipher.decrypt(&nonce, ct).map_err(|_| {
             anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase or tampered backup)")
         })
-    };
-    plain
+    }
 }
 
 /// Decrypt a backup file — v3/v2 (header) or v1 (legacy derive, `warn!`) — and
@@ -751,10 +752,10 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     f.sync_all()
         .with_context(|| format!("fsync temp {tmp:?}"))?;
     fs::rename(&tmp, path).with_context(|| format!("rename over {path:?}"))?;
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
     }
     Ok(())
 }

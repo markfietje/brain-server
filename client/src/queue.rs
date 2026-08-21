@@ -364,10 +364,10 @@ pub fn queue_from_json(raw: &str) -> Vec<QueuedAction> {
                     "Dsar" => None,
                     _ => None,
                 };
-                if let Some(payload) = payload {
-                    if let Ok(a) = serde_json::from_value(payload) {
-                        out.push(a);
-                    }
+                if let Some(payload) = payload
+                    && let Ok(a) = serde_json::from_value(payload)
+                {
+                    out.push(a);
                 }
             }
         }

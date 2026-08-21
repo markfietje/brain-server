@@ -423,9 +423,11 @@ mod tests {
         // source is pinned at the same level as the pure fn it wraps.
         let deadlines = notification_deadlines(&["ph".to_string(), "eu".to_string()], 1000);
         assert_eq!(deadlines.len(), 4);
-        assert!(deadlines
-            .iter()
-            .all(|d| d.deadline == 1000 + d.hours * 3600));
+        assert!(
+            deadlines
+                .iter()
+                .all(|d| d.deadline == 1000 + d.hours * 3600)
+        );
     }
 
     /// D-1 "never certify silence": a corrupt `jurisdictions` JSON cell must

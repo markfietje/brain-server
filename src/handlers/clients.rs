@@ -6,15 +6,15 @@
 //! into the audit (`AuditKind::Client`). This is the evidence/identity register
 //! only — it does not gate enforcement (that is v1.27.x + v2.x).
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::audit::{AuditKind, AuditStatus};
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::audit::{AuditKind, AuditStatus};
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 /// `POST /clients` body. `profile` is optional (the bound profile is a later
 /// concern; here it is recorded verbatim when supplied).
@@ -102,7 +102,7 @@ pub async fn list_clients(
                 crate::auth::Action::Read,
                 "",
                 "clients",
-            ))
+            ));
         }
     }
     let pool_for = pool.clone();

@@ -14,14 +14,14 @@
 //! `VACUUM INTO` `.bak` snapshot in the DB directory — exists, 0600, size,
 //! `PRAGMA integrity_check`, and audit-chain verification of its log.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 /// Persisted retention overrides plus per-kind counts, both keyed by kind.
 type KindMap = std::collections::BTreeMap<String, i64>;

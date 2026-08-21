@@ -4,10 +4,10 @@
 //! and a feed of recent 401/403s that proves the backend isn't the
 //! unauthenticated-memory-access class.
 
+use crate::UiState;
 use crate::api::{ApiClient, AuditRow};
 use crate::confirm::ConfirmDestructive;
-use crate::panels::{use_document_title, PageTitle};
-use crate::UiState;
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 /// M6 pure: filter audit rows to denied-auth events (kind == "auth" AND

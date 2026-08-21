@@ -388,8 +388,8 @@ fn alg_str(a: Algorithm) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
     use rsa::RsaPrivateKey;
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
     use tempfile::tempdir;
 
     /// Write a keypair to the dir under `<kid>.pem` + `<kid>.key`. Returns

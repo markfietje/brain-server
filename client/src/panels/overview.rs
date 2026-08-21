@@ -7,8 +7,8 @@
 //! The alert list is driven by the pure `overview_alerts` (below) so the panel
 //! is plumbing and the severity ordering / empty case are testable.
 
-use crate::api::{error_message, ApiClient};
-use crate::panels::{use_document_title, PageTitle, RefreshButton};
+use crate::api::{ApiClient, error_message};
+use crate::panels::{PageTitle, RefreshButton, use_document_title};
 use crate::{Route, UiState};
 use dioxus::prelude::*;
 

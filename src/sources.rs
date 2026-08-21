@@ -15,7 +15,7 @@
 //! writes commit. Pure w.r.t. the DB: no embedding model, no I/O beyond the tx.
 
 use anyhow::Result;
-use rusqlite::{params, Transaction};
+use rusqlite::{Transaction, params};
 use xxhash_rust::xxh3::xxh3_64;
 
 /// The vault connector kind. 'vault' = a file under a vault dir. Stringly-typed
@@ -271,13 +271,13 @@ fn sweep_source_chunks(tx: &Transaction<'_>, source_id: i64) -> Result<usize> {
     let ids = chunk_ids_for_source(tx, source_id)?;
     // Active holds are tiny + partial-index-served; a missing legal_holds table
     // (a unit-test schema) means no holds.
-    if let Err(e) = crate::legal_hold::refuse_if_held(tx, &ids) {
-        if !(e.inner.code == "internal_error" && is_missing_table(&e.inner.message)) {
-            return Err(anyhow::anyhow!(
-                "source {source_id} sweep refused: {}",
-                e.inner.message
-            ));
-        }
+    if let Err(e) = crate::legal_hold::refuse_if_held(tx, &ids)
+        && !(e.inner.code == "internal_error" && is_missing_table(&e.inner.message))
+    {
+        return Err(anyhow::anyhow!(
+            "source {source_id} sweep refused: {}",
+            e.inner.message
+        ));
     }
     for id in &ids {
         tx.execute(

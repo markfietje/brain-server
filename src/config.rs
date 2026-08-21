@@ -655,14 +655,13 @@ pub fn retention_kind_days() -> std::collections::BTreeMap<String, i64> {
         .iter()
         .map(|(k, v)| (k.to_string(), *v))
         .collect();
-    if let Ok(raw) = std::env::var("BRAIN_RETENTION_KIND_DAYS") {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-            if let Some(obj) = v.as_object() {
-                for (k, val) in obj {
-                    if let Some(days) = val.as_i64() {
-                        map.insert(k.to_string(), days);
-                    }
-                }
+    if let Ok(raw) = std::env::var("BRAIN_RETENTION_KIND_DAYS")
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw)
+        && let Some(obj) = v.as_object()
+    {
+        for (k, val) in obj {
+            if let Some(days) = val.as_i64() {
+                map.insert(k.to_string(), days);
             }
         }
     }
@@ -944,29 +943,29 @@ mod tests {
         let _ = std::fs::remove_file(&missing);
 
         // 1. Valid file → no error, regardless of env.
-        std::env::set_var("AUTH_TOKEN_FILE", &valid);
+        unsafe { std::env::set_var("AUTH_TOKEN_FILE", &valid) };
         assert_eq!(auth_token_misconfigured(), None);
         // 2. Broken file + no env fallback → fatal.
-        std::env::set_var("AUTH_TOKEN_FILE", &missing);
-        std::env::remove_var("AUTH_TOKEN");
+        unsafe { std::env::set_var("AUTH_TOKEN_FILE", &missing) };
+        unsafe { std::env::remove_var("AUTH_TOKEN") };
         let msg = auth_token_misconfigured();
         assert!(msg.is_some(), "broken explicit file must refuse to start");
         assert!(msg.as_ref().unwrap().contains("AUTH_TOKEN_FILE"));
         // 3. Broken file + env fallback → ladder keeps auth ON.
-        std::env::set_var("AUTH_TOKEN", "fallback");
+        unsafe { std::env::set_var("AUTH_TOKEN", "fallback") };
         assert_eq!(auth_token_misconfigured(), None);
         // 4. No file configured → unchanged no-auth default.
-        std::env::remove_var("AUTH_TOKEN_FILE");
+        unsafe { std::env::remove_var("AUTH_TOKEN_FILE") };
         assert_eq!(auth_token_misconfigured(), None);
 
         let _ = std::fs::remove_file(&valid);
         match prev_file {
-            Some(v) => std::env::set_var("AUTH_TOKEN_FILE", v),
-            None => std::env::remove_var("AUTH_TOKEN_FILE"),
+            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN_FILE", v) },
+            None => unsafe { std::env::remove_var("AUTH_TOKEN_FILE") },
         }
         match prev_env {
-            Some(v) => std::env::set_var("AUTH_TOKEN", v),
-            None => std::env::remove_var("AUTH_TOKEN"),
+            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN", v) },
+            None => unsafe { std::env::remove_var("AUTH_TOKEN") },
         }
     }
 }

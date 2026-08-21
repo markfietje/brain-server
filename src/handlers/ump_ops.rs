@@ -8,22 +8,22 @@ use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
-use axum::Json;
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_stream::StreamExt;
 
+use crate::AppState;
 use crate::handlers::auth::{OptCapability, OptPrincipal};
 use crate::handlers::gate::{load_knowledge_row, principal_to_owner};
 use crate::handlers::ingest::{ingest_one, lower_ump};
 use crate::handlers::recall::{RecallRequest, RecallSourceQuery};
 use crate::handlers::suggest::record_feedback;
 use crate::handlers::ump::{self, UmpMeta};
-use crate::handlers::{audit_scope, HandlerError};
-use crate::AppState;
+use crate::handlers::{HandlerError, audit_scope};
 
 /// §3.1 `max_recall`: the UMP-side cap on a recall request. Callers are
 /// clamped, never rejected — the brain's own `MAX_LIMIT` stays authoritative.
@@ -653,11 +653,11 @@ pub async fn revise(
             // The revision is a NEW record with its own content-addressed id:
             // drop the carried origin so the new row reports its own urn
             // (otherwise `superseded_by` on the old row points at itself).
-            if let Some(meta_json) = &mut req.ump_meta {
-                if let Ok(mut m) = serde_json::from_str::<Value>(meta_json) {
-                    m.as_object_mut().map(|o| o.remove("origin"));
-                    *meta_json = m.to_string();
-                }
+            if let Some(meta_json) = &mut req.ump_meta
+                && let Ok(mut m) = serde_json::from_str::<Value>(meta_json)
+            {
+                m.as_object_mut().map(|o| o.remove("origin"));
+                *meta_json = m.to_string();
             }
             Ok((old_id, req))
         },

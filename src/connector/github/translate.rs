@@ -195,9 +195,10 @@ mod tests {
         assert!(t.markdown.contains(
             "The BGE cross-encoder pegged the M1 CPU and blew the 8s recall timeout.\n\nSteps to reproduce: ..."
         ));
-        assert!(t
-            .markdown
-            .contains("# Issue #42: Rerank tier pegged the M1 CPU"));
+        assert!(
+            t.markdown
+                .contains("# Issue #42: Rerank tier pegged the M1 CPU")
+        );
     }
 
     #[test]
@@ -210,9 +211,10 @@ mod tests {
         assert!(t.markdown.contains("author: markfietje"));
         assert!(t.markdown.contains("labels: [bug, retrieval]"));
         assert!(t.markdown.contains("github_node_id: I_kwDOAAaaaa"));
-        assert!(t
-            .markdown
-            .contains("github_updated_at: 2026-07-19T18:52:58Z"));
+        assert!(
+            t.markdown
+                .contains("github_updated_at: 2026-07-19T18:52:58Z")
+        );
     }
 
     #[test]

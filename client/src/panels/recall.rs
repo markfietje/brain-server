@@ -7,9 +7,9 @@
 //! slider, and the `?trace=true` decision-path artifact (deep-linkable via
 //! `/recall/:trace_id`).
 
-use crate::api::{ApiClient, Hit, RecallResponse};
-use crate::panels::{use_document_title, PageTitle};
 use crate::Route;
+use crate::api::{ApiClient, Hit, RecallResponse};
+use crate::panels::{PageTitle, use_document_title};
 use crate::{DrawerContent, UiState};
 use dioxus::prelude::*;
 
@@ -61,7 +61,7 @@ pub fn panel() -> Element {
     let mut query = use_signal(String::new);
     // The keystroke generation: bumped on every input; a delayed commit commits
     // only if its generation still matches (cancel-safe — see `debounce_commit`).
-    let mut gen = use_signal(|| 0u64);
+    let mut generation = use_signal(|| 0u64);
     let mut trace = use_signal(|| false); // M4.2: ?trace=true toggle
     let mut min_rel = use_signal(String::new); // M4.1: high|medium|low|""
 
@@ -70,8 +70,8 @@ pub fn panel() -> Element {
     // main.rs), then checks the generation — a newer keystroke cancels it.
     let oninput = move |e: Event<FormData>| {
         input.set(e.value());
-        gen += 1;
-        let gen_at_spawn = gen();
+        generation += 1;
+        let gen_at_spawn = generation();
         let val = input();
         spawn(async move {
             // Dependency-free sleep: web + desktop webviews both have a JS engine.
@@ -79,7 +79,7 @@ pub fn panel() -> Element {
                 "return await new Promise(r => setTimeout(r, {DEBOUNCE_MS}));"
             ))
             .await;
-            if debounce_commit(gen_at_spawn, gen()) {
+            if debounce_commit(gen_at_spawn, generation()) {
                 query.set(val);
             }
         });

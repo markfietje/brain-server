@@ -6,9 +6,9 @@
 //! drain worker does the rest. A forged or replayed webhook is rejected before
 //! enqueue.
 
+use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::webhook::{EnqueueOutcome, WebhookQueue};
-use crate::AppState;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -30,10 +30,10 @@ struct WhConfig {
 /// Resolve the directory holding per-connector config files, honoring
 /// `BRAIN_CONNECTOR_CONFIG_DIR` then `~/.config/brain-server/connectors`.
 fn connector_config_dir() -> PathBuf {
-    if let Ok(s) = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR") {
-        if !s.trim().is_empty() {
-            return PathBuf::from(s);
-        }
+    if let Ok(s) = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR")
+        && !s.trim().is_empty()
+    {
+        return PathBuf::from(s);
     }
     let home = std::env::var("HOME")
         .map(PathBuf::from)

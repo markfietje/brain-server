@@ -13,7 +13,7 @@
 
 use super::audit_write;
 use crate::audit::AuditStatus;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// Enqueue a payload for a topic. Returns `true` if a new row was created,
 /// `false` if the key already existed (idempotent replay → no-op).

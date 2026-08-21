@@ -13,19 +13,19 @@
 //! `/auth/logout` — they verify the presented token themselves (a refresh
 //! token is the credential). `/auth/revoke` requires admin auth.
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::auth::jwt::{verify_access_token, TokenType};
-use crate::auth::revocation::{record_and_rotate, revoke, RefreshError};
-use crate::auth::{AuthError, Claims};
 use crate::AppState;
+use crate::auth::jwt::{TokenType, verify_access_token};
+use crate::auth::revocation::{RefreshError, record_and_rotate, revoke};
+use crate::auth::{AuthError, Claims};
 
 /// Access-token lifetime. OWASP JWT Cheat Sheet: ≤15 min for access tokens.
 const ACCESS_LIFETIME_SECS: u64 = 15 * 60;

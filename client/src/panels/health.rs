@@ -3,9 +3,9 @@
 //! v1.21.0 "Profiles" M4: a third card — the home domain's active profile
 //! + effective knobs (transparency = the 2026 compliance ask).
 
-use crate::api::ApiClient;
-use crate::panels::{use_document_title, PageTitle, RefreshButton};
 use crate::UiState;
+use crate::api::ApiClient;
+use crate::panels::{PageTitle, RefreshButton, use_document_title};
 use dioxus::prelude::*;
 
 pub fn panel() -> Element {

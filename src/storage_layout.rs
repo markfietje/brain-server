@@ -232,10 +232,11 @@ impl StorageLayout {
         }
         if let Some(raw) = db_path {
             let p = PathBuf::from(raw.trim());
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() && parent.is_absolute() {
-                    return Ok(Self::new(parent.to_path_buf()));
-                }
+            if let Some(parent) = p.parent()
+                && !parent.as_os_str().is_empty()
+                && parent.is_absolute()
+            {
+                return Ok(Self::new(parent.to_path_buf()));
             }
             // BRAIN_DB_PATH was relative or bare — fall through to default.
         }
@@ -384,7 +385,7 @@ mod tests {
         // operator knob. Tested via a constructed layout + env read.
         let layout = StorageLayout::new(PathBuf::from("/tmp/whatever"));
         // When BRAIN_DB_PATH is unset, legacy_db is root/brain.db.
-        std::env::remove_var("BRAIN_DB_PATH");
+        unsafe { std::env::remove_var("BRAIN_DB_PATH") };
         assert_eq!(layout.legacy_db(), PathBuf::from("/tmp/whatever/brain.db"));
     }
 

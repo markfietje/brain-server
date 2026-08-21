@@ -14,8 +14,8 @@
 //! Both are read-only (their roles `can == ["read"]`): the panels fetch, they
 //! never mutate, and every endpoint the server gates stays server-enforced.
 
-use crate::api::{error_message, ApiClient, ClientRow, ConnectorRow};
-use crate::panels::{use_document_title, PageTitle};
+use crate::api::{ApiClient, ClientRow, ConnectorRow, error_message};
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 /// v1.27.11 M3: the client-side re-filter. `allowlist = None` (not a client-

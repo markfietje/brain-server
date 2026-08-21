@@ -11,14 +11,14 @@
 //! Nothing here runs autonomously: a DSAR is an explicit operator action
 //! (Admin gate), and the webhook is fire-and-forget fail-soft.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::AppState;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_QUERY};
-use crate::AppState;
 
 /// Max derived_from walk depth for a DSAR purge. Derived chains are operator-
 /// created and short (see `consolidate.rs`); a bounded walk keeps the tx small.
@@ -841,10 +841,10 @@ pub async fn get_dsar_certificate(
         match row {
             Some((Some(stored_subject), Some(c))) => {
                 // Tenant gate: if the principal is scoped, the row's subject must match.
-                if let Some(sub) = &tenant_sub {
-                    if stored_subject.as_str() != sub.as_str() {
-                        return Err(HandlerError::not_found("no dsar request with this id"));
-                    }
+                if let Some(sub) = &tenant_sub
+                    && stored_subject.as_str() != sub.as_str()
+                {
+                    return Err(HandlerError::not_found("no dsar request with this id"));
                 }
                 let v: serde_json::Value = serde_json::from_str(&c)
                     .map_err(|_| HandlerError::internal("stored certificate is not valid JSON"))?;
@@ -909,10 +909,10 @@ pub(crate) fn notify_art19(subject: String, certificate_id: i64, certified_at: S
         let mut last_err: Option<String> = None;
         for attempt in 0..3u32 {
             let mut req = client.post(&url).header("content-type", "application/json");
-            if let Some(secret) = crate::config::dsar_webhook_secret() {
-                if let Some(sig) = hmac_hex(secret.as_bytes(), payload.as_bytes()) {
-                    req = req.header("x-brain-signature-256", format!("sha256={sig}"));
-                }
+            if let Some(secret) = crate::config::dsar_webhook_secret()
+                && let Some(sig) = hmac_hex(secret.as_bytes(), payload.as_bytes())
+            {
+                req = req.header("x-brain-signature-256", format!("sha256={sig}"));
             }
             match req.body(payload.clone()).send().await {
                 Ok(r) if r.status().is_success() => return,

@@ -23,8 +23,8 @@
 //! `ponytail:` revisit if brain-server is ever deployed multi-tenant.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 
 /// Default root for per-connector config files. Overridable via
@@ -191,7 +191,7 @@ mod tests {
         let _guard = env_test_lock();
 
         // Env set → use it, and replace `/` in instance with `_` for filename safety.
-        std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", "/tmp/brain-cfg-test");
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", "/tmp/brain-cfg-test") };
         let p = path_for("github", "markfietje/brain-server").unwrap();
         assert_eq!(
             p,
@@ -199,7 +199,7 @@ mod tests {
         );
 
         // Env unset → fall back to $HOME/.config/brain-server/connectors/.
-        std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR");
+        unsafe { std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR") };
         let p = path_for("github", "foo").unwrap();
         assert!(p.ends_with(".config/brain-server/connectors/github-foo.json"));
     }

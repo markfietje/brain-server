@@ -464,7 +464,7 @@ fn print_report(base: &str, searches: usize, rows: &[Row], rss_after_batches: &[
 /// Ship gate: set `BENCH_EVAL_REGRESSION_PCT` (default 2.0); if recall@5 drops
 /// more than that vs the `BENCH_EVAL_BASELINE` JSON, exits non-zero.
 fn run_eval() -> Result<(), String> {
-    use brain_server::eval::{evaluate, Judgment};
+    use brain_server::eval::{Judgment, evaluate};
 
     let path = std::env::var("BRAIN_EVAL_JUDGMENTS").map_err(|_| {
         "BRAIN_EVAL_JUDGMENTS env var must point to a judgments JSON file".to_string()
@@ -578,7 +578,9 @@ fn run_eval() -> Result<(), String> {
                 base_recall, report.recall_at_5, drop, threshold
             ));
         }
-        println!("\n✓ recall@5 within regression threshold ({threshold:.4}) vs baseline {base_recall:.4}");
+        println!(
+            "\n✓ recall@5 within regression threshold ({threshold:.4}) vs baseline {base_recall:.4}"
+        );
     }
 
     Ok(())

@@ -78,13 +78,12 @@ fn find_year(text: &str) -> Option<(i32, u32, Option<u32>)> {
             if yr.iter().all(|b| b.is_ascii_digit()) {
                 let after = i + 4;
                 let next_ok = after == bytes.len() || !is_word_byte(bytes[after]);
-                if next_ok {
-                    if let Ok(year) = std::str::from_utf8(&yr).unwrap_or("0").parse::<i32>() {
-                        if (1000..=9999).contains(&year) {
-                            let (month, day, _) = parse_month_day(text, after);
-                            return Some((year, month, day));
-                        }
-                    }
+                if next_ok
+                    && let Ok(year) = std::str::from_utf8(&yr).unwrap_or("0").parse::<i32>()
+                    && (1000..=9999).contains(&year)
+                {
+                    let (month, day, _) = parse_month_day(text, after);
+                    return Some((year, month, day));
                 }
             }
         }
@@ -153,46 +152,41 @@ pub fn extract_interval(text: &str, now_utc: &NaiveDateTime) -> TemporalInterval
     let year = find_year(text);
 
     // "from X to Y" / "between X and Y" — two dates → [start, end).
-    if let Some((ys, ms, ds)) = find_range_start(&lower, text) {
-        if let Some((ye, me, de)) = find_range_end(&lower, text) {
-            if let (Some(valid), Some(invalid)) =
-                (iso_from_ymd(ys, ms, ds), iso_from_ymd(ye, me, de))
-            {
-                return TemporalInterval {
-                    valid_at: Some(valid),
-                    invalid_at: Some(invalid),
-                };
-            }
-        }
+    if let Some((ys, ms, ds)) = find_range_start(&lower, text)
+        && let Some((ye, me, de)) = find_range_end(&lower, text)
+        && let (Some(valid), Some(invalid)) = (iso_from_ymd(ys, ms, ds), iso_from_ymd(ye, me, de))
+    {
+        return TemporalInterval {
+            valid_at: Some(valid),
+            invalid_at: Some(invalid),
+        };
     }
 
     let mut interval = TemporalInterval::default();
 
     // "until <year>" / "<year> until <year>" → invalid_at.
-    if contains_marker(&lower, &["until", "through ", "ending "]) {
-        if let Some((y, m, d)) = year {
-            interval.invalid_at = iso_from_ymd(y, m, d);
-        }
+    if contains_marker(&lower, &["until", "through ", "ending "])
+        && let Some((y, m, d)) = year
+    {
+        interval.invalid_at = iso_from_ymd(y, m, d);
     }
     // "since <year>" / "from <year>" / "as of <year>" / "in <year>" → valid_at.
     if contains_marker(
         &lower,
         &["since", "from", "as of", "in ", "starting", "began"],
-    ) {
-        if let Some((y, m, d)) = year {
-            if interval.valid_at.is_none() {
-                interval.valid_at = iso_from_ymd(y, m, d);
-            }
-        }
+    ) && let Some((y, m, d)) = year
+        && interval.valid_at.is_none()
+    {
+        interval.valid_at = iso_from_ymd(y, m, d);
     }
 
     // Bare year with no marker + a currency marker → currently true since that year.
-    if interval.valid_at.is_none() && interval.invalid_at.is_none() {
-        if let Some((y, m, d)) = year {
-            if contains_marker(&lower, CURRENCY_MARKERS) {
-                interval.valid_at = iso_from_ymd(y, m, d);
-            }
-        }
+    if interval.valid_at.is_none()
+        && interval.invalid_at.is_none()
+        && let Some((y, m, d)) = year
+        && contains_marker(&lower, CURRENCY_MARKERS)
+    {
+        interval.valid_at = iso_from_ymd(y, m, d);
     }
 
     // "currently" / "now" with NO year → valid_at = now.

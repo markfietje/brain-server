@@ -13,11 +13,11 @@
 //!     for sqlite-vec; the domain-router/centroid piece came later.
 
 use axum::{
-    extract::{Query, State},
     Json,
+    extract::{Query, State},
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::AppState;
@@ -25,11 +25,11 @@ use xxhash_rust::xxh3::xxh3_64;
 use zerocopy::IntoBytes;
 
 use super::{
-    normalize_domain, normalize_name, normalize_rel_type, IngestResponse, MAX_CONTENT,
-    MAX_ENTITIES, MAX_RELATIONS, MAX_TITLE,
+    IngestResponse, MAX_CONTENT, MAX_ENTITIES, MAX_RELATIONS, MAX_TITLE, normalize_domain,
+    normalize_name, normalize_rel_type,
 };
-use crate::handlers::auth::OptPrincipal;
 use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 /// A normalized relation ready for insert: (from, to, kind, optional explicit
 /// valid_at, optional explicit invalid_at). The temporal pair is caller override;
@@ -185,9 +185,11 @@ pub async fn ingest(
         } else {
             let value: serde_json::Value = serde_json::from_str(&body)
                 .map_err(|e| HandlerError::bad_request("invalid_body", e.to_string()))?;
-            vec![serde_json::from_value(value)
-                .map(|r: IngestRequest| (r, crate::handlers::ump::UmpMeta::default()))
-                .map_err(|e| HandlerError::bad_request("invalid_body", e.to_string()))]
+            vec![
+                serde_json::from_value(value)
+                    .map(|r: IngestRequest| (r, crate::handlers::ump::UmpMeta::default()))
+                    .map_err(|e| HandlerError::bad_request("invalid_body", e.to_string())),
+            ]
         };
 
     if lowered.len() == 1 {
@@ -356,25 +358,26 @@ pub(crate) async fn ingest_one(
     // `procedural` for a stored step) — those are preserved in `ump_meta.kind`
     // and must not be rejected (that would break UMP revise/re-import, the
     // §3.5/§6 round-trip seam). `confidence` is a probability on BOTH paths.
-    if let Some(kind) = req.memory_kind.as_deref() {
-        if req.ump_meta.is_none() && !crate::procedural::MemoryKind::is_strict_valid(kind) {
-            return Err(HandlerError::bad_request_with(
-                "invalid_memory_kind",
-                "memory_kind must be one of: fact, procedure, step, decision, episodic",
-                serde_json::json!({
-                    "allowed": ["fact", "procedure", "step", "decision", "episodic"]
-                }),
-            ));
-        }
+    if let Some(kind) = req.memory_kind.as_deref()
+        && req.ump_meta.is_none()
+        && !crate::procedural::MemoryKind::is_strict_valid(kind)
+    {
+        return Err(HandlerError::bad_request_with(
+            "invalid_memory_kind",
+            "memory_kind must be one of: fact, procedure, step, decision, episodic",
+            serde_json::json!({
+                "allowed": ["fact", "procedure", "step", "decision", "episodic"]
+            }),
+        ));
     }
-    if let Some(c) = req.confidence {
-        if !(0.0..=1.0).contains(&c) {
-            return Err(HandlerError::bad_request_with(
-                "invalid_confidence",
-                "confidence must be within 0.0..=1.0",
-                serde_json::json!({ "min": 0.0, "max": 1.0 }),
-            ));
-        }
+    if let Some(c) = req.confidence
+        && !(0.0..=1.0).contains(&c)
+    {
+        return Err(HandlerError::bad_request_with(
+            "invalid_confidence",
+            "confidence must be within 0.0..=1.0",
+            serde_json::json!({ "min": 0.0, "max": 1.0 }),
+        ));
     }
 
     if req.entities.len() > MAX_ENTITIES {
@@ -410,13 +413,13 @@ pub(crate) async fn ingest_one(
     let mut entities: Vec<(String, Option<String>)> = Vec::with_capacity(req.entities.len());
     for e in &req.entities {
         let name = normalize_name(&e.name)?;
-        if let Some(t) = &e.kind {
-            if t.len() > 64 {
-                return Err(HandlerError::bad_request(
-                    "entity_invalid",
-                    "entity type exceeds 64 characters",
-                ));
-            }
+        if let Some(t) = &e.kind
+            && t.len() > 64
+        {
+            return Err(HandlerError::bad_request(
+                "entity_invalid",
+                "entity type exceeds 64 characters",
+            ));
         }
         entities.push((name, e.kind.clone()));
     }

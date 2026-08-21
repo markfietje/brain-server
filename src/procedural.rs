@@ -318,17 +318,16 @@ pub fn evaluate_decision(
     vars: &std::collections::HashMap<String, f64>,
 ) -> DecisionOutcome {
     for branch in &rule.branches {
-        if let Some((var, op, val)) = parse_condition(&branch.condition) {
-            if let Some(actual) = vars.get(var) {
-                if matches_op(*actual, op, val) {
-                    return DecisionOutcome {
-                        result: branch.result.clone(),
-                        matched_condition: Some(branch.condition.clone()),
-                        citation: branch.citation,
-                        used_default: false,
-                    };
-                }
-            }
+        if let Some((var, op, val)) = parse_condition(&branch.condition)
+            && let Some(actual) = vars.get(var)
+            && matches_op(*actual, op, val)
+        {
+            return DecisionOutcome {
+                result: branch.result.clone(),
+                matched_condition: Some(branch.condition.clone()),
+                citation: branch.citation,
+                used_default: false,
+            };
         }
     }
     DecisionOutcome {

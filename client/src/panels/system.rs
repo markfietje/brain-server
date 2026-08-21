@@ -12,17 +12,13 @@
 
 use crate::api::ApiClient;
 use crate::confirm::ConfirmDestructive;
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 /// M3.1: a boolean evidence cell renders via an i18n key (yes/no), never the
 /// raw English `true`/`false` from JSON. Pure so the scan guard cannot trip.
 fn sys_bool(v: bool) -> &'static str {
-    if v {
-        "sys_yes"
-    } else {
-        "sys_no"
-    }
+    if v { "sys_yes" } else { "sys_no" }
 }
 
 pub fn panel() -> Element {
@@ -56,18 +52,18 @@ pub fn panel() -> Element {
     let sys_http_delete = crate::i18n::t("sys_http_delete");
     use_effect(move || {
         spawn(async move {
-            if let Some(saved) = crate::i18n::pref_load("console_history").await {
-                if history().is_empty() {
-                    let lines = saved
-                        .split('\n')
-                        .filter(|s| !s.is_empty())
-                        .map(|s| crate::api::StoredLine {
-                            text: s.to_string(),
-                            secret: false,
-                        })
-                        .collect();
-                    history.set(lines);
-                }
+            if let Some(saved) = crate::i18n::pref_load("console_history").await
+                && history().is_empty()
+            {
+                let lines = saved
+                    .split('\n')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| crate::api::StoredLine {
+                        text: s.to_string(),
+                        secret: false,
+                    })
+                    .collect();
+                history.set(lines);
             }
         });
     });

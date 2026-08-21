@@ -11,15 +11,15 @@
 //!     and Phase 3 (per-domain DBs + centroid routing).
 
 use axum::{
-    extract::{Query, State},
     Json,
+    extract::{Query, State},
 };
 use rand::Rng;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::{
     task,
-    time::{timeout, Duration as StdDuration},
+    time::{Duration as StdDuration, timeout},
 };
 
 /// Deserialize `lex` from either a bare string (legacy: treated as one term)
@@ -53,8 +53,8 @@ where
 use crate::AppState;
 
 use super::{
-    normalize_domain, HitSource, RecallHit, RecallResponse, DEFAULT_RECALL_LIMIT, MAX_LIMIT,
-    MAX_QUERY, MIN_LIMIT,
+    DEFAULT_RECALL_LIMIT, HitSource, MAX_LIMIT, MAX_QUERY, MIN_LIMIT, RecallHit, RecallResponse,
+    normalize_domain,
 };
 use crate::contains_suspicious_pattern;
 use crate::handlers::HandlerError;
@@ -443,7 +443,7 @@ pub(crate) async fn run_recall(
             return Err(crate::handlers::HandlerError::bad_request(
                 "query_invalid",
                 e.to_string(),
-            ))
+            ));
         }
     };
     base_filters.source_leg = source_leg;
@@ -633,20 +633,20 @@ pub(crate) async fn run_recall(
     // a role-restricted agent that searched beyond the global
     // perimeter domain crossed a client border — a security event on the
     // established Auth/Denied channel. Best-effort (never fails the recall).
-    if crate::qa::scope_violation(role_restricted, &domains_searched) {
-        if let Ok(conn) = state.pool.get() {
-            crate::audit::record(
-                &conn,
-                crate::audit::AuditKind::Auth,
-                "api",
-                "scope_violation",
-                crate::audit::AuditStatus::Denied,
-                &format!(
-                    "agent={} domains={domains_searched:?}",
-                    principal_label(principal)
-                ),
-            );
-        }
+    if crate::qa::scope_violation(role_restricted, &domains_searched)
+        && let Ok(conn) = state.pool.get()
+    {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Auth,
+            "api",
+            "scope_violation",
+            crate::audit::AuditStatus::Denied,
+            &format!(
+                "agent={} domains={domains_searched:?}",
+                principal_label(principal)
+            ),
+        );
     }
 
     // emit a read event into the hash-chained audit
@@ -718,10 +718,10 @@ pub(crate) async fn run_recall(
                         // lingers; it never false-deletes); the warning
                         // is logged inside the helper.
                         for (_, domain_pool) in &prune_targets {
-                            if let Some(dp) = domain_pool {
-                                if let Ok(c) = dp.get() {
-                                    crate::audit::prune_audit_retention(&c, days);
-                                }
+                            if let Some(dp) = domain_pool
+                                && let Ok(c) = dp.get()
+                            {
+                                crate::audit::prune_audit_retention(&c, days);
                             }
                         }
                     }
@@ -1251,13 +1251,15 @@ mod tests {
 
     #[test]
     fn results_to_hits_empty() {
-        assert!(results_to_hits(
-            Vec::<(crate::SearchResult, String)>::new(),
-            false,
-            false,
-            &None
-        )
-        .is_empty());
+        assert!(
+            results_to_hits(
+                Vec::<(crate::SearchResult, String)>::new(),
+                false,
+                false,
+                &None
+            )
+            .is_empty()
+        );
     }
 
     /// Cross-domain RRF: results are ranked by their RRF contribution

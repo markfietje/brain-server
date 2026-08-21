@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-use super::{normalize_since, SearchFilters};
+use super::{SearchFilters, normalize_since};
 
 /// Schema version of the query document. Bump when the wire shape changes so
 /// the server can reject unsupported clients instead of mis-parsing them.

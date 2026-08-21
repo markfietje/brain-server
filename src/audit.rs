@@ -55,7 +55,7 @@
 //! ```
 
 use hmac::{Hmac, Mac};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -771,7 +771,9 @@ pub fn record_tenant(
                 epoch: scheme_epoch(&scheme).to_string(),
             };
             if !write_head_pin(conn, &pin) {
-                tracing::warn!("audit head pin write failed (row {id}) — truncation detection degraded until the next write");
+                tracing::warn!(
+                    "audit head pin write failed (row {id}) — truncation detection degraded until the next write"
+                );
             }
         }
     }
@@ -2015,9 +2017,11 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(sorted, (1..=10).collect::<Vec<i64>>());
         // Offset past the end → empty, not an error.
-        assert!(recent_tenant(&db, None, Some("team-a"), 4, 40)
-            .unwrap()
-            .is_empty());
+        assert!(
+            recent_tenant(&db, None, Some("team-a"), 4, 40)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// concurrent autocommit `record_tenant` callers must not

@@ -7,10 +7,10 @@
 //! client-side. Export serializes the (filtered) fetched rows to JSON and
 //! triggers a download via `document::eval` (no new server route).
 
+use crate::UiState;
 use crate::api::{ApiClient, AuditRow};
 use crate::i18n::{t, t_fmt};
-use crate::panels::{use_document_title, PageTitle, RefreshButton};
-use crate::UiState;
+use crate::panels::{PageTitle, RefreshButton, use_document_title};
 use dioxus::prelude::*;
 
 const PAGE: usize = 100; // page size for the server-side audit pagination (M4)

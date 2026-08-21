@@ -7,8 +7,8 @@
 //! `parse_traverse` / `render_path`) as pure cores so the tests pin the field
 //! names the UI reads. This file is plumbing: signal wiring + rendering.
 
-use crate::api::{kind_is_valid, parse_entity, render_path, ApiClient, ApiError};
-use crate::panels::{use_document_title, PageTitle};
+use crate::api::{ApiClient, ApiError, kind_is_valid, parse_entity, render_path};
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 /// v1.17.7 M3.3: the traverse controls, held as one struct so the resource

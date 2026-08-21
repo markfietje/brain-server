@@ -2,24 +2,24 @@
 
 use anyhow::{Context, Result};
 use axum::{
-    body::{to_bytes, Body},
+    Router,
+    body::{Body, to_bytes},
     extract::{Path, Query, State},
     http::Request,
     middleware::{self, Next},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post},
-    Router,
 };
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
     time::{Duration as StdDuration, Instant},
 };
@@ -94,12 +94,12 @@ mod otel;
 // Re-export the retrieval engine's public surface so the HTTP handlers and the
 // (DB-backed) integration tests in this file can address it at the crate root.
 pub use search::{
-    cosine_sim, fuse_prf_passes, perform_search, perform_search_with_prf, prf_extract_terms,
-    prf_should_expand,
+    PrfConfig, Provenance, RRF_K, RRF_OVERFETCH, SearchFilters, SearchResult, SearchSource,
+    SearchTelemetry, cosine_sim, fuse_prf_passes, perform_search, perform_search_with_prf,
+    prf_extract_terms, prf_should_expand,
     quality::{HeuristicEstimator, Recommendation, RetrievalAssessment, RetrievalQualityEstimator},
-    query::{compile_lex, LexSpec, QueryDoc, QueryDocError},
-    rrf_fuse, vec0_knn, PrfConfig, Provenance, SearchFilters, SearchResult, SearchSource,
-    SearchTelemetry, RRF_K, RRF_OVERFETCH,
+    query::{LexSpec, QueryDoc, QueryDocError, compile_lex},
+    rrf_fuse, vec0_knn,
 };
 
 use config::{
@@ -665,7 +665,7 @@ impl axum::response::IntoResponse for AppError {
 /// `handlers::guard_capacity` (which uses `HandlerError` for the `/ingest` +
 /// `/ingest/markdown` paths).
 fn guard_capacity(state: &AppState) -> Result<(), AppError> {
-    use brain_server::capacity::{capacity_target, classify, CapacityEnvelope};
+    use brain_server::capacity::{CapacityEnvelope, capacity_target, classify};
     let Some(conn) = state.pool.get().ok() else {
         return Ok(());
     };
@@ -760,7 +760,7 @@ async fn add_chunk(
         let screen_result = screen::screen(&text, title.as_deref().unwrap_or(""));
         let quarantine = match screen_result {
             screen::ScreenResult::Reject => {
-                return AddResponse::error("Input contains suspicious patterns")
+                return AddResponse::error("Input contains suspicious patterns");
             }
             screen::ScreenResult::Quarantine => true,
             screen::ScreenResult::Clean => false,
@@ -1072,19 +1072,19 @@ async fn search(
 
                 // read-event audit for search reads
                 // (best-effort, never fails the search the caller asked for).
-                if crate::config::audit_read_events(principal.0.is_some()) {
-                    if let Ok(conn) = s.pool.get() {
-                        let actor = handlers::recall::principal_label(&principal.0);
-                        let tenant = handlers::recall::principal_tenant(&principal.0);
-                        crate::audit::record_read_event(
-                            &conn,
-                            crate::audit::AuditKind::Search,
-                            &actor,
-                            &q,
-                            None,
-                            &tenant,
-                        );
-                    }
+                if crate::config::audit_read_events(principal.0.is_some())
+                    && let Ok(conn) = s.pool.get()
+                {
+                    let actor = handlers::recall::principal_label(&principal.0);
+                    let tenant = handlers::recall::principal_tenant(&principal.0);
+                    crate::audit::record_read_event(
+                        &conn,
+                        crate::audit::AuditKind::Search,
+                        &actor,
+                        &q,
+                        None,
+                        &tenant,
+                    );
                 }
 
                 if p.explain {
@@ -1353,52 +1353,50 @@ async fn ingest_memory(
                     &source_uri,
                     sources::KIND_MANUAL,
                     title_for_source.as_deref(),
+                ) && let Ok(outcome) = sources::upsert_revision(
+                    &tx,
+                    source_id,
+                    &revision,
+                    Some(&content_hash),
+                    1,
+                    text_len as u64,
                 ) {
-                    if let Ok(outcome) = sources::upsert_revision(
+                    let revision_id = match outcome {
+                        sources::RevisionOutcome::Unchanged(id)
+                        | sources::RevisionOutcome::Created { id, .. } => id,
+                    };
+                    // was `let _ =` + a comment
+                    // claiming failure "rolls back the whole entry" — it did
+                    // not (the tx committed regardless), so a failed link
+                    // stored a visible memory with no source linkage. Now a
+                    // linkage/evidence failure skips the entry for real (tx
+                    // drops uncommitted), matching the fail-soft style.
+                    if sources::link_chunks(
                         &tx,
                         source_id,
-                        &revision,
-                        Some(&content_hash),
-                        1,
-                        text_len as u64,
-                    ) {
-                        let revision_id = match outcome {
-                            sources::RevisionOutcome::Unchanged(id)
-                            | sources::RevisionOutcome::Created { id, .. } => id,
-                        };
-                        // was `let _ =` + a comment
-                        // claiming failure "rolls back the whole entry" — it did
-                        // not (the tx committed regardless), so a failed link
-                        // stored a visible memory with no source linkage. Now a
-                        // linkage/evidence failure skips the entry for real (tx
-                        // drops uncommitted), matching the fail-soft style.
-                        if sources::link_chunks(
-                            &tx,
-                            source_id,
-                            revision_id,
-                            std::slice::from_ref(&chunk_id),
-                        )
-                        .is_err()
-                        {
-                            eprintln!("⚠️ source link failed — rolling back chunk {chunk_id}");
-                            continue;
-                        }
-                        // manual memories are observed == valid_from
-                        // == now and remain current (valid_to NULL); highest
-                        // authority (trusted local write surface).
-                        if sources::stamp_evidence(
-                            &tx,
-                            chunk_id,
-                            &chrono::Utc::now().to_rfc3339(),
-                            None,
-                            None,
-                            sources::AUTHORITY_MANUAL,
-                        )
-                        .is_err()
-                        {
-                            eprintln!("⚠️ evidence stamp failed — rolling back chunk {chunk_id}");
-                            continue;
-                        }
+                        revision_id,
+                        std::slice::from_ref(&chunk_id),
+                    )
+                    .is_err()
+                    {
+                        eprintln!("⚠️ source link failed — rolling back chunk {chunk_id}");
+                        continue;
+                    }
+                    // manual memories are observed == valid_from
+                    // == now and remain current (valid_to NULL); highest
+                    // authority (trusted local write surface).
+                    if sources::stamp_evidence(
+                        &tx,
+                        chunk_id,
+                        &chrono::Utc::now().to_rfc3339(),
+                        None,
+                        None,
+                        sources::AUTHORITY_MANUAL,
+                    )
+                    .is_err()
+                    {
+                        eprintln!("⚠️ evidence stamp failed — rolling back chunk {chunk_id}");
+                        continue;
                     }
                 }
 
@@ -1674,10 +1672,10 @@ fn health_body(
                 "injection_classifier_loaded": crate::screen::screen_classifier_loaded()
             }
         });
-    if let Some(c) = capacity {
-        if let serde_json::Value::Object(ref mut m) = body {
-            m.insert("capacity".to_string(), c);
-        }
+    if let Some(c) = capacity
+        && let serde_json::Value::Object(ref mut m) = body
+    {
+        m.insert("capacity".to_string(), c);
     }
     // cached audit-chain posture from the integrity watcher —
     // never content, never PII (a hash + two booleans/timestamps).
@@ -1835,8 +1833,8 @@ async fn list_audit(
         for (domain, pool) in &targets {
             let Some(pool) = pool else {
                 continue; // an unopenable domain contributes no rows; the
-                          // chain-verify surfaces report it as not-ok (fail-closed
-                          // lives there — a row listing cannot attest anything).
+                // chain-verify surfaces report it as not-ok (fail-closed
+                // lives there — a row listing cannot attest anything).
             };
             let Ok(conn) = pool.get() else {
                 continue;
@@ -2551,13 +2549,12 @@ async fn ingest_markdown(
         excluded_ranges.extend(list_bold_ranges);
         let mut vocab = linker::extract_vocabulary(&content, &excluded_ranges);
         // Merge existing entities from DB for cross-document recognition.
-        if let Ok(conn) = state.pool.get() {
-            if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT name FROM entities") {
-                if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-                    for row in rows.flatten() {
-                        vocab.insert(&row);
-                    }
-                }
+        if let Ok(conn) = state.pool.get()
+            && let Ok(mut stmt) = conn.prepare("SELECT DISTINCT name FROM entities")
+            && let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0))
+        {
+            for row in rows.flatten() {
+                vocab.insert(&row);
             }
         }
         // Save entity set before consuming vocab.
@@ -2658,48 +2655,46 @@ async fn ingest_markdown(
         let tx = conn
             .transaction()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        if replace {
-            if let Some(sp) = source_path.as_deref() {
-                // Collect stale knowledge IDs for this source_path,
-                // then sweep vec_knowledge + relationships + knowledge.
-                let stale_ids: Vec<i64> = {
-                    let mut stmt = tx
-                        .prepare("SELECT id FROM knowledge WHERE source_path = ?1")
-                        .map_err(|e| AppError::Internal(e.to_string()))?;
-                    let rows = stmt
-                        .query_map(params![sp], |r| r.get::<_, i64>(0))
-                        .map_err(|e| AppError::Internal(e.to_string()))?;
-                    rows.filter_map(|r| r.ok()).collect()
-                };
-                for id in &stale_ids {
-                    // was `let _ =` — a stale vec0 row
-                    // would surface the old chunk in retrieval after the replace.
-                    tx.execute(
-                        "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
-                        params![id],
-                    )
+        if replace && let Some(sp) = source_path.as_deref() {
+            // Collect stale knowledge IDs for this source_path,
+            // then sweep vec_knowledge + relationships + knowledge.
+            let stale_ids: Vec<i64> = {
+                let mut stmt = tx
+                    .prepare("SELECT id FROM knowledge WHERE source_path = ?1")
                     .map_err(|e| AppError::Internal(e.to_string()))?;
-                }
-                // Sweep relationships: both those still linked (previously
-                // stale_ids) AND orphans already NULLed by prior re-ingests.
-                // The replace sweep is an erasure path: a held chunk refuses
-                // the whole re-ingest (same 409 fence as /purge) — held
-                // evidence must not be destroyed by routine supersession.
-                crate::legal_hold::refuse_if_held(&tx, &stale_ids).map_err(|e| {
-                    AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message))
-                })?;
-                tx.execute("DELETE FROM relationships WHERE knowledge_id IS NULL", [])
+                let rows = stmt
+                    .query_map(params![sp], |r| r.get::<_, i64>(0))
                     .map_err(|e| AppError::Internal(e.to_string()))?;
-                for id in &stale_ids {
-                    tx.execute(
-                        "DELETE FROM relationships WHERE knowledge_id = ?1",
-                        params![id],
-                    )
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                }
-                tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp])
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                rows.filter_map(|r| r.ok()).collect()
+            };
+            for id in &stale_ids {
+                // was `let _ =` — a stale vec0 row
+                // would surface the old chunk in retrieval after the replace.
+                tx.execute(
+                    "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?;
             }
+            // Sweep relationships: both those still linked (previously
+            // stale_ids) AND orphans already NULLed by prior re-ingests.
+            // The replace sweep is an erasure path: a held chunk refuses
+            // the whole re-ingest (same 409 fence as /purge) — held
+            // evidence must not be destroyed by routine supersession.
+            crate::legal_hold::refuse_if_held(&tx, &stale_ids).map_err(|e| {
+                AppError::Conflict(format!("{}: {}", e.inner.code, e.inner.message))
+            })?;
+            tx.execute("DELETE FROM relationships WHERE knowledge_id IS NULL", [])
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            for id in &stale_ids {
+                tx.execute(
+                    "DELETE FROM relationships WHERE knowledge_id = ?1",
+                    params![id],
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            }
+            tx.execute("DELETE FROM knowledge WHERE source_path = ?1", params![sp])
+                .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         let r = write_markdown_ingest(
             &tx,
@@ -2966,10 +2961,10 @@ fn write_markdown_ingest(
     // revision. Fail-loud here (unlike the unchanged path above): an orphan
     // chunk with no source linkage is a real bug we want to surface, not a
     // degraded ingest. Vault ingests only — interactive adds stay unlinked.
-    if let Some(sp) = source_path.as_deref() {
-        if !inserted_ids.is_empty() {
-            link_vault_source(tx, sp, doc_title, raw_content, &inserted_ids)?;
-        }
+    if let Some(sp) = source_path.as_deref()
+        && !inserted_ids.is_empty()
+    {
+        link_vault_source(tx, sp, doc_title, raw_content, &inserted_ids)?;
     }
 
     // Document-level knowledge graph: attach relations to the first chunk.
@@ -3360,19 +3355,19 @@ async fn get_chunk(
         Some(v) => {
             // read-event audit for direct chunk reads
             // (best-effort). Target is the chunk id — no content leaves the row.
-            if crate::config::audit_read_events(principal.0.is_some()) {
-                if let Ok(conn) = state.pool.get() {
-                    let actor = handlers::recall::principal_label(&principal.0);
-                    let tenant = handlers::recall::principal_tenant(&principal.0);
-                    crate::audit::record_read_event(
-                        &conn,
-                        crate::audit::AuditKind::Get,
-                        &actor,
-                        &format!("chunk:{id}"),
-                        None,
-                        &tenant,
-                    );
-                }
+            if crate::config::audit_read_events(principal.0.is_some())
+                && let Ok(conn) = state.pool.get()
+            {
+                let actor = handlers::recall::principal_label(&principal.0);
+                let tenant = handlers::recall::principal_tenant(&principal.0);
+                crate::audit::record_read_event(
+                    &conn,
+                    crate::audit::AuditKind::Get,
+                    &actor,
+                    &format!("chunk:{id}"),
+                    None,
+                    &tenant,
+                );
             }
             Ok(Json(v))
         }
@@ -3507,19 +3502,19 @@ async fn multi_get(
 
     // read-event audit for batched reads (best-effort).
     // One event per request; target = the chunk count, never content.
-    if crate::config::audit_read_events(principal.0.is_some()) {
-        if let Ok(conn) = state.pool.get() {
-            let actor = handlers::recall::principal_label(&principal.0);
-            let tenant = handlers::recall::principal_tenant(&principal.0);
-            crate::audit::record_read_event(
-                &conn,
-                crate::audit::AuditKind::Get,
-                &actor,
-                &format!("chunks:{}", rows.len()),
-                None,
-                &tenant,
-            );
-        }
+    if crate::config::audit_read_events(principal.0.is_some())
+        && let Ok(conn) = state.pool.get()
+    {
+        let actor = handlers::recall::principal_label(&principal.0);
+        let tenant = handlers::recall::principal_tenant(&principal.0);
+        crate::audit::record_read_event(
+            &conn,
+            crate::audit::AuditKind::Get,
+            &actor,
+            &format!("chunks:{}", rows.len()),
+            None,
+            &tenant,
+        );
     }
 
     Ok(Json(serde_json::json!({ "chunks": rows })))
@@ -4996,11 +4991,17 @@ fn handle_cli_args() {
                 println!("  brain-server                start server on $BIND_HOST:$BIND_PORT");
                 println!("  brain-server --version      print version and exit");
                 println!("  brain-server --help         print this help and exit");
-                println!("  brain-server --re-embed <profile>  rebuild the vector store at a profile's dim, then exit");
-                println!("  brain-server --re-audit     re-anchor the audit chain under hmac256 (v1.27.31), then exit");
+                println!(
+                    "  brain-server --re-embed <profile>  rebuild the vector store at a profile's dim, then exit"
+                );
+                println!(
+                    "  brain-server --re-audit     re-anchor the audit chain under hmac256 (v1.27.31), then exit"
+                );
                 println!();
                 println!("Env: BIND_HOST, BIND_PORT, BRAIN_DB_PATH, AUTH_TOKEN_FILE, RUST_LOG");
-                println!("      BRAIN_AUDIT_CHAIN_KEY / BRAIN_AUDIT_CHAIN_KEY_FILE (audit chain HMAC key)");
+                println!(
+                    "      BRAIN_AUDIT_CHAIN_KEY / BRAIN_AUDIT_CHAIN_KEY_FILE (audit chain HMAC key)"
+                );
                 std::process::exit(0);
             }
             // Offline one-shot modes handled later in main_inner — passthrough.
@@ -5260,8 +5261,10 @@ async fn main_inner() -> Result<()> {
         profile,
         config::PROFILE_ENTERPRISE | config::PROFILE_DESKTOP | config::PROFILE_QUALITY_LOCAL
     ) {
-        std::env::set_var("BRAIN_RERANK_ENABLED", "1");
-        info!("rerank tier armed (profile={profile}); loading mxbai-rerank-large-v1 (fallback bge-reranker-v2-m3)…");
+        unsafe { std::env::set_var("BRAIN_RERANK_ENABLED", "1") };
+        info!(
+            "rerank tier armed (profile={profile}); loading mxbai-rerank-large-v1 (fallback bge-reranker-v2-m3)…"
+        );
         // Warm at boot, not on first recall: the lazy load would otherwise put
         // the model download inside the request path (observed: first-query 503
         // `recall timed out` while the reranker downloaded).
@@ -5290,10 +5293,10 @@ async fn main_inner() -> Result<()> {
     }
     // A FRESH global DB (zero audit rows) starts directly on hmac256 when the
     // key resolved above; a DB with history stays legacy until --re-audit.
-    if let Ok(conn) = pool.get() {
-        if audit::bootstrap_epoch(&conn) {
-            info!("audit chain: fresh DB bootstrapped to the hmac256 epoch");
-        }
+    if let Ok(conn) = pool.get()
+        && audit::bootstrap_epoch(&conn)
+    {
+        info!("audit chain: fresh DB bootstrapped to the hmac256 epoch");
     }
 
     // ── legacy cutover: brain.db → global.db ─────────────────
@@ -5504,15 +5507,15 @@ async fn main_inner() -> Result<()> {
             for e in entries.flatten() {
                 if e.path().is_file() {
                     use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = std::fs::metadata(e.path()) {
-                        if meta.permissions().mode() & 0o077 != 0 {
-                            warn!(
-                                "UMP operator signing key {:?} is group/world-readable \
+                    if let Ok(meta) = std::fs::metadata(e.path())
+                        && meta.permissions().mode() & 0o077 != 0
+                    {
+                        warn!(
+                            "UMP operator signing key {:?} is group/world-readable \
                                  (mode {:o}) — chmod 600 it to keep the signing key private",
-                                e.path(),
-                                meta.permissions().mode() & 0o777
-                            );
-                        }
+                            e.path(),
+                            meta.permissions().mode() & 0o777
+                        );
                     }
                 }
             }
@@ -5547,7 +5550,9 @@ async fn main_inner() -> Result<()> {
             dir = key_dir
         );
     } else {
-        info!("JWT auth not configured (set BRAIN_JWT_ISSUER + BRAIN_JWT_KEY_DIR); running in opaque-token mode");
+        info!(
+            "JWT auth not configured (set BRAIN_JWT_ISSUER + BRAIN_JWT_KEY_DIR); running in opaque-token mode"
+        );
     }
     let revocation_cache = Arc::new(auth::revocation::RevocationCache::new());
     // Spawn the revocation purge job. Runs every PURGE_INTERVAL_SECS, drops
@@ -5999,19 +6004,19 @@ async fn main_inner() -> Result<()> {
             // the clients register — a client's domain must resolve even if
             // its per-domain file vanished between boots (register recreates
             // it: cap-bounded; a refused seed is logged, never fatal).
-            if config::multi_db() {
-                if let Ok(conn) = app_state.pool.get() {
-                    let domains: Vec<String> = conn
-                        .prepare("SELECT DISTINCT domain FROM clients")
-                        .and_then(|mut stmt| {
-                            stmt.query_map([], |r| r.get::<_, String>(0))
-                                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                        })
-                        .unwrap_or_default();
-                    for d in domains {
-                        if let Err(e) = app_state.registry.seed_registered(&d) {
-                            warn!("clients-table domain seed refused: {e}");
-                        }
+            if config::multi_db()
+                && let Ok(conn) = app_state.pool.get()
+            {
+                let domains: Vec<String> = conn
+                    .prepare("SELECT DISTINCT domain FROM clients")
+                    .and_then(|mut stmt| {
+                        stmt.query_map([], |r| r.get::<_, String>(0))
+                            .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    })
+                    .unwrap_or_default();
+                for d in domains {
+                    if let Err(e) = app_state.registry.seed_registered(&d) {
+                        warn!("clients-table domain seed refused: {e}");
                     }
                 }
             }
@@ -6220,8 +6225,8 @@ mod tests {
     #[test]
     fn graph_entity_respects_limit_and_clamps() {
         let c = graph_db(1000); // hub id 1 with 1000 out-edges
-                                // The entity query joins both endpoints, so a 1000-edge hub yields
-                                // >1000 rows without a cap; the LIMIT keeps the response finite.
+        // The entity query joins both endpoints, so a 1000-edge hub yields
+        // >1000 rows without a cap; the LIMIT keeps the response finite.
         let bounded = entity_relations(&c, 1, 500, None).unwrap();
         assert_eq!(bounded.len(), 500, "bounded to the cap");
         // A small explicit limit is honored.
@@ -6255,7 +6260,7 @@ mod tests {
         // NULL`. A retired version of a triple must not appear as a current
         // relation even though its row survives (supersession never deletes).
         let c = graph_db(4); // hub (id 1) → e1001..e1004 via 'links_to'
-                             // Retire the edge to e1001 in place (transaction-time END set).
+        // Retire the edge to e1001 in place (transaction-time END set).
         c.execute(
             "UPDATE relationships SET superseded_at = '2025-01-01 00:00:00'
              WHERE to_entity_id = 1001",
@@ -6444,14 +6449,14 @@ mod tests {
         // Save/restore the prior env to avoid global-state pollution under
         // parallel test execution.
         let prev = std::env::var("AUTH_TOKEN").ok();
-        std::env::set_var("AUTH_TOKEN", "tok-a\n  tok-b\n");
+        unsafe { std::env::set_var("AUTH_TOKEN", "tok-a\n  tok-b\n") };
         let tokens = crate::config::auth_tokens();
         assert_eq!(tokens.len(), 2);
         assert!(tokens.contains(&"tok-a".to_string()));
         assert!(tokens.contains(&"tok-b".to_string()));
         match prev {
-            Some(v) => std::env::set_var("AUTH_TOKEN", v),
-            None => std::env::remove_var("AUTH_TOKEN"),
+            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN", v) },
+            None => unsafe { std::env::remove_var("AUTH_TOKEN") },
         }
     }
 
@@ -6501,7 +6506,7 @@ mod tests {
         // logic correctly distinguishes the two: classify returns Exceeded but
         // the read-vs-write gate is via blocks_writes(), which is never consulted
         // by read handlers.
-        use brain_server::capacity::{classify, CapacityEnvelope, CapacityStatus};
+        use brain_server::capacity::{CapacityEnvelope, CapacityStatus, classify};
         let env = CapacityEnvelope {
             max_docs: 5,
             max_db_mib: 512,
@@ -7185,7 +7190,7 @@ mod tests {
         // INJECTION_POLICY is process-global, so both the quarantine and reject
         // assertions live in ONE test to avoid a cross-test env-var race under
         // the default parallel test runner.
-        std::env::set_var("INJECTION_POLICY", "quarantine");
+        unsafe { std::env::set_var("INJECTION_POLICY", "quarantine") };
         let db = test_db();
         db.execute(
             "INSERT INTO knowledge (content, source, content_hash)
@@ -7229,7 +7234,7 @@ mod tests {
 
         // Under Reject, flag_if_quarantined must be a no-op — rejection happens at
         // the handler branch instead (helper stays inert).
-        std::env::set_var("INJECTION_POLICY", "reject");
+        unsafe { std::env::set_var("INJECTION_POLICY", "reject") };
         db.execute(
             "INSERT INTO knowledge (content, source, content_hash)
              VALUES ('ignore previous please', 'test', 'q3')",
@@ -7241,7 +7246,7 @@ mod tests {
             !flag_if_quarantined(&db, reject_id, true).expect("reject flag ok"),
             "helper is a no-op under Reject policy"
         );
-        std::env::remove_var("INJECTION_POLICY");
+        unsafe { std::env::remove_var("INJECTION_POLICY") };
     }
 
     #[test]
@@ -8378,7 +8383,7 @@ mod tests {
     fn typed_edge_prefix_passes_validation() {
         // TRACE typed-edge prefixes (update:, supersedes:, etc.) must
         // pass the relation_type validator so callers can ingest typed edges.
-        use crate::handlers::{is_match, RELTYPE_RE};
+        use crate::handlers::{RELTYPE_RE, is_match};
         assert!(is_match(RELTYPE_RE, "update:lives_in"));
         assert!(is_match(RELTYPE_RE, "supersedes:address"));
         assert!(is_match(RELTYPE_RE, "contradicts:claim"));
@@ -8830,7 +8835,7 @@ mod tests {
         // --- Config 1: pure-vector (vec0 KNN only, no FTS, no PRF) ---
         // Temporarily disable PRF so perform_search_traced is the hybrid path;
         // for pure-vector we call vec0_knn directly.
-        std::env::set_var("PRF_ENABLED", "false");
+        unsafe { std::env::set_var("PRF_ENABLED", "false") };
         let mut pv_r5 = 0.0;
         let mut pv_r10 = 0.0;
         for (q, rel) in queries {
@@ -8846,7 +8851,7 @@ mod tests {
         let n = queries.len() as f32;
 
         // --- Config 2: hybrid (RRF vec + FTS, PRF off) ---
-        std::env::set_var("PRF_ENABLED", "false");
+        unsafe { std::env::set_var("PRF_ENABLED", "false") };
         let mut hy_r5 = 0.0;
         let mut hy_r10 = 0.0;
         for (q, rel) in queries {
@@ -8863,7 +8868,7 @@ mod tests {
         }
 
         // --- Config 3: hybrid + PRF (PRF on) ---
-        std::env::set_var("PRF_ENABLED", "true");
+        unsafe { std::env::set_var("PRF_ENABLED", "true") };
         let mut prf_r5 = 0.0;
         let mut prf_r10 = 0.0;
         for (q, rel) in queries {
@@ -10684,12 +10689,14 @@ Final paragraph after the rule.";
         // Fresh: still actionable.
         assert!(handlers::gate::expire_if_stale(&db, fresh, now).expect("fresh is fresh"));
         // Stale: refused + audited as expired.
-        assert!(!handlers::gate::expire_if_stale(
-            &db,
-            stale,
-            now - crate::config::proposal_ttl_secs() - 1
-        )
-        .expect("stale refused"));
+        assert!(
+            !handlers::gate::expire_if_stale(
+                &db,
+                stale,
+                now - crate::config::proposal_ttl_secs() - 1
+            )
+            .expect("stale refused")
+        );
         let status: String = db
             .query_row("SELECT status FROM proposals WHERE id = ?1", [stale], |r| {
                 r.get(0)
@@ -10895,7 +10902,7 @@ Final paragraph after the rule.";
     /// overrides both directions.
     #[test]
     fn test_observe_read_events_default_on_for_jwt_off_for_loopback() {
-        std::env::remove_var("BRAIN_AUDIT_READ_EVENTS");
+        unsafe { std::env::remove_var("BRAIN_AUDIT_READ_EVENTS") };
         assert!(
             crate::config::audit_read_events(true),
             "JWT mode: read events on by default"
@@ -10904,17 +10911,17 @@ Final paragraph after the rule.";
             !crate::config::audit_read_events(false),
             "loopback/opaque: read events off by default"
         );
-        std::env::set_var("BRAIN_AUDIT_READ_EVENTS", "on");
+        unsafe { std::env::set_var("BRAIN_AUDIT_READ_EVENTS", "on") };
         assert!(
             crate::config::audit_read_events(false),
             "explicit override turns loopback auditing on"
         );
-        std::env::set_var("BRAIN_AUDIT_READ_EVENTS", "off");
+        unsafe { std::env::set_var("BRAIN_AUDIT_READ_EVENTS", "off") };
         assert!(
             !crate::config::audit_read_events(true),
             "explicit override turns JWT auditing off"
         );
-        std::env::remove_var("BRAIN_AUDIT_READ_EVENTS");
+        unsafe { std::env::remove_var("BRAIN_AUDIT_READ_EVENTS") };
     }
 
     /// M3: the DSAR locate walk finds owner roots AND transitive
@@ -11206,15 +11213,15 @@ Final paragraph after the rule.";
             let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
             let _ = sent_tx.send(buf);
         });
-        std::env::set_var("BRAIN_DSAR_WEBHOOK_URL", &url);
-        std::env::set_var("BRAIN_DSAR_WEBHOOK_SECRET", "s3cret");
+        unsafe { std::env::set_var("BRAIN_DSAR_WEBHOOK_URL", &url) };
+        unsafe { std::env::set_var("BRAIN_DSAR_WEBHOOK_SECRET", "s3cret") };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             handlers::observe::notify_art19("alice@example.com".to_string(), 7, "now".to_string());
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         });
-        std::env::remove_var("BRAIN_DSAR_WEBHOOK_URL");
-        std::env::remove_var("BRAIN_DSAR_WEBHOOK_SECRET");
+        unsafe { std::env::remove_var("BRAIN_DSAR_WEBHOOK_URL") };
+        unsafe { std::env::remove_var("BRAIN_DSAR_WEBHOOK_SECRET") };
         let req = sent_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap_or_default();
@@ -12057,7 +12064,7 @@ Final paragraph after the rule.";
         roles: &[&str],
         exp_delta: u64,
     ) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use rsa::pkcs8::EncodePrivateKey;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -12377,22 +12384,26 @@ Final paragraph after the rule.";
             manages: vec![],
         };
         // Same team, shared pool: allowed.
-        assert!(handlers::authorize(
-            &Some(principal.clone()),
-            auth::Action::Read,
-            "team-alpha",
-            "global"
-        )
-        .is_ok());
+        assert!(
+            handlers::authorize(
+                &Some(principal.clone()),
+                auth::Action::Read,
+                "team-alpha",
+                "global"
+            )
+            .is_ok()
+        );
         // Same team but a NAMED domain the scope does not name: denied — a
         // domain wildcard is not a cross-domain grant.
-        assert!(handlers::authorize(
-            &Some(principal.clone()),
-            auth::Action::Read,
-            "team-alpha",
-            "acme-us"
-        )
-        .is_err());
+        assert!(
+            handlers::authorize(
+                &Some(principal.clone()),
+                auth::Action::Read,
+                "team-alpha",
+                "acme-us"
+            )
+            .is_err()
+        );
         // Cross-team: denied with 403.
         let err = handlers::authorize(&Some(principal), auth::Action::Read, "team-beta", "global")
             .unwrap_err();
@@ -13195,7 +13206,12 @@ Final paragraph after the rule.";
             violations.is_empty(),
             "comments carry version/milestone/audit labels (drop the label, keep the invariant sentence; \
              schema-history files keep version tags; escape hatch: [errata-exempt: reason]):\n{}",
-            violations.iter().take(40).cloned().collect::<Vec<_>>().join("\n")
+            violations
+                .iter()
+                .take(40)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 
@@ -13838,9 +13854,9 @@ Final paragraph after the rule.";
     /// never as a cross-domain content-confirmation oracle.
     #[tokio::test]
     async fn verify_cannot_cross_domain() {
-        use axum::extract::State as AxState;
         use axum::Json as AxumJson;
-        use handlers::verify::{verify, VerifyRequest};
+        use axum::extract::State as AxState;
+        use handlers::verify::{VerifyRequest, verify};
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
@@ -14394,7 +14410,7 @@ Final paragraph after the rule.";
     /// passes, even on the UMP surface.
     #[test]
     fn capability_accepted_only_on_ump_surface_with_operator_key() {
-        use brain_server::ump_integrity::{mint_capability_token, CapabilityToken};
+        use brain_server::ump_integrity::{CapabilityToken, mint_capability_token};
         use rand::RngCore;
 
         let mut seed = [0u8; 32];
@@ -14627,8 +14643,8 @@ Final paragraph after the rule.";
         let body_with = |env: Option<&str>| {
             let prev = std::env::var("BRAIN_DPO_CONTACT").ok();
             match env {
-                Some(v) => std::env::set_var("BRAIN_DPO_CONTACT", v),
-                None => std::env::remove_var("BRAIN_DPO_CONTACT"),
+                Some(v) => unsafe { std::env::set_var("BRAIN_DPO_CONTACT", v) },
+                None => unsafe { std::env::remove_var("BRAIN_DPO_CONTACT") },
             }
             let body = health_body(
                 100,
@@ -14641,8 +14657,8 @@ Final paragraph after the rule.";
                 0,
             );
             match prev {
-                Some(v) => std::env::set_var("BRAIN_DPO_CONTACT", v),
-                None => std::env::remove_var("BRAIN_DPO_CONTACT"),
+                Some(v) => unsafe { std::env::set_var("BRAIN_DPO_CONTACT", v) },
+                None => unsafe { std::env::remove_var("BRAIN_DPO_CONTACT") },
             }
             body
         };
@@ -15245,7 +15261,7 @@ Final paragraph after the rule.";
         use tower::ServiceExt;
 
         register_sqlite_vec();
-        std::env::remove_var("INJECTION_POLICY");
+        unsafe { std::env::remove_var("INJECTION_POLICY") };
         let tmp = NamedTempFile::new().expect("temp file");
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
@@ -15337,7 +15353,7 @@ Final paragraph after the rule.";
         assert_eq!(rels, 0, "a quarantined plant gets no KG edges");
 
         // B. Reject policy: the same body is refused, not stored.
-        std::env::set_var("INJECTION_POLICY", "reject");
+        unsafe { std::env::set_var("INJECTION_POLICY", "reject") };
         let (status, v) = post(&app, "/ingest", injection).await;
         assert_eq!(
             status,
@@ -15345,7 +15361,7 @@ Final paragraph after the rule.";
             "reject policy: {v}"
         );
         assert_eq!(v["error"]["code"], "input_rejected");
-        std::env::remove_var("INJECTION_POLICY");
+        unsafe { std::env::remove_var("INJECTION_POLICY") };
 
         // C. Benign control: clean content scores flagged=0.
         let benign = serde_json::json!({
@@ -15377,7 +15393,7 @@ Final paragraph after the rule.";
         use tower::ServiceExt;
 
         register_sqlite_vec();
-        std::env::remove_var("INJECTION_POLICY");
+        unsafe { std::env::remove_var("INJECTION_POLICY") };
         let tmp = NamedTempFile::new().expect("temp file");
         let mgr = SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
@@ -15491,7 +15507,7 @@ Final paragraph after the rule.";
         );
 
         // B. Reject policy: the same body is refused, not stored.
-        std::env::set_var("INJECTION_POLICY", "reject");
+        unsafe { std::env::set_var("INJECTION_POLICY", "reject") };
         let (status, v) = post(&app, "/procedure", plant).await;
         assert_eq!(
             status,
@@ -15499,7 +15515,7 @@ Final paragraph after the rule.";
             "reject policy: {v}"
         );
         assert_eq!(v["error"]["code"], "input_rejected");
-        std::env::remove_var("INJECTION_POLICY");
+        unsafe { std::env::remove_var("INJECTION_POLICY") };
     }
 
     /// the reference conformance suite's wire expectations, end to
@@ -15528,7 +15544,7 @@ Final paragraph after the rule.";
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
         std::fs::write(key_dir.path().join("operator.key"), seed).expect("write seed");
-        std::env::set_var("BRAIN_UMP_KEY_DIR", key_dir.path());
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", key_dir.path()) };
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let mgr = SqliteConnectionManager::file(tmp.path());
@@ -15666,10 +15682,12 @@ Final paragraph after the rule.";
                 .starts_with("ed25519:"),
             "reference verifyHash requires the ed25519: prefix"
         );
-        assert!(rec["integrity"]["signer"]
-            .as_str()
-            .unwrap()
-            .starts_with("did:key:z"));
+        assert!(
+            rec["integrity"]["signer"]
+                .as_str()
+                .unwrap()
+                .starts_with("did:key:z")
+        );
         let pk = crate::handlers::ump::operator_signing_key()
             .map(|(_, sk)| sk.verifying_key().to_bytes());
         assert!(
@@ -15801,7 +15819,7 @@ Final paragraph after the rule.";
         assert_eq!(s, axum::http::StatusCode::OK, "feedback: {fb}");
         assert_eq!(fb["ok"], true, "{fb}");
 
-        std::env::remove_var("BRAIN_UMP_KEY_DIR");
+        unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
     }
 
     /// the WORM-lite enforcement end to end:
@@ -15811,8 +15829,8 @@ Final paragraph after the rule.";
     /// free rows, and (4) releasing every hold un-freezes it so a later purge
     /// succeeds. Covers plan Verifications 1, 2-ish (release-gated), 3.
     #[tokio::test]
-    async fn legal_hold_freezes_erasure_and_dsar_defers(
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn legal_hold_freezes_erasure_and_dsar_defers()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use axum::body::to_bytes;
         use tower::ServiceExt;
 

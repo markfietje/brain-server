@@ -10,10 +10,10 @@
 //! corpus needs sharper separation.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
-use crate::search::cosine_sim;
 use crate::Pool;
+use crate::search::cosine_sim;
 
 /// Minimum cosine similarity between a query and a domain centroid for the
 /// query to be confidently routed to that domain. Below this, non-strict recall

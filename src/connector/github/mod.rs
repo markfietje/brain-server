@@ -23,7 +23,7 @@ pub mod client;
 pub mod translate;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::connector::auth::AccessToken;
 use crate::connector::github::client::{GitHubClient, Page};

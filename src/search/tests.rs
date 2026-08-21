@@ -241,9 +241,11 @@ fn prf_extracts_topical_terms_not_in_query() {
 fn prf_excludes_stopwords() {
     let hits = vec![sr(1, 0.9, "the document is about the thing and the other")];
     let terms = prf_extract_terms(&hits, "query", 5);
-    assert!(!terms
-        .iter()
-        .any(|t| t == "the" || t == "about" || t == "and"));
+    assert!(
+        !terms
+            .iter()
+            .any(|t| t == "the" || t == "about" || t == "and")
+    );
     assert!(terms.contains(&"document".to_string()));
 }
 
@@ -360,9 +362,11 @@ fn prf_skips_flagged_content() {
     flagged.flagged = true;
     let hits = vec![flagged, sr(2, 0.8, "unrelated filler text here")];
     let terms = prf_extract_terms(&hits, "query", 5);
-    assert!(!terms
-        .iter()
-        .any(|t| t == "rust" || t == "memory" || t == "safety"));
+    assert!(
+        !terms
+            .iter()
+            .any(|t| t == "rust" || t == "memory" || t == "safety")
+    );
 }
 
 #[test]
@@ -608,7 +612,7 @@ fn graph_rescue_fuse_does_not_mark_prf_expanded() {
 /// (a regression here would silently affect vec0 AND FTS retrieval).
 #[test]
 fn push_gate_filters_emits_decay_kind_and_scope() {
-    use super::{push_gate_filters, SearchFilters};
+    use super::{SearchFilters, push_gate_filters};
     let mut sql = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let filters = SearchFilters {
@@ -673,7 +677,7 @@ fn push_gate_filters_emits_decay_kind_and_scope() {
 /// contributes three bound params (kind, days, now).
 #[test]
 fn push_gate_filters_emits_per_kind_retention_disjunction() {
-    use super::{push_gate_filters, SearchFilters};
+    use super::{SearchFilters, push_gate_filters};
     let mut sql = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let filters = SearchFilters {
@@ -715,7 +719,7 @@ fn push_gate_filters_emits_per_kind_retention_disjunction() {
 /// regress to the legacy form.
 #[test]
 fn push_gate_filters_emits_unixepoch_kind_defaults() {
-    use super::{push_gate_filters, SearchFilters};
+    use super::{SearchFilters, push_gate_filters};
     let mut sql = String::from("SELECT 1 FROM knowledge k WHERE 1=1");
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let filters = SearchFilters {

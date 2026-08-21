@@ -9,7 +9,7 @@
 //! interpretation, so the operator sees exactly what the reference suite sees.
 
 use crate::api::ApiClient;
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 pub fn panel() -> Element {

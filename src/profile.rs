@@ -96,22 +96,22 @@ impl Profile {
                 self.name
             ));
         }
-        if let Some(s) = &self.default_access_scope {
-            if !ACCESS_SCOPES.contains(&s.as_str()) {
-                return Err(format!(
-                    "default_access_scope must be one of {ACCESS_SCOPES:?}"
-                ));
-            }
+        if let Some(s) = &self.default_access_scope
+            && !ACCESS_SCOPES.contains(&s.as_str())
+        {
+            return Err(format!(
+                "default_access_scope must be one of {ACCESS_SCOPES:?}"
+            ));
         }
-        if let Some(m) = &self.pii_mode {
-            if !PII_MODES.contains(&m.as_str()) {
-                return Err(format!("pii_mode must be one of {PII_MODES:?}"));
-            }
+        if let Some(m) = &self.pii_mode
+            && !PII_MODES.contains(&m.as_str())
+        {
+            return Err(format!("pii_mode must be one of {PII_MODES:?}"));
         }
-        if let Some(a) = &self.audit_level {
-            if !AUDIT_LEVELS.contains(&a.as_str()) {
-                return Err(format!("audit_level must be one of {AUDIT_LEVELS:?}"));
-            }
+        if let Some(a) = &self.audit_level
+            && !AUDIT_LEVELS.contains(&a.as_str())
+        {
+            return Err(format!("audit_level must be one of {AUDIT_LEVELS:?}"));
         }
         if let Some(days) = &self.retention {
             for (kind, d) in days {

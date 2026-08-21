@@ -23,7 +23,7 @@
 //!   --source  StorageLayout::detect()?.legacy_db()
 //!   --dest    StorageLayout::detect()?.global_domain_db()
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::fs;

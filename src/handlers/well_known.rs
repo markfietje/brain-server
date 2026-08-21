@@ -10,14 +10,14 @@
 
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
-use crate::auth::jwks::{JwkSet, KeyStore};
 use crate::AppState;
+use crate::auth::jwks::{JwkSet, KeyStore};
 
 /// `GET /.well-known/openid-configuration`. Returns OIDC Discovery metadata.
 /// `jwks_uri` + `issuer` derive from `BRAIN_PUBLIC_BASE_URL`.
@@ -313,10 +313,12 @@ mod tests {
         assert_eq!(v["art_4"], true);
         assert_eq!(v["schema_version"], "1.0");
         assert!(v["disclosure"].as_str().unwrap().contains("inspectable"));
-        assert!(v["inspectable_controls"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("recall_trace")));
+        assert!(
+            v["inspectable_controls"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("recall_trace"))
+        );
         assert!(v["playbook"].as_str().unwrap().contains("AI_LITERACY.md"));
     }
 
@@ -327,10 +329,12 @@ mod tests {
         assert_eq!(v["art_50"], true);
         assert_eq!(v["schema_version"], "1.0");
         assert!(v["disclosure"].as_str().unwrap().contains("AI-generated"));
-        assert!(v["origin_metadata"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("source")));
+        assert!(
+            v["origin_metadata"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("source"))
+        );
     }
 
     /// M6: the CoP marker declares self-attested posture + commitments and
@@ -344,10 +348,12 @@ mod tests {
         let c = v["commitments"].as_array().unwrap();
         assert!(c.contains(&serde_json::json!("human_in_the_loop_write_back")));
         assert!(c.contains(&serde_json::json!("full_audit_chain")));
-        assert!(v["self_assessment"]
-            .as_str()
-            .unwrap()
-            .contains("COMPLIANCE.md"));
+        assert!(
+            v["self_assessment"]
+                .as_str()
+                .unwrap()
+                .contains("COMPLIANCE.md")
+        );
         assert!(!v["last_review"].as_str().unwrap().is_empty());
     }
 }

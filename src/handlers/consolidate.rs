@@ -12,10 +12,10 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::Arc;
 
-use crate::consolidate;
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::consolidate;
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 #[derive(Debug, Serialize)]
 pub struct ConsolidateProposal {

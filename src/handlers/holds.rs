@@ -7,14 +7,14 @@
 //! (`/decayed` exclusion), `/purge` (409 `legal_hold_active`), and DSAR
 //! (deferral + certificate `held_ids`).
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::AppState;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_LIMIT};
-use crate::AppState;
 
 /// `POST /legal-hold` body: the ids to freeze + the human citation.
 #[derive(Debug, Deserialize)]

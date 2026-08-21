@@ -21,14 +21,14 @@
 //! replays. The request's HTTP `Date` header, if parseable, is the best-effort
 //! caller-supplied timestamp.
 
+use crate::Pool;
 use crate::audit::{self, AuditKind, AuditStatus};
 use crate::config::{WEBHOOK_QUEUE_MAX, WEBHOOK_REPLAY_SECS};
 use crate::handlers::HandlerError;
-use crate::Pool;
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rusqlite::params;
 use rusqlite::OptionalExtension;
+use rusqlite::params;
 use sha2::Sha256;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -574,8 +574,8 @@ mod tests {
     #[test]
     fn egress_client_refuses_redirect_to_loopback() {
         use std::io::{Read, Write};
-        use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
         let addr = listener.local_addr().unwrap();
         let url = format!("http://{addr}/sink");

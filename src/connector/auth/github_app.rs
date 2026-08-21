@@ -37,7 +37,7 @@
 #![cfg(feature = "connector-github")]
 
 use anyhow::{Context, Result};
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -352,7 +352,7 @@ mod tests {
         // standard way to generate a keypair for tests. We use `rand`'s
         // thread_rng() — already a transitive dep of `rsa`.
         use rand::rngs::OsRng;
-        use rsa::{pkcs8::EncodePrivateKey, RsaPrivateKey};
+        use rsa::{RsaPrivateKey, pkcs8::EncodePrivateKey};
         let mut rng = OsRng;
         let key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA keypair");
         key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
@@ -499,8 +499,8 @@ mod tests {
     /// Uses the `base64` dev-dep rather than hand-rolling — clippy-clean and
     /// matches what `jsonwebtoken` uses internally.
     fn base64_url_decode(s: &str) -> Vec<u8> {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         URL_SAFE_NO_PAD.decode(s).unwrap_or_default()
     }
 }

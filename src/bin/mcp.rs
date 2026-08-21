@@ -248,19 +248,17 @@ fn success_response(id: &serde_json::Value, result: serde_json::Value, modern: b
         "id": id,
         "result": result,
     });
-    if modern {
-        if let Some(r) = resp["result"].as_object_mut() {
-            r.insert("resultType".into(), serde_json::json!("complete"));
-            r.insert(
-                "_meta".into(),
-                serde_json::json!({
-                    "io.modelcontextprotocol/serverInfo": {
-                        "name": SERVER_NAME,
-                        "version": SERVER_VERSION,
-                    },
-                }),
-            );
-        }
+    if modern && let Some(r) = resp["result"].as_object_mut() {
+        r.insert("resultType".into(), serde_json::json!("complete"));
+        r.insert(
+            "_meta".into(),
+            serde_json::json!({
+                "io.modelcontextprotocol/serverInfo": {
+                    "name": SERVER_NAME,
+                    "version": SERVER_VERSION,
+                },
+            }),
+        );
     }
     resp.to_string()
 }

@@ -10,15 +10,15 @@
 //! artifacts** — a human (DPO/legal) reviews + signs them; nothing here renders
 //! legal judgment.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::audit::{AuditKind, AuditStatus};
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::audit::{AuditKind, AuditStatus};
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 /// `POST /transfers` body — the Art 30/Art 46 register entry.
 #[derive(Debug, Deserialize)]

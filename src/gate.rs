@@ -10,7 +10,7 @@
 //! the HTTP + transaction wiring. The human decides what becomes memory —
 //! novelty/conflict/salience rank candidates, they never promote.
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 /// Minimum content length below which a candidate is treated as filler
 /// (bounded by [`MAX_SALIENCE_LEN`]). Constants tuned to the repo's ingest
@@ -661,7 +661,7 @@ mod tests {
     fn redaction_masks_pii_for_non_admin_and_passes_admin() {
         let text = "contact bob@example.com or +1 (555) 123 4567";
         let none: Option<crate::auth::Principal> = None; // loopback trusts localhost
-                                                         // Non-admin JWT principal → masked.
+        // Non-admin JWT principal → masked.
         let p = crate::auth::Principal {
             sub: "user".into(),
             tenant: "alpha".into(),

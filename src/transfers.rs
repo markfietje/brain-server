@@ -166,12 +166,30 @@ pub(crate) struct SurveillancePosture {
 }
 
 const SURVEILLANCE: &[SurveillancePosture] = &[
-    SurveillancePosture { country: "us", note: "FISA 702 bulk authorities + CLOUD Act extraterritorial reach — s.46(2) (equivalent protection) must be assessed." },
-    SurveillancePosture { country: "eu", note: "GDPR-compliant member state; law-enforcement access regulated under Art 48." },
-    SurveillancePosture { country: "uk", note: "Investigatory Powers Act 2016 — bulk powers weigh on the equivalent-protection assessment." },
-    SurveillancePosture { country: "au", note: "Telecommunications interception + law-enforcement access regimes assessed." },
-    SurveillancePosture { country: "sg", note: "PDPA + regulated law-enforcement access; assessed." },
-    SurveillancePosture { country: "ca", note: "PIPEDA + regulated law-enforcement access; assessed." },
+    SurveillancePosture {
+        country: "us",
+        note: "FISA 702 bulk authorities + CLOUD Act extraterritorial reach — s.46(2) (equivalent protection) must be assessed.",
+    },
+    SurveillancePosture {
+        country: "eu",
+        note: "GDPR-compliant member state; law-enforcement access regulated under Art 48.",
+    },
+    SurveillancePosture {
+        country: "uk",
+        note: "Investigatory Powers Act 2016 — bulk powers weigh on the equivalent-protection assessment.",
+    },
+    SurveillancePosture {
+        country: "au",
+        note: "Telecommunications interception + law-enforcement access regimes assessed.",
+    },
+    SurveillancePosture {
+        country: "sg",
+        note: "PDPA + regulated law-enforcement access; assessed.",
+    },
+    SurveillancePosture {
+        country: "ca",
+        note: "PIPEDA + regulated law-enforcement access; assessed.",
+    },
 ];
 
 /// The destination-surveillance posture for a TIA. Unknown → `None`.
@@ -252,31 +270,31 @@ pub(crate) fn validate_register(
             format!("purpose is required and ≤ {MAX_TRANSFER_PURPOSE} characters"),
         ));
     }
-    if let Some(t) = signed_at {
-        if t < 0 {
-            return Err(HandlerError::bad_request(
-                "transfer_timestamp_invalid",
-                "signed_at must be a non-negative epoch timestamp",
-            ));
-        }
+    if let Some(t) = signed_at
+        && t < 0
+    {
+        return Err(HandlerError::bad_request(
+            "transfer_timestamp_invalid",
+            "signed_at must be a non-negative epoch timestamp",
+        ));
     }
-    if let Some(t) = expires_at {
-        if t < 0 {
-            return Err(HandlerError::bad_request(
-                "transfer_timestamp_invalid",
-                "expires_at must be a non-negative epoch timestamp",
-            ));
-        }
+    if let Some(t) = expires_at
+        && t < 0
+    {
+        return Err(HandlerError::bad_request(
+            "transfer_timestamp_invalid",
+            "expires_at must be a non-negative epoch timestamp",
+        ));
     }
     // An agreement cannot expire before it was signed — a backwards-dated row
     // would be evidence nobody can honestly sign off on.
-    if let (Some(s), Some(e)) = (signed_at, expires_at) {
-        if e < s {
-            return Err(HandlerError::bad_request(
-                "transfer_timestamp_invalid",
-                "expires_at must not precede signed_at",
-            ));
-        }
+    if let (Some(s), Some(e)) = (signed_at, expires_at)
+        && e < s
+    {
+        return Err(HandlerError::bad_request(
+            "transfer_timestamp_invalid",
+            "expires_at must not precede signed_at",
+        ));
     }
     if let Some(b) = lawful_basis {
         let b = b.trim();
@@ -657,9 +675,10 @@ mod tests {
         // for, and a register-known code without a 72h rule (e.g. `us`) yields
         // no deadline (the DPO confirms).
         let eu = crate::ph::notification_deadlines(&["eu".to_string()], 1000);
-        assert!(eu
-            .iter()
-            .any(|d| d.audience == "authority" && d.hours == 72));
+        assert!(
+            eu.iter()
+                .any(|d| d.audience == "authority" && d.hours == 72)
+        );
         let us = crate::ph::notification_deadlines(&["us".to_string()], 1000);
         assert!(us.is_empty(), "no curated US breach window → DPO confirms");
         // Every curated jurisdiction is a valid register code.
@@ -739,18 +758,20 @@ mod tests {
 
     #[test]
     fn validate_register_bounds_fields() {
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "scc-eu-2021",
-            "C",
-            "p",
-            Some("contract"),
-            None,
-            None
-        )
-        .is_ok());
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                Some("contract"),
+                None,
+                None
+            )
+            .is_ok()
+        );
         assert!(
             validate_register(" ", "ph", "us", "scc-eu-2021", "C", "p", None, None, None).is_err()
         );
@@ -758,87 +779,99 @@ mod tests {
             validate_register("d", "PH", "us", "scc-eu-2021", "C", "p", None, None, None).is_ok(),
             "case-insensitive codes"
         );
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "not-a-mechanism",
-            "C",
-            "p",
-            None,
-            None,
-            None
-        )
-        .is_err());
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "not-a-mechanism",
+                "C",
+                "p",
+                None,
+                None,
+                None
+            )
+            .is_err()
+        );
         assert!(
             validate_register("d", "ph", "us", "scc-eu-2021", " ", "p", None, None, None).is_err()
         );
         assert!(
             validate_register("d", "ph", "us", "scc-eu-2021", "C", "", None, None, None).is_err()
         );
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "scc-eu-2021",
-            "C",
-            "p",
-            Some("not-a-basis"),
-            None,
-            None
-        )
-        .is_err());
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                Some("not-a-basis"),
+                None,
+                None
+            )
+            .is_err()
+        );
         // signed/expiry timestamps validated in the shared
         // validator — the write path's single validation site.
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "scc-eu-2021",
-            "C",
-            "p",
-            None,
-            Some(-1),
-            None
-        )
-        .is_err());
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "scc-eu-2021",
-            "C",
-            "p",
-            None,
-            None,
-            Some(-1)
-        )
-        .is_err());
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "scc-eu-2021",
-            "C",
-            "p",
-            None,
-            Some(0),
-            Some(99)
-        )
-        .is_ok());
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                None,
+                Some(-1),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                None,
+                None,
+                Some(-1)
+            )
+            .is_err()
+        );
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                None,
+                Some(0),
+                Some(99)
+            )
+            .is_ok()
+        );
         // 4th pass: the register must not accept a backwards-dated agreement.
-        assert!(validate_register(
-            "d",
-            "ph",
-            "us",
-            "scc-eu-2021",
-            "C",
-            "p",
-            None,
-            Some(100),
-            Some(99)
-        )
-        .is_err());
+        assert!(
+            validate_register(
+                "d",
+                "ph",
+                "us",
+                "scc-eu-2021",
+                "C",
+                "p",
+                None,
+                Some(100),
+                Some(99)
+            )
+            .is_err()
+        );
         assert!(
             validate_register(
                 "d",

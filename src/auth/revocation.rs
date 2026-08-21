@@ -70,16 +70,14 @@ impl RevocationCache {
     ) -> Result<bool, rusqlite::Error> {
         let key = (jti.to_string(), iss.to_string());
         // Fast path: negative cache hit.
-        if let Ok(g) = self.negatives.lock() {
-            if let Some(entry) = g.get(&key) {
-                if SystemTime::now()
-                    .duration_since(entry.checked_at)
-                    .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))
-                    .unwrap_or(false)
-                {
-                    return Ok(false);
-                }
-            }
+        if let Ok(g) = self.negatives.lock()
+            && let Some(entry) = g.get(&key)
+            && SystemTime::now()
+                .duration_since(entry.checked_at)
+                .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))
+                .unwrap_or(false)
+        {
+            return Ok(false);
         }
         // Slow path: SQL lookup. Parameterized — jti/iss come from a verified
         // JWT but we treat them as untrusted at the storage layer too. Use

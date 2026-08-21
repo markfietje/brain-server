@@ -42,7 +42,7 @@ pub mod verify;
 pub mod webhooks;
 pub mod well_known;
 
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -348,7 +348,7 @@ impl HandlerError {
 /// brain read-only. Callers: every ingest path (`/add`, `/ingest`,
 /// `/ingest/memory`, `/ingest/markdown`). Read routes do NOT call this.
 pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
-    use brain_server::capacity::{capacity_target, CapacityEnvelope};
+    use brain_server::capacity::{CapacityEnvelope, capacity_target};
     // Cheap short-circuit: pool state never blocks writes here; we only need a
     // connection to count rows. If the pool is momentarily exhausted, fail open.
     let Some(conn) = state.pool.get().ok() else {
@@ -498,12 +498,12 @@ pub fn cap_gate(
             "capability token lacks the '{verb}' verb"
         )));
     }
-    if let Some(scope) = cap.scope.as_deref().filter(|s| !s.is_empty()) {
-        if scope != "global" {
-            return Err(HandlerError::unauthorized(format!(
-                "capability token scope '{scope}' is not the global project"
-            )));
-        }
+    if let Some(scope) = cap.scope.as_deref().filter(|s| !s.is_empty())
+        && scope != "global"
+    {
+        return Err(HandlerError::unauthorized(format!(
+            "capability token scope '{scope}' is not the global project"
+        )));
     }
     Ok(())
 }

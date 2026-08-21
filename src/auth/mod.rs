@@ -56,11 +56,11 @@ pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
 // and the bin does not consume every name (e.g. `ALLOWED_ALGS` is used by the
 // jwt module itself + tests). Deleting the allows breaks `-D warnings`.
 #[allow(unused_imports)]
-pub use jwt::{AuthError, Claims, TokenType, VerifyingKey, ALLOWED_ALGS};
+pub use jwt::{ALLOWED_ALGS, AuthError, Claims, TokenType, VerifyingKey};
 #[allow(unused_imports)]
-pub use policy::{client_authorized_domains, is_authorized, Action, Principal, Scope};
+pub use policy::{Action, Principal, Scope, client_authorized_domains, is_authorized};
 #[allow(unused_imports)]
-pub use revocation::{purge_expired, revoke, revoke_chain, RevocationCache};
+pub use revocation::{RevocationCache, purge_expired, revoke, revoke_chain};
 
 use std::collections::HashSet;
 use std::path::PathBuf;

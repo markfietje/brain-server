@@ -8,10 +8,10 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::AppState;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_CONTENT, MAX_TITLE};
 use crate::procedural::{self, DecisionOutcome, DecisionRule, MemoryKind};
-use crate::AppState;
 // zerocopy::IntoBytes provides Vec<f32>::as_bytes() — the same cast the /ingest
 // path uses to hand f32 vectors to vec_quantize_int8's blob parameter.
 use zerocopy::IntoBytes;
@@ -384,14 +384,13 @@ pub async fn steps(
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .ok();
-            if let Some((row_domain, row_owner, row_scope)) = row_meta {
-                if !crate::handlers::can_read_domain(&gate_principal, &row_domain)
-                    || !record_gate.admits(&row_owner, &row_scope)
-                {
-                    return Err(HandlerError::not_found(format!(
-                        "no procedure with id {procedure_id}"
-                    )));
-                }
+            if let Some((row_domain, row_owner, row_scope)) = row_meta
+                && (!crate::handlers::can_read_domain(&gate_principal, &row_domain)
+                    || !record_gate.admits(&row_owner, &row_scope))
+            {
+                return Err(HandlerError::not_found(format!(
+                    "no procedure with id {procedure_id}"
+                )));
             }
             // Ordered steps via the next_step edges (same domain label —
             // steps live with their procedure).

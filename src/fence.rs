@@ -51,21 +51,23 @@ pub fn strip_markdown_refs(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            if let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i + 1) {
-                out.push('[');
-                out.push_str(&s[label_start..label_end]);
-                out.push(']');
-                i = url_close + 1;
-                continue;
-            }
+        if bytes[i] == b'!'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'['
+            && let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i + 1)
+        {
+            out.push('[');
+            out.push_str(&s[label_start..label_end]);
+            out.push(']');
+            i = url_close + 1;
+            continue;
         }
-        if bytes[i] == b'[' {
-            if let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i) {
-                out.push_str(&s[label_start..label_end]);
-                i = url_close + 1;
-                continue;
-            }
+        if bytes[i] == b'['
+            && let Some((label_start, label_end, url_close)) = scan_link_construct(bytes, i)
+        {
+            out.push_str(&s[label_start..label_end]);
+            i = url_close + 1;
+            continue;
         }
         let ch = s[i..].chars().next().expect("non-empty slice");
         out.push(ch);

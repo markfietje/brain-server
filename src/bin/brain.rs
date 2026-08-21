@@ -121,40 +121,210 @@ struct Subcommand {
 }
 
 const SUBCOMMANDS: &[Subcommand] = &[
-    Subcommand { name: "query", json: true, run: cmd_query, usage: "brain query \"<q>\" [--k N] [--source S ...] [--phrase P ...]\n                 [--exclude E ...] [--code C ...] [--since ISO]\n                 [--intent I] [--profile P] [--graph] [--explain]" },
-    Subcommand { name: "explain", json: true, run: cmd_explain, usage: "brain explain \"<q>\" [--source S ...] [--since ISO]" },
-    Subcommand { name: "get", json: true, run: cmd_get, usage: "brain get <id>" },
-    Subcommand { name: "ingest-dir", json: true, run: cmd_ingest_dir, usage: "brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]" },
-    Subcommand { name: "reconcile", json: false, run: cmd_reconcile, usage: "brain reconcile <path> [--kind vault] [--dry-run]" },
-    Subcommand { name: "resolve", json: false, run: cmd_resolve, usage: "brain resolve <new_id> <old_id>" },
-    Subcommand { name: "domain-move", json: false, run: cmd_domain_move, usage: "brain domain-move <id> [<id> ...] --to <domain> [--confirm global]" },
-    Subcommand { name: "domains-recompute", json: false, run: cmd_domains_recompute, usage: "brain domains-recompute" },
-    Subcommand { name: "undo-resolve", json: false, run: cmd_undo_resolve, usage: "brain undo-resolve <old_id> [<old_id> ...]" },
-    Subcommand { name: "check-consistency", json: false, run: cmd_check_consistency, usage: "brain check-consistency" },
-    Subcommand { name: "source-delete", json: false, run: cmd_source_delete, usage: "brain source-delete <id> [--yes]" },
-    Subcommand { name: "suggest", json: true, run: cmd_suggest, usage: "brain suggest \"<context>\" [--exclude id[,id...]] [--k N] [--domain D] [--session S]" },
-    Subcommand { name: "suggest-feedback", json: false, run: cmd_suggest_feedback, usage: "brain suggest-feedback <chunk_id> accept|dismiss [--reason \"...\"] [--session S]" },
-    Subcommand { name: "suggest-metrics", json: true, run: cmd_suggest_metrics, usage: "brain suggest-metrics [--session S] [--since DATE]" },
-    Subcommand { name: "retention", json: true, run: cmd_retention, usage: "brain retention get\n  brain retention set <kind> <days>" },
-    Subcommand { name: "setup", json: false, run: cmd_setup, usage: "brain setup [domain] [--profile NAME] [--yes]" },
-    Subcommand { name: "client", json: false, run: cmd_client, usage: "brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n  brain client dpa get <name>\n  brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n  brain client hold add <name> <id> [<id> ...] --reason R | list <name>" },
-    Subcommand { name: "snapshot-status", json: true, run: cmd_snapshot_status, usage: "brain snapshot-status" },
-    Subcommand { name: "eval", json: true, run: cmd_eval, usage: "brain eval [--floor r5=0.85 r10=0.9]" },
-    Subcommand { name: "procedure", json: false, run: cmd_procedure, usage: "brain procedure <title> [--step \"title: content\" ...] [--domain D]" },
-    Subcommand { name: "classify", json: false, run: cmd_classify, usage: "brain classify \"<text>\"" },
-    Subcommand { name: "evaluate", json: false, run: cmd_evaluate, usage: "brain evaluate <decision_id> --var name=value [--var name=value ...]" },
-    Subcommand { name: "connect", json: false, run: cmd_connect, usage: "brain connect github --app-id N --install-id N --key-file PATH \\\n                      --repo owner/repo [...] [--webhook-secret-file PATH]\n  brain connect --kind crm-salesforce ...   (vocabulary accepts the v1.24 set;\n                                             only github has a runnable binary)" },
-    Subcommand { name: "sync", json: false, run: cmd_sync, usage: "brain sync [github] [--config PATH]" },
-    Subcommand { name: "connector-status", json: true, run: cmd_connector_status, usage: "brain connector-status" },
-    Subcommand { name: "backup", json: false, run: cmd_backup, usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]" },
-    Subcommand { name: "restore", json: false, run: cmd_restore, usage: "brain restore <in-path> [--passphrase-file PATH]" },
-    Subcommand { name: "key", json: false, run: cmd_key, usage: "brain key generate [--kid ID] [--alg RS256] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]" },
-    Subcommand { name: "ump", json: false, run: cmd_ump, usage: "brain ump export [--format md|ump] [--out FILE]\n  brain ump import <file>\n  brain ump keygen [--dir PATH]" },
-    Subcommand { name: "token", json: false, run: cmd_token, usage: "brain token rotate" },
-    Subcommand { name: "workflow", json: true, run: cmd_workflow, usage: "brain workflow status <run>\n  brain workflow answer <run> <id> <text>\n  brain workflow approve <run> <step>" },
-    Subcommand { name: "bench", json: false, run: |_| cmd_bench(), usage: "brain bench" },
-    Subcommand { name: "status", json: true, run: |_| cmd_status(), usage: "brain status" },
-    Subcommand { name: "doctor", json: false, run: cmd_doctor, usage: "brain doctor [--backup <path> [--passphrase-file PATH]]" },
+    Subcommand {
+        name: "query",
+        json: true,
+        run: cmd_query,
+        usage: "brain query \"<q>\" [--k N] [--source S ...] [--phrase P ...]\n                 [--exclude E ...] [--code C ...] [--since ISO]\n                 [--intent I] [--profile P] [--graph] [--explain]",
+    },
+    Subcommand {
+        name: "explain",
+        json: true,
+        run: cmd_explain,
+        usage: "brain explain \"<q>\" [--source S ...] [--since ISO]",
+    },
+    Subcommand {
+        name: "get",
+        json: true,
+        run: cmd_get,
+        usage: "brain get <id>",
+    },
+    Subcommand {
+        name: "ingest-dir",
+        json: true,
+        run: cmd_ingest_dir,
+        usage: "brain ingest-dir <path> [--dry-run] [--replace] [--source S] [--domain D]",
+    },
+    Subcommand {
+        name: "reconcile",
+        json: false,
+        run: cmd_reconcile,
+        usage: "brain reconcile <path> [--kind vault] [--dry-run]",
+    },
+    Subcommand {
+        name: "resolve",
+        json: false,
+        run: cmd_resolve,
+        usage: "brain resolve <new_id> <old_id>",
+    },
+    Subcommand {
+        name: "domain-move",
+        json: false,
+        run: cmd_domain_move,
+        usage: "brain domain-move <id> [<id> ...] --to <domain> [--confirm global]",
+    },
+    Subcommand {
+        name: "domains-recompute",
+        json: false,
+        run: cmd_domains_recompute,
+        usage: "brain domains-recompute",
+    },
+    Subcommand {
+        name: "undo-resolve",
+        json: false,
+        run: cmd_undo_resolve,
+        usage: "brain undo-resolve <old_id> [<old_id> ...]",
+    },
+    Subcommand {
+        name: "check-consistency",
+        json: false,
+        run: cmd_check_consistency,
+        usage: "brain check-consistency",
+    },
+    Subcommand {
+        name: "source-delete",
+        json: false,
+        run: cmd_source_delete,
+        usage: "brain source-delete <id> [--yes]",
+    },
+    Subcommand {
+        name: "suggest",
+        json: true,
+        run: cmd_suggest,
+        usage: "brain suggest \"<context>\" [--exclude id[,id...]] [--k N] [--domain D] [--session S]",
+    },
+    Subcommand {
+        name: "suggest-feedback",
+        json: false,
+        run: cmd_suggest_feedback,
+        usage: "brain suggest-feedback <chunk_id> accept|dismiss [--reason \"...\"] [--session S]",
+    },
+    Subcommand {
+        name: "suggest-metrics",
+        json: true,
+        run: cmd_suggest_metrics,
+        usage: "brain suggest-metrics [--session S] [--since DATE]",
+    },
+    Subcommand {
+        name: "retention",
+        json: true,
+        run: cmd_retention,
+        usage: "brain retention get\n  brain retention set <kind> <days>",
+    },
+    Subcommand {
+        name: "setup",
+        json: false,
+        run: cmd_setup,
+        usage: "brain setup [domain] [--profile NAME] [--yes]",
+    },
+    Subcommand {
+        name: "client",
+        json: false,
+        run: cmd_client,
+        usage: "brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n  brain client dpa get <name>\n  brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n  brain client hold add <name> <id> [<id> ...] --reason R | list <name>",
+    },
+    Subcommand {
+        name: "snapshot-status",
+        json: true,
+        run: cmd_snapshot_status,
+        usage: "brain snapshot-status",
+    },
+    Subcommand {
+        name: "eval",
+        json: true,
+        run: cmd_eval,
+        usage: "brain eval [--floor r5=0.85 r10=0.9]",
+    },
+    Subcommand {
+        name: "procedure",
+        json: false,
+        run: cmd_procedure,
+        usage: "brain procedure <title> [--step \"title: content\" ...] [--domain D]",
+    },
+    Subcommand {
+        name: "classify",
+        json: false,
+        run: cmd_classify,
+        usage: "brain classify \"<text>\"",
+    },
+    Subcommand {
+        name: "evaluate",
+        json: false,
+        run: cmd_evaluate,
+        usage: "brain evaluate <decision_id> --var name=value [--var name=value ...]",
+    },
+    Subcommand {
+        name: "connect",
+        json: false,
+        run: cmd_connect,
+        usage: "brain connect github --app-id N --install-id N --key-file PATH \\\n                      --repo owner/repo [...] [--webhook-secret-file PATH]\n  brain connect --kind crm-salesforce ...   (vocabulary accepts the v1.24 set;\n                                             only github has a runnable binary)",
+    },
+    Subcommand {
+        name: "sync",
+        json: false,
+        run: cmd_sync,
+        usage: "brain sync [github] [--config PATH]",
+    },
+    Subcommand {
+        name: "connector-status",
+        json: true,
+        run: cmd_connector_status,
+        usage: "brain connector-status",
+    },
+    Subcommand {
+        name: "backup",
+        json: false,
+        run: cmd_backup,
+        usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]",
+    },
+    Subcommand {
+        name: "restore",
+        json: false,
+        run: cmd_restore,
+        usage: "brain restore <in-path> [--passphrase-file PATH]",
+    },
+    Subcommand {
+        name: "key",
+        json: false,
+        run: cmd_key,
+        usage: "brain key generate [--kid ID] [--alg RS256] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]",
+    },
+    Subcommand {
+        name: "ump",
+        json: false,
+        run: cmd_ump,
+        usage: "brain ump export [--format md|ump] [--out FILE]\n  brain ump import <file>\n  brain ump keygen [--dir PATH]",
+    },
+    Subcommand {
+        name: "token",
+        json: false,
+        run: cmd_token,
+        usage: "brain token rotate",
+    },
+    Subcommand {
+        name: "workflow",
+        json: true,
+        run: cmd_workflow,
+        usage: "brain workflow status <run>\n  brain workflow answer <run> <id> <text>\n  brain workflow approve <run> <step>",
+    },
+    Subcommand {
+        name: "bench",
+        json: false,
+        run: |_| cmd_bench(),
+        usage: "brain bench",
+    },
+    Subcommand {
+        name: "status",
+        json: true,
+        run: |_| cmd_status(),
+        usage: "brain status",
+    },
+    Subcommand {
+        name: "doctor",
+        json: false,
+        run: cmd_doctor,
+        usage: "brain doctor [--backup <path> [--passphrase-file PATH]]",
+    },
 ];
 
 fn main() {
@@ -1221,7 +1391,9 @@ fn cmd_domain_move(args: &[String]) -> Result<(), String> {
         .unwrap_or_default();
     println!("moved {moved} chunk(s) {} -> {to}", from_domains.join(","));
     if from_domains.iter().any(|d| d == "global") {
-        println!("  note: these were in 'global'; still retrievable via the global domain's historical paths");
+        println!(
+            "  note: these were in 'global'; still retrievable via the global domain's historical paths"
+        );
     }
     Ok(())
 }
@@ -1305,10 +1477,10 @@ fn cmd_undo_resolve(args: &[String]) -> Result<(), String> {
         chunks.len()
     );
     println!("  chunks restored to current recall: {chunks:?}");
-    if let Some(r) = rejected {
-        if !r.is_empty() {
-            println!("  rejected: {r:?}");
-        }
+    if let Some(r) = rejected
+        && !r.is_empty()
+    {
+        println!("  rejected: {r:?}");
     }
     Ok(())
 }
@@ -2815,17 +2987,17 @@ fn cmd_connect(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("rename -> {config_path:?}: {e}"))?;
 
     // Best-effort audit of connector registration (local-file, but recorded).
-    if let Ok(db_path) = std::env::var("BRAIN_DB_PATH") {
-        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
-            brain_server::audit::record(
-                &conn,
-                brain_server::audit::AuditKind::Connector,
-                "github",
-                &instance,
-                brain_server::audit::AuditStatus::Ok,
-                "connect config written",
-            );
-        }
+    if let Ok(db_path) = std::env::var("BRAIN_DB_PATH")
+        && let Ok(conn) = rusqlite::Connection::open(&db_path)
+    {
+        brain_server::audit::record(
+            &conn,
+            brain_server::audit::AuditKind::Connector,
+            "github",
+            &instance,
+            brain_server::audit::AuditStatus::Ok,
+            "connect config written",
+        );
     }
 
     println!("wrote {config_path:?}");
@@ -3167,8 +3339,8 @@ fn cmd_key_generate(args: &[String]) -> Result<(), String> {
 
     // Generate the RSA keypair. 2048 bits is the documented default for RS256;
     // matching every major IdP's minimum.
-    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
     use rsa::RsaPrivateKey;
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
     let mut rng = rand::thread_rng();
     let priv_key = RsaPrivateKey::new(&mut rng, 2048)
         .map_err(|e| format!("RSA keypair generation failed: {e}"))?;
@@ -3199,7 +3371,9 @@ fn cmd_key_generate(args: &[String]) -> Result<(), String> {
     println!("  kid     : {kid}");
     println!("  public  : {pub_path:?}");
     println!("  private : {priv_path:?} (mode 0600)");
-    println!("restart brain-server to load the new key; existing tokens stay valid until the old key is pruned");
+    println!(
+        "restart brain-server to load the new key; existing tokens stay valid until the old key is pruned"
+    );
     Ok(())
 }
 
@@ -3934,7 +4108,13 @@ fn run_eval(endpoint: &str, floors: &[(String, f32)]) -> Result<bool, String> {
     println!("{:-<52} ------ ------", "");
     println!(
         "mean  r@5={:.3} r@10={:.3} p@5={:.3} p@10={:.3} mrr={:.3} ndcg@10={:.3}  (over {} queries)",
-        mean[0], mean[1], mean[2], mean[3], mean[4], mean[5], queries.len()
+        mean[0],
+        mean[1],
+        mean[2],
+        mean[3],
+        mean[4],
+        mean[5],
+        queries.len()
     );
     let names = ["r5", "r10", "p5", "p10", "mrr", "ndcg"];
     let mut held = true;
@@ -3979,11 +4159,11 @@ fn parse_eval_fixture(raw: &str) -> Result<Vec<EvalQuery>, String> {
             if let Some(c) = &mut current {
                 c.query = q.trim().trim_matches('"').to_string();
             }
-        } else if let Some(r) = line.strip_prefix("Relevant:") {
-            if let Some(mut c) = current.take() {
-                c.relevant = parse_index_list(r);
-                out.push(c);
-            }
+        } else if let Some(r) = line.strip_prefix("Relevant:")
+            && let Some(mut c) = current.take()
+        {
+            c.relevant = parse_index_list(r);
+            out.push(c);
         }
     }
     Ok(out)
@@ -4317,10 +4497,15 @@ fn setup_render_knobs_shows_every_set_knob() {
 }
 
 fn cmd_workflow(args: &[String]) -> Result<(), String> {
-    if args.is_empty() { return Err("usage: brain workflow status|answer|approve ...".into()); }
+    if args.is_empty() {
+        return Err("usage: brain workflow status|answer|approve ...".into());
+    }
     let sub = args[0].as_str();
-    let msg = format!("workflow {sub} — harness at tools/steward-harness (line-delimited JSON RPC)");
-    if json_mode() { return emit_json_ok("workflow", serde_json::json!({"sub":sub,"note":msg})); }
+    let msg =
+        format!("workflow {sub} — harness at tools/steward-harness (line-delimited JSON RPC)");
+    if json_mode() {
+        return emit_json_ok("workflow", serde_json::json!({"sub":sub,"note":msg}));
+    }
     println!("{msg}");
     Ok(())
 }

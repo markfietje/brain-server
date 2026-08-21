@@ -11,14 +11,14 @@
 //! `handlers::gate::role_retrieval_gate` resolve the bundles held by a JWT
 //! principal, so an edit here takes effect at the next request (no restart).
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 fn map_err(e: String) -> HandlerError {
     HandlerError::internal(format!("role store: {e}"))

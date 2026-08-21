@@ -636,10 +636,10 @@ fn Connect() -> Element {
     // (token path) falls through to this form. `use_effect` runs once on mount.
     use_effect(move || {
         spawn(async move {
-            if let Some(last) = i18n::pref_load("last_base").await {
-                if let Some(prefill) = prefill_if_empty(&url(), &last) {
-                    url.set(prefill);
-                }
+            if let Some(last) = i18n::pref_load("last_base").await
+                && let Some(prefill) = prefill_if_empty(&url(), &last)
+            {
+                url.set(prefill);
             }
         });
     });
@@ -731,15 +731,14 @@ fn Connect() -> Element {
                     probe.domain_profile("global").await,
                     Ok(dp) if dp.profile.is_none()
                 ) && i18n::pref_load("wizard_done").await.is_none();
-                if eligible {
-                    if let Ok(ps) = probe.profiles().await {
-                        if !ps.is_empty() {
-                            wizard_profiles.set(ps);
-                            wizard_chosen.set(0);
-                            busy.set(false);
-                            return;
-                        }
-                    }
+                if eligible
+                    && let Ok(ps) = probe.profiles().await
+                    && !ps.is_empty()
+                {
+                    wizard_profiles.set(ps);
+                    wizard_chosen.set(0);
+                    busy.set(false);
+                    return;
                 }
                 nav.replace(Route::Review {});
             }
@@ -1091,12 +1090,11 @@ fn AppShell() -> Element {
     // captures its keys while open.
     let toggle_palette = move |e: Event<KeyboardData>| {
         let mut ui = ui;
-        if e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER) {
-            if let Key::Character(c) = e.key() {
-                if c.eq_ignore_ascii_case("k") {
-                    ui.palette_open.set(!(ui.palette_open)());
-                }
-            }
+        if (e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER))
+            && let Key::Character(c) = e.key()
+            && c.eq_ignore_ascii_case("k")
+        {
+            ui.palette_open.set(!(ui.palette_open)());
         }
     };
 
@@ -1671,12 +1669,12 @@ fn CommandPalette() -> Element {
     let select = move |c: &Command| {
         let mut confirm = confirm;
         let mut cursor = cursor;
-        if let Command::Run(ra) = c {
-            if destructive_action(ra) {
-                confirm.set(Some(c.clone()));
-                cursor.set(0);
-                return;
-            }
+        if let Command::Run(ra) = c
+            && destructive_action(ra)
+        {
+            confirm.set(Some(c.clone()));
+            cursor.set(0);
+            return;
         }
         run(c.clone());
     };

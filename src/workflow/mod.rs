@@ -31,8 +31,8 @@ pub(crate) mod outbox;
 pub(crate) mod state;
 pub(crate) mod tx;
 
-use crate::audit::{record_tenant, AuditKind, AuditStatus};
-use rusqlite::{params, Connection};
+use crate::audit::{AuditKind, AuditStatus, record_tenant};
+use rusqlite::{Connection, params};
 
 /// The audit actor for substrate writes. The engine crates drive the writes;
 /// this layer stamps them with its own identity so an audit reader can
@@ -71,7 +71,7 @@ mod tests {
     use super::*;
     use crate::audit::verify_chain;
     use crate::workflow::outbox;
-    use crate::workflow::state::{cas_update, CasError};
+    use crate::workflow::state::{CasError, cas_update};
     use crate::workflow::tx::WorkflowTx;
     use brain_server::migration::run_migration;
     use brain_server::register_sqlite_vec::register_sqlite_vec;

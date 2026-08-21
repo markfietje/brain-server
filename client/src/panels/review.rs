@@ -8,8 +8,8 @@
 //! suggest-re-ingest. The connection mutation freeze (M1) disables the buttons
 //! when `writes_enabled` is false.
 
-use crate::api::{error_message, ApiClient, ApiError, Proposal};
-use crate::panels::{use_document_title, PageTitle, RefreshButton};
+use crate::api::{ApiClient, ApiError, Proposal, error_message};
+use crate::panels::{PageTitle, RefreshButton, use_document_title};
 use crate::{Route, UiState};
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -381,10 +381,10 @@ pub fn panel() -> Element {
     let mut reject_for = use_signal(|| None::<i64>); // proposal id awaiting reason
     let reingest_for = use_signal(|| None::<(i64, String)>); // M3: (id, content) → editor
     let mut edit_for = use_signal(|| None::<(i64, String)>); // v1.20.14: (id, content) → editor
-                                                             // v1.20.15 "Clock": the queue is a clock — nearest `expires_at` first
-                                                             // (toggleable to creation order), and a ~30s tick re-renders the live
-                                                             // deadline badges from a fresh `now_unix()` (the same honest approximation
-                                                             // /ops uses; the server's 400 on a stale approve stays authoritative).
+    // v1.20.15 "Clock": the queue is a clock — nearest `expires_at` first
+    // (toggleable to creation order), and a ~30s tick re-renders the live
+    // deadline badges from a fresh `now_unix()` (the same honest approximation
+    // /ops uses; the server's 400 on a stale approve stays authoritative).
     let mut sort_expiry = use_signal(|| true);
     let tick = use_signal(|| 0u64);
     use_future(move || {
@@ -635,12 +635,13 @@ pub fn panel() -> Element {
                     class: "text-xs text-muted-foreground my-2 border border-border rounded p-2",
                     role: "note",
                     dt { {crate::i18n::t("review_help")} }
-                    {keyboard_help().iter().map(|(key, k)| rsx! {
-                        div { class: "flex gap-2",
-                            kbd { class: "font-mono border border-border rounded px-1", {*k} }
+                    { {
+                        let help = keyboard_help();
+                        rsx! { for (key, k) in help { div { class: "flex gap-2",
+                            kbd { class: "font-mono border border-border rounded px-1", {k} }
                             span { {crate::i18n::t(key)} }
-                        }
-                    })}
+                        } } }
+                    } }
                 }
             }
             // v1.16.2 M6: one-line batch summary — surfaces partial failure

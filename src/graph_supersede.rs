@@ -34,7 +34,7 @@
 //! unchanged window is a [`EdgeAction::SameWindow`] no-op (history is not
 //! churned).
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// What an edge ingest resolved to. The caller records the corresponding audit
 /// event and decides whether the relationship count for the response moves.

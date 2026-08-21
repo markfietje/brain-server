@@ -32,8 +32,8 @@ use std::sync::Arc;
 
 use crate::audit;
 use crate::handlers::auth::OptPrincipal;
-use crate::handlers::{normalize_domain, HandlerError, MAX_QUERY};
-use crate::{config, AppState};
+use crate::handlers::{HandlerError, MAX_QUERY, normalize_domain};
+use crate::{AppState, config};
 
 // ─────────────────────────────────────────────────────────────────────────
 // POST /suggest

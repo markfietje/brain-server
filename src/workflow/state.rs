@@ -9,7 +9,7 @@
 
 use super::audit_write;
 use crate::audit::AuditStatus;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum CasError {

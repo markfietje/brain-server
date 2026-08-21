@@ -345,9 +345,10 @@ mod tests {
             h,
             format!("blake3:{}", base32_encode(&record_hash(b"{\"a\":1}")))
         );
-        assert!(h
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ':'));
+        assert!(
+            h.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ':')
+        );
     }
 
     #[test]

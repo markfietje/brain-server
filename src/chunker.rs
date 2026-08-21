@@ -164,19 +164,19 @@ pub fn chunk_markdown(content: &str) -> Vec<Chunk> {
 
         // Flush on size, except inside a code block (keep blocks intact) or a
         // heading (heading always closes the chunk anyway, handled above).
-        if code_block_depth == 0 && !in_heading {
-            if let Some(cs) = chunk_start {
-                if chunk_end.saturating_sub(cs) >= MAX_CHUNK_BYTES {
-                    flush_buf(
-                        content,
-                        &line_starts,
-                        &mut chunk_start,
-                        &mut chunk_end,
-                        &buf_heading,
-                        &mut chunks,
-                    );
-                }
-            }
+        if code_block_depth == 0
+            && !in_heading
+            && let Some(cs) = chunk_start
+            && chunk_end.saturating_sub(cs) >= MAX_CHUNK_BYTES
+        {
+            flush_buf(
+                content,
+                &line_starts,
+                &mut chunk_start,
+                &mut chunk_end,
+                &buf_heading,
+                &mut chunks,
+            );
         }
     }
 

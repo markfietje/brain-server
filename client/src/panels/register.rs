@@ -10,7 +10,7 @@
 //! entry is a documented ceiling — recall hits already open the shared drawer).
 
 use crate::api::ApiClient;
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 /// One register row — a `/export` knowledge row's provenance projection

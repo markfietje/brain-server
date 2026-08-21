@@ -1,14 +1,14 @@
-use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
-use rusqlite::{params, Connection};
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
+use rusqlite::{Connection, params};
 
 #[derive(Debug, Serialize)]
 pub struct DomainInfo {

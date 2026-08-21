@@ -198,30 +198,30 @@ mod tests {
     #[test]
     fn capacity_envelope_env_overrides_docs_limit() {
         let prev = std::env::var("CAPACITY_MAX_DOCS").ok();
-        std::env::set_var("CAPACITY_MAX_DOCS", "5");
+        unsafe { std::env::set_var("CAPACITY_MAX_DOCS", "5") };
         let env = CapacityEnvelope::for_target(CapacityTarget::Jetson);
         assert_eq!(
             env.max_docs, 5,
             "CAPACITY_MAX_DOCS env var must override the Jetson default of 10k"
         );
         match prev {
-            Some(v) => std::env::set_var("CAPACITY_MAX_DOCS", v),
-            None => std::env::remove_var("CAPACITY_MAX_DOCS"),
+            Some(v) => unsafe { std::env::set_var("CAPACITY_MAX_DOCS", v) },
+            None => unsafe { std::env::remove_var("CAPACITY_MAX_DOCS") },
         }
     }
 
     #[test]
     fn capacity_envelope_env_overrides_db_mib() {
         let prev = std::env::var("CAPACITY_MAX_DB_MIB").ok();
-        std::env::set_var("CAPACITY_MAX_DB_MIB", "50");
+        unsafe { std::env::set_var("CAPACITY_MAX_DB_MIB", "50") };
         let env = CapacityEnvelope::for_target(CapacityTarget::Jetson);
         assert_eq!(
             env.max_db_mib, 50,
             "CAPACITY_MAX_DB_MIB env var must override the Jetson default of 512"
         );
         match prev {
-            Some(v) => std::env::set_var("CAPACITY_MAX_DB_MIB", v),
-            None => std::env::remove_var("CAPACITY_MAX_DB_MIB"),
+            Some(v) => unsafe { std::env::set_var("CAPACITY_MAX_DB_MIB", v) },
+            None => unsafe { std::env::remove_var("CAPACITY_MAX_DB_MIB") },
         }
     }
 
@@ -231,7 +231,7 @@ mod tests {
         // is breached. This proves the env → CapacityEnvelope → classify wire
         // that guard_capacity relies on at runtime.
         let prev = std::env::var("CAPACITY_MAX_DOCS").ok();
-        std::env::set_var("CAPACITY_MAX_DOCS", "5");
+        unsafe { std::env::set_var("CAPACITY_MAX_DOCS", "5") };
         let env = CapacityEnvelope::for_target(CapacityTarget::Jetson);
         assert_eq!(
             classify(10, 0, 0, &env),
@@ -239,8 +239,8 @@ mod tests {
             "10 docs must exceed env-overridden limit of 5"
         );
         match prev {
-            Some(v) => std::env::set_var("CAPACITY_MAX_DOCS", v),
-            None => std::env::remove_var("CAPACITY_MAX_DOCS"),
+            Some(v) => unsafe { std::env::set_var("CAPACITY_MAX_DOCS", v) },
+            None => unsafe { std::env::remove_var("CAPACITY_MAX_DOCS") },
         }
     }
 

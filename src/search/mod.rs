@@ -7,14 +7,14 @@
 //! Rust operating over already-registered SQLite connections.
 #![deny(unsafe_code)]
 
-use crate::config::{QualityConfig, MAX_SNIPPET_CHARS, SNIPPET_CONTEXT_CHARS};
+use crate::config::{MAX_SNIPPET_CHARS, QualityConfig, SNIPPET_CONTEXT_CHARS};
 use crate::search::graph_ppr::graph_retrieve;
 use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualityEstimator};
 use crate::search::query::LegFilter;
 use anyhow::{Context, Result};
 use brain_server::embed::Embedder;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
-use rusqlite::{params, Connection, ToSql};
+use rusqlite::{Connection, ToSql, params};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;

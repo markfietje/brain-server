@@ -7,7 +7,7 @@
 //! the source of truth for shape. The panel validates JSON before send so a
 //! typo surfaces as a readable error, not a 400.
 
-use crate::api::{parse_ingest_result, ApiClient, IngestOutcome};
+use crate::api::{ApiClient, IngestOutcome, parse_ingest_result};
 use dioxus::prelude::*;
 
 pub fn panel() -> Element {

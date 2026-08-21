@@ -33,7 +33,7 @@
 
 use base64::Engine;
 use ed25519_dalek::SigningKey;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// brain `memory_kind` → UMP `kind` (v1.0 §2.1 has exactly five kinds:
 /// semantic | episodic | procedural | working | identity — no `declarative`).
@@ -784,10 +784,12 @@ mod tests {
             &[],
             None,
         );
-        assert!(rec["integrity"]["content_hash"]
-            .as_str()
-            .unwrap()
-            .starts_with("blake3:"));
+        assert!(
+            rec["integrity"]["content_hash"]
+                .as_str()
+                .unwrap()
+                .starts_with("blake3:")
+        );
         assert!(verify_record(&rec, None));
         let mut tampered = rec.clone();
         tampered["body"]["text"] = json!("Dave does NOT work at Acme.");

@@ -9,14 +9,14 @@
 //! data). The Health panel / wizard consume the binding view; `brain setup`
 //! consumes the list.
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 fn map_err(e: String) -> HandlerError {
     HandlerError::internal(format!("profile store: {e}"))
@@ -214,13 +214,13 @@ pub async fn domain_profile_bind(
         Some(p) if p.trim().is_empty() => None,
         Some(p) => Some(p.trim().to_string()),
     };
-    if let Some(p) = &profile {
-        if !brain_server::profile::is_valid_profile_name(p) {
-            return Err(HandlerError::bad_request(
-                "profile_invalid",
-                "profile name must be lowercase alnum + hyphen (max 63)",
-            ));
-        }
+    if let Some(p) = &profile
+        && !brain_server::profile::is_valid_profile_name(p)
+    {
+        return Err(HandlerError::bad_request(
+            "profile_invalid",
+            "profile name must be lowercase alnum + hyphen (max 63)",
+        ));
     }
     let actor = super::recall::principal_label(&principal.0);
     let pool = state.pool.clone();
@@ -229,13 +229,12 @@ pub async fn domain_profile_bind(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         // Friendly 404 for an unknown profile (the FK would also refuse).
-        if let Some(p) = &profile {
-            if brain_server::profile::load(&conn, p)
+        if let Some(p) = &profile
+            && brain_server::profile::load(&conn, p)
                 .map_err(map_err)?
                 .is_none()
-            {
-                return Err(HandlerError::not_found(format!("no profile named '{p}'")));
-            }
+        {
+            return Err(HandlerError::not_found(format!("no profile named '{p}'")));
         }
         brain_server::profile::bind(&conn, &domain, profile.as_deref()).map_err(map_err)?;
         crate::audit::record(

@@ -93,7 +93,7 @@ mod tests {
     fn control_chars_stripped_preserves_tab_newline() {
         assert_eq!(strip_control_chars("a\u{0000}b\u{001B}\u{007F}c"), "abc");
         assert_eq!(strip_control_chars("a\u{0085}b\u{009F}c"), "abc"); // C1
-                                                                       // Tab + newline survive (legit whitespace).
+        // Tab + newline survive (legit whitespace).
         assert_eq!(strip_control_chars("a\tb\nc"), "a\tb\nc");
     }
 

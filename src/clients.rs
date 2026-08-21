@@ -183,8 +183,7 @@ fn client_row(r: &rusqlite::Row) -> rusqlite::Result<Client> {
     })
 }
 
-const CLIENT_SELECT: &str =
-    "SELECT name, domain, jurisdiction, profile, dpa_terms, status, created_at, archived_at FROM clients";
+const CLIENT_SELECT: &str = "SELECT name, domain, jurisdiction, profile, dpa_terms, status, created_at, archived_at FROM clients";
 
 /// The full register, ordered by name (a small operator table — no paging seam
 /// yet; the dashboard reads it whole).

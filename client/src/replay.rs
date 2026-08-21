@@ -306,7 +306,7 @@ pub fn ReplayReview(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queue::{digest_salted, MAX_REPLAY_RETRIES};
+    use crate::queue::{MAX_REPLAY_RETRIES, digest_salted};
 
     fn dsar(subject: &str, salt: &str, salted: bool, retries: u8) -> QueuedAction {
         QueuedAction::Dsar {

@@ -24,8 +24,8 @@ use std::sync::Mutex;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 
-use crate::config;
 use crate::Pool as BrainPool;
+use crate::config;
 
 /// Errors raised by domain resolution/opening.
 #[derive(Debug)]
@@ -218,15 +218,13 @@ fn scan_domain_files(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Some(rest) = name
+            if let Some(name) = entry.file_name().to_str()
+                && let Some(rest) = name
                     .strip_prefix("brain-")
                     .and_then(|s| s.strip_suffix(".db"))
-                {
-                    if DomainRegistry::is_valid_domain(rest) {
-                        out.push(rest.to_string());
-                    }
-                }
+                && DomainRegistry::is_valid_domain(rest)
+            {
+                out.push(rest.to_string());
             }
         }
     }

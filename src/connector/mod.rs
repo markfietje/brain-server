@@ -52,7 +52,7 @@ pub mod pipeline;
 pub mod supervisor;
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 /// The maximum supported connector manifest schema version. Bumped when the

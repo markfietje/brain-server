@@ -17,7 +17,7 @@
 //!   2. `decode` with full claim validation (iss/aud/exp/nbf/sub required,
 //!      `jti` required post-decode, leeway for clock skew).
 
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 
 /// Algorithm whitelist. Per OWASP A04:2025 (Cryptographic Failures) and the
@@ -332,9 +332,9 @@ mod tests {
     //! OWASP JWT Cheat Sheet test matrix (M1.3). Each test pins one failure
     //! mode the cheat sheet names. Run with `cargo test --lib auth::jwt`.
     use super::*;
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use rsa::RsaPrivateKey;
+    use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
     use serde::Serialize;
 
     /// Mint a 2048-bit RSA keypair once per test binary. Cheap enough (the

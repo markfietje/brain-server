@@ -16,8 +16,8 @@
 //! new algorithm and lives in the Dioxus-free cores below.
 
 use crate::api::{ApiClient, DecayedRow, Proposal};
-use crate::panels::{use_document_title, PageTitle};
-use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
+use crate::panels::{PageTitle, use_document_title};
+use crate::time_budget::{Tier, format_remaining, now_unix, remaining, tier};
 use dioxus::prelude::*;
 
 /// Gate-health severity + i18n label. Healthy when decisions are balanced;
@@ -109,8 +109,8 @@ pub fn panel() -> Element {
     let ui = use_context::<crate::UiState>();
     let writes = (ui.writes_enabled)(); // read once; re-renders when it changes
     let refresh = use_signal(|| 0u32); // bump to refetch after a mutation
-                                       // v1.27.19 "Scrub" (D-7): last action/load outcome, rendered in the gate
-                                       // strip — a failed decide/reject must be visible, not silently dropped.
+    // v1.27.19 "Scrub" (D-7): last action/load outcome, rendered in the gate
+    // strip — a failed decide/reject must be visible, not silently dropped.
     let status = use_signal(|| None::<Result<String, String>>);
     // M2: the live clock. A once-on-mount loop bumps `tick` every ~30s so every
     // countdown re-renders from a fresh `now_unix()` — the honest near-real-

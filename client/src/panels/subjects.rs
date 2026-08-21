@@ -8,8 +8,8 @@
 
 use crate::api::{ApiClient, DsarCertificate, DsarLedgerRow, Footprint};
 use crate::i18n::{t, t_fmt};
-use crate::panels::{use_document_title, PageTitle};
-use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
+use crate::panels::{PageTitle, use_document_title};
+use crate::time_budget::{Tier, format_remaining, now_unix, remaining, tier};
 use crate::{Route, UiState};
 use dioxus::prelude::*;
 
@@ -477,7 +477,7 @@ async fn run_dsar(api: ApiClient, subject: String, action: &'static str) -> Dsar
             return DsarOutcome::Failed(t_fmt(
                 "dsar_action_failed",
                 &[action.to_string(), e.to_string()],
-            ))
+            ));
         }
         Ok(resp) => resp,
     };

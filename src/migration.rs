@@ -10,7 +10,7 @@
 //! the lib has no dependency on the server-private `config` module.
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{info, warn};
 use xxhash_rust::xxh3::xxh3_64;
@@ -1657,20 +1657,22 @@ pub fn run_migration_with_store_dim(
             let rows: i64 = db
                 .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
                 .unwrap_or(0);
-            if rows > 0 {
-                if let Some(pin) = crate::audit::initial_head_pin(db) {
-                    match serde_json::to_string(&pin) {
-                        Ok(json) => {
-                            if let Err(e) = db.execute(
-                                "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_head', ?1)
+            if rows > 0
+                && let Some(pin) = crate::audit::initial_head_pin(db)
+            {
+                match serde_json::to_string(&pin) {
+                    Ok(json) => {
+                        if let Err(e) = db.execute(
+                            "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_head', ?1)
                                  ON CONFLICT(key) DO UPDATE SET value = ?1;",
-                                params![json],
-                            ) {
-                                warn!("audit head pin stamp failed (truncation detection deferred): {e}");
-                            }
+                            params![json],
+                        ) {
+                            warn!(
+                                "audit head pin stamp failed (truncation detection deferred): {e}"
+                            );
                         }
-                        Err(e) => warn!("audit head pin serialize failed: {e}"),
                     }
+                    Err(e) => warn!("audit head pin serialize failed: {e}"),
                 }
             }
         }

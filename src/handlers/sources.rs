@@ -16,9 +16,9 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::handlers::auth::OptPrincipal;
-use crate::handlers::HandlerError;
 use crate::AppState;
+use crate::handlers::HandlerError;
+use crate::handlers::auth::OptPrincipal;
 
 /// Hard cap on the size of `live_uris` in a reconcile request. Matches the
 /// `MAX_INGEST_FILES` ceiling in `brain ingest-dir` (50k) — a vault larger

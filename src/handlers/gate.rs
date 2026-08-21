@@ -15,8 +15,8 @@
 //! Human-in-the-loop: nothing here auto-promotes, auto-decays-away, or
 //! auto-deletes. The human decides. Zero tokens, no LLM, no background worker.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -132,13 +132,13 @@ pub async fn ingest_proposal(
     // still stored (the reviewer needs to see WHY the capture tripped) — but a
     // warning is attached so a reviewer doesn't blindly approve a capture whose
     // own trigger text was instruction-bearing.
-    if let Some(p) = req.source_prompt.as_deref() {
-        if p.len() > MAX_SOURCE_PROMPT {
-            return Err(HandlerError::bad_request(
-                "source_prompt_too_long",
-                format!("source_prompt exceeds {MAX_SOURCE_PROMPT} bytes"),
-            ));
-        }
+    if let Some(p) = req.source_prompt.as_deref()
+        && p.len() > MAX_SOURCE_PROMPT
+    {
+        return Err(HandlerError::bad_request(
+            "source_prompt_too_long",
+            format!("source_prompt exceeds {MAX_SOURCE_PROMPT} bytes"),
+        ));
     }
     // strict kind validation — the raw-string
     // round-trip, so unknown/mixed-case values (which `from_str` silently
@@ -280,10 +280,10 @@ fn find_conflict(conn: &rusqlite::Connection, content: &str) -> Option<i64> {
         .ok();
     drop(stmt);
     // Full pairwise conflict scan only when we have a subject-anchored hit.
-    if matched.is_some() {
-        if let Ok(pairs) = crate::consolidate::find_subject_conflicts(conn) {
-            return pairs.into_iter().map(|p| p.from_chunk).next();
-        }
+    if matched.is_some()
+        && let Ok(pairs) = crate::consolidate::find_subject_conflicts(conn)
+    {
+        return pairs.into_iter().map(|p| p.from_chunk).next();
     }
     None
 }
@@ -624,14 +624,13 @@ pub async fn approve_proposal(
                 |r| r.get(0),
             )
             .ok();
-        if let Some(created_at) = stale_created_at {
-            if !expire_if_stale(&conn, id, created_at)? {
+        if let Some(created_at) = stale_created_at
+            && !expire_if_stale(&conn, id, created_at)? {
                 return Err(HandlerError::bad_request(
                     "proposal_expired",
                     "proposal aged out of the review window (TTL), refused",
                 ));
             }
-        }
 
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -961,15 +960,15 @@ impl RecordReadGate {
 
     /// Whether a stored row `(owner, access_scope)` passes the gate.
     pub fn admits(&self, owner: &Option<String>, access_scope: &Option<String>) -> bool {
-        if let Some(sc) = &self.access_scopes {
-            if !access_scope.as_ref().is_some_and(|s| sc.contains(s)) {
-                return false;
-            }
+        if let Some(sc) = &self.access_scopes
+            && !access_scope.as_ref().is_some_and(|s| sc.contains(s))
+        {
+            return false;
         }
-        if let Some(owns) = &self.owner_in {
-            if !owner.as_ref().is_some_and(|o| owns.contains(o)) {
-                return false;
-            }
+        if let Some(owns) = &self.owner_in
+            && !owner.as_ref().is_some_and(|o| owns.contains(o))
+        {
+            return false;
         }
         true
     }
@@ -1053,13 +1052,13 @@ pub async fn reject_proposal(
                 |r| r.get(0),
             )
             .ok();
-        if let Some(created_at) = created_at {
-            if !expire_if_stale(&conn, id, created_at)? {
-                return Err(HandlerError::bad_request(
-                    "proposal_expired",
-                    "proposal aged out of the review window (TTL), refused",
-                ));
-            }
+        if let Some(created_at) = created_at
+            && !expire_if_stale(&conn, id, created_at)?
+        {
+            return Err(HandlerError::bad_request(
+                "proposal_expired",
+                "proposal aged out of the review window (TTL), refused",
+            ));
         }
         let n = conn
             .execute(
@@ -1177,14 +1176,13 @@ pub async fn edit_proposal(
                     |r| r.get(0),
                 )
                 .ok();
-            if let Some(ct) = created_at {
-                if !expire_if_stale(&conn, id, ct)? {
+            if let Some(ct) = created_at
+                && !expire_if_stale(&conn, id, ct)? {
                     return Err(HandlerError::bad_request(
                         "proposal_expired",
                         "proposal aged out of the review window (TTL), refused",
                     ));
                 }
-            }
 
             let tx = conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -1778,11 +1776,10 @@ pub(crate) fn purge_chunk_ids(
         if let Ok(mut s) = tx.prepare(
             "SELECT from_entity_id FROM relationships WHERE knowledge_id = ?1
              UNION SELECT to_entity_id FROM relationships WHERE knowledge_id = ?1",
-        ) {
-            if let Ok(rows) = s.query_map([id], |r| r.get::<_, i64>(0)) {
-                for e in rows.flatten() {
-                    affected_entities.insert(e);
-                }
+        ) && let Ok(rows) = s.query_map([id], |r| r.get::<_, i64>(0))
+        {
+            for e in rows.flatten() {
+                affected_entities.insert(e);
             }
         }
         // Capture a SHA-256 of the row content for the tombstone before

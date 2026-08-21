@@ -9,8 +9,8 @@
 
 use crate::api::ApiClient;
 use crate::confirm::ConfirmDestructive;
-use crate::panels::{use_document_title, PageTitle};
-use crate::time_budget::{format_remaining, now_unix, remaining, tier, Tier};
+use crate::panels::{PageTitle, use_document_title};
+use crate::time_budget::{Tier, format_remaining, now_unix, remaining, tier};
 use dioxus::prelude::*;
 
 /// v1.20.22 M2.2: day-scale next-expiry bands, the same numbers the Subjects

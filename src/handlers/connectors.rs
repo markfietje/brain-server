@@ -5,17 +5,17 @@
 //! all DB logic stays in the connector module (mirrors `handlers/sources.rs`'s
 //! split from `sources.rs`).
 
+use axum::Json as JsonBody;
 use axum::extract::State;
 use axum::response::Json;
-use axum::Json as JsonBody;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::connector::kind;
+use crate::AppState;
 use crate::connector::ConnectorRow;
+use crate::connector::kind;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{ApiError, HandlerError};
-use crate::AppState;
 
 #[derive(Debug, Serialize)]
 pub struct ListConnectorsResponse {
@@ -88,19 +88,18 @@ pub async fn register(
             // configuration lever. Unbound domain → no constraint → allowed.
             if let Some(profile) =
                 brain_server::profile::profile_for_domain(&conn, &domain).map_err(map_err)?
+                && !profile.connector_allowed(&kind)
             {
-                if !profile.connector_allowed(&kind) {
-                    return Err(HandlerError {
-                        status: axum::http::StatusCode::FORBIDDEN,
-                        inner: ApiError::new(
-                            "connector_not_in_profile",
-                            format!(
-                                "'{}' is not permitted by the '{}' profile bound to '{}'",
-                                kind, profile.name, domain
-                            ),
+                return Err(HandlerError {
+                    status: axum::http::StatusCode::FORBIDDEN,
+                    inner: ApiError::new(
+                        "connector_not_in_profile",
+                        format!(
+                            "'{}' is not permitted by the '{}' profile bound to '{}'",
+                            kind, profile.name, domain
                         ),
-                    });
-                }
+                    ),
+                });
             }
             let id = crate::connector::upsert_connector(&conn, &kind, &instance, &config_json)
                 .map_err(map_err)?;

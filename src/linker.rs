@@ -253,14 +253,14 @@ pub fn extract_heading_relationships(
         }
 
         // The top of the stack is the parent heading
-        if let Some(parent) = stack.last() {
-            if parent.name != heading_text {
-                edges.push(TypedEdge {
-                    relation: "part_of".to_string(),
-                    from: heading_text.clone(),
-                    to: parent.name.clone(),
-                });
-            }
+        if let Some(parent) = stack.last()
+            && parent.name != heading_text
+        {
+            edges.push(TypedEdge {
+                relation: "part_of".to_string(),
+                from: heading_text.clone(),
+                to: parent.name.clone(),
+            });
         }
 
         stack.push(HeadingEntry {
@@ -749,7 +749,7 @@ pub fn find_list_item_bold_ranges(content: &str) -> Vec<(usize, usize)> {
             let start = i;
             if let Some(end) = find_closing_double_star(bytes, i + 2) {
                 let close = end + 2; // past closing **
-                                     // Include the trailing colon if present
+                // Include the trailing colon if present
                 let range_end = if close < len && bytes[close] == b':' {
                     close + 1
                 } else {
@@ -868,15 +868,15 @@ pub fn extract_vocabulary(content: &str, excluded_ranges: &[(usize, usize)]) -> 
     let mut line_start = 0;
     for line in content.lines() {
         let line_end = line_start + line.len();
-        if !is_in_ranges(line_start, line_end, excluded_ranges) {
-            if let Some((_level, heading)) = parse_heading_line(line) {
-                let heading = strip_heading_number(heading);
-                if STOP_HEADINGS.contains(&heading.to_lowercase().as_str()) || heading.len() < 4 {
-                    line_start += line.len() + 1;
-                    continue;
-                }
-                vocab.insert(heading);
+        if !is_in_ranges(line_start, line_end, excluded_ranges)
+            && let Some((_level, heading)) = parse_heading_line(line)
+        {
+            let heading = strip_heading_number(heading);
+            if STOP_HEADINGS.contains(&heading.to_lowercase().as_str()) || heading.len() < 4 {
+                line_start += line.len() + 1;
+                continue;
             }
+            vocab.insert(heading);
         }
         line_start += line.len() + 1;
     }
@@ -959,9 +959,11 @@ mod tests {
     fn extracts_headings_as_vocabulary() {
         let content = "# Title\n\n## CRUSH Map Configuration\n\n## OSD Deployment\n";
         let vocab = extract_vocabulary(content, &[]);
-        assert!(vocab
-            .entities
-            .contains(&"crush map configuration".to_string()));
+        assert!(
+            vocab
+                .entities
+                .contains(&"crush map configuration".to_string())
+        );
         assert!(vocab.entities.contains(&"osd deployment".to_string()));
     }
 

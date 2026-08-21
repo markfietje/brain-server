@@ -64,11 +64,7 @@ pub fn ndcg(retrieved: &[i64], relevant: &[i64], k: usize) -> f32 {
     // Ideal: all relevant items ranked first.
     let ideal_hits = relevant.len().min(k);
     let idcg: f32 = (0..ideal_hits).map(|i| 1.0 / (i as f32 + 2.0).log2()).sum();
-    if idcg == 0.0 {
-        0.0
-    } else {
-        dcg / idcg
-    }
+    if idcg == 0.0 { 0.0 } else { dcg / idcg }
 }
 
 /// Aggregate metrics over a set of queries.

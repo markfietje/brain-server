@@ -2,7 +2,7 @@
 //! stacks the three write tools — Ingest, Procedures, Consolidate. One page,
 //! one nav target, no tab chrome; each panel is self-contained.
 
-use crate::panels::{use_document_title, PageTitle};
+use crate::panels::{PageTitle, use_document_title};
 use dioxus::prelude::*;
 
 pub fn panel() -> Element {

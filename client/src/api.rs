@@ -409,10 +409,10 @@ impl ApiClient {
         if let Some(chunk) = resp.bytes_stream().next().await {
             let chunk = chunk.map_err(ApiError::Network)?;
             for line in String::from_utf8_lossy(&chunk).lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    if let Some(e) = parse_alert_event(data.trim()) {
-                        events.push(e);
-                    }
+                if let Some(data) = line.strip_prefix("data:")
+                    && let Some(e) = parse_alert_event(data.trim())
+                {
+                    events.push(e);
                 }
             }
         }
@@ -694,15 +694,15 @@ impl ApiClient {
         if !domain.trim().is_empty() {
             body["domain"] = serde_json::json!(domain.trim());
         }
-        if let Some(a) = entities.as_array() {
-            if !a.is_empty() {
-                body["entities"] = entities.clone();
-            }
+        if let Some(a) = entities.as_array()
+            && !a.is_empty()
+        {
+            body["entities"] = entities.clone();
         }
-        if let Some(a) = relations.as_array() {
-            if !a.is_empty() {
-                body["relations"] = relations.clone();
-            }
+        if let Some(a) = relations.as_array()
+            && !a.is_empty()
+        {
+            body["relations"] = relations.clone();
         }
         self.post_json("/ingest", &body).await
     }
@@ -744,10 +744,10 @@ impl ApiClient {
         domain: &str,
     ) -> Result<ProcedureResponse, ApiError> {
         let mut body = serde_json::json!({ "title": title, "content": content });
-        if let Some(a) = steps.as_array() {
-            if !a.is_empty() {
-                body["steps"] = steps.clone();
-            }
+        if let Some(a) = steps.as_array()
+            && !a.is_empty()
+        {
+            body["steps"] = steps.clone();
         }
         if !domain.trim().is_empty() {
             body["domain"] = serde_json::json!(domain.trim());
@@ -2437,7 +2437,9 @@ mod tests {
     #[test]
     fn error_message_maps_status_codes_to_actionable_hints() {
         // Status arms map to actionable hints.
-        assert!(error_message(&ApiError::Status(401, "x".into())).contains("authentication failed"));
+        assert!(
+            error_message(&ApiError::Status(401, "x".into())).contains("authentication failed")
+        );
         assert!(error_message(&ApiError::Status(403, "x".into())).contains("permission denied"));
         assert!(error_message(&ApiError::Status(404, "missing".into())).contains("missing"));
         assert!(error_message(&ApiError::Status(429, "x".into())).contains("rate limited"));
@@ -2510,7 +2512,7 @@ mod tests {
         assert!(decode_claims("a.b").is_none()); // 2 parts, not 3
         assert!(decode_claims("a.b.c").is_none()); // bad base64url
         assert!(decode_claims("e30.!!!.e30").is_none()); // invalid chars
-                                                         // A valid-shaped JWT whose payload isn't JSON → None.
+        // A valid-shaped JWT whose payload isn't JSON → None.
         let b64 = base64url_encode(b"not json");
         assert!(decode_claims(&format!("x.{b64}.x")).is_none());
     }

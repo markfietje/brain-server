@@ -8,15 +8,15 @@
 //! hash-chained into the audit (`AuditKind::Breach`). Human-opened by design —
 //! automated detection is a v2.x monitoring concern.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 use std::sync::Arc;
 
+use crate::AppState;
 use crate::audit::{AuditKind, AuditStatus};
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_LIMIT};
-use crate::AppState;
 
 /// The breach actors: `authorize(Admin)` is the base gate, and a JWT principal
 /// that carries roles must hold a role named `dpo` OR one with the `admin`
@@ -109,13 +109,13 @@ pub async fn post_breach(
         &req.severity,
         &req.jurisdictions,
     )?;
-    if let Some(a) = req.affected_estimate {
-        if a < 0 {
-            return Err(HandlerError::bad_request(
-                "breach_estimate_invalid",
-                "affected_estimate must be >= 0",
-            ));
-        }
+    if let Some(a) = req.affected_estimate
+        && a < 0
+    {
+        return Err(HandlerError::bad_request(
+            "breach_estimate_invalid",
+            "affected_estimate must be >= 0",
+        ));
     }
     let opened_by = actor_of(&principal.0);
     let now = chrono::Utc::now().timestamp();

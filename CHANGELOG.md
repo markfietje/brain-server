@@ -19,6 +19,36 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.36] — 2026-08-21
+
+**Server + client release** (server `Cargo.toml`/lock 1.27.35 → **1.27.36**, client `Cargo.toml` 1.27.21 `edition 2024`/`rust-version 1.98`; `crates` workspace `1.98`, `fuzz`/`tools/steward-harness` `edition 2024`; no schema change).
+
+### Release notes
+
+**Improvements**
+
+- Toolchain hardens to Rust `1.98` / `edition 2024` across all manifests; `gen` → `generation` in recall debounce (`client/src/panels/recall.rs:64`) and `review.rs` temporary-borrow fix; `client`/`server` clippy harden (`collapsible_if`/`let_and_return`) via `cargo clippy --fix`.
+
+**Security fixes**
+
+- None.
+
+**Bug fixes**
+
+- None.
+
+### Engineering record
+
+- `src/backup.rs:1` `#![allow(deprecated)]` for upstream `aes-gcm`→`generic-array` 0.14 deprecation; `src/config.rs`/`src/capacity.rs`/`src/storage_layout.rs`/`src/main.rs`/`src/connector/auth/store.rs` `std::env::set_var`/`remove_var` wrapped in `unsafe` (Rust 1.98). `cargo clippy --all-targets --features bench -- -D warnings` + `cargo clippy --manifest-path client/Cargo.toml -- -D warnings` + `cargo fmt` clean.
+
+## [1.27.35] — 2026-08-21
+
+**Harness driver** — see tag `v1.27.35`.
+
+## [1.27.34] — 2026-08-21
+
+**Executor-core** — see tag `v1.27.34`.
+
 ## [1.27.33] — 2026-08-21
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.32 → **1.27.33**; no schema change; client + plugin unchanged).

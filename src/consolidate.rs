@@ -11,7 +11,7 @@
 //! `entities` table into the subject key.
 
 use anyhow::Result;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{Connection, Transaction, params};
 
 /// Typed link kinds. Stringly-typed in the DB so a future kind needs no
 /// migration; these constants are the documented, validated set.

@@ -5,9 +5,9 @@ use axum::extract::{Path, State};
 use axum::response::Json;
 use std::sync::Arc;
 
+use crate::AppState;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{ForgetResponse, HandlerError};
-use crate::AppState;
 
 /// `DELETE /memory/{id}`
 pub async fn forget(

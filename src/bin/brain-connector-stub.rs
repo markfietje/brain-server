@@ -89,12 +89,12 @@ fn main() {
 /// Duplicated rather than shared because the stub is its own binary and we
 /// keep the bin_common surface tiny (HTTP only).
 fn auth_token() -> Option<String> {
-    if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
-        if let Ok(s) = std::fs::read_to_string(path.trim()) {
-            let s = s.trim();
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+    if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE")
+        && let Ok(s) = std::fs::read_to_string(path.trim())
+    {
+        let s = s.trim();
+        if !s.is_empty() {
+            return Some(s.to_string());
         }
     }
     if let Ok(t) = std::env::var("BRAIN_TOKEN") {

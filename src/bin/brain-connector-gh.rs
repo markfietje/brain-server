@@ -28,12 +28,12 @@
 
 use anyhow::{Context, Result};
 
+use brain_server::connector::auth::AuthProvider;
 use brain_server::connector::auth::github_app::{GitHubAppConfig, GitHubAppProvider};
 use brain_server::connector::auth::store::CredentialStore;
-use brain_server::connector::auth::AuthProvider;
 use brain_server::connector::github::client::GitHubClient;
 use brain_server::connector::github::{
-    backfill_issues_for_repo, reconcile_github_sources, BackfillReport,
+    BackfillReport, backfill_issues_for_repo, reconcile_github_sources,
 };
 
 const DEFAULT_URL: &str = "http://127.0.0.1:8765";

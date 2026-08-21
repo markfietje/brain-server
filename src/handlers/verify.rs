@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use crate::handlers::auth::OptPrincipal;
 
-use crate::handlers::{HandlerError, MAX_QUERY};
 use crate::AppState;
+use crate::handlers::{HandlerError, MAX_QUERY};
 
 /// Cap on collected match ranges. A claim that matches 10k positions in a
 /// 1 MiB chunk is not more informative than one that matches 100; capping
