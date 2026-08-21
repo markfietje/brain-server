@@ -19,6 +19,31 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.41] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.40 → **1.27.41**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Workflow front-door routing with human-escalation handoff and post-call draft workflow.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- Additive module `src/workflow/frontdoor.rs` — closed intent vocabulary, escape handling, SLA envelope and HITL post-call drafts (no storage change).
+- Tests: lib 147, clippy `-D warnings` + fmt clean.
+
+---
+
 ## [1.27.40] — 2026-08-21
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.39 → **1.27.40**; no schema change; client + plugin unchanged).
