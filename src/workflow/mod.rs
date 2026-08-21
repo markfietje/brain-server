@@ -28,6 +28,7 @@ pub(crate) mod evidence;
 pub(crate) mod executor;
 pub(crate) mod interview;
 pub(crate) mod outbox;
+pub(crate) mod qa_score;
 pub(crate) mod state;
 pub(crate) mod tx;
 

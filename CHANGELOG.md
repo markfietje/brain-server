@@ -19,6 +19,31 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.27.40] — 2026-08-21
+
+**Server-only release** (server `Cargo.toml`/lock 1.27.39 → **1.27.40**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Quality intelligence: deterministic scorer over workflow artifacts with per-question justification.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- Pure scorer module `src/workflow/qa_score.rs` (integer ten-thousandths), cause split, override-rate, gap-rule and repeater flywheel (HITL proposals only), scoreboard with audit/trust coverage.
+- Tests: lib 147 + 7 new qa_score, bin 726, clippy `-D warnings` + fmt clean.
+
+---
+
 ## [1.27.39] — 2026-08-21
 
 **Server-only release** (server `Cargo.toml`/lock 1.27.38 → **1.27.39**; no schema change; client + plugin unchanged).
