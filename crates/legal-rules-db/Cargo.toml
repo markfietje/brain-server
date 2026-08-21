@@ -8,3 +8,4 @@ description = "The (jurisdiction, date, amount) -> then-in-force legal-rule reso
 publish = false
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }

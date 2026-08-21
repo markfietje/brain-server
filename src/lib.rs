@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! brain-server library target.
 //!
 //! Exists so connector binaries (`brain-connector-gh`, future connectors)

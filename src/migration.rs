@@ -1630,9 +1630,13 @@ pub fn run_migration_with_store_dim(
     // stamped for existing chains; the epoch key (`audit_chain_epoch`) is
     // runtime-only (absent = legacy) — the format itself flips only via the
     // offline `--re-audit` re-anchor. No tables, no columns.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS rules(id INTEGER PRIMARY KEY, jurisdiction TEXT NOT NULL, subject TEXT NOT NULL, rule_key TEXT NOT NULL, body TEXT NOT NULL, source_ref TEXT NOT NULL, effective_at INTEGER NOT NULL, reviewed_at INTEGER, expires_at INTEGER, revision INTEGER NOT NULL, superseded_by INTEGER, created_at INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
+    )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.31')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.31';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.37')
+         ON CONFLICT(key) DO UPDATE SET value = '1.27.37';",
         [],
     )?;
 

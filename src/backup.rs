@@ -47,6 +47,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[allow(deprecated)]
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit, Payload, generic_array::GenericArray},

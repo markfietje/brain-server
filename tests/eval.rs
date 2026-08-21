@@ -56,7 +56,7 @@ fn recall_at_k(results: &[i64], relevant: &[usize], k: usize) -> f32 {
 fn test_recall_at_k_metric() {
     // Pure unit test of the recall metric — no model needed.
     let results = vec![0, 3, 5, 1, 7, 2, 9]; // ids returned in rank order
-                                             // relevant = [0, 8]. 0 is in top-5 (rank 0); 8 is not in results at all.
+    // relevant = [0, 8]. 0 is in top-5 (rank 0); 8 is not in results at all.
     let r5 = recall_at_k(&results, &[0, 8], 5);
     assert!(
         (r5 - 0.5).abs() < 1e-6,
