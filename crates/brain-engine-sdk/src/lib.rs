@@ -15,6 +15,46 @@
 // Tests assert via unwrap/expect; production code keeps the deny.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+/// This crate's ABI version. Hosts and engines check compatibility with
+/// [`requires_host`] before wiring.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Whether this SDK satisfies a host's minimum required version
+/// (`"major.minor[.patch]"`). Compares component-wise; missing components
+/// default to 0.
+pub fn requires_host(min: &str) -> bool {
+    let parse = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .map(|p| p.trim().parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (have, need) = (parse(VERSION), parse(min));
+    for i in 0..need.len().max(have.len()) {
+        let h = have.get(i).copied().unwrap_or(0);
+        let n = need.get(i).copied().unwrap_or(0);
+        if h != n {
+            return h > n;
+        }
+    }
+    true
+}
+
 pub mod host;
 pub mod policy;
 pub mod pure;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_matches_cargo_and_gate() {
+        assert_eq!(VERSION, "1.28.0");
+        assert!(requires_host("1.28"));
+        assert!(requires_host("1.28.0"));
+        assert!(requires_host("1.27.9"), "patch-lower hosts are accepted");
+        assert!(!requires_host("1.29"));
+        assert!(!requires_host("2.0"));
+        assert!(requires_host("1"), "prefix requirements pad to zero");
+    }
+}
