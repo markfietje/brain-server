@@ -5601,12 +5601,45 @@ async fn main_inner() -> Result<()> {
     // must be applied BEFORE the merge — otherwise the outer 1 MiB layer would
     // pre-empt the import cap (Tower-http pitfall: an outer limit can never be
     // raised by an inner one) and real DB imports would be uncapturable.
+    // Compliance-pack evidence surfaces. Feature-gated: without the feature
+    // the router is EMPTY — the routes do not exist on the wire at all.
+    let compliance_router: Router<Arc<AppState>> = {
+        #[cfg(feature = "compliance-pack")]
+        {
+            Router::new()
+                .route("/audit/export", get(handlers::compliance::export_audit))
+                .route(
+                    "/compliance/evaluation-record",
+                    post(handlers::compliance::post_evaluation_record),
+                )
+                .route(
+                    "/compliance/inventory",
+                    get(handlers::compliance::inventory),
+                )
+                .route(
+                    "/ropa",
+                    get(handlers::compliance::list_ropa).post(handlers::compliance::create_ropa),
+                )
+                .route("/ropa/{id}", post(handlers::compliance::upsert_ropa))
+        }
+        #[cfg(not(feature = "compliance-pack"))]
+        {
+            Router::new()
+        }
+    };
+
     let import_router = Router::new()
         .route(
             "/domains/{name}/import",
             post(handlers::domains::import_domain),
         )
-        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024)); // 1 GiB
+        // F-49a: this dial is DELIBERATE and scoped to exactly this route
+        // group — bulk markdown imports are Admin-gated (handler re-checks
+        // before reading a byte) and stream-parsed one file at a time, so
+        // the 1 GiB ceiling is an operator-scale allowance, not an anonymous
+        // amplification surface. Every other route stays at the 1 MiB
+        // default layered after this router.
+        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024));
 
     let app = Router::new()
         // Static SPA seat (host-frontend-static semantics).
@@ -5912,18 +5945,13 @@ async fn main_inner() -> Result<()> {
         )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
-        // serve the built client SPA from client/dist.
-        // nest_service strips the `/app` prefix; ServeDir serves files with MIME
-        // + path-traversal prevention, and not_found_service returns index.html
-        // for SPA deep-links (the Dioxus router handles them client-side). The
-        // CompressionLayer below brotli-compresses the WASM bundle. If the dir
-        // doesn't exist, `/app` 404s and the API is unaffected.
-        .nest_service(
-            "/app",
-            tower_http::services::ServeDir::new(config::client_dir()).not_found_service(
-                tower_http::services::ServeFile::new(config::client_dir().join("index.html")),
-            ),
-        )
+        // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
+        // `handlers::frontend`): MIME + path-traversal prevention + SPA
+        // deep-link fallback to index.html live there. The historical
+        // `nest_service("/app", ServeDir)` registration is GONE — axum 0.8
+        // panics at boot on the conflicting internal wildcard
+        // (/app/{*__private__axum_nest_tail_param} vs /app/{*path}), a
+        // latent boot-blocker the 1.28.4 line never exercised end-to-end.
         // Root → the client shell (a 301 so browsers + the client's fetch base
         // both see a canonical `/app/`).
         .route(
@@ -5937,6 +5965,7 @@ async fn main_inner() -> Result<()> {
         // (see the import_router comment above). All shared layers below
         // (auth, JWT, rate limit, timeout, trace) still cover it.
         .merge(import_router)
+        .merge(compliance_router)
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             StdDuration::from_secs(30),
