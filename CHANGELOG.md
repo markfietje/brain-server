@@ -19,6 +19,38 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.0] — 2026-08-22
+
+**Server + crates release** (server `Cargo.toml`/lock 1.27.42 → **1.28.0**; new `crates/brain-engine-sdk` at **1.28.0**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- New stable engine ABI: the `brain-engine-sdk` crate — pure decision cores, policy vocabulary, and a storage-agnostic write seam (`WorkflowHost`) that third-party engines compile against instead of the server.
+- Storage-portable by construction: every seam signature is value-typed, so a future Postgres (or any transactional) backend can be added behind the same trait without engine code changes.
+- The server's workflow writes now flow through one audited host object; SLA priority clocks and per-kind retention defaults have a single owner shared by server and engines.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- M-crate cut: `crates/brain-engine-sdk` joins the engine-crate workspace node — zero dependencies, `unsafe_code = "forbid"`, clippy `unwrap_used/expect_used/panic = deny` (tests excepted via scoped cfg). `sdk::pure::{evidence,qa_score}` moved verbatim from `src/workflow` as `pub` API; output types are `#[non_exhaustive]`; oracle tests travel with the code.
+- `sdk::policy` now owns the P-class SLA TTL table and `DEFAULT_RETENTION_KIND_DAYS`; the server's front-door and config modules facade re-export them — policy truth lives once. Server behavior unchanged.
+- `WorkflowHost` trait (`tx`/`enqueue`/`cas`/`load_state`/`audit`) with typed error vocabulary (`HostError::{Stale,Busy,NotFound,Internal}`, `CasError::{Gone,Stale,Database}`) and audit kinds/statuses as SDK-owned value enums. `HostTx` is an RAII unit-of-work guard: commit on call, rollback on drop.
+- First host adapter: SQLite pool lane in `src/workflow/host.rs` — single `BEGIN IMMEDIATE` write lane, fail-fast `Busy` on a second concurrent unit, ops inside an open unit join it, ops outside run standalone with identical audit semantics, reads bypass the lane. A dropped unit rolls back its transition AND its audit row (pinned). Trait `audit()` resolves tenant from `run:<id>` targets and records unmapped SDK kinds as loud Error rows. Steering handler routes through the host object.
+- All five engine cores depend on `brain-engine-sdk` only; new CI job enforces the decoupling grep gate plus fmt/clippy/test over the crates workspace. `cargo build -p brain-engine-sdk -p brain-interview-core --offline` builds without the server.
+- Tests: sdk 18, crates workspace 41 total across 6 binaries, server workflow suite 21 (6 new host pins: commit/drop atomicity, Busy fail-fast, standalone enqueue idempotence + audit-once, CAS conflict mapping + load_state recovery, tenant resolution + chain verify).
+- Honest ceilings: compile-time linkage only — runtime plugin loading is future work; the SQLite adapter is the sole backend shipping today (the trait is backend-portable, no Postgres adapter yet); policy facades cover the P-class clock and retention defaults table (env override plumbing stays server-side); a `mem::forget`-leaked `HostTx` holds the write lane until process end (engines drive units on one thread).
+
+---
+
 ## [1.27.42] — 2026-08-21
 
 **Server + crates release** (server `Cargo.toml` 1.27.41 → **1.27.42**; crates workspace unchanged; no schema change; client + plugin unchanged).

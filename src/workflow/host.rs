@@ -22,7 +22,7 @@ type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 enum Lane {
     Idle,
-    Active(PooledConn),
+    Active(Box<PooledConn>),
 }
 
 pub(crate) struct SqliteWorkflowHost {
@@ -84,7 +84,7 @@ impl HostTxHandle for SqliteUnitHandle {
         let conn = {
             let mut guard = self.inner.lane.lock().unwrap_or_else(|e| e.into_inner());
             match std::mem::replace(&mut *guard, Lane::Idle) {
-                Lane::Active(c) => c,
+                Lane::Active(c) => *c,
                 Lane::Idle => {
                     return Err(HostError::Internal("unit already finished".into()));
                 }
@@ -114,7 +114,7 @@ impl WorkflowHost for SqliteWorkflowHost {
             .map_err(|e| HostError::Internal(e.to_string()))?;
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| HostError::Internal(format!("begin failed: {e}")))?;
-        *guard = Lane::Active(conn);
+        *guard = Lane::Active(Box::new(conn));
         Ok(HostTx::new(Box::new(SqliteUnitHandle {
             inner: Arc::clone(&self.inner),
         })))
