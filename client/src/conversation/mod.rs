@@ -161,42 +161,97 @@ impl NodeDefinition for ToolInvocation {
     }
 }
 
-/// Review job (brain truth): `review/start|progress|end`.
+/// Review job (brain truth): the producer events `proposal/open|updated|decided`
+/// (whole-value checkpoints: content digest, SLA deadline, role gate — replay
+/// works from any join point) plus the legacy `review/*` vocabulary.
 pub struct ReviewJob;
 impl NodeDefinition for ReviewJob {
     const KIND: &'static str = "review-job";
     const PUBLICATION: Publication = Publication::Immediate;
     fn events() -> &'static [(&'static str, Role)] {
         const EVENTS: &[(&str, Role)] = &[
+            ("proposal/open", Role::Start),
+            ("proposal/updated", Role::Update),
+            ("proposal/decided", Role::Update),
             ("review/start", Role::Start),
             ("review/progress", Role::Update),
             ("review/end", Role::Update),
         ];
         EVENTS
     }
+    /// Producer events carry a branded proposal id (`p<id>`), not a generic id.
+    fn matches(event: &Value) -> Option<(String, Role)> {
+        let kind = event.get("kind")?.as_str()?;
+        let id = event.get("id").or_else(|| event.get("run_id"))?.as_str()?;
+        let role = Self::events().iter().find(|(k, _)| *k == kind)?.1;
+        if kind.starts_with("proposal/") {
+            // Fail-closed coordinate check: only branded ids match.
+            crate::plugins::ProposalId::parse(id)?;
+        }
+        Some((id.to_string(), role))
+    }
     fn fold(prev: Option<Value>, event: &Value) -> Value {
+        let kind = event.get("kind").and_then(Value::as_str);
         let mut s =
             prev.unwrap_or_else(|| serde_json::json!({"status": "running", "proposal_id": null}));
         if let Some(p) = event.get("proposal_id") {
             s["proposal_id"] = p.clone();
         }
-        match event.get("kind").and_then(Value::as_str) {
-            Some("review/progress") => {
+        // Whole-value checkpoints ride every producer event so a node joined
+        // before its open still renders complete (digest, SLA clock, gate).
+        if let Some(d) = event.get("content_digest") {
+            s["content_digest"] = d.clone();
+        }
+        if let Some(t) = event.get("sla_deadline") {
+            s["sla_deadline"] = t.clone();
+        }
+        if let Some(g) = event.get("role_gate") {
+            s["role_gate"] = g.clone();
+        }
+        match kind {
+            Some("proposal/updated" | "review/progress") => {
                 if let Some(n) = event.get("pending") {
                     s["pending"] = n.clone();
                 }
             }
-            Some("review/end") => {
+            Some("proposal/decided" | "review/end") => {
                 s["status"] = Value::from(
                     event
                         .get("approved")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                 );
+                s["terminal"] = Value::from(true);
             }
             _ => {}
         }
         s
+    }
+}
+
+impl ReviewJob {
+    /// The view model for one review-job node. A pending (pre-start) or empty
+    /// state renders a fallback placeholder — never silently dropped, and an
+    /// undecided node never shows decision actions.
+    pub fn build_view_node(state: &Value) -> Value {
+        let has_identity = state.get("proposal_id").and_then(Value::as_i64).is_some();
+        if !has_identity {
+            return serde_json::json!({
+                "kind": Self::KIND,
+                "fallback": true,
+                "label": "awaiting details",
+            });
+        }
+        serde_json::json!({
+            "kind": Self::KIND,
+            "fallback": false,
+            "proposal_id": state.get("proposal_id").cloned().unwrap_or(Value::Null),
+            "digest": state.get("content_digest").cloned().unwrap_or(Value::Null),
+            "sla_deadline": state.get("sla_deadline").cloned().unwrap_or(Value::Null),
+            "role_gate": state.get("role_gate").cloned().unwrap_or(Value::Null),
+            "terminal": state.get("terminal").and_then(Value::as_bool).unwrap_or(false),
+            "approved": state.get("status").and_then(Value::as_bool),
+        })
     }
 }
 
@@ -321,6 +376,78 @@ mod tests {
         let s = ReviewJob::fold(None, &ev);
         assert_eq!(s["status"], true);
         assert_eq!(s["proposal_id"], 7);
+    }
+
+    // ── the producer/consumer review-job matrix ────────────────────
+
+    fn open_ev(id: i64) -> Value {
+        serde_json::json!({
+            "kind":"proposal/open","id":format!("p{id}"),"proposal_id":id,
+            "content_digest":"d1","sla_deadline":1_800_000_000,"role_gate":"approve",
+        })
+    }
+
+    #[test]
+    fn producer_open_starts_with_checkpoints() {
+        let ev = open_ev(7);
+        assert_eq!(ReviewJob::matches(&ev), Some(("p7".into(), Role::Start)));
+        let s = ReviewJob::fold(None, &ev);
+        assert_eq!(s["status"], "running");
+        assert_eq!(s["content_digest"], "d1");
+        assert_eq!(s["sla_deadline"], 1_800_000_000);
+        assert_eq!(s["role_gate"], "approve");
+    }
+
+    #[test]
+    fn unbranded_producer_ids_fail_closed() {
+        // A `proposal/*` event with a non-branded id never matches.
+        let e = serde_json::json!({"kind":"proposal/open","id":"7"});
+        assert_eq!(ReviewJob::matches(&e), None, "unbranded coordinate refused");
+        assert_eq!(
+            ReviewJob::matches(&serde_json::json!({"kind":"proposal/open","id":"p0"})),
+            None
+        );
+    }
+
+    #[test]
+    fn decided_before_start_stays_pending_then_converges() {
+        let mut a = crate::conversation::assembler::Assembler::new();
+        let decided = serde_json::json!({
+            "kind":"proposal/decided","id":"p9","proposal_id":9,
+            "approved":true,"content_digest":"d2","role_gate":"approve",
+        });
+        a.ingest::<ReviewJob>(1, &decided);
+        assert!(
+            a.snapshot().is_empty(),
+            "terminal before start stays pending"
+        );
+        assert!(a.has_pending("review-job:p9"));
+        a.ingest::<ReviewJob>(2, &open_ev(9));
+        let snap = a.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0].data["status"], true,
+            "pending fold replayed onto start"
+        );
+        assert_eq!(snap[0].data["terminal"], true);
+        assert_eq!(
+            snap[0].data["content_digest"], "d2",
+            "checkpoint survives replay"
+        );
+    }
+
+    #[test]
+    fn view_node_falls_back_before_details_arrive() {
+        // Empty / identity-less state → the pre-start fallback placeholder.
+        let fb = ReviewJob::build_view_node(&serde_json::json!({}));
+        assert_eq!(fb["fallback"], true);
+        // A complete running node renders real coordinates; undecided nodes
+        // expose no approval verdict.
+        let run = ReviewJob::build_view_node(&ReviewJob::fold(None, &open_ev(7)));
+        assert_eq!(run["fallback"], false);
+        assert_eq!(run["proposal_id"], 7);
+        assert_eq!(run["digest"], "d1");
+        assert_eq!(run["approved"], Value::Null, "undecided shows no verdict");
     }
 
     #[test]

@@ -57,6 +57,9 @@ pub const ALERT_KIND_PENDING: &str = "pending";
 pub const ALERT_KIND_EXPIRY: &str = "expiry";
 pub const ALERT_KIND_SCREEN: &str = "screen";
 pub const ALERT_KIND_CHAIN: &str = "chain";
+/// proposal conversation events (`proposal/open|updated|decided`)
+/// feeding the client's review-job node — metadata-only payloads.
+pub const ALERT_KIND_PROPOSAL: &str = "proposal";
 
 /// `GET /events` SSE broadcast buffer. Bounded — a slow
 /// consumer drops missed events (broadcast lag semantics), never blocks the

@@ -67,6 +67,11 @@ pub mod strip_invisible;
 // drive it (the `page_decayed` idiom) and so the server handler only wires.
 pub mod graph_supersede;
 
+// The proposal conversation-event producer (`proposal/open|decided`):
+// the wire contract between the HITL queue and the client's review-job
+// node, in one place. Pure builders; payloads are metadata only.
+pub mod proposal_events;
+
 // The shared untrusted-fence primitives: the
 // sentinel constants + the markdown-ref strip the MCP binary and CLI wrap
 // agent-bound text with. `src/gate.rs` re-exports `strip_markdown_refs` so

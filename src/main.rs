@@ -71,7 +71,9 @@ mod integrity;
 mod legal_hold;
 mod linker;
 mod ph;
+// proposal conversation events (shared with the lib tree).
 mod procedural;
+mod proposal_events;
 mod qa;
 mod search;
 mod secrets;

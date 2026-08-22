@@ -247,6 +247,18 @@ pub async fn ingest_proposal(
             "expires_at": now + crate::config::proposal_ttl_secs(),
         }),
     );
+    // the conversation-event producer — `proposal/open` with its
+    // whole-value checkpoints (digest, SLA deadline, role gate), so the
+    // client's review-job node can join/replay from any stream point.
+    crate::alert::publish(
+        &state,
+        crate::alert::ALERT_KIND_PROPOSAL,
+        crate::proposal_events::open(
+            crate::proposal_events::ProposalId(resp.id),
+            now + crate::config::proposal_ttl_secs(),
+            &review_digest(&content),
+        ),
+    );
     if screen_res != crate::screen::ScreenResult::Clean {
         crate::alert::publish(
             &state,
@@ -593,6 +605,7 @@ pub async fn approve_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
     super::authorize_role(&principal.0, &pool, "approve")?;
     let model = Arc::clone(&state.model);
+    let alert_state = Arc::clone(&state);
 
     // capture the actor label before `principal` is
     // moved into the blocking closure below (the closure promotes via
@@ -821,6 +834,18 @@ pub async fn approve_proposal(
                 crate::screen::ScreenResult::Quarantine => "proposal_approved:screen_quarantine",
                 crate::screen::ScreenResult::Reject => "proposal_approved:screen_reject",
             },
+        );
+
+        // the conversation-event producer — `proposal/decided`
+        // (terminal, checkpoints repeated) after the approval committed.
+        crate::alert::publish(
+            &alert_state,
+            crate::alert::ALERT_KIND_PROPOSAL,
+            crate::proposal_events::decided(
+                crate::proposal_events::ProposalId(id),
+                true,
+                &review_digest(&content),
+            ),
         );
 
         Ok(serde_json::json!({
@@ -1055,6 +1080,7 @@ pub async fn reject_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     super::authorize_role(&principal.0, &pool, "reject")?;
 
+    let alert_state = Arc::clone(&state);
     let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
         let conn = pool
             .get()
@@ -1091,6 +1117,24 @@ pub async fn reject_proposal(
                 crate::audit::AuditStatus::Ok,
                 "proposal_rejected",
             );
+            // the conversation-event producer — `proposal/decided`
+            // (terminal) after the rejection committed; the digest rides the
+            // stored row so the node converges without its open event.
+            if let Ok(content) = conn.query_row(
+                "SELECT content FROM proposals WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, String>(0),
+            ) {
+                crate::alert::publish(
+                    &alert_state,
+                    crate::alert::ALERT_KIND_PROPOSAL,
+                    crate::proposal_events::decided(
+                        crate::proposal_events::ProposalId(id),
+                        false,
+                        &review_digest(&content),
+                    ),
+                );
+            }
             // Art.14 oversight evidence for the override (reject is always
             // safe — recorded, never gated). Best-effort. The `basis` is the
             // review digest of the stored content — the same snapshot-hash

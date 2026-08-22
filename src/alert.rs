@@ -24,7 +24,7 @@ use crate::AppState;
 
 /// The four fixed alert kinds (mirrors `config::ALERT_KIND_*`).
 pub use crate::config::{
-    ALERT_KIND_CHAIN, ALERT_KIND_EXPIRY, ALERT_KIND_PENDING, ALERT_KIND_SCREEN,
+    ALERT_KIND_CHAIN, ALERT_KIND_EXPIRY, ALERT_KIND_PENDING, ALERT_KIND_PROPOSAL, ALERT_KIND_SCREEN,
 };
 
 /// The ops-clock SLA tier (mirrors the client clock). `Ok` → `Warn` →

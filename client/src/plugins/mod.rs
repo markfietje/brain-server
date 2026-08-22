@@ -36,6 +36,28 @@ pub const CTX_CONVERSATION: &str = "ctx.conversation";
 #[allow(dead_code)]
 pub const CTX_APPROVALS: &str = "ctx.approvals";
 
+/// Branded proposal id (wire form `p<id>`): a proposal coordinate is never
+/// confusable with a chunk or run id in an event payload. Mirrors the server
+/// producer's wire form; parse is fail-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposalId(pub i64);
+
+impl ProposalId {
+    /// Truthful allow: the client only consumes ids; the wire form is the
+    /// server producer's (kept as the documented contract shape).
+    #[allow(dead_code)]
+    pub fn wire(self) -> String {
+        format!("p{}", self.0)
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        s.strip_prefix('p')?
+            .parse::<i64>()
+            .ok()
+            .filter(|i| *i > 0)
+            .map(Self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginError {
     /// A family or slot key is already owned by another live plugin.

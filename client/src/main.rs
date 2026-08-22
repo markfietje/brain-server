@@ -372,7 +372,7 @@ fn app() -> Element {
     // Panels read this `Signal<ApiClient>` via `use_resource`, so replacing the
     // value re-fetches everything — no explicit invalidation needed.
     let api = use_context_provider(|| Signal::new(ApiClient::new("", None)));
-    // v1.28.8: boot composition — ui-shell → ui-chat → ui-control-panel mount
+    // boot composition — ui-shell → ui-chat → ui-control-panel mount
     // into one shared slot registry provided to every panel. A built-in
     // conflict cannot happen without an edit; if it ever does, fail loud.
     let _plugins = use_context_provider(|| {
