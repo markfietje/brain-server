@@ -1,0 +1,166 @@
+/* v1.28.4 premium component polish (components-enhanced port).
+ * Progressive enhancement over the existing shadcn-style classes: hover lift,
+ * pointer-following radial glow on buttons, pill badges, shimmer skeletons,
+ * spring toasts/modals, stat cards. GPU-friendly (transform/opacity only). */
+
+:root {
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Cards: gradient accent bar on hover + depth + lift. */
+.card-enhanced {
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out);
+}
+.card-enhanced::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(180deg, var(--color-accent), transparent);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.card-enhanced:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.08), 0 2px 6px rgb(0 0 0 / 0.06);
+}
+.card-enhanced:hover::before {
+  opacity: 1;
+}
+
+/* Buttons: tactile hover with a radial gradient following the pointer via
+ * --mx/--my (set from JS or left centered); spring press; glow focus. */
+.btn {
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform var(--duration-fast) var(--ease-spring),
+    box-shadow var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) ease;
+}
+.btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    120px circle at var(--mx, 50%) var(--my, 50%),
+    color-mix(in srgb, var(--color-accent) 18%, transparent),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity var(--duration-fast) ease;
+  pointer-events: none;
+}
+.btn:hover::after {
+  opacity: 1;
+}
+.btn:active {
+  transform: scale(0.97);
+}
+.btn:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 40%, transparent);
+}
+
+/* Badges: pill, uppercase, semantic. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge-success { background: color-mix(in srgb, var(--color-ok) 15%, transparent); color: var(--color-ok); }
+.badge-warn    { background: color-mix(in srgb, var(--color-warn) 15%, transparent); color: var(--color-warn); }
+.badge-danger  { background: color-mix(in srgb, var(--color-danger) 15%, transparent); color: var(--color-danger); }
+
+/* Skeleton wave shimmer. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-muted-foreground) 12%, transparent);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-background) 60%, transparent),
+    transparent
+  );
+  animation: skeleton-wave 1.4s infinite;
+}
+@keyframes skeleton-wave {
+  to { transform: translateX(100%); }
+}
+
+/* Toast: slide-up spring, bottom-right, color-coded border. */
+.toast {
+  animation: toast-in var(--duration-normal) var(--ease-spring) both;
+  border-left: 3px solid var(--color-info);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.12);
+}
+.toast-success { border-left-color: var(--color-ok); }
+.toast-danger { border-left-color: var(--color-danger); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+}
+
+/* Modal: backdrop blur + scale-in spring. */
+.modal-backdrop {
+  backdrop-filter: blur(4px);
+  animation: fade-in var(--duration-fast) ease both;
+}
+.modal-panel {
+  animation: modal-in var(--duration-normal) var(--ease-spring) both;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.96) translateY(6px); }
+}
+
+/* Stat card: big number + delta row. */
+.stat-card .stat-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* Session rail: right-dock at wide panes, overlay on narrow. */
+.session-rail {
+  width: 400px;
+  max-width: 100vw;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-card);
+  animation: rail-in var(--duration-normal) var(--ease-out) both;
+}
+@keyframes rail-in {
+  from { transform: translateX(24px); opacity: 0; }
+}
+@media (max-width: 1023px) {
+  .session-rail {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    box-shadow: -12px 0 32px rgb(0 0 0 / 0.14);
+  }
+}

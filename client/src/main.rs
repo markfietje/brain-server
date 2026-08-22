@@ -537,6 +537,10 @@ fn app() -> Element {
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/tailwind.css") }
+        // v1.28.4 M4: the premium polish layers (progressive enhancement —
+        // both are additive CSS, no first-paint dependency).
+        document::Stylesheet { href: asset!("/assets/components-enhanced.css") }
+        document::Stylesheet { href: asset!("/assets/animations-enhanced.css") }
         if booted() {
             // v1.16.2 "Harden" M4.1: an ErrorBoundary around the router so a panic
             // in a child panel renders an operator-facing fallback instead of a
@@ -1099,27 +1103,55 @@ fn AppShell() -> Element {
     // v1.16.7 M5: cmd/ctrl+K toggles the command palette. Handled on the shell
     // root (focused by default when the app has focus); the palette's own input
     // captures its keys while open.
-    let toggle_palette = move |e: Event<KeyboardData>| {
+    //
+    // v1.28.4 M4: session-first shell — ⌘B collapses the nav rail to an icon
+    // strip (persisted pref); Esc closes it.
+    let mut sidebar_collapsed = use_signal(|| false);
+    use_future(move || async move {
+        if i18n::pref_load("sidebar_collapsed").await.as_deref() == Some("1") {
+            sidebar_collapsed.set(true);
+        }
+    });
+    let shell_keys = move |e: Event<KeyboardData>| {
         let mut ui = ui;
-        if (e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER))
+        let mut sidebar_collapsed = sidebar_collapsed;
+        let mod_pressed =
+            e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER);
+        if mod_pressed
             && let Key::Character(c) = e.key()
-            && c.eq_ignore_ascii_case("k")
         {
-            ui.palette_open.set(!(ui.palette_open)());
+            if c.eq_ignore_ascii_case("k") {
+                ui.palette_open.set(!(ui.palette_open)());
+            } else if c.eq_ignore_ascii_case("b") {
+                let next = !sidebar_collapsed();
+                sidebar_collapsed.set(next);
+                i18n::pref_save("sidebar_collapsed", if next { "1" } else { "0" });
+            }
+        } else if e.key() == Key::Escape && !(ui.palette_open)() {
+            sidebar_collapsed.set(false);
         }
     };
 
     rsx! {
-        div { class: "flex min-h-screen bg-background text-foreground", onkeydown: toggle_palette,
-            // Fixed sidebar: brand + primary nav + identity footer.
+        div { class: "flex min-h-screen bg-background text-foreground", onkeydown: shell_keys,
+            // Fixed sidebar: brand + primary nav + identity footer. v1.28.4 M4:
+            // collapsible (⌘B / Esc); collapsed = icon strip with the pending
+            // count + running dot kept visible.
             aside {
-                class: "nav-rail sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card",
+                class: if sidebar_collapsed() {
+                    "nav-rail nav-collapsed sticky top-0 flex h-screen w-14 shrink-0 flex-col border-r border-border bg-card"
+                } else {
+                    "nav-rail sticky top-0 flex h-screen w-56 shrink-0 flex-col border-r border-border bg-card"
+                },
                 "aria-label": t("aria_primary_nav"),
+                "aria-expanded": "{!sidebar_collapsed()}",
                 div { class: "flex items-center gap-2 border-b border-border px-4 h-14",
                     div { class: "flex size-8 items-center justify-center rounded-md bg-accent/15 text-accent",
                         span { class: "font-mono text-sm font-bold", "b" }
                     }
-                    span { class: "font-semibold tracking-tight", "brain" }
+                    if !sidebar_collapsed() {
+                        span { class: "nav-label font-semibold tracking-tight", "brain" }
+                    }
                 }
                 nav { class: "flex-1 overflow-y-auto p-3 nav",
                     // M2.1: F-pattern anchor — pending review count on the rail.
