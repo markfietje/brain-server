@@ -58,6 +58,9 @@ use hmac::{Hmac, Mac};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+pub mod decision;
+pub use decision::{DecisionInput, DecisionRecord};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::error;
@@ -105,6 +108,11 @@ pub enum AuditKind {
     /// `--re-audit` epoch flip writes one row on the NEW chain recording
     /// the scheme change, so the evidence epoch boundary is itself evidence.
     Anchor,
+    /// per-decision evidence rows (Art. 12): every
+    /// `decision_records` append also extends THIS chain, so the decision
+    /// ledger inherits the audit chain's tamper-evidence (extended, never a
+    /// separate trust root).
+    Decision,
 }
 
 impl AuditKind {
@@ -126,6 +134,7 @@ impl AuditKind {
             AuditKind::Retention => "retention",
             AuditKind::Workflow => "workflow",
             AuditKind::Anchor => "anchor",
+            AuditKind::Decision => "decision",
         }
     }
 }
@@ -139,7 +148,7 @@ pub enum AuditStatus {
 }
 
 impl AuditStatus {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             AuditStatus::Ok => "ok",
             AuditStatus::Denied => "denied",

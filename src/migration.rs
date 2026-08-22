@@ -1682,6 +1682,43 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // ── v1.28.5 "Compliance Pack" (feature-gated): Art.12/14 evidence
+    // tables. Without the feature these are NOT created and server behaviour
+    // is unchanged; with it, the migration stays additive + idempotent.
+    #[cfg(feature = "compliance-pack")]
+    db.execute_batch(crate::audit::decision::DDL)?;
+
+    #[cfg(feature = "compliance-pack")]
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS oversight_evidence(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reviewer_id TEXT NOT NULL,
+            reviewed_at INTEGER NOT NULL,
+            basis TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            authority TEXT NOT NULL DEFAULT '',
+            decision_hash TEXT
+         );",
+    )?;
+
+    #[cfg(feature = "compliance-pack")]
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ropa_registry(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity TEXT NOT NULL,
+            controller TEXT NOT NULL,
+            processor TEXT NOT NULL,
+            categories TEXT NOT NULL DEFAULT '',
+            recipients TEXT NOT NULL DEFAULT '',
+            lawful_basis TEXT NOT NULL,
+            retention_days INTEGER,
+            security_measures TEXT NOT NULL DEFAULT '',
+            transfers TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+         );",
+    )?;
+
     // ── Parity check: assert vec0 absorbed all valid legacy vectors ──────
     // A silent partial backfill (e.g. skipped non-512-dim rows) would otherwise
     // leave the index incomplete with no signal. We log a warning for any

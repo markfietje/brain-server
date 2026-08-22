@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.28.4"
+version = "1.28.5"
 edition = "2024"
 rust-version = "1.98"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
@@ -19,6 +19,10 @@ bench = []
 # build is unchanged. Enable with
 # `cargo run --release --features migrate --bin brain-migrate-rehearse`.
 migrate = []
+# v1.28.5 "Compliance Pack": Art.12/14 decision-evidence pipeline (decision
+# records, oversight evidence, RoPA register). Off by default so the default
+# build is unchanged and the new tables are simply not migrated.
+compliance-pack = []
 # GitHub App connector auth (M2.1). `jsonwebtoken` is now a required dep
 # on the server (v1.2.0 AuthN) with `use_pem` + `rust_crypto` always on, and
 # `reqwest` is required since v1.15.0 (the DSAR Art 19 webhook needs outbound

@@ -195,6 +195,25 @@ impl WorkflowHost for SqliteWorkflowHost {
                 detail,
                 &tenant,
             );
+            // Art.12 decision evidence is recorded HERE, on the host write
+            // path — never in engine code — so a workflow cannot modify its
+            // own evidence. Coarse fields only; `detail` stays out of the
+            // decision record (it may carry free-form context).
+            #[cfg(feature = "compliance-pack")]
+            {
+                let _ = crate::audit::decision::record_decision(
+                    conn,
+                    &crate::audit::decision::DecisionInput {
+                        actor_id: actor,
+                        role: "engine",
+                        policy_version: env!("CARGO_PKG_VERSION"),
+                        prompt_class: "workflow",
+                        tool: target,
+                        model_id: "",
+                        outcome: status.as_str(),
+                    },
+                );
+            }
             Ok(())
         });
         // Best-effort by contract: scoped only fails on pool exhaustion, and a
@@ -326,6 +345,56 @@ mod tests {
             "a missing run reads Gone"
         );
         assert!(host.load_state(42).unwrap().is_none());
+    }
+
+    /// Art.12 write-path independence: the host (not engine code) appends a
+    /// decision record for every audited workflow event, and the exported
+    /// record verifies outside the host with the configured key.
+    #[cfg(feature = "compliance-pack")]
+    #[test]
+    fn host_records_decision_evidence_that_verifies_outside() {
+        if std::env::var("BRAIN_AUDIT_SIGNING_KEY").is_err() {
+            // deterministic signed path for this process
+            unsafe {
+                std::env::set_var(
+                    "BRAIN_AUDIT_SIGNING_KEY",
+                    "0707070707070707070707070707070707070707070707070707070707070707",
+                );
+            }
+        }
+        let (host, tmp) = host();
+        {
+            let unit = host.tx().unwrap();
+            host.audit(
+                AuditKind::Workflow,
+                "engine-x",
+                "run:1",
+                AuditStatus::Ok,
+                "milestone",
+            );
+            unit.commit().unwrap();
+        }
+        let conn = rusqlite::Connection::open(tmp.path()).unwrap();
+        let (actor, tool, outcome): (String, String, String) = conn
+            .query_row(
+                "SELECT actor_id, tool, outcome FROM decision_records",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (actor.as_str(), tool.as_str(), outcome.as_str()),
+            ("engine-x", "run:1", "ok")
+        );
+        // export → verify OUTSIDE the host path (plain connection + key only)
+        let exported = crate::audit::decision::list_decisions(&conn, None, 10).unwrap();
+        assert_eq!(exported.len(), 1);
+        assert!(exported[0].sig.is_some());
+        assert!(crate::audit::decision::verify_decisions(&conn).unwrap());
+        assert!(
+            crate::audit::verify_chain(&conn),
+            "the audit_events chain that anchors decisions still verifies"
+        );
     }
 
     #[test]
