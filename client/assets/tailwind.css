@@ -133,7 +133,6 @@
   }
   img, video, canvas, audio, iframe, embed, object {
     display: block;
-    vertical-align: middle;
   }
   /* svg stays inline: block-level svg breaks icons/rings rendered next to
    * text (context ring, status dots, inline glyphs). */
