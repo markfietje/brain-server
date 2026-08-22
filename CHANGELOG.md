@@ -19,6 +19,37 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.1] — 2026-08-22
+
+**SDK release** (server `Cargo.toml`/lock 1.28.0 → **1.28.1**; `crates/brain-engine-sdk` 1.28.0 → **1.28.1**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- The engine SDK gains an opt-in plugin kernel: services mount with declared dependencies (ordering enforced, never assumed), and every registration taken through a reversible effect is undone on unmount — load/unload/reload is safe by construction.
+- Declarative harness manifests: a validated YAML file lists plugins and their dependency order; malformed input fails loudly instead of degrading.
+- A typed agent-harness lifecycle: turn snapshots are defensive copies (mid-turn config changes never touch a running turn), structural operations are phase-gated, and queued session writes flush in deterministic order at save-points and at run finish/abort.
+- Typed hooks with four dispatch modes — broadcast observe, short-circuit policy (first denial wins and stands), ordered mutation, and deterministic fan-out — each with per-listener panic containment and registration provenance.
+- A fail-closed execution environment for tools: no tool touches the filesystem or processes directly; the default seam refuses everything, path escapes are refused before the seam runs, and shell commands are allowlist-gated.
+- Tool registry alignment: what a model sees presented, what can be looked up, and what executes are one set by construction; mid-session tool additions load additively with a full-list fallback counted as a cache miss.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- Hostcall capability gate: every dispatch checks a trust posture against an operation class, unknown pairs deny, and both grants and denials emit audit rows on the same chain engines use — a denied hostcall can never bypass the record silently.
+
+### Engineering record
+
+M1 plugin kernel (`sdk::plugin` + `sdk::loader`): `Service` trait with stable `key()` wire names and `inject()` dependency lists enforced at install; `Context` owns services by type plus an effect stack whose entries undo in strict reverse order via `EffectHandle` drop/dispose; `reload` unmounts then remounts the same instance (single-process HMR). Manifest loader validates plugin order + inject ordering and fails loud. M2 agent-harness lifecycle (`sdk::harness`): `Phase::{Idle,Running,Compact}` gates structural ops (`compact`, `set_leaf_id`, tree navigation) while steering/follow-up/config setters stay legal mid-turn; `TurnSnapshot` is an owned clone captured at `start_run`; pending session writes drain FIFO strictly after `message_end` persistence; finish and abort share one settlement path that drains residuals, returns to Idle, runs deferred-idle work in order, and audits `RunStart`/`RunEnd`; non-main lanes get read-only handles whose run ops reject. M3 typed hooks (`sdk::events`): one `Hooks` registry owning registration + provenance sidecar + four modes (`emit`, `waterfall`, `serial`, `parallel`); throwing subscribers are contained per listener (cloned payloads) and never starve later listeners. M4 execution environment (`sdk::env`): tools receive a cloned narrowed `ExecutionEnv`; built-in Read/Write/Edit/Bash factories route everything through the injected seam; registry enforces presentation/lookup/execution alignment plus additive mid-session loading. M5 security carry-over (`sdk::capability`): coarse posture ladder (Safe ⊂ Standard ⊂ Permissive) checked per hostcall class, fail-closed on unknown pairs, decisions audited in the same step; audited mount/unmount helpers put plugin lifecycle rows on the shared chain.
+
+All kernel code is feature-gated (`--features harness-kernel`); without it the SDK compiles exactly as 1.28.0 (zero new dependencies, same public ABI). Tests: brain-engine-sdk 18 → **49** passed with the feature (31 new across kernel, harness, events, env, capability), 18 without; crates workspace suite green. Clippy `-D warnings` + fmt clean.
+
+Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full Cordis semantics (cross-process HMR, nested-fiber lifecycles) deferred; remote-session/CBOR transport out of scope; the capability ladder is the invariant skeleton of the full per-engine policy landing next release; waterfall's "monotonic final denial" means first-deny short-circuit (later listeners do not run); serial mutations are single-threaded ordered application, not concurrent.
+
 ## [1.28.0] — 2026-08-22
 
 **Server + crates release** (server `Cargo.toml`/lock 1.27.42 → **1.28.0**; new `crates/brain-engine-sdk` at **1.28.0**; no schema change; client + plugin unchanged).

@@ -364,11 +364,11 @@ dependencies = [
 
 [[package]]
 name = "brain-engine-sdk"
-version = "1.28.0"
+version = "1.28.1"
 
 [[package]]
 name = "brain-server"
-version = "1.28.0"
+version = "1.28.1"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
