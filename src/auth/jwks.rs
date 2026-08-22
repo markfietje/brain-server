@@ -191,8 +191,22 @@ impl KeyStore {
                 private_pem,
             });
         }
+        Self::finalize_keys(keys)
+    }
+
+    /// Sort + index the parsed keys into a store. Duplicate kids are refused,
+    /// never silently collapsed: two keys sharing a kid would make the by-kid
+    /// lookup resolve to whichever sorted last — an ambiguity no verifier
+    /// should inherit.
+    fn finalize_keys(mut keys: Vec<ManagedKey>) -> Result<Self, LoadError> {
         // Sort by kid for deterministic JWKS output (stable rotation order).
         keys.sort_by(|a, b| a.kid.cmp(&b.kid));
+        if let Some(dup) = keys
+            .windows(2)
+            .find_map(|w| (w[0].kid == w[1].kid).then_some(w[0].kid.clone()))
+        {
+            return Err(LoadError::DuplicateKid { kid: dup });
+        }
         let by_kid = keys
             .iter()
             .enumerate()
@@ -266,6 +280,9 @@ pub enum LoadError {
         kid: String,
         reason: String,
     },
+    DuplicateKid {
+        kid: String,
+    },
 }
 
 impl std::fmt::Display for LoadError {
@@ -276,6 +293,12 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::ReadKey { kid, source } => write!(f, "read key {kid}: {source}"),
             LoadError::Parse { kid, reason } => write!(f, "parse key {kid}: {reason}"),
+            LoadError::DuplicateKid { kid } => {
+                write!(
+                    f,
+                    "duplicate kid '{kid}' in key dir — refusing ambiguous store"
+                )
+            }
         }
     }
 }
@@ -489,5 +512,27 @@ mod tests {
         write_keypair(dir.path(), "kid-2");
         store.reload(dir.path()).unwrap();
         assert_eq!(store.len(), 2);
+    }
+
+    /// Duplicate kids are refused at index time — never silently collapsed
+    /// to whichever key sorted last.
+    #[test]
+    fn duplicate_kids_refuse_the_load() {
+        let dir = tempdir().unwrap();
+        write_keypair(dir.path(), "kid-1");
+        let pem = std::fs::read_to_string(dir.path().join("kid-1.pem")).unwrap();
+        let mk = |kid: &str, pem: &str| ManagedKey {
+            kid: kid.to_string(),
+            alg: Algorithm::RS256,
+            verifying: parse_public_pem(kid, pem).unwrap().1,
+            public_pem: pem.to_string(),
+            private_pem: None,
+        };
+        let dup = vec![mk("a", &pem), mk("b", &pem), mk("a", &pem)];
+        match KeyStore::finalize_keys(dup) {
+            Err(LoadError::DuplicateKid { kid }) => assert_eq!(kid, "a"),
+            Ok(_) => panic!("expected DuplicateKid, load succeeded"),
+            Err(e) => panic!("expected DuplicateKid, got {e}"),
+        }
     }
 }

@@ -88,4 +88,5 @@ pub mod profile;
 // record-level retrieval gate. Lives in the lib because `migration` (lib)
 // seeds the presets at first boot and `handlers`/`mcp` (server binaries)
 // enforce the gate.
+pub mod model_pin;
 pub mod role;

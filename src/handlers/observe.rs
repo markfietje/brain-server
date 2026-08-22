@@ -87,6 +87,12 @@ pub struct DsarRequest {
     /// so the operator records exactly what they signed.
     #[serde(default)]
     pub mechanism: Option<String>,
+    /// Exact-subject matching for the residue sweeps (traces, proposals,
+    /// workflow state): default is the erasure-safe substring sweep; an
+    /// operator may narrow to exact matches to avoid over-matching short or
+    /// wildcard-like subjects.
+    #[serde(default)]
+    pub subject_exact: bool,
 }
 
 fn default_dsar_action() -> String {
@@ -235,7 +241,17 @@ pub async fn post_dsar(
             if idx == global_idx {
                 continue;
             }
-            let run = run_dsar_pool(pool, name, &subject, &action, dry_run, now, false, None)?;
+            let run = run_dsar_pool(
+                pool,
+                name,
+                &subject,
+                &action,
+                dry_run,
+                now,
+                false,
+                None,
+                req.subject_exact,
+            )?;
             if !dry_run {
                 cross_ids.extend(run.purged_ids.iter().copied());
                 if let Some(b) = &run.bundle {
@@ -267,6 +283,7 @@ pub async fn post_dsar(
             now,
             true,
             aggregate_hash.as_deref(),
+            req.subject_exact,
         )?;
         runs.push(global_run);
 
@@ -511,6 +528,7 @@ pub(crate) async fn run_dsar_subject(
     dry_run: bool,
     jurisdiction: Option<String>,
     mechanism: Option<String>,
+    subject_exact: bool,
     now: i64,
 ) -> Result<DsarResponse, HandlerError> {
     let subject = subject.to_string();
@@ -535,6 +553,7 @@ pub(crate) async fn run_dsar_subject(
             now,
             true,
             None,
+            subject_exact,
         )?;
         if dry_run {
             return Ok(DsarResponse {
@@ -1083,7 +1102,7 @@ struct DsarPoolRun {
 /// (the global run's own bundle is digested in shim mode — byte-identical to
 /// the purge + ledger row commit in the
 /// same tx.
-#[allow(clippy::too_many_arguments)] // 8 run fields; a struct would add ceremony to the single-erasure path
+#[allow(clippy::too_many_arguments)] // 9 run fields; a struct would add ceremony to the single-erasure path
 fn run_dsar_pool(
     pool: &crate::Pool,
     domain: &str,
@@ -1093,6 +1112,7 @@ fn run_dsar_pool(
     now: i64,
     write_ledger: bool,
     aggregate_bundle_hash: Option<&str>,
+    subject_exact: bool,
 ) -> Result<DsarPoolRun, HandlerError> {
     let mut conn = pool
         .get()
@@ -1259,11 +1279,19 @@ fn run_dsar_pool(
     // future field that does embed personal data. Best-effort (short
     // common subjects over-match slightly; erasure-safe direction).
     if matches!(action, "purge" | "both") && !subject.is_empty() {
-        tx.execute(
-            "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
-            rusqlite::params![format!("%{subject}%")],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let (sql, pat): (&str, String) = if subject_exact {
+            (
+                "DELETE FROM recall_traces WHERE trace_json = ?1",
+                subject.to_string(),
+            )
+        } else {
+            (
+                "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
+                format!("%{subject}%"),
+            )
+        };
+        tx.execute(sql, rusqlite::params![pat])
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
         // proposals hold raw candidate content with no owner column,
         // so a DSAR could never locate them and their plaintext (possibly PII
         // about the subject) survived a "complete" erasure. Sweep them by the
@@ -1274,11 +1302,19 @@ fn run_dsar_pool(
         // is intentionally erased with the memory per Art 17.
         // was `let _ =` — a silent failure would leave
         // subject PII in a "complete" erasure; propagate (tx rolls back).
-        tx.execute(
-            "DELETE FROM proposals WHERE content LIKE ?1",
-            rusqlite::params![format!("%{subject}%")],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let (sql, pat): (&str, String) = if subject_exact {
+            (
+                "DELETE FROM proposals WHERE content = ?1",
+                subject.to_string(),
+            )
+        } else {
+            (
+                "DELETE FROM proposals WHERE content LIKE ?1",
+                format!("%{subject}%"),
+            )
+        };
+        tx.execute(sql, rusqlite::params![pat])
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
     }
 
     // Governed-workflow sweep: matched runs + their dependents go with the
@@ -1293,13 +1329,20 @@ fn run_dsar_pool(
     } else {
         // Dry-run/export: count what a live purge WOULD reach.
         if !subject.is_empty() {
-            workflow_rows =
-                tx.query_row(
-                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
-                    rusqlite::params![format!("%{subject}%")],
-                    |r| r.get::<_, i64>(0),
+            let (sql, pat): (&str, String) = if subject_exact {
+                (
+                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json = ?1",
+                    subject.to_string(),
                 )
-                .map_err(|e| HandlerError::internal(e.to_string()))? as usize;
+            } else {
+                (
+                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
+                    format!("%{subject}%"),
+                )
+            };
+            workflow_rows =
+                tx.query_row(sql, rusqlite::params![pat], |r| r.get::<_, i64>(0))
+                    .map_err(|e| HandlerError::internal(e.to_string()))? as usize;
         }
     }
 
@@ -1719,8 +1762,10 @@ mod tests {
         }
 
         // Handler order: non-global pools first (local txs, no ledger)...
-        let health_run =
-            run_dsar_pool(&health, "global", subject, "both", false, now, false, None).unwrap();
+        let health_run = run_dsar_pool(
+            &health, "global", subject, "both", false, now, false, None, false,
+        )
+        .unwrap();
         assert!(!health_run.purged_ids.is_empty(), "health pool erased");
         assert_eq!(health_run.ledger_id, None, "non-global pool never ledgers");
         // ...then global, with the cross-domain aggregate hash.
@@ -1736,6 +1781,7 @@ mod tests {
             now,
             true,
             Some(&aggregate),
+            false,
         )
         .unwrap();
         assert!(!global_run.purged_ids.is_empty(), "global pool erased");
@@ -1837,7 +1883,10 @@ mod tests {
         drop(conn);
 
         let now = chrono::Utc::now().timestamp();
-        let run = run_dsar_pool(&pool, "global", subject, "both", false, now, true, None).unwrap();
+        let run = run_dsar_pool(
+            &pool, "global", subject, "both", false, now, true, None, false,
+        )
+        .unwrap();
         assert!(!run.purged_ids.is_empty(), "subject root erased");
 
         let conn = pool.get().unwrap();

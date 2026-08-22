@@ -70,8 +70,25 @@ done
 #    xattr that Gatekeeper uses to SIGKILL the process on first exec. Strip it
 #    so the binary is actually runnable.
 mkdir -p "$DEST_DIR"
+# Optional release-artifact verification (P2-10 posture): when the operator
+# provides BRAIN_RELEASE_PUBKEY (minisign public key file) and a detached
+# signature <binary>.minisig exists next to the source binary, every install
+# is verified BEFORE it lands. Missing signature + pubkey = refuse (fail-
+# closed); no pubkey configured = local-build trust (documented ceiling).
+verify_signature() {
+	src="$1"
+	if [[ -z "${BRAIN_RELEASE_PUBKEY:-}" ]]; then
+		return 0
+	fi
+	sig="$src.minisig"
+	[[ -f "$sig" ]] || die "BRAIN_RELEASE_PUBKEY set but $sig missing — refusing unsigned artifact"
+	command -v minisign >/dev/null 2>&1 || die "minisign not found; required to verify BRAIN_RELEASE_PUBKEY"
+	minisign -Vm "$src" -p "$BRAIN_RELEASE_PUBKEY" || die "signature verification FAILED for $src"
+	ok "verified $src against $BRAIN_RELEASE_PUBKEY"
+}
 install_bin() {
 	src="$1"; dest="$2"
+	verify_signature "$src"
 	cp -f "$src" "$dest"
 	chmod +x "$dest"
 	# Strip the local-build provenance xattr (Gatekeeper SIGKILLs otherwise) AND

@@ -120,12 +120,8 @@ pub fn run_once(db_path: &Path) -> anyhow::Result<bool> {
     let conn = Connection::open(db_path)?;
     // Checkpoint WAL first so the snapshot is consistent + WAL is small.
     let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-    let sql = format!(
-        "VACUUM INTO '{}'",
-        snap.to_str()
-            .ok_or_else(|| anyhow::anyhow!("snapshot path not utf-8"))?
-    );
-    conn.execute(&sql, [])?;
+    // The shared escaper (backup::vacuum_into) — never a hand-rolled literal.
+    brain_server::backup::vacuum_into(&conn, &snap)?;
     drop(conn);
 
     // Snapshots are plaintext copies of the whole store; lock them to the

@@ -212,6 +212,74 @@ pub struct CapabilityToken {
     pub scope: Option<String>,
     /// Unix seconds; tokens expire.
     pub exp: u64,
+    /// Per-token id. When present, a process-lifetime replay cache rejects a
+    /// second presentation of the same (jti, exp) — mirroring the JWT jti
+    /// denylist posture. Absent on legacy tokens (they stay expiry-only; the
+    /// documented ceiling until owners re-mint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
+}
+
+impl CapabilityToken {
+    pub fn new(alg: &str, iss: &str, verbs: &[&str], scope: Option<&str>, exp: u64) -> Self {
+        Self {
+            alg: alg.to_string(),
+            iss: iss.to_string(),
+            verbs: verbs.iter().map(|s| s.to_string()).collect(),
+            scope: scope.map(|s| s.to_string()),
+            exp,
+            jti: None,
+        }
+    }
+}
+
+/// Process-lifetime replay cache for capability tokens that carry a `jti`.
+/// Bounded: entries prune lazily once expired; the count is capped at
+/// [`CAP_REPLAY_CAP`] so a flood of unique tokens cannot grow memory
+/// unboundedly. Poisoned lock = deny (fail-closed).
+#[derive(Default)]
+pub struct ReplayCache {
+    seen: std::sync::Mutex<Vec<(String, u64)>>,
+}
+
+const CAP_REPLAY_CAP: usize = 4096;
+
+impl ReplayCache {
+    /// Returns `true` when this (jti, exp) was NOT seen before and is now
+    /// recorded (first presentation). `false` = replay or poisoned state.
+    pub fn first_presentation(&self, jti: &str, exp: u64) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let Ok(mut list) = self.seen.lock() else {
+            return false;
+        };
+        if list.len() >= CAP_REPLAY_CAP {
+            list.retain(|(_, e)| *e > now);
+            if list.len() >= CAP_REPLAY_CAP {
+                list.clear(); // extreme flood: drop history rather than grow
+            }
+        }
+        let fresh = !list.iter().any(|(j, _)| j == jti);
+        if fresh {
+            list.push((jti.to_string(), exp));
+        }
+        fresh
+    }
+}
+
+/// The process-global cache consulted at every capability-token acceptance.
+pub static CAP_REPLAY: std::sync::LazyLock<ReplayCache> =
+    std::sync::LazyLock::new(ReplayCache::default);
+
+/// Record-and-check a parsed token's `jti` at acceptance time. Tokens without
+/// a `jti` are legacy and pass through (expiry-only ceiling).
+pub fn cap_replay_check(cap: &CapabilityToken) -> bool {
+    match &cap.jti {
+        None => true,
+        Some(jti) => CAP_REPLAY.first_presentation(jti, cap.exp),
+    }
 }
 
 /// Parse + verify a capability token against the owner public key.
@@ -410,6 +478,7 @@ mod tests {
             verbs: vec!["read".into(), "derive".into()],
             scope: Some("projects/x".into()),
             exp: u64::MAX,
+            jti: None,
         };
         let token = mint_capability_token(&claims, &sk).unwrap();
         let parsed = parse_capability_token(&token, &pk).unwrap();
@@ -432,5 +501,38 @@ mod tests {
             parse_capability_token(&exp_token, &pk),
             Err(TokenError::Expired)
         );
+    }
+
+    /// A jti-bearing token is accepted exactly once per process; the second
+    /// presentation is a replay and must be refused. Legacy (no-jti) tokens
+    /// pass through expiry-only.
+    #[test]
+    fn capability_jti_replay_cache_rejects_second_presentation() {
+        let cache = ReplayCache::default();
+        assert!(cache.first_presentation("cap-1", u64::MAX));
+        assert!(!cache.first_presentation("cap-1", u64::MAX), "replay");
+        assert!(
+            !cache.first_presentation("cap-1", u64::MAX - 1),
+            "same jti, different exp is still the same token"
+        );
+        assert!(cache.first_presentation("cap-2", u64::MAX));
+
+        // Legacy tokens without jti are not replay-tracked.
+        let (_, pk) = keypair();
+        let legacy = CapabilityToken {
+            alg: "EdDSA".into(),
+            iss: did_key_from_ed25519(&pk),
+            verbs: vec!["read".into()],
+            scope: None,
+            exp: u64::MAX,
+            jti: None,
+        };
+        assert!(cap_replay_check(&legacy));
+        assert!(cap_replay_check(&legacy));
+
+        let mut minted = legacy.clone();
+        minted.jti = Some("cap-3".into());
+        assert!(cap_replay_check(&minted));
+        assert!(!cap_replay_check(&minted), "second presentation refused");
     }
 }

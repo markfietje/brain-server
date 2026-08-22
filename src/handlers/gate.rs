@@ -918,7 +918,7 @@ pub fn role_retrieval_gate(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
-                sub = %sub,
+                sub = %super::mask_sub(&sub),
                 error = %e,
                 "role retrieval gate: pool unavailable — degrading to empty permit (fail closed)"
             );
@@ -929,7 +929,7 @@ pub fn role_retrieval_gate(
         Ok(roles) => Some(brain_server::role::effective_filter(&sub, &manages, &roles)),
         Err(e) => {
             tracing::warn!(
-                sub = %sub,
+                sub = %super::mask_sub(&sub),
                 error = %e,
                 "role retrieval gate: role store error — degrading to empty permit (fail closed)"
             );

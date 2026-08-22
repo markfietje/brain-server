@@ -174,6 +174,10 @@ pub struct ClientDsarRequest {
     pub action: String,
     #[serde(default)]
     pub dry_run: bool,
+    /// Exact-subject matching for the residue sweeps (default: the
+    /// erasure-safe substring sweep).
+    #[serde(default)]
+    pub subject_exact: bool, // subject_exact defaults false via serde; test literals use ..Default::default()-free explicit form
 }
 
 fn default_dsar_action() -> String {
@@ -227,6 +231,7 @@ pub async fn client_dsar(
         req.dry_run,
         Some(jurisdiction),
         mechanism,
+        req.subject_exact,
         now,
     )
     .await?;
@@ -787,6 +792,7 @@ mod tests {
                 subject: "alice@beta".to_string(),
                 action: "purge".to_string(),
                 dry_run: false,
+                subject_exact: false,
             }),
         )
         .await
@@ -816,6 +822,7 @@ mod tests {
             subject: "s".to_string(),
             action: "purge".to_string(),
             dry_run: true,
+            subject_exact: false,
         });
         let err = client_dsar(
             State(state.clone()),
@@ -842,6 +849,7 @@ mod tests {
                 subject: "s".to_string(),
                 action: "purge".to_string(),
                 dry_run: true,
+                subject_exact: false,
             }),
         )
         .await
@@ -968,6 +976,7 @@ mod tests {
                 subject: "alice@beta".to_string(),
                 action: "purge".to_string(),
                 dry_run: false,
+                subject_exact: false,
             }),
         )
         .await
@@ -1973,6 +1982,7 @@ mod tests {
             false,
             Some("eu".to_string()),
             None,
+            false,
             now,
         )
         .await
@@ -1993,6 +2003,7 @@ mod tests {
             false,
             Some("us".to_string()),
             None,
+            false,
             now + 1,
         )
         .await
