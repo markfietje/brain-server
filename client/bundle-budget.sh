@@ -10,7 +10,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 budget=5734400
 cargo build --release --target wasm32-unknown-unknown --quiet
-wasm=$(ls -t target/wasm32-unknown-unknown/release/*.wasm | head -1)
+wasm=""
+for f in target/wasm32-unknown-unknown/release/*.wasm; do
+  [ -e "$f" ] || continue
+  if [ -z "$wasm" ] || [ "$f" -nt "$wasm" ]; then wasm="$f"; fi
+done
+if [ -z "$wasm" ]; then echo "no release wasm found under target/wasm32-unknown-unknown"; exit 1; fi
 size=$(stat -f%z "$wasm" 2>/dev/null || stat -c%s "$wasm")
 echo "wasm: $size bytes ($((size / 1024)) KB) — budget $budget bytes"
 if [ "$size" -gt "$budget" ]; then

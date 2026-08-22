@@ -36,11 +36,11 @@ impl EventRegistry {
         // the single place callers resolve it from.
         use super::*;
         let policy = match kind {
-            k if k == AssistantNode::KIND => AssistantNode::PUBLICATION,
-            k if k == ToolNode::KIND => ToolNode::PUBLICATION,
-            k if k == ReviewJobNode::KIND => ReviewJobNode::PUBLICATION,
-            k if k == DeliveryNode::KIND => DeliveryNode::PUBLICATION,
-            k if k == WorkflowRunNode::KIND => WorkflowRunNode::PUBLICATION,
+            k if k == AssistantTurn::KIND => AssistantTurn::PUBLICATION,
+            k if k == ToolInvocation::KIND => ToolInvocation::PUBLICATION,
+            k if k == ReviewJob::KIND => ReviewJob::PUBLICATION,
+            k if k == Delivery::KIND => Delivery::PUBLICATION,
+            k if k == WorkflowRun::KIND => WorkflowRun::PUBLICATION,
             _ => return None,
         };
         self.is_registered(kind).then_some(policy)
@@ -58,32 +58,32 @@ impl EventRegistry {
 /// The built-in registration set (the default chat surface).
 pub fn builtin_registry() -> EventRegistry {
     let mut r = EventRegistry::new();
-    assert!(r.register::<super::AssistantNode>());
-    assert!(r.register::<super::ToolNode>());
-    assert!(r.register::<super::ReviewJobNode>());
-    assert!(r.register::<super::DeliveryNode>());
-    assert!(r.register::<super::WorkflowRunNode>());
+    assert!(r.register::<super::AssistantTurn>());
+    assert!(r.register::<super::ToolInvocation>());
+    assert!(r.register::<super::ReviewJob>());
+    assert!(r.register::<super::Delivery>());
+    assert!(r.register::<super::WorkflowRun>());
     r
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversation::{AssistantNode, ReviewJobNode};
+    use crate::conversation::{AssistantTurn, ReviewJob};
 
     #[test]
     fn unique_kind_invariant() {
         let mut r = EventRegistry::new();
-        assert!(r.register::<AssistantNode>());
-        assert!(!r.register::<AssistantNode>(), "duplicate kind refused");
+        assert!(r.register::<AssistantTurn>());
+        assert!(!r.register::<AssistantTurn>(), "duplicate kind refused");
     }
 
     #[test]
     fn lifecycle_register_deregister() {
         let mut r = EventRegistry::new();
-        assert!(r.register::<ReviewJobNode>());
+        assert!(r.register::<ReviewJob>());
         assert!(r.is_registered("review-job"));
-        assert!(r.deregister::<ReviewJobNode>());
+        assert!(r.deregister::<ReviewJob>());
         assert!(!r.is_registered("review-job"));
         assert!(r.publication_of("review-job").is_none());
     }

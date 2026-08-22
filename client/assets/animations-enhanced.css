@@ -70,15 +70,16 @@
   will-change: transform, opacity;
 }
 
-/* The accessibility gate: one override collapses every effect above and any
- * component-level animation to an instant state change. */
+/* The accessibility gate: every effect reads its duration from these
+ * variables, so collapsing them collapses all motion to instant state
+ * changes — no specificity fights, no !important. */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+  }
+  html {
+    scroll-behavior: auto;
   }
 }

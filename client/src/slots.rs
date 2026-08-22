@@ -103,9 +103,10 @@ impl SlotRegistry {
     /// (declaration merging); order is stable otherwise. Bumps the revision.
     pub fn register<K: SlotKind>(&mut self, spec: SlotSpec) {
         let list = self.entries.entry(K::NAME.to_string()).or_default();
-        match list.iter_mut().find(|e| e.key == spec.key) {
-            Some(slot) => *slot = spec,
-            None => list.push(spec),
+        if let Some(slot) = list.iter_mut().find(|e| e.key == spec.key) {
+            *slot = spec;
+        } else {
+            list.push(spec);
         }
         self.revision += 1;
     }
@@ -123,7 +124,7 @@ impl SlotRegistry {
     }
 
     /// Keyed family view (chat nodes by kind, tool views by name).
-    pub fn keyed<'a, K: SlotKind>(&'a self, key: &str) -> Option<&'a SlotSpec> {
+    pub fn keyed<K: SlotKind>(&self, key: &str) -> Option<&SlotSpec> {
         self.entries.get(K::NAME)?.iter().find(|e| e.key == key)
     }
 

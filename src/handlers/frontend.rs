@@ -135,16 +135,17 @@ fn respond(root: &std::path::Path, method: &Method, req_path: &str) -> Response 
     }
     // Unmatched route or absent dist entry → the shell entry (deep links boot
     // the SPA). A wholly absent dist degrades to 404, never a panic.
-    match std::fs::read(root.join("index.html")) {
-        Ok(bytes) => (
+    if let Ok(bytes) = std::fs::read(root.join("index.html")) {
+        (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             ],
             bytes,
         )
-            .into_response(),
-        Err(_) => not_found(),
+            .into_response()
+    } else {
+        not_found()
     }
 }
 
@@ -208,37 +209,35 @@ mod tests {
         assert_eq!(resolve_safe(&root, "/"), Some(root.join("index.html")));
     }
 
+    /// Shell-entry routing over one fixture: `/` and any deep link resolve to
+    /// the SPA index with 200.
     #[tokio::test]
-    async fn shell_entry_serves_index() {
+    async fn shell_entry_and_deep_links_resolve_to_index() {
         let (dir, root) = fixture();
-        let res = respond(&root, &Method::GET, "/");
+        for path in ["/", "/review/42"] {
+            let res = respond(&root, &Method::GET, path);
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let ct = res.headers()[header::CONTENT_TYPE].to_str().unwrap();
+            assert!(ct.starts_with("text/html"), "{path}: {ct}");
+        }
         drop(dir);
-        assert_eq!(res.status(), StatusCode::OK);
-        assert!(
-            res.headers()[header::CONTENT_TYPE]
-                .to_str()
-                .unwrap()
-                .starts_with("text/html")
-        );
     }
 
+    /// Content-type routing over one fixture: each path maps to the exact
+    /// header the contract requires.
     #[tokio::test]
-    async fn deep_link_falls_back_to_shell_with_200() {
+    async fn asset_content_types_route_by_extension() {
         let (dir, root) = fixture();
-        let res = respond(&root, &Method::GET, "/review/42");
+        let cases = [
+            ("/pkg/app.js", "text/javascript"),
+            ("/blob.xyz", "application/octet-stream"),
+        ];
+        for (path, expected) in cases {
+            let res = respond(&root, &Method::GET, path);
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert_eq!(res.headers()[header::CONTENT_TYPE], expected, "{path}");
+        }
         drop(dir);
-        assert_eq!(res.status(), StatusCode::OK);
-        let ct = res.headers()[header::CONTENT_TYPE].to_str().unwrap();
-        assert!(ct.starts_with("text/html"), "{ct}");
-    }
-
-    #[tokio::test]
-    async fn asset_is_served_with_its_type() {
-        let (dir, root) = fixture();
-        let res = respond(&root, &Method::GET, "/pkg/app.js");
-        drop(dir);
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(res.headers()[header::CONTENT_TYPE], "text/javascript");
     }
 
     #[tokio::test]
@@ -249,18 +248,6 @@ mod tests {
         drop(dir);
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(idx.status(), StatusCode::METHOD_NOT_ALLOWED);
-    }
-
-    #[tokio::test]
-    async fn unknown_extension_serves_octet_stream() {
-        let (dir, root) = fixture();
-        let res = respond(&root, &Method::GET, "/blob.xyz");
-        drop(dir);
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(
-            res.headers()[header::CONTENT_TYPE],
-            "application/octet-stream"
-        );
     }
 
     #[tokio::test]

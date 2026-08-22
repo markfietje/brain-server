@@ -40,7 +40,7 @@ impl Assembler {
                     self.order.push(key.clone());
                 }
                 self.nodes
-                    .insert(key.clone(), NodeState::new(key, D::KIND, seq, state));
+                    .insert(key.clone(), NodeState::new(&key, D::KIND, seq, state));
             }
             Role::Update => {
                 match self.nodes.get_mut(&key) {
@@ -91,13 +91,13 @@ impl Assembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversation::{AssistantNode, ReviewJobNode};
+    use crate::conversation::{AssistantTurn, ReviewJob};
 
     #[test]
     fn path_replace_update_in_place() {
         let mut a = Assembler::new();
-        a.ingest::<AssistantNode>(1, &serde_json::json!({"kind":"assistant/start","id":"a"}));
-        a.ingest::<AssistantNode>(
+        a.ingest::<AssistantTurn>(1, &serde_json::json!({"kind":"assistant/start","id":"a"}));
+        a.ingest::<AssistantTurn>(
             2,
             &serde_json::json!({"kind":"assistant/delta","id":"a","delta":"x"}),
         );
@@ -108,16 +108,16 @@ mod tests {
     #[test]
     fn path_append_two_starts() {
         let mut a = Assembler::new();
-        a.ingest::<AssistantNode>(1, &serde_json::json!({"kind":"assistant/start","id":"a"}));
-        a.ingest::<AssistantNode>(2, &serde_json::json!({"kind":"assistant/start","id":"b"}));
+        a.ingest::<AssistantTurn>(1, &serde_json::json!({"kind":"assistant/start","id":"a"}));
+        a.ingest::<AssistantTurn>(2, &serde_json::json!({"kind":"assistant/start","id":"b"}));
         assert_eq!(a.snapshot().len(), 2);
     }
 
     #[test]
     fn path_prepend_order_is_first_seen() {
         let mut a = Assembler::new();
-        a.ingest::<ReviewJobNode>(5, &serde_json::json!({"kind":"review/start","id":"r1"}));
-        a.ingest::<ReviewJobNode>(6, &serde_json::json!({"kind":"review/start","id":"r0"}));
+        a.ingest::<ReviewJob>(5, &serde_json::json!({"kind":"review/start","id":"r1"}));
+        a.ingest::<ReviewJob>(6, &serde_json::json!({"kind":"review/start","id":"r0"}));
         assert_eq!(a.snapshot()[0].key, "review-job:r1", "start order wins");
     }
 
@@ -125,13 +125,13 @@ mod tests {
     fn path_pending_update_converges_after_start() {
         let mut a = Assembler::new();
         // End arrives before start (out-of-order stream).
-        a.ingest::<ReviewJobNode>(
+        a.ingest::<ReviewJob>(
             1,
             &serde_json::json!({"kind":"review/end","id":"r","approved":true}),
         );
         assert!(a.snapshot().is_empty(), "update-only stays pending");
         assert!(a.has_pending("review-job:r"));
-        a.ingest::<ReviewJobNode>(2, &serde_json::json!({"kind":"review/start","id":"r"}));
+        a.ingest::<ReviewJob>(2, &serde_json::json!({"kind":"review/start","id":"r"}));
         let n = a.snapshot();
         assert_eq!(n.len(), 1);
         assert_eq!(
@@ -144,16 +144,17 @@ mod tests {
     fn path_replayed_seq_does_not_duplicate() {
         let mut a = Assembler::new();
         let ev = serde_json::json!({"kind":"review/start","id":"r"});
-        a.ingest::<ReviewJobNode>(1, &ev);
-        a.ingest::<ReviewJobNode>(1, &ev);
-        assert_eq!(a.snapshot().len(), 1);
+        for seq in [1u64, 1, 1] {
+            a.ingest::<ReviewJob>(seq, &ev);
+        }
+        assert_eq!(a.snapshot().len(), 1, "replay is idempotent");
     }
 
     #[test]
     fn path_families_are_isolated() {
         let mut a = Assembler::new();
-        a.ingest::<ReviewJobNode>(1, &serde_json::json!({"kind":"review/start","id":"x"}));
-        a.ingest::<AssistantNode>(2, &serde_json::json!({"kind":"assistant/start","id":"x"}));
+        a.ingest::<ReviewJob>(1, &serde_json::json!({"kind":"review/start","id":"x"}));
+        a.ingest::<AssistantTurn>(2, &serde_json::json!({"kind":"assistant/start","id":"x"}));
         assert_eq!(
             a.snapshot().len(),
             2,
@@ -164,8 +165,14 @@ mod tests {
     #[test]
     fn revision_gates_publication() {
         let mut a = Assembler::new();
-        assert!(!a.should_publish(0));
-        a.ingest::<ReviewJobNode>(1, &serde_json::json!({"kind":"review/start","id":"r"}));
+        assert!(!a.should_publish(0), "fresh assembler: nothing to flush");
+        // Update-only events stay pending (no node), yet the revision moves —
+        // publication gating reflects event flow, not snapshot size.
+        a.ingest::<ReviewJob>(
+            1,
+            &serde_json::json!({"kind":"review/progress","id":"r","pending":2}),
+        );
+        assert!(a.snapshot().is_empty());
         assert!(a.should_publish(0));
         assert!(!a.should_publish(a.revision()), "already flushed");
     }

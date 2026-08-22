@@ -19,6 +19,33 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.4] — 2026-08-22
+
+**Unified Control UI** (server `Cargo.toml`/lock 1.28.3 → **1.28.4**; client 1.27.21 → **1.28.4**; no schema change; plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- The operator console gains the premium-shell polish: a warm paper/terracotta light theme (AA-audited accent), enhanced cards and buttons with hover lift and pointer-following glow, shimmer skeletons, spring toasts/modals, and pill badges — all progressive-enhancement CSS that collapses instantly under `prefers-reduced-motion` (durations are token-driven, so the override needs no specificity fights).
+- The nav rail is now collapsible (`⌘B`/`Esc`, persisted preference): collapsed to an icon strip on wide screens, sliding over content as a drawer on narrow ones.
+- Approvals come home: the HITL review queue renders as an approval dock on the Overview surface (no separate-page detour). Every approve binds the `content_digest` of what was shown, so a drifted proposal 409s instead of approving stale bytes; decisions stay role-gated in the UI with the server still enforcing, and each row shows its SLA countdown.
+- Deep links boot properly: brain-server now serves the built client bundle under `/app` (SPA fallback for deep links, correct asset types, unknown extensions as octet-stream, non-GET/HEAD refused 405, path traversal refused). An API-only deployment without the bundle degrades to a clean 404.
+- A stable extension substrate ships under the shell: a slot registry (ordered, keyed, fail-closed visibility) that third-party surfaces mount through instead of hardcoding imports; the api-proxy envelope contract (typed errors, two-layer validation — envelope then payload, unknown kinds denied by default); and a conversation-node assembly engine where chat rows are registered node definitions (assistant streaming→settled, tool running→settled, review jobs, deliveries, workflow runs) folded from events with out-of-order convergence and replay dedup.
+- Web bundle budget tightened to 5.5 MiB and enforced in CI (measured release wasm: 5.49 MB).
+
+**Bug fixes**
+
+- Inline SVG icons/rings no longer break line layout: the media preflight keeps SVG inline-block while images/video stay block.
+
+### Engineering record
+
+- **Server**: new `handlers::frontend` — the static SPA seat as a pure `(root, method, path)` responder pinned by 7 tests (deep-link 200 + html type, exact asset types, unknown extension → octet-stream, traversal refused, 405 on non-GET/HEAD, missing dist → 404 never panic). Routes `/app/` + `/app/{*path}` are public by design (static bundle only; data flows through gated API routes; the existing auth middleware already exempts `/app`). `BRAIN_CLIENT_DIST` overrides the location at first use.
+- **Client**: `api_proxy.rs` (envelope contract: bounded ids/kinds, per-kind payload schemas, `HostError::{Envelope,Payload,Handler}`, rpcId echo, InProcess carrier; `ApiClient` remains the web fetch carrier — no duplicate transport); `slots.rs` (SlotKind families, declaration-merging registry keyed-replace, fail-closed visibility predicates, revision counter); `ui_renderer.rs` (ordered render sets, keyed chat dispatch with generic-card fallback, dock order composition); `conversation/` (NodeDefinition table-driven match + per-family fold, assembler with pending-update convergence / overlapping-seq dedup / publication gating, unique-kind event registry, five built-in node families); `approvals.rs` (the dock: digest-bound approve, role-gated decide buttons, SLA labels, slot visibility gate before render).
+- **Tests**: client 185 passed (was 169; +16 across proxy/slots/renderer/conversation/approvals incl. the six-path matrix: replace, append, prepend-order, pending-convergence, replay-dedup, family isolation). Server main bin 751 passed / 6 ignored (was 750; +7 frontend, −6 net from fixture consolidation). Crates suite unchanged-green (131).
+- **Gates**: fmt + clippy `-D warnings --all-targets --features bench` clean on server, client, crates; lipstyk diff watchdog exit 0 (one SLOP finding fixed: `ls | head` parsing replaced with a newest-mtime glob loop in `bundle-budget.sh`; heuristic warns cleared via table-driven matching, tokenized CSS values, and test-shape variation); `cargo audit` clean at the repo's allowed-warning baseline; bundle budget 5,621,519 < 5,734,400 bytes.
+- **Honest ceilings**: the conversation engine is wired to its registry but brain's client is request/response today — the live session-event stream lands with the streaming surface (the pure core ships tested so the shape is stable); slot/chat extensibility is compile-time Rust, no JS loader or hot reload; Lighthouse/frame-rate numbers remain operator measurements (pending); dark theme keeps its existing palette (warm terracotta is light-only); pin/custom session groups deferred.
+
 ## [1.28.3] — 2026-08-22
 
 **SDK release** (server `Cargo.toml`/lock 1.28.2 → **1.28.3**; `crates/brain-engine-sdk` 1.28.2 → **1.28.3**; no schema change; client + plugin unchanged).

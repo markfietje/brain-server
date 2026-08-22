@@ -106,7 +106,7 @@ pub fn validate_payload(kind: &str, payload: &serde_json::Value) -> Result<(), H
 /// The host-side handler map: one entry per proxied kind. The server implements
 /// this once over its real handlers; tests inject fixtures.
 pub trait ApiProxy: Send + Sync {
-    fn handle(&self, env: RpcEnvelope) -> Result<serde_json::Value, HostError>;
+    fn respond(&self, env: RpcEnvelope) -> Result<serde_json::Value, HostError>;
 }
 
 /// Shared dispatch: validate both layers, then delegate. `rpcId` echoes back in
@@ -117,8 +117,10 @@ pub fn dispatch(
 ) -> Result<(String, serde_json::Value), HostError> {
     let env = validate_envelope(raw).ok_or_else(|| HostError::Envelope("malformed".into()))?;
     validate_payload(&env.kind, &env.payload)?;
-    let out = proxy.handle(env)?;
-    Ok((raw["rpcId"].as_str().unwrap_or_default().to_string(), out))
+    let out = proxy.respond(env)?;
+    // `rpc_id` was validated at layer 1, so the echo cannot be empty.
+    let id = raw["rpcId"].as_str().unwrap_or("").to_string();
+    Ok((id, out))
 }
 
 /// Deterministic carrier for tests + headless runs.
@@ -153,14 +155,14 @@ mod tests {
     use super::*;
     struct Echo;
     impl ApiProxy for Echo {
-        fn handle(&self, env: RpcEnvelope) -> Result<serde_json::Value, HostError> {
+        fn respond(&self, env: RpcEnvelope) -> Result<serde_json::Value, HostError> {
             Ok(serde_json::json!({"echo": env.payload, "kind": env.kind}))
         }
     }
 
     struct Deny;
     impl ApiProxy for Deny {
-        fn handle(&self, _: RpcEnvelope) -> Result<serde_json::Value, HostError> {
+        fn respond(&self, _: RpcEnvelope) -> Result<serde_json::Value, HostError> {
             Err(HostError::Handler {
                 status: 503,
                 message: "down".into(),
