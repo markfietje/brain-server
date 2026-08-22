@@ -46,6 +46,8 @@ pub mod pure;
 // The plugin kernel + agent harness line. Opt-in: without the feature the
 // crate compiles exactly as before (no kernel, no extra dependencies).
 #[cfg(feature = "harness-kernel")]
+pub mod events;
+#[cfg(feature = "harness-kernel")]
 pub mod harness;
 #[cfg(feature = "harness-kernel")]
 pub mod loader;
