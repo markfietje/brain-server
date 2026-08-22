@@ -19,6 +19,36 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.5] — 2026-08-22
+
+**Compliance Pack** (server `Cargo.toml`/lock 1.28.4 → **1.28.5**; client, plugin, and SDK crates unchanged; no schema change to the default build — the new evidence tables are created only under the opt-in `compliance-pack` cargo feature).
+
+### Release notes
+
+**Improvements**
+
+- New opt-in compliance evidence pack (`--features compliance-pack`) for EU AI Act / GDPR audits: every workflow decision now appends a **decision record** (actor, role, policy version, prompt class, tool, model id, outcome) that is SHA-256 hash-chained AND anchored into the existing audit chain — extended, never a separate trust root. When `BRAIN_AUDIT_SIGNING_KEY` (or `_FILE`, 0600-enforced) is configured, each record also carries a detached Ed25519 signature that verifies outside the server.
+- The decision ledger exports as a bundle: `GET /audit/export?since=&format=jsonl|pdf&rpcId=` — JSONL for machines (with an echoed correlation id for reconciliation), a paginated human-readable PDF for the Annex IV technical file.
+- Human reviews leave oversight evidence: every proposal approval or rejection records who decided, on what snapshot hash (the review digest — never raw content), and with what outcome, linked to its own decision record — the Art.12↔14 link regulators ask for. Approval remains DPO/admin-gated; reject stays always-safe and is recorded as an override.
+- Accuracy/validation declarations can be appended to the same ledger via `POST /compliance/evaluation-record` (dataset SHA-256 + methodology summary + system version), and `GET /compliance/inventory` checks which evidence classes exist across the deployment (decision log, oversight, DSAR ledger, incident log, transfers register, RoPA) and flags missing ones.
+- GDPR Art.30 records of processing: a RoPA registry (`GET|POST /ropa`, `POST /ropa/{id}`, Admin + audited) with activity, controller/processor, categories, recipients, lawful basis, retention, security measures, and transfers.
+- `/retention/report` now discloses the evidence-retention floor: decision records are retained 12 months by default (above the 6-month legal minimum) under the feature.
+
+**Security fixes**
+
+- A wide-mode (group/world-readable) `BRAIN_AUDIT_SIGNING_KEY_FILE` is refused fail-closed: decisions continue hash-chained but are recorded unsigned with an error-level warning, never silently trusted.
+
+### Engineering record
+
+- M1 (Art.12): `src/audit/decision.rs` — `DecisionRecord` + `DecisionInput`, per-record chain link over all committed fields plus the previous hash (genesis binds to the empty string, so fabricated earlier histories break verification), detached Ed25519 signing via `BRAIN_AUDIT_SIGNING_KEY`/`_FILE` (0600 check; absent key ⇒ NULL signature, disclosed on export). Every record ALSO extends the existing `audit_events` chain (`AuditKind::Decision`). The recorder lives on the host write path (`WorkflowHost::audit`) — engines cannot write their own evidence; pinned by `host_records_decision_evidence_that_verifies_outside`. Export: `GET /audit/export` (Admin) jsonl/pdf, dependency-free PDF writer with escaping + pagination pinned by tests.
+- M2 (Art.14): `oversight_evidence` table + `record_oversight` wired into approve (accept) and reject (override) in the review queue, basis = review digest; authority labels ride the linked decision record's role field. Approval role gating unchanged (v1.23 posture); per-role authority documentation lives in the operator's private governance docs.
+- M3 (Art.15): evaluation/validation declarations stored as decision-ledger entries (`prompt_class=evaluation`) tied to dataset hash + version; `GET /compliance/inventory` flags missing artefact classes. Adversarial-testing vocabulary and SBOM mapping remain in the private security-baseline docs (not shipped in-tree).
+- M4 (Art.13/30): `ropa_registry` table + routes; disclosure notices continue via the existing `/.well-known/ai-notice` surface. Transparency-register wording/placement evidence stays an operator-private artifact.
+- M5 (Art.15/17/73): DSAR pipeline (intake → discovery → fulfilment → proof) and the incident ledger were already shipped (v1.20.x DSAR line; breach module); this release wires both into the inventory checker rather than re-implementing them.
+- Feature gating: without `--features compliance-pack` the tables are not migrated, the routes do not exist on the wire, no decision records are written, and behaviour is byte-identical to 1.28.4 (default full suite green: 751 bin / 152 lib). With the feature: 754 bin (+3 pins) / 152 lib (+5 decision-module tests).
+- Validation: fmt + clippy `-D warnings --all-targets --features bench` clean in BOTH feature configurations; full test suites green with and without the feature; export round-trip (record → read → Ed25519 verify outside the host path) pinned by test; tamper pins cover mutated fields, forged genesis links, and corrupted signatures.
+- Honest ceilings: certificates prove existence/time/signer/immutability — not fairness, lawfulness, or accuracy of the underlying decisions (that needs governance + legal review); an unsigned chain (no signing key configured) verifies structurally only; law evolves — jurisdiction rules stay a curated, human-checked snapshot; PDF output is plain-text Helvetica rendering for readability, not a typeset Annex IV document; oversight "modify" outcome is not yet emitted (approve maps accept, reject maps override).
+
 ## [1.28.4] — 2026-08-22
 
 **Unified Control UI** (server `Cargo.toml`/lock 1.28.3 → **1.28.4**; client 1.27.21 → **1.28.4**; no schema change; plugin unchanged).
