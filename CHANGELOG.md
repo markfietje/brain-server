@@ -19,6 +19,37 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.3] — 2026-08-22
+
+**SDK release** (server `Cargo.toml`/lock 1.28.2 → **1.28.3**; `crates/brain-engine-sdk` 1.28.2 → **1.28.3**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Workflows gain a real engine seam: a context mounts ONE workflow engine (a second mount replaces the first via config, never parallel providers), metadata is validated as pure data before any script is evaluated, and a started run hands back handles whose result can never throw — failures arrive as an outcome (`completed` / `error` / `cancelled`), never as an exception.
+- Cancel and dispose are bounded by construction: both settle within a grace window (5 s default) with child-run quiescence, even when the underlying script never settles; run concurrency is capped (refused, never queued unbounded).
+- Workflow lifecycle events (`start` / `phase` / `log` / `agent-start` / `agent-end` / `end`) are observe-only data snapshots delivered through the panic-contained event emitter — a throwing subscriber cannot starve later listeners, and the end snapshot omits the result value.
+- Evidence reduction and quality scoring are now first-class services on the engine context, backed by the same deterministic cores as before — no second implementation.
+- The operator scoreboard endpoint (`GET /workflow/scoreboard`, DPO/admin) aggregates first-contact resolution, repeat contact, correctness, override/abstention/guidance rates, handoff completeness and escalation honor over the most recent runs — all rates in exact integer ten-thousandths.
+- A workflow tool for model-facing surfaces: start → await → dispose in a guaranteed-cleanup shape; anything not `completed` surfaces as a tool error.
+- Prompt caching discipline ships in the SDK: cache-stable system-prompt assembly (no timestamps or randomness) and compaction only under pressure that keeps a verbatim tail and appends one summary entry — history is never rewritten.
+
+**Security fixes**
+
+- Scoreboard `audit_ok` is fail-closed per run: a run counts audit-green only when a workflow audit row actually references it — absence of evidence never counts green.
+
+### Engineering record
+
+- **M1 WorkflowEngine seam**: data-validated meta (name ≤128, description ≤1024, ≤32 phases) refused pre-publish; once-future result; cooperative + blocking-bounded cancel; dispose = cancel + bounded settle + child quiescence; observe-only snapshots through contained emit; one-engine ctx slot; tool surface with 30 s await grace and drop-guard dispose.
+- **M2 Services + scoreboard**: `ctx.evidence` / `ctx.scoring` re-export the pure reducer/scorer; host owns the wire shape (SDK stays dependency-free); endpoint derivation defaults absent scorer fields honestly and derives `handoff_complete` from run status.
+- **M3 Prompt discipline**: deterministic assembly capped at 20 lines + skill listing (oversized prompts refused, not trimmed); compaction plan keeps the last ~20k tokens verbatim and folds only under ≥16k pressure.
+- **M4 Bounds & fuzz**: fuzz crate with committed corpus replayed by normal tests (evidence/meta/hostcall/scorer targets), libFuzzer entry points feature-gated; bounds measured once in BENCHMARKS.md (reducer ~3.7 M findings/s, scorer ~2.3 M runs/s, admit ~24 M/s, lifecycle ~4.9 M/s).
+- Tests: server bin **744** / 6 ignored (+2 scoreboard pins), lib **147**, brain 18, mcp 19, bench 8, metrics 2, eval 2; SDK **83** (+10 workflow seam, +3 services, +5 prompt); fuzz corpus replay 4; client 158 unchanged; clippy `-D warnings` + fmt clean (server, crates default + harness-kernel); lipstyk clean across the release diff; `cargo audit` clean (2 allowed warnings, unchanged).
+- Honest ceilings: script trust equals bash trust — worker threads are a serialization boundary, not a security boundary (out-of-process sandboxing deferred); no JS/TS legacy entrypoints (native descriptor runtime stays the future v1); the tool abort bridge observes only the cooperative cancel flag; scoreboard rates derive from what runs recorded — runs lacking scorer fields score their defaults, which is visible rather than hidden.
+
+---
+
 ## [1.28.2] — 2026-08-22
 
 **SDK release** (server `Cargo.toml`/lock 1.28.1 → **1.28.2**; `crates/brain-engine-sdk` 1.28.1 → **1.28.2**; no schema change; client + plugin unchanged).

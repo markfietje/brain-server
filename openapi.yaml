@@ -3434,6 +3434,52 @@ paths:
           description: Not authenticated
         "403":
           description: Not admin-scoped
+  /workflow/scoreboard:
+    get:
+      summary: Workflow outcome/efficiency scoreboard (DPO/admin evidence surface)
+      description: >
+        Aggregates the governed-workflow scoreboard over the most recent
+        1000 runs: first-contact resolution, repeat-contact rate, correctness,
+        override rate, abstention, guidance acceptance, handoff completeness,
+        and escalation honor. All rates are integer ten-thousandths (10000 =
+        100%). `audit_ok` is fail-closed per run — a run counts green only
+        when a workflow audit row actually references it. Weekly report +
+        monthly human-signed recalibration posture.
+      operationId: workflowScoreboard
+      responses:
+        "200":
+          description: The aggregated scoreboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fcr_units:
+                    type: integer
+                  repeat_contact_rate_units:
+                    type: integer
+                  correctness_units:
+                    type: integer
+                  override_rate_units:
+                    type: integer
+                  gap_rate_units:
+                    type: integer
+                  abstention_rate_units:
+                    type: integer
+                  guidance_acceptance_units:
+                    type: integer
+                  handoff_completeness_units:
+                    type: integer
+                  audit_green:
+                    type: boolean
+                  escalation_honored_units:
+                    type: integer
+                  runs_scored:
+                    type: integer
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not DPO/admin
   /.well-known/openid-configuration:
     get:
       summary: OIDC Discovery metadata (RFC 8414) (v1.2 AuthN)

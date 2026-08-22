@@ -7,9 +7,9 @@
 //! fuzzer becomes a regression test by dropping its bytes in `corpus/`.
 
 use brain_engine_sdk::hostcall::HostCallPayload;
-use brain_engine_sdk::pure::evidence::{reduce, Finding};
-use brain_engine_sdk::pure::qa_score::{score_run, RunArtifacts, StepRow};
-use brain_engine_sdk::workflow::{WorkflowMeta, MAX_TOTAL_AGENTS};
+use brain_engine_sdk::pure::evidence::{Finding, reduce};
+use brain_engine_sdk::pure::qa_score::{RunArtifacts, StepRow, score_run};
+use brain_engine_sdk::workflow::{MAX_TOTAL_AGENTS, WorkflowMeta};
 
 /// Evidence reducer over arbitrary finding batches.
 pub fn fuzz_evidence(data: &[u8]) {
@@ -37,7 +37,11 @@ pub fn fuzz_meta(data: &[u8]) {
         name: text.chars().take(200).collect(),
         description: text.to_string(),
         when_to_use: None,
-        phases: text.lines().take(MAX_TOTAL_AGENTS).map(str::to_string).collect(),
+        phases: text
+            .lines()
+            .take(MAX_TOTAL_AGENTS)
+            .map(str::to_string)
+            .collect(),
     };
     // Must validate-or-refuse; never panic.
     let _ = meta.validate();

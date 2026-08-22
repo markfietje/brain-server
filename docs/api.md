@@ -149,6 +149,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/legal-hold` · `/legal-hold/{id}/release` · GET `/legal-holds` | Per-domain legal holds; held ids are frozen (purge/DSAR defer) |
 | POST | `/breach` · `/breach/{id}/event` · `/breach/{id}/close` | Breach-notification workflow (open / append event / close) |
 | GET | `/breaches` · `/breaches/{id}` | Breach register + detail |
+| GET | `/workflow/scoreboard` | Workflow outcome/efficiency scoreboard over recent runs (DPO/admin; rates in integer ten-thousandths, fail-closed audit linkage) |
 
 ---
 

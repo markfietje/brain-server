@@ -487,6 +487,26 @@ migration's `comments`/plan — the shipped code is true to its docs.
 | Workflow CAS + audit | 10 concurrent | <30 ms | <60 ms | Chain verify stays green |
 | Steering (drop-oldest) | flood 1000 | <5 ms enqueue | 0 drops under 256 cap | Bounded queue verified |
 
+| Steering (drop-oldest) | flood 1000 | <5 ms enqueue | 0 drops under 256 cap | Bounded queue verified |
+
+## Bounds (v1.28.3 — SDK pure surfaces + workflow seam, measured once, honestly)
+
+> Single release-gate measurement on the dev host (Apple M-series, release build,
+> synthetic corpus — the frozen small-corpus posture, not production claims).
+> Per-op latency is the reciprocal of the measured ceiling; no lift claims.
+
+| Surface | Throughput ceiling | Per-op | Notes |
+|---|---|---|---|
+| Evidence reducer | ~3.7 M findings/s | <1 µs/finding | 10k-finding batches, 500 claim-groups |
+| QA scorer (`score_run`) | ~2.3 M runs/s | <1 µs/run | 8-step artifacts |
+| WorkflowMeta admit gate | ~24 M/s | <1 µs | validate-as-data + concurrency bound |
+| Run lifecycle (start→complete→handle) | ~4.9 M/s | <1 µs | holder-owned run, once-future resolve |
+
+> Honest ceilings: these are CPU-bound pure-function ceilings; end-to-end
+> workflow latency is dominated by storage + audit-chain writes (host-owned),
+> not by the SDK seam. Cancel/dispose settle within `DEFAULT_GRACE` (5 s) by
+> construction and are not throughput-measured.
+
 ## Set hygiene & anti-overfitting
 
 - **Dev set**: used to develop and ablate PRF/RRF/rerank changes.
