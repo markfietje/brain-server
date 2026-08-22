@@ -212,10 +212,12 @@ pub struct CapabilityToken {
     pub scope: Option<String>,
     /// Unix seconds; tokens expire.
     pub exp: u64,
-    /// Per-token id. When present, a process-lifetime replay cache rejects a
-    /// second presentation of the same (jti, exp) — mirroring the JWT jti
-    /// denylist posture. Absent on legacy tokens (they stay expiry-only; the
-    /// documented ceiling until owners re-mint).
+    /// Per-token id. When present, a process-lifetime replay cache keyed on
+    /// `(jti, method, path)` rejects reuse of the same token on any endpoint
+    /// other than the one it was first seen on — mirroring the JWT jti
+    /// denylist posture while keeping per-request-bearer retries valid.
+    /// Absent on legacy tokens (they stay expiry-only; the documented
+    /// ceiling until owners re-mint).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
 }
@@ -237,17 +239,30 @@ impl CapabilityToken {
 /// Bounded: entries prune lazily once expired; the count is capped at
 /// [`CAP_REPLAY_CAP`] so a flood of unique tokens cannot grow memory
 /// unboundedly. Poisoned lock = deny (fail-closed).
+///
+/// The cache pins each jti to the FIRST `(method, path)` it presented on:
+/// capability tokens are presented as per-request bearers (nothing in-tree
+/// mints one-time tokens), so keying on `jti` alone burned the single use on
+/// the first request and refused every legitimate re-presentation — retries
+/// and repeat calls on the same endpoint 401'd for the token's whole life.
+/// Pinned this way, a token serves its declared verb×scope on that endpoint
+/// repeatedly (retry-safe), while reuse on any DIFFERENT method/path is a
+/// replay and is refused — lateral movement stays closed.
 #[derive(Default)]
 pub struct ReplayCache {
-    seen: std::sync::Mutex<Vec<(String, u64)>>,
+    seen: std::sync::Mutex<Vec<(ReplayKey, u64)>>,
 }
+
+/// (jti, method, path) — the endpoint-pinned replay key.
+type ReplayKey = (String, String, String);
 
 const CAP_REPLAY_CAP: usize = 4096;
 
 impl ReplayCache {
-    /// Returns `true` when this (jti, exp) was NOT seen before and is now
-    /// recorded (first presentation). `false` = replay or poisoned state.
-    pub fn first_presentation(&self, jti: &str, exp: u64) -> bool {
+    /// Returns `true` when this (jti, method, path) was NOT seen before and
+    /// is now recorded (first presentation). `false` = replay or poisoned
+    /// state.
+    pub fn first_presentation(&self, jti: &str, method: &str, path: &str, exp: u64) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -261,9 +276,15 @@ impl ReplayCache {
                 list.clear(); // extreme flood: drop history rather than grow
             }
         }
-        let fresh = !list.iter().any(|(j, _)| j == jti);
+        // Pin: a jti is bound to the FIRST (method, path) it presented on.
+        // Retries / repeat calls on that exact endpoint stay valid;
+        // presentation on ANY other endpoint is a replay.
+        let pinned = list
+            .iter_mut()
+            .find_map(|((j, m, p), _)| (j == jti).then_some((m, p)));
+        let fresh = pinned.is_none_or(|(m, p)| **m == *method && **p == *path);
         if fresh {
-            list.push((jti.to_string(), exp));
+            list.push(((jti.to_string(), method.to_string(), path.to_string()), exp));
         }
         fresh
     }
@@ -274,11 +295,12 @@ pub static CAP_REPLAY: std::sync::LazyLock<ReplayCache> =
     std::sync::LazyLock::new(ReplayCache::default);
 
 /// Record-and-check a parsed token's `jti` at acceptance time. Tokens without
-/// a `jti` are legacy and pass through (expiry-only ceiling).
-pub fn cap_replay_check(cap: &CapabilityToken) -> bool {
+/// a `jti` are legacy and pass through (expiry-only ceiling). Keyed on
+/// `(jti, method, path)` — see [`ReplayCache`] for why.
+pub fn cap_replay_check(cap: &CapabilityToken, method: &str, path: &str) -> bool {
     cap.jti
         .as_ref()
-        .is_none_or(|jti| CAP_REPLAY.first_presentation(jti, cap.exp))
+        .is_none_or(|jti| CAP_REPLAY.first_presentation(jti, method, path, cap.exp))
 }
 
 /// Parse + verify a capability token against the owner public key.
@@ -502,19 +524,27 @@ mod tests {
         );
     }
 
-    /// A jti-bearing token is accepted exactly once per process; the second
-    /// presentation is a replay and must be refused. Legacy (no-jti) tokens
-    /// pass through expiry-only.
+    /// A jti-bearing token is accepted once per (jti, method, path): the
+    /// same endpoint may re-present it (per-request-bearer retries), but ANY
+    /// other method/path is a replay and must be refused. Legacy (no-jti)
+    /// tokens pass through expiry-only.
     #[test]
     fn capability_jti_replay_cache_rejects_second_presentation() {
         let cache = ReplayCache::default();
-        assert!(cache.first_presentation("cap-1", u64::MAX));
-        assert!(!cache.first_presentation("cap-1", u64::MAX), "replay");
+        assert!(cache.first_presentation("cap-1", "POST", "/ump/recall", u64::MAX));
         assert!(
-            !cache.first_presentation("cap-1", u64::MAX - 1),
-            "same jti, different exp is still the same token"
+            cache.first_presentation("cap-1", "POST", "/ump/recall", u64::MAX),
+            "same endpoint re-presentation is retry, not replay"
         );
-        assert!(cache.first_presentation("cap-2", u64::MAX));
+        assert!(
+            !cache.first_presentation("cap-1", "GET", "/ump/memory/1", u64::MAX),
+            "different method+path on same jti is a replay"
+        );
+        assert!(
+            !cache.first_presentation("cap-1", "POST", "/ump/forget", u64::MAX),
+            "different path, same jti is still a replay"
+        );
+        assert!(cache.first_presentation("cap-2", "POST", "/ump/recall", u64::MAX));
 
         // Legacy tokens without jti are not replay-tracked.
         let (_, pk) = keypair();
@@ -526,12 +556,19 @@ mod tests {
             exp: u64::MAX,
             jti: None,
         };
-        assert!(cap_replay_check(&legacy));
-        assert!(cap_replay_check(&legacy));
+        assert!(cap_replay_check(&legacy, "POST", "/ump/recall"));
+        assert!(cap_replay_check(&legacy, "GET", "/ump/memory/1"));
 
         let mut minted = legacy.clone();
         minted.jti = Some("cap-3".into());
-        assert!(cap_replay_check(&minted));
-        assert!(!cap_replay_check(&minted), "second presentation refused");
+        assert!(cap_replay_check(&minted, "POST", "/ump/recall"));
+        assert!(
+            cap_replay_check(&minted, "POST", "/ump/recall"),
+            "retry on the same endpoint stays valid"
+        );
+        assert!(
+            !cap_replay_check(&minted, "GET", "/ump/export"),
+            "second endpoint refused as replay"
+        );
     }
 }

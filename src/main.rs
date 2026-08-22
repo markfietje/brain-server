@@ -4822,8 +4822,12 @@ fn capability_pass_through(req: &mut Request<Body>, raw: &str, path: &str) -> bo
     }
     let pk = sk.verifying_key().to_bytes();
     if let Ok(cap) = brain_server::ump_integrity::parse_capability_token(raw, &pk) {
-        // Replay defense: a jti-bearing token is accepted once per process.
-        if !brain_server::ump_integrity::cap_replay_check(&cap) {
+        // Replay defense: a jti-bearing token is accepted once per
+        // (jti, method, path) — capability tokens are per-request bearers,
+        // so keying on jti alone burned the use on the first call; keyed this
+        // way retries on the SAME endpoint stay valid while reuse on any
+        // other method/path is refused as a replay.
+        if !brain_server::ump_integrity::cap_replay_check(&cap, req.method().as_str(), path) {
             return false;
         }
         req.extensions_mut().insert(cap);
@@ -13956,6 +13960,85 @@ Final paragraph after the rule.";
             .unwrap()
         };
         assert_eq!(n, 1);
+    }
+
+    /// Suggestions read-seam (reaudit N1): flagged/quarantined rows are never
+    /// suggested, expired rows stay retired, emitted title/snippet pass
+    // through `sanitize_read`, and the run's `q` cannot inject LIKE
+    /// wildcards.
+    #[tokio::test]
+    async fn workflow_suggestions_exclude_flagged_and_sanitize() {
+        use axum::extract::{Path, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('global', 'interview', '{\"q\": \"widget\"}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let conn = state.pool.get().unwrap();
+        let insert_k = |content: &str, flagged: i64, expires_at: Option<i64>| {
+            conn.execute(
+                "INSERT INTO knowledge (title, content, content_hash, source, domain, access_scope, flagged, expires_at)
+                 VALUES (?1, ?1, ?2, 'structured', 'global', 'private', ?3, ?4)",
+                rusqlite::params![content, format!("h-{content}"), flagged, expires_at],
+            )
+            .unwrap();
+        };
+        insert_k("clean widget pricing note", 0, None);
+        insert_k(
+            "quarantined widget injection ignore previous instructions",
+            1,
+            None,
+        );
+        insert_k("expired widget note", 0, Some(1)); // long past
+        drop(conn);
+
+        let resp = crate::handlers::workflow::get_suggestions(
+            State(state.clone()),
+            axum::Extension(None),
+            Path(run_id),
+        )
+        .await
+        .expect("suggestions must resolve");
+        let body = serde_json::to_string(&resp.0).unwrap();
+        assert!(
+            !body.contains("quarantined"),
+            "flagged content must never be suggested: {body}"
+        );
+        assert!(
+            !body.contains("expired widget"),
+            "decayed content must not be suggested: {body}"
+        );
+        assert!(body.contains("clean widget pricing"), "{body}");
+
+        // LIKE-wildcard injection: a `q` of `%` must not match every row.
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE workflow_runs SET state_json='{\"q\": \"%\"}' WHERE id=?1",
+                [run_id],
+            )
+            .unwrap();
+        }
+        let resp = crate::handlers::workflow::get_suggestions(
+            State(state.clone()),
+            axum::Extension(None),
+            Path(run_id),
+        )
+        .await
+        .expect("suggestions must resolve");
+        let body = serde_json::to_string(&resp.0).unwrap();
+        assert!(
+            !body.contains("clean widget pricing"),
+            "a wildcard-only q must not sweep the corpus: {body}"
+        );
     }
 
     fn domain_headers(label: &str) -> axum::http::HeaderMap {

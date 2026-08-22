@@ -229,29 +229,76 @@ pub async fn get_suggestions(
         let pool2 = st.pool.clone();
         let domain2 = domain.clone();
         let q2 = q.clone();
+        let reader = principal.clone();
         // simple FTS search; fallback to empty
         tokio::task::spawn_blocking(move || -> Vec<serde_json::Value> {
             let Ok(conn) = pool2.get() else { return vec![] };
             let mut out = Vec::new();
-            let mut stmt = match conn.prepare("SELECT id,title,content FROM knowledge WHERE domain=?1 AND content LIKE ?2 LIMIT 5") {
+            // Quarantine + decay posture (P0-1 read seam): flagged content is
+            // never retrievable through a side door, and expired rows stay
+            // retired. The LIKE pattern escapes `%`/`_`/`\` so the run's `q`
+            // cannot inject wildcards (data-shape class).
+            let mut stmt = match conn.prepare(
+                "SELECT id,title,content FROM knowledge \
+                 WHERE domain=?1 AND flagged=0 \
+                   AND (expires_at IS NULL OR expires_at >= ?3) \
+                   AND content LIKE ?2 ESCAPE '\\' LIMIT 5",
+            ) {
                 Ok(s) => s,
                 Err(_) => return vec![],
             };
-            let pat = format!("%{}%", q2.chars().take(50).collect::<String>());
-            let rows = match stmt.query_map(rusqlite::params![domain2, pat], |r| Ok(serde_json::json!({"id": r.get::<_,i64>(0)?, "title": r.get::<_,Option<String>>(1)?, "snippet": r.get::<_,String>(2)?.chars().take(200).collect::<String>()}))) {
+            let q_take: String = q2.chars().take(50).collect();
+            let pat = format!(
+                "%{}%",
+                q_take
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            );
+            let now = chrono::Utc::now().timestamp();
+            let rows = match stmt.query_map(rusqlite::params![domain2, pat, now], |r| {
+                let id: i64 = r.get(0)?;
+                let title: Option<String> = r.get(1)?;
+                let content: String = r.get(2)?;
+                Ok((id, title, content))
+            }) {
                 Ok(r) => r,
                 Err(_) => return vec![],
             };
-            for r in rows.flatten() { out.push(r); }
+            for (id, title, content) in rows.flatten() {
+                // Read-seam parity with get_run/list_steps: suggestion output
+                // feeds engine context, so title + snippet go through the
+                // same PII-redact → markdown-ref → invisible-strip chain.
+                let snippet: String = crate::gate::sanitize_read(&content, false, &reader)
+                    .chars()
+                    .take(200)
+                    .collect();
+                out.push(serde_json::json!({
+                    "id": id,
+                    "title": title
+                        .as_deref()
+                        .map(|t| crate::gate::sanitize_read(t, false, &reader)),
+                    "snippet": snippet,
+                }));
+            }
             out
-        }).await.unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
     };
     if hits.is_empty() {
         let pool3 = st.pool.clone();
         tokio::task::spawn_blocking(move || {
             if let Ok(conn) = pool3.get() {
                 let now = chrono::Utc::now().timestamp();
-                let _ = conn.execute("INSERT INTO findings(run_id,claim,evidence,source,confidence,ts) VALUES (?1,'abstention','no hits','copilot',0,?2)", rusqlite::params![id, now]);
+                // D-1: never certify silence — a failed abstention record is
+                // announced, not swallowed (v1.27.19 convention).
+                if let Err(e) = conn.execute(
+                    "INSERT INTO findings(run_id,claim,evidence,source,confidence,ts) VALUES (?1,'abstention','no hits','copilot',0,?2)",
+                    rusqlite::params![id, now],
+                ) {
+                    tracing::warn!("abstention finding write failed for run {id}: {e}");
+                }
             }
         }).await.ok();
         return Ok(Json(serde_json::json!({"suggestions": []})));
