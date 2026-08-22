@@ -447,10 +447,10 @@ pub fn mask_sub(sub: &str) -> String {
 /// them. Everyone else is clamped to `false` at every retrieval entry point
 /// (fail-closed — quarantined content never reaches an unprivileged agent).
 pub fn review_flags_allowed(principal: &Option<crate::auth::Principal>) -> bool {
-    match principal {
-        None => true,
-        Some(p) => crate::auth::is_authorized(p, crate::auth::Action::Admin, &p.tenant, "global"),
+    if let Some(p) = principal {
+        return crate::auth::is_authorized(p, crate::auth::Action::Admin, &p.tenant, "global");
     }
+    true
 }
 
 /// read-access predicate for a *target*

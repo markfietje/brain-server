@@ -276,10 +276,9 @@ pub static CAP_REPLAY: std::sync::LazyLock<ReplayCache> =
 /// Record-and-check a parsed token's `jti` at acceptance time. Tokens without
 /// a `jti` are legacy and pass through (expiry-only ceiling).
 pub fn cap_replay_check(cap: &CapabilityToken) -> bool {
-    match &cap.jti {
-        None => true,
-        Some(jti) => CAP_REPLAY.first_presentation(jti, cap.exp),
-    }
+    cap.jti
+        .as_ref()
+        .is_none_or(|jti| CAP_REPLAY.first_presentation(jti, cap.exp))
 }
 
 /// Parse + verify a capability token against the owner public key.
