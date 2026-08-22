@@ -71,6 +71,10 @@ struct Inner {
     mounted: Vec<Box<dyn Service + Send>>,
     effects: Vec<ActiveEffect>,
     next_effect_id: u64,
+    /// The ONE workflow engine for this context (`ctx.workflowEngine`).
+    /// Mounting replaces any previous engine — Cordis mount semantics, never
+    /// parallel providers.
+    workflow_engine: Option<Arc<dyn crate::workflow::WorkflowEngine>>,
 }
 
 /// The plugin context: owns services by type plus the effect stack whose
@@ -101,6 +105,7 @@ impl Context {
                 mounted: Vec::new(),
                 effects: Vec::new(),
                 next_effect_id: 0,
+                workflow_engine: None,
             })),
         }
     }
@@ -250,6 +255,20 @@ impl Context {
             Ok(inner) => inner.mounted.iter().map(|m| m.key()).collect(),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// Mount the context's workflow engine. Replaces any previously mounted
+    /// engine (config-driven replacement, never a parallel registry).
+    pub fn mount_workflow_engine(&mut self, engine: Arc<dyn crate::workflow::WorkflowEngine>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.workflow_engine = Some(engine);
+        }
+    }
+
+    /// The mounted engine, when one is configured.
+    pub fn workflow_engine(&self) -> Option<Arc<dyn crate::workflow::WorkflowEngine>> {
+        let inner = self.inner.lock().ok()?;
+        inner.workflow_engine.clone()
     }
 }
 
@@ -609,5 +628,65 @@ mod audit_tests {
         );
         let log = host.log.lock().map(|g| g.clone()).unwrap_or_default();
         assert!(log.contains(&"workflow/plugin/ctx.plain/denied/mount".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod engine_slot_tests {
+    use super::*;
+    use crate::workflow::{
+        AgentId, RunBuilder, WorkflowEngine, WorkflowError, WorkflowMeta, WorkflowResult,
+        WorkflowRun, WorkflowStartRequest,
+    };
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    struct NamedEngine {
+        name: &'static str,
+        log: Arc<StdMutex<Vec<&'static str>>>,
+    }
+    impl WorkflowEngine for NamedEngine {
+        fn start(&self, req: WorkflowStartRequest) -> Result<WorkflowRun, WorkflowError> {
+            let mut b = RunBuilder::default();
+            let id = b.admit(&req)?;
+            let (completer, run) = b.build_run(id);
+            completer.complete(WorkflowResult::completed("ok".into()));
+            if let Ok(mut g) = self.log.lock() {
+                g.push(self.name);
+            }
+            Ok(run)
+        }
+    }
+
+    #[test]
+    fn second_engine_mount_replaces_the_first_not_parallel() {
+        let log = Arc::new(StdMutex::new(Vec::new()));
+        let mut ctx = Context::new();
+        ctx.mount_workflow_engine(Arc::new(NamedEngine {
+            name: "first",
+            log: Arc::clone(&log),
+        }));
+        ctx.mount_workflow_engine(Arc::new(NamedEngine {
+            name: "second",
+            log: Arc::clone(&log),
+        }));
+        // Start through the ctx-mounted engine (the tool path shape).
+        let mounted = ctx.workflow_engine().expect("engine mounted");
+        let req = WorkflowStartRequest {
+            script: "x".into(),
+            meta: WorkflowMeta {
+                name: "demo".into(),
+                description: "d".into(),
+                when_to_use: None,
+                phases: vec![],
+            },
+            args: "{}".into(),
+            parent: AgentId("p".into()),
+        };
+        mounted.start(req).unwrap();
+        assert_eq!(
+            log.lock().map(|g| g.clone()).unwrap_or_default(),
+            vec!["second"],
+            "one engine per context: config replaces, never parallel providers"
+        );
     }
 }
