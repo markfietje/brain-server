@@ -3745,6 +3745,13 @@ components:
         export_rows: { type: integer, description: knowledge rows in the export bundle }
         tombstones: { type: integer, description: prior deletions for this subject (ledger trace) }
         dsar_rows: { type: integer, description: prior DSAR ledger rows for this subject }
+        workflow_rows:
+          type: integer
+          description: >
+            Governed-workflow rows a live purge would reach — matched
+            workflow_runs plus their dependents (steps/outbox/findings/
+            contradictions); runs frozen by an active legal hold are counted
+            as matched and listed as deferred on the live certificate.
         dry_run: { type: boolean, default: true }
     TerminationCertificate:
       type: object

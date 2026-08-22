@@ -49,7 +49,7 @@ mod tests {
         fn sanitize_view(&self, raw: &str) -> String {
             // Deliberately naive test stand-in for the host's real redactor.
             if raw.contains('@') {
-                "[redacted:*]".repeat(1)
+                "[redacted:*]".to_string()
             } else {
                 raw.to_string()
             }

@@ -19,6 +19,37 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.2] — 2026-08-22
+
+**SDK release** (server `Cargo.toml`/lock 1.28.1 → **1.28.2**; `crates/brain-engine-sdk` 1.28.1 → **1.28.2**; no schema change; client + plugin unchanged).
+
+### Release notes
+
+**Improvements**
+
+- Governed-workflow data is now inside the erasure boundary: a DSAR sweep reaches every workflow table in each domain (runs, steps, findings, contradictions, outbox), and the dry-run footprint reports honestly how many workflow rows a live purge would reach.
+- Legal holds now freeze workflow runs exactly as they freeze memory chunks: a held run is deferred — never silently deleted — and listed with its reasons on the DSAR certificate.
+- A capability policy for engine extensions: three trust profiles (Safe/Standard/Permissive) with per-engine overrides, where deny always outranks allow and anything outside the vocabulary is refused.
+- Hostcalls pass through one audited dispatch: payload canonicalization, a capability check that writes its decision to the audit chain either way, and only then the handler — a misconfigured handler fails loudly instead of degrading.
+- Secrets are mediated: engine-facing key material resolves through a broker that refuses group/world-readable key files outright (no silent fallback to another source), and tools can learn only whether a secret is configured — never its value.
+
+**Security fixes**
+
+- Session state reads by extensions return only the sanitized view (PII redact + invisible-strip + markdown-ref strip); there is no method on the seam that can return raw content.
+
+### Engineering record
+
+- **Capability policy (SDK `trust`):** `ExtensionPolicy { mode, max_memory_mb, default_caps, deny_caps, per_engine }` with the Safe/Standard/Permissive profiles (exec/env denied by default in every profile), the documented precedence table (per-engine deny > global deny > per-engine allow > global allow > mode fallback; explicit denies honored even under Permissive), and the closed `HostCallKind`→capability map (`tool`→tools … `log`→log); unknown kinds parse as errors, never defaults.
+- **Hostcall dispatch (SDK `hostcall`):** four ordered steps — test interceptor short-circuit, canonicalization (256 KiB body bound, name bounds, control-char refusal), audited capability check (`Decision::{Allowed,Prompt,Denied}`; Prompt requires consent and audits Denied), kind handler last; missing-handler-after-pass is Internal, never a silent denial. Plus `Budget::effective_timeout` (manager ∩ per-op intersection), cooperative `CancellationToken`, RAII `ExtensionRegion` (drop cancels within the 5 s cleanup budget), pure `exec_mediation` destructive-command table, and a `ManagerProbe` Weak-ref cycle-break (upgrade after drop reads None).
+- **Session seam:** SDK `SanitizedSession`/`SessionSource`/`SessionSanitizer` — raw state has exactly one consumer, the sanitizer; server implements both once (`RunStateSource` over `workflow_runs` + `ReadViewSanitizer` = `sanitize_read` under a synthetic least-privileged principal, so admin/loopback PII bypass never leaks through an extension read).
+- **Server hostcall wiring (`workflow::hostcalls`):** production posture = Standard plus always-mediated `tools`/`log`; handlers are log (structured emit), session (sanitized view via `WorkflowHost::load_state`), `secret_status` (broker resolves host-side, publishes `{configured}` only, name-shape validated), and `mediated_exec` (exec_mediation gate). Per-engine allow cannot reinstate the global exec/env deny.
+- **Erasure reach (`workflow::erasure`):** subject sweep deletes matched runs with their dependents (contradictions via finding joins, findings, steps, outbox, run row) in the caller's tx; frozen runs (`knowledge_id = -run_id` active-hold convention — chunk ids are positive, so no collision) are deferred and certificate-listed beside held chunks; dry-run counts `workflow_rows` (matched runs incl. frozen + dependents) into the additive `Footprint` field (openapi updated).
+- **Secrets broker (`src/secrets.rs`):** `BRAIN_<NAME>_KEY_FILE` (mode-checked via the existing `check_secret_permissions`) → inline env fallback; a wide-mode FILE refuses fail-closed WITHOUT falling through to any other source.
+- Tests: server bin **742** / 6 ignored (+9), lib **147** / 1 ignored, brain CLI 18, mcp 19, bench 8, eval/metrics unchanged; client **158**; SDK **68** (+23 across trust/hostcall/session); crates workspace green. Clippy `-D warnings` clean on server (bench) and crates (default + harness-kernel); fmt clean; `cargo audit`: zero vulnerabilities (2 pre-allowed warnings).
+- Honest ceilings: workflow scripts hold bash-equivalent trust — the harness contains buggy scripts (bounded grace + force-terminate), it does not defend against hostile code; sandboxing needs an out-of-process engine (future work). Worker-thread isolation is not a security boundary; real isolation is process/container. The run-hold freeze is read-time enforcement over stored rows using the negative-id convention; a future first-class `run_id` column would supersede it. The secret-status tool reveals configuration presence, not material — but a probing engine can still enumerate names.
+
+---
+
 ## [1.28.1] — 2026-08-22
 
 **SDK release** (server `Cargo.toml`/lock 1.28.0 → **1.28.1**; `crates/brain-engine-sdk` 1.28.0 → **1.28.1**; no schema change; client + plugin unchanged).
