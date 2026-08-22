@@ -64,6 +64,9 @@ pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
 pub const MAX_QUERY: usize = 2_000;
 pub const MAX_TITLE: usize = 500;
 pub const MAX_CONTENT: usize = 1_000_000;
+/// Explicit entry-count bound on `/ingest/memory` (the 1 MiB body cap alone
+/// still admits thousands of micro-entries in one tx).
+pub const MAX_INGEST_ENTRIES: usize = 500;
 /// bound on the autoCapture `source_prompt` reviewer-facing field.
 /// The plugin sends ≤ 2000 chars; the server enforces its own bound so a
 /// malicious caller can't persist a multi-MiB prompt to the proposals table.
@@ -427,6 +430,26 @@ pub fn authorize(
                 Err(HandlerError::forbidden(action, effective_team, domain))
             }
         }
+    }
+}
+
+/// Log-safe principal identifier: a truncated SHA-256 of `sub`, never the raw
+/// identifier (GDPR personal-data class; parity with the recall `query_hash`
+/// rule). Local logs only — OTLP attributes were already hash-only.
+pub fn mask_sub(sub: &str) -> String {
+    let h = crate::audit::hash(sub);
+    h.chars().take(12).collect()
+}
+
+/// Quarantine/decay review posture. `include_flagged`/`include_decayed` are
+/// operator-review controls, not caller preferences: only a loopback/opaque
+/// principal (`None`) or one authorized for Admin on its own tenant may set
+/// them. Everyone else is clamped to `false` at every retrieval entry point
+/// (fail-closed — quarantined content never reaches an unprivileged agent).
+pub fn review_flags_allowed(principal: &Option<crate::auth::Principal>) -> bool {
+    match principal {
+        None => true,
+        Some(p) => crate::auth::is_authorized(p, crate::auth::Action::Admin, &p.tenant, "global"),
     }
 }
 
@@ -891,6 +914,7 @@ mod tests {
             verbs: verbs.iter().map(|s| s.to_string()).collect(),
             scope: scope.map(|s| s.to_string()),
             exp: u64::MAX,
+            jti: None,
         };
         // None = no capability presented: no-op.
         assert!(cap_gate(&None, "read").is_ok());

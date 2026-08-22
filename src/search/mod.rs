@@ -656,7 +656,10 @@ pub struct SearchFilters {
     pub profile: Option<String>,
     /// when `false` (default), retrieval excludes quarantined
     /// (`flagged=1`) chunks so untrusted/prompt-injection content never reaches
-    /// the agent. Set `true` only for operator review paths (`?include_flagged=1`).
+    /// the agent. `true` is honored ONLY for operator-review callers (loopback/
+    /// opaque or Admin-authorized principals — see
+    /// `handlers::review_flags_allowed`); every other caller is clamped to
+    /// `false` at the handler boundary.
     pub include_flagged: bool,
     /// point-in-time recall. When `Some`, retrieval returns
     /// the revision of each source that was current *at* this RFC3339 instant

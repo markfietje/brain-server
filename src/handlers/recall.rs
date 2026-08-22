@@ -21,6 +21,7 @@ use tokio::{
     task,
     time::{Duration as StdDuration, timeout},
 };
+use tracing::warn;
 
 /// Deserialize `lex` from either a bare string (legacy: treated as one term)
 /// or a full `LexSpec` object (the structured form). Keeps the OpenClaw
@@ -205,6 +206,15 @@ pub async fn recall(
 ) -> Result<Json<RecallResponse>, HandlerError> {
     // the deterministic pipeline lives in `run_recall` so the
     // HTTP and UMP bindings share one core; only the renderer differs.
+    // Quarantine/decay review flags are operator posture, not a caller
+    // preference — clamp before the core runs so no unprivileged caller can
+    // pull flagged/decayed rows through recall.
+    let mut req = req;
+    if !super::review_flags_allowed(&principal.0) && (req.include_flagged || req.include_decayed) {
+        warn!("review flags requested by a non-operator principal; clamped to false");
+        req.include_flagged = false;
+        req.include_decayed = false;
+    }
     let provenance = req.provenance;
     let include_decayed = req.include_decayed;
     let outcome = run_recall(&state, &principal.0, req, source_query.0).await?;
@@ -263,6 +273,14 @@ pub(crate) async fn run_recall(
         "",
         forced_domain.as_deref().unwrap_or("global"),
     )?;
+    // Defense-in-depth at the core: every binding of run_recall gets the
+    // clamp even if a handler forgets it.
+    let mut req = req;
+    if !super::review_flags_allowed(principal) && (req.include_flagged || req.include_decayed) {
+        warn!("review flags requested by a non-operator principal; clamped to false");
+        req.include_flagged = false;
+        req.include_decayed = false;
+    }
     // `strict` controls cross-domain fan-out: when true, stay in the resolved
     // domain even on miss/low-confidence; when false (default), federate. Used
     // below in the no-confident-route branch.
@@ -389,7 +407,7 @@ pub(crate) async fn run_recall(
         // is filtered because the principal only holds other domains) — that
         // is a legitimate "nothing to search" outcome, not an error.
         tracing::debug!(
-            principal = ?principal.as_ref().map(|p| p.sub.as_str()),
+            principal = principal.as_ref().map(|p| super::mask_sub(&p.sub)),
             "recall: all targets filtered by domain read-gate"
         );
     }
