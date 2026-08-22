@@ -11,6 +11,7 @@
 resolver = "2"
 
 members = [
+    "brain-fuzz",
     "brain-engine-sdk",
     "brain-interview-core",
     "brain-consensus-core",

@@ -1,0 +1,29 @@
+[package]
+name = "brain-fuzz"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+description = "Fuzz targets + committed corpus for the SDK's pure surfaces. Corpus-replay tests run in the normal suite; libFuzzer targets compile behind the `libfuzzer` feature (cargo-fuzz compatible)."
+
+[lib]
+bench = false
+
+[features]
+# Real libFuzzer entry points (`cargo fuzz build` style). Off by default so
+# the workspace builds green without the fuzzer toolchain.
+libfuzzer = ["dep:libfuzzer-sys"]
+
+[dependencies]
+brain-engine-sdk = { path = "../brain-engine-sdk", features = ["harness-kernel"] }
+libfuzzer-sys = { version = "0.4", optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
