@@ -291,8 +291,8 @@ pub async fn get_suggestions(
         tokio::task::spawn_blocking(move || {
             if let Ok(conn) = pool3.get() {
                 let now = chrono::Utc::now().timestamp();
-                // D-1: never certify silence — a failed abstention record is
-                // announced, not swallowed (v1.27.19 convention).
+                // Never certify silence: a failed abstention record is
+                // announced, not swallowed (the silent-write sweep convention).
                 if let Err(e) = conn.execute(
                     "INSERT INTO findings(run_id,claim,evidence,source,confidence,ts) VALUES (?1,'abstention','no hits','copilot',0,?2)",
                     rusqlite::params![id, now],
