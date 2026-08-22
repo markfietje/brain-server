@@ -4,6 +4,8 @@
 //! the host write path; these endpoints only append operator-attested records
 //! (evaluation declarations) and read/export evidence.
 
+#![deny(clippy::unwrap_used)]
+
 use std::sync::Arc;
 
 use axum::Json;
@@ -31,6 +33,14 @@ pub async fn export_audit(
 ) -> Result<axum::response::Response, HandlerError> {
     admin_gate(&principal.0)?;
     let format = q.format.unwrap_or_else(|| "jsonl".to_string());
+    if let Some(rpc) = q.rpc_id.as_ref()
+        && rpc.len() > MAX_RPC_ID
+    {
+        return Err(HandlerError::bad_request(
+            "rpc_id_too_long",
+            "rpcId must be at most 128 characters",
+        ));
+    }
     if !matches!(format.as_str(), "jsonl" | "pdf") {
         return Err(HandlerError::bad_request(
             "format_invalid",
@@ -79,7 +89,8 @@ pub async fn export_audit(
         // the rpcId echo rides the envelope's first line so a reconciler can
         // pair export requests with their evidence bundles.
         if let Some(rpc) = q.rpc_id {
-            lines.push_str(&format!("{{\"rpcId\":\"{}\"}}\n", rpc.replace('"', "")));
+            let envelope = serde_json::json!({ "rpcId": rpc });
+            lines.push_str(&format!("{envelope}\n"));
         }
         for r in &records {
             if let Ok(line) = serde_json::to_string(r) {
@@ -102,6 +113,21 @@ pub async fn export_audit(
         )
             .into_response())
     }
+}
+
+const MAX_RPC_ID: usize = 128;
+
+/// Wire-boundary field caps for operator-supplied evidence text: bounded
+/// input is the two-layer-envelope rule — refuse absurd sizes rather than
+/// storing them forever (evidence tables are append-only).
+fn capped(field: &str, value: &str, max: usize) -> Result<(), HandlerError> {
+    if value.len() > max {
+        return Err(HandlerError::bad_request(
+            "field_too_long",
+            format!("{field} must be at most {max} characters"),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +195,16 @@ pub async fn post_evaluation_record(
             "dataset_hash and declaration are required",
         ));
     }
+    // the dataset hash must BE a SHA-256 hex digest — a free-text blob here
+    // would defeat the "tied to dataset" property the record exists for.
+    if !is_sha256_hex(&body.dataset_hash) {
+        return Err(HandlerError::bad_request(
+            "dataset_hash_invalid",
+            "dataset_hash must be 64 hex characters (SHA-256)",
+        ));
+    }
+    capped("declaration", &body.declaration, 8_000)?;
+    capped("system_version", &body.system_version, 128)?;
     let pool = state.pool.clone();
     let actor = crate::handlers::recall::principal_label(&principal.0);
     let record = tokio::task::spawn_blocking(
@@ -288,6 +324,11 @@ struct InventoryCounts {
     ropa: i64,
 }
 
+/// strict SHA-256 hex-digest predicate (pure, pinned).
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn art(name: &str, present: bool, count: i64, _now: Option<i64>) -> serde_json::Value {
     serde_json::json!({ "artifact": name, "present": present, "count": count })
 }
@@ -385,6 +426,14 @@ async fn ropa_upsert(
             "activity and lawful_basis are required",
         ));
     }
+    capped("activity", &body.activity, 256)?;
+    capped("controller", &body.controller, 256)?;
+    capped("processor", &body.processor, 256)?;
+    capped("lawful_basis", &body.lawful_basis, 128)?;
+    capped("categories", &body.categories, 1_024)?;
+    capped("recipients", &body.recipients, 1_024)?;
+    capped("security_measures", &body.security_measures, 1_024)?;
+    capped("transfers", &body.transfers, 1_024)?;
     let pool = state.pool.clone();
     let actor = crate::handlers::recall::principal_label(&principal.0);
     let id_out = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
@@ -468,15 +517,15 @@ async fn ropa_upsert(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The decision signing key resolves once per process from the env; every
     /// compliance test installs the same fixed seed under a shared lock so
     /// signatures verify deterministically.
-    static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     const TEST_SEED_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    fn ensure_test_key() {
+    pub(crate) fn ensure_test_key() {
         let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if std::env::var("BRAIN_AUDIT_SIGNING_KEY").is_err() {
             // test-only process-global, installed under KEY_LOCK
@@ -529,6 +578,22 @@ mod tests {
             .unwrap();
         assert_eq!(stored, hash);
         assert!(brain_server::audit::decision::verify_decisions(&conn).unwrap());
+    }
+
+    #[test]
+    fn wire_input_caps_reject_absurd_sizes() {
+        assert!(capped("x", &"a".repeat(255), 256).is_ok());
+        assert!(capped("x", &"a".repeat(257), 256).is_err());
+        assert!(capped("x", "", 1).is_ok());
+    }
+
+    #[test]
+    fn dataset_hash_predicate_is_strict() {
+        let hex = "a".repeat(64);
+        assert!(is_sha256_hex(&hex));
+        assert!(!is_sha256_hex(&"g".repeat(64)));
+        assert!(!is_sha256_hex(&"a".repeat(63)));
+        assert!(!is_sha256_hex(""));
     }
 
     #[test]

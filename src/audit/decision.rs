@@ -11,6 +11,8 @@
 //! `BRAIN_AUDIT_SIGNING_KEY` is unset, rows are hashed + chained but carry a
 //! NULL signature (disclosed on `/audit/export`, not silently trusted).
 
+#![deny(clippy::unwrap_used)]
+
 use std::os::unix::fs::PermissionsExt;
 use std::sync::OnceLock;
 

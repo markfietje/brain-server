@@ -1,0 +1,3 @@
+# unwrap_used/expect_used denials are applied per-module (the compliance
+# evidence modules); tests are exempt so fixtures stay readable.
+allow-unwrap-in-tests = true

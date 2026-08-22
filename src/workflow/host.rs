@@ -353,15 +353,9 @@ mod tests {
     #[cfg(feature = "compliance-pack")]
     #[test]
     fn host_records_decision_evidence_that_verifies_outside() {
-        if std::env::var("BRAIN_AUDIT_SIGNING_KEY").is_err() {
-            // deterministic signed path for this process
-            unsafe {
-                std::env::set_var(
-                    "BRAIN_AUDIT_SIGNING_KEY",
-                    "0707070707070707070707070707070707070707070707070707070707070707",
-                );
-            }
-        }
+        // deterministic signed path for this process — installed under the
+        // same lock the compliance tests use, so env writes never race reads.
+        crate::handlers::compliance::tests::ensure_test_key();
         let (host, tmp) = host();
         {
             let unit = host.tx().unwrap();

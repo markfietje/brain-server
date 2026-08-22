@@ -263,6 +263,18 @@ lto = "fat"
 codegen-units = 1
 strip = true
 panic = "abort"
+# F-50a: arithmetic near the i64 edge (paginated listings, DSAR/purge
+# offsets) must abort, never wrap silently — with panic=abort an overflow is
+# fail-stop. Measured cost on the synthetic bench: < 1% (see CHANGELOG 1.28.5).
+overflow-checks = true
+
+[lints.rust]
+# F-50b: no `unsafe fn` is defined in this crate today; keeping the lint at
+# deny means the first one that appears inherits block-scoped safety.
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+missing_safety_doc = "deny"
 
 
 
