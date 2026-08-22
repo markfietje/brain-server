@@ -253,6 +253,53 @@ impl Context {
     }
 }
 
+/// Audited mounting (compliance carry-over): plugin mount/unmount emit
+/// `Workflow` audit rows through the same host chain engines use — a mount
+/// that failed still leaves its denial on the record.
+pub fn install_audited<H: crate::host::WorkflowHost + ?Sized>(
+    host: &std::sync::Arc<H>,
+    ctx: &mut Context,
+    svc: Box<dyn Service + Send>,
+) -> Result<(), KernelError> {
+    let key = svc.key();
+    let result = ctx.install(svc);
+    use crate::host::{AuditKind, AuditStatus};
+    host.audit(
+        AuditKind::Workflow,
+        "plugin",
+        key,
+        if result.is_ok() {
+            AuditStatus::Ok
+        } else {
+            AuditStatus::Denied
+        },
+        "mount",
+    );
+    result
+}
+
+/// Audited unmounting; see [`install_audited`].
+pub fn uninstall_audited<H: crate::host::WorkflowHost + ?Sized>(
+    host: &std::sync::Arc<H>,
+    ctx: &mut Context,
+    key: &'static str,
+) -> Result<(), KernelError> {
+    let result = ctx.uninstall(key);
+    use crate::host::{AuditKind, AuditStatus};
+    host.audit(
+        AuditKind::Workflow,
+        "plugin",
+        key,
+        if result.is_ok() {
+            AuditStatus::Ok
+        } else {
+            AuditStatus::Denied
+        },
+        "unmount",
+    );
+    result
+}
+
 fn borrow_failed<T>(_e: T) -> KernelError {
     KernelError::NotMounted {
         key: "context re-entrant borrow".to_string(),
@@ -483,5 +530,84 @@ mod tests {
             ctx.uninstall("nope").unwrap_err(),
             KernelError::NotMounted { key: "nope".into() }
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use crate::host::{AuditKind, AuditStatus, CasError, HostError, HostTx, WorkflowHost};
+    use std::sync::{Arc, Mutex as StdMutex};
+
+    #[derive(Default)]
+    struct TapeHost {
+        log: StdMutex<Vec<String>>,
+    }
+    impl WorkflowHost for TapeHost {
+        fn tx(&self) -> Result<HostTx, HostError> {
+            unreachable!()
+        }
+        fn enqueue(&self, _: i64, _: &str, _: &str, _: &str) -> Result<bool, HostError> {
+            Ok(true)
+        }
+        fn cas(&self, _: i64, _: i64, _: &str) -> Result<(), CasError> {
+            Ok(())
+        }
+        fn load_state(&self, _: i64) -> Result<Option<(String, i64)>, HostError> {
+            Ok(None)
+        }
+        fn audit(&self, k: AuditKind, actor: &str, target: &str, s: AuditStatus, d: &str) {
+            if let Ok(mut g) = self.log.lock() {
+                g.push(format!(
+                    "{}/{}/{}/{}/{}",
+                    k.as_str(),
+                    actor,
+                    target,
+                    s.as_str(),
+                    d
+                ));
+            }
+        }
+    }
+
+    struct Plain;
+    impl Service for Plain {
+        fn key(&self) -> &'static str {
+            "ctx.plain"
+        }
+        fn mount(&mut self, _ctx: &mut Context) {}
+        fn unmount(&self) {}
+    }
+
+    #[test]
+    fn mount_unmount_leave_audit_rows_on_the_chain() {
+        let host = Arc::new(TapeHost::default());
+        let mut ctx = Context::new();
+        install_audited(&host, &mut ctx, Box::new(Plain)).ok();
+        uninstall_audited(&host, &mut ctx, "ctx.plain").ok();
+        let log = host.log.lock().map(|g| g.clone()).unwrap_or_default();
+        assert_eq!(
+            log,
+            vec![
+                "workflow/plugin/ctx.plain/ok/mount",
+                "workflow/plugin/ctx.plain/ok/unmount"
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_mount_audits_denied() {
+        let host = Arc::new(TapeHost::default());
+        let mut ctx = Context::new();
+        install_audited(&host, &mut ctx, Box::new(Plain)).ok();
+        let err = install_audited(&host, &mut ctx, Box::new(Plain)).unwrap_err();
+        assert_eq!(
+            err,
+            KernelError::Duplicate {
+                key: "ctx.plain".into()
+            }
+        );
+        let log = host.log.lock().map(|g| g.clone()).unwrap_or_default();
+        assert!(log.contains(&"workflow/plugin/ctx.plain/denied/mount".to_string()));
     }
 }
