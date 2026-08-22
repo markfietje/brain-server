@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn version_matches_cargo_and_gate() {
-        assert_eq!(VERSION, "1.28.3");
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
         assert!(requires_host("1.28"));
         assert!(requires_host("1.28.3"));
         assert!(requires_host("1.27.9"), "patch-lower hosts are accepted");
