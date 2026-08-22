@@ -573,3 +573,11 @@ data_ids_ph = 1, 2, 3
 data_owner_ph = user@example.com
 data_kind_ph = fact
 data_days_ph = 90
+# v1.28.4 approval dock
+approval_dock_title = Goedkeuringen
+pending_suffix = in behandeling
+dock_empty = Wachtrij leeg — niets te beslissen.
+dock_sla = nog {0}
+dock_approve_aria = Voorstel #{0} goedkeuren
+dock_reject_aria = Voorstel #{0} afwijzen
+dock_load_failed = Kon de goedkeuringswachtrij niet laden.

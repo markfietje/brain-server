@@ -11,6 +11,13 @@
 //! - Overlapping sequences dedup: a replayed event never duplicates a node.
 //! - `Publication::AnimationFrame` coalesces at most one snapshot per frame;
 //!   `Immediate` flushes on every event (terminal nodes).
+//!
+//! Truthful allow: the engine is wired to its slot registry and definitions,
+//! but brain's client is request/response today (no live session stream yet) —
+//! the runtime event source lands with the streaming surface. The pure core
+//! ships tested now so the ABI is stable when it does.
+
+#![allow(dead_code)]
 
 pub mod assembler;
 pub mod event_registry;
@@ -42,7 +49,12 @@ pub struct NodeState {
 
 impl NodeState {
     fn new(key: String, kind: &'static str, seq: u64, data: Value) -> Self {
-        Self { key, kind, seq, data }
+        Self {
+            key,
+            kind,
+            seq,
+            data,
+        }
     }
 }
 
@@ -158,9 +170,8 @@ impl NodeDefinition for ReviewJobNode {
         }
     }
     fn fold(prev: Option<Value>, event: &Value) -> Value {
-        let mut s = prev.unwrap_or_else(|| {
-            serde_json::json!({"status": "running", "proposal_id": null})
-        });
+        let mut s =
+            prev.unwrap_or_else(|| serde_json::json!({"status": "running", "proposal_id": null}));
         if let Some(p) = event.get("proposal_id") {
             s["proposal_id"] = p.clone();
         }
@@ -172,7 +183,10 @@ impl NodeDefinition for ReviewJobNode {
             }
             Some("review/end") => {
                 s["status"] = Value::from(
-                    event.get("approved").and_then(Value::as_bool).unwrap_or(false),
+                    event
+                        .get("approved")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 );
             }
             _ => {}
@@ -219,18 +233,25 @@ impl NodeDefinition for WorkflowRunNode {
     const PUBLICATION: Publication = Publication::Immediate;
     fn matches(event: &Value) -> Option<(String, Role)> {
         let kind = event.get("kind")?.as_str()?;
-        let id = event.get("run_id").or_else(|| event.get("id"))?.as_str()?.to_string();
+        let id = event
+            .get("run_id")
+            .or_else(|| event.get("id"))?
+            .as_str()?
+            .to_string();
         match kind {
-            k if k.starts_with("workflow/") => {
-                Some((id, if k == "workflow/start" { Role::Start } else { Role::Update }))
-            }
+            k if k.starts_with("workflow/") => Some((
+                id,
+                if k == "workflow/start" {
+                    Role::Start
+                } else {
+                    Role::Update
+                },
+            )),
             _ => None,
         }
     }
     fn fold(prev: Option<Value>, event: &Value) -> Value {
-        let mut s = prev.unwrap_or_else(|| {
-            serde_json::json!({"state": "running", "phases": []})
-        });
+        let mut s = prev.unwrap_or_else(|| serde_json::json!({"state": "running", "phases": []}));
         match event.get("kind").and_then(Value::as_str) {
             Some("workflow/phase") => {
                 if let Some(p) = event.get("phase") {
@@ -240,8 +261,12 @@ impl NodeDefinition for WorkflowRunNode {
                 }
             }
             Some("workflow/end") => {
-                s["state"] =
-                    Value::from(event.get("outcome").cloned().unwrap_or(Value::from("completed")));
+                s["state"] = Value::from(
+                    event
+                        .get("outcome")
+                        .cloned()
+                        .unwrap_or(Value::from("completed")),
+                );
             }
             _ => {}
         }
@@ -286,7 +311,10 @@ mod tests {
     #[test]
     fn review_job_records_approval() {
         let ev = serde_json::json!({"kind":"review/end","id":"r1","approved":true,"proposal_id":7});
-        assert_eq!(ReviewJobNode::matches(&ev), Some(("r1".into(), Role::Update)));
+        assert_eq!(
+            ReviewJobNode::matches(&ev),
+            Some(("r1".into(), Role::Update))
+        );
         let s = ReviewJobNode::fold(None, &ev);
         assert_eq!(s["status"], true);
         assert_eq!(s["proposal_id"], 7);
@@ -294,12 +322,18 @@ mod tests {
 
     #[test]
     fn delivery_collects_items() {
-        let s0 = DeliveryNode::fold(None, &serde_json::json!({"kind":"delivery/start","id":"d1"}));
+        let s0 = DeliveryNode::fold(
+            None,
+            &serde_json::json!({"kind":"delivery/start","id":"d1"}),
+        );
         let s1 = DeliveryNode::fold(
             Some(s0),
             &serde_json::json!({"kind":"delivery/item","id":"d1","item":{"uri":"crm://1"}}),
         );
-        let s2 = DeliveryNode::fold(Some(s1), &serde_json::json!({"kind":"delivery/end","id":"d1"}));
+        let s2 = DeliveryNode::fold(
+            Some(s1),
+            &serde_json::json!({"kind":"delivery/end","id":"d1"}),
+        );
         assert_eq!(s2["items"].as_array().unwrap().len(), 1);
         assert_eq!(s2["done"], true);
     }

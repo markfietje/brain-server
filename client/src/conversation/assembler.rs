@@ -39,10 +39,8 @@ impl Assembler {
                 if !self.nodes.contains_key(&key) {
                     self.order.push(key.clone());
                 }
-                self.nodes.insert(
-                    key.clone(),
-                    NodeState::new(key, D::KIND, seq, state),
-                );
+                self.nodes
+                    .insert(key.clone(), NodeState::new(key, D::KIND, seq, state));
             }
             Role::Update => {
                 match self.nodes.get_mut(&key) {
@@ -62,7 +60,10 @@ impl Assembler {
 
     /// Ordered snapshot (by first-seen order of starts).
     pub fn snapshot(&self) -> Vec<&NodeState> {
-        self.order.iter().filter_map(|k| self.nodes.get(k)).collect()
+        self.order
+            .iter()
+            .filter_map(|k| self.nodes.get(k))
+            .collect()
     }
 
     /// Does the publication policy say "flush now"? `frame_pending` is the
@@ -124,13 +125,19 @@ mod tests {
     fn path_pending_update_converges_after_start() {
         let mut a = Assembler::new();
         // End arrives before start (out-of-order stream).
-        a.ingest::<ReviewJobNode>(1, &serde_json::json!({"kind":"review/end","id":"r","approved":true}));
+        a.ingest::<ReviewJobNode>(
+            1,
+            &serde_json::json!({"kind":"review/end","id":"r","approved":true}),
+        );
         assert!(a.snapshot().is_empty(), "update-only stays pending");
         assert!(a.has_pending("review-job:r"));
         a.ingest::<ReviewJobNode>(2, &serde_json::json!({"kind":"review/start","id":"r"}));
         let n = a.snapshot();
         assert_eq!(n.len(), 1);
-        assert_eq!(n[0].data["status"], true, "pending fold replayed onto start");
+        assert_eq!(
+            n[0].data["status"], true,
+            "pending fold replayed onto start"
+        );
     }
 
     #[test]
@@ -147,7 +154,11 @@ mod tests {
         let mut a = Assembler::new();
         a.ingest::<ReviewJobNode>(1, &serde_json::json!({"kind":"review/start","id":"x"}));
         a.ingest::<AssistantNode>(2, &serde_json::json!({"kind":"assistant/start","id":"x"}));
-        assert_eq!(a.snapshot().len(), 2, "same id across families is two nodes");
+        assert_eq!(
+            a.snapshot().len(),
+            2,
+            "same id across families is two nodes"
+        );
     }
 
     #[test]

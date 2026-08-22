@@ -93,14 +93,12 @@ pub fn validate_payload(kind: &str, payload: &serde_json::Value) -> Result<(), H
             Ok(())
         }
         // Mutations require an id.
-        "review/approve" | "review/reject" => {
-            payload
-                .get("id")
-                .and_then(|v| v.as_i64())
-                .filter(|i| *i > 0)
-                .map(|_| ())
-                .ok_or_else(|| bad("id must be a positive integer"))
-        }
+        "review/approve" | "review/reject" => payload
+            .get("id")
+            .and_then(|v| v.as_i64())
+            .filter(|i| *i > 0)
+            .map(|_| ())
+            .ok_or_else(|| bad("id must be a positive integer")),
         _ => Err(bad("unknown kind")),
     }
 }
@@ -147,8 +145,7 @@ pub fn parse_response(status: u16, text: &str) -> Result<serde_json::Value, Host
             message: text.chars().take(256).collect(),
         });
     }
-    serde_json::from_str(text)
-        .map_err(|e| HostError::Envelope(format!("response not JSON: {e}")))
+    serde_json::from_str(text).map_err(|e| HostError::Envelope(format!("response not JSON: {e}")))
 }
 
 #[cfg(test)]
@@ -173,7 +170,9 @@ mod tests {
 
     #[test]
     fn envelope_validation() {
-        assert!(validate_envelope(&serde_json::json!({"rpcId":"1","kind":"session/event"})).is_some());
+        assert!(
+            validate_envelope(&serde_json::json!({"rpcId":"1","kind":"session/event"})).is_some()
+        );
         assert!(validate_envelope(&serde_json::json!({"rpcId":"","kind":"x"})).is_none());
         assert!(validate_envelope(&serde_json::json!({"kind":"x"})).is_none());
         assert!(
@@ -229,8 +228,11 @@ mod tests {
 
     #[test]
     fn rpc_id_echoes_through_dispatch() {
-        let (id, _) =
-            dispatch(&Echo, &serde_json::json!({"rpcId":"corr-7","kind":"health"})).unwrap();
+        let (id, _) = dispatch(
+            &Echo,
+            &serde_json::json!({"rpcId":"corr-7","kind":"health"}),
+        )
+        .unwrap();
         assert_eq!(id, "corr-7");
     }
 

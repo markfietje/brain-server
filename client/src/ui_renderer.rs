@@ -5,9 +5,14 @@
 //! Chat dispatch goes through `conversation.chat.node` keyed by node kind with
 //! a generic-card fallback, so a kind with no registered view still renders
 //! (never silently drops).
+//!
+//! Truthful allow: dock composition is live (the approval dock); keyed chat
+//! dispatch mounts with the streaming conversation surface.
+
+#![allow(dead_code)]
 
 use crate::slots::{
-    render_set, SlotKind, SlotRegistry, SlotSpec,
+    SlotKind, SlotRegistry, SlotSpec, render_set,
     slot_names::{ChatNodeSlot, InputDock},
 };
 
@@ -38,7 +43,10 @@ fn family_name<K: SlotKind>() -> &'static str {
 /// Resolve a family to ordered render entries (visibility applied).
 pub fn resolve<K: SlotKind>(reg: &SlotRegistry, caps: &[String]) -> Vec<RenderEntry> {
     let family = family_name::<K>();
-    render_set::<K>(reg, caps).into_iter().map(|s| (family, s).into()).collect()
+    render_set::<K>(reg, caps)
+        .into_iter()
+        .map(|s| (family, s).into())
+        .collect()
 }
 
 /// Chat-node dispatch: exact keyed view first, else `None` (the caller renders

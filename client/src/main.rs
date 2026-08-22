@@ -50,6 +50,9 @@ mod storage;
 // connector-module precedent). Each is `#[cfg(test)]`-covered now; the
 // dead-code watchdog re-flags if a scaffold ships without its consumer.
 mod api_proxy;
+// v1.28.4 M5: the approval control center dock — the HITL queue as a
+// conversation.input.dock slot entry with digest-bound decisions.
+mod approvals;
 mod conversation;
 mod slots;
 // v1.28.4 M2: the renderer contract over the slot registry (root + keyed chat
@@ -1117,9 +1120,7 @@ fn AppShell() -> Element {
         let mut sidebar_collapsed = sidebar_collapsed;
         let mod_pressed =
             e.modifiers().contains(Modifiers::CONTROL) || e.modifiers().contains(Modifiers::SUPER);
-        if mod_pressed
-            && let Key::Character(c) = e.key()
-        {
+        if mod_pressed && let Key::Character(c) = e.key() {
             if c.eq_ignore_ascii_case("k") {
                 ui.palette_open.set(!(ui.palette_open)());
             } else if c.eq_ignore_ascii_case("b") {

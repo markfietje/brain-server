@@ -246,6 +246,9 @@ pub fn panel() -> Element {
 
     rsx! {
         PageTitle { {crate::i18n::t("overview_title")} }
+        // v1.28.4 M5: the approval control center dock — the HITL queue on the
+        // home surface (digest-bound decisions; the server still enforces).
+        crate::approvals::ApprovalDock {}
         div { class: "flex justify-end my-2", RefreshButton { refresh } }
         // M2.2 — status row.
         div { class: "mt-2 grid gap-4 md:grid-cols-2",

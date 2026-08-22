@@ -573,3 +573,11 @@ data_ids_ph = 1, 2, 3
 data_owner_ph = user@example.com
 data_kind_ph = fact
 data_days_ph = 90
+# v1.28.4 approval dock
+approval_dock_title = Aprobaciones
+pending_suffix = pendiente
+dock_empty = Cola vacía: nada pendiente de decidir.
+dock_sla = quedan {0}
+dock_approve_aria = Aprobar propuesta #{0}
+dock_reject_aria = Rechazar propuesta #{0}
+dock_load_failed = No se pudo cargar la cola de aprobaciones.

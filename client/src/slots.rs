@@ -12,6 +12,13 @@
 //!
 //! Port note: semantics ported from the harness slot-map pattern; original
 //! Rust, compile-time extension only (no JS loader — honest ceiling).
+//!
+//! Truthful allow: the registry core is live (the approval dock composes
+//! through it); the remaining families (`settings.section`, `conversation.*`,
+//! `tool.call.toolview`) are the declared extension surface for plugins that
+//! mount when a consumer registers them — same one-release-ahead posture.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -106,18 +113,18 @@ impl SlotRegistry {
     /// Fail-closed: an unregistered family has no entries and cannot be created
     /// by lookup (only `register<K>` mints families).
     pub fn ordered<K: SlotKind>(&self) -> Vec<&SlotSpec> {
-        let mut v: Vec<&SlotSpec> =
-            self.entries.get(K::NAME).map(|l| l.iter().collect()).unwrap_or_default();
+        let mut v: Vec<&SlotSpec> = self
+            .entries
+            .get(K::NAME)
+            .map(|l| l.iter().collect())
+            .unwrap_or_default();
         v.sort_by_key(|e| e.order);
         v
     }
 
     /// Keyed family view (chat nodes by kind, tool views by name).
     pub fn keyed<'a, K: SlotKind>(&'a self, key: &str) -> Option<&'a SlotSpec> {
-        self.entries
-            .get(K::NAME)?
-            .iter()
-            .find(|e| e.key == key)
+        self.entries.get(K::NAME)?.iter().find(|e| e.key == key)
     }
 
     /// Remove an entry (unmount lifecycle).
@@ -151,7 +158,10 @@ pub fn visible(spec: &SlotSpec, capabilities: &[String]) -> bool {
 
 /// Ordered + visibility-filtered render set for a family.
 pub fn render_set<'a, K: SlotKind>(reg: &'a SlotRegistry, caps: &[String]) -> Vec<&'a SlotSpec> {
-    reg.ordered::<K>().into_iter().filter(|s| visible(s, caps)).collect()
+    reg.ordered::<K>()
+        .into_iter()
+        .filter(|s| visible(s, caps))
+        .collect()
 }
 
 #[cfg(test)]
@@ -207,7 +217,10 @@ mod tests {
         r.register::<ConversationView>(SlotSpec::new("main", 0));
         assert!(r.revision() > rev0);
         assert!(r.deregister::<ConversationView>("main"));
-        assert!(!r.deregister::<ConversationView>("main"), "second remove is a no-op");
+        assert!(
+            !r.deregister::<ConversationView>("main"),
+            "second remove is a no-op"
+        );
     }
 
     #[test]

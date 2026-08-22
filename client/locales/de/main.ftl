@@ -573,3 +573,11 @@ data_ids_ph = 1, 2, 3
 data_owner_ph = user@example.com
 data_kind_ph = fact
 data_days_ph = 90
+# v1.28.4 approval dock
+approval_dock_title = Freigaben
+pending_suffix = offen
+dock_empty = Warteschlange leer — nichts zu entscheiden.
+dock_sla = noch {0}
+dock_approve_aria = Vorschlag #{0} freigeben
+dock_reject_aria = Vorschlag #{0} ablehnen
+dock_load_failed = Freigabe-Warteschlange konnte nicht geladen werden.

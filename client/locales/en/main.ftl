@@ -616,3 +616,11 @@ data_ids_ph = 1, 2, 3
 data_owner_ph = user@example.com
 data_kind_ph = fact
 data_days_ph = 90
+# v1.28.4 approval dock
+approval_dock_title = Approvals
+pending_suffix = pending
+dock_empty = Queue clear — nothing awaiting a decision.
+dock_sla = {0} left to decide
+dock_approve_aria = Approve proposal #{0}
+dock_reject_aria = Reject proposal #{0}
+dock_load_failed = Could not load the approval queue.

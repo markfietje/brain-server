@@ -573,3 +573,11 @@ data_ids_ph = 1, 2, 3
 data_owner_ph = user@example.com
 data_kind_ph = fact
 data_days_ph = 90
+# v1.28.4 approval dock
+approval_dock_title = Approbations
+pending_suffix = en attente
+dock_empty = File vide — aucune décision en attente.
+dock_sla = {0} restant
+dock_approve_aria = Approuver la proposition #{0}
+dock_reject_aria = Rejeter la proposition #{0}
+dock_load_failed = Impossible de charger la file d'approbation.
