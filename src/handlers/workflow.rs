@@ -437,11 +437,16 @@ pub async fn post_calibration_sign(
         ));
     }
     tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool_sign
+        let mut conn = pool_sign
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        // Gate + write in ONE immediate transaction: the monthly gate is
+        // check-then-write, so two concurrent signs must serialize here.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let now = chrono::Utc::now().timestamp();
-        if crate::workflow::calibration::signature_blocked(&conn, now) {
+        if crate::workflow::calibration::signature_blocked(&tx, now) {
             return Err(HandlerError::conflict_with(
                 "already_signed_this_month",
                 "a human-signed calibration already exists for this month",
@@ -449,13 +454,15 @@ pub async fn post_calibration_sign(
             ));
         }
         crate::workflow::calibration::record_signed(
-            &conn,
+            &tx,
             kappa,
-            score_units_now(&conn),
+            score_units_now(&tx),
             &reviewer,
             now,
         )
         .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        tx.commit()
+            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
         Ok(serde_json::json!({"signed": true, "month": now}))
     })
     .await

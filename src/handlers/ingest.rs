@@ -561,6 +561,23 @@ pub(crate) async fn ingest_one(
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
 
+        // Re-check the bound profile UNDER THE WRITE LOCK: a concurrent
+        // profile bind/unbind between the pre-tx mask decision and this write
+        // would otherwise land unmasked content into a now-strict domain.
+        let profile_now =
+            brain_server::profile::profile_for_domain(&tx, &domain_label)
+                .map_err(HandlerError::internal)?;
+        let strict_now = profile_now
+            .as_ref()
+            .is_some_and(brain_server::profile::Profile::pii_strict);
+        if strict_now != strict_domain {
+            return Err(HandlerError::conflict_with(
+                "profile_changed",
+                "the domain's bound profile changed during ingest — retry",
+                serde_json::json!([]),
+            ));
+        }
+
         // Baseline counts so we can report what THIS ingest actually added
         // (relations may auto-create entities that weren't in the input array).
         let entities_before: i64 = tx
