@@ -50,12 +50,12 @@ mod storage;
 // connector-module precedent). Each is `#[cfg(test)]`-covered now; the
 // dead-code watchdog re-flags if a scaffold ships without its consumer.
 mod api_proxy;
-// v1.28.4 M5: the approval control center dock — the HITL queue as a
+// The approval control center dock — the HITL queue as a
 // conversation.input.dock slot entry with digest-bound decisions.
 mod approvals;
 mod conversation;
 mod slots;
-// v1.28.4 M2: the renderer contract over the slot registry (root + keyed chat
+// The renderer contract over the slot registry (root + keyed chat
 // dispatch + dock order) — consumed by the approval control center (M5).
 mod ui_renderer;
 // v1.20.15 "Clock": the shared proposal-deadline clock core (tier + format
@@ -540,7 +540,7 @@ fn app() -> Element {
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/tailwind.css") }
-        // v1.28.4 M4: the premium polish layers (progressive enhancement —
+        // The premium polish layers (progressive enhancement —
         // both are additive CSS, no first-paint dependency).
         document::Stylesheet { href: asset!("/assets/components-enhanced.css") }
         document::Stylesheet { href: asset!("/assets/animations-enhanced.css") }
@@ -1107,7 +1107,7 @@ fn AppShell() -> Element {
     // root (focused by default when the app has focus); the palette's own input
     // captures its keys while open.
     //
-    // v1.28.4 M4: session-first shell — ⌘B collapses the nav rail to an icon
+    // Session-first shell — ⌘B collapses the nav rail to an icon
     // strip (persisted pref); Esc closes it.
     let mut sidebar_collapsed = use_signal(|| false);
     use_future(move || async move {
@@ -1135,7 +1135,7 @@ fn AppShell() -> Element {
 
     rsx! {
         div { class: "flex min-h-screen bg-background text-foreground", onkeydown: shell_keys,
-            // Fixed sidebar: brand + primary nav + identity footer. v1.28.4 M4:
+            // Fixed sidebar: brand + primary nav + identity footer.
             // collapsible (⌘B / Esc); collapsed = icon strip with the pending
             // count + running dot kept visible.
             aside {

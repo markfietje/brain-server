@@ -213,10 +213,11 @@ impl NodeDefinition for DeliveryNode {
         let mut s = prev.unwrap_or_else(|| serde_json::json!({"items": [], "done": false}));
         match event.get("kind").and_then(Value::as_str) {
             Some("delivery/item") => {
-                if let Some(item) = event.get("item") {
-                    if let Some(arr) = s.get_mut("items").and_then(Value::as_array_mut) {
-                        arr.push(item.clone());
-                    }
+                if let (Some(item), Some(arr)) = (
+                    event.get("item"),
+                    s.get_mut("items").and_then(Value::as_array_mut),
+                ) {
+                    arr.push(item.clone());
                 }
             }
             Some("delivery/end") => s["done"] = Value::from(true),
@@ -254,19 +255,18 @@ impl NodeDefinition for WorkflowRunNode {
         let mut s = prev.unwrap_or_else(|| serde_json::json!({"state": "running", "phases": []}));
         match event.get("kind").and_then(Value::as_str) {
             Some("workflow/phase") => {
-                if let Some(p) = event.get("phase") {
-                    if let Some(arr) = s.get_mut("phases").and_then(Value::as_array_mut) {
-                        arr.push(p.clone());
-                    }
+                if let (Some(p), Some(arr)) = (
+                    event.get("phase"),
+                    s.get_mut("phases").and_then(Value::as_array_mut),
+                ) {
+                    arr.push(p.clone());
                 }
             }
             Some("workflow/end") => {
-                s["state"] = Value::from(
-                    event
-                        .get("outcome")
-                        .cloned()
-                        .unwrap_or(Value::from("completed")),
-                );
+                s["state"] = event
+                    .get("outcome")
+                    .cloned()
+                    .unwrap_or(Value::from("completed"));
             }
             _ => {}
         }

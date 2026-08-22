@@ -11,7 +11,7 @@
 //! no client to serve.
 
 use axum::extract::Path;
-use axum::http::{header, Method, StatusCode};
+use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::path::{Component, PathBuf};
 use std::sync::OnceLock;
@@ -19,7 +19,9 @@ use std::sync::OnceLock;
 fn dist_dir() -> &'static PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        std::env::var("BRAIN_CLIENT_DIST").unwrap_or_else(|_| "client/dist".to_string()).into()
+        std::env::var("BRAIN_CLIENT_DIST")
+            .unwrap_or_else(|_| "client/dist".to_string())
+            .into()
     })
 }
 
@@ -32,14 +34,25 @@ pub(crate) fn resolve_safe(root: &std::path::Path, req_path: &str) -> Option<Pat
         return Some(root.join("index.html"));
     }
     let cand = PathBuf::from(rel);
-    if cand.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_))) {
+    if cand.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
         return None;
     }
     Some(root.join(cand))
 }
 
 fn content_type(path: &std::path::Path) -> (&'static str, bool) {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "html" => ("text/html; charset=utf-8", true),
         "js" | "mjs" => ("text/javascript", true),
         "css" => ("text/css", true),
@@ -60,7 +73,10 @@ fn serve_file(full: PathBuf) -> Response {
         Ok(bytes) => {
             let (ctype, known) = content_type(&full);
             (
-                [(header::CONTENT_TYPE, ctype), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")],
+                [
+                    (header::CONTENT_TYPE, ctype),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                ],
                 bytes,
             )
                 .into_response()
@@ -121,7 +137,10 @@ fn respond(root: &std::path::Path, method: &Method, req_path: &str) -> Response 
     // the SPA). A wholly absent dist degrades to 404, never a panic.
     match std::fs::read(root.join("index.html")) {
         Ok(bytes) => (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::X_CONTENT_TYPE_OPTIONS, "nosniff")],
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
             bytes,
         )
             .into_response(),

@@ -136,7 +136,7 @@ impl<P: ApiProxy> InProcessCarrier<P> {
 /// Browser uplink: `ApiClient` IS the web fetch carrier (same-origin bearer
 /// requests); this module owns the envelope/validation contract it must speak.
 /// The [`InProcessCarrier`] covers tests + headless runs without a port.
-
+///
 /// Shared response decode: non-2xx → `Handler`, bad JSON → `Envelope`.
 pub fn parse_response(status: u16, text: &str) -> Result<serde_json::Value, HostError> {
     if !(200..300).contains(&status) {

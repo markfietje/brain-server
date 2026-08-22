@@ -35,15 +35,15 @@ impl EventRegistry {
         // The built-in families carry their policy as consts; this registry is
         // the single place callers resolve it from.
         use super::*;
-        Some(match kind {
+        let policy = match kind {
             k if k == AssistantNode::KIND => AssistantNode::PUBLICATION,
             k if k == ToolNode::KIND => ToolNode::PUBLICATION,
             k if k == ReviewJobNode::KIND => ReviewJobNode::PUBLICATION,
             k if k == DeliveryNode::KIND => DeliveryNode::PUBLICATION,
             k if k == WorkflowRunNode::KIND => WorkflowRunNode::PUBLICATION,
             _ => return None,
-        })
-        .filter(|_| self.is_registered(kind))
+        };
+        self.is_registered(kind).then_some(policy)
     }
 
     pub fn len(&self) -> usize {
