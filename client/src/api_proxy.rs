@@ -13,6 +13,13 @@
 //!
 //! Port note: semantics ported from the dual-process harness UI pattern
 //! (apiproxy fetch carriers); implementation is original Rust.
+//!
+//! Truthful allow: this module is the envelope CONTRACT — the wasm shell still
+//! speaks it through `ApiClient` (the web carrier), and the server-side proxy
+//! handler consumes the same shape; nothing in the client tree calls these
+//! items directly yet. Re-evaluated when a second carrier lands.
+
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
@@ -128,42 +135,9 @@ impl<P: ApiProxy> InProcessCarrier<P> {
     }
 }
 
-/// Browser carrier: same-origin fetch uplink. Constructed with the API base;
-/// `send` posts the envelope and returns the parsed body. Transport errors are
-/// typed, never panics.
-pub struct WebFetchCarrier {
-    pub base: String,
-}
-
-impl WebFetchCarrier {
-    pub async fn send(&self, env: &RpcEnvelope) -> Result<serde_json::Value, HostError> {
-        let url = format!("{}/api/proxy", self.base.trim_end_matches('/'));
-        let body = serde_json::to_string(&serde_json::json!({
-            "rpcId": env.rpc_id,
-            "kind": env.kind,
-            "payload": env.payload,
-        }))
-        .map_err(|e| HostError::Envelope(e.to_string()))?;
-        // reqwest targets both wasm (browser fetch) and native; the same code
-        // path serves the desktop dev shell and the web build.
-        let resp = reqwest::Client::new()
-            .post(&url)
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| HostError::Handler {
-                status: 0,
-                message: e.to_string(),
-            })?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(|e| HostError::Handler {
-            status,
-            message: e.to_string(),
-        })?;
-        parse_response(status, &text)
-    }
-}
+/// Browser uplink: `ApiClient` IS the web fetch carrier (same-origin bearer
+/// requests); this module owns the envelope/validation contract it must speak.
+/// The [`InProcessCarrier`] covers tests + headless runs without a port.
 
 /// Shared response decode: non-2xx → `Handler`, bad JSON → `Envelope`.
 pub fn parse_response(status: u16, text: &str) -> Result<serde_json::Value, HostError> {

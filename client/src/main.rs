@@ -52,6 +52,9 @@ mod storage;
 mod api_proxy;
 mod conversation;
 mod slots;
+// v1.28.4 M2: the renderer contract over the slot registry (root + keyed chat
+// dispatch + dock order) — consumed by the approval control center (M5).
+mod ui_renderer;
 // v1.20.15 "Clock": the shared proposal-deadline clock core (tier + format
 // math), consumed by the review cards, the detail page, and /ops.
 mod time_budget;
