@@ -196,27 +196,38 @@ fn check_envelope(
 /// compares against this; using `system.memory_used_mb` (whole-host) would
 /// always exceed the per-process ceiling on any machine with real workload.
 fn read_rss_mb(base: &str) -> Result<u64, String> {
-    let resp = get(base, "/health", &[], None)?;
-    if resp.status != 200 {
-        return Err(format!("/health returned status {}", resp.status));
+    let token = auth_token();
+    // v1.27.23 shrank public /health to {status, version}; the deployment
+    // fingerprint fields (capacity.*) live on the Read-gated /health/db. Try
+    // the gated detail first (bench resolves the operator token), then fall
+    // back to legacy /health shapes for older servers.
+    for path in ["/health/db", "/health"] {
+        let resp = get(base, path, &[], token.as_deref())?;
+        if resp.status != 200 {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&resp.body) {
+            Ok(v) => v,
+            Err(e) => return Err(format!("{path} non-JSON body: {e}")),
+        };
+        if let Some(rss) = v
+            .get("capacity")
+            .and_then(|c| c.get("rss_mib"))
+            .and_then(|m| m.as_u64())
+            .or_else(|| {
+                v.get("system")
+                    .and_then(|s| s.get("memory_used_mb"))
+                    .and_then(|m| m.as_u64())
+            })
+        {
+            return Ok(rss);
+        }
     }
-    let v: serde_json::Value =
-        serde_json::from_str(&resp.body).map_err(|e| format!("/health non-JSON body: {e}"))?;
-    // prefer the process RSS from the capacity object (accurate).
-    // Fall back to system.memory_used_mb when the capacity field is absent
-    // (older servers) so the harness still works against them.
-    v.get("capacity")
-        .and_then(|c| c.get("rss_mib"))
-        .and_then(|m| m.as_u64())
-        .or_else(|| {
-            v.get("system")
-                .and_then(|s| s.get("memory_used_mb"))
-                .and_then(|m| m.as_u64())
-        })
-        .ok_or_else(|| {
-            "missing capacity.rss_mib (and system.memory_used_mb fallback) in /health body"
-                .to_string()
-        })
+    Err(
+        "missing capacity.rss_mib — /health/db requires the operator token \
+         (BRAIN_TOKEN/BRAIN_TOKEN_FILE) and a server >= 1.28.5"
+            .to_string(),
+    )
 }
 
 /// Ingest one synthetic doc via `/add`. Mirrors `AddRequest { text, title }`.
