@@ -377,15 +377,6 @@ pub fn brain_db_path() -> std::path::PathBuf {
 }
 
 /// directory of the built brain-client web assets
-/// (index.html + WASM + CSS). Served at `/app` by `tower_http::services::ServeDir`.
-/// Default is `client/dist` relative to CWD; override with `BRAIN_CLIENT_DIR`.
-/// If the dir doesn't exist, `/app` routes 404 and the API is unaffected.
-pub fn client_dir() -> std::path::PathBuf {
-    std::env::var("BRAIN_CLIENT_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("client/dist"))
-}
-
 /// `GET /ump/subscribe` SSE broadcast buffer. Bounded —
 /// a slow consumer drops missed events (broadcast lag semantics), never
 /// blocks the publish path.

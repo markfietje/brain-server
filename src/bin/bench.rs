@@ -197,8 +197,8 @@ fn check_envelope(
 /// always exceed the per-process ceiling on any machine with real workload.
 fn read_rss_mb(base: &str) -> Result<u64, String> {
     let token = auth_token();
-    // v1.27.23 shrank public /health to {status, version}; the deployment
-    // fingerprint fields (capacity.*) live on the Read-gated /health/db. Try
+    // The public /health is a minimal probe; the deployment fingerprint
+    // fields (capacity.*) live on the Read-gated /health/db. Try
     // the gated detail first (bench resolves the operator token), then fall
     // back to legacy /health shapes for older servers.
     for path in ["/health/db", "/health"] {
