@@ -1,0 +1,30 @@
+{
+  "id": "repeater_3_30d",
+  "family": "gdl_cases",
+  "system_version": "1.28.6",
+  "scorer_version": "1",
+  "kappa_units": 9000,
+  "ambiguity_register": [
+    "the third contact inside 30 days may be a related-but-distinct issue; the flywheel treats the threshold as a proposal trigger, not a verdict"
+  ],
+  "evidence_refs": ["run:gdl-31", "contact-history:gdl-31:30d"],
+  "human_pass": false,
+  "artifacts": {
+    "steps": [
+      {
+        "expected": "resolve on first contact",
+        "actual": "third contact in 30 days",
+        "skipped_verify": false,
+        "abstained": false,
+        "guidance_accepted": null
+      }
+    ],
+    "findings": [],
+    "contradictions": 0,
+    "audit_ok": true,
+    "repeat_contact": true,
+    "handoff_complete": true,
+    "verified": true,
+    "escalation_honored": true
+  }
+}

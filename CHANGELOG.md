@@ -19,6 +19,36 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.7] — 2026-08-22
+
+**Gold Calibration** (server `Cargo.toml`/lock 1.28.6 → **1.28.7**; SDK `brain-engine-sdk` 1.28.4 → **1.28.7**, new `gold-sets` crate, `legal-rules-db` 1.27.29 → **1.28.7**; client + plugin unchanged; no schema change). The scorer no longer measures artifacts — it measures agreed truth.
+
+### Release notes
+
+**Improvements**
+
+- Workflow calibration is now closed-loop: the weekly scoreboard read emits a machine-generated calibration REPORT on the audit chain, and a new DPO/admin endpoint (`POST /workflow/calibration/sign`) records the monthly HUMAN-signed calibration — one per calendar month, with the reviewer's scorer-vs-human agreement (κ), the uplift vs our own baseline, and the reviewer id. Every record rides the existing hash-chained workflow audit family.
+- Law versions are now first-class: every jurisdiction in the DSAR/transfer register carries an explicit law-version label (e.g. PH NPC advisory 2024-04, EU GDPR consolidated 2021), owned by one SDK table so the server register and the legal-rule seeds can never drift; intake envelopes can stamp the law version in force at case open.
+- The quality scorer is now pinned against versioned frozen gold packs (a QC-report pack + five continuity case packs) behind an opt-in `gold-sets` feature — including a κ ≥ 0.70 agreement gate on the frozen human verdicts.
+
+**Bug fixes**
+
+- None.
+
+**Security fixes**
+
+- None.
+
+### Engineering record
+
+- New `crates/gold-sets` crate (`publish = false`): seven embedded gold cases (`gold/qc_report.json`, five `gold/gdl_cases/*.json`), each freezing `system_version`, `scorer_version`, κ, an ambiguity register, evidence refs, the human verdict, and the run-shaped artifacts; fails closed on corrupt packs or a κ below 7000 ten-thousandths.
+- SDK: pure `calibration` module (Cohen's κ in integer ten-thousandths, weekly/monthly cadence gates, `CalibrationRecord` whose detail string rides `AuditKind::Workflow`) re-exported beside `scoreboard`; `policy::LAW_VERSIONS` + `stamp_envelope_for_jurisdiction`; optional `gold-sets` feature that re-runs the oracle pins (`scorer_oracle_fixture`, cause split, no-auto-publish) against gold truth instead of hand fixtures — without the feature the hand fixtures remain the contract (the documented rollback posture).
+- Server: `src/workflow/calibration.rs` owns the cadence/baseline stamps in `schema_meta` (`calibration_last_report_at`, `_last_signed_month`, `_baseline_units`, `_last_kappa_units`) plus the audited report/sign writes via the shared workflow audit path; `GET /workflow/scoreboard` gained an additive `calibration_report_emitted` field; the sign endpoint is Admin + DPO-role gated, wire input validated (reviewer 1..=128 chars, κ sentinel −1 or 0..=10000), 409 `already_signed_this_month` when the gate is shut; route registered in the router, guard table, and openapi.
+- Tests: server main bin **760 passed** / 6 ignored, lib **156** / 1 ignored (new pins: calibration cadence/audit-chain ×3, law-version consistency ×1), client 186 unchanged; crates workspace 121 (+9 gold-sets, +4 calibration, +1 legal-rules-db law_version) and 125 with `--features gold-sets` (+4 gold oracle pins); clippy `-D warnings` + fmt clean (server, client, crates default and gold); `cargo audit` clean (2 pre-existing allowed warnings).
+- Honest ceilings: server-side κ comes from the human reviewer (or the last signed value for machine reports) — the server cannot run labeling rounds itself; uplift is OUR delta vs OUR baseline, never an external comparison; gold packs are frozen data this repo validates, it does not re-run the labeling round; the monthly gate keys on a ~30.44-day month index, not calendar months.
+
+---
+
 ## [1.28.6] — 2026-08-22
 
 **Eval & Release** (server + client `Cargo.toml`/locks 1.28.5 / 1.28.4 → **1.28.6**; SDK crates unchanged; no schema change). The close-out of the 1.28.x line: every finding from the 2026-08-22 security audit (MEMORY_STACK_REPORT) is closed, and the frozen eval set reaches its ≥100-query scale floor.

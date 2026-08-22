@@ -322,6 +322,7 @@ pub async fn get_scoreboard(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
     crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
+    let pool_cal = pool.clone();
     let runs: Vec<brain_engine_sdk::scoreboard::RunArtifacts> =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -359,6 +360,30 @@ pub async fn get_scoreboard(
         .map_err(|e| HandlerError::internal(format!("{e}")))?
         .map_err(HandlerError::internal)?;
     let sb = brain_engine_sdk::scoreboard::build(&runs);
+    // Pair efficiency with correctness, then honor the weekly REPORT cadence:
+    // when due, a machine-generated CalibrationRecord lands on the workflow
+    // audit chain (best-effort; a missed report is re-due next read).
+    let score_units = if runs.is_empty() {
+        0
+    } else {
+        runs.iter()
+            .map(|r| brain_engine_sdk::pure::qa_score::score_run(r).total_units)
+            .sum::<i32>()
+            / runs.len() as i32
+    };
+    let emitted = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let conn = pool_cal.get().map_err(|e| format!("{e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        if !crate::workflow::calibration::report_due(&conn, now) {
+            return Ok(false);
+        }
+        crate::workflow::calibration::record_report(&conn, score_units, now)
+            .map_err(|e| format!("{e}"))?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
     // The SDK stays dependency-free; the host owns the wire shape.
     Ok(Json(serde_json::json!({
         "fcr_units": sb.fcr_units,
@@ -372,7 +397,70 @@ pub async fn get_scoreboard(
         "audit_green": sb.audit_green,
         "escalation_honored_units": sb.escalation_honored_units,
         "runs_scored": runs.len(),
+        "calibration_report_emitted": emitted,
     })))
+}
+
+/// The body of a monthly human-signed calibration. `human_agreement_kappa_units`
+/// is the reviewer's recorded scorer-vs-human κ (`-1` sentinel = none yet).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationSignBody {
+    reviewer_id: String,
+    human_agreement_kappa_units: i32,
+}
+
+/// `POST /workflow/calibration/sign` — the monthly human-signed calibration
+/// gate (DPO/admin). One signature per calendar month; the record rides the
+/// workflow audit chain and re-anchors the baseline delta.
+pub async fn post_calibration_sign(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    Json(body): Json<CalibrationSignBody>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
+    let pool_sign = pool.clone();
+    let reviewer = body.reviewer_id.trim().to_string();
+    if reviewer.is_empty() || reviewer.len() > 128 {
+        return Err(HandlerError::bad_request(
+            "reviewer_invalid",
+            "reviewer_id must be 1..=128 characters",
+        ));
+    }
+    let kappa = body.human_agreement_kappa_units;
+    if kappa != -1 && !(0..=brain_engine_sdk::pure::qa_score::SCALE).contains(&kappa) {
+        return Err(HandlerError::bad_request(
+            "kappa_invalid",
+            "human_agreement_kappa_units must be -1 or in 0..=10000",
+        ));
+    }
+    tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+        let conn = pool_sign
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        let now = chrono::Utc::now().timestamp();
+        if crate::workflow::calibration::signature_blocked(&conn, now) {
+            return Err(HandlerError::conflict_with(
+                "already_signed_this_month",
+                "a human-signed calibration already exists for this month",
+                serde_json::json!([]),
+            ));
+        }
+        crate::workflow::calibration::record_signed(
+            &conn,
+            kappa,
+            score_units_now(&conn),
+            &reviewer,
+            now,
+        )
+        .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        Ok(serde_json::json!({"signed": true, "month": now}))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map(Json)
 }
 
 /// Pure derivation of scorer artifacts from run rows + the audited-id set.
@@ -393,6 +481,40 @@ fn derive_artifacts(
             }
         })
         .collect()
+}
+
+/// The current mean per-run score, derived exactly as the scoreboard derives
+/// it (same queries, same fail-closed audit linkage) — the signed gate and
+/// the weekly report must measure the same number.
+fn score_units_now(conn: &rusqlite::Connection) -> i32 {
+    let mut stmt = match conn
+        .prepare("SELECT id, status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000")
+    {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let rows: Vec<(i64, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    let audited: std::collections::HashSet<i64> = conn
+        .prepare(
+            "SELECT DISTINCT CAST(target AS INTEGER) FROM audit_events WHERE kind = 'workflow'",
+        )
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get::<_, i64>(0))
+                .map(|it| it.filter_map(Result::ok).collect())
+        })
+        .unwrap_or_default();
+    let runs = derive_artifacts(&rows, &audited);
+    if runs.is_empty() {
+        0
+    } else {
+        runs.iter()
+            .map(|r| brain_engine_sdk::pure::qa_score::score_run(r).total_units)
+            .sum::<i32>()
+            / runs.len() as i32
+    }
 }
 
 fn artifacts_from_row(

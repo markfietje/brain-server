@@ -1,0 +1,30 @@
+{
+  "id": "handoff_incomplete",
+  "family": "gdl_cases",
+  "system_version": "1.28.6",
+  "scorer_version": "1",
+  "kappa_units": 8200,
+  "ambiguity_register": [
+    "completeness of the continuity bundle is judged against section 11; partial bundles may still satisfy the receiving team"
+  ],
+  "evidence_refs": ["run:gdl-44", "handoff:gdl-44"],
+  "human_pass": false,
+  "artifacts": {
+    "steps": [
+      {
+        "expected": "attach full handoff bundle",
+        "actual": "bundle missing plan-so-far",
+        "skipped_verify": false,
+        "abstained": false,
+        "guidance_accepted": null
+      }
+    ],
+    "findings": [],
+    "contradictions": 0,
+    "audit_ok": true,
+    "repeat_contact": false,
+    "handoff_complete": false,
+    "verified": true,
+    "escalation_honored": true
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "id": "intake_is_is_not",
+  "family": "gdl_cases",
+  "system_version": "1.28.6",
+  "scorer_version": "1",
+  "kappa_units": 8400,
+  "ambiguity_register": [
+    "is/is-not completeness is judged per phase; a terse but sufficient record can read as incomplete"
+  ],
+  "evidence_refs": ["run:gdl-7:phase:intake", "handoff:gdl-7"],
+  "human_pass": true,
+  "artifacts": {
+    "steps": [
+      {
+        "expected": "record IS state",
+        "actual": "recorded",
+        "skipped_verify": false,
+        "abstained": false,
+        "guidance_accepted": null
+      },
+      {
+        "expected": "record IS-NOT state",
+        "actual": "recorded",
+        "skipped_verify": false,
+        "abstained": false,
+        "guidance_accepted": null
+      }
+    ],
+    "findings": [],
+    "contradictions": 0,
+    "audit_ok": true,
+    "repeat_contact": false,
+    "handoff_complete": true,
+    "verified": true,
+    "escalation_honored": true
+  }
+}

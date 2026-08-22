@@ -150,6 +150,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/breach` · `/breach/{id}/event` · `/breach/{id}/close` | Breach-notification workflow (open / append event / close) |
 | GET | `/breaches` · `/breaches/{id}` | Breach register + detail |
 | GET | `/workflow/scoreboard` | Workflow outcome/efficiency scoreboard over recent runs (DPO/admin; rates in integer ten-thousandths, fail-closed audit linkage) |
+| POST | `/workflow/calibration/sign` | Monthly human-signed workflow calibration gate (DPO/admin; one signature per calendar month, audited) |
 | GET | `/workflow/runs/{id}` · `/workflow/runs/{id}/steps` · `/workflow/runs/{id}/suggestions` | Run row (state sanitized at the read seam), steps, retrieval-backed suggestions (Read on the run's domain) |
 | POST | `/workflow/runs/{id}/steering` | Queue a steering message: blocklist-screened, Write + approve-class role gate, bounded inbox drop-oldest at 100 |
 

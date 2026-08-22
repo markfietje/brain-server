@@ -1,0 +1,30 @@
+{
+  "id": "skipped_verify",
+  "family": "gdl_cases",
+  "system_version": "1.28.6",
+  "scorer_version": "1",
+  "kappa_units": 9500,
+  "ambiguity_register": [
+    "a verify step skipped under an explicit customer instruction still reads as skipped"
+  ],
+  "evidence_refs": ["run:gdl-12:step:4", "audit:gdl-12:chain"],
+  "human_pass": false,
+  "artifacts": {
+    "steps": [
+      {
+        "expected": "verify checksum",
+        "actual": "skipped",
+        "skipped_verify": true,
+        "abstained": false,
+        "guidance_accepted": null
+      }
+    ],
+    "findings": [],
+    "contradictions": 0,
+    "audit_ok": true,
+    "repeat_contact": false,
+    "handoff_complete": true,
+    "verified": false,
+    "escalation_honored": true
+  }
+}

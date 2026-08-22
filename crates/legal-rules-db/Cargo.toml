@@ -1,6 +1,6 @@
 [package]
 name = "legal-rules-db"
-version = "1.27.29"
+version = "1.28.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

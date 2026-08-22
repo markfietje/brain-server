@@ -25,13 +25,37 @@ impl Priority {
     }
 }
 
-/// An SLA-stamped envelope: priority + derived deadline.
+/// An SLA-stamped envelope: priority + derived deadline (+ optional law
+/// version stamped at intake so every downstream artifact cites the law that
+/// was in force when the case opened).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Envelope {
     pub p_class: Priority,
     pub sla_deadline: i64,
     pub created_at: i64,
+    /// Empty string = unknown jurisdiction / unstamped.
+    pub law_version: &'static str,
+}
+
+/// The curated law-version table: one version label per jurisdiction code,
+/// re-checked on each release. Single owner — the server facade and the
+/// legal-rule seeds read this same truth.
+pub const LAW_VERSIONS: &[(&str, &str)] = &[
+    ("ph", "npc-advisory-2024-04"),
+    ("eu", "gdpr-consolidated-2021"),
+    ("uk", "uk-gdpr-idta-2021"),
+    ("us", "ccpa-cpra-2023-amended"),
+    ("au", "privacy-act-apps-2019"),
+    ("sg", "pdpa-2020-amended"),
+    ("ca", "pipeda-2019-amended"),
+    ("nl", "wet-ob-1968-rev2024"),
+];
+
+/// Resolve a jurisdiction code (lowercase) to its law-version label.
+pub fn law_version_for(jurisdiction: &str) -> Option<&'static str> {
+    let c = jurisdiction.trim().to_ascii_lowercase();
+    LAW_VERSIONS.iter().find(|(k, _)| *k == c).map(|(_, v)| *v)
 }
 
 /// Stamp an envelope with its SLA deadline from the class TTL table.
@@ -40,7 +64,21 @@ pub fn stamp_envelope(created_at: i64, p_class: Priority) -> Envelope {
         sla_deadline: created_at + p_class.ttl_secs(),
         p_class,
         created_at,
+        law_version: "",
     }
+}
+
+/// Intake stamping: SLA deadline + the law version in force for the case's
+/// jurisdiction at open time. Unknown jurisdictions stamp empty (fail-open on
+/// labeling only — nothing enforces on it downstream).
+pub fn stamp_envelope_for_jurisdiction(
+    created_at: i64,
+    p_class: Priority,
+    jurisdiction: &str,
+) -> Envelope {
+    let mut e = stamp_envelope(created_at, p_class);
+    e.law_version = law_version_for(jurisdiction).unwrap_or("");
+    e
 }
 
 /// Default retention (days) per `memory_kind` for chunks with no explicit
@@ -81,5 +119,19 @@ mod tests {
                 .iter()
                 .any(|(k, _)| *k == "episodic")
         );
+    }
+
+    #[test]
+    fn law_version_stamped_at_intake() {
+        let e = stamp_envelope_for_jurisdiction(0, Priority::P2, "PH");
+        assert_eq!(e.law_version, "npc-advisory-2024-04");
+        let eu = stamp_envelope_for_jurisdiction(0, Priority::P2, "eu");
+        assert_eq!(eu.law_version, "gdpr-consolidated-2021");
+        // Unknown jurisdiction stamps empty; SLA clock unaffected.
+        let unk = stamp_envelope_for_jurisdiction(0, Priority::P2, "zz");
+        assert_eq!(unk.law_version, "");
+        assert_eq!(unk.sla_deadline, e.sla_deadline);
+        // The plain stamp stays law-free (legacy callers unchanged).
+        assert_eq!(stamp_envelope(0, Priority::P1).law_version, "");
     }
 }

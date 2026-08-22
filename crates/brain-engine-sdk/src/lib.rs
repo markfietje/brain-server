@@ -73,6 +73,14 @@ pub mod workflow;
 pub mod scoreboard {
     pub use crate::pure::qa_score::{RunArtifacts, Scoreboard, StepRow, scoreboard as build};
 }
+
+/// The calibration surface: scorer-vs-human agreement and its cadence gates.
+pub mod calibration {
+    pub use crate::pure::calibration::{
+        CalibrationRecord, NO_KAPPA, SCORER_VERSION as CALIBRATION_SCORER_VERSION,
+        WEEK_SECS as CALIBRATION_WEEK_SECS, kappa_units, month_due, month_index, week_due,
+    };
+}
 #[cfg(feature = "harness-kernel")]
 pub mod trust;
 

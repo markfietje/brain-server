@@ -22,6 +22,7 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod calibration;
 pub(crate) mod consensus;
 pub(crate) mod driver;
 pub(crate) mod erasure;
@@ -67,6 +68,20 @@ fn audit_write(conn: &Connection, run_id: i64, target: &str, status: AuditStatus
         status,
         detail,
         &tenant,
+    );
+}
+
+/// Emit a workflow audit row against the `global` tenant — for substrate
+/// events that are not bound to one run (calibration reports/signatures).
+fn audit_write_global(conn: &Connection, target: &str, status: AuditStatus, detail: &str) {
+    record_tenant(
+        conn,
+        AuditKind::Workflow,
+        ACTOR,
+        target,
+        status,
+        detail,
+        "global",
     );
 }
 

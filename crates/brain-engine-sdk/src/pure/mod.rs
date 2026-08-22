@@ -5,5 +5,6 @@
 //! be PROVEN false-merge-free — a reducer that merges near-identical claims is
 //! one that compounds errors, so the guard stays conservative.
 
+pub mod calibration;
 pub mod evidence;
 pub mod qa_score;

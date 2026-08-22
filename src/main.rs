@@ -5999,6 +5999,10 @@ async fn main_inner() -> Result<()> {
             "/workflow/scoreboard",
             get(handlers::workflow::get_scoreboard),
         )
+        .route(
+            "/workflow/calibration/sign",
+            post(handlers::workflow::post_calibration_sign),
+        )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -12787,6 +12791,8 @@ Final paragraph after the rule.";
             ("/events", "Read"),
             // the workflow scoreboard is a DPO/admin evidence surface.
             ("/workflow/scoreboard", "Admin"),
+            // the monthly human-signed calibration gate: Admin + DPO role.
+            ("/workflow/calibration/sign", "Admin"),
             // the governed-workflow run surfaces: reads on the run's domain,
             // steering is a Write + approve-class role gate.
             ("/workflow/runs/{id}", "Read"),

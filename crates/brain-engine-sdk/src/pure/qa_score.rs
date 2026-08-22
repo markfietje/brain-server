@@ -399,4 +399,103 @@ mod tests {
         assert_eq!(sb.repeat_contact_rate_units, 5000);
         assert!(sb.audit_green);
     }
+
+    // The gold-pack calibration pins: the same oracle contract, re-run
+    // against versioned frozen truth instead of these hand fixtures.
+    // Opt-in via the `gold-sets` feature; without it the hand fixtures above
+    // are the contract (documented rollback posture).
+    #[cfg(feature = "gold-sets")]
+    mod gold {
+        use super::*;
+        use gold_sets::{CaseArtifacts, GoldCase};
+
+        fn artifacts(c: &GoldCase) -> RunArtifacts {
+            let a: &CaseArtifacts = &c.artifacts;
+            RunArtifacts {
+                steps: a
+                    .steps
+                    .iter()
+                    .map(|s| StepRow {
+                        expected: s.expected.clone(),
+                        actual: s.actual.clone(),
+                        skipped_verify: s.skipped_verify,
+                        abstained: s.abstained,
+                        guidance_accepted: s.guidance_accepted,
+                    })
+                    .collect(),
+                findings: a.findings.clone(),
+                contradictions: a.contradictions as usize,
+                audit_ok: a.audit_ok,
+                repeat_contact: a.repeat_contact,
+                handoff_complete: a.handoff_complete,
+                verified: a.verified,
+                escalation_honored: a.escalation_honored,
+            }
+        }
+
+        /// Machine verdict for a case: pass only at a perfect score.
+        fn machine_pass(c: &GoldCase) -> bool {
+            score_run(&artifacts(c)).total_units == SCALE
+        }
+
+        #[test]
+        fn scorer_oracle_fixture_against_gold() {
+            for c in gold_sets::all().unwrap() {
+                let s = score_run(&artifacts(&c));
+                assert_eq!(s.questions.len(), 5);
+                assert!(s.questions.iter().all(|q| !q.justification.is_empty()));
+                assert!(s.questions.iter().all(|q| !q.evidence_refs.is_empty()));
+                for q in &s.questions {
+                    assert!((0..=SCALE).contains(&q.score_units));
+                }
+                // Agreed human truth is the oracle, not the fixture table.
+                assert_eq!(
+                    machine_pass(&c),
+                    c.human_pass,
+                    "case {} disagrees with frozen human verdict",
+                    c.id
+                );
+            }
+        }
+
+        #[test]
+        fn cause_split_fixture_table_against_gold() {
+            for c in gold_sets::all().unwrap() {
+                let a = artifacts(&c);
+                if !a.steps.iter().any(|s| s.skipped_verify) && !a.handoff_complete && a.audit_ok {
+                    assert_eq!(classify_cause(&a), Cause::System);
+                } else if a.steps.iter().any(|s| s.skipped_verify) {
+                    assert_eq!(classify_cause(&a), Cause::Agent);
+                }
+            }
+        }
+
+        #[test]
+        fn no_auto_publish_invariant_against_gold() {
+            // Even on gold cases the flywheel yields proposals only — the type
+            // system still offers no path to a direct knowledge write.
+            for c in gold_sets::all().unwrap() {
+                let a = artifacts(&c);
+                let steps = a.steps.clone();
+                for p in flywheel_proposals(3000, 3) {
+                    match p {
+                        FlywheelProposal::Gap(_) | FlywheelProposal::Rca => {}
+                    }
+                }
+                let _ = (steps, override_rate(&a.steps));
+            }
+        }
+
+        #[test]
+        fn kappa_gate_holds_on_gold_truth() {
+            let cases = gold_sets::all().unwrap();
+            let failures = gold_sets::kappa_gate_failures(&cases);
+            assert!(failures.is_empty(), "κ gate failed: {failures:?}");
+            // Independent recomputation from the paired labels.
+            let human: Vec<bool> = cases.iter().map(|c| c.human_pass).collect();
+            let machine: Vec<bool> = cases.iter().map(machine_pass).collect();
+            let k = crate::pure::calibration::kappa_units(&human, &machine).expect("defined");
+            assert!(k >= 7000, "recomputed κ {k} below 0.70");
+        }
+    }
 }

@@ -3610,10 +3610,59 @@ paths:
                     type: integer
                   runs_scored:
                     type: integer
+                  calibration_report_emitted:
+                    type: boolean
+                    description: >-
+                      True when this read triggered the weekly machine-generated
+                      CalibrationReport on the workflow audit chain.
         "401":
           description: Not authenticated
         "403":
           description: Not DPO/admin
+  /workflow/calibration/sign:
+    post:
+      summary: Monthly human-signed workflow calibration gate (DPO/admin)
+      description: >
+        Records one human-signed CalibrationRecord per calendar month on the
+        workflow audit chain (scorer version, reviewer-supplied
+        scorer-vs-human kappa in ten-thousandths, uplift vs our own baseline,
+        reviewer id). A signature re-anchors the baseline. 409
+        `already_signed_this_month` when the gate is closed for the month.
+      operationId: signWorkflowCalibration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reviewer_id, human_agreement_kappa_units]
+              additionalProperties: false
+              properties:
+                reviewer_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                human_agreement_kappa_units:
+                  type: integer
+                  description: "-1 sentinel (no human calibration yet) or 0..=10000"
+      responses:
+        "200":
+          description: Signed; the record is on the audit chain
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signed: { type: boolean }
+                  month: { type: integer }
+        "400":
+          description: reviewer_invalid or kappa_invalid
+        "401":
+          description: Not authenticated
+        "403":
+          description: Not DPO/admin
+        "409":
+          description: already_signed_this_month
   /workflow/runs/{id}:
     get:
       summary: Fetch one workflow run (Read on the run's domain)

@@ -30,8 +30,9 @@ dependencies = [
 
 [[package]]
 name = "brain-engine-sdk"
-version = "1.28.4"
+version = "1.28.7"
 dependencies = [
+ "gold-sets",
  "serde",
  "serde_yaml",
 ]
@@ -156,6 +157,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gold-sets"
+version = "1.28.7"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -195,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "legal-rules-db"
-version = "1.27.29"
+version = "1.28.7"
 dependencies = [
  "brain-engine-sdk",
  "serde",

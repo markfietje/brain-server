@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Rule {
     pub id: i64,
+    /// Version label of the law this rule cites (from the SDK's curated table).
+    pub law_version: String,
     pub jurisdiction: String,
     pub subject: String,
     pub rule_key: String,
@@ -74,6 +76,9 @@ pub fn seed_rules() -> (Vec<Rule>, Vec<(i64, Rate)>) {
     let rules = vec![
         Rule {
             id: 1,
+            law_version: brain_engine_sdk::policy::law_version_for("nl")
+                .unwrap_or("")
+                .into(),
             jurisdiction: "NL".into(),
             subject: "vat".into(),
             rule_key: "nl_vat_standard".into(),
@@ -88,6 +93,9 @@ pub fn seed_rules() -> (Vec<Rule>, Vec<(i64, Rate)>) {
         },
         Rule {
             id: 2,
+            law_version: brain_engine_sdk::policy::law_version_for("ph")
+                .unwrap_or("")
+                .into(),
             jurisdiction: "PH".into(),
             subject: "vat".into(),
             rule_key: "ph_vat_standard".into(),
@@ -112,11 +120,18 @@ pub fn seed_rules() -> (Vec<Rule>, Vec<(i64, Rate)>) {
 mod tests {
     use super::*;
     #[test]
+    fn seeded_rules_carry_law_versions() {
+        let (rules, _) = seed_rules();
+        assert_eq!(rules[0].law_version, "wet-ob-1968-rev2024");
+        assert_eq!(rules[1].law_version, "npc-advisory-2024-04");
+    }
+    #[test]
     fn rulebook_reconstructs_any_date() {
         let (mut rules, rates) = seed_rules();
         // add revision effective mid-month
         rules.push(Rule {
             id: 3,
+            law_version: rules[0].law_version.clone(),
             jurisdiction: "NL".into(),
             subject: "vat".into(),
             rule_key: "nl_vat_standard".into(),

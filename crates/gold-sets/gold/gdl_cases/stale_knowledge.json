@@ -1,0 +1,30 @@
+{
+  "id": "stale_knowledge",
+  "family": "gdl_cases",
+  "system_version": "1.28.6",
+  "scorer_version": "1",
+  "kappa_units": 8600,
+  "ambiguity_register": [
+    "stale knowledge is a system failure at retrieval time but an agent failure once flagged and re-applied"
+  ],
+  "evidence_refs": ["run:gdl-23", "finding:gdl-23:1", "contradiction:gdl-23:2"],
+  "human_pass": false,
+  "artifacts": {
+    "steps": [
+      {
+        "expected": "verify procedure against current revision",
+        "actual": "applied cached revision",
+        "skipped_verify": false,
+        "abstained": false,
+        "guidance_accepted": null
+      }
+    ],
+    "findings": ["incorrect revision applied from stale knowledge"],
+    "contradictions": 1,
+    "audit_ok": true,
+    "repeat_contact": false,
+    "handoff_complete": true,
+    "verified": false,
+    "escalation_honored": true
+  }
+}

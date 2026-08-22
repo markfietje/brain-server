@@ -1,0 +1,62 @@
+[
+  {
+    "id": "qc_clean_run",
+    "family": "qc_report",
+    "system_version": "1.28.6",
+    "scorer_version": "1",
+    "kappa_units": 8800,
+    "ambiguity_register": [
+      "a single clean run may under-represent chronic low-severity friction"
+    ],
+    "evidence_refs": ["run:qc-101", "audit:qc-101:chain"],
+    "human_pass": true,
+    "artifacts": {
+      "steps": [
+        {
+          "expected": "verify checksum",
+          "actual": "verified",
+          "skipped_verify": false,
+          "abstained": false,
+          "guidance_accepted": true
+        }
+      ],
+      "findings": [],
+      "contradictions": 0,
+      "audit_ok": true,
+      "repeat_contact": false,
+      "handoff_complete": true,
+      "verified": true,
+      "escalation_honored": true
+    }
+  },
+  {
+    "id": "qc_incorrect_finding",
+    "family": "qc_report",
+    "system_version": "1.28.6",
+    "scorer_version": "1",
+    "kappa_units": 9100,
+    "ambiguity_register": [
+      "'incorrect' phrasing inside a finding may be quoted customer language, not an agent error"
+    ],
+    "evidence_refs": ["run:qc-214", "finding:qc-214:3"],
+    "human_pass": false,
+    "artifacts": {
+      "steps": [
+        {
+          "expected": "verify part number against catalog",
+          "actual": "verified",
+          "skipped_verify": false,
+          "abstained": false,
+          "guidance_accepted": null
+        }
+      ],
+      "findings": ["incorrect part number quoted to the customer"],
+      "contradictions": 0,
+      "audit_ok": true,
+      "repeat_contact": true,
+      "handoff_complete": true,
+      "verified": true,
+      "escalation_honored": true
+    }
+  }
+]

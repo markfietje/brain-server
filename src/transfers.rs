@@ -75,12 +75,16 @@ pub(crate) struct JurisdictionRule {
     pub law: &'static str,
     pub deadline_days: Option<i64>,
     pub rights: &'static [&'static str],
+    /// Version label of the cited law (the SDK policy table is the single
+    /// owner; a consistency test pins the two together).
+    pub law_version: &'static str,
 }
 
 const JURISDICTIONS: &[JurisdictionRule] = &[
     JurisdictionRule {
         code: "eu",
         law: "GDPR (Art 12/15/17)",
+        law_version: "gdpr-consolidated-2021",
         deadline_days: Some(30),
         rights: &[
             "access",
@@ -94,6 +98,7 @@ const JURISDICTIONS: &[JurisdictionRule] = &[
     JurisdictionRule {
         code: "uk",
         law: "UK GDPR (Art 12/15/17)",
+        law_version: "uk-gdpr-idta-2021",
         deadline_days: Some(30),
         rights: &[
             "access",
@@ -106,30 +111,35 @@ const JURISDICTIONS: &[JurisdictionRule] = &[
     JurisdictionRule {
         code: "us",
         law: "CCPA/CPRA (Cal. Civ. Code 1798)",
+        law_version: "ccpa-cpra-2023-amended",
         deadline_days: Some(45),
         rights: &["access", "erasure", "rectification", "opt-out-of-sale"],
     },
     JurisdictionRule {
         code: "au",
         law: "Privacy Act 1988 (APPs)",
+        law_version: "privacy-act-apps-2019",
         deadline_days: Some(30),
         rights: &["access", "erasure", "rectification"],
     },
     JurisdictionRule {
         code: "sg",
         law: "PDPA 2012",
+        law_version: "pdpa-2020-amended",
         deadline_days: Some(30),
         rights: &["access", "erasure", "rectification"],
     },
     JurisdictionRule {
         code: "ca",
         law: "PIPEDA (SC 2000 c.5)",
+        law_version: "pipeda-2019-amended",
         deadline_days: Some(30),
         rights: &["access", "erasure", "rectification"],
     },
     JurisdictionRule {
         code: "ph",
         law: "RA 10173 (DPA 2012)",
+        law_version: "npc-advisory-2024-04",
         deadline_days: None, // "reasonable (commensurate)" — operator window used
         rights: &["access", "erasure", "rectification"],
     },
@@ -617,6 +627,20 @@ mod tests {
             dsar_deadline_for(created, "xx"),
             created + crate::config::dsar_window_secs()
         );
+    }
+
+    #[test]
+    fn law_versions_match_the_sdk_policy_table() {
+        // The SDK policy table is the single owner of law-version labels; the
+        // curated register must cite the same version per jurisdiction.
+        for j in JURISDICTIONS {
+            assert_eq!(
+                Some(j.law_version),
+                brain_engine_sdk::policy::law_version_for(j.code),
+                "law version drift for {}",
+                j.code
+            );
+        }
     }
 
     #[test]
