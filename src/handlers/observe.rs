@@ -139,6 +139,9 @@ pub struct Footprint {
     pub export_rows: usize,
     pub tombstones: usize,
     pub dsar_rows: usize,
+    /// Governed-workflow rows a live purge would reach (matched runs +
+    /// their dependents; frozen runs counted as matched).
+    pub workflow_rows: usize,
     pub dry_run: bool,
 }
 
@@ -275,6 +278,7 @@ pub async fn post_dsar(
                 export_rows: 0,
                 tombstones: 0,
                 dsar_rows: 0,
+                workflow_rows: runs.iter().map(|r| r.workflow_rows).sum(),
                 dry_run: true,
             };
             for r in &runs {
@@ -548,6 +552,7 @@ pub(crate) async fn run_dsar_subject(
                     export_rows: run.export_rows,
                     tombstones: run.tombstones,
                     dsar_rows: run.dsar_rows,
+                    workflow_rows: run.workflow_rows,
                     dry_run: true,
                 }),
             });
@@ -1052,6 +1057,9 @@ struct DsarPoolRun {
     export_rows: usize,
     tombstones: usize,
     dsar_rows: usize,
+    /// Governed-workflow rows this pool's sweep reached (matched runs +
+    /// dependents; frozen runs counted as matched).
+    workflow_rows: usize,
     /// Live-purge ids from this pool (certificate payload).
     purged_ids: Vec<i64>,
     /// ids under legal hold that erasure DEFERRED,
@@ -1157,12 +1165,23 @@ fn run_dsar_pool(
                 |r| r.get(0),
             )
             .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let workflow_rows: usize = if subject.is_empty() {
+            0
+        } else {
+            tx.query_row(
+                "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
+                rusqlite::params![format!("%{subject}%")],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))? as usize
+        };
         return Ok(DsarPoolRun {
             roots: roots.len(),
             derived: derived.len(),
             export_rows,
             tombstones: tombstones as usize,
             dsar_rows: dsar_rows as usize,
+            workflow_rows,
             purged_ids: Vec::new(),
             held: Vec::new(),
             bundle: None,
@@ -1176,6 +1195,7 @@ fn run_dsar_pool(
     //    owner reason, derived descendants with `derived` + origin id.
     let mut purged_ids: Vec<i64> = Vec::new();
     let mut held: Vec<serde_json::Value> = Vec::new();
+    let mut workflow_rows: usize = 0;
     if matches!(action, "purge" | "both") {
         // a held id is frozen against DSAR erasure too
         // (the WORM-lite posture). The subject's located set that is under an
@@ -1261,6 +1281,28 @@ fn run_dsar_pool(
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     }
 
+    // Governed-workflow sweep: matched runs + their dependents go with the
+    // erasure; runs frozen by an active legal hold are DEFERRED and listed
+    // on the certificate beside the held chunks.
+    if matches!(action, "purge" | "both") {
+        let wf = crate::workflow::erasure::sweep_subject(&tx, subject)?;
+        workflow_rows = wf.runs_matched + wf.dependent_rows;
+        for (run_id, reasons) in wf.deferred {
+            held.push(serde_json::json!({ "run": run_id, "reasons": reasons }));
+        }
+    } else {
+        // Dry-run/export: count what a live purge WOULD reach.
+        if !subject.is_empty() {
+            workflow_rows =
+                tx.query_row(
+                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
+                    rusqlite::params![format!("%{subject}%")],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))? as usize;
+        }
+    }
+
     // 4. Store the export's SHA-256 (replacing
     //    the brute-forceable xxh3-64 digest of a DELETED-content payload),
     //    never the raw bundle — the ledger's job is to prove the purge
@@ -1299,6 +1341,7 @@ fn run_dsar_pool(
         export_rows: 0,
         tombstones: 0,
         dsar_rows: 0,
+        workflow_rows,
         purged_ids,
         held,
         bundle: export_bundle,
@@ -1577,6 +1620,7 @@ mod tests {
             export_rows,
             tombstones: tombstones as usize,
             dsar_rows: dsar_rows as usize,
+            workflow_rows: 0,
             dry_run: true,
         };
         assert_eq!(fp.roots, 1);

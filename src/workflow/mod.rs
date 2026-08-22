@@ -24,11 +24,14 @@
 
 pub(crate) mod consensus;
 pub(crate) mod driver;
+pub(crate) mod erasure;
 pub(crate) mod executor;
 pub(crate) mod frontdoor;
 pub(crate) mod host;
+pub(crate) mod hostcalls;
 pub(crate) mod interview;
 pub(crate) mod outbox;
+pub(crate) mod session;
 pub(crate) mod state;
 pub(crate) mod tx;
 

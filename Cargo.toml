@@ -66,7 +66,7 @@ otel = [
 # v1.28.0 "Keel SDK cut": the stable engine ABI (pure cores, policy vocabulary,
 # the storage-agnostic WorkflowHost seam). The server is the first host adapter;
 # engines compile against this crate, never against brain-server.
-brain-engine-sdk = { path = "crates/brain-engine-sdk" }
+brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kernel"] }
 # Core Embedding
 model2vec-rs = "0.1.4"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +

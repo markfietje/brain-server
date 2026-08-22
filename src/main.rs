@@ -74,6 +74,7 @@ mod ph;
 mod procedural;
 mod qa;
 mod search;
+mod secrets;
 mod temporal;
 mod transfers;
 // the two-layer injection screen seam.
