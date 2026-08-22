@@ -60,7 +60,7 @@ pub mod loader;
 #[cfg(feature = "harness-kernel")]
 pub mod plugin;
 #[cfg(feature = "harness-kernel")]
-pub mod services;
+pub mod prompt;
 #[cfg(feature = "harness-kernel")]
 pub mod session;
 #[cfg(feature = "harness-kernel")]
