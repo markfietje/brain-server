@@ -114,9 +114,7 @@ impl ExtensionPolicy {
         let override_for = self.per_engine.get(engine);
         let denies = |caps: &Vec<String>| caps.iter().any(|c| c == cap);
         let allows = |caps: &Vec<String>| caps.iter().any(|c| c == cap);
-        if override_for.is_some_and(|o| denies(&o.deny_caps))
-            || denies(&self.deny_caps)
-        {
+        if override_for.is_some_and(|o| denies(&o.deny_caps)) || denies(&self.deny_caps) {
             return Decision::Denied;
         }
         if override_for.is_some_and(|o| allows(&o.allow_caps)) || allows(&self.default_caps) {
@@ -227,12 +225,13 @@ mod tests {
     fn precedence_table_deny_outranks_allow_everywhere() {
         let mut policy = ExtensionPolicy::standard();
         policy.default_caps.push("ui".into());
-        policy
-            .per_engine
-            .insert("rogue".into(), EngineOverride {
+        policy.per_engine.insert(
+            "rogue".into(),
+            EngineOverride {
                 allow_caps: vec!["exec".into(), "ui".into()],
                 deny_caps: vec![],
-            });
+            },
+        );
         // Global deny beats per-engine allow...
         assert_eq!(policy.decide("rogue", "exec"), Decision::Denied);
         // ...and per-engine deny beats global allow.
@@ -281,6 +280,9 @@ mod tests {
         // Unknown classes are errors, not defaults.
         assert!(HostCallKind::parse("shell").is_err());
         assert!(HostCallKind::parse("").is_err());
-        assert!(HostCallKind::parse("TOOL").is_err(), "exact wire match only");
+        assert!(
+            HostCallKind::parse("TOOL").is_err(),
+            "exact wire match only"
+        );
     }
 }
