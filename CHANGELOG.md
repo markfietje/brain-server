@@ -19,6 +19,31 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.8] — 2026-08-23
+
+**PluginUI** (server `Cargo.toml`/lock 1.28.7 → **1.28.8**; client 1.28.6 → **1.28.8**; crates + plugin unchanged; no schema change). The shell, the chat surface, and the HITL control panel are separate plugins composed through slots — approval workflow as a first-class chat plugin, with per-decision audit evidence.
+
+### Release notes
+
+**Improvements**
+
+- The operator console is now composed from three built-in UI plugins — **ui-shell** (layout), **ui-chat** (conversation + input docks + keyed chat-node dispatch), **ui-control-panel** (approvals) — mounted by a plugin kernel over one shared slot registry. Third-party plugins insert between existing dock entries purely by registration (order is data); the approval dock sits at order 5, the queue at 20.
+- Approval decisions now ride a producer/consumer event contract: the server emits `proposal/open` and `proposal/decided` conversation events carrying whole-value checkpoints (content digest, SLA deadline, role gate), so the client's review-job node can join or replay from any stream point without its start event. Payloads are metadata only — never proposal content or PII.
+- The host publishes a boot manifest for the client bundle: `/app/boot.json` plus a `window.__BRAIN_BOOT__` script seat list every `pkg/` bundle with byte size and SHA-256, and the served shell entry auto-injects the script tag. A fail-closed loader validates the manifest (bounded paths under `pkg/`, known extensions, 64-hex digests) and refuses any bundle it cannot certify.
+
+**Security fixes**
+
+- Plugin mount/unmount is now recorded as audited evidence (`POST /workflow/plugins/mount`, Write-gated): each mount writes one hash-chained workflow audit row with the plugin identity, slot-registry revision, and bundle digest — Art. 12 record-keeping for the composition itself. Invalid input (hostile plugin names, malformed digests) is refused before any write.
+- The digest-binding invariant is pinned at the new plugin boundary: an approve through the control-panel dock carries exactly the rendered `content_digest` (server 409s on drift); a reject carries none. The API CSP is unchanged — the boot seats ride the client policy.
+
+### Engineering record
+
+- **M1 (client):** new `client/src/plugins/` kernel — `PluginHost::boot()` mounts ui-shell → ui-chat → ui-control-panel into one shared `SlotRegistry`; declaration = authorization (registration into an undeclared family is a load error), double-declaring a family or slot key across owners fails loud with rollback of partial registrations, unmount reverses exactly the plugin's entries and bumps the registry revision (the `slots/changed` payload). The approval dock now consumes the shared host instead of building an ad-hoc registry.
+- **M2:** server-side pure producer (`src/proposal_events.rs`: branded `ProposalId` wire form `p<id>`, open/decided builders) published on the `/events` feed under a new fixed `proposal` alert kind at proposal creation, approve, and reject; client-side consumer folds checkpoints onto the review-job node definition (branded-id match is fail-closed), keeps pending-until-start convergence, adds terminal state, and renders a pre-start fallback view node via `build_view_node`.
+- **M3:** `frontend.rs` gains pure `boot_manifest(dist)` (sorted, SHA-256 per bundle) + `inject_boot_script` (idempotent, head-anchored); routes `/app/boot.json` + `/app/boot.js`; client `plugins/boot.rs` validates manifests fail-closed with a `certifies()` refusal predicate.
+- **Tests:** server bin 774 passed (+5: boot-manifest pins, mount-evidence audit row, extended CSP table), lib 166, mcp 19, brain 18, bench 8; crates workspace 122; client 204 (+10: kernel conflict/rollback/reversal matrix, checkpoint replay matrix, manifest validation, digest binding); clippy `-D warnings` + fmt clean on all trees; `cargo audit` clean (2 pre-allowed warnings); wasm 5.72 MB within the 5.73 MB budget.
+- **Honest ceilings:** the Rust slot system remains a minimal Cordis-shaped reimplementation (conformance spec lands in a later release), not vendored TS; no JS third-party plugin loading in WASM — new UI plugins are compile-time crates until a JS runtime exists; hot-reload swaps registrations, not running fibers (the unmount/remount driver is test-exercised, the runtime swap driver lands with the streaming conversation surface); the boot manifest's runtime fetch-and-refuse driver likewise awaits that surface — today the integrity contract is pinned server-side and in the loader's pure core; `proposal/updated` progress events are produced but expiry does not yet emit a decided event (the TTL path audits, it does not stream).
+
 ## [1.28.7] — 2026-08-22
 
 **Gold Calibration** (server `Cargo.toml`/lock 1.28.6 → **1.28.7**; SDK `brain-engine-sdk` 1.28.4 → **1.28.7**, new `gold-sets` crate, `legal-rules-db` 1.27.29 → **1.28.7**; client + plugin unchanged; no schema change). The scorer no longer measures artifacts — it measures agreed truth.
