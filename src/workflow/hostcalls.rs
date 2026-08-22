@@ -69,10 +69,8 @@ pub(crate) fn build(
             {
                 return Err("invalid secret name".into());
             }
-            match crate::secrets::resolve(target) {
-                Ok(_) => Ok(r#"{"configured":true}"#.into()),
-                Err(_) => Ok(r#"{"configured":false}"#.into()),
-            }
+            let configured = crate::secrets::resolve(target).is_ok();
+            Ok(format!(r#"{{"configured":{configured}}}"#))
         }
         "mediated_exec" => {
             // Even where tools are granted, destructive commands are refused

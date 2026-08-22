@@ -1195,7 +1195,7 @@ fn run_dsar_pool(
     //    owner reason, derived descendants with `derived` + origin id.
     let mut purged_ids: Vec<i64> = Vec::new();
     let mut held: Vec<serde_json::Value> = Vec::new();
-    let mut workflow_rows: usize = 0;
+    let mut workflow_rows = 0;
     if matches!(action, "purge" | "both") {
         // a held id is frozen against DSAR erasure too
         // (the WORM-lite posture). The subject's located set that is under an
