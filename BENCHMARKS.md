@@ -513,8 +513,26 @@ migration's `comments`/plan — the shipped code is true to its docs.
 - **Validation set**: used to pick thresholds *once*, with a documented ablation.
 - **Final set**: used only for the reported numbers above. Never tuned on.
 - Re-judging `Relevant:` after observing results invalidates the set.
-- Until 100+ judged queries exist on a representative corpus and the rows above are filled
+- Until the rows above are filled
   on both desktop and 4 GB ARM, **no "parity with QMD" claim is permitted**.
+
+## v1.28.6 — frozen eval set expanded (37 → 106 queries)
+
+| Metric | Value | Notes |
+|---|---|---|
+| Frozen set | 106 judged queries / 25-doc corpus | `tests/fixtures/eval_queries.md`; per-vertical gold sets (migration, legal, troubleshoot) + cross-category |
+| Dataset SHA-256 | `cc0bdbb723548cbe8b729ea9636e9400c1681734a7ac15c8a3a13fc9a3bea43d` | over `tests/fixtures/eval_queries.md` at freeze; record as `EvaluationRecord` via `POST /compliance/evaluation-record` |
+| r@5 | 0.976 | edge static embedder, default profile, fresh single-DB instance, floors ≥ 0.85 held |
+| r@10 | 0.991 | idem |
+| MRR | 0.956 | idem |
+| nDCG@10 | 0.962 | idem |
+
+> Honest ceilings: measured once on a fresh dev-macOS instance with the
+> frozen corpus ingested verbatim (`brain eval --floor r5=…,r10=…,mrr=…`); not
+> a LongMemEval/QMD parity claim. The two deliberate negation probes
+> ("SnapSync", "Kubernetes ingress") judge empty relevance sets and are scored
+> 1.0 when nothing surfaces.
+
 
 ## v1.28.4 "Unified Control UI" — client shell
 

@@ -19,6 +19,36 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.6] — 2026-08-22
+
+**Eval & Release** (server + client `Cargo.toml`/locks 1.28.5 / 1.28.4 → **1.28.6**; SDK crates unchanged; no schema change). The close-out of the 1.28.x line: every finding from the 2026-08-22 security audit (MEMORY_STACK_REPORT) is closed, and the frozen eval set reaches its ≥100-query scale floor.
+
+### Release notes
+
+**Security fixes**
+
+- **Quarantine bypass closed (critical):** `include_flagged` / `include_decayed` on `/recall` and `/search` were caller-controlled — any read-capable principal could pull prompt-injection-quarantined or decayed content straight into context. Both flags are now operator posture: only a loopback or Admin-authorized principal's `true` is honored; everyone else is clamped to `false`.
+- **Attacker-reachable panic fixed:** a crafted ingest (`"İ"` × 20 + `"from 2011"`) panicked the temporal-marker extractor via a Unicode-lowercase byte-offset mismatch, turning ingests into 500s. Lowering is now ASCII-only (offset-preserving).
+- **Approval digest binding restored on all client surfaces:** offline approvals from Ops, Overview, replay, and auto-replay previously sent `digest: None`, letting a mutated proposal be promoted under a genuine click. The digest now rides the queued action end-to-end.
+- **Workflow steering hardened:** steering text is screened against the prompt-injection blocklist before it can reach the engine state machine; an approve-class role gate now applies on top of domain Write authorization; the bounded steering inbox commits drop-oldest + enqueue atomically.
+- **Capability tokens get replay defense:** owner-signed UMP capability tokens may carry a `jti`; a process-lifetime replay cache accepts each `(jti)` exactly once (fail-closed on poisoned state).
+- Workflow run state is no longer the one raw read seam — it goes through the shared sanitize boundary; rate limiting gains a per-principal second dimension in JWT mode; `sub` identifiers in local logs are masked to hash prefixes; duplicate JWT `kid`s refuse key-store load instead of silently collapsing; model artifacts support fail-closed SHA-256 pinning via `BRAIN_MODEL_MANIFEST`; the snapshot path uses the one shared `VACUUM INTO` escaper.
+
+**Improvements**
+
+- Frozen eval set expanded 37 → **106 judged queries** over a 25-doc corpus with per-vertical gold sets (migration, legal, troubleshoot); floors hold: r@5 **0.976**, r@10 **0.991**, MRR **0.956**, nDCG@10 **0.962** (edge profile, fresh instance). Dataset SHA-256 recorded in `BENCHMARKS.md`.
+- DSAR residue sweeps accept `subject_exact: true` for exact matching alongside the erasure-safe substring default.
+- `/ingest/memory` enforces an explicit entry-count cap (`too_many_entries`, 500).
+- Release binaries are minisign-signable (`scripts/release-sign.sh`) and `install-service.sh` verifies signatures whenever the operator configures `BRAIN_RELEASE_PUBKEY`.
+
+### Engineering record
+
+- Audit closure: P0-1 (recall review-flag clamp + pure predicate `review_flags_allowed`, loopback/Admin regression pins), P1-1 (ASCII lowering + hostile-input test), P1-2 (`QueuedAction::Approve.digest` field, serde-default legacy decode pin, ops/overview/replay/main forwarding), P1-3 (steering screen/gate/atomic cap + route-authz guard-table entries + openapi paths), P2-1..P2-10 as listed above, P3 (DSAR exact-match option).
+- Tests: server main bin **760 passed** / 6 ignored (+5: review-flag clamp, temporal regression, steering hardening, jwks duplicate-kid, model-pin), lib **156**, brain CLI 18, mcp 19, eval 4 (+2 scale/gold-set pins), metrics 8, bench 8; client **186** (+1 digest round-trip); crates workspace green; clippy `-D warnings` + fmt clean everywhere; `cargo audit` clean (2 pre-existing allowed warnings).
+- Honest ceilings: opaque-token mode has no principal identity, so the per-principal limiter applies in JWT mode only; legacy capability tokens without `jti` stay expiry-only until re-minted; legacy queued approvals without a stored digest replay digest-less; model pinning activates only when the operator sets `BRAIN_MODEL_MANIFEST`; minisign verification requires the operator's public key; eval numbers are our-baseline deltas on dev hardware, not external parity claims; DNS-rebinding egress validation remains a documented v2.x ceiling.
+
+---
+
 ## [1.28.5] — 2026-08-22
 
 **Compliance Pack** (server `Cargo.toml`/lock 1.28.4 → **1.28.5**; client, plugin, and SDK crates unchanged; no schema change to the default build — the new evidence tables are created only under the opt-in `compliance-pack` cargo feature).

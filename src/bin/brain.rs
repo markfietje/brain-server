@@ -47,6 +47,21 @@ const DOCS: &[&str] = &[
     "Ownership and borrowing are Rust's core concepts for compile-time memory safety.",
     "Antioxidants in tropical fruits like bignay help reduce oxidative stress.",
     "The GDPR covers any organization processing EU residents' data, with fines up to four percent of global revenue.",
+    "VxRail LCM upgrades require a green RCM release certification manifest before any upgrade wave is scheduled.",
+    "A stretched-cluster rolling reboot reboots one ESXi node at a time; never reboot two nodes concurrently.",
+    "vSAN storage policies set FTT failures to tolerate and FTM failure tolerance method per virtual machine.",
+    "PowerFlex protection domains map fault sets to failure boundaries across SDS storage pools.",
+    "NSX-T managers push micro-segmentation firewall rules to transport nodes over the control plane.",
+    "A DPA data processing agreement under GDPR Article 28 binds the processor to the controller's instructions.",
+    "Standard Contractual Clauses 2021 are the approved EU transfer mechanism for processors outside the EEA.",
+    "RA 10173 the Philippine Data Privacy Act requires NPC breach notification within 72 hours.",
+    "Schrems II requires a transfer impact assessment before any personal-data transfer to a third country.",
+    "Legal holds freeze erasure until every hold is explicitly released by the operator.",
+    "Intermittent storage fabric latency usually traces to a failing SFP on one uplink port, not the array.",
+    "High VM disk latency triage order: vSAN backend congestion, then host cache, then the physical disk group.",
+    "A node flapping out of vCenter management is most often NTP drift breaking certificate validation.",
+    "PSOD purple diagnostic screen dumps land in var log and must be collected before any reboot clears them.",
+    "vMotion failing at ten percent points to VMkernel port mobility or a missing shared datastore.",
 ];
 
 fn base_url() -> String {
