@@ -40,8 +40,15 @@ die() { printf 'ERR %s\n' "$*" >&2; exit 1; }
 # 1. Build the release binary + operator CLIs.
 #    `--features bench,migrate` are empty features (no extra deps) — they only
 #    gate compilation of the bench + brain-migrate-rehearse binaries.
-log "building release binaries (server + brain/mcp/bench/brain-connector-stub/brain-migrate-rehearse)..."
-( cd "$REPO" && cargo build --release --features bench,migrate \
+# v1.28.7: the compliance pack (Art.12/14/15/30 evidence tables + decision
+# ledger) is built IN by default — the evidence surfaces are dormant without
+# the feature, which is a deploy-drift trap. Set BRAIN_NO_COMPLIANCE_PACK=1
+# to build without it.
+COMPLIANCE_FEATURE="compliance-pack"
+[[ "${BRAIN_NO_COMPLIANCE_PACK:-0}" = "1" ]] && COMPLIANCE_FEATURE=""
+FEATURES="bench,migrate${COMPLIANCE_FEATURE:+,$COMPLIANCE_FEATURE}"
+log "building release binaries (features: $FEATURES)..."
+( cd "$REPO" && cargo build --release --features "$FEATURES" \
     --bin "$BIN_NAME" --bin brain --bin mcp --bin bench --bin brain-connector-stub --bin brain-migrate-rehearse )
 [[ -x "$SRC_BIN" ]] || die "build did not produce $SRC_BIN"
 
@@ -142,6 +149,26 @@ elif plutil -extract EnvironmentVariables.AUTH_TOKEN_FILE raw "$PLIST" >/dev/nul
 	[[ -f "$TOKEN_FILE" ]] || die "plist sets AUTH_TOKEN_FILE but $TOKEN_FILE is missing — refusing to invent a token"
 	chmod 600 "$TOKEN_FILE"
 	ok "auth token sourced from $TOKEN_FILE (0600) — contents untouched"
+fi
+
+# 2c. Compliance-pack signing key: provision a 0600 key file (generate once)
+#     and point the service at it via BRAIN_AUDIT_SIGNING_KEY_FILE, so Art.12
+#     decision records are SIGNED in production, not silently unsigned.
+if [[ -n "$COMPLIANCE_FEATURE" ]]; then
+	AUDIT_KEY_FILE="$HOME/.config/brain-server/audit-signing-key"
+	mkdir -p "$(dirname "$AUDIT_KEY_FILE")"
+	if [[ ! -f "$AUDIT_KEY_FILE" ]]; then
+		openssl rand -hex 32 > "$AUDIT_KEY_FILE"
+		chmod 600 "$AUDIT_KEY_FILE"
+		ok "generated audit signing key -> $AUDIT_KEY_FILE (0600)"
+	else
+		chmod 600 "$AUDIT_KEY_FILE"
+		ok "audit signing key already present at $AUDIT_KEY_FILE (contents untouched)"
+	fi
+	plutil -remove EnvironmentVariables.BRAIN_AUDIT_SIGNING_KEY "$PLIST" 2>/dev/null || true
+	plutil -remove EnvironmentVariables.BRAIN_AUDIT_SIGNING_KEY_FILE "$PLIST" 2>/dev/null || true
+	plutil -insert EnvironmentVariables.BRAIN_AUDIT_SIGNING_KEY_FILE -string "$AUDIT_KEY_FILE" "$PLIST"
+	ok "service signs decision records via $AUDIT_KEY_FILE"
 fi
 
 # 3. Restart the launchd service so it runs the new binary.
