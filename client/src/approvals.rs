@@ -44,22 +44,22 @@ pub fn ApprovalDock() -> Element {
     let mut proposals = use_signal(Vec::<crate::api::Proposal>::new);
     let mut error = use_signal(|| None::<String>);
 
-    // M2 composition: the dock renders only if it survives the registry's
-    // fail-closed visibility pass (third parties could gate or reorder it).
-    let caps: Vec<String> = roles.iter().map(|r| format!("role:{r}")).collect();
-    let mut reg = crate::slots::SlotRegistry::new();
-    use crate::slots::slot_names::InputDock;
+    // M2 composition: the dock renders only if it survives the SHARED plugin
+    // host's fail-closed visibility pass (the control-panel plugin registered
+    // this dock at order 5, role-gated; third parties could reorder or gate).
+    let host = use_context::<Signal<crate::plugins::PluginHost>>();
+    let caps: Vec<String> = {
+        let mut c: Vec<String> = roles.iter().map(|r| format!("role:{r}")).collect();
+        if can_decide {
+            c.push("role:approve".to_string());
+        }
+        c
+    };
     let docks_visible = {
-        reg.register::<InputDock>(crate::slots::SlotSpec::new("approval", 5).when("role:approve"));
-        crate::ui_renderer::input_docks(&reg, &{
-            let mut c = caps.clone();
-            if can_decide {
-                c.push("role:approve".to_string());
-            }
-            c
-        })
-        .iter()
-        .any(|d| d.key == "approval")
+        let reg = &host.read().slots;
+        crate::ui_renderer::input_docks(reg, &caps)
+            .iter()
+            .any(|d| d.key == "approval")
     };
 
     use_resource(move || async move {

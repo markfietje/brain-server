@@ -49,6 +49,16 @@ pub mod slot_names {
     impl SlotKind for InputDock {
         const NAME: &'static str = "conversation.input.dock";
     }
+    /// The shell's render-only root (declared by ui-shell alone).
+    pub struct Root;
+    impl SlotKind for Root {
+        const NAME: &'static str = "root";
+    }
+    /// Tool-detail views inside a conversation node.
+    pub struct DetailsTool;
+    impl SlotKind for DetailsTool {
+        const NAME: &'static str = "conversation.details.tool";
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +98,7 @@ impl SlotSpec {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SlotRegistry {
     entries: HashMap<String, Vec<SlotSpec>>,
     revision: u64,
@@ -131,6 +141,20 @@ impl SlotRegistry {
     /// Remove an entry (unmount lifecycle).
     pub fn deregister<K: SlotKind>(&mut self, key: &str) -> bool {
         if let Some(list) = self.entries.get_mut(K::NAME) {
+            let before = list.len();
+            list.retain(|e| e.key != key);
+            if list.len() != before {
+                self.revision += 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Untyped removal by family name — the plugin kernel's journal-based
+    /// rollback/unmount path (it journals `(family, key)` pairs, not types).
+    pub fn remove_in(&mut self, family: &str, key: &str) -> bool {
+        if let Some(list) = self.entries.get_mut(family) {
             let before = list.len();
             list.retain(|e| e.key != key);
             if list.len() != before {

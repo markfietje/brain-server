@@ -55,6 +55,10 @@ mod api_proxy;
 mod approvals;
 mod conversation;
 mod slots;
+// 1.28.8 "PluginUI": shell + chat + control panel are separate Cordis-shaped
+// plugins composed through the slot registry by a mount/unmount kernel
+// (declaration = authorization, double-declare fails loud).
+mod plugins;
 // The renderer contract over the slot registry (root + keyed chat
 // dispatch + dock order) — consumed by the approval control center (M5).
 mod ui_renderer;
@@ -368,6 +372,12 @@ fn app() -> Element {
     // Panels read this `Signal<ApiClient>` via `use_resource`, so replacing the
     // value re-fetches everything — no explicit invalidation needed.
     let api = use_context_provider(|| Signal::new(ApiClient::new("", None)));
+    // v1.28.8: boot composition — ui-shell → ui-chat → ui-control-panel mount
+    // into one shared slot registry provided to every panel. A built-in
+    // conflict cannot happen without an edit; if it ever does, fail loud.
+    let _plugins = use_context_provider(|| {
+        crate::plugins::PluginHost::boot().expect("built-in plugin composition must load")
+    });
     // M1/M2: the shared UI-state bundle. Provided once at the root so it
     // survives every route transition (panels read/write via use_context).
     let ui = use_context_provider(|| UiState {
