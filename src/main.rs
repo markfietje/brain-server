@@ -2506,7 +2506,10 @@ async fn ingest_markdown(
         body
     };
 
-    let source_path = payload.source_path.clone().filter(|s| !s.trim().is_empty());
+    let source_path = payload
+        .source_path
+        .clone()
+        .filter(|s| !s.trim().is_empty() && crate::search::is_client_safe_uri(s));
 
     // Title precedence depends on the caller:
     //   - vault ingest (source_path set): frontmatter title > filename fallback.

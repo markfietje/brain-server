@@ -208,6 +208,13 @@ impl GitHubAppProvider {
     /// connector binary builds one client and shares it across the provider +
     /// the GitHub REST client.
     pub fn new(config: GitHubAppConfig, http: reqwest::blocking::Client) -> Result<Self> {
+        // The repo-wide secret posture: a wide-mode private key is refused,
+        // not silently used (same reader-side enforcement as the auth token
+        // and JWT keys).
+        crate::secret_file::check_secret_permissions(std::path::Path::new(
+            &config.private_key_path,
+        ))
+        .map_err(anyhow::Error::msg)?;
         let pem_bytes = std::fs::read(&config.private_key_path).with_context(|| {
             format!(
                 "failed to read GitHub App private key at {}",

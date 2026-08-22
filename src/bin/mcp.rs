@@ -327,7 +327,9 @@ fn check_meta(params: &serde_json::Value) -> Result<(), MetaError> {
             message: format!("unsupported protocol version: {}", sanitize_echo(version)),
             data: Some(serde_json::json!({
                 "supported": SUPPORTED_VERSIONS,
-                "requested": version,
+                // Same carrier risk as `message`: a hostile version string
+                // must not ride raw into the calling LLM's context.
+                "requested": sanitize_echo(version),
             })),
         });
     }
@@ -1042,7 +1044,13 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
         assert_eq!(v["error"]["code"], -32022);
         assert_eq!(v["error"]["data"]["supported"][0], MODERN_VERSION);
-        assert_eq!(v["error"]["data"]["requested"], "1900-01-01");
+        // `requested` is hex-escaped like `message` — the data field is as
+        // much an LLM-context carrier as the message.
+        assert_eq!(
+            v["error"]["data"]["requested"],
+            "313930302d30312d3031",
+            "hex-escaped, never raw"
+        );
     }
 
     #[test]

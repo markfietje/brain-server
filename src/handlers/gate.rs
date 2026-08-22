@@ -802,6 +802,8 @@ pub async fn approve_proposal(
             &review_digest(&content),
             "accept",
             "approve",
+            Some(id),
+            "global",
         );
 
         crate::audit::record(
@@ -1090,15 +1092,29 @@ pub async fn reject_proposal(
                 "proposal_rejected",
             );
             // Art.14 oversight evidence for the override (reject is always
-            // safe — recorded, never gated). Best-effort.
+            // safe — recorded, never gated). Best-effort. The `basis` is the
+            // review digest of the stored content — the same snapshot-hash
+            // semantics as approve, never a mutable row pointer.
             #[cfg(feature = "compliance-pack")]
-            super::compliance::record_oversight(
-                &conn,
-                &super::recall::principal_label(&principal.0),
-                &format!("proposal:{id}"),
-                "override",
-                "reject",
-            );
+            {
+                let basis: String = conn
+                    .query_row(
+                        "SELECT content FROM proposals WHERE id = ?1",
+                        rusqlite::params![id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .map(|c| review_digest(&c))
+                    .unwrap_or_else(|_| format!("proposal:{id}"));
+                super::compliance::record_oversight(
+                    &conn,
+                    &super::recall::principal_label(&principal.0),
+                    &basis,
+                    "override",
+                    "reject",
+                    Some(id),
+                    "global",
+                );
+            }
         }
         Ok(n)
     })

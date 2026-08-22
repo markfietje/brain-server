@@ -120,6 +120,15 @@ pub async fn post_breach(
     let opened_by = actor_of(&principal.0);
     let now = chrono::Utc::now().timestamp();
     let discovered_at = req.discovered_at.unwrap_or(now);
+    // Bound the timestamp at the boundary: an unbounded `discovered_at` once
+    // overflowed the deadline arithmetic (stored re-triggering abort). Reject
+    // non-positive and future-skewed values outright.
+    if discovered_at <= 0 || discovered_at > now + 86_400 {
+        return Err(HandlerError::bad_request(
+            "breach_discovered_invalid",
+            "discovered_at must be a positive unix timestamp no more than 1 day in the future",
+        ));
+    }
 
     let pool_for = pool.clone();
     let scope_for = req.scope.clone();

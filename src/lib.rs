@@ -11,6 +11,7 @@
 //! (`main.rs`, `handlers/`, `search/`, etc.) stay private to the server binary.
 
 pub mod connector;
+pub mod secret_file;
 
 // Audit log + backup/restore: shared cross-cutting concerns
 // exposed to the `brain` CLI binary. `audit` is used by `backup` for

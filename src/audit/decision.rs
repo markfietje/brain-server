@@ -23,7 +23,8 @@ use sha2::{Digest, Sha256};
 
 /// The feature-gated evidence table. Created by the migration only under
 /// `--features compliance-pack`; without it the server behaves as before.
-pub const DDL: &str = "CREATE TABLE IF NOT EXISTS decision_records(
+pub const DDL: &str = "CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS decision_records(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts INTEGER NOT NULL,
     actor_id TEXT NOT NULL,
@@ -193,6 +194,25 @@ pub fn record_decision(conn: &Connection, input: &DecisionInput<'_>) -> Option<D
     if conn.execute(begin, []).is_err() {
         return None;
     }
+    // Engine-controlled fields must never carry NUL: the link preimage
+    // separates fields with a single 0 byte, so an embedded NUL would make
+    // distinct field combinations hash identically (dispute ambiguity).
+    let nul_free = [
+        input.actor_id,
+        input.role,
+        input.policy_version,
+        input.prompt_class,
+        input.tool,
+        input.model_id,
+        input.outcome,
+    ]
+    .iter()
+    .all(|f| !f.as_bytes().contains(&0));
+    if !nul_free {
+        tracing::warn!("decision record refused: NUL byte in engine-controlled field");
+        let _ = conn.execute(rollback, []);
+        return None;
+    }
     let prev_hash: String = conn
         .query_row(
             "SELECT hash FROM decision_records ORDER BY id DESC LIMIT 1",
@@ -225,6 +245,19 @@ pub fn record_decision(conn: &Connection, input: &DecisionInput<'_>) -> Option<D
         ],
     );
     if row.is_err() {
+        let _ = conn.execute(rollback, []);
+        return None;
+    }
+    // Re-pin the head in the same tx as the append (the audit-chain-head
+    // posture): truncating the tip later is detected at verify time.
+    if conn
+        .execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('decision_chain_head', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![hash_hex],
+        )
+        .is_err()
+    {
         let _ = conn.execute(rollback, []);
         return None;
     }
@@ -295,6 +328,16 @@ pub fn list_decisions(
 /// chains verify structurally; the absence of signatures is disclosed by the
 /// exporter, not hidden here.
 pub fn verify_decisions(conn: &Connection) -> Result<bool, rusqlite::Error> {
+    let vk = verifying_key();
+    verify_decisions_with(conn, vk.as_ref())
+}
+
+/// The verification core with the verifying key injected (test seam; also
+/// lets a caller distinguish "no key" from "key mismatch" upstream).
+pub fn verify_decisions_with(
+    conn: &Connection,
+    vk: Option<&VerifyingKey>,
+) -> Result<bool, rusqlite::Error> {
     let mut stmt = conn.prepare(
         "SELECT id, ts, actor_id, role, policy_version, prompt_class, tool, model_id,
                 outcome, hash, prev_hash, sig
@@ -318,7 +361,6 @@ pub fn verify_decisions(conn: &Connection) -> Result<bool, rusqlite::Error> {
             })
         })?
         .collect::<Result<_, _>>()?;
-    let vk = verifying_key();
     let mut prev = String::new();
     for r in &rows {
         let input = DecisionInput {
@@ -334,7 +376,12 @@ pub fn verify_decisions(conn: &Connection) -> Result<bool, rusqlite::Error> {
         if r.prev_hash != prev || r.hash != expect {
             return Ok(false);
         }
-        if let (Some(sig_hex), Some(vk)) = (&r.sig, vk) {
+        if let Some(sig_hex) = &r.sig {
+            // Fail closed: a stored signature with no verifying key
+            // configured is UNVERIFIABLE, never "ok".
+            let Some(vk) = vk else {
+                return Ok(false);
+            };
             let Some(sig_bytes) = unhex(sig_hex) else {
                 return Ok(false);
             };
@@ -346,6 +393,40 @@ pub fn verify_decisions(conn: &Connection) -> Result<bool, rusqlite::Error> {
             }
         }
         prev = r.hash.clone();
+    }
+    // Head pin: a chain that is internally valid but truncated (or extended
+    // after the fact) must still fail when the pinned head disagrees. A chain
+    // with no pin yet bootstraps its pin at first verify (legacy chains —
+    // truncation BEFORE that first verify is not detectable; disclosed
+    // ceiling).
+    let rows_empty = rows.is_empty();
+    let pinned: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'decision_chain_head'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(p) = pinned {
+        // Pinned head must equal the recomputed tip — truncation or extension
+        // of an internally-valid chain fails here.
+        if rows_empty {
+            if !p.is_empty() {
+                return Ok(false);
+            }
+        } else if p != prev {
+            return Ok(false);
+        }
+    } else if !rows_empty
+        && conn
+            .execute(
+                "INSERT INTO schema_meta(key, value) VALUES ('decision_chain_head', ?1)",
+                rusqlite::params![prev],
+            )
+            .is_err()
+    {
+        // Legacy chain with no pin yet: bootstrap the pin at first verify.
+        return Ok(false);
     }
     Ok(true)
 }
@@ -367,6 +448,15 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
 /// one text page-set listing each record's fields. Deliberately dependency-free
 /// PDF 1.4 — text objects only, Helvetica, paginated at 40 lines per page.
 pub fn render_pdf(records: &[DecisionRecord], title: &str) -> Vec<u8> {
+    let refs: Vec<&DecisionRecord> = records.iter().collect();
+    render_pdf_labelled(&[], &refs, title)
+}
+
+/// Same body, with one provenance label (the owning domain) printed per
+/// record: ids collide across domains, so an exported bundle without the
+/// label is unattributable. `labels` must be empty or `records.len()` long.
+pub fn render_pdf_labelled(labels: &[&str], records: &[&DecisionRecord], title: &str) -> Vec<u8> {
+    assert!(labels.is_empty() || labels.len() == records.len());
     const LINES_PER_PAGE: usize = 40;
     let mut pages: Vec<Vec<String>> = vec![Vec::new()];
     let push = |pages: &mut Vec<Vec<String>>, line: String| {
@@ -383,7 +473,10 @@ pub fn render_pdf(records: &[DecisionRecord], title: &str) -> Vec<u8> {
             chrono::Utc::now().to_rfc3339()
         ),
     );
-    for r in records {
+    for (i, r) in records.iter().enumerate() {
+        if !labels.is_empty() {
+            push(&mut pages, format!("domain={}", labels[i]));
+        }
         push(&mut pages, format!("decision id={} ts={}", r.id, r.ts));
         push(
             &mut pages,
@@ -577,5 +670,76 @@ mod tests {
             body.contains("/Count 12"),
             "476 lines paginate to 12 pages, got {count}"
         );
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        conn
+    }
+
+    fn input<'a>(actor: &'a str, outcome: &'a str) -> DecisionInput<'a> {
+        DecisionInput {
+            actor_id: actor,
+            role: "dpo",
+            policy_version: "gov-2026.08",
+            prompt_class: "review",
+            tool: "proposal:7",
+            model_id: "test-model",
+            outcome,
+        }
+    }
+
+    #[test]
+    fn signed_chain_without_key_fails_closed() {
+        // A stored signature with NO verifying key configured must read as
+        // NOT OK — never as structurally-valid silence. Exercised via the
+        // injection seam (no process-global key mutation).
+        install_test_signing_key([9u8; 32]);
+        let conn = db();
+        record_decision(&conn, &input("a", "ok")).unwrap();
+        assert!(!verify_decisions_with(&conn, None).unwrap());
+        assert!(verify_decisions(&conn).unwrap());
+    }
+
+    #[test]
+    fn tip_truncation_is_detected_by_the_head_pin() {
+        let conn = db();
+        record_decision(&conn, &input("a", "o1")).unwrap();
+        record_decision(&conn, &input("b", "o2")).unwrap();
+        assert!(verify_decisions(&conn).unwrap());
+        let pinned: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='decision_chain_head'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute("DELETE FROM decision_records WHERE id = 2", [])
+            .unwrap();
+        // The chain is internally valid after truncation; the pin catches it.
+        assert!(!verify_decisions(&conn).unwrap());
+        assert_ne!(
+            pinned,
+            conn.query_row(
+                "SELECT hash FROM decision_records ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn nul_in_engine_field_refuses_the_record() {
+        let conn = db();
+        let i = input("eng\u{0}ine", "ok");
+        assert!(record_decision(&conn, &i).is_none(), "NUL refused");
+        assert_eq!(list_decisions(&conn, None, 10).unwrap().len(), 0);
     }
 }

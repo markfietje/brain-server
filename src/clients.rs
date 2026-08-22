@@ -230,7 +230,15 @@ pub(crate) fn scaffold_and_register(
     let mut conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-    if by_name(&conn, name)?.is_some() {
+    if let Some(existing) = by_name(&conn, name)? {
+        if existing.status != "active" {
+            // An ARCHIVED client must not be silently re-registered: the
+            // archive is a termination record. Re-activation is an
+            // explicit operator action, not a register side effect.
+            return Err(HandlerError::conflict(format!(
+                "client {name} is archived — re-register refused"
+            )));
+        }
         return Ok(());
     }
     let tx = conn

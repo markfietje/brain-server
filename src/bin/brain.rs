@@ -17,7 +17,7 @@
 #[path = "../bin_common/http.rs"]
 mod http;
 
-use http::{delete, get, post};
+use http::{delete, get, post, url_encode};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
@@ -1436,7 +1436,9 @@ fn cmd_domains_recompute(_args: &[String]) -> Result<(), String> {
     }
     let v: serde_json::Value =
         serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
-    let rows = v.get("recomputed").and_then(|a| a.as_array()).unwrap();
+    let Some(rows) = v.get("recomputed").and_then(|a| a.as_array()) else {
+        return Err("unexpected response shape (missing recomputed[])".into());
+    };
     if rows.is_empty() {
         println!("no domains to recompute");
         return Ok(());
@@ -2106,7 +2108,7 @@ fn cmd_client_qa(args: &[String]) -> Result<(), String> {
         "list" => {
             let resp = get(
                 &base_url(),
-                &format!("/clients/{name}/proposals"),
+                &format!("/clients/{}/proposals", url_encode(&name)),
                 &[],
                 auth_token().as_deref(),
             )?;
@@ -2131,7 +2133,7 @@ fn cmd_client_qa(args: &[String]) -> Result<(), String> {
             let body = serde_json::json!({ "flagged": flagged, "note": note });
             let resp = post(
                 &base_url(),
-                &format!("/clients/{name}/proposals/{id}/coach"),
+                &format!("/clients/{}/proposals/{id}/coach", url_encode(&name)),
                 &[],
                 "application/json",
                 &body.to_string(),
@@ -2171,7 +2173,7 @@ fn cmd_client_hold(args: &[String]) -> Result<(), String> {
             let body = serde_json::json!({ "ids": ids, "reason": reason });
             let resp = post(
                 &base_url(),
-                &format!("/clients/{name}/hold"),
+                &format!("/clients/{}/hold", url_encode(&name)),
                 &[],
                 "application/json",
                 &body.to_string(),
@@ -2190,7 +2192,7 @@ fn cmd_client_hold(args: &[String]) -> Result<(), String> {
         "list" => {
             let resp = get(
                 &base_url(),
-                &format!("/clients/{name}"),
+                &format!("/clients/{}", url_encode(&name)),
                 &[],
                 auth_token().as_deref(),
             )?;
@@ -2257,7 +2259,7 @@ fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
         "action": action,
         "dry_run": dry_run,
     });
-    let path = format!("/clients/{name}/dsar");
+    let path = format!("/clients/{}/dsar", url_encode(&name));
     let resp = post(
         &base_url(),
         &path,
@@ -2312,7 +2314,7 @@ fn cmd_client_end(args: &[String]) -> Result<(), String> {
     }
     let resp = post(
         &base_url(),
-        &format!("/clients/{name}/end"),
+        &format!("/clients/{}/end", url_encode(&name)),
         &[],
         "application/json",
         &body.to_string(),
@@ -2339,7 +2341,7 @@ fn cmd_client_dpa(args: &[String]) -> Result<(), String> {
         })?;
     let (positionals, flags) = parse_flags(&args[1..])?;
     let name = require_positional(&positionals, "name")?;
-    let path = format!("/clients/{name}/dpa");
+    let path = format!("/clients/{}/dpa", url_encode(&name));
     match cmd {
         "get" => {
             let resp = get(&base_url(), &path, &[], auth_token().as_deref())?;
@@ -3179,16 +3181,53 @@ fn cmd_backup(args: &[String]) -> Result<(), String> {
 /// `brain restore <in-path> [--passphrase-file PATH]`
 fn cmd_restore(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args)?;
-    let in_path = positionals
-        .first()
-        .cloned()
-        .ok_or_else(|| "usage: brain restore <in-path> [--passphrase-file PATH]".to_string())?;
+    let in_path = positionals.first().cloned().ok_or_else(|| {
+        "usage: brain restore <in-path> [--passphrase-file PATH] [--force]".to_string()
+    })?;
     let pass = resolve_passphrase(&flags)?;
     let db = default_db_path();
+    // Split-brain guard: restoring while the launchd service holds the DB
+    // open leaves the server writing the OLD inode — new connections see the
+    // restored file, existing ones keep the pre-restore world. Refuse unless
+    // the operator says --force.
+    if !flags.contains_key("force") && brain_server_reachable() {
+        return Err(
+            "brain-server appears to be RUNNING (a listener answered on its port). \
+             Stop it first: launchctl unload ~/Library/LaunchAgents/com.brain.server.plist \
+             — or pass --force to restore anyway."
+                .to_string(),
+        );
+    }
     brain_server::backup::restore(Path::new(&in_path), &db, &pass)
         .map_err(|e| format!("restore failed: {e:#}"))?;
     println!("restored: {db:?} (safety snapshot saved as <db>.bak)");
     Ok(())
+}
+
+/// Best-effort liveness probe for the split-brain guard: a TCP connect to
+/// the configured base URL's host:port within 500ms means SOMETHING is
+/// listening there. Unreachable / unparseable URL = not running.
+fn brain_server_reachable() -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let base = base_url();
+    let host_port = base
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("127.0.0.1:8765")
+        .to_string();
+    let addr = if host_port.contains(':') {
+        host_port
+    } else {
+        format!("{host_port}:8765")
+    };
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .is_some_and(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
 }
 
 // ── JWT signing key management ──────────────────────────────

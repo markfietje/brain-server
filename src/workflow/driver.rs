@@ -44,7 +44,17 @@ pub fn load_state(conn: &Connection, run_id: i64) -> Option<(Value, i64)> {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .ok()?;
-    Some((serde_json::from_str(&js).unwrap_or(Value::Null), rev))
+    match serde_json::from_str::<Value>(&js) {
+        Ok(v) => Some((v, rev)),
+        // Corrupt state is integrity-visible: the driver refuses to treat it
+        // as a terminal run (the old `unwrap_or(Null)` fell through to
+        // `Decision::Done`), so a poisoned row surfaces instead of silently
+        // closing the run.
+        Err(e) => {
+            tracing::warn!("run {run_id}: corrupt state_json refused: {e}");
+            None
+        }
+    }
 }
 
 pub fn advance(
@@ -77,6 +87,13 @@ mod tests {
             params![js],
         ).unwrap();
         c
+    }
+
+    #[test]
+    fn corrupt_state_refused_not_done() {
+        let conn = seed_db("{not json");
+        // P3-9: a poisoned state_json used to fall through to Decision::Done.
+        assert!(load_state(&conn, 1).is_none(), "corrupt state refused");
     }
 
     #[test]

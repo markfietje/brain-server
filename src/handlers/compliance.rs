@@ -32,6 +32,17 @@ pub async fn export_audit(
     Query(q): Query<ExportQuery>,
 ) -> Result<axum::response::Response, HandlerError> {
     admin_gate(&principal.0)?;
+    // The export of Art.12 evidence is itself evidence (who inspected).
+    if let Ok(conn) = state.pool.get() {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Decision,
+            &crate::handlers::recall::principal_label(&principal.0),
+            "compliance/export",
+            crate::audit::AuditStatus::Ok,
+            "decision_ledger_export",
+        );
+    }
     let format = q.format.unwrap_or_else(|| "jsonl".to_string());
     if let Some(rpc) = q.rpc_id.as_ref()
         && rpc.len() > MAX_RPC_ID
@@ -49,27 +60,37 @@ pub async fn export_audit(
     }
     let targets = crate::handlers::domain_pools(&state.registry, &state.pool);
     let since = q.since;
-    let records = tokio::task::spawn_blocking(
-        move || -> Vec<brain_server::audit::decision::DecisionRecord> {
-            let mut all = Vec::new();
-            for (_, pool) in &targets {
-                let Some(pool) = pool else { continue };
-                let Ok(conn) = pool.get() else { continue };
-                match brain_server::audit::decision::list_decisions(&conn, since, 10_000) {
-                    Ok(rows) => all.extend(rows),
-                    Err(_) => continue, // table absent (feature added later) exports empty
+    let records: Vec<(String, brain_server::audit::decision::DecisionRecord)> =
+        tokio::task::spawn_blocking(
+            move || -> Vec<(String, brain_server::audit::decision::DecisionRecord)> {
+                let mut all = Vec::new();
+                for (domain, pool) in &targets {
+                    let Some(pool) = pool else { continue };
+                    let Ok(conn) = pool.get() else { continue };
+                    match brain_server::audit::decision::list_decisions(&conn, since, 10_000) {
+                        Ok(rows) => all.extend(rows.into_iter().map(|r| (domain.clone(), r))),
+                        Err(_) => continue, // table absent (feature added later) exports empty
+                    }
                 }
-            }
-            all.sort_by_key(|r| r.id);
-            all
-        },
-    )
-    .await
-    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+                // ids are per-domain sequences — sort by (domain, id) so the
+                // merged bundle stays attributable and per-domain ordered.
+                all.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.id.cmp(&b.1.id)));
+                all
+            },
+        )
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+    let labels: Vec<String> = records.iter().map(|(d, _)| d.clone()).collect();
+    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
 
     let content_disposition = |name: &str| format!("attachment; filename=\"{name}\"");
     if format == "pdf" {
-        let body = brain_server::audit::decision::render_pdf(&records, "Decision ledger (Art.12)");
+        let body = brain_server::audit::decision::render_pdf_labelled(
+            &label_refs,
+            // render_pdf_labelled borrows the records; rebuild the slice view.
+            &records.iter().map(|(_, r)| r).collect::<Vec<_>>(),
+            "Decision ledger (Art.12)",
+        );
         Ok((
             [
                 (
@@ -92,10 +113,15 @@ pub async fn export_audit(
             let envelope = serde_json::json!({ "rpcId": rpc });
             lines.push_str(&format!("{envelope}\n"));
         }
-        for r in &records {
-            if let Ok(line) = serde_json::to_string(r) {
-                lines.push_str(&line);
-                lines.push('\n');
+        for (domain, r) in &records {
+            // Each line carries its owning domain: ids are per-domain
+            // sequences and each domain has its own chain lineage.
+            if let Ok(mut v) = serde_json::to_value(r) {
+                v["domain"] = serde_json::Value::String(domain.clone());
+                if let Ok(line) = serde_json::to_string(&v) {
+                    lines.push_str(&line);
+                    lines.push('\n');
+                }
             }
         }
         Ok((
@@ -150,6 +176,8 @@ pub(crate) fn record_oversight(
     basis: &str,
     outcome: &str,
     authority: &str,
+    proposal_id: Option<i64>,
+    domain: &str,
 ) -> Option<i64> {
     let decision = brain_server::audit::decision::record_decision(
         conn,
@@ -165,15 +193,17 @@ pub(crate) fn record_oversight(
     )?;
     let decision_hash = decision.hash.clone();
     conn.execute(
-        "INSERT INTO oversight_evidence(reviewer_id, reviewed_at, basis, outcome, authority, decision_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO oversight_evidence(reviewer_id, reviewed_at, basis, outcome, authority, decision_hash, proposal_id, domain)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             reviewer_id,
             chrono::Utc::now().timestamp(),
             basis,
             outcome,
             authority,
-            decision_hash
+            decision_hash,
+            proposal_id,
+            domain
         ],
     )
     .ok()?;
@@ -255,6 +285,16 @@ pub async fn inventory(
     principal: OptPrincipal,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     admin_gate(&principal.0)?;
+    if let Ok(conn) = state.pool.get() {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Decision,
+            &crate::handlers::recall::principal_label(&principal.0),
+            "compliance/inventory",
+            crate::audit::AuditStatus::Ok,
+            "evidence_inventory_read",
+        );
+    }
     let targets = crate::handlers::domain_pools(&state.registry, &state.pool);
     let now = chrono::Utc::now().timestamp();
     let items = tokio::task::spawn_blocking(move || -> Vec<serde_json::Value> {
@@ -358,6 +398,16 @@ pub async fn list_ropa(
     principal: OptPrincipal,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     admin_gate(&principal.0)?;
+    if let Ok(conn) = state.pool.get() {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Client,
+            &crate::handlers::recall::principal_label(&principal.0),
+            "ropa:list",
+            crate::audit::AuditStatus::Ok,
+            "ropa_registry_read",
+        );
+    }
     let pool = state.pool.clone();
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
@@ -434,6 +484,16 @@ async fn ropa_upsert(
     capped("recipients", &body.recipients, 1_024)?;
     capped("security_measures", &body.security_measures, 1_024)?;
     capped("transfers", &body.transfers, 1_024)?;
+    // Bound the declared window: a garbage retention period would poison the
+    // Art.30 register's storage-limitation evidence.
+    if let Some(d) = body.retention_days
+        && !(0..=36_500).contains(&d)
+    {
+        return Err(HandlerError::bad_request(
+            "retention_days_invalid",
+            "retention_days must be 0..=36500",
+        ));
+    }
     let pool = state.pool.clone();
     let actor = crate::handlers::recall::principal_label(&principal.0);
     let id_out = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
@@ -558,7 +618,16 @@ pub(crate) mod tests {
     fn oversight_links_a_signed_decision_record() {
         ensure_test_key();
         let conn = db();
-        let id = record_oversight(&conn, "dpo-1", "digest-abc", "accept", "approve").unwrap();
+        let id = record_oversight(
+            &conn,
+            "dpo-1",
+            "digest-abc",
+            "accept",
+            "approve",
+            Some(7),
+            "global",
+        )
+        .unwrap();
         assert_eq!(id, 1);
         let (hash, outcome): (String, String) = conn
             .query_row(
@@ -597,10 +666,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pdf_labelled_export_carries_domain_provenance() {
+        let conn = db();
+        ensure_test_key();
+        record_oversight(&conn, "dpo-1", "d", "accept", "approve", None, "global");
+        let recs = brain_server::audit::decision::list_decisions(&conn, None, 10).unwrap();
+        let labels = vec!["acme-us"];
+        let refs: Vec<&brain_server::audit::decision::DecisionRecord> = recs.iter().collect();
+        let body = String::from_utf8(brain_server::audit::decision::render_pdf_labelled(
+            &labels, &refs, "t",
+        ))
+        .unwrap();
+        assert!(body.contains("domain=acme-us"), "label present");
+        assert!(body.contains("decision id="));
+        // Unlabelled render stays label-free (legacy shape).
+        let plain =
+            String::from_utf8(brain_server::audit::decision::render_pdf(&recs, "t")).unwrap();
+        assert!(!plain.contains("domain="));
+    }
+
+    #[test]
     fn tampered_signature_fails_verification() {
         ensure_test_key();
         let conn = db();
-        record_oversight(&conn, "dpo-1", "d", "override", "reject");
+        record_oversight(
+            &conn,
+            "dpo-1",
+            "d",
+            "override",
+            "reject",
+            Some(9),
+            "acme-us",
+        );
         let n = conn
             .execute(
                 "UPDATE decision_records SET sig = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",

@@ -138,6 +138,26 @@ pub struct EvidenceLinkRef {
 /// ranges *within* `text` (never the full content) so a client can render its
 /// own markers without the server injecting HTML. `source_uri` + `revision_id`
 /// form a stable, dereferenceable link to the exact source revision.
+/// Scheme deny-list for URIs that reach client renderers as evidence links.
+/// The server never dereferences these; the risk is the browser sink.
+/// Connector families own open vocabularies (`crm://`, custom record kinds),
+/// so this is a deny-list of renderer-hostile schemes, not an allow-list.
+pub fn is_client_safe_uri(uri: &str) -> bool {
+    let lower = uri.trim().to_ascii_lowercase();
+    !lower.is_empty()
+        && !lower.chars().any(char::is_control)
+        && ![
+            "javascript:",
+            "data:",
+            "vbscript:",
+            "file:",
+            "blob:",
+            "about:",
+        ]
+        .iter()
+        .any(|s| lower.starts_with(s))
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Evidence {
     /// Verbatim window of the chunk content around the first query-term match.
@@ -314,18 +334,27 @@ impl SearchResult {
             self.snippet = Some(self.content.chars().take(MAX_SNIPPET_CHARS).collect());
             return;
         }
-        let lower = self.content.to_lowercase();
+        // One domain only: flatten content to chars once, lowercase per char
+        // (expanding mappings like `İ` shift byte offsets — offsets in the
+        // lowered string are mapped into CHAR space before any windowing, so
+        // start <= end always and a planted multibyte chunk cannot abort).
+        let content_chars: Vec<char> = self.content.chars().collect();
+        let hay: String = content_chars
+            .iter()
+            .flat_map(|c| c.to_lowercase())
+            .collect();
         // Pick the first query token that appears in the content.
         let term = q
             .split(|c: char| !c.is_alphanumeric())
             .filter(|t| t.len() >= 3)
-            .find(|t| lower.contains(&t.to_lowercase()));
-        let idx = term
-            .and_then(|t| lower.find(&t.to_lowercase()))
-            .unwrap_or(0);
-        let start = idx.saturating_sub(SNIPPET_CONTEXT_CHARS);
-        let end = (idx + MAX_SNIPPET_CHARS).min(self.content.chars().count());
-        let snippet: String = self.content.chars().skip(start).take(end - start).collect();
+            .find(|t| hay.contains(&t.to_lowercase()));
+        let idx = term.and_then(|t| hay.find(&t.to_lowercase())).unwrap_or(0);
+        let match_char = hay[..idx].chars().count();
+        let start = match_char
+            .saturating_sub(SNIPPET_CONTEXT_CHARS)
+            .min(content_chars.len());
+        let end = (start + MAX_SNIPPET_CHARS).min(content_chars.len());
+        let snippet: String = content_chars[start..end].iter().collect();
         self.snippet = Some(snippet);
     }
 
@@ -404,7 +433,9 @@ impl SearchResult {
                     line_start: ls,
                     line_end: le,
                     heading_path: hp,
-                    source_uri: uri,
+                    // Client-rendered sink guard: a planted `javascript:`/`data:`
+                    // URI must never reach an evidence link.
+                    source_uri: uri.filter(|u| is_client_safe_uri(u)),
                     revision_id: rev,
                     valid_from: vf,
                     valid_to: vt,

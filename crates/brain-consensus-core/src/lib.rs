@@ -73,6 +73,19 @@ pub fn review_join_gate(reviews: &[Review]) -> Result<(), String> {
     if !reviews.iter().all(|r| &r.artifact_id == first) {
         return Err("review_join_gate_requires_same_artifact".into());
     }
+    // Reviewers must be DISTINCT: one session approving twice under the same
+    // name is self-approval, not consensus. Empty reviewer strings never
+    // count as an identity.
+    let mut seen: Vec<&str> = Vec::new();
+    for r in reviews {
+        if r.reviewer.trim().is_empty() {
+            return Err("review_join_gate_requires_reviewer_identity".into());
+        }
+        if seen.contains(&r.reviewer.as_str()) {
+            return Err("review_join_gate_requires_distinct_reviewers".into());
+        }
+        seen.push(&r.reviewer);
+    }
     Ok(())
 }
 
@@ -189,6 +202,48 @@ mod tests {
             },
         ];
         assert!(review_join_gate(&reviews).is_err());
+    }
+
+    #[test]
+    fn review_join_gate_requires_distinct_reviewers() {
+        let a = art("a1");
+        let dup = vec![
+            Review {
+                reviewer: "same".into(),
+                artifact_id: a.id.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
+            Review {
+                reviewer: "same".into(),
+                artifact_id: a.id.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
+        ];
+        assert_eq!(
+            review_join_gate(&dup).unwrap_err(),
+            "review_join_gate_requires_distinct_reviewers"
+        );
+        // Empty identities are refused outright.
+        let anon = vec![
+            Review {
+                reviewer: "  ".into(),
+                artifact_id: a.id.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
+            Review {
+                reviewer: "critic".into(),
+                artifact_id: a.id.clone(),
+                verdict: Verdict::Approve,
+                notes: "".into(),
+            },
+        ];
+        assert_eq!(
+            review_join_gate(&anon).unwrap_err(),
+            "review_join_gate_requires_reviewer_identity"
+        );
     }
 
     #[test]

@@ -1697,9 +1697,35 @@ pub fn run_migration_with_store_dim(
             basis TEXT NOT NULL,
             outcome TEXT NOT NULL,
             authority TEXT NOT NULL DEFAULT '',
-            decision_hash TEXT
+            decision_hash TEXT,
+            proposal_id INTEGER,
+            domain TEXT NOT NULL DEFAULT ''
          );",
     )?;
+    // v1.28.7 pass-3 P3-4: identical-content approvals must stay
+    // distinguishable — the row binds the proposal id and its owning domain.
+    #[cfg(feature = "compliance-pack")]
+    for (col, def) in [
+        ("proposal_id", "INTEGER"),
+        ("domain", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('oversight_evidence') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE oversight_evidence ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
 
     #[cfg(feature = "compliance-pack")]
     db.execute_batch(

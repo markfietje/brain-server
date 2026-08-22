@@ -738,3 +738,39 @@ fn push_gate_filters_emits_unixepoch_kind_defaults() {
         "the legacy strftime('%s', …) form must not be emitted"
     );
 }
+
+#[test]
+fn snippet_window_never_underflows_on_multibyte_content() {
+    // P0-A regression: a planted multibyte chunk (byte offset outpaces the
+    // char count) used to underflow `end - start` and abort the process
+    // (panic = "abort" in release). The window is computed in char space.
+    let mut r = sr(1, 1.0, &"中".repeat(100));
+    r.content.push_str(" alpha");
+    r.with_snippet("alpha");
+    let s = r.snippet.expect("snippet present");
+    assert!(s.contains("alpha"), "window contains the match");
+    assert!(r.content.contains(&s), "verbatim substring of content");
+
+    // Expanding lowercase mapping (`İ` -> two chars) must not desync either.
+    let mut r2 = sr(2, 1.0, format!("{} needle", "İ".repeat(50)).as_str());
+    r2.with_snippet("needle");
+    assert!(r2.snippet.as_deref().unwrap_or_default().contains("needle"));
+
+    // No match at all: window starts at 0, still bounded.
+    let mut r3 = sr(3, 1.0, &"中".repeat(300));
+    r3.with_snippet("alpha");
+    assert!(r3.snippet.is_some());
+}
+
+#[test]
+fn client_safe_uri_deny_list_blocks_renderer_sinks() {
+    assert!(super::is_client_safe_uri("manual://abc123"));
+    assert!(super::is_client_safe_uri("crm://acme/OPP-1"));
+    assert!(super::is_client_safe_uri("https://example.com/x"));
+    assert!(!super::is_client_safe_uri("javascript:alert(1)"));
+    assert!(!super::is_client_safe_uri("data:text/html;base64,AAAA"));
+    assert!(!super::is_client_safe_uri("file:///etc/passwd"));
+    assert!(!super::is_client_safe_uri("JAVASCRIPT:x"));
+    assert!(!super::is_client_safe_uri(""));
+    assert!(!super::is_client_safe_uri("https://x/\u{0}"));
+}

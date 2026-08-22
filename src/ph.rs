@@ -136,7 +136,10 @@ pub fn notification_deadlines(jurisdictions: &[String], discovered_at: i64) -> V
                     jurisdiction: j.clone(),
                     audience,
                     hours: *hours,
-                    deadline: discovered_at + hours * 3600,
+                    // checked, never wrapping: the handler bounds
+                    // `discovered_at`, but stored rows from older versions
+                    // must not re-abort on read either.
+                    deadline: discovered_at.saturating_add((*hours) * 3600),
                 });
             }
         }
@@ -253,5 +256,22 @@ mod tests {
         assert!(is_severity("CRITICAL"));
         assert!(!is_severity("grave"));
         assert_eq!(SEVERITIES.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn deadlines_never_overflow_and_stay_ordered() {
+        // P1-B regression: i64::MAX discovered_at used to overflow the
+        // deadline add and abort; saturating math keeps it defined.
+        let d = notification_deadlines(&["ph".into(), "eu".into()], i64::MAX);
+        assert_eq!(d.len(), 4);
+        assert!(d.iter().all(|x| x.deadline == i64::MAX));
+        // Normal case unchanged: 72h.
+        let d2 = notification_deadlines(&["ph".into()], 1_000);
+        assert!(d2.iter().all(|x| x.deadline == 1_000 + 72 * 3600));
     }
 }

@@ -33,22 +33,7 @@ pub mod revocation;
 /// ponytail: `install-service.sh`'s chmod is still the writer-side contract;
 /// this is the reader-side enforcement, and non-Unix platforms are unchecked
 /// (no POSIX modes to read).
-pub fn check_secret_permissions(path: &std::path::Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::metadata(path)
-        .map_err(|e| format!("cannot stat secret file {}: {e}", path.display()))?;
-    let mode = meta.permissions().mode();
-    if mode & 0o077 != 0 {
-        return Err(format!(
-            "secret file {} is group/world-accessible (mode {:o}) — expected owner-only \
-             (0600/0400). chmod 600 {} and restart.",
-            path.display(),
-            mode & 0o777,
-            path.display()
-        ));
-    }
-    Ok(())
-}
+pub use brain_server::secret_file::check_secret_permissions;
 
 // Re-export the principal types used across handler boundaries.
 // Truthful allows: `auth` is a bin-private module (compiled into the server

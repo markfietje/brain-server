@@ -66,8 +66,10 @@ pub fn build_url(base: &str, path: &str, query: &[(String, String)]) -> Result<U
 }
 
 /// Percent-encode a string for use in a URL (query component). Encodes every
-/// byte that is not an unreserved ASCII char (RFC 3986 §2.3).
-fn url_encode(input: &str) -> String {
+/// byte that is not an unreserved ASCII char (RFC 3986 §2.3). Also the path-
+/// segment encoder: a positional like `/`, `?`, or `#` must never rewrite the
+/// request-target.
+pub(crate) fn url_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for b in input.bytes() {
         match b {

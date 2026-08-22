@@ -410,6 +410,52 @@ pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
 /// (same ceiling as the single-`---` split, narrowed by one line).
 pub const MD_RECORD_SEP: &str = "\n---\n---\n";
 
+/// YAML double-quoted scalar: control-safe escaping so a stored value can
+/// never inject extra frontmatter keys (newline) or break out of the scalar
+/// (quote/backslash).
+fn yaml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            // flow-context safe: a raw comma would split the pair
+            ',' => out.push_str("\\,"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+fn yaml_unquote(s: &str) -> String {
+    let inner = s
+        .strip_prefix('"')
+        .and_then(|r| r.strip_suffix('"'))
+        .unwrap_or(s);
+    let mut out = String::with_capacity(inner.len());
+    let mut esc = false;
+    for c in inner.chars() {
+        if esc {
+            match c {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                c => out.push(c),
+            }
+            esc = false;
+        } else if c == '\\' {
+            esc = true;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// §6.3 markdown projection: YAML frontmatter carrying the L2 fields + the
 /// body text. Lossless for the fields it carries (pinned by a round-trip
 /// test). `ponytail:` YAML is a hand-rolled subset (like `vault.rs`) — no
@@ -419,7 +465,7 @@ pub fn record_to_markdown(record: &Value) -> Result<String, String> {
     let push = |out: &mut String, key: &str, v: &Value| {
         let s = match v {
             Value::Null => String::new(),
-            Value::String(s) => s.clone(),
+            Value::String(s) => yaml_quote(s),
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             _ => return,
@@ -434,14 +480,18 @@ pub fn record_to_markdown(record: &Value) -> Result<String, String> {
     let scope_owner = record["scope"]["owner"].as_str().unwrap_or("");
     let scope_vis = record["scope"]["visibility"].as_str().unwrap_or("");
     if !scope_owner.is_empty() || !scope_vis.is_empty() {
+        // Quoted inside the flow map: an owner like `x }, evil: 1` must stay
+        // one scalar.
         out.push_str(&format!(
-            "scope: {{ owner: {scope_owner}, visibility: {scope_vis} }}\n"
+            "scope: {{ owner: {}, visibility: {} }}\n",
+            yaml_quote(scope_owner),
+            yaml_quote(scope_vis)
         ));
     }
     let mut time_parts: Vec<String> = Vec::new();
     for k in ["observed", "valid_from", "valid_to"] {
         if let Some(v) = record["time"][k].as_str() {
-            time_parts.push(format!("{k}: {v}"));
+            time_parts.push(format!("{k}: {}", yaml_quote(v)));
         }
     }
     if !time_parts.is_empty() {
@@ -453,15 +503,23 @@ pub fn record_to_markdown(record: &Value) -> Result<String, String> {
         ("salience", &record["lifecycle"]["salience"]),
         ("decay", &record["lifecycle"]["decay"]),
     ] {
-        if !v.is_null() {
-            lc_parts.push(format!("{k}: {v}"));
+        match v {
+            Value::Number(n) => lc_parts.push(format!("{k}: {n}")),
+            Value::String(s) => lc_parts.push(format!("{k}: {}", yaml_quote(s))),
+            _ => {}
         }
     }
     if !lc_parts.is_empty() {
         out.push_str(&format!("lifecycle: {{ {} }}\n", lc_parts.join(", ")));
     }
     out.push_str("---\n\n");
-    out.push_str(record["body"]["text"].as_str().unwrap_or(""));
+    // The body is emitted verbatim EXCEPT the record-separator sequence: a
+    // stored body containing `\n---\n---\n` would forge a record boundary in
+    // the join and smuggle a forged identity block through re-import. The
+    // dashes are broken with a space; the ceiling is that such a body
+    // round-trips altered (disclosed, deliberate).
+    let body = record["body"]["text"].as_str().unwrap_or("");
+    out.push_str(&body.replace(MD_RECORD_SEP, "\n- - -\n- - -\n"));
     Ok(out)
 }
 
@@ -478,7 +536,7 @@ pub fn record_from_markdown(text: &str) -> Result<Value, String> {
             l.trim()
                 .strip_prefix(k)
                 .and_then(|r| r.trim_start().strip_prefix(':'))
-                .map(|v| v.trim().trim_matches('"').to_string())
+                .map(|v| yaml_unquote(v.trim()))
         })
     };
     if get("ump").as_deref() != Some("1.0") {
@@ -492,14 +550,33 @@ pub fn record_from_markdown(text: &str) -> Result<Value, String> {
         }
         if let Some(inner) = v.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
             let mut map = serde_json::Map::new();
-            for pair in inner.split(',') {
+            // Split on commas OUTSIDE quoted scalars only (escaped commas
+            // stay inside one value).
+            let mut parts: Vec<&str> = Vec::new();
+            let mut start = 0usize;
+            let mut in_q = false;
+            let mut esc = false;
+            for (i, c) in inner.char_indices() {
+                if esc {
+                    esc = false;
+                } else if c == '\\' && in_q {
+                    esc = true;
+                } else if c == '"' {
+                    in_q = !in_q;
+                } else if c == ',' && !in_q {
+                    parts.push(&inner[start..i]);
+                    start = i + 1;
+                }
+            }
+            parts.push(&inner[start..]);
+            for pair in parts {
                 let mut it = pair.splitn(2, ':');
                 if let (Some(k), Some(v)) = (it.next(), it.next()) {
                     let v = v.trim();
                     let val = if v == "null" {
                         Value::Null
                     } else {
-                        Value::String(v.trim_matches('"').to_string())
+                        Value::String(yaml_unquote(v))
                     };
                     map.insert(k.trim().to_string(), val);
                 }
@@ -922,7 +999,7 @@ mod tests {
         );
         let md = record_to_markdown(&rec).unwrap();
         assert!(md.starts_with("---\nump: \"1.0\"\n"));
-        assert!(md.contains("id: urn:ump:"));
+        assert!(md.contains("id: \"urn:ump:"), "id is a quoted scalar");
         let back = record_from_markdown(&md).unwrap();
         assert_eq!(back["ump"], "1.0");
         assert_eq!(back["id"], rec["id"]);
@@ -932,6 +1009,51 @@ mod tests {
         assert_eq!(back["lifecycle"]["decay"], rec["lifecycle"]["decay"]);
         assert_eq!(back["body"]["text"], rec["body"]["text"]);
         assert_eq!(back["body"]["structured"]["title"], "dave-acme");
+    }
+
+    /// Pass-3 P2-F: a hostile record cannot forge frontmatter keys (newline
+    /// in a value), split the scope flow-map (comma), or forge a record
+    /// boundary (the `\n---\n---\n` sequence in the body).
+    #[test]
+    fn markdown_projection_escapes_injection_vectors() {
+        let rec = json!({
+            "ump": "1.0",
+            "id": "urn:ump:evil",
+            "kind": "fact",
+            "body": {
+                "text": "harmless\n---\n---\nid: urn:ump:forged\nscope: { owner: attacker }",
+                "structured": { "title": "line1\nadmin: true" }
+            },
+            "scope": { "owner": "x }, admin: true, y", "visibility": "private" },
+            "time": {},
+            "lifecycle": {}
+        });
+        let md = record_to_markdown(&rec).unwrap();
+        assert!(!md.contains("\n---\n---\n"), "separator never survives");
+        // The forged block is inert text inside one record's body.
+        let back = record_from_markdown(&md).unwrap();
+        assert_eq!(back["id"], "urn:ump:evil");
+        let body = back["body"]["text"].as_str().unwrap();
+        assert!(
+            body.contains("id: urn:ump:forged"),
+            "body preserved verbatim apart from the separator"
+        );
+        // Title newline cannot inject a key: exactly one `title:` line.
+        assert_eq!(md.lines().filter(|l| l.starts_with("title:")).count(), 1);
+        assert!(!md.contains("\nadmin: true"));
+        // Scope stays a two-key flow map.
+        let scope_line = md.lines().find(|l| l.starts_with("scope:")).unwrap();
+        assert!(scope_line.starts_with("scope: { owner:"));
+        assert!(
+            scope_line.ends_with('}'),
+            "flow map not split: {scope_line}"
+        );
+        assert!(
+            md.lines().filter(|l| l.starts_with("admin:")).count() == 0,
+            "no injected key"
+        );
+        // And it round-trips.
+        assert_eq!(back["scope"]["owner"], "x }, admin: true, y");
     }
 
     /// M1 §6.3/§8: the projection rejects missing or wrong-version headers.
