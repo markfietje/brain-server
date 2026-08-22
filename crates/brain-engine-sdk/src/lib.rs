@@ -57,6 +57,8 @@ pub mod harness;
 pub mod loader;
 #[cfg(feature = "harness-kernel")]
 pub mod plugin;
+#[cfg(feature = "harness-kernel")]
+pub mod trust;
 
 #[cfg(test)]
 mod tests {
