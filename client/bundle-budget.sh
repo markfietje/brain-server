@@ -3,13 +3,12 @@
 # CI cannot run `dx bundle` (the Dioxus CLI is not on the runners), so this
 # guards the dominant term — the release WASM binary — against unbounded
 # growth. Measured release wasm at v1.20.0: 4.34 MB (the dx-bundle artifact
-# with wasm-opt is 3.7 MB, v1.18.1). Budget = +60% headroom over the
-# completed-surface measurement; the plan's final ≤5MB mobile + ≤50KB
-# initial-instance budgets remain dx-bundle operator measurements
-# (BENCHMARKS.md — operator step, same as memory profiling).
+# with wasm-opt is 3.7 MB, v1.18.1). v1.28.4 tightened the cap to 5.5 MiB
+# (5,734,400 bytes) — the plan's ceiling for the shell + conversation engine;
+# the script fails CI on regression.
 set -euo pipefail
 cd "$(dirname "$0")"
-budget=7000000
+budget=5734400
 cargo build --release --target wasm32-unknown-unknown --quiet
 wasm=$(ls -t target/wasm32-unknown-unknown/release/*.wasm | head -1)
 size=$(stat -f%z "$wasm" 2>/dev/null || stat -c%s "$wasm")

@@ -515,3 +515,17 @@ migration's `comments`/plan — the shipped code is true to its docs.
 - Re-judging `Relevant:` after observing results invalidates the set.
 - Until 100+ judged queries exist on a representative corpus and the rows above are filled
   on both desktop and 4 GB ARM, **no "parity with QMD" claim is permitted**.
+
+## v1.28.4 "Unified Control UI" — client shell
+
+| Surface | Measurement | Notes |
+|---|---|---|
+| Release WASM | 5,621,506 bytes (5.49 MB) | `cargo build --release --target wasm32-unknown-unknown`; budget tightened to 5.5 MiB (5,734,400) — CI-failing gate in `client/bundle-budget.sh` |
+| 20-slot register+render | < 50 ms (asserted bound) | pure-Rust slot registry, debug build; no wasm-bindgen per slot |
+
+> Honest ceilings: the 20-slot bound is a debug-build assertion of the
+> registry path, not a browser-mount measurement; Lighthouse perf and
+> streaming-frame rates are operator measurements (`dx serve`) and stay
+> **pending** — the animation layers are transform/opacity-only with a
+> `prefers-reduced-motion` global override, so no first-paint dependency is
+> introduced.
