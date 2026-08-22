@@ -517,8 +517,13 @@ fn app() -> Element {
             for action in auto {
                 use queue::QueuedAction::*;
                 let res = match &action {
-                    Approve { id, supersedes, .. } => api
-                        .approve_proposal(*id, *supersedes, None)
+                    Approve {
+                        id,
+                        supersedes,
+                        digest,
+                        ..
+                    } => api
+                        .approve_proposal(*id, *supersedes, digest.as_deref())
                         .await
                         .map(|_| ()),
                     Reject { id, .. } => api.reject_proposal(*id, None).await.map(|_| ()),

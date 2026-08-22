@@ -143,6 +143,12 @@ pub enum QueuedAction {
     Approve {
         id: i64,
         supersedes: Option<i64>,
+        /// The `content_digest` the operator approved against (ReviewArmour).
+        /// Forwarded on replay so an offline approval binds to the bytes that
+        /// were shown; `None` on legacy persisted items replays digest-less
+        /// (the server still enforces whenever a digest IS present).
+        #[serde(default)]
+        digest: Option<String>,
         queued_at: i64,
         #[serde(default)]
         retries: u8,
@@ -511,6 +517,7 @@ mod tests {
         QueuedAction::Approve {
             id,
             supersedes: None,
+            digest: None,
             queued_at: 1000,
             retries: 0,
         }
@@ -535,6 +542,7 @@ mod tests {
             QueuedAction::Approve {
                 id: 7,
                 supersedes: None,
+                digest: None,
                 queued_at: 9000,
                 retries: 3,
             }
@@ -565,6 +573,7 @@ mod tests {
             QueuedAction::Approve {
                 id: 1,
                 supersedes: Some(3),
+                digest: None,
                 queued_at: 42,
                 retries: 0,
             },
@@ -820,5 +829,32 @@ mod tests {
         // The Network arm is a fixed hint (constructing a reqwest::Error in a
         // test is not possible — its constructor is pub(crate)); the arm
         // returns false like any non-404 Err, covered by the 500 case above.
+    }
+
+    /// ReviewArmour replay parity: a queued approval carries the digest it was
+    /// rendered with, and legacy persisted items (no digest key) still decode.
+    #[test]
+    fn approve_digest_round_trips_and_legacy_items_decode() {
+        let bound = QueuedAction::Approve {
+            id: 1,
+            supersedes: None,
+            digest: Some("a1b2c3d4".into()),
+            queued_at: 1,
+            retries: 0,
+        };
+        let json = queue_to_json(std::slice::from_ref(&bound));
+        assert_eq!(queue_from_json(&json), vec![bound.clone()]);
+        match &bound {
+            QueuedAction::Approve { digest, .. } => {
+                assert_eq!(digest.as_deref(), Some("a1b2c3d4"))
+            }
+            _ => panic!("wrong variant"),
+        }
+        let legacy = r#"[{"Approve":{"id":2,"supersedes":null,"queued_at":5,"retries":0}}]"#;
+        let q = queue_from_json(legacy);
+        assert!(
+            matches!(&q[0], QueuedAction::Approve { digest: None, .. }),
+            "pre-digest items decode digest-less: {q:?}"
+        );
     }
 }

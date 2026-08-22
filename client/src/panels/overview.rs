@@ -213,11 +213,19 @@ pub fn panel() -> Element {
     // M2.4: materialize the queue preview into an owned Vec of (id, kind) so
     // the `onclick` closures capture Copy/owned values (a `let` statement or a
     // borrowed row can't live inside a Dioxus `for` body).
-    let preview: Vec<(i64, String)> = match &*proposals.read() {
+    let preview: Vec<(i64, String, Option<String>)> = match &*proposals.read() {
         Some(Ok(list)) => list
             .iter()
             .take(5)
-            .map(|p| (p.id, p.kind.clone()))
+            .map(|p| {
+                (
+                    p.id,
+                    p.kind.clone(),
+                    // ReviewArmour: the digest the row rendered, so one-click
+                    // approvals bind to it (direct call + offline replay).
+                    Some(p.content_digest.clone()),
+                )
+            })
             .collect(),
         _ => Vec::new(),
     };
@@ -227,7 +235,7 @@ pub fn panel() -> Element {
     // copies the Copy signals into the future → it stays `Fn` + `Copy`.
     // v1.27.19 "Scrub" (D-7): a failed decide is surfaced, never swallowed.
     let action_err = use_signal(String::new);
-    let decide = move |id: i64, reject: bool| {
+    let decide = move |id: i64, reject: bool, digest: Option<String>| {
         let api = api;
         let mut refresh = refresh;
         let mut action_err = action_err;
@@ -235,7 +243,10 @@ pub fn panel() -> Element {
             let res: Result<(), crate::api::ApiError> = if reject {
                 api().reject_proposal(id, None).await.map(|_| ())
             } else {
-                api().approve_proposal(id, None, None).await.map(|_| ())
+                api()
+                    .approve_proposal(id, None, digest.as_deref())
+                    .await
+                    .map(|_| ())
             };
             if let Err(e) = res {
                 action_err.set(crate::api::error_message(&e));
@@ -335,7 +346,7 @@ pub fn panel() -> Element {
                 match &*proposals.read() {
                     Some(Ok(list)) if !list.is_empty() => rsx! {
                         ul { class: "divide-y divide-border",
-                            for (pid, kind) in preview {
+                            for (pid, kind, dg) in preview {
                                 li { class: "flex items-center gap-3 py-2",
                                     Link {
                                         to: Route::ReviewDetail { proposal_id: pid },
@@ -345,13 +356,13 @@ pub fn panel() -> Element {
                                     button {
                                         class: "btn btn-primary btn-sm",
                                         disabled: !writes,
-                                        onclick: move |_| decide(pid, false),
+                                        onclick: move |_| decide(pid, false, dg.clone()),
                                         "{approve}"
                                     }
                                     button {
                                         class: "btn btn-ghost btn-sm",
                                         disabled: !writes,
-                                        onclick: move |_| decide(pid, true),
+                                        onclick: move |_| decide(pid, true, None),
                                         "{reject}"
                                     }
                                 }

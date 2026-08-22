@@ -226,10 +226,12 @@ pub fn panel() -> Element {
         _ => Vec::new(),
     };
     queue_priority(&mut ordered);
+    // ReviewArmour: approvals bind to the digest that was rendered (per-row
+    // `dg`), both on the direct call and on the offline-replay item.
 
     // M3 decide — approve/reject reuse the same server call + offline-enqueue
     // replay as review (v1.20.0 posture), then refetch.
-    let decide = move |id: i64, reject: bool| {
+    let decide = move |id: i64, reject: bool, digest: Option<String>| {
         let api = api();
         let mut refresh = refresh;
         let mut status = status;
@@ -237,7 +239,9 @@ pub fn panel() -> Element {
             let res: Result<(), crate::api::ApiError> = if reject {
                 api.reject_proposal(id, None).await.map(|_| ())
             } else {
-                api.approve_proposal(id, None, None).await.map(|_| ())
+                api.approve_proposal(id, None, digest.as_deref())
+                    .await
+                    .map(|_| ())
             };
             if let Err(ref e) = res {
                 if crate::queue::is_offline(e) {
@@ -251,6 +255,7 @@ pub fn panel() -> Element {
                         crate::queue::QueuedAction::Approve {
                             id,
                             supersedes: None,
+                            digest: digest.clone(),
                             queued_at: crate::queue::now_ts(),
                             retries: 0,
                         }
@@ -318,7 +323,7 @@ pub fn panel() -> Element {
                 }
                 match &*proposals.read() {
                     Some(Ok(_)) => rsx! { ul { class: "mt-2 divide-y divide-border",
-                        for (pid, p) in ordered.iter().map(|p| (p.id, p)) {
+                        for (pid, p) in ordered.iter().map(|p| (p.id, p.clone())) {
                             li { class: "py-2.5",
                                 div { class: "flex justify-between items-center gap-2",
                                     // i18n-exempt: decision data — the proposal id + wire kind verbatim.
@@ -328,7 +333,7 @@ pub fn panel() -> Element {
                                             span { class: "badge badge-{crate::panels::verdict_badge(v)}",
                                                 {crate::i18n::t_fmt("screen_label", &[crate::i18n::t(crate::panels::verdict_label(v))])} }
                                         }
-                                        {clock_badge(p, now)}
+                                        {clock_badge(&p, now)}
                                     }
                                 }
                                 // v1.20.24 "Sweep" (LITL fence): bounded scroll
@@ -347,14 +352,14 @@ pub fn panel() -> Element {
                                         class: "btn btn-primary btn-sm",
                                         disabled: !writes,
                                         title: crate::i18n::t("ops_tip_approve"),
-                                        onclick: move |_| decide(pid, false),
+                                        onclick: move |_| decide(pid, false, Some(p.content_digest.clone())),
                                         {crate::i18n::t("approve")}
                                     }
                                     button {
                                         class: "btn btn-outline btn-sm",
                                         disabled: !writes,
                                         title: crate::i18n::t("ops_tip_reject"),
-                                        onclick: move |_| decide(pid, true),
+                                        onclick: move |_| decide(pid, true, None),
                                         {crate::i18n::t("reject")}
                                     }
                                 }

@@ -147,8 +147,13 @@ fn DestructiveRow(
                 }
                 // (N5): a retry-exhausted row replays by hand here — the same
                 // calls the auto-replay loop makes.
-                Approve { id, supersedes, .. } => api()
-                    .approve_proposal(*id, *supersedes, None)
+                Approve {
+                    id,
+                    supersedes,
+                    digest,
+                    ..
+                } => api()
+                    .approve_proposal(*id, *supersedes, digest.as_deref())
                     .await
                     .map(|_| ()),
                 Reject { id, .. } => api().reject_proposal(*id, None).await.map(|_| ()),

@@ -483,6 +483,7 @@ pub fn panel() -> Element {
                     crate::queue::QueuedAction::Approve {
                         id,
                         supersedes: None,
+                        digest: digests().get(&id).cloned(),
                         queued_at: crate::queue::now_ts(),
                         retries: 0,
                     }
@@ -518,6 +519,7 @@ pub fn panel() -> Element {
                 crate::queue::QueuedAction::Approve {
                     id,
                     supersedes,
+                    digest: digests().get(&id).cloned(),
                     queued_at: crate::queue::now_ts(),
                     retries: 0,
                 }
@@ -1262,6 +1264,7 @@ fn DetailActions(api: Signal<ApiClient>, proposal_id: i64, digest: String) -> El
                     crate::queue::enqueue(crate::queue::QueuedAction::Approve {
                         id: proposal_id,
                         supersedes: None,
+                        digest: Some(digest.clone()),
                         queued_at: crate::queue::now_ts(),
                         retries: 0,
                     });
