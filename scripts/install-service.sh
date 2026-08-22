@@ -181,7 +181,12 @@ launchctl bootstrap "gui/${UID_NUM}" "$PLIST" >/dev/null 2>&1 || \
   die "bootstrap failed -- run: launchctl bootstrap gui/${UID_NUM} $PLIST"
 
 # 4. Verify the new process came up and is serving.
-PID="$(pgrep -f "$DEST_BIN" | head -1 || true)"
+PID=""
+for _ in $(seq 1 10); do
+	PID="$(pgrep -f "$DEST_BIN" | head -1 || true)"
+	[[ -n "$PID" ]] && break
+	sleep 0.5
+done
 [[ -n "$PID" ]] || die "service did not start -- check ~/Library/Logs/brain-server.err.log"
 ok "running pid $PID from $DEST_BIN"
 
