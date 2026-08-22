@@ -259,10 +259,14 @@ impl Context {
 
     /// Mount the context's workflow engine. Replaces any previously mounted
     /// engine (config-driven replacement, never a parallel registry).
-    pub fn mount_workflow_engine(&mut self, engine: Arc<dyn crate::workflow::WorkflowEngine>) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.workflow_engine = Some(engine);
-        }
+    /// Fail-closed: a poisoned lock refuses the mount instead of ignoring it.
+    pub fn mount_workflow_engine(
+        &mut self,
+        engine: Arc<dyn crate::workflow::WorkflowEngine>,
+    ) -> Result<(), KernelError> {
+        let mut inner = self.inner.lock().map_err(borrow_failed)?;
+        inner.workflow_engine = Some(engine);
+        Ok(())
     }
 
     /// The mounted engine, when one is configured.
@@ -664,11 +668,13 @@ mod engine_slot_tests {
         ctx.mount_workflow_engine(Arc::new(NamedEngine {
             name: "first",
             log: Arc::clone(&log),
-        }));
+        }))
+        .unwrap();
         ctx.mount_workflow_engine(Arc::new(NamedEngine {
             name: "second",
             log: Arc::clone(&log),
-        }));
+        }))
+        .unwrap();
         // Start through the ctx-mounted engine (the tool path shape).
         let mounted = ctx.workflow_engine().expect("engine mounted");
         let req = WorkflowStartRequest {

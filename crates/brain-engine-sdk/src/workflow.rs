@@ -144,10 +144,7 @@ impl WorkflowResult {
             output: Some(output),
         }
     }
-    pub fn errored(why: impl Into<String>) -> Self {
-        // The why rides in no field by design: outputs are data, diagnostics
-        // go to logs. Keep the value minimal so snapshots stay small.
-        let _ = why.into();
+    pub fn error() -> Self {
         WorkflowResult {
             stop_reason: StopReason::Error,
             output: None,
@@ -623,7 +620,7 @@ mod tests {
         let r = req("boom");
         let id = b.admit(&r).unwrap();
         let (completer, run) = b.build_run(id);
-        completer.complete(WorkflowResult::errored("script failed"));
+        completer.complete(WorkflowResult::error());
         let out = futures_block_on(run.result);
         assert_eq!(out.stop_reason, StopReason::Error);
         assert!(out.output.is_none());

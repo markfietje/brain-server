@@ -60,13 +60,19 @@ pub mod loader;
 #[cfg(feature = "harness-kernel")]
 pub mod plugin;
 #[cfg(feature = "harness-kernel")]
-pub mod session;
+pub mod services;
 #[cfg(feature = "harness-kernel")]
 pub mod tools;
 #[cfg(feature = "harness-kernel")]
-pub mod trust;
-#[cfg(feature = "harness-kernel")]
 pub mod workflow;
+
+/// The scoreboard surface (`sdk::scoreboard::build`) — a re-export of the
+/// pure scorer, never a second implementation.
+pub mod scoreboard {
+    pub use crate::pure::qa_score::{RunArtifacts, Scoreboard, StepRow, scoreboard as build};
+}
+#[cfg(feature = "harness-kernel")]
+pub mod trust;
 
 #[cfg(test)]
 mod tests {
