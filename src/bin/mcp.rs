@@ -1047,8 +1047,7 @@ mod tests {
         // `requested` is hex-escaped like `message` — the data field is as
         // much an LLM-context carrier as the message.
         assert_eq!(
-            v["error"]["data"]["requested"],
-            "313930302d30312d3031",
+            v["error"]["data"]["requested"], "313930302d30312d3031",
             "hex-escaped, never raw"
         );
     }
