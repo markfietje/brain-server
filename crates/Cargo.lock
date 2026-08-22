@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "brain-engine-sdk"
-version = "1.28.3"
+version = "1.28.4"
 dependencies = [
  "serde",
  "serde_yaml",
