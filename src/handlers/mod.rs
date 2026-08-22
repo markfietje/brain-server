@@ -23,6 +23,7 @@ pub mod clients;
 pub mod connectors;
 pub mod consolidate;
 pub mod domains;
+pub mod frontend;
 pub mod forget;
 pub mod gate;
 pub mod govern;

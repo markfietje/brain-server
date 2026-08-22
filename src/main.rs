@@ -5609,6 +5609,12 @@ async fn main_inner() -> Result<()> {
         .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024)); // 1 GiB
 
     let app = Router::new()
+        // v1.28.4 M1: the static SPA seat (host-frontend-static semantics).
+        // Serves the built client dist; absent dist degrades to 404 so an
+        // API-only deployment is unaffected. Public surface (no auth) — the
+        // bundle is static, data flows only through the gated API routes.
+        .route("/app/", get(handlers::frontend::spa_index))
+        .route("/app/{*path}", get(handlers::frontend::spa_static))
         .route("/health", get(health))
         .route("/health/db", get(health_db))
         .route("/ready", get(ready))
