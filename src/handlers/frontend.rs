@@ -136,12 +136,13 @@ fn respond(root: &std::path::Path, method: &Method, req_path: &str) -> Response 
     // Unmatched route or absent dist entry → the shell entry (deep links boot
     // the SPA). A wholly absent dist degrades to 404, never a panic.
     if let Ok(bytes) = std::fs::read(root.join("index.html")) {
+        let html = inject_boot_script(String::from_utf8_lossy(&bytes).as_ref());
         (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             ],
-            bytes,
+            html,
         )
             .into_response()
     } else {
@@ -149,8 +150,91 @@ fn respond(root: &std::path::Path, method: &Method, req_path: &str) -> Response 
     }
 }
 
+/// Pure: splice the boot-script tag before `</head>` so the bootstrap sees
+/// `window.__BRAIN_BOOT__` before any module runs. Idempotent; a headless
+/// document passes through untouched (the loader then falls back to fetching
+/// `/app/boot.json` directly).
+pub(crate) fn inject_boot_script(html: &str) -> String {
+    const TAG: &str = "<script src=\"/app/boot.js\"></script>";
+    if html.contains("/app/boot.js") {
+        return html.to_string();
+    }
+    match html.to_ascii_lowercase().find("</head>") {
+        Some(i) => format!("{}{TAG}{}", &html[..i], &html[i..]),
+        None => html.to_string(),
+    }
+}
+
 fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "client bundle not installed").into_response()
+}
+
+// ── boot manifest (`window.__BRAIN_BOOT__`) ────────────────────────────────
+//
+// The host publishes one manifest describing every client bundle it serves:
+// path, byte size, SHA-256. The loader (client + operator checks) refuses a
+// bundle whose recorded hash does not match what is served — the
+// supply-chain posture for the plugin composition. Generated per request from
+// the dist dir (cheap: pkg/ holds a handful of files), so no stale cache can
+// certify an old artifact.
+
+/// Pure: build the boot manifest over a dist root. `pkg/*` bundles only —
+/// index.html and assets are shell chrome, not plugin surface. Sorted by path
+/// so the manifest is deterministic.
+pub(crate) fn boot_manifest(root: &std::path::Path) -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    let mut bundles: Vec<serde_json::Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(root.join("pkg")) {
+        let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        entries.sort();
+        for p in entries {
+            if !p.is_file() {
+                continue;
+            }
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !(name.ends_with(".wasm") || name.ends_with(".js") || name.ends_with(".css")) {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&p) else {
+                continue;
+            };
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            let digest = format!("{:x}", h.finalize());
+            bundles.push(serde_json::json!({
+                "path": format!("pkg/{name}"),
+                "bytes": bytes.len(),
+                "sha256": digest,
+            }));
+        }
+    }
+    serde_json::json!({"boot": "brain", "bundles": bundles})
+}
+
+/// `GET /app/boot.json` — the machine-readable seat (the loader fetches this).
+pub async fn boot_json() -> Response {
+    serve_boot(dist_dir())
+}
+
+/// `GET /app/boot.js` — the `window.__BRAIN_BOOT__` seat. An external
+/// same-origin script (CLIENT_CSP allows 'self' scripts; inline would not).
+pub async fn boot_js() -> Response {
+    let json = boot_manifest(dist_dir()).to_string();
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        format!("window.__BRAIN_BOOT__={json};"),
+    )
+        .into_response()
+}
+
+fn serve_boot(root: &std::path::Path) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        boot_manifest(root).to_string(),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -194,6 +278,56 @@ mod tests {
             std::fs::create_dir_all(&p).unwrap();
             TempDir(p)
         }
+    }
+
+    #[test]
+    fn inject_boot_script_is_idempotent_and_head_anchored() {
+        let doc = "<html><head><title>t</title></head><body></body></html>";
+        let once = inject_boot_script(doc);
+        assert!(once.contains("<script src=\"/app/boot.js\"></script></head>"));
+        assert_eq!(inject_boot_script(&once), once, "idempotent");
+        // A headless document passes through untouched.
+        assert_eq!(
+            inject_boot_script("<html><body>x</body></html>"),
+            "<html><body>x</body></html>"
+        );
+    }
+
+    #[tokio::test]
+    async fn boot_manifest_lists_pkg_bundles_with_sha256() {
+        use sha2::{Digest, Sha256};
+        let dir = tempdir_like::tempdir();
+        let root = dir.path().to_path_buf();
+        fs::create_dir_all(root.join("pkg")).unwrap();
+        fs::write(root.join("pkg/app.wasm"), b"wasm-bytes").unwrap();
+        fs::write(root.join("index.html"), "<html></html>").unwrap();
+        let m = boot_manifest(&root);
+        assert_eq!(m["boot"], "brain");
+        let bundles = m["bundles"].as_array().unwrap();
+        assert_eq!(bundles.len(), 1, "shell chrome is not a bundle entry");
+        assert_eq!(bundles[0]["path"], "pkg/app.wasm");
+        assert_eq!(bundles[0]["bytes"], 10);
+        let mut h = Sha256::new();
+        h.update(b"wasm-bytes");
+        assert_eq!(bundles[0]["sha256"], format!("{:x}", h.finalize()));
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn boot_manifest_of_empty_dist_is_empty_not_error() {
+        let dir = tempdir_like::tempdir();
+        let m = boot_manifest(dir.path());
+        drop(dir);
+        assert_eq!(m["bundles"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn boot_js_wraps_manifest_as_global_assignment() {
+        // The pure wrapper contract: window.__BRAIN_BOOT__=<json>;
+        let m = serde_json::json!({"boot":"brain","bundles":[]});
+        let js = format!("window.__BRAIN_BOOT__={m};");
+        assert!(js.starts_with("window.__BRAIN_BOOT__={"));
+        assert!(js.ends_with(";"));
     }
 
     #[test]

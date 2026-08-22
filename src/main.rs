@@ -5709,6 +5709,8 @@ async fn main_inner() -> Result<()> {
         // bundle is static, data flows only through the gated API routes.
         .route("/app/", get(handlers::frontend::spa_index))
         .route("/app/{*path}", get(handlers::frontend::spa_static))
+        .route("/app/boot.json", get(handlers::frontend::boot_json))
+        .route("/app/boot.js", get(handlers::frontend::boot_js))
         .route("/health", get(health))
         .route("/health/db", get(health_db))
         .route("/ready", get(ready))

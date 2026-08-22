@@ -16,6 +16,7 @@
 //!   registrations and bumps the registry revision (the `slots/changed`
 //!   payload) — hot-reload swaps registrations, never running fibers.
 
+pub mod boot;
 pub mod chat;
 pub mod control_panel;
 pub mod shell;
