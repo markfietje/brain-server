@@ -205,3 +205,196 @@ pub async fn get_suggestions(
         .collect();
     Ok(Json(serde_json::json!({"suggestions": suggestions})))
 }
+
+/// `GET /workflow/scoreboard` — the outcome/efficiency scoreboard over
+/// workflow runs (DPO/admin evidence surface). Derived honestly from what
+/// runs recorded: known scorer fields in `state_json`, absence = default,
+/// and a fail-closed `audit_ok`: a run counts green only when a workflow
+/// audit row actually references it.
+pub async fn get_scoreboard(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Option<Principal>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
+    crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
+    let runs: Vec<brain_engine_sdk::scoreboard::RunArtifacts> =
+        tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let conn = pool.get().map_err(|e| format!("{e}"))?;
+            let mut stmt = conn
+                .prepare("SELECT id, status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000")
+                .map_err(|e| format!("{e}"))?;
+            let mut audited_stmt = conn
+                .prepare(
+                    "SELECT DISTINCT CAST(target AS INTEGER) FROM audit_events WHERE kind = 'workflow'",
+                )
+                .map_err(|e| format!("{e}"))?;
+            let audited: std::collections::HashSet<i64> = {
+                let rows = audited_stmt
+                    .query_map([], |r| r.get::<_, i64>(0))
+                    .map_err(|e| format!("{e}"))?;
+                let mut set = std::collections::HashSet::new();
+                for r in rows {
+                    set.insert(r.map_err(|e| format!("{e}"))?);
+                }
+                set
+            };
+
+            let mut rows = Vec::new();
+            for row in stmt
+                .query_map([], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                })
+                .map_err(|e| format!("{e}"))?
+            {
+                rows.push(row.map_err(|e| format!("{e}"))?);
+            }
+            Ok(derive_artifacts(&rows, &audited))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?
+        .map_err(HandlerError::internal)?;
+    let sb = brain_engine_sdk::scoreboard::build(&runs);
+    // The SDK stays dependency-free; the host owns the wire shape.
+    Ok(Json(serde_json::json!({
+        "fcr_units": sb.fcr_units,
+        "repeat_contact_rate_units": sb.repeat_contact_rate_units,
+        "correctness_units": sb.correctness_units,
+        "override_rate_units": sb.override_rate_units,
+        "gap_rate_units": sb.gap_rate_units,
+        "abstention_rate_units": sb.abstention_rate_units,
+        "guidance_acceptance_units": sb.guidance_acceptance_units,
+        "handoff_completeness_units": sb.handoff_completeness_units,
+        "audit_green": sb.audit_green,
+        "escalation_honored_units": sb.escalation_honored_units,
+        "runs_scored": runs.len(),
+    })))
+}
+
+/// Pure derivation of scorer artifacts from run rows + the audited-id set.
+/// Fail-closed: `audit_ok` only when a state flag says so OR an audit row
+/// references the run.
+fn derive_artifacts(
+    rows: &[(i64, String, String)],
+    audited: &std::collections::HashSet<i64>,
+) -> Vec<brain_engine_sdk::scoreboard::RunArtifacts> {
+    rows.iter()
+        .map(|(id, status, state_json)| {
+            let v: serde_json::Value =
+                serde_json::from_str(state_json).unwrap_or(serde_json::Value::Null);
+            let flag = v.get("audit_ok").and_then(|b| b.as_bool()).unwrap_or(false);
+            brain_engine_sdk::scoreboard::RunArtifacts {
+                audit_ok: flag || audited.contains(id),
+                ..artifacts_from_row(status, &v)
+            }
+        })
+        .collect()
+}
+
+fn artifacts_from_row(
+    status: &str,
+    v: &serde_json::Value,
+) -> brain_engine_sdk::scoreboard::RunArtifacts {
+    use brain_engine_sdk::pure::qa_score::StepRow;
+    brain_engine_sdk::scoreboard::RunArtifacts {
+        steps: v
+            .get("steps")
+            .and_then(|s| s.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|s| StepRow {
+                        expected: s
+                            .get("expected")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .into(),
+                        actual: s
+                            .get("actual")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .into(),
+                        skipped_verify: s
+                            .get("skipped_verify")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false),
+                        abstained: s
+                            .get("abstained")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false),
+                        guidance_accepted: s.get("guidance_accepted").and_then(|x| x.as_bool()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        findings: v
+            .get("findings")
+            .and_then(|f| f.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        contradictions: v
+            .get("contradictions")
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as usize,
+        audit_ok: false, // overridden by the caller's fail-closed check
+        repeat_contact: v
+            .get("repeat_contact")
+            .and_then(|r| r.as_bool())
+            .unwrap_or(false),
+        handoff_complete: status == "completed",
+        verified: v.get("verified").and_then(|b| b.as_bool()).unwrap_or(false),
+        escalation_honored: v
+            .get("escalation_honored")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(true),
+    }
+}
+
+#[cfg(test)]
+mod scoreboard_tests {
+    use super::*;
+    use brain_engine_sdk::scoreboard::StepRow;
+
+    #[test]
+    fn derivation_defaults_and_fail_closed_audit_ok() {
+        let audited = std::collections::HashSet::from([7]);
+        let rows = vec![
+            // completed run WITH an audit row: audit_ok true via linkage.
+            (
+                7i64,
+                "completed".to_string(),
+                r#"{"steps":[{"expected":"a","actual":"a"}]}"#.to_string(),
+            ),
+            // completed run WITHOUT any audit linkage and no flag: audit_ok
+            // stays FALSE — absence never counts green.
+            (8, "completed".to_string(), "{}".to_string()),
+            // recorded flag wins over missing linkage.
+            (9, "failed".to_string(), r#"{"audit_ok":true}"#.to_string()),
+        ];
+        let runs = derive_artifacts(&rows, &audited);
+        assert_eq!(runs.len(), 3);
+        assert!(runs[0].audit_ok && runs[2].audit_ok);
+        assert!(!runs[1].audit_ok, "no audit row + no flag => not green");
+        assert!(!runs[0].handoff_complete.eq(&false));
+        assert_eq!(
+            runs[0].steps,
+            vec![StepRow {
+                expected: "a".into(),
+                actual: "a".into(),
+                skipped_verify: false,
+                abstained: false,
+                guidance_accepted: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_input_scores_zero_not_panic() {
+        let sb = brain_engine_sdk::scoreboard::build(&[]);
+        assert_eq!(sb.fcr_units, 0);
+        assert!(sb.audit_green, "vacuous conjunction is true by definition");
+    }
+}

@@ -5900,6 +5900,10 @@ async fn main_inner() -> Result<()> {
             "/workflow/runs/{id}/suggestions",
             get(handlers::workflow::get_suggestions),
         )
+        .route(
+            "/workflow/scoreboard",
+            get(handlers::workflow::get_scoreboard),
+        )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // serve the built client SPA from client/dist.
@@ -12689,6 +12693,8 @@ Final paragraph after the rule.";
             ("/ump/audit", "Admin"),
             ("/ump/audit/verify", "Admin"),
             ("/events", "Read"),
+            // the workflow scoreboard is a DPO/admin evidence surface.
+            ("/workflow/scoreboard", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -12751,6 +12757,7 @@ Final paragraph after the rule.";
                     "govern" => include_str!("handlers/govern.rs"),
                     "holds" => include_str!("handlers/holds.rs"),
                     "breaches" => include_str!("handlers/breaches.rs"),
+                    "workflow" => include_str!("handlers/workflow.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),

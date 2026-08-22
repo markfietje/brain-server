@@ -62,6 +62,8 @@ pub mod plugin;
 #[cfg(feature = "harness-kernel")]
 pub mod services;
 #[cfg(feature = "harness-kernel")]
+pub mod session;
+#[cfg(feature = "harness-kernel")]
 pub mod tools;
 #[cfg(feature = "harness-kernel")]
 pub mod workflow;
