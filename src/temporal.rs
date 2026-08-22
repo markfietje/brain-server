@@ -136,7 +136,10 @@ fn iso_from_ymd(year: i32, month: u32, day: Option<u32>) -> Option<String> {
 }
 
 /// Lowercase the text once for marker matching, keeping the original for
-/// offset math against the year scanner (years are ASCII so offsets align).
+/// offset math against the year scanner. ASCII-only lowering: every marker
+/// and year is ASCII, and `str::to_lowercase` (full Unicode) can CHANGE the
+/// byte length (e.g. `İ` → `i̇`), which would desynchronize offsets between
+/// the lowered copy and the original and panic on non-boundary slicing.
 fn contains_marker(lower: &str, markers: &[&str]) -> bool {
     markers.iter().any(|m| lower.contains(m))
 }
@@ -148,7 +151,7 @@ fn contains_marker(lower: &str, markers: &[&str]) -> bool {
 ///
 /// `now_utc` is injected so tests are deterministic.
 pub fn extract_interval(text: &str, now_utc: &NaiveDateTime) -> TemporalInterval {
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
     let year = find_year(text);
 
     // "from X to Y" / "between X and Y" — two dates → [start, end).
@@ -367,5 +370,17 @@ mod tests {
         let a = extract_interval("from 2011 to 2017", &fixed_now());
         let b = extract_interval("from 2011 to 2017", &fixed_now());
         assert_eq!(a, b);
+    }
+
+    /// Regression: full-Unicode `to_lowercase` changes byte lengths
+    /// (`İ` U+0130 lowercases to a two-char sequence), so keyword offsets found
+    /// in the lowered copy panicked when used to slice the original. ASCII-only
+    /// lowering keeps every offset aligned; the range must still parse.
+    #[test]
+    fn unicode_length_changing_input_does_not_panic_and_still_parses() {
+        let hostile = format!("{} from 2011 to 2017", "İ".repeat(20));
+        let i = extract_interval(&hostile, &fixed_now());
+        assert_eq!(i.valid_at.as_deref(), Some("2011-01-01 00:00:00"));
+        assert_eq!(i.invalid_at.as_deref(), Some("2017-01-01 00:00:00"));
     }
 }
