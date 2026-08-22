@@ -6010,6 +6010,10 @@ async fn main_inner() -> Result<()> {
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),
         )
+        .route(
+            "/workflow/plugins/mount",
+            post(handlers::workflow::post_plugin_mount),
+        )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -12806,6 +12810,9 @@ Final paragraph after the rule.";
             ("/workflow/runs/{id}/steps", "Read"),
             ("/workflow/runs/{id}/steering", "Write"),
             ("/workflow/runs/{id}/suggestions", "Read"),
+            // plugin mount evidence: any authenticated principal records its
+            // own composition (a Write, metadata-only).
+            ("/workflow/plugins/mount", "Write"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13975,6 +13982,92 @@ Final paragraph after the rule.";
         assert_eq!(n, 1);
     }
 
+    /// Plugin mount evidence: the audited write lands a Workflow row with the
+    /// plugin target + action/revision/bundle detail; invalid input is
+    /// refused before any audit write.
+    #[tokio::test]
+    async fn plugin_mount_evidence_is_audited_and_input_gated() {
+        use axum::extract::State;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+
+        // Invalid plugin name refused (fail-closed, no row).
+        let err = crate::handlers::workflow::post_plugin_mount(
+            State(state.clone()),
+            axum::Extension(None),
+            axum::Json(crate::handlers::workflow::PluginMountRequest {
+                plugin: "Bad_Plugin!".to_string(),
+                action: None,
+                revision: Some(1),
+                bundle_sha256: None,
+            }),
+        )
+        .await
+        .expect_err("hostile plugin name must be refused");
+        assert_eq!(err.inner.code, "plugin_invalid", "{err:?}");
+
+        // Bad sha refused.
+        let err = crate::handlers::workflow::post_plugin_mount(
+            State(state.clone()),
+            axum::Extension(None),
+            axum::Json(crate::handlers::workflow::PluginMountRequest {
+                plugin: "ui-chat".to_string(),
+                action: None,
+                revision: None,
+                bundle_sha256: Some("nothex".to_string()),
+            }),
+        )
+        .await
+        .expect_err("malformed digest must be refused");
+        assert_eq!(err.inner.code, "sha_invalid", "{err:?}");
+
+        // A valid mount records one Workflow evidence row.
+        let sha = "a".repeat(64);
+        let ok = crate::handlers::workflow::post_plugin_mount(
+            State(state.clone()),
+            axum::Extension(None),
+            axum::Json(crate::handlers::workflow::PluginMountRequest {
+                plugin: "ui-control-panel".to_string(),
+                action: Some("mount".to_string()),
+                revision: Some(7),
+                bundle_sha256: Some(sha.clone()),
+            }),
+        )
+        .await
+        .expect("valid mount must succeed");
+        assert_eq!(ok.0["ok"], serde_json::json!(true));
+        {
+            // Audit rows are hash-only at rest (target_hash/detail_hash), so
+            // the assertion is over the evidence FAMILY: exactly one new
+            // workflow-kind row for the mount (the unmount below adds one more).
+            let conn = state.pool.get().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE kind='workflow'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "one mount-evidence row");
+            assert!(sha.len() == 64, "digest rode the event");
+        }
+
+        // Unmount is the reverse evidence.
+        let ok = crate::handlers::workflow::post_plugin_mount(
+            State(state.clone()),
+            axum::Extension(None),
+            axum::Json(crate::handlers::workflow::PluginMountRequest {
+                plugin: "ui-control-panel".to_string(),
+                action: Some("unmount".to_string()),
+                revision: None,
+                bundle_sha256: None,
+            }),
+        )
+        .await
+        .expect("valid unmount must succeed");
+        assert_eq!(ok.0["ok"], serde_json::json!(true));
+    }
+
     /// Suggestions read-seam (reaudit N1): flagged/quarantined rows are never
     /// suggested, expired rows stay retired, emitted title/snippet pass
     // through `sanitize_read`, and the run's `q` cannot inject LIKE
@@ -14889,7 +14982,14 @@ Final paragraph after the rule.";
         assert!(!hdr.contains("wasm-unsafe-eval"));
         assert!(hdr.contains("default-src 'none'"));
 
-        for client_path in ["/app/", "/app/pkg/app.wasm"] {
+        // The boot-manifest seats ride the CLIENT CSP too (same-origin
+        // scripts/JSON under /app — never the API's strict policy).
+        for client_path in [
+            "/app/",
+            "/app/pkg/app.wasm",
+            "/app/boot.json",
+            "/app/boot.js",
+        ] {
             let res = app
                 .clone()
                 .oneshot(

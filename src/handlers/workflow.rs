@@ -631,3 +631,91 @@ mod scoreboard_tests {
         assert!(sb.audit_green, "vacuous conjunction is true by definition");
     }
 }
+
+// ── plugin mount evidence (Art. 12 record-keeping) ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PluginMountRequest {
+    /// Plugin identity (`ui-shell`, `ui-chat`, `ui-control-panel`, …).
+    pub plugin: String,
+    /// `mount` (default) or `unmount`.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// The slot-registry revision the client composed at.
+    #[serde(default)]
+    pub revision: Option<u64>,
+    /// SHA-256 of the bundle the plugin shipped in, when the boot manifest
+    /// carries one. Recorded verbatim after a strict shape check.
+    #[serde(default)]
+    pub bundle_sha256: Option<String>,
+}
+
+fn valid_plugin_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// `POST /workflow/plugins/mount` — record UI-plugin mount/unmount evidence on
+/// the audit chain. Mount evidence is Art. 12 record-keeping: WHO ran WHICH
+/// plugin composition, WHEN, against which bundle digest. Metadata only; the
+/// write is audited in the same tx it lands.
+pub async fn post_plugin_mount(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    Json(body): Json<PluginMountRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    if !valid_plugin_name(&body.plugin) {
+        return Err(HandlerError::bad_request(
+            "plugin_invalid",
+            "plugin name must be 1..=64 lowercase alnum/hyphen",
+        ));
+    }
+    let action = match body.action.as_deref() {
+        None | Some("mount") => "mount",
+        Some("unmount") => "unmount",
+        Some(_) => {
+            return Err(HandlerError::bad_request(
+                "action_invalid",
+                "action must be mount or unmount",
+            ));
+        }
+    };
+    if let Some(sha) = &body.bundle_sha256
+        && (sha.len() != 64 || !sha.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err(HandlerError::bad_request(
+            "sha_invalid",
+            "bundle_sha256 must be 64 hex chars",
+        ));
+    }
+    // Write gate on the shared pool: recording evidence is a write, and an
+    // unauthenticated caller has no composition worth evidencing.
+    super::authorize(&principal, crate::auth::Action::Write, "", "global")?;
+    let actor = super::recall::principal_label(&principal);
+    let pool = state.pool.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        // Audit row + evidence commit atomically via the chain's own tx path.
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Workflow,
+            actor.trim(),
+            &format!("plugin:{}", body.plugin),
+            crate::audit::AuditStatus::Ok,
+            &match (&body.revision, &body.bundle_sha256) {
+                (Some(r), Some(s)) => format!("{action} revision:{r} bundle:{s}"),
+                (Some(r), None) => format!("{action} revision:{r}"),
+                (None, Some(s)) => format!("{action} bundle:{s}"),
+                (None, None) => action.to_string(),
+            },
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    Ok(Json(serde_json::json!({"ok": true})))
+}

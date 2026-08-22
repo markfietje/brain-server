@@ -3619,6 +3619,52 @@ paths:
           description: Not authenticated
         "403":
           description: Not DPO/admin
+  /workflow/plugins/mount:
+    post:
+      summary: Record UI-plugin mount/unmount evidence (Art. 12 record-keeping)
+      description: >
+        Records one audited evidence row for a UI-plugin mount or unmount —
+        the plugin identity, the slot-registry revision it composed at, and
+        the SHA-256 of its bundle when the boot manifest carries one.
+        Metadata only; never plugin content.
+      operationId: recordPluginMount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plugin]
+              additionalProperties: false
+              properties:
+                plugin:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  pattern: "^[a-z0-9-]+$"
+                action:
+                  type: string
+                  enum: [mount, unmount]
+                revision:
+                  type: integer
+                  format: int64
+                bundle_sha256:
+                  type: string
+                  minLength: 64
+                  maxLength: 64
+      responses:
+        "200":
+          description: Evidence row recorded on the audit chain
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "400":
+          description: plugin_invalid, action_invalid, or sha_invalid
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /workflow/calibration/sign:
     post:
       summary: Monthly human-signed workflow calibration gate (DPO/admin)

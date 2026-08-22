@@ -33,6 +33,13 @@ pub fn dock_orders() -> Vec<(&'static str, i32)> {
         .collect()
 }
 
+/// The digest-binding rule (ReviewArmour) at the plugin boundary: an approve
+/// forwards the `content_digest` the operator was shown (drift 409s
+/// server-side); a reject carries none. Pure so the plugin path is pinnable.
+pub fn decision_digest(approve: bool, content_digest: &str) -> Option<String> {
+    approve.then(|| content_digest.to_string())
+}
+
 #[component]
 pub fn ApprovalDock() -> Element {
     let api = use_context::<Signal<ApiClient>>();
@@ -82,8 +89,11 @@ pub fn ApprovalDock() -> Element {
         spawn(async move {
             let client = api();
             let res = if approve {
+                // The plugin boundary never loosens the digest binding: the
+                // approve carries exactly the rendered digest (drift 409s).
+                let bound = decision_digest(true, &digest.unwrap_or_default());
                 client
-                    .approve_proposal(id, None, digest.as_deref())
+                    .approve_proposal(id, None, bound.as_deref())
                     .await
                     .map(|_| ())
             } else {
@@ -175,5 +185,16 @@ mod tests {
         assert_eq!(orders[0].0, "approval_dock_title");
         assert_eq!(orders[0].1, 5);
         assert_eq!(orders[1].1, 20);
+    }
+
+    #[test]
+    fn plugin_path_binds_digest_on_approve_only() {
+        // Approve binds the bytes the operator saw (server 409s on drift).
+        assert_eq!(
+            decision_digest(true, "sha256-abc"),
+            Some("sha256-abc".to_string())
+        );
+        // Reject is always safe and carries no digest.
+        assert_eq!(decision_digest(false, "sha256-abc"), None);
     }
 }
