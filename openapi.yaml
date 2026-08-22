@@ -880,6 +880,45 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AuditRow'
+  /audit/export:
+    get:
+      summary: Export the Art.12 decision-evidence ledger (compliance-pack feature; v1.28.5)
+      operationId: exportAudit
+      description: >
+        v1.28.5 "Compliance Pack": streams the per-decision evidence records
+        (hash-chained, optionally Ed25519-signed via BRAIN_AUDIT_SIGNING_KEY)
+        as JSONL or a human-readable PDF. `rpcId` is echoed on the first JSONL
+        line for reconciliation. Admin only. Route exists only when the server
+        is built with --features compliance-pack.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Unix-seconds lower bound on record ts
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [jsonl, pdf]
+        - name: rpcId
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Caller-supplied correlation id echoed in the export envelope
+      responses:
+        "200":
+          description: The evidence bundle (attachment)
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+            application/pdf:
+              schema:
+                type: string
   /audit/verify:
     get:
       summary: Verify the audit hash chain (v1.1.0 Harden; v1.27.31 multi-domain)
@@ -908,6 +947,88 @@ paths:
                     type: object
                     additionalProperties: { type: boolean }
                     description: v1.27.31 — per-domain verification breakdown
+  /compliance/evaluation-record:
+    post:
+      summary: Append an accuracy/validation declaration to the decision ledger (Art.15; compliance-pack; v1.28.5)
+      operationId: postEvaluationRecord
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [declaration, dataset_hash]
+              properties:
+                declaration: { type: string, description: free-text accuracy/validation methodology summary }
+                dataset_hash: { type: string, description: SHA-256 of the frozen evaluation dataset }
+                system_version: { type: string }
+      responses:
+        "201":
+          description: The stored DecisionRecord
+        "400": { description: evaluation_record_incomplete }
+  /compliance/inventory:
+    get:
+      summary: Evidence-inventory checker across Art.12/14/15/17/73 + RoPA artefacts (compliance-pack; v1.28.5)
+      operationId: complianceInventory
+      responses:
+        "200":
+          description: Per-artifact presence flags; `complete` false when any class is missing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  complete: { type: boolean }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        artifact: { type: string }
+                        present: { type: boolean }
+                        count: { type: integer }
+  /ropa:
+    get:
+      summary: List RoPA activities (GDPR Art.30; compliance-pack; v1.28.5)
+      operationId: listRopa
+      responses:
+        "200":
+          description: The processing-activities register
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activities: { type: array, items: { $ref: '#/components/schemas/RopaActivity' } }
+    post:
+      summary: Create one RoPA activity (Admin; audited; compliance-pack; v1.28.5)
+      operationId: createRopa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RopaInput' }
+      responses:
+        "201": { description: Created (returns the row id) }
+        "400": { description: ropa_incomplete }
+  /ropa/{id}:
+    post:
+      summary: Update one RoPA activity (Admin; audited; compliance-pack; v1.28.5)
+      operationId: updateRopa
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RopaInput' }
+      responses:
+        "201": { description: Created (returns the row id) }
+        "400": { description: ropa_incomplete }
   /metrics:
     get:
       summary: Prometheus text-format exporter (v1.1.0 Harden M5)
@@ -4228,6 +4349,33 @@ components:
         instance: { type: string }
         domain: { type: string }
       required: [id, kind, instance, domain]
+    RopaInput:
+      type: object
+      required: [activity, controller, processor, lawful_basis]
+      properties:
+        activity: { type: string }
+        controller: { type: string }
+        processor: { type: string }
+        categories: { type: string }
+        recipients: { type: string }
+        lawful_basis: { type: string }
+        retention_days: { type: integer, nullable: true }
+        security_measures: { type: string }
+        transfers: { type: string }
+    RopaActivity:
+      type: object
+      properties:
+        id: { type: integer }
+        activity: { type: string }
+        controller: { type: string }
+        processor: { type: string }
+        categories: { type: string }
+        recipients: { type: string }
+        lawful_basis: { type: string }
+        retention_days: { type: integer, nullable: true }
+        security_measures: { type: string }
+        transfers: { type: string }
+        updated_at: { type: integer }
     AuditRow:
       type: object
       description: >

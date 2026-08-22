@@ -791,6 +791,19 @@ pub async fn approve_proposal(
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
 
+        // Art.14 oversight evidence, linked through a fresh Art.12 decision
+        // record. Best-effort (the approval itself is already committed);
+        // the basis is the review digest — the snapshot hash of what the
+        // reviewer approved, never raw content.
+        #[cfg(feature = "compliance-pack")]
+        super::compliance::record_oversight(
+            &conn,
+            &super::recall::principal_label(&principal.0),
+            &review_digest(&content),
+            "accept",
+            "approve",
+        );
+
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Reconcile,
@@ -1075,6 +1088,16 @@ pub async fn reject_proposal(
                 &format!("proposal:{id}"),
                 crate::audit::AuditStatus::Ok,
                 "proposal_rejected",
+            );
+            // Art.14 oversight evidence for the override (reject is always
+            // safe — recorded, never gated). Best-effort.
+            #[cfg(feature = "compliance-pack")]
+            super::compliance::record_oversight(
+                &conn,
+                &super::recall::principal_label(&principal.0),
+                &format!("proposal:{id}"),
+                "override",
+                "reject",
             );
         }
         Ok(n)

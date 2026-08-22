@@ -324,6 +324,16 @@ pub async fn retention_report(
             let p = per_domain.get(d).unwrap_or(&policy);
             rows.extend(retention_report_rows(&conn, now, d, p)?);
         }
+        // Art.26(7) evidence floor: decision records are retained 12 months
+        // by default (≥ the 6-month legal minimum) and never decay earlier.
+        #[cfg(feature = "compliance-pack")]
+        rows.push(serde_json::json!({
+            "domain": "*",
+            "kind": "decision_evidence",
+            "ttl_days": 365,
+            "count": -1,
+            "expiring_30d": 0,
+        }));
         Ok(serde_json::json!({
             "window_days": REPORT_WINDOW_DAYS,
             "generated_at": chrono::Utc::now().to_rfc3339(),

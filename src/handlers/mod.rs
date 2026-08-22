@@ -20,6 +20,8 @@
 pub mod auth;
 pub mod breaches;
 pub mod clients;
+#[cfg(feature = "compliance-pack")]
+pub mod compliance;
 pub mod connectors;
 pub mod consolidate;
 pub mod domains;
