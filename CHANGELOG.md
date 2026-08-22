@@ -37,6 +37,13 @@ been run, it is marked **pending** rather than asserted.
 **Security fixes**
 
 - A wide-mode (group/world-readable) `BRAIN_AUDIT_SIGNING_KEY_FILE` is refused fail-closed: decisions continue hash-chained but are recorded unsigned with an error-level warning, never silently trusted.
+- Release profile now builds with `overflow-checks = true`: arithmetic near the i64 edge (paginated listings, DSAR/purge offsets) aborts fail-stop instead of wrapping silently. Measured on the synthetic 2000-doc bench (single runs, before → after): ingest 826 → 1037 docs/s, p50 11.88 → 11.51 ms — no regression, far inside the ~2 % ceiling that would have triggered a revert.
+- The compliance evidence modules deny `clippy::unwrap_used` (`clippy.toml` exempts tests), so request-data paths there are structurally panic-free; `unsafe_op_in_unsafe_fn` and `missing_safety_doc` are denied crate-wide (zero current sites — the first future `unsafe fn` inherits block-scoped safety).
+
+**Bug fixes**
+
+- Fixed a boot-blocking router panic introduced in 1.28.4: `/app` was registered twice (the static SPA seat handlers AND a historical `nest_service("/app", ServeDir)`), and axum 0.8 panics at startup on the conflicting internal wildcards — any full server start failed ("Insertion failed due to conflict with previously registered route"). This is what failed the 1.28.4 CI `server-boot`/`recall eval gate` jobs. The duplicate registration is removed (the handler-based seat already implements MIME, traversal prevention, deep-link fallback, 405-on-non-GET); server boot verified end-to-end on a live release binary.
+- `bench` no longer fails against servers ≥ 1.27.23: it reads `capacity.rss_mib` from the Read-gated `/health/db` (with the operator token) instead of the shrunken public `/health`, falling back to legacy shapes for older servers. `BENCH_SCALES` env override documented by use in the overflow-checks A/B.
 
 ### Engineering record
 
@@ -47,6 +54,8 @@ been run, it is marked **pending** rather than asserted.
 - M5 (Art.15/17/73): DSAR pipeline (intake → discovery → fulfilment → proof) and the incident ledger were already shipped (v1.20.x DSAR line; breach module); this release wires both into the inventory checker rather than re-implementing them.
 - Feature gating: without `--features compliance-pack` the tables are not migrated, the routes do not exist on the wire, no decision records are written, and behaviour is byte-identical to 1.28.4 (default full suite green: 751 bin / 152 lib). With the feature: 754 bin (+3 pins) / 152 lib (+5 decision-module tests).
 - Validation: fmt + clippy `-D warnings --all-targets --features bench` clean in BOTH feature configurations; full test suites green with and without the feature; export round-trip (record → read → Ed25519 verify outside the host path) pinned by test; tamper pins cover mutated fields, forged genesis links, and corrupted signatures.
+- Post-implementation hardening pass (round-49 audit follow-ups): F-49a — the 1 GiB body-limit dial on `/domains/{name}/import` is documented in-source as a deliberate, Admin-gated, single-route allowance (the default build keeps its 1 MiB layer everywhere else). F-49b — the new evidence modules deny `clippy::unwrap_used` (`clippy.toml` exempts tests), so request-data paths in the compliance surface are structurally panic-free going forward. Wire-boundary caps added: `rpcId` ≤ 128 chars (echoed via serde_json, never hand-escaped), RoPA fields bounded (256/1024/128-char class caps), evaluation declarations ≤ 8 KB, and `dataset_hash` must be exactly 64 hex characters.
+- Post-ship verification: release binary booted end-to-end on a scratch DB (health ok) and exercised with the synthetic bench harness; the 1.28.4 CI failures are reproduced-and-fixed (sdk version pin → asserts `CARGO_PKG_VERSION`; boot panic → duplicate route removed).
 - Honest ceilings: certificates prove existence/time/signer/immutability — not fairness, lawfulness, or accuracy of the underlying decisions (that needs governance + legal review); an unsigned chain (no signing key configured) verifies structurally only; law evolves — jurisdiction rules stay a curated, human-checked snapshot; PDF output is plain-text Helvetica rendering for readability, not a typeset Annex IV document; oversight "modify" outcome is not yet emitted (approve maps accept, reject maps override).
 
 ## [1.28.4] — 2026-08-22
