@@ -2179,6 +2179,12 @@ paths:
                 dry_run:
                   type: boolean
                   default: false
+                subject_exact:
+                  type: boolean
+                  default: false
+                  description: >
+                    Exact-subject matching for the residue sweeps (default is
+                    the erasure-safe substring sweep).
       responses:
         "200":
           description: >
@@ -2784,6 +2790,13 @@ paths:
                     footprint (locate + bundle build) without executing any
                     write: no purge, no sweep, no ledger row, no certificate.
                     The 200 carries `footprint` instead of `certificate`.
+                subject_exact:
+                  type: boolean
+                  default: false
+                  description: >
+                    Exact-subject matching for the residue sweeps (traces,
+                    proposals, workflow state) — default is the erasure-safe
+                    substring sweep.
                 jurisdiction:
                   type: string
                   description: >
@@ -3601,6 +3614,122 @@ paths:
           description: Not authenticated
         "403":
           description: Not DPO/admin
+  /workflow/runs/{id}:
+    get:
+      summary: Fetch one workflow run (Read on the run's domain)
+      description: >
+        Returns the run row (id, domain, kind, status, state_json, created_at,
+        updated_at). The `state_json` body is routed through the shared read
+        seam (`sanitize_read`) like every other stored-text surface. 404 when
+        the run does not exist.
+      operationId: getWorkflowRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The run row
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  domain: { type: string }
+                  kind: { type: string }
+                  status: { type: string }
+                  state_json: { type: string }
+                  created_at: { type: integer }
+                  updated_at: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized for the run's domain }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/steps:
+    get:
+      summary: List the steps of a workflow run (Read on the run's domain)
+      operationId: listWorkflowRunSteps
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The step rows (state_json sanitized at the read seam)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  steps:
+                    type: array
+                    items: { type: object }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized for the run's domain }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/steering:
+    post:
+      summary: Queue a steering message for a run (Write + approve-class role gate)
+      description: >
+        Screens the message against the prompt-injection blocklist BEFORE it
+        can reach the outbox topic that drives the engine state machine
+        (400 `steering_rejected` on a hit), applies the standard Write
+        authorization on the run's domain plus the approve-class role gate,
+        and enqueues atomically under the bounded steering inbox
+        (drop-oldest at 100).
+      operationId: postWorkflowSteering
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: Accepted — `{ok: true}`
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "400": { description: message_too_long | message_empty | steering_rejected }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (domain Write or role gate) }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/suggestions:
+    get:
+      summary: Retrieval-backed suggestions for a run (Read on the run's domain)
+      operationId: getWorkflowSuggestions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Suggestion hits (may be empty; abstention is recorded)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestions:
+                    type: array
+                    items: { type: object }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized for the run's domain }
+        "404": { description: Workflow run not found }
   /.well-known/openid-configuration:
     get:
       summary: OIDC Discovery metadata (RFC 8414) (v1.2 AuthN)

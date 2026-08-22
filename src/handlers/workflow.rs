@@ -40,7 +40,13 @@ pub async fn get_run(
     }).await.map_err(|e| HandlerError::internal(format!("{e}")))?.map_err(HandlerError::internal)?;
     let row = row.ok_or_else(|| HandlerError::not_found("workflow run not found"))?;
     crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &row.domain)?;
-    Ok(Json(serde_json::to_value(&row).unwrap()))
+    // The read seam covers EVERY stored-text surface — run state included
+    // (the one seam that previously skipped it).
+    let mut row = row;
+    row.state_json = crate::gate::sanitize_read(&row.state_json, false, &principal);
+    Ok(Json(serde_json::to_value(&row).map_err(|e| {
+        HandlerError::internal(format!("serialize: {e}"))
+    })?))
 }
 
 pub async fn list_steps(
@@ -73,6 +79,18 @@ pub async fn list_steps(
         return Err(HandlerError::not_found("workflow run not found"));
     };
     crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    // Read-seam parity with get_run: step state is stored text.
+    let steps: Vec<serde_json::Value> = steps
+        .into_iter()
+        .map(|mut s| {
+            if let Some(v) = s.get_mut("state_json")
+                && let Some(raw) = v.as_str().map(str::to_string)
+            {
+                *v = serde_json::Value::String(crate::gate::sanitize_read(&raw, false, &principal));
+            }
+            s
+        })
+        .collect();
     Ok(Json(serde_json::json!({"steps": steps})))
 }
 
@@ -99,33 +117,72 @@ pub async fn post_steering(
             "message must not be empty",
         ));
     }
+    // Steering text drives an engine state machine — screen it like any other
+    // untrusted ingest BEFORE it can reach the outbox (prompt-injection class).
+    if crate::contains_suspicious_pattern(&body.message) {
+        return Err(HandlerError::bad_request(
+            "steering_rejected",
+            "steering message matches a blocked prompt-injection pattern",
+        ));
+    }
+    let pool = state.pool.clone();
+    // Resolve the run's domain first so the STANDARD gates apply: the shared
+    // `authorize` Write check (loopback `None` = superuser is the documented
+    // ambient posture for local harness processes) plus the HITL-class role
+    // gate — steering shapes decisions, so a token whose roles omit the
+    // approve capability may not steer, exactly as it may not approve.
+    let domain: String = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        conn.query_row(
+            "SELECT domain FROM workflow_runs WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("{e}"))?
+        .ok_or_else(|| "workflow run not found".to_string())
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(|e| {
+        if e == "workflow run not found" {
+            HandlerError::not_found(e)
+        } else {
+            HandlerError::internal(e)
+        }
+    })?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    super::authorize_role(&principal, &state.pool, "approve")?;
+
     let sanitized = crate::gate::sanitize_read(&body.message, false, &principal);
     let payload = serde_json::json!({"message": sanitized}).to_string();
     let pool = state.pool.clone();
-    let principal2 = principal.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let conn = pool.get().map_err(|e| format!("{e}"))?;
-        let domain: String = conn.query_row("SELECT domain FROM workflow_runs WHERE id=?1", rusqlite::params![id], |r| r.get(0)).optional().map_err(|e| format!("{e}"))?.ok_or("workflow run not found".to_string())?;
-        // auth inside blocking would need principal; we already authorized via sanitized? do check via is_authorized logic without pool
-        // authorize read/write check is done outside; re-check via principal2
-        if let Some(p) = &principal2
-            && !crate::auth::is_authorized(p, crate::auth::Action::Write, &p.tenant, &domain)
-        {
-            return Err("forbidden".to_string());
-        }
-        let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'", rusqlite::params![id], |r| r.get(0)).map_err(|e| format!("{e}"))?;
+        let mut conn = pool.get().map_err(|e| format!("{e}"))?;
+        // The cap and the enqueue commit atomically: drop-oldest + insert in
+        // one tx on one connection so the inbox bound can never race past 100.
+        let tx = conn.transaction().map_err(|e| format!("{e}"))?;
+        let cnt: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("{e}"))?;
         if cnt >= 100 {
-            conn.execute("DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE run_id=?1 AND topic='steering' ORDER BY id ASC LIMIT 1)", rusqlite::params![id]).map_err(|e| format!("{e}"))?;
+            tx.execute(
+                "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE run_id=?1 AND topic='steering' ORDER BY id ASC LIMIT ?2)",
+                rusqlite::params![id, cnt - 99],
+            )
+            .map_err(|e| format!("{e}"))?;
         }
         let now = chrono::Utc::now().timestamp();
         let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
-        use brain_engine_sdk::host::WorkflowHost as _;
-        crate::workflow::host::SqliteWorkflowHost::new(pool.clone())
-            .enqueue(id, "steering", &payload, &key)
+        crate::workflow::outbox::enqueue(&tx, id, "steering", &payload, &key, now)
             .map_err(|e| format!("{e}"))?;
-        crate::audit::record_tenant(&conn, crate::audit::AuditKind::Workflow, "api", &format!("workflow:{id}"), crate::audit::AuditStatus::Ok, "steering", &domain);
+        tx.commit().map_err(|e| format!("{e}"))?;
         Ok(())
-    }).await.map_err(|e| HandlerError::internal(format!("{e}")))?.map_err(|e| if e=="forbidden" { HandlerError::forbidden(crate::auth::Action::Write, "", "workflow") } else if e=="workflow run not found" { HandlerError::not_found(e) } else { HandlerError::internal(e) })?;
+    }).await.map_err(|e| HandlerError::internal(format!("{e}")))?.map_err(HandlerError::internal)?;
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
