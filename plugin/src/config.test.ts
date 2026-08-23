@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { DEFAULTS, resolveConfig } from "./config.js";
+import { assertSafeBaseUrl, DEFAULTS, resolveConfig } from "./config.js";
 
 describe("resolveConfig", () => {
   test("applies all defaults for an empty config", () => {
@@ -39,7 +39,7 @@ describe("resolveConfig", () => {
 
   test("overrides provided values and trims whitespace", () => {
     const cfg = resolveConfig({
-      baseUrl: "  http://example.com:8765  ",
+      baseUrl: "  http://127.0.0.1:8765  ", // loopback: remote cleartext is refused (F-E4)
       authToken: "  secret  ",
       agents: ["main", "research"],
       autoRecall: false,
@@ -48,7 +48,7 @@ describe("resolveConfig", () => {
     });
     // resolveConfig trims surrounding whitespace; trailing-slash stripping is
     // BrainClient's job (it normalizes on construction).
-    expect(cfg.baseUrl).toBe("http://example.com:8765");
+    expect(cfg.baseUrl).toBe("http://127.0.0.1:8765");
     expect(cfg.authToken).toBe("secret");
     expect(cfg.agents).toEqual(["main", "research"]);
     expect(cfg.autoRecall).toBe(false);
@@ -111,5 +111,27 @@ describe("resolveConfig", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("assertSafeBaseUrl (F-E4 scheme gate)", () => {
+  test("https passes", () => {
+    expect(() => assertSafeBaseUrl("https://brain.example.com")).not.toThrow();
+  });
+  test("loopback http passes", () => {
+    for (const u of [
+      "http://127.0.0.1:8765",
+      "http://localhost:8765",
+      "http://[::1]:8765",
+    ]) {
+      expect(() => assertSafeBaseUrl(u)).not.toThrow();
+    }
+  });
+  test("remote cleartext throws", () => {
+    expect(() => assertSafeBaseUrl("http://brain.example.com")).toThrow(
+      /cleartext|loopback/,
+    );
+    expect(() => assertSafeBaseUrl("ftp://x")).toThrow(/scheme/);
+    expect(() => assertSafeBaseUrl("not a url")).toThrow(/valid URL/);
   });
 });

@@ -19,6 +19,7 @@
  *    to the agent, while the recall hook can still fail-open by catching.
  */
 import type { ResolvedBrainConfig } from "./config.js";
+import { sanitizeForBlock } from "./format.js";
 
 /**
  * Typed transport error. `kind` is the actionable category; `status` is the
@@ -83,6 +84,8 @@ export type BrainRecallHit = {
   memory_kind?: string;
   lawful_basis?: string;
   region?: string;
+  /** who produced this memory (human/model/agent/operator/imported) — absent on older servers. */
+  origin?: string;
 };
 
 /**
@@ -837,7 +840,10 @@ export class BrainClient {
       try {
         const text = await res.text();
         if (text) {
-          detail = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+          // Reflection-channel hygiene: the error body reaches the agent's
+          // prompt — strip invisible/markdown-ref content, keep the cap.
+          const stripped = sanitizeForBlock(text);
+          detail = stripped.length > 500 ? `${stripped.slice(0, 500)}…` : stripped;
         }
       } catch {
         // Body already consumed or unreadable; keep statusText.

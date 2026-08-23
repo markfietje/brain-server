@@ -11,8 +11,8 @@
  * narrow (unknown) params to the Static-derived type rather than re-validating.
  */
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
-import { Check } from "typebox/value";
 import { Type, type Static, type TObject } from "typebox";
+import { Check } from "typebox/value";
 import {
   BrainClient,
   describeBrainError,
@@ -619,7 +619,7 @@ export function registerBrainTools(
           const rows = res.traversal
             .map(
               (r) =>
-                `${"  ".repeat(Math.max(0, r.depth - 1))}${r.depth}. ${sanitizeForBlock(r.entity).trim()} [${r.edgePath || "-"}] (domain: ${r.domain})`,
+                `${"  ".repeat(Math.max(0, r.depth - 1))}${r.depth}. ${sanitizeForBlock(r.entity).trim()} [${sanitizeForBlock(r.edgePath || "-").trim()}] (domain: ${sanitizeForBlock(r.domain ?? "-").trim()})`,
             )
             .join("\n");
           return {
@@ -697,7 +697,7 @@ export function registerBrainTools(
                   pr.conflictWith !== undefined && pr.conflictWith !== null
                     ? ` conflits_with=${pr.conflictWith}`
                     : "";
-                return `#${pr.id} [${pr.kind}] (novelty=${pr.novelty.toFixed(2)}, salience=${pr.salience.toFixed(2)}${conflict}, verdict=${pr.screenVerdict}): ${sanitizeForBlock(pr.content)}`;
+                return `#${pr.id} [${sanitizeForBlock(pr.kind).trim()}] (novelty=${pr.novelty.toFixed(2)}, salience=${pr.salience.toFixed(2)}${conflict}, verdict=${sanitizeForBlock(pr.screenVerdict).trim()}): ${sanitizeForBlock(pr.content)}`;
               })
               .join("\n");
             return {

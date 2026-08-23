@@ -53,6 +53,9 @@ export function provenanceTag(hit: BrainRecallHit): string {
   if (hit.region) {
     parts.push(`reg:${hit.region}`);
   }
+  if (hit.origin) {
+    parts.push(`origin:${hit.origin}`);
+  }
   if (parts.length === 0) {
     return "";
   }
@@ -76,7 +79,9 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
     // v1.20.24 "Sweep": titles carry the same smuggling class as bodies —
     // run them through the shared block sanitation too (they were raw).
     const title = hit.title?.trim() ? ` ${sanitizeForBlock(hit.title).trim()}` : "";
-    const domain = hit.domain ? ` [${hit.domain}]` : "";
+    // Sanitized like every other interpolation — `domain` is agent-
+    // influenceable via memory_store's free-form param.
+    const domain = hit.domain ? ` [${sanitizeForBlock(hit.domain).trim()}]` : "";
     // A `conflict` hit is contested by another current chunk (v1.6 supersedes /
     // contradicts). Surface it so the model does not treat a contested memory
     // as settled fact.

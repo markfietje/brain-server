@@ -114,6 +114,11 @@ export type ResolvedBrainConfig = {
  *      wherever openclaw stores its config — migrate off it)
  * Config wins ONLY when no env source is set, so an operator rotating via
  * env does not fight a stale config value.
+ *
+ * Two-token pattern (Seatbelt): point this at the AGENT token (the second
+ * whitespace-split line of the server's token file, provisioned by the
+ * installer) — never the operator token. Under the server's
+ * `BRAIN_WRITE_POSTURE=review`, agent writes land as pending proposals.
  */
 function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
   const file = process.env.BRAIN_TOKEN_FILE?.trim();
@@ -137,12 +142,39 @@ function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
 }
 
 /** Resolve raw plugin config into a fully-populated, validated config. */
+/**
+ * Scheme gate (F-E4): `https:` always OK; `http:` only for loopback hosts —
+ * the bearer token plus user-turn text must never transit remote cleartext.
+ * Anything else throws at registration with a clear message.
+ */
+export function assertSafeBaseUrl(raw: string): void {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`brain-server plugin: baseUrl is not a valid URL: ${raw}`);
+  }
+  if (url.protocol === "https:") return;
+  if (url.protocol === "http:") {
+    const host = url.hostname;
+    if (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]") {
+      return;
+    }
+    throw new Error(
+      `brain-server plugin: refusing remote cleartext baseUrl '${raw}' — use https:// or a loopback host (the bearer token would transit in plaintext)`,
+    );
+  }
+  throw new Error(`brain-server plugin: unsupported baseUrl scheme in '${raw}'`);
+}
+
 export function resolveConfig(raw: unknown): ResolvedBrainConfig {
   const cfg = (raw ?? {}) as Partial<BrainConfig>;
   const authToken = resolveAuthToken(cfg);
+  const baseUrl = (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl;
+  assertSafeBaseUrl(baseUrl);
   return {
     enabled: cfg.enabled ?? DEFAULTS.enabled,
-    baseUrl: (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl,
+    baseUrl,
     // exactOptionalPropertyTypes: only emit the key when a token is present.
     ...(authToken !== undefined ? { authToken } : {}),
     agents: cfg.agents ?? [],

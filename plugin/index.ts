@@ -269,7 +269,7 @@ export default definePluginEntry({
           return { prependContext: block };
         } catch (err) {
           // FAIL-OPEN: never stall the agent on a memory error.
-          api.logger.warn?.(`${PLUGIN_ID}: recall failed (${String(err)}); skipping injection`);
+          api.logger.warn?.(`${PLUGIN_ID}: recall failed (${sanitizeForBlock(String(err))}); skipping injection`);
           return undefined;
         }
       },
@@ -324,7 +324,7 @@ export default definePluginEntry({
           }
         }
       } catch (err) {
-        api.logger.warn?.(`${PLUGIN_ID}: capture failed (${String(err)})`);
+        api.logger.warn?.(`${PLUGIN_ID}: capture failed (${sanitizeForBlock(String(err))})`);
       }
     });
 

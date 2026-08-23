@@ -95,6 +95,14 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
 > source is set, so rotating via env never fights a stale stored value; an
 > unreadable token file degrades loudly to the next rung, never silently to a
 > weaker source.
+>
+> **Two-token pattern (Seatbelt):** the server token file is whitespace-split.
+> Line 1 is the OPERATOR token (approvals, erasure — it must never enter
+> openclaw config). Line 2, provisioned by `scripts/install-service.sh` as the
+> agent token, is what this plugin should carry: point `BRAIN_TOKEN_FILE` at a
+> 0600 file holding it. Paired with the server's `BRAIN_WRITE_POSTURE=review`,
+> the agent's writes land as proposals for operator approval — agents propose,
+> operators dispose.
 
 ## Tools
 
