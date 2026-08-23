@@ -20,6 +20,8 @@ mod http;
 use http::{get, post};
 use std::io::{BufRead, Write};
 
+use axum::response::IntoResponse;
+
 /// Modern protocol version (final 2026-07-28 spec): stateless, per-request
 /// `_meta`, `server/discover` instead of `initialize`.
 const MODERN_VERSION: &str = "2026-07-28";
@@ -95,6 +97,13 @@ fn dirs_home() -> std::path::PathBuf {
 }
 
 fn main() {
+    if http_mode_requested() {
+        if let Err(e) = run_http() {
+            eprintln!("mcp: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut buf = String::new();
@@ -205,17 +214,24 @@ fn handle_line(line: &str, legacy: &mut bool) -> Option<String> {
         .unwrap_or(serde_json::Value::Null);
 
     let (result, modern): (Result<serde_json::Value, (i64, String)>, bool) =
-        if params.get("_meta").is_some() {
+        if method == "initialize" {
+            // Handshake — legacy semantics, regardless of what else rides in
+            // `params`. The 2026-07-28 surface has no `initialize` (stateless,
+            // per-request `_meta` + `server/discover`), so a client that sends
+            // one is declaring legacy semantics even when its params also
+            // carry a `_meta` block (hosts attach client capabilities there).
+            // Routing this branch on `_meta` presence instead left `legacy`
+            // unset and every subsequent bare call rejected with -32602 —
+            // pinned by `initialize_with_meta_still_selects_legacy`.
+            *legacy = true;
+            (method_initialize().map_err(|e| (-32603, e)), false)
+        } else if params.get("_meta").is_some() {
             // Modern protocol: validate the mandatory per-request `_meta` fields,
             // then dispatch on the 2026-07-28 surface.
             match check_meta(&params) {
                 Ok(()) => (dispatch(method, &params), true),
                 Err(e) => return Some(error_response(&id, e.code, &e.message, e.data)),
             }
-        } else if method == "initialize" {
-            // Legacy handshake: select 2025-11-25 semantics for this process.
-            *legacy = true;
-            (method_initialize().map_err(|e| (-32603, e)), false)
         } else if *legacy {
             // Legacy mode: bare requests dispatch without `_meta` or `resultType`.
             (dispatch(method, &params), false)
@@ -856,9 +872,214 @@ fn format_response(status: u16, body: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Streamable HTTP / SSE transport.
+//
+// The same JSON-RPC surface, served over HTTP for hosts that cannot spawn a
+// child process. One endpoint (`/mcp`), the MCP Streamable HTTP contract:
+//   - `POST /mcp` carries a single JSON-RPC message; the response is
+//     `application/json`, or SSE-framed when the client's `Accept` asks for
+//     `text/event-stream`.
+//   - notifications (no `id`) get `202 Accepted` with no body.
+//   - `GET`/`DELETE /mcp` → 405: this server is stateless and never
+//     initiates messages, so it offers no listen stream (spec-permitted).
+//
+// Security posture (fail-closed):
+//   - binds loopback by default; `MCP_HTTP_ADDR` is opt-in exposure,
+//   - when `MCP_HTTP_TOKEN` is set, every request must present the matching
+//     bearer — a missing or wrong token is 401 before any parsing,
+//   - bodies are bounded at MAX_LINE_BYTES (the stdio cap), refused 413,
+//   - Content-Type must be application/json (spec requirement), refused 415.
+// ---------------------------------------------------------------------------
+
+/// Resolve the bind address for HTTP mode. Loopback default — the MCP surface
+/// trusts its caller as much as stdio does, so non-loopback binds are an
+/// explicit operator act (and should ride `MCP_HTTP_TOKEN`).
+fn http_bind_addr() -> String {
+    std::env::var("MCP_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:8766".to_string())
+}
+
+/// Is HTTP mode requested? Explicit `MCP_TRANSPORT=http`, or any of the HTTP
+/// knobs present. Plain stdio stays the default: zero behavior change for
+/// every existing host that spawns the binary.
+fn http_mode_requested() -> bool {
+    if std::env::var("MCP_TRANSPORT").is_ok_and(|t| t.trim().eq_ignore_ascii_case("http")) {
+        return true;
+    }
+    std::env::var_os("MCP_HTTP_ADDR").is_some()
+        || std::env::var_os("MCP_HTTP_PORT").is_some_and(|p| !p.is_empty())
+}
+
+/// Content negotiation: does the client's `Accept` ask for an SSE-framed
+/// response? Pure so the negotiation law is pinnable.
+fn wants_sse(accept: Option<&str>) -> bool {
+    accept.is_some_and(|a| {
+        a.split(',').any(|part| {
+            part.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("text/event-stream")
+        })
+    })
+}
+
+/// Frame one JSON-RPC response as a Streamable-HTTP SSE event.
+fn sse_frame(body: &str) -> String {
+    format!("event: message\ndata: {body}\n\n")
+}
+
+/// Bearer gate. Fail-closed: a configured token must be presented EXACTLY;
+/// with no token configured the loopback-only default posture applies.
+fn check_auth(provided: Option<&str>, expected: Option<&str>) -> bool {
+    expected.is_none_or(|want| {
+        provided.is_some_and(|p| {
+            p.strip_prefix("Bearer ")
+                .or_else(|| p.strip_prefix("bearer "))
+                .is_some_and(|tok| tok == want)
+        })
+    })
+}
+
+/// Run the HTTP transport until interrupted. Never returns under normal
+/// operation; errors fail loud on stderr with exit code 1.
+fn run_http() -> Result<(), String> {
+    let expected_token = std::env::var("MCP_HTTP_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let addr = match (http_bind_addr(), std::env::var("MCP_HTTP_PORT")) {
+        (a, Ok(port)) if !port.trim().is_empty() => match a.rsplit_once(':') {
+            Some((host, _)) => format!("{host}:{port}"),
+            None => a,
+        },
+        (a, _) => a,
+    };
+    let app = mcp_router(expected_token);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("tokio runtime: {e}"))?;
+    eprintln!("mcp: streamable-http listening on http://{addr}/mcp");
+    runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .map_err(|e| format!("bind {addr}: {e}"))?;
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| format!("serve: {e}"))
+    })
+}
+
+/// The `/mcp` router. Split from [`run_http`] so tests can drive it with
+/// `tower::ServiceExt::oneshot` — no sockets needed.
+fn mcp_router(expected_token: Option<String>) -> axum::Router {
+    use axum::routing::post;
+    axum::Router::new()
+        .route("/mcp", post(mcp_post).get(mcp_refused).delete(mcp_refused))
+        .with_state(expected_token)
+}
+
+type McpState = Option<String>;
+
+async fn mcp_post(
+    axum::extract::State(expected): axum::extract::State<McpState>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::http::{StatusCode, header};
+    // Auth gate BEFORE any parsing work (fail-closed ordering).
+    if !check_auth(
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok()),
+        expected.as_deref(),
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"unauthorized"}}"#,
+        )
+            .into_response();
+    }
+    // Spec: clients MUST declare both content types they accept.
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    // Bodies are capped at the stdio line bound — no multi-GB POSTs.
+    if body.len() > MAX_LINE_BYTES {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "payload exceeds max length").into_response();
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !content_type.starts_with("application/json") {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content-type must be application/json",
+        )
+            .into_response();
+    }
+    let line = String::from_utf8_lossy(&body);
+    // Stateless transport: each request negotiates its own era (a bare HTTP
+    // client that needs legacy semantics sends `initialize` per connection —
+    // documented ceiling; session stickiness is what Mcp-Session-Id is for).
+    let mut legacy = false;
+    // Notification (no id, no reply body) → 202 Accepted per the spec.
+    if let Some(response) = handle_line(line.trim(), &mut legacy) {
+        if wants_sse(accept.as_deref()) {
+            let framed = sse_frame(&response);
+            ([(header::CONTENT_TYPE, "text/event-stream")], framed).into_response()
+        } else {
+            ([(header::CONTENT_TYPE, "application/json")], response).into_response()
+        }
+    } else {
+        (StatusCode::ACCEPTED, "").into_response()
+    }
+}
+
+/// GET/DELETE /mcp → 405: stateless server, no listen stream, nothing to
+/// terminate (both spec-permitted refusals).
+async fn mcp_refused() -> axum::response::Response {
+    use axum::http::StatusCode;
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        "stateless mcp server: only POST /mcp is served",
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A legacy client whose `initialize` params carry a `_meta` block (hosts
+    /// attach capabilities there) still selects 2025-11-25 semantics: the
+    /// handshake answers, and subsequent bare requests dispatch instead of
+    /// being rejected with -32602. Regression: `_meta` presence used to route
+    /// `initialize` onto the modern surface ("method not found"), leaving
+    /// `legacy` unset for the whole process.
+    #[test]
+    fn initialize_with_meta_still_selects_legacy() {
+        let mut legacy = false;
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host","version":"1"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+        let resp = handle_line(init, &mut legacy).expect("initialize reply");
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            parsed.get("result").is_some(),
+            "initialize must succeed when params carry _meta: {resp}"
+        );
+        assert!(legacy, "handshake must flip the process to legacy mode");
+
+        let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let resp = handle_line(call, &mut legacy).expect("tools/list reply");
+        let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            parsed.get("error").is_none(),
+            "bare post-handshake request must dispatch in legacy mode: {resp}"
+        );
+    }
 
     /// The welding vector, pinned at the MCP seam: a control char splitting
     /// the close-marker cannot terminate the fence early.
@@ -1234,5 +1455,192 @@ mod tests {
         assert!(deref.contains('t') && !deref.contains("http://x"));
         // Every straight-line response is fenced.
         assert!(body.starts_with(brain_server::fence::FENCE_BEGIN));
+    }
+
+    // ── Streamable HTTP / SSE transport ────────────────────────────────
+
+    fn sse_app() -> axum::Router {
+        mcp_router(None)
+    }
+
+    fn gated_app(token: &str) -> axum::Router {
+        mcp_router(Some(token.to_string()))
+    }
+
+    async fn post_json(app: axum::Router, body: &str, accept: &str) -> axum::response::Response {
+        use tower::ServiceExt;
+        app.oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("accept", accept)
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("in-memory request")
+    }
+
+    async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
+        axum::body::to_bytes(res.into_body(), MAX_LINE_BYTES)
+            .await
+            .expect("buffered body")
+            .to_vec()
+    }
+
+    const TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+
+    /// The full HTTP roundtrip: a JSON-RPC POST returns the same result the
+    /// stdio line would — one transport, two framings.
+    #[tokio::test]
+    async fn http_post_roundtrips_jsonrpc() {
+        let res = post_json(sse_app(), TOOLS_LIST, "application/json").await;
+        assert_eq!(res.status(), 200);
+        assert_eq!(
+            res.headers()["content-type"],
+            "application/json",
+            "JSON accept → JSON framing"
+        );
+        let raw = body_bytes(res).await;
+        let body = String::from_utf8_lossy(&raw);
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid json-rpc response");
+        assert_eq!(v["id"], 1);
+        assert!(v["result"]["tools"].as_array().is_some());
+    }
+
+    /// An `Accept: text/event-stream` client gets the SSE framing of the SAME
+    /// response — `event: message` + one data line + blank terminator.
+    #[tokio::test]
+    async fn http_sse_negotiation_frames_the_response() {
+        let res = post_json(sse_app(), TOOLS_LIST, "text/event-stream").await;
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()["content-type"], "text/event-stream");
+        let raw = body_bytes(res).await;
+        let body = String::from_utf8_lossy(&raw);
+        assert!(body.starts_with("event: message\ndata: {"));
+        assert!(body.ends_with("\n\n"), "SSE events end with a blank line");
+        // The framed data line parses back to the identical JSON-RPC envelope.
+        let data = body
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .expect("one data line");
+        let v: serde_json::Value =
+            serde_json::from_str(data).expect("framed payload is valid json");
+        assert_eq!(v["id"], 1);
+    }
+
+    /// Notifications (no id) get no reply body — 202 Accepted.
+    #[tokio::test]
+    async fn http_notification_is_202_no_body() {
+        let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        let res = post_json(sse_app(), notification, "application/json").await;
+        assert_eq!(res.status(), 202);
+        assert!(body_bytes(res).await.is_empty());
+    }
+
+    /// GET and DELETE are refused 405: stateless server, no listen stream.
+    #[tokio::test]
+    async fn http_get_delete_refused() {
+        use tower::ServiceExt;
+        let app = sse_app();
+        for method in ["GET", "DELETE"] {
+            let res = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri("/mcp")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 405, "{method} must be refused");
+        }
+    }
+
+    /// Oversized bodies are refused BEFORE parsing (the stdio cap carries).
+    #[tokio::test]
+    async fn http_body_cap_refused_413() {
+        let huge = format!("{{\"pad\":\"{}\"}}", "x".repeat(MAX_LINE_BYTES + 1));
+        let res = post_json(sse_app(), &huge, "application/json").await;
+        assert_eq!(res.status(), 413);
+    }
+
+    /// Non-JSON content types are refused 415 (spec: clients MUST declare).
+    #[tokio::test]
+    async fn http_wrong_content_type_415() {
+        use tower::ServiceExt;
+        let res = sse_app()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "text/plain")
+                    .header("accept", "application/json")
+                    .body(axum::body::Body::from(TOOLS_LIST))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 415);
+    }
+
+    #[test]
+    fn sse_negotiation_and_framing_are_pure() {
+        assert!(wants_sse(Some("text/event-stream")));
+        assert!(wants_sse(Some("application/json, text/event-stream")));
+        // Parameterized media types negotiate on the bare type.
+        assert!(wants_sse(Some("text/event-stream; charset=utf-8")));
+        assert!(!wants_sse(Some("application/json")));
+        assert!(!wants_sse(None));
+        let framed = sse_frame(r#"{"id":1}"#);
+        assert_eq!(framed, "event: message\ndata: {\"id\":1}\n\n");
+    }
+
+    /// The bearer gate fails closed: configured token + missing/wrong
+    /// credential → 401 before any parsing; exact match passes. With NO token
+    /// configured the loopback default posture applies.
+    #[tokio::test]
+    async fn http_token_gate_fails_closed() {
+        assert!(!check_auth(None, Some("secret")));
+        assert!(!check_auth(Some("Bearer wrong"), Some("secret")));
+        assert!(
+            !check_auth(Some("secret"), Some("secret")),
+            "bare token is not a bearer"
+        );
+        assert!(check_auth(Some("Bearer secret"), Some("secret")));
+        assert!(check_auth(Some("bearer secret"), Some("secret")));
+        // Unconfigured gate admits everything (loopback posture).
+        assert!(check_auth(None, None));
+
+        // Live through the router: missing header → 401; wrong → 401;
+        // exact bearer → 200.
+        use tower::ServiceExt;
+        let req = |auth: Option<&str>| {
+            let mut b = axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json");
+            if let Some(a) = auth {
+                b = b.header("authorization", a);
+            }
+            b.body(axum::body::Body::from(TOOLS_LIST.to_string()))
+                .unwrap()
+        };
+        let denied = gated_app("secret").oneshot(req(None)).await.unwrap();
+        assert_eq!(denied.status(), 401);
+        let wrong = gated_app("secret")
+            .oneshot(req(Some("Bearer nope")))
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 401);
+        let ok = gated_app("secret")
+            .oneshot(req(Some("Bearer secret")))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), 200);
     }
 }

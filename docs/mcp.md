@@ -105,7 +105,7 @@ printf '%s\n' \
 
 | Surface | Transport | Tools |
 |---|---|---|
-| **AMCP binary (`mcp`)** | JSON-RPC 2.0 / stdio | `brain_search`, `brain_recall`, `brain_ingest`, `ump.*` |
+| **AMCP binary (`mcp`)** | JSON-RPC 2.0 / stdio **or Streamable HTTP + SSE** (`/mcp`) | `brain_search`, `brain_recall`, `brain_ingest`, `ump.*` |
 | **OpenClaw plugin** | loopback HTTP | `memory_recall`, `memory_store`, `memory_verify`, `memory_get`, `memory_graph_*`, `memory_procedure_*`, `memory_decision_evaluate` |
 | **HTTP API** | HTTP/JSON | Everything in the [API reference](./api.md) |
 
@@ -114,14 +114,103 @@ memory/capability surfaces over MCP; the **UMP document**
 ([./universal-memory-protocol.md](./universal-memory-protocol.md)) specifies the
 contract those tools implement.
 
+## Streamable HTTP / SSE transport
+
+Since **1.28.19** the same binary can also serve its full JSON-RPC surface over
+**Streamable HTTP** (the MCP HTTP+SSE transport) for hosts that cannot spawn a
+child process. stdio remains the default — HTTP is opt-in.
+
+```bash
+# start in HTTP mode (loopback by default)
+MCP_TRANSPORT=http ./target/release/mcp            # listens on 127.0.0.1:8766/mcp
+
+# or pick an address/port explicitly, with a required bearer
+MCP_HTTP_ADDR=127.0.0.1:8766 MCP_HTTP_TOKEN=$(cat ~/.config/brain-server/auth-token) ./target/release/mcp
+```
+
+Contract (single endpoint `/mcp`, stateless):
+
+| Request | Response |
+|---|---|
+| `POST /mcp` with a JSON-RPC message | `200 application/json` — or SSE-framed (`event: message`, one `data:` line) when the request's `Accept` lists `text/event-stream` |
+| `POST /mcp` with a notification (no `id`) | `202 Accepted`, no body |
+| `GET` / `DELETE /mcp` | `405` — this server is stateless and never initiates messages |
+
+Security posture (fail-closed): binds loopback unless told otherwise;
+`MCP_HTTP_TOKEN` turns on a bearer gate checked **before any parsing**; bodies
+are capped at the 1 MiB stdio bound (`413`); non-JSON content types are
+refused `415`.
+
+### Example configuration
+
+Claude Desktop / generic MCP host (`claude_desktop_config.json` style) pointing
+at a remote MCP server:
+
+```json
+{
+  "mcpServers": {
+    "brain": {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:8766/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+OpenClaw agent config (`~/.openclaw/openclaw.json`), MCP-over-HTTP block:
+
+```jsonc
+{
+  // ...
+  "mcp": {
+    "servers": {
+      "brain": {
+        "url": "http://127.0.0.1:8766/mcp",
+        "transport": "http",          // streamable HTTP + SSE
+        "headers": {
+          // only needed when MCP_HTTP_TOKEN is set on the mcp process
+          "Authorization": "Bearer <MCP_HTTP_TOKEN>"
+        }
+      }
+    }
+  }
+}
+```
+
+Start the server side of that pair:
+
+```bash
+export BRAIN_URL=http://127.0.0.1:8765          # where brain-server runs
+export BRAIN_TOKEN_FILE=~/.config/brain-server/auth-token   # upstream auth ladder
+export MCP_HTTP_ADDR=127.0.0.1:8766             # where this listens
+export MCP_HTTP_TOKEN=$BRAIN_TOKEN              # gate for inbound MCP calls
+./target/release/mcp
+```
+
+Smoke-test it with curl (SSE framing):
+
+```bash
+curl -s http://127.0.0.1:8766/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
+# → event: message
+# → data: {"id":2,"jsonrpc":"2.0","result":{...,"tools":[...]}}
+```
+
 ## Security notes
 
-- The MCP binary is **clientside** — it performs no listening, no network binds;
-  it only makes outbound HTTP calls to the configured server, inheriting the
-  server's auth, PII redaction, and audit on every read/write.
+- The MCP binary is **clientside** — in stdio mode it performs no listening and
+  no network binds; it only makes outbound HTTP calls to the configured server,
+  inheriting the server's auth, PII redaction, and audit on every read/write.
 - It applies the same token-file resolution and never logs the token.
 - There is no separate credential; whoever can invoke the binary acts as the
   configured principal on the server.
+- **HTTP mode changes the bind posture**: `MCP_TRANSPORT=http` / `MCP_HTTP_ADDR`
+  opens a listener (loopback by default). Anything that can reach that port can
+  drive the same tools, so set `MCP_HTTP_TOKEN` whenever the listener is not
+  strictly personal-loopback, and treat a non-loopback `MCP_HTTP_ADDR` without
+  a token as a misconfiguration.
 
 ## DeepSeek Harness (dsh)
 
