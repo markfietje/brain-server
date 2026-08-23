@@ -136,6 +136,17 @@ jobs:
         run: cargo test --manifest-path client/Cargo.toml
       - name: wasm build
         run: cargo build --manifest-path client/Cargo.toml --target wasm32-unknown-unknown
+      # v1.28.20 Cockpit M1: desktop is a compile target, not a document.
+      # No GUI run in CI — compile + clippy correctness only (the webkit2gtk
+      # dep chain needs its system headers on Linux).
+      - name: Install desktop webview headers
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev pkg-config
+      - name: desktop feature compiles
+        run: cargo check --manifest-path client/Cargo.toml --features desktop --all-targets
+      # v1.28.20 Cockpit M4: mobile is a smoke target for this release
+      # (allow-fail, honestly labeled — not a shipped platform).
+      - name: mobile feature smoke (allow-fail)
+        run: cargo check --manifest-path client/Cargo.toml --features mobile || echo "mobile smoke failed (documented allow-fail for v1.28.20)"
       # v1.20.0 M2.1 — the bundle regression budget (client/bundle-budget.sh):
       # release wasm must stay under the measured+headroom ceiling. `dx
       # bundle` is an operator step; this is the CI-side growth guard.
