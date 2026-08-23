@@ -73,8 +73,19 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok());
             let max_steps = engine::resolve_budget(env_max);
-            match engine::crank_with_steering(host.clone(), Some(host.clone()), run_id, max_steps)
-                .await
+            // BRAIN_CHECKPOINT_EVERY tunes the checkpoint cadence
+            // (default 25, ceiling 100 — the resolver clamps).
+            let ckpt_every = std::env::var("BRAIN_CHECKPOINT_EVERY")
+                .ok()
+                .and_then(|s| s.parse::<u32>().ok());
+            match engine::crank_with_steering(
+                host.clone(),
+                Some(host.clone()),
+                run_id,
+                max_steps,
+                engine::resolve_checkpoint_every(ckpt_every),
+            )
+            .await
             {
                 Ok(report) => json!({
                     "ok": true,

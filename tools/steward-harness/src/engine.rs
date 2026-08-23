@@ -99,26 +99,46 @@ pub fn resolve_budget(env_val: Option<u32>) -> u32 {
     clamp_max_steps(resolve_max_steps(env_val))
 }
 
+/// Resolve the checkpoint cadence: the number of emitted events
+/// after which a `workflow/checkpoint` fires. Default 25, bounded 1..=100 —
+/// a deterministic cadence is what makes derived windows replayable, so both
+/// degenerates are refused: 0 (never checkpoint) and unbounded floods.
+pub fn resolve_checkpoint_every(env_val: Option<u32>) -> u32 {
+    env_val.unwrap_or(25).clamp(1, 100)
+}
+
 /// Run the governed loop until a stop condition. `max_steps` bounds ONE
 /// crank invocation; the run itself may need many cranks (human-cranked).
+/// The checkpoint cadence is the default [`resolve_checkpoint_every`].
 pub async fn crank(
     host: Arc<dyn WorkflowHost>,
     run_id: i64,
     max_steps: u32,
 ) -> Result<CrankReport, HarnessError> {
-    crank_with_steering(host, None, run_id, max_steps).await
+    crank_full(host, None, None, None, run_id, max_steps, 0).await
 }
 
 /// `crank` with an optional advisory steering source drained at each step
 /// boundary. Steering never redirects the loop autonomously — drained
 /// messages land in `state.steering[]` as advisories for the next decision.
+/// `checkpoint_every` = 0 falls back to [`resolve_checkpoint_every`] default.
 pub async fn crank_with_steering(
     host: Arc<dyn WorkflowHost>,
     reader: Option<Arc<dyn SteeringReader>>,
     run_id: i64,
     max_steps: u32,
+    checkpoint_every: u32,
 ) -> Result<CrankReport, HarnessError> {
-    crank_full(host, reader, None, None, run_id, max_steps).await
+    crank_full(
+        host,
+        reader,
+        None,
+        None,
+        run_id,
+        max_steps,
+        checkpoint_every,
+    )
+    .await
 }
 
 /// The full crank: an optional [`Effects`] door makes every event emission
@@ -127,6 +147,13 @@ pub async fn crank_with_steering(
 /// optional cancel token (`brain_engine_sdk::hostcall::CancellationToken`,
 /// clones share the signal) is honored at every step boundary and settles
 /// the run as [`StoppedAt::Cancelled`] exactly between steps.
+///
+/// The checkpoint cadence is deterministic by construction: a
+/// `workflow/checkpoint` fires on every phase transition ([`Decision::
+/// Advance`], the whole-state-replacement boundary), on every
+/// [`StoppedAt::AskHuman`] pause, every `checkpoint_every` emitted events
+/// (0 → default), and once during finalize — so a completed run always ends
+/// ON a checkpoint. Replayable windows need replayable boundaries.
 #[allow(clippy::too_many_arguments)]
 pub async fn crank_full(
     host: Arc<dyn WorkflowHost>,
@@ -135,17 +162,45 @@ pub async fn crank_full(
     cancel: Option<CancellationToken>,
     run_id: i64,
     max_steps: u32,
+    checkpoint_every: u32,
 ) -> Result<CrankReport, HarnessError> {
     let max_steps = clamp_max_steps(max_steps);
+    let cadence = if checkpoint_every == 0 {
+        resolve_checkpoint_every(None)
+    } else {
+        resolve_checkpoint_every(Some(checkpoint_every))
+    };
     let mut steps_executed: u32 = 0;
     let mut warned = false;
     let mut kernel = RunState::new(max_steps);
     let mut hostcalls: BTreeMap<String, u64> = BTreeMap::new();
+    // Events emitted since the last checkpoint — the cadence counter.
+    let mut events_since_ckpt: u32 = 0;
     // Lineage cursor: the id of the last emitted event, threaded
     // into every emission. After a rewind the run state's LAST `branches[]`
     // marker names where the new branch forks — the cursor seeds from it, so
     // the next emitted event parents at the rewind target.
     let mut last_event: Option<i64> = None;
+
+    // The one checkpoint seam: snapshot the CURRENT state as a bounded
+    // event, thread the lineage cursor, reset the cadence counter. The
+    // idempotency key derives from PERSISTED facts (`key_suffix`) — stable
+    // across replays (same boundary ⇒ same key ⇒ exactly-once).
+    macro_rules! checkpoint {
+        ($st:expr, $key_suffix:expr) => {{
+            last_event = Some(emit(
+                &*host,
+                &effects,
+                &mut hostcalls,
+                run_id,
+                "workflow/checkpoint",
+                &$st.to_string(),
+                &format!("run-{run_id}-ckpt-{}", $key_suffix),
+                last_event,
+            )?);
+            events_since_ckpt = 0;
+        }};
+    }
 
     loop {
         let Some((js, rev)) = host.load_state(run_id)? else {
@@ -195,12 +250,31 @@ pub async fn crank_full(
                         &mut st,
                         &effects,
                         &mut hostcalls,
-                        last_event,
+                        &mut last_event,
                     )?;
                 }
                 return Ok(report(steps_executed, StoppedAt::Done, warned, hostcalls));
             }
             Decision::AskHuman { question } => {
+                // An AskHuman pause is a natural checkpoint
+                // boundary — the window derivation anchors here. Keyed on the
+                // persisted step count (stable across replays). The cursor
+                // and cadence counter die with the return, so this path
+                // emits directly instead of through the checkpoint seam.
+                let ordinal = st
+                    .get("steps")
+                    .and_then(|s| s.as_array())
+                    .map_or(0, Vec::len);
+                let _ = emit(
+                    &*host,
+                    &effects,
+                    &mut hostcalls,
+                    run_id,
+                    "workflow/checkpoint",
+                    &st.to_string(),
+                    &format!("run-{run_id}-ckpt-ask-{ordinal}"),
+                    last_event,
+                )?;
                 return Ok(report(
                     steps_executed,
                     StoppedAt::AskHuman { question },
@@ -212,7 +286,13 @@ pub async fn crank_full(
                 let ns: Value = serde_json::from_str(&next_state)
                     .map_err(|e| HarnessError::CorruptState(e.to_string()))?;
                 match cas_persist(&*host, run_id, rev, &ns) {
-                    Ok(()) => continue,
+                    Ok(()) => {
+                        // A whole-state replacement IS a phase
+                        // transition — checkpoint the new phase's opening
+                        // state (keyed on the revision it replaced).
+                        checkpoint!(ns, format!("adv-{rev}"));
+                        continue;
+                    }
                     Err(actual) => {
                         return Ok(report(
                             steps_executed,
@@ -310,19 +390,14 @@ pub async fn crank_full(
                     &format!("run-{run_id}-evt-{ordinal}"),
                     last_event,
                 )?);
-                // Checkpoint-as-event: the state snapshot rides the outbox so
-                // a rewind target always exists. Oversized states are an
-                // ERROR, never a truncation.
-                last_event = Some(emit(
-                    &*host,
-                    &effects,
-                    &mut hostcalls,
-                    run_id,
-                    "workflow/checkpoint",
-                    &st.to_string(),
-                    &format!("run-{run_id}-ckpt-{ordinal}"),
-                    last_event,
-                )?);
+                events_since_ckpt += 1;
+                // The cadence boundary — every N emitted events a
+                // checkpoint fires (replacing the old every-step emission; a
+                // deterministic cadence is what makes derived windows
+                // replayable). Keyed on the persisted step ordinal.
+                if events_since_ckpt >= cadence {
+                    checkpoint!(st, format!("n-{ordinal}"));
+                }
             }
         }
     }
@@ -427,7 +502,7 @@ fn finalize(
     st: &mut Value,
     effects: &Option<Arc<crate::effects::Effects>>,
     hostcalls: &mut BTreeMap<String, u64>,
-    parent: Option<i64>,
+    parent: &mut Option<i64>,
 ) -> Result<(), HarnessError> {
     let Some(obj) = st.as_object_mut() else {
         return Err(HarnessError::CorruptState("state is not an object".into()));
@@ -450,6 +525,20 @@ fn finalize(
     let js = st.to_string();
     host.cas(run_id, rev, &js)
         .map_err(|e| HarnessError::Host(HostError::Internal(e.to_string())))?;
+    // A completed run ends ON a checkpoint — the window
+    // derivation always has a terminal anchor (full state incl. status).
+    // The cursor advances through BOTH emissions (chain stays unbroken).
+    let ckpt_id = emit(
+        host,
+        effects,
+        hostcalls,
+        run_id,
+        "workflow/checkpoint",
+        &st.to_string(),
+        &format!("run-{run_id}-ckpt-end"),
+        *parent,
+    )?;
+    *parent = Some(ckpt_id);
     let _ = emit(
         host,
         effects,
@@ -458,7 +547,7 @@ fn finalize(
         "workflow/end",
         &serde_json::json!({ "stop": "completed" }).to_string(),
         &format!("run-{run_id}-end"),
-        parent,
+        *parent,
     )?;
     Ok(())
 }

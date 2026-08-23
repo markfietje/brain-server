@@ -163,3 +163,66 @@ async fn rewind_creates_branch_and_replay_is_idempotent() {
         after.iter().map(|(_, _, _, k, _)| k.as_str()).collect();
     assert_eq!(keys.len(), after.len(), "keys stay unique");
 }
+
+// ── Fathom M1: the checkpoint cadence ──────────────────────────────────────
+
+#[tokio::test]
+async fn checkpoints_fire_on_askhuman_phase_and_event_count() {
+    // AskHuman boundary: a run that pauses owes a checkpoint AT the pause —
+    // the window derivation anchors there.
+    let host = Arc::new(TapeHost::default());
+    host.seed(r#"{"pending_question":"which disk group?"}"#);
+    engine::crank(host.clone(), 1, 8).await.unwrap();
+    let (_, events) = host.snapshot();
+    let ask_ckpts: Vec<_> = events
+        .iter()
+        .filter(|(_, t, p, ..)| *t == "workflow/checkpoint" && p.contains("disk group"))
+        .collect();
+    assert_eq!(ask_ckpts.len(), 1, "exactly one AskHuman checkpoint");
+
+    // Phase transition (Decision::Advance = whole-state replacement): the new
+    // phase's opening state is checkpointed.
+    let host = Arc::new(TapeHost::default());
+    host.seed(r#"{"next_state":"{\"status\":\"active\"}"}"#);
+    engine::crank(host.clone(), 1, 8).await.unwrap();
+    let (_, events) = host.snapshot();
+    assert!(
+        events
+            .iter()
+            .any(|(_, t, p, ..)| *t == "workflow/checkpoint" && p.contains("active")),
+        "an Advance fires a phase-transition checkpoint"
+    );
+
+    // Event-count cadence: with cadence 2 and a 5-step queue, checkpoints
+    // land deterministically at every second emitted log event (+ finalize).
+    let host = Arc::new(TapeHost::default());
+    host.seed(
+        r#"{"next_step":"s","queue":[
+            {"expected":"a","actual":"a"},{"expected":"b","actual":"b"},
+            {"expected":"c","actual":"c"},{"expected":"d","actual":"d"},
+            {"expected":"e","actual":"e"}]}"#,
+    );
+    engine::crank_full(host.clone(), None, None, None, 1, 50, 2)
+        .await
+        .unwrap();
+    let (_, events) = host.snapshot();
+    let ckpts = events
+        .iter()
+        .filter(|(_, t, ..)| *t == "workflow/checkpoint")
+        .count();
+    // 5 logs → cadence checkpoints after events 2 and 4, then the terminal
+    // end-checkpoint. Deterministic positions, not per-step floods.
+    assert_eq!(
+        ckpts, 3,
+        "cadence-2 over 5 steps + finalize = 3 checkpoints"
+    );
+}
+
+#[test]
+fn checkpoint_cadence_is_env_tunable_with_ceiling() {
+    use steward_harness::engine::resolve_checkpoint_every;
+    assert_eq!(resolve_checkpoint_every(None), 25, "documented default");
+    assert_eq!(resolve_checkpoint_every(Some(10)), 10);
+    assert_eq!(resolve_checkpoint_every(Some(0)), 1, "never-off refused");
+    assert_eq!(resolve_checkpoint_every(Some(500)), 100, "ceiling 100");
+}
