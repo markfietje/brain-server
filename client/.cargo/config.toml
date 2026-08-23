@@ -1,0 +1,5 @@
+# v1.28.20 Cockpit M4: size-optimize the wasm target (the dx CLI applies
+# [web.wasm_opt] only to its own bundles; this makes the raw `cargo build
+# --target wasm32-unknown-unknown` CI path match the shipped posture).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "opt-level=z", "-C", "strip=symbols"]

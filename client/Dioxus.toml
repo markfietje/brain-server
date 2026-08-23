@@ -17,6 +17,11 @@ base_path = "app"
 
 [web.resource.dev]
 
+# v1.28.20 Cockpit M4: size-optimize the shipped bundle (dx applies this to
+# its own builds; the raw cargo CI path mirrors it via .cargo/config.toml).
+[web.wasm_opt]
+level = "z"
+
 [tailwind]
 # Dioxus 0.7 auto-detects tailwind.css and downloads the binary.
 # input/output are optional overrides.
@@ -24,7 +29,13 @@ input = "styles/input.css"
 output = "assets/tailwind.css"
 
 # --- Desktop (macOS/Windows/Linux): same code, no glue ----------------------
-# dx serve --platform desktop  /  dx bundle --platform desktop
+# dx serve --platform desktop  /  scripts/build-desktop.sh
+[desktop.window]
+title = "brain — memory control"
+width = 1200
+height = 820
+min_width = 720
+min_height = 560
 
 # --- iOS (v1.17.0) -----------------------------------------------------------
 [ios]
