@@ -211,23 +211,24 @@ pub async fn ingest(
     // Multi-record UMP batch: per-record status, one failure never aborts.
     let mut results = Vec::with_capacity(lowered.len());
     for lowered_req in lowered {
-        match lowered_req {
-            Ok((req, _)) => match if crate::config::write_posture() == "review" {
-                Err(propose_structured(&_state, &principal.0, req).await)
-            } else {
-                ingest_one(&_state, &principal.0, req).await
-            } {
-                Ok(r) => results.push(serde_json::to_value(r).unwrap_or_default()),
-                Err(e) => results.push(json!({
-                    "status": "error",
-                    "error": format!("{e:?}"),
-                })),
-            },
-            Err(e) => results.push(json!({
-                "status": "error",
-                "error": format!("{e:?}"),
-            })),
+        if let Err(e) = &lowered_req {
+            results.push(err_envelope(e));
+            continue;
         }
+        // The error arm was handled above; this binding always succeeds.
+        let Ok((req, _)) = lowered_req else {
+            continue;
+        };
+        let outcome = if crate::config::write_posture() == "review" {
+            Err(propose_structured(&_state, &principal.0, req).await)
+        } else {
+            ingest_one(&_state, &principal.0, req).await
+        };
+        results.push(
+            outcome
+                .map(|r| serde_json::to_value(r).unwrap_or_default())
+                .unwrap_or_else(err_envelope),
+        );
     }
     Ok(Json(
         json!({ "ump": "1.0", "count": results.len(), "results": results }),
@@ -319,10 +320,15 @@ async fn propose_structured(
         },
     )
     .await;
-    match p {
-        Ok(p) => HandlerError::accepted(p.id, json!({ "proposal_id": p.id, "status": "pending" })),
-        Err(e) => e,
-    }
+    p.map_or_else(
+        |e| e,
+        |p| HandlerError::accepted(p.id, json!({ "proposal_id": p.id, "status": "pending" })),
+    )
+}
+
+/// the uniform per-record error envelope (lowering + ingest failures share it).
+fn err_envelope(e: impl std::fmt::Debug) -> serde_json::Value {
+    json!({ "status": "error", "error": format!("{e:?}") })
 }
 
 pub(crate) async fn ingest_one(

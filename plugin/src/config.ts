@@ -151,8 +151,10 @@ export function assertSafeBaseUrl(raw: string): void {
   let url: URL;
   try {
     url = new URL(raw);
-  } catch {
-    throw new Error(`brain-server plugin: baseUrl is not a valid URL: ${raw}`);
+  } catch (cause) {
+    throw new Error(`brain-server plugin: baseUrl is not a valid URL: ${raw}`, {
+      cause,
+    });
   }
   if (url.protocol === "https:") return;
   if (url.protocol === "http:") {

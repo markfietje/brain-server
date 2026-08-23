@@ -130,7 +130,7 @@ fn is_invisible(c: char) -> bool {
         // Mirror of the server's residual-class additions: Mongolian vowel
         // separator, Hangul fillers, interlinear annotation.
         || matches!(cp, 0x180E | 0x115F | 0x1160)
-        || (0xFFF9 <= cp && cp <= 0xFFFB)
+        || (0xFFF9..=0xFFFB).contains(&cp)
 }
 
 // ---------------------------------------------------------------------------

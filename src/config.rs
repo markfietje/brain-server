@@ -127,9 +127,13 @@ pub fn write_posture() -> &'static str {
 /// startup validation: an unknown `BRAIN_WRITE_POSTURE` value refuses to
 /// boot rather than silently degrading to `open`.
 pub fn validate_write_posture() -> Result<(), String> {
-    match std::env::var("BRAIN_WRITE_POSTURE").as_deref() {
-        Err(_) | Ok("") | Ok("open") | Ok("review") => Ok(()),
-        Ok(other) => Err(format!(
+    // Absent env reads as the empty string — the same open default.
+    match std::env::var("BRAIN_WRITE_POSTURE")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" | "open" | "review" => Ok(()),
+        other => Err(format!(
             "BRAIN_WRITE_POSTURE='{other}' is invalid; must be open or review"
         )),
     }
@@ -955,9 +959,10 @@ mod tests {
             validate_write_posture().is_err(),
             "…but startup REFUSES the unknown value"
         );
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) },
-            None => unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") },
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") };
         }
     }
 

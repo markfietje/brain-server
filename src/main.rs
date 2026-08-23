@@ -772,18 +772,19 @@ async fn add_chunk(
             },
         )
         .await;
-        return match proposal {
-            Ok(p) => (
-                axum::http::StatusCode::ACCEPTED,
-                Json(serde_json::json!({
-                    "success": true,
-                    "status": "proposal_pending",
-                    "proposal_id": p.id
-                })),
-            )
-                .into_response(),
-            Err(e) => e.into_response(),
-        };
+        return proposal
+            .map(|p| {
+                (
+                    axum::http::StatusCode::ACCEPTED,
+                    Json(serde_json::json!({
+                        "success": true,
+                        "status": "proposal_pending",
+                        "proposal_id": p.id
+                    })),
+                )
+                    .into_response()
+            })
+            .unwrap_or_else(axum::response::IntoResponse::into_response);
     }
 
     // injection screen. Now the full two-layer
@@ -1280,18 +1281,19 @@ async fn ingest_memory(
             },
         )
         .await;
-        return match proposal {
-            Ok(p) => (
-                axum::http::StatusCode::ACCEPTED,
-                Json(serde_json::json!({
-                    "success": true,
-                    "status": "proposal_pending",
-                    "proposal_id": p.id
-                })),
-            )
-                .into_response(),
-            Err(e) => e.into_response(),
-        };
+        return proposal
+            .map(|p| {
+                (
+                    axum::http::StatusCode::ACCEPTED,
+                    Json(serde_json::json!({
+                        "success": true,
+                        "status": "proposal_pending",
+                        "proposal_id": p.id
+                    })),
+                )
+                    .into_response()
+            })
+            .unwrap_or_else(axum::response::IntoResponse::into_response);
     }
 
     let model = Arc::clone(&s.model);
@@ -14202,16 +14204,15 @@ Final paragraph after the rule.";
             })),
         )
         .await;
-        match &res {
-            Ok(_) => panic!("remember must divert to the 202 proposal envelope"),
-            Err(e) => assert_eq!(e.status, axum::http::StatusCode::ACCEPTED, "{e:?}"),
-        }
+        let Err(e) = &res else {
+            panic!("remember must divert to the 202 proposal envelope")
+        };
+        assert_eq!(e.status, axum::http::StatusCode::ACCEPTED, "{e:?}");
 
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("BRAIN_WRITE_POSTURE", v),
-                None => std::env::remove_var("BRAIN_WRITE_POSTURE"),
-            }
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") };
         }
 
         let conn = state.pool.get().unwrap();

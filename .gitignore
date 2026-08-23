@@ -95,3 +95,4 @@ docs/DOC_ACCURACY_AUDIT_PROMPT.md
 
 # Rerank/classify model artifacts — downloaded from HuggingFace (see PLAN_06), never committed
 /models/
+EXECUTION_PROMPT_*.md

@@ -19,6 +19,23 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.14] — 2026-08-23 — the audit-hardening line (1.28.9 → 1.28.14)
+
+**Security remediation of the 2026-08-23 independent audit** (server `Cargo.toml`/lock 1.28.8 → **1.28.14**; client bumped in-tree; plugin **0.4.7**; no schema change). Six themes shipped as individually-green commits: Gateweld, Seatbelt, Boundary (Fencepost3 + Provenance), Anchor (Legible + boot integrity), Bedrock, Parity.
+
+### Release notes
+
+**Security fixes**
+
+- Approve without a `content_digest` is now `400 digest_required` — the display↔decision binding is mandatory (was an opt-in legacy branch). Plugin-mount evidence is server-verified against the live boot manifest BEFORE the Art.12 audit row is written (`409` on mismatch/unknown digest).
+- New `BRAIN_WRITE_POSTURE=open|review` (default `open`; installer sets `review`). Under review, `/add`, `/ingest`, `/ingest/memory`, `/ingest/markdown`, `/ump/remember`, `/ump/revise` route through the existing proposal pipeline and return `202 proposal_pending` — agents propose, operators dispose. Origin labels corrected (`/ingest/memory` derives; UMP = `agent`; `/procedure` = `operator`, idempotent backfill) + the installer provisions a second agent token.
+- The Rust MCP fence-welding forge is closed (`fence::wrap_fenced`: control chars strip BEFORE sentinels, no transform after); MCP tool results, `format_response`, and CLI recall/get output all share it. Recall hits serialize `origin`/`flagged`/`authority`; UMP recall records carry `untrusted: true`; `/export` gains a top-level `untrusted` marker with content verbatim.
+- Boot chain means something: symlink containment (canonical, fail-closed), Ed25519-signed manifest (`sig`+`kid`) with `GET /app/boot.pub`, embedded fetch-and-refuse loader, digest-stamped service worker, external SW registration, CSP drops `'unsafe-eval'`. Client decision UI: full-content scroll dock, overview queue link-only, actions above content, invisible-char badge.
+- Supply chain: all CI `uses:` SHA-pinned + least-privilege permissions; rerank model dir refuses CWD-relative paths; model-manifest generator + installer provisioning; UMP key dir fails closed on wide modes; security headers on 401/429 (outermost layer); webhook secret selection deterministic; context-drawer strip; screen evasion hardening (new invisible classes + matching-time fullwidth fold).
+- Plugin 0.4.7: every interpolation inside the fence sanitized; error seam stripped; `baseUrl` scheme gate (https or loopback); `origin` provenance tag; drift reconciled and synced to openclaw.
+
+**Behavior-change ledger:** approve-without-digest now 400s; review posture 202s six write surfaces (env-gated, default unchanged); recall/export JSON gained additive fields; MCP/CLI output fenced; `/app` serves embedded loader/sw assets; plugin refuses remote cleartext `baseUrl`. Full findings-closure table: `AUDIT.md` §Register.
+
 ## [1.28.8] — 2026-08-23
 
 **PluginUI** (server `Cargo.toml`/lock 1.28.7 → **1.28.8**; client 1.28.6 → **1.28.8**; crates + plugin unchanged; no schema change). The shell, the chat surface, and the HITL control panel are separate plugins composed through slots — approval workflow as a first-class chat plugin, with per-decision audit evidence.

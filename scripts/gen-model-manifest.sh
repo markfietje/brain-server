@@ -27,7 +27,10 @@ for root in "${ROOTS[@]}"; do
 		if [[ -n "$(dirname "$f")" && ! -f "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" ]]; then
 			continue
 		fi
-		rel=$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$f")
+		# Absolute paths: the server resolves relative entries against the
+		# manifest's own directory, so relative storage would misresolve.
+		abs=$(cd "$(dirname "$f")" && pwd)/$(basename "$f")
+		rel=$(python3 -c "import json,sys;print(json.dumps(sys.argv[1]))" "$abs")
 		[[ $first = 1 ]] || printf ',\n' >> "$OUT.tmp"
 		first=0
 		printf '  %s: "%s"' "$rel" "$sha" >> "$OUT.tmp"

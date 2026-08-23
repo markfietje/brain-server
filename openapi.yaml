@@ -4382,6 +4382,20 @@ components:
           type: string
           nullable: true
           description: "v1.27.12 \"Provenance\": the stored data-residency region stamp. Label only."
+        origin:
+          type: string
+          nullable: true
+          description: >
+            v1.28.11 "Boundary": who produced this memory (human/model/agent/
+            operator/imported) — the write-side taint label, serialized so the
+            consumer can see the provenance. Absent for legacy rows.
+        flagged:
+          type: boolean
+          description: "v1.28.11 \"Boundary\": true when the source row was quarantined by the injection screen."
+        authority:
+          type: number
+          nullable: true
+          description: "v1.28.11 \"Boundary\": source-authority tie-breaker (0..1), surfaced as a provenance label."
     Chunk:
       type: object
       properties:

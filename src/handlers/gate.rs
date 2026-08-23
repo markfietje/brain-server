@@ -1479,11 +1479,8 @@ pub(crate) fn review_digest(content: &str) -> String {
 /// is mandatory since the Gateweld closure: an absent digest is a protocol
 /// violation (`400 digest_required` at the handler), never a silent pass.
 pub(crate) fn review_digest_matches(content: &str, want: Option<&str>) -> bool {
-    match want {
-        Some(w) => review_digest(content) == w,
-        // ponytail: no legacy branch — approve without a digest fails closed.
-        None => false,
-    }
+    // ponytail: no legacy branch — approve without a digest fails closed.
+    want.is_some_and(|w| review_digest(content) == w)
 }
 
 // ── decay + GDPR lifecycle ──────────────────────────────────────────────

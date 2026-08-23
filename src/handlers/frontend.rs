@@ -300,14 +300,14 @@ pub async fn boot_js() -> Response {
 /// `GET /app/boot.pub` — raw Ed25519 public key bytes (public material, no
 /// auth). Absent key → 404 (the loader refuses an unsigned manifest anyway).
 pub async fn boot_pub() -> Response {
-    match crate::handlers::ump::operator_signing_key() {
-        Some((_, sk)) => (
+    if let Some((_, sk)) = crate::handlers::ump::operator_signing_key() {
+        return (
             [(header::CONTENT_TYPE, "application/octet-stream")],
             sk.verifying_key().to_bytes().to_vec(),
         )
-            .into_response(),
-        None => not_found(),
+            .into_response();
     }
+    not_found()
 }
 
 /// `GET /app/sw.js` — the embedded service worker: cache keys stamped with
