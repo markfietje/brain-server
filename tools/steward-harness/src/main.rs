@@ -44,12 +44,12 @@ fn main() {
             continue;
         }
         let v: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-        let resp = rt.block_on(handle(&host, &v));
+        let resp = rt.block_on(handle_rpc(&host, &v));
         println!("{resp}");
     }
 }
 
-async fn handle(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
+async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
     use brain_engine_sdk::host::WorkflowHost as _;
     let cmd = v.get("cmd").and_then(|x| x.as_str()).unwrap_or("");
     match cmd {
