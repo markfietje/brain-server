@@ -233,21 +233,24 @@ impl WorkflowHost for SqliteWorkflowHost {
     }
 }
 
-/// Resolve the audit tenant from a `run:<id>`-shaped target (the engines'
-/// convention); anything else audits against `global`.
+/// Resolve the audit tenant from a `run:<id>` reference ANYWHERE in the
+/// target (the engines' convention, incl. `workflow/hostcall/<kind>/run:<id>`);
+/// anything else audits against `global`.
 fn tenant_for_target(conn: &Connection, target: &str) -> String {
-    target
-        .strip_prefix("run:")
-        .and_then(|id| id.parse::<i64>().ok())
-        .and_then(|run_id| {
-            conn.query_row(
+    let run_id = target
+        .match_indices("run:")
+        .filter_map(|(i, _)| target[i + 4..].split(['/', ' ']).next())
+        .find_map(|rest| rest.parse::<i64>().ok());
+    match run_id {
+        Some(run_id) => conn
+            .query_row(
                 "SELECT domain FROM workflow_runs WHERE id = ?1",
                 rusqlite::params![run_id],
                 |r| r.get::<_, String>(0),
             )
-            .ok()
-        })
-        .unwrap_or_else(|| "global".to_string())
+            .unwrap_or_else(|_| "global".to_string()),
+        None => "global".to_string(),
+    }
 }
 
 #[cfg(test)]

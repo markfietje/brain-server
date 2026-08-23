@@ -49,15 +49,50 @@ fn parse_word_list(raw: String) -> Vec<String> {
 /// argv0 admission: exact match, or a trailing-`/` entry acting as a
 /// directory prefix (`/usr/bin/` admits `/usr/bin/ls`). No entry, no exec.
 fn argv0_allowed(argv0: &str, allowlist: &[String]) -> bool {
+    // Prefix admission is only sound on a normalized path: a `..` component
+    // could let `/usr/bin/../sbin/evil` masquerade under the `/usr/bin/`
+    // prefix. Refuse rather than canonicalize (symlinks stay out of scope).
+    if argv0.split('/').any(|c| c == "..") {
+        return false;
+    }
     allowlist
         .iter()
         .any(|e| e == argv0 || (e.ends_with('/') && argv0.starts_with(e.as_str())))
 }
 
 fn loopback_host(host: &str) -> bool {
-    // A host may carry a port (`127.0.0.1:8080`); strip it for the check.
-    let bare = host.split(':').next().unwrap_or(host);
+    let h = host.trim();
+    // Bracketed IPv6 literal, optionally with a port (`[::1]:8080`).
+    let bare = match h.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        Some((inner, _)) => inner,
+        None => {
+            // Plain host, optionally with ONE port separator (`127.0.0.1:8080`);
+            // an IPv6 literal carries many colons and is kept whole.
+            if h.matches(':').count() == 1 {
+                h.split(':').next().unwrap_or(h)
+            } else {
+                h
+            }
+        }
+    };
     matches!(bare, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// Audit-and-refuse for paths that have no resolved run yet (global tenant).
+fn deny_simple(
+    host: &SqliteWorkflowHost,
+    engine: &str,
+    who: &str,
+    reason: &str,
+) -> Result<String, String> {
+    host.audit(
+        AuditKind::Workflow,
+        engine,
+        who,
+        AuditStatus::Denied,
+        reason,
+    );
+    Err(reason.to_string())
 }
 
 /// URL construction for mediated egress: remote = HTTPS only; loopback may
@@ -212,10 +247,12 @@ fn register_handlers(
 fn run_mediated_exec(
     host: &SqliteWorkflowHost,
     engine: &str,
-    _run: &str,
+    run: &str,
     body: &str,
 ) -> Result<String, String> {
-    const WHO: &str = "workflow/hostcall/exec";
+    // `run:<id>`-shaped targets let the host chain resolve the run's domain
+    // as the audit tenant (the substrate convention).
+    let who = format!("workflow/hostcall/exec/run:{run}");
     match exec_effect(body) {
         Ok(out) => {
             let payload = serde_json::json!({
@@ -228,7 +265,7 @@ fn run_mediated_exec(
             host.audit(
                 AuditKind::Workflow,
                 engine,
-                WHO,
+                &who,
                 AuditStatus::Ok,
                 "mediated exec",
             );
@@ -238,7 +275,7 @@ fn run_mediated_exec(
             host.audit(
                 AuditKind::Workflow,
                 engine,
-                WHO,
+                &who,
                 AuditStatus::Denied,
                 &reason,
             );
@@ -438,20 +475,20 @@ fn run_mediated_event(
     run: &str,
     body: &str,
 ) -> Result<String, String> {
-    const WHO: &str = "workflow/hostcall/events";
+    let run_id: i64 = match run.parse() {
+        Ok(id) => id,
+        Err(_) => return deny_simple(host, engine, "workflow/hostcall/events", "invalid run key"),
+    };
+    let who = format!("workflow/hostcall/events/run:{run_id}");
     let deny = |reason: String| {
         host.audit(
             AuditKind::Workflow,
             engine,
-            WHO,
+            &who,
             AuditStatus::Denied,
             &reason,
         );
         Err(reason)
-    };
-    let run_id: i64 = match run.parse() {
-        Ok(id) => id,
-        Err(_) => return deny("invalid run key".into()),
     };
     let v: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -474,7 +511,7 @@ fn run_mediated_event(
     }
     match host.enqueue(run_id, topic, payload, key) {
         Ok(created) => {
-            host.audit(AuditKind::Workflow, engine, WHO, AuditStatus::Ok, topic);
+            host.audit(AuditKind::Workflow, engine, &who, AuditStatus::Ok, topic);
             Ok(format!("enqueued:{created}"))
         }
         Err(e) => deny(format!("enqueue failed: {e}")),
@@ -485,7 +522,6 @@ fn run_mediated_event(
 /// read for `run_id`'s domain, sanitized. Body shape:
 /// `{"run_id": <id>, "query": "..."}`.
 fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String, String> {
-    const WHO: &str = "workflow/hostcall/tool/knowledge_suggest";
     let v: serde_json::Value =
         serde_json::from_str(body).map_err(|_| "invalid suggest payload".to_string())?;
     let run_id = v
@@ -501,7 +537,7 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
         host.audit(
             AuditKind::Workflow,
             "engine",
-            WHO,
+            &format!("workflow/hostcall/tool/knowledge_suggest/run:{run_id}"),
             AuditStatus::Denied,
             "query out of bounds",
         );
@@ -522,11 +558,21 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
     // Substring match on both ends.
     pattern.insert(0, '%');
     pattern.push('%');
+    let who = format!("workflow/hostcall/tool/knowledge_suggest/run:{run_id}");
     let hits = host.with_conn(|conn| {
+        // Fail closed on an unknown run: a deleted run must not read as an
+        // empty (ok) answer — resolve the domain explicitly first.
+        let domain: String = conn
+            .query_row(
+                "SELECT domain FROM workflow_runs WHERE id = ?1",
+                rusqlite::params![run_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| "run not found".to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT k.id, k.title, k.content FROM knowledge k \
-                 WHERE k.domain = (SELECT domain FROM workflow_runs WHERE id = ?1) \
+                 WHERE k.domain = ?1 \
                    AND k.flagged = 0 \
                    AND (k.expires_at IS NULL OR k.expires_at >= ?2) \
                    AND k.content LIKE ?3 ESCAPE '\\' LIMIT 5",
@@ -534,7 +580,7 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
             .map_err(|e| e.to_string())?;
         let now = chrono::Utc::now().timestamp();
         let rows = stmt
-            .query_map(rusqlite::params![run_id, now, pattern], |r| {
+            .query_map(rusqlite::params![domain, now, pattern], |r| {
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(0)?,
                     "title": r.get::<_, String>(1)?,
@@ -551,7 +597,7 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
     host.audit(
         AuditKind::Workflow,
         "engine",
-        WHO,
+        &who,
         AuditStatus::Ok,
         "suggest",
     );
@@ -856,6 +902,49 @@ mod tests {
             ctx.dispatch("tool", "knowledge_suggest", &too_long)
                 .is_err()
         );
+
+        // A missing run fails closed — never an empty (ok) answer.
+        let missing = serde_json::json!({"run_id": 999, "query": "access"}).to_string();
+        assert!(
+            ctx.dispatch("tool", "knowledge_suggest", &missing)
+                .unwrap_err()
+                .to_string()
+                .contains("run not found")
+        );
+    }
+
+    #[test]
+    fn hostcall_audits_resolve_the_run_domain_tenant() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo") };
+        let h = host();
+        let ctx = build(h.clone(), "engine-a");
+        assert!(
+            ctx.dispatch("exec", "1", r#"{"argv":["/bin/cat","x"]}"#)
+                .is_err()
+        );
+        // Audit targets are stored hashed; assert via the resolved tenant.
+        let rows: Vec<(String, String)> = h
+            .with_conn(|c| -> Result<Vec<(String, String)>, String> {
+                let mut stmt = c
+                    .prepare(
+                        "SELECT detail_hash, status FROM audit_events \
+                         WHERE kind='workflow' AND tenant_id = 'acme' ORDER BY id",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                Ok(rows)
+            })
+            .unwrap();
+        // The dispatch gate audit (target `exec/1`, global tenant) plus the
+        // handler's run-scoped denial — only the latter lands on `acme`.
+        let acme_denials = rows.iter().filter(|(_, s)| s == "denied").count();
+        assert_eq!(acme_denials, 1, "exactly one run-scoped denial audited");
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") };
     }
 
     #[test]
