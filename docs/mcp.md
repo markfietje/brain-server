@@ -141,6 +141,17 @@ Security posture (fail-closed): binds loopback unless told otherwise;
 are capped at the 1 MiB stdio bound (`413`); non-JSON content types are
 refused `415`.
 
+> **Honest ceiling — legacy mode is process-global.** Under stdio the
+> single-parent trust model made this safe: one client owns the process, and
+> its `initialize` selects 2025-11-25 semantics for that client alone. Over
+> HTTP the process is shared by every connecting client, so **one client's
+> `initialize` silently selects legacy semantics for all of them** — a later
+> legacy-style client's bare requests dispatch on the strength of an
+> initialization it never performed. Modern clients carrying per-request
+> `_meta` are unaffected (their branch is checked first). Fine for
+> single-operator loopback use; revisit before exposing `/mcp` beyond
+> loopback (per-connection or per-token protocol state is the v2.x shape).
+
 ### Example configuration
 
 Claude Desktop / generic MCP host (`claude_desktop_config.json` style) pointing
