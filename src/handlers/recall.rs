@@ -899,6 +899,9 @@ fn results_to_hits(
                 // read seam is the uniform control) — run through sanitize.
                 lawful_basis: crate::gate::sanitize_read_opt(r.lawful_basis.take(), pii, principal),
                 region: crate::gate::sanitize_read_opt(r.region.take(), pii, principal),
+                origin: crate::gate::sanitize_read_opt(r.origin.take(), pii, principal),
+                flagged: r.flagged,
+                authority: r.authority,
             }
         })
         .collect()
@@ -1403,6 +1406,30 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].provenance.is_some());
         assert_eq!(hits[0].provenance.as_ref().unwrap().vector_rank, Some(0));
+    }
+
+    /// Boundary: the provenance taint labels survive the recall boundary —
+    /// `origin`, `flagged` and `authority` serialize on every hit.
+    #[test]
+    fn recall_hit_serializes_provenance_taint_labels() {
+        let r = SearchResult {
+            id: 1,
+            score: 0.9,
+            title: None,
+            content: "c".into(),
+            source: None,
+            flagged: true,
+            untrusted: true,
+            authority: Some(0.7),
+            origin: Some("agent".into()),
+            ..Default::default()
+        };
+        let hits = results_to_hits(vec![(r, "global".into())], false, false, &None);
+        let v = serde_json::to_value(&hits[0]).unwrap();
+        assert_eq!(v["origin"], "agent");
+        assert_eq!(v["flagged"], true);
+        assert_eq!(v["authority"].as_f64(), Some(0.7_f32 as f64));
+        assert_eq!(v["untrusted"], true);
     }
 
     // ---- v1.5.0 "Epistemic" — calibrated abstention ----

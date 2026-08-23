@@ -2212,6 +2212,10 @@ pub async fn export(
         Ok(serde_json::json!({
             "export_format_version": 2,
             "exported_at": chrono::Utc::now().to_rfc3339(),
+            // Boundary label: exported memory is untrusted retrieved content.
+            // Content stays verbatim — portability is the point; the label
+            // travels WITH it, never a sanitizer over it.
+            "untrusted": true,
             // the residency stamp — where data lived.
             "region": brain_server::storage_layout::region(),
             "knowledge": knowledge,

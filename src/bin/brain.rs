@@ -849,6 +849,9 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
         println!("  (no results)");
         return;
     }
+    // Boundary parity: a hit listing is untrusted retrieved memory — emit it
+    // inside the shared fence (`wrap_fenced`), never as bare terminal text.
+    let mut listing = String::new();
     for (rank, h) in hits.iter().enumerate() {
         let id = h.get("id").and_then(|x| x.as_i64()).unwrap_or(-1);
         let score = h.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
@@ -880,16 +883,15 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
             .map(|s| brain_server::fence::strip_markdown_refs(&s))
             .unwrap_or_default();
 
-        println!(
-            "{:>3}. [{:.4}] id={} source={}",
+        listing.push_str(&format!(
+            "{:>3}. [{:.4}] id={} source={}\n     title: {title}\n",
             rank + 1,
             score,
             id,
             source
-        );
-        println!("     title: {title}");
+        ));
         if !snippet.is_empty() {
-            println!("     {snippet}");
+            listing.push_str(&format!("     {snippet}\n"));
         }
         if with_provenance {
             if let Some(p) = h.get("provenance") {
@@ -901,15 +903,16 @@ fn print_hits(hits: &[serde_json::Value], with_provenance: bool) {
                     .get("prf_expanded")
                     .and_then(|x| x.as_bool())
                     .unwrap_or(false);
-                println!(
-                    "     provenance: vector_rank={:?} fts_rank={:?} fused={:?} rerank={:?} prf_expanded={}",
+                listing.push_str(&format!(
+                    "     provenance: vector_rank={:?} fts_rank={:?} fused={:?} rerank={:?} prf_expanded={}\n",
                     vr, fr, fs, rs, prf
-                );
+                ));
             } else {
-                println!("     provenance: (none returned by server)");
+                listing.push_str("     provenance: (none returned by server)\n");
             }
         }
     }
+    println!("{}", brain_server::fence::wrap_fenced(&listing));
 }
 
 fn cmd_get(args: &[String]) -> Result<(), String> {
@@ -966,15 +969,12 @@ fn cmd_get(args: &[String]) -> Result<(), String> {
         println!("  revision   : {r}");
     }
     println!("  {:-<60}", "");
-    // the CLI is an agent-facing surface — strip the same
-    // invisible-Unicode class the server screen + client strip.
-    // + markdown-ref + control-char parity.
-    let content = brain_server::strip_invisible::strip_control_chars(
-        &brain_server::fence::strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
-            &json_str(&v, "content").unwrap_or_default(),
-        )),
+    // Boundary parity with the MCP seam: the full content body is untrusted
+    // retrieved memory — one shared fenced envelope.
+    println!(
+        "{}",
+        brain_server::fence::wrap_fenced(&json_str(&v, "content").unwrap_or_default())
     );
-    println!("{content}");
     Ok(())
 }
 

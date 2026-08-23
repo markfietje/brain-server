@@ -219,8 +219,7 @@ pub struct SearchResult {
     #[serde(skip_serializing_if = "provenance_is_empty")]
     pub provenance: Provenance,
     /// True when the source row was quarantined (e.g. prompt-injection screen
-    /// tripped). Internal safety flag; never serialized to clients.
-    #[serde(skip)]
+    /// tripped). Serialized (Boundary): the consumer must see the taint.
     pub flagged: bool,
     /// All retrieved content is untrusted evidence (OWASP LLM01:2025). Serialized
     /// so the consuming agent can enforce the instruction/data boundary.
@@ -234,10 +233,15 @@ pub struct SearchResult {
     /// the deterministic freshness tie-break, never blended into `score`.
     #[serde(skip)]
     pub observed_at: Option<String>,
-    /// source-authority tie-breaker (0..1). `#[serde(skip)]` —
-    /// it is a ranking hint, not part of the wire contract.
-    #[serde(skip)]
+    /// source-authority tie-breaker (0..1). Serialized (Boundary) —
+    /// a provenance label the consumer can weigh; ranking never writes.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authority: Option<f32>,
+    /// who produced this memory (`human` / `model` / `agent` /
+    /// `operator` / `imported`) — the write-side taint label. Serialized
+    /// (Boundary); labels only, no enforcement here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// Structured evidence (span + source link + highlight ranges). Populated
     /// by `enrich_evidence` after retrieval; absent if enrichment is skipped.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -313,6 +317,7 @@ impl SearchResult {
             evidence: None,
             observed_at: None,
             authority: None,
+            origin: None,
             assertion_kind: None,
             confidence: None,
             expires_at: None,
@@ -480,6 +485,7 @@ impl SearchResult {
                     evidence: None,
                     observed_at: None,
                     authority: None,
+                    origin: None,
                     assertion_kind: None,
                     confidence: None,
                     expires_at: None,
@@ -989,6 +995,7 @@ pub fn rrf_fuse(
             evidence: None,
             observed_at: r.observed_at.clone(),
             authority: r.authority,
+            origin: r.origin.clone(),
             assertion_kind: r.assertion_kind.clone(),
             confidence: r.confidence,
             expires_at: r.expires_at,
@@ -1532,7 +1539,7 @@ pub fn vec0_knn(
     let mut sql = String::from(
         "SELECT k.id, k.title, k.content, v.distance, k.flagged,
                 k.observed_at, k.authority, k.assertion_kind, k.confidence,
-                k.expires_at, k.pii, k.source, k.node_kind, k.lawful_basis, k.region
+                k.expires_at, k.pii, k.source, k.node_kind, k.lawful_basis, k.region, k.origin
          FROM vec_knowledge v
          JOIN knowledge k ON k.id = v.knowledge_id
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -1631,6 +1638,7 @@ pub fn vec0_knn(
             r.memory_kind = row.get(12)?;
             r.lawful_basis = row.get(13)?;
             r.region = row.get(14)?;
+            r.origin = row.get(15)?;
             Ok(r)
         })?
         .filter_map(|r| r.ok())
@@ -1648,7 +1656,7 @@ fn fts_search(
     let mut sql = String::from(
         "SELECT k.id, k.title, k.content, bm25(knowledge_fts) AS score, k.flagged,
                 k.observed_at, k.authority, k.assertion_kind, k.confidence,
-                k.expires_at, k.pii, k.source, k.node_kind, k.lawful_basis, k.region
+                k.expires_at, k.pii, k.source, k.node_kind, k.lawful_basis, k.region, k.origin
          FROM knowledge_fts
          JOIN knowledge k ON k.id = knowledge_fts.rowid
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -1735,6 +1743,7 @@ fn fts_search(
             r.memory_kind = row.get(12)?;
             r.lawful_basis = row.get(13)?;
             r.region = row.get(14)?;
+            r.origin = row.get(15)?;
             Ok(r)
         })?
         .filter_map(|r| r.ok())

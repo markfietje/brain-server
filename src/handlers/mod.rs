@@ -153,6 +153,16 @@ pub struct RecallHit {
     pub lawful_basis: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// who produced this memory (human/model/agent/operator/imported) —
+    /// the write-side taint label (Boundary). Absent for legacy rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// true when the source row was quarantined by the injection screen.
+    /// The consumer must see the taint (Boundary).
+    pub flagged: bool,
+    /// source-authority tie-breaker (0..1), surfaced as a provenance label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authority: Option<f32>,
 }
 
 /// calibrated abstention. When the existing

@@ -594,7 +594,14 @@ pub async fn recall(
                 },
                 "provenance_depth": r.evidence.as_ref().map(|e| e.links.len() as u32).unwrap_or(0),
             });
-            out.push(json!({ "record": record, "signals": signals, "score": score }));
+            // Boundary label: every recall record is untrusted retrieved
+            // memory — the consumer can see the taint, not infer it.
+            out.push(json!({
+                "record": record,
+                "untrusted": true,
+                "signals": signals,
+                "score": score
+            }));
         }
         Ok(out)
     })
