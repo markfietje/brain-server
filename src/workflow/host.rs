@@ -70,6 +70,18 @@ impl SqliteWorkflowHost {
     fn pool_get(&self) -> Result<PooledConn, String> {
         self.inner.pool.get().map_err(|e| e.to_string())
     }
+
+    /// Run a read-only closure on a pooled connection. The mediated-handler
+    /// read seam (knowledge_suggest): hostcall handlers never touch the pool
+    /// directly — they come through here, so lane discipline stays in one
+    /// place.
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let conn = self.pool_get()?;
+        f(&conn)
+    }
 }
 
 struct SqliteUnitHandle {

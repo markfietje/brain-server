@@ -11,7 +11,7 @@
 
 use crate::host::{AuditKind, AuditStatus, WorkflowHost};
 use crate::trust::{Decision, ExtensionPolicy, HostCallKind, UnknownKind};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -102,6 +102,11 @@ pub struct HostCallContext<H: WorkflowHost + ?Sized> {
     pub budget: Budget,
     handlers: Mutex<HashMap<&'static str, Handler>>,
     interceptor: Mutex<Option<Interceptor>>,
+    /// In-run dispatch tally: `(label, kind_wire) -> count`. Append-only,
+    /// per-context (one context per engine invocation — no atomics needed).
+    /// The audit chain is the durable count; this is the cheap aggregate a
+    /// CrankReport carries.
+    counters: Mutex<BTreeMap<(String, String), u64>>,
     host: Arc<H>,
 }
 
@@ -113,6 +118,7 @@ impl<H: WorkflowHost + ?Sized> HostCallContext<H> {
             budget: Budget::default(),
             handlers: Mutex::new(HashMap::new()),
             interceptor: Mutex::new(None),
+            counters: Mutex::new(BTreeMap::new()),
             host,
         }
     }
@@ -126,6 +132,24 @@ impl<H: WorkflowHost + ?Sized> HostCallContext<H> {
         if let Ok(mut g) = self.handlers.lock() {
             g.insert(kind.as_str(), Arc::new(f));
         }
+    }
+
+    /// Snapshot of the in-run dispatch tally: `((label, kind), count)`.
+    /// Pure read; the map only grows within one engine invocation.
+    pub fn counters(&self) -> BTreeMap<(String, String), u64> {
+        self.counters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Whether a handler is registered for `kind` (the exhaustive-table
+    /// pin reads this; production code should not branch on it).
+    pub fn has_handler(&self, kind: HostCallKind) -> bool {
+        self.handlers
+            .lock()
+            .ok()
+            .is_some_and(|g| g.contains_key(kind.as_str()))
     }
 
     /// Test seam: short-circuit dispatch before canonicalization.
@@ -171,6 +195,13 @@ impl<H: WorkflowHost + ?Sized> HostCallContext<H> {
         // 2. Time budget must still be satisfiable.
         if self.budget.effective_timeout().is_none() && self.budget.manager_secs.is_some() {
             return Err(DispatchError::BudgetExceeded);
+        }
+
+        // Countable: every canonicalized dispatch tallies, allowed or not —
+        // denials are effects too and must show up in the run's report.
+        if let Ok(mut g) = self.counters.lock() {
+            *g.entry((payload.name.clone(), payload.kind.as_str().to_string()))
+                .or_insert(0) += 1;
         }
 
         // 3. Capability check, audited either way.
@@ -506,6 +537,42 @@ mod tests {
         };
         assert!(token.is_cancelled());
         assert!(!ExtensionRegion::default().cleanup_expired());
+    }
+
+    #[test]
+    fn dispatch_counter_increments_per_kind_and_label() {
+        let mut policy = ExtensionPolicy::permissive();
+        policy.deny_caps.push("exec".into());
+        let (_host2, c) = ctx(policy);
+        assert_eq!(c.counters().len(), 0, "no dispatch, no tally");
+        c.dispatch("log", "boot", "a").unwrap();
+        c.dispatch("log", "boot", "b").unwrap();
+        // A denied call counts too — denials are effects.
+        assert!(c.dispatch("exec", "sh", "ls").is_err());
+        let counters = c.counters();
+        assert_eq!(counters.get(&("boot".to_string(), "log".to_string())), Some(&2));
+        assert_eq!(
+            counters.get(&("sh".to_string(), "exec".to_string())),
+            Some(&1),
+            "denied dispatches tally like any other"
+        );
+    }
+
+    #[test]
+    fn hostcall_table_is_exhaustive() {
+        // The closed 7-word vocabulary must stay closed: parse accepts every
+        // wire name, as_str round-trips, and the capability map covers each.
+        for wire in [
+            "tool", "exec", "http", "session", "events", "ui", "log",
+        ] {
+            let k = HostCallKind::parse(wire).unwrap();
+            assert_eq!(k.as_str(), wire);
+            assert!(!k.required_capability().is_empty());
+        }
+        // And nothing outside parses (the deny-by-default posture).
+        for bad in ["shell", "", "Tool", "tools"] {
+            assert!(HostCallKind::parse(bad).is_err());
+        }
     }
 
     #[test]

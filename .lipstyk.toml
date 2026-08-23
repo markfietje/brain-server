@@ -46,3 +46,11 @@ enabled = false
 
 [rules.comment-clustering]
 enabled = false
+
+# v1.28.15 diff: the workflow module's identifier vocabulary is its DOMAIN
+# vocabulary (run/state/topic/answer/payload/question) — a single-purpose
+# module has inherently low unique-stem entropy, so this heuristic fires on
+# every touched line there regardless of authorship. False positive for
+# diff gating; full scan (`--config /dev/null`) still surfaces it.
+[rules.naming-entropy]
+enabled = false

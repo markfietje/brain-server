@@ -14575,13 +14575,13 @@ Final paragraph after the rule.";
         use axum::extract::{Path, State};
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
-        // Step 1: open a run whose state asks a human question immediately.
+        // Open a run whose state asks a human question immediately.
         let run_id = open_engine_run(
             &state,
             &serde_json::json!({"pending_question": "collect logs first?"}).to_string(),
         )
         .await;
-        // The engine's load_state → decide would report StoppedAt::AskHuman.
+        // load_state → decide over this shape reports StoppedAt::AskHuman.
         let view = crate::handlers::workflow::get_run_state(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
@@ -14593,8 +14593,8 @@ Final paragraph after the rule.";
         let v: serde_json::Value =
             serde_json::from_str(view.0["state_json"].as_str().unwrap()).unwrap();
         assert!(v.get("pending_question").is_some(), "AskHuman stop shape");
-        // Step 2: the human answers via POST .../answer; the next crank sees
-        // no routing key and reports StoppedAt::Done.
+        // The human answers via POST .../answer; the next crank sees no
+        // routing key and reports StoppedAt::Done.
         let digest = crate::audit::hash("collect logs first?");
         let ans = crate::handlers::workflow::post_answer(
             State(state.clone()),
