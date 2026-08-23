@@ -19,6 +19,48 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.19] — 2026-08-23 — "Witness": the client finally testifies
+
+The client-side evidence loop closes: a workflow-outbox drain worker publishes drained `workflow/*` events on the `/events` SSE bus (opt-in, domain-gated, sanitized before broadcast), the GUI holds a persistent reconnecting stream instead of a chunk-and-drop poll, posts per-plugin mount evidence with the Anchor-signed boot-manifest digest, and the review-job / workflow-run chat nodes become real HITL surfaces on a new `/runs/:id` conversation panel. Plus: the standalone `mcp` binary gains the MCP Streamable HTTP/SSE transport alongside stdio. Server `Cargo.toml`/lock 1.28.18 → **1.28.19**; client 1.28.14 → **1.28.19**; schema unchanged (1.28.18 — zero DDL); SDK + harness unchanged.
+
+### Release notes
+
+**Improvements**
+
+- `/events` now also carries drained `workflow/*` outbox events under kind `workflow` with payload `{topic, run_id, payload_json, event_id, parent_event_id, domain}`. Additive and default-off: existing consumers see nothing unless they explicitly ask `?kinds=workflow`, and even then only events whose run domain they may Read (checked per subscriber at fan-out; denied events are dropped, never leaked).
+- The GUI holds ONE persistent `/events` stream for the whole app (survives route changes): capped exponential backoff (1 s → 30 s), deduped per coordinate space (alert `seq`, outbox `(run_id, event_id)`), bounded 500-event ring. The old 10 s poll is demoted, not removed — it wakes only after two consecutive stream failures.
+- New `/runs/:run_id` conversation panel (deep-linkable): the run's stream events fold through the conversation assembler into keyed chat nodes — `review-job` renders digest + SLA clock + role gate with inline approve/reject (the ApprovalDock's digest-bound decision action moved to where the evidence streams in; the dock itself remains on Overview), and `workflow-run` renders the lineage timeline (parent links + branch markers) and the live AskHuman card. Unknown node kinds fall back to a generic card — never silently dropped. Keyboard conventions reused from Review (A/R decide, J/K walk).
+- Mount evidence flows at last: every GUI boot posts one `POST /workflow/plugins/mount` per mounted plugin, carrying the bundle SHA-256 read from the Anchor-signed `/app/boot.json` (`.wasm` entry preferred). Fire-and-forget with a console warning — evidence loss is visible, never fatal.
+- **MCP over HTTP:** the `mcp` binary now serves its full JSON-RPC surface over Streamable HTTP (`POST /mcp`, SSE-framed when the client's `Accept` asks) in addition to stdio — opt-in via `MCP_TRANSPORT=http` / `MCP_HTTP_ADDR`. Example Claude Desktop and OpenClaw configurations are in docs/mcp.md.
+- Steering composer on the run panel posts the existing screened `POST …/steering` (≤4000 chars, live remaining-char count).
+
+**Bug fixes**
+
+- Fixed a pre-existing runtime panic in the client: the plugin host was provided to the context as a bare `PluginHost` while consumers read it as `Signal<PluginHost>`, so mounting the Overview approval dock panicked. The provider now wraps the host in a signal.
+- Fixed an aborted-`git-stash` hazard during this release's development session (work recovered intact; no tree damage).
+
+**Security fixes**
+
+- The workflow event bridge applies the unconditional sanitize seam to outbox payloads BEFORE broadcast (invisible chars + markdown-ref constructs never reach the wire raw, even though engine state is machine-written), and the per-subscriber run-domain Read gate fails closed at fan-out.
+- HTTP-mode MCP is fail-closed by construction: loopback bind by default, optional `MCP_HTTP_TOKEN` bearer checked BEFORE any request parsing (401 on missing/wrong credential), bodies capped at the 1 MiB stdio bound (413), non-JSON content types refused (415), GET/DELETE refused 405 (stateless server, no listen stream).
+
+### Engineering record
+
+- **Server M1 (outbox → SSE bridge):** new `spawn_workflow_event_worker` in `src/alert.rs` — every 2 s, per registered domain (webhook drainer's cadence + fail-soft discipline), pending `topic LIKE 'workflow/%'` rows advance via the existing `workflow::outbox::deliver` (audit row commits in the same tx; non-workflow topics like `steering` are never touched — engines consume those through their own surfaces) and publish `{kind:"workflow", payload:{…}}` on the bounded broadcast. Batch-bounded at 100 rows/domain/tick. Admission decision extracted as pure `workflow_event_admissible(kinds, authorized)`: opt-in required AND domain Read granted (default-off for old consumers). Pinned by `workflow_events_broadcast_with_domain_authz`, `sanitize_applies_to_workflow_payloads`, `kinds_filter_excludes_workflow_by_default`.
+- **Client M2/M3/M4 (Witness):** new `client/src/events.rs` — parse/framing/backoff/dedup/envelope-adapter pure cores (`stream_reconnects_and_dedups_by_seq`, `ops_poll_falls_back_after_two_stream_failures`, `assembler_ingest_builds_review_job_from_proposal_events`) with the coroutine driver as thin plumbing in main.rs; `stream_client()` drops the 15 s total timeout that would sever healthy streams while keeping the 5 s handshake bound. New `client/src/panels/conversation.rs` keyed off the shared slot registry (`ui_renderer::chat_node_view` dispatch + generic-card fallback); answer binds SHA-256 of the exact `pending_question` bytes (server re-verifies in-tx). api.rs gains ~12 typed wrappers (`workflow_open/run/state/state_put/events/answer/steer/rewind/handoff/scoreboard`, `plugin_mount_evidence`, `boot_manifest`). Mount-evidence planning is pure (`plugins::mount_evidence_plan` + `manifest_digest`: `.wasm` preferred, absent manifest → metadata-only evidence — an unverifiable digest is never invented).
+- **MCP HTTP transport:** `src/bin/mcp.rs` reuses the existing JSON-RPC core (`handle_line`) behind an axum router driven by `tower::ServiceExt::oneshot` in tests — no sockets needed for the pins: `http_post_roundtrips_jsonrpc`, `http_sse_negotiation_frames_the_response`, `http_notification_is_202_no_body`, `http_get_delete_refused`, `http_body_cap_refused_413`, `http_wrong_content_type_415`, `http_token_gate_fails_closed`, `sse_negotiation_and_framing_are_pure`. Content negotiation honors the client's `Accept`; legacy-era negotiation stays per-request (stateless ceiling documented below). Zero new dependencies (axum/tokio were already workspace deps).
+- Tests: server main bin **812** / 6 ignored (+3: the three Witness bridge pins); lib **166** / 1 ignored (unchanged); mcp bin **30** (+11: the eight HTTP/SSE pins above plus framing helpers); brain CLI 6, eval 4, metrics 8, bench 8 (all unchanged); client **212** / 0 (+11: events cores ×5, mount-evidence ×3, conversation panel ×3). clippy `-D warnings` + fmt clean on both trees; lipstyk diff gate green (one rule disable added with written reason: `structural-repetition` fires on the ~90 deliberately one-line typed API wrappers — the repetition IS the wire contract); live smoke on a COPY of the real DB green: `brain doctor` clean, verify_chain intact, open-run → POST event → SSE delivery within one drain tick (both JSON and SSE framings), GET 405 / notification 202 verified against the running process.
+
+### Honest ceilings
+
+- The SSE bus is broadcast-lag semantics: a slow consumer drops missed events and re-syncs via the poll fallback (ops) or the lineage read (runs). The drain worker marks rows delivered after publish-attempt scheduling — a crash between deliver and broadcast loses that event from the LIVE feed (it remains fully queryable via `/workflow/runs/{id}/events`; the durable record is never lost, only the push).
+- Domain fan-out authorization is evaluated at stream-delivery time against each subscriber's principal at connect; long-lived connections do not re-authorize mid-stream when roles change (reconnect picks up new grants).
+- HTTP-mode MCP is stateless: no sessions, no server-initiated messages, no resumability tokens; legacy (2025-11-25) clients must send `initialize` per connection because nothing sticks between requests. Non-loopback binds without `MCP_HTTP_TOKEN` are possible but documented as misconfiguration, not prevented.
+- Per-plugin bundle digests do not exist: compile-time plugins ship inside the single UI wasm bundle, so all mount-evidence rows carry the same manifest digest (the executing UI code), not per-plugin hashes.
+- The ops poll fallback re-syncs alert regions only; the conversation panel relies on the persistent stream (its degraded mode is the manual reload / lineage refetch).
+
+---
+
 ## [1.28.18] — 2026-08-23 — "Lineage": events remember where they came from
 
 The outbox grows ancestry: `parent_id` links every event to the event it followed, checkpoints become events, rewind branches instead of deleting (pi's leaf-move discipline), and the I-PASS handoff packet becomes a real endpoint. Server `Cargo.toml`/lock 1.28.17 → **1.28.18**; SDK `brain-engine-sdk` 1.28.10 → **1.28.11**; schema 1.27.38 → **1.28.18** (`outbox.parent_id`, additive-NULL); `steward-harness` unchanged at 0.2.2; client + plugin unchanged.
