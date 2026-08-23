@@ -7,4 +7,5 @@
 
 pub mod calibration;
 pub mod evidence;
+pub mod handoff;
 pub mod qa_score;

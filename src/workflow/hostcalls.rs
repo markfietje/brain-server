@@ -20,7 +20,7 @@ const EXEC_TIMEOUT_SECS: u64 = 30;
 /// Operator env: whitespace-separated argv0 prefixes an engine may execute.
 /// Empty/absent = deny ALL engine exec (fail-closed).
 pub(crate) fn exec_allowlist() -> Vec<String> {
-    parse_word_list(&std::env::var("BRAIN_ENGINE_EXEC_ALLOWLIST").unwrap_or_default())
+    word_list(&std::env::var("BRAIN_ENGINE_EXEC_ALLOWLIST").unwrap_or_default())
 }
 
 /// Operator env: host names an engine may reach over HTTPS (loopback may use
@@ -512,6 +512,7 @@ fn run_mediated_event(
         .get("idempotency_key")
         .and_then(|x| x.as_str())
         .unwrap_or_default();
+    let parent = v.get("parent_event_id").and_then(|x| x.as_i64());
     if !topic.starts_with("workflow/") || topic.len() > 128 {
         return deny("topic must be under workflow/*".into());
     }
@@ -521,10 +522,12 @@ fn run_mediated_event(
     if key.is_empty() || key.len() > 256 {
         return deny("idempotency_key out of bounds".into());
     }
-    match host.enqueue(run_id, topic, payload, key) {
-        Ok(created) => {
+    match host.enqueue_with_parent(run_id, parent, topic, payload, key) {
+        Ok((created, event_id)) => {
             host.audit(AuditKind::Workflow, engine, &who, AuditStatus::Ok, topic);
-            Ok(format!("enqueued:{created}"))
+            // The id rides the receipt so the engine can parent its NEXT
+            // emission without a second read.
+            Ok(format!("enqueued:{created}:{event_id}"))
         }
         Err(e) => deny(format!("enqueue failed: {e}")),
     }
@@ -797,8 +800,8 @@ mod tests {
                 r#"{"topic":"workflow/log","payload":"{\"a\":1}","idempotency_key":"k-ev-1"}"#,
             )
             .unwrap();
-        assert_eq!(ok, "enqueued:true");
-        // Replay by key is an idempotent no-op receipt.
+        assert_eq!(ok, "enqueued:true:1", "receipt carries the event id");
+        // Replay by key is an idempotent no-op receipt (same id resolved).
         let replay = ctx
             .dispatch(
                 "events",
@@ -806,7 +809,7 @@ mod tests {
                 r#"{"topic":"workflow/log","payload":"{}","idempotency_key":"k-ev-1"}"#,
             )
             .unwrap();
-        assert_eq!(replay, "enqueued:false");
+        assert_eq!(replay, "enqueued:false:1");
 
         // Non-workflow topics are refused — the alert bus stays server-owned.
         for bad_topic in ["alerts/page", "workflow", "", "../secrets"] {

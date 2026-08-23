@@ -130,6 +130,22 @@ pub trait WorkflowHost: Send + Sync {
         idempotency_key: &str,
     ) -> Result<bool, HostError>;
 
+    /// Lineage-aware enqueue (v1.28.18): parent the event at
+    /// `parent_event_id`, receiving back `(created, event_id)`. Defaulted so
+    /// every existing impl compiles unchanged — hosts without lineage
+    /// delegate to [`WorkflowHost::enqueue`] and report a `0` sentinel id.
+    fn enqueue_with_parent(
+        &self,
+        run_id: i64,
+        _parent_event_id: Option<i64>,
+        topic: &str,
+        payload_json: &str,
+        idempotency_key: &str,
+    ) -> Result<(bool, i64), HostError> {
+        self.enqueue(run_id, topic, payload_json, idempotency_key)
+            .map(|first| (first, 0))
+    }
+
     /// Atomically advance a run's state iff the caller's view is current.
     fn cas(&self, run_id: i64, expected_rev: i64, state_json: &str) -> Result<(), CasError>;
 
@@ -204,6 +220,19 @@ mod tests {
         }
         let h: Arc<dyn WorkflowHost> = Arc::new(MockHost::default());
         let _ = assert_host(h);
+    }
+
+    /// The defaulted lineage method: hosts without ancestry delegate to
+    /// `enqueue` and report the `0` sentinel id — existing impls compile
+    /// unchanged (the v1.28.18 additive-ABI pin).
+    #[test]
+    fn enqueue_with_parent_defaults_to_enqueue_and_drops_the_id() {
+        let h = MockHost::default();
+        let (created, id) = h
+            .enqueue_with_parent(1, Some(42), "topic", "{}", "k")
+            .unwrap();
+        assert!(created);
+        assert_eq!(id, 0, "no-lineage hosts report the sentinel");
     }
 
     #[test]

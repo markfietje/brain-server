@@ -125,7 +125,11 @@ mod tests {
     #[test]
     fn workflow_writes_are_audit_chained() {
         let conn = db();
-        assert!(outbox::enqueue(&conn, 1, "intake", r#"{"a":1}"#, "k-1", 1).unwrap());
+        assert!(
+            outbox::enqueue(&conn, 1, "intake", r#"{"a":1}"#, "k-1", 1)
+                .unwrap()
+                .0
+        );
         let id: i64 = conn
             .query_row("SELECT id FROM outbox", [], |r| r.get(0))
             .unwrap();

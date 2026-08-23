@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::AppState;
-use crate::auth::Principal;
 use crate::handlers::HandlerError;
 
 #[derive(Serialize)]
@@ -888,7 +887,7 @@ pub async fn post_run(
     let _ = parsed;
     super::authorize(&principal, crate::auth::Action::Write, "", &body.domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    crate::handlers::workflow::authorize_role_gate(&principal, &pool, "workflow")?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     let (domain, kind, state_json) = (body.domain, body.kind, body.state_json);
     let (run_id, _): (i64, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -919,7 +918,7 @@ pub async fn post_run(
 }
 
 /// Resolve a run's domain or 404 (probe-blind on missing runs).
-async fn run_domain(state: &Arc<AppState>, id: i64) -> Result<String, HandlerError> {
+pub(crate) async fn run_domain(state: &Arc<AppState>, id: i64) -> Result<String, HandlerError> {
     let pool = state.pool.clone();
     tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
         let conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -937,16 +936,6 @@ async fn run_domain(state: &Arc<AppState>, id: i64) -> Result<String, HandlerErr
     .ok_or_else(|| HandlerError::not_found("workflow run not found"))
 }
 
-/// The engine-path role gate: `workflow` capability when the principal
-/// carries roles; loopback/no-role principals untouched (Seatbelt posture).
-fn authorize_role_gate(
-    principal: &Option<Principal>,
-    pool: &crate::Pool,
-    capability: &str,
-) -> Result<(), HandlerError> {
-    super::authorize_role(principal, pool, capability)
-}
-
 /// `GET /workflow/runs/{id}/state` — the ENGINE-exact view
 /// `{state_json, revision}`. Machine round-trip: deliberately NOT routed
 /// through `sanitize_read` (the human `GET /workflow/runs/{id}` is); engines
@@ -962,7 +951,7 @@ pub async fn get_run_state(
     let domain = run_domain(&state, id).await?;
     super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    authorize_role_gate(&principal, &pool, "workflow")?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     let row: Option<(String, i64)> = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let conn = pool.get().map_err(|e| format!("{e}"))?;
         let row = conn
@@ -1016,7 +1005,7 @@ pub async fn put_run_state(
     let domain = run_domain(&state, id).await?;
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    authorize_role_gate(&principal, &pool, "workflow")?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     let status = body.status.clone().unwrap_or_else(|| "active".to_string());
     if !status.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') || status.len() > 24 {
         return Err(HandlerError::bad_request(
@@ -1066,10 +1055,14 @@ pub struct PostEventRequest {
     pub topic: String,
     pub payload_json: String,
     pub idempotency_key: String,
+    /// Optional ancestry link: the outbox id this event follows.
+    #[serde(default)]
+    pub parent_event_id: Option<i64>,
 }
 
 /// `POST /workflow/runs/{id}/events` — outbox enqueue, idempotent by UNIQUE
-/// key → `{first: bool}`. The exactly-once receipt engines replay against.
+/// key → `{first, event_id}`. The exactly-once receipt engines replay
+/// against; `event_id` resolves even on replay (the surviving row's id).
 pub async fn post_event(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -1080,7 +1073,7 @@ pub async fn post_event(
     let domain = run_domain(&state, id).await?;
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    authorize_role_gate(&principal, &pool, "workflow")?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     let topic_ok = !body.topic.is_empty()
         && body.topic.len() <= 64
         && body
@@ -1108,14 +1101,21 @@ pub async fn post_event(
             "idempotency_key must be 1..=128 chars",
         ));
     }
-    let first: bool = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+    if body.parent_event_id.is_some_and(|p| p <= 0) {
+        return Err(HandlerError::bad_request(
+            "parent_invalid",
+            "parent_event_id must be a positive outbox id",
+        ));
+    }
+    let outcome: (bool, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
         let mut tx =
             crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(|e| format!("{e}"))?;
         let now = chrono::Utc::now().timestamp();
-        let first = crate::workflow::outbox::enqueue(
+        let outcome = crate::workflow::outbox::enqueue_child(
             tx.tx(),
             id,
+            body.parent_event_id,
             &body.topic,
             &body.payload_json,
             &body.idempotency_key,
@@ -1123,12 +1123,14 @@ pub async fn post_event(
         )
         .map_err(|e| format!("{e}"))?;
         tx.commit().map_err(|e| format!("{e}"))?;
-        Ok(first)
+        Ok(outcome)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
-    Ok(Json(serde_json::json!({"first": first})))
+    Ok(Json(
+        serde_json::json!({"first": outcome.0, "event_id": outcome.1}),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1180,7 +1182,7 @@ pub async fn post_answer(
     let domain = run_domain(&state, id).await?;
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    authorize_role_gate(&principal, &pool, "approve")?;
+    crate::handlers::authorize_role(&principal, &pool, "approve")?;
     let answer = body.answer.clone();
     let result: Result<i64, String> = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;

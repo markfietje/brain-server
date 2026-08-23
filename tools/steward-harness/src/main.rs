@@ -60,10 +60,7 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
                 .and_then(|x| x.as_str())
                 .unwrap_or("{}")
                 .to_string();
-            match host
-                .open_run(domain, "troubleshoot", &state_json)
-                .await
-            {
+            match host.open_run(domain, "troubleshoot", &state_json).await {
                 Ok(run_id) => json!({"ok": true, "run_id": run_id}),
                 Err(e) => json!({"ok": false, "error": e.to_string()}),
             }

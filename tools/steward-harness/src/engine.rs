@@ -141,6 +141,11 @@ pub async fn crank_full(
     let mut warned = false;
     let mut kernel = RunState::new(max_steps);
     let mut hostcalls: BTreeMap<String, u64> = BTreeMap::new();
+    // Lineage cursor: the id of the last emitted event, threaded
+    // into every emission. After a rewind the run state's LAST `branches[]`
+    // marker names where the new branch forks — the cursor seeds from it, so
+    // the next emitted event parents at the rewind target.
+    let mut last_event: Option<i64> = None;
 
     loop {
         let Some((js, rev)) = host.load_state(run_id)? else {
@@ -148,6 +153,16 @@ pub async fn crank_full(
         };
         let mut st: Value =
             serde_json::from_str(&js).map_err(|e| HarnessError::CorruptState(e.to_string()))?;
+        if last_event.is_none()
+            && let Some(from) = st
+                .get("branches")
+                .and_then(|b| b.as_array())
+                .and_then(|a| a.last())
+                .and_then(|m| m.get("from_event"))
+                .and_then(|v| v.as_i64())
+        {
+            last_event = Some(from);
+        }
 
         // Cancel check BEFORE executing another step: settle at the boundary
         // the previous CAS+event twin completed — never mid-step.
@@ -173,7 +188,15 @@ pub async fn crank_full(
                     .and_then(|s| s.as_str())
                     .is_some_and(|s| s == "completed");
                 if !already {
-                    finalize(&*host, run_id, rev, &mut st, &effects, &mut hostcalls)?;
+                    finalize(
+                        &*host,
+                        run_id,
+                        rev,
+                        &mut st,
+                        &effects,
+                        &mut hostcalls,
+                        last_event,
+                    )?;
                 }
                 return Ok(report(steps_executed, StoppedAt::Done, warned, hostcalls));
             }
@@ -277,7 +300,7 @@ pub async fn crank_full(
                     .get("steps")
                     .and_then(|s| s.as_array())
                     .map_or(steps_executed as usize, Vec::len);
-                emit(
+                last_event = Some(emit(
                     &*host,
                     &effects,
                     &mut hostcalls,
@@ -285,7 +308,21 @@ pub async fn crank_full(
                     "workflow/log",
                     &serde_json::json!({ "line": format!("step {} executed", step) }).to_string(),
                     &format!("run-{run_id}-evt-{ordinal}"),
-                )?;
+                    last_event,
+                )?);
+                // Checkpoint-as-event: the state snapshot rides the outbox so
+                // a rewind target always exists. Oversized states are an
+                // ERROR, never a truncation.
+                last_event = Some(emit(
+                    &*host,
+                    &effects,
+                    &mut hostcalls,
+                    run_id,
+                    "workflow/checkpoint",
+                    &st.to_string(),
+                    &format!("run-{run_id}-ckpt-{ordinal}"),
+                    last_event,
+                )?);
             }
         }
     }
@@ -334,7 +371,9 @@ fn cas_persist(host: &dyn WorkflowHost, run_id: i64, rev: i64, st: &Value) -> Re
     match host.load_state(run_id) {
         Ok(Some((_, fresh_rev))) => match host.cas(run_id, fresh_rev, &js) {
             Ok(()) => Ok(()),
-            Err(brain_engine_sdk::host::CasError::Stale { actual_revision }) => Err(actual_revision),
+            Err(brain_engine_sdk::host::CasError::Stale { actual_revision }) => {
+                Err(actual_revision)
+            }
             Err(_) => Err(fresh_rev),
         },
         _ => Err(rev),
@@ -342,7 +381,9 @@ fn cas_persist(host: &dyn WorkflowHost, run_id: i64, rev: i64, st: &Value) -> Re
 }
 
 /// Route an event emission through the Effects door when present, tallying
-/// the dispatch; otherwise the host trait's audited enqueue carries it.
+/// the dispatch; otherwise the host trait's lineage-aware enqueue carries it.
+/// Returns the stored event id (the parent cursor). Checkpoint payloads are
+/// bounded — an oversized state is a loud error, never a truncation.
 fn emit(
     host: &dyn WorkflowHost,
     effects: &Option<Arc<crate::effects::Effects>>,
@@ -351,15 +392,29 @@ fn emit(
     topic: &str,
     payload: &str,
     key: &str,
-) -> Result<(), HarnessError> {
+    parent: Option<i64>,
+) -> Result<i64, HarnessError> {
+    const MAX_CHECKPOINT_BYTES: usize = 256 * 1024;
+    if topic == "workflow/checkpoint" && payload.len() > MAX_CHECKPOINT_BYTES {
+        return Err(HarnessError::Host(HostError::Internal(format!(
+            "checkpoint payload exceeds {MAX_CHECKPOINT_BYTES} bytes; refusing to truncate state"
+        ))));
+    }
     if let Some(fx) = effects {
-        fx.event(run_id, topic, payload, key)
+        let out = fx
+            .event_with_parent(run_id, topic, payload, key, parent)
             .map_err(|e| HarnessError::Host(HostError::Internal(e.to_string())))?;
         *hostcalls.entry(format!("{key}/events")).or_insert(0) += 1;
+        // Receipt shape "enqueued:<created>:<event_id>" (the mediated handler).
+        Ok(out
+            .rsplit(':')
+            .next()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0))
     } else {
-        host.enqueue(run_id, topic, payload, key)?;
+        let (_, id) = host.enqueue_with_parent(run_id, parent, topic, payload, key)?;
+        Ok(id)
     }
-    Ok(())
 }
 
 /// Fold artifacts into the scoreboard keys the server's scorer derives from,
@@ -371,6 +426,7 @@ fn finalize(
     st: &mut Value,
     effects: &Option<Arc<crate::effects::Effects>>,
     hostcalls: &mut BTreeMap<String, u64>,
+    parent: Option<i64>,
 ) -> Result<(), HarnessError> {
     let Some(obj) = st.as_object_mut() else {
         return Err(HarnessError::CorruptState("state is not an object".into()));
@@ -393,7 +449,7 @@ fn finalize(
     let js = st.to_string();
     host.cas(run_id, rev, &js)
         .map_err(|e| HarnessError::Host(HostError::Internal(e.to_string())))?;
-    emit(
+    let _ = emit(
         host,
         effects,
         hostcalls,
@@ -401,6 +457,7 @@ fn finalize(
         "workflow/end",
         &serde_json::json!({ "stop": "completed" }).to_string(),
         &format!("run-{run_id}-end"),
+        parent,
     )?;
     Ok(())
 }

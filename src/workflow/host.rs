@@ -139,9 +139,31 @@ impl WorkflowHost for SqliteWorkflowHost {
         payload_json: &str,
         idempotency_key: &str,
     ) -> Result<bool, HostError> {
+        self.enqueue_with_parent(run_id, None, topic, payload_json, idempotency_key)
+            .map(|(created, _)| created)
+    }
+
+    /// The lineage-aware write: parents the event at `parent_event_id`
+    /// when present. Same exactly-once + same-tx-audit discipline as `enqueue`.
+    fn enqueue_with_parent(
+        &self,
+        run_id: i64,
+        parent_event_id: Option<i64>,
+        topic: &str,
+        payload_json: &str,
+        idempotency_key: &str,
+    ) -> Result<(bool, i64), HostError> {
         let now = chrono::Utc::now().timestamp();
         match self.scoped(|conn| {
-            super::outbox::enqueue(conn, run_id, topic, payload_json, idempotency_key, now)
+            super::outbox::enqueue_child(
+                conn,
+                run_id,
+                parent_event_id,
+                topic,
+                payload_json,
+                idempotency_key,
+                now,
+            )
         }) {
             Ok(Ok(created)) => Ok(created),
             Ok(Err(e)) => Err(HostError::Internal(e.to_string())),

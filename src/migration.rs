@@ -1602,7 +1602,8 @@ pub fn run_migration_with_store_dim(
             status          TEXT NOT NULL DEFAULT 'pending',
             idempotency_key TEXT NOT NULL UNIQUE,
             created_at      INTEGER NOT NULL,
-            delivered_at    INTEGER
+            delivered_at    INTEGER,
+            parent_id       INTEGER REFERENCES outbox(id)
          );",
         [],
     )?;
@@ -1636,6 +1637,28 @@ pub fn run_migration_with_store_dim(
              ON workflow_steps(run_id, phase, step_key);",
     )?;
 
+    // ── v1.28.18 "Lineage": outbox ancestry. ────────────────────────────
+    // `parent_id` links each event to the event it followed (NULL = root).
+    // Additive-NULL: existing rows become roots and legacy runs read as flat
+    // sequences. The down-migration is a documented no-op (SQLite ALTER DROP
+    // is not portable; keep the column, drop the code).
+    {
+        let present: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('outbox') WHERE name='parent_id'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                "ALTER TABLE outbox ADD COLUMN parent_id INTEGER REFERENCES outbox(id)",
+                [],
+            )?;
+        }
+    }
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
@@ -1650,8 +1673,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.27.38')
-         ON CONFLICT(key) DO UPDATE SET value = '1.27.38';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.18')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.18';",
         [],
     )?;
 

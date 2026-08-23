@@ -54,10 +54,24 @@ impl Effects {
         payload_json: &str,
         idempotency_key: &str,
     ) -> Result<String, HarnessEffectError> {
+        self.event_with_parent(run, topic, payload_json, idempotency_key, None)
+    }
+
+    /// Lineage-aware emission: the event parents at `parent` when
+    /// present. Same mediated door, one extra optional body field.
+    pub fn event_with_parent(
+        &self,
+        run: i64,
+        topic: &str,
+        payload_json: &str,
+        idempotency_key: &str,
+        parent: Option<i64>,
+    ) -> Result<String, HarnessEffectError> {
         let body = serde_json::json!({
             "topic": topic,
             "payload": payload_json,
             "idempotency_key": idempotency_key,
+            "parent_event_id": parent,
         })
         .to_string();
         self.call("events", &run.to_string(), &body)

@@ -19,6 +19,45 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.18] — 2026-08-23 — "Lineage": events remember where they came from
+
+The outbox grows ancestry: `parent_id` links every event to the event it followed, checkpoints become events, rewind branches instead of deleting (pi's leaf-move discipline), and the I-PASS handoff packet becomes a real endpoint. Server `Cargo.toml`/lock 1.28.17 → **1.28.18**; SDK `brain-engine-sdk` 1.28.10 → **1.28.11**; schema 1.27.38 → **1.28.18** (`outbox.parent_id`, additive-NULL); `steward-harness` unchanged at 0.2.2; client + plugin unchanged.
+
+### Release notes
+
+**Improvements**
+
+- Runs now have a tree, not a list: every outbox event can carry a `parent_event_id`, the engine threads its lineage cursor automatically, and after a rewind the next event parents at the rewind target. `GET /workflow/runs/{id}/events?branch=` reads any branch's ancestor chain, root-first.
+- Rewind-as-branch: `POST /workflow/runs/{id}/rewind` restores the state snapshot from a `workflow/checkpoint` event (or the run root) in one transaction, appending a `branches[]` marker to the engine-owned state. Nothing is ever deleted — the abandoned branch stays fully queryable. Write + approve role gate, reason screened like steering.
+- Checkpoints are events: at every step boundary the engine emits `workflow/checkpoint` carrying the full state snapshot (≤256 KiB guard — oversized states error loudly, never truncate).
+- The I-PASS handoff packet exists: `GET /workflow/runs/{id}/handoff` assembles Illness/Patient/Action/Situation/Safety from the run's own records (frontdoor seed, opening event, steps, latest checkpoint digest, SLA envelope, legal-hold + escalation status); `handoff_complete` derives exactly as the scoreboard derives it. CLI: `brain workflow handoff <run>` (with `--json`).
+
+**Bug fixes**
+
+- Fixed a pre-existing compile break on `main` found while wiring this release: `exec_allowlist()` called a non-existent `parse_word_list` helper (a leftover from the previous lipstyk cleanup pass); it now uses the sibling `word_list` like its HTTP twin. The tree at v1.28.17 did not compile as-committed.
+
+**Security fixes**
+
+- None new: the rewind write rides the existing gates (domain Write, `approve` role, blocklist screening of the free-text reason) and commits its audit row in the same transaction as the state restore.
+
+### Engineering record
+
+- **M1 (migration + substrate):** additive `ALTER TABLE outbox ADD COLUMN parent_id INTEGER REFERENCES outbox(id)` guarded by a pragma probe (fresh DDL carries it too); schema stamp → 1.28.18; down-migration is a documented no-op (SQLite ALTER DROP is not portable — keep the column, drop the code). `outbox::enqueue_child` mirrors `enqueue`'s exactly-once discipline (INSERT OR IGNORE, audit only on first insert, replay never re-parents — first write wins) and returns `(created, event_id)` so callers link without a second read; `enqueue` now resolves the id too. `verify_outbox_lineage(conn, run_id)`: every non-root parent must exist, belong to the same run, and have a smaller id — cycles are impossible by construction, the check proves the stored rows obey it. Pinned by `verify_outbox_lineage_detects_orphans_and_cycles` (orphan via FK-disabled fixture row, cross-run parent, forward-id link, legacy all-NULL flat chain passes).
+- **M2 (SDK ABI):** one additive defaulted method, `WorkflowHost::enqueue_with_parent(run_id, parent_event_id, topic, payload_json, key) -> Result<(bool, i64)>`; the default delegates to `enqueue` and reports the `0` sentinel id, so every existing impl (server host, remote host, test doubles) compiles unchanged. `SqliteWorkflowHost` overrides with the real thing through the same lane discipline.
+- **M3 (engine + routes):** the crank threads `last_event` into every emission (host path and mediated Effects door — the events hostcall body gained optional `parent_event_id`, its receipt is now `enqueued:<created>:<event_id>`); the cursor seeds from the LAST `state.branches[].from_event`, which is what makes rewind work without a server push. `/events` POST gains `parent_event_id` → `{first, event_id}`; new GET `/events?branch=`, POST `/rewind`, GET `/handoff` handlers live in `src/handlers/workflow_lineage.rs` with the read seam on every emitted text field, probe-blind 404s, and WorkflowTx atomicity (transition + audit commit together). Route-coverage + route-authz guard tables extended (rewind Write, handoff Read; the shared `/events` path maps to the last-registered handler per the documented convention). openapi.yaml + docs/api.md updated in the same change.
+- **M4 (I-PASS):** pure builder `crates/brain-engine-sdk/src/pure/handoff.rs` (no serde derive — input is pre-resolved facts, output a plain struct; deterministic over its inputs). The server handler gathers facts (run row, opening event, workflow_steps, step events, latest checkpoint digest, pending_question, SLA deadline — recorded value or the policy stamp over P3 at run-open, legal-hold count, escalation flag) and renders five `{title, lines}` sections.
+- Tests: server bin **809** / 6 ignored (+7: `post_event_parents_and_returns_event_id`, `rewind_creates_branch_not_deletion`, `rewind_requires_checkpoint_target_and_approve_role`, `events_branch_query_walks_ancestors`, `handoff_route_assembles_five_pass_sections`, outbox lineage pins ×2 incl. the child audit-once pin); lib **166** / 1 ignored (outbox tests re-pinned for the `(bool, i64)` signature); SDK **101** / harness gold 6 + effects 3 + settle 4 + **lineage 2** (`checkpoint_payload_round_trips_state_exactly`, `rewind_creates_branch_and_replay_is_idempotent`). clippy `-D warnings` + fmt clean across all three workspaces; lipstyk diff-gate green with the two documented rule disables in `.lipstyk.toml` (spawn_blocking-owned clones; the named exec_allowlist seam).
+
+### Honest ceilings
+
+- Legacy runs stay flat: existing rows are NULL roots and verify treats them as valid flat sequences until new emissions chain them — an audit-shaped choice, not a migration gap.
+- Root rewind (target = the run's first event when it is not a checkpoint) restores `{}`, not the original open state: pre-checkpoint history had no snapshot. The first checkpoint lands at step boundary 1, so the exposure is bounded to runs rewound before their first step.
+- Branch selection is single-cursor: the engine follows the LAST `branches[]` marker; parallel sibling branches are queryable via `/events?branch=` but only one branch is "live" per run state (multi-head driving is later engine work, behind its own gate).
+- The handoff packet is assembled evidence, not judgment: no LLM summarization of abandoned branches (pi's summary-at-ancestor is noted, not built), no cross-run dependency analysis; SLA falls back to a P3 policy stamp when the state records no deadline.
+- `/health`'s chain watcher does not sweep outbox lineage — `verify_outbox_lineage` is callable and tested but not yet surfaced on a route or metric (Witness-tier work).
+
+---
+
 ## [1.28.17] — 2026-08-23 — "Settle": the workflow invariants are law
 
 DeepSeek Harness's settlement guarantees become contract tests BEFORE the engine grows: the result never rejects, cancel/dispose settle within bounded grace, events are observe-only clones, admission is capped, and the budget door fails closed — pinned as pure algebra in the SDK and tokio conformance in the engine. Server `Cargo.toml`/lock 1.28.16 → **1.28.17**; SDK `brain-engine-sdk` 1.28.9 → **1.28.10**; `steward-harness` 0.2.1 → **0.2.2**; client + plugin unchanged; no schema change.

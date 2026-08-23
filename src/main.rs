@@ -6154,7 +6154,19 @@ async fn main_inner() -> Result<()> {
         .route("/workflow/runs", post(handlers::workflow::post_run))
         .route(
             "/workflow/runs/{id}/events",
+            get(handlers::workflow_lineage::get_run_events),
+        )
+        .route(
+            "/workflow/runs/{id}/events",
             post(handlers::workflow::post_event),
+        )
+        .route(
+            "/workflow/runs/{id}/rewind",
+            post(handlers::workflow_lineage::post_rewind),
+        )
+        .route(
+            "/workflow/runs/{id}/handoff",
+            get(handlers::workflow_lineage::get_handoff),
         )
         .route(
             "/workflow/runs/{id}/answer",
@@ -10381,11 +10393,21 @@ Final paragraph after the rule.";
         // v1.27.25 for idx_rels_open_unique (structural open-row invariant).
         // v1.27.30 for the five governed-workflow tables (the Spine substrate).
         // v1.27.31 for the audit head pin schema_meta stamp (AuditRepair M3).
+        // The Lineage release for outbox.parent_id (additive event ancestry).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_27_38),
-            "schema_version must be recorded as 1.27.38 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_18),
+            "schema_version must be recorded as 1.28.18 after migration"
         );
+        // Lineage: every outbox row carries the nullable parent link.
+        let parent_col: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('outbox') WHERE name='parent_id'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(parent_col, 1, "outbox.parent_id must exist");
 
         // v1.27.31 "AuditRepair": the migration stamps the initial head pin
         // ONLY for a chain with rows (a fresh DB pins on its first audit
@@ -11805,6 +11827,8 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}",
             "/workflow/runs/{id}/state",
             "/workflow/runs/{id}/events",
+            "/workflow/runs/{id}/rewind",
+            "/workflow/runs/{id}/handoff",
             "/workflow/runs/{id}/answer",
             "/workflow/runs/{id}/steering",
             "/workflow/runs/{id}/steps",
@@ -13024,6 +13048,10 @@ Final paragraph after the rule.";
             // conservative convention as `/retention`).
             ("/workflow/runs/{id}/state", "Write"),
             ("/workflow/runs/{id}/events", "Write"),
+            // Lineage: the events read + handoff packet are Reads
+            // on the run's domain; rewind is a Write + `approve` role gate.
+            ("/workflow/runs/{id}/rewind", "Write"),
+            ("/workflow/runs/{id}/handoff", "Read"),
             ("/workflow/runs/{id}/answer", "Write"),
             // plugin mount evidence: any authenticated principal records its
             // own composition (a Write, metadata-only).
@@ -13091,6 +13119,7 @@ Final paragraph after the rule.";
                     "holds" => include_str!("handlers/holds.rs"),
                     "breaches" => include_str!("handlers/breaches.rs"),
                     "workflow" => include_str!("handlers/workflow.rs"),
+                    "workflow_lineage" => include_str!("handlers/workflow_lineage.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
@@ -14434,20 +14463,17 @@ Final paragraph after the rule.";
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
         let run_id = open_engine_run(&state, "{}").await;
-        let body = crate::handlers::workflow::PostEventRequest {
+        let mk = |key: &str| crate::handlers::workflow::PostEventRequest {
             topic: "workflow/log".to_string(),
             payload_json: r#"{"line":"step done"}"#.to_string(),
-            idempotency_key: "run-1-evt-1".to_string(),
+            idempotency_key: key.to_string(),
+            parent_event_id: None,
         };
         let first = crate::handlers::workflow::post_event(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
             Path(run_id),
-            axum::Json(crate::handlers::workflow::PostEventRequest {
-                topic: body.topic.clone(),
-                payload_json: body.payload_json.clone(),
-                idempotency_key: body.idempotency_key.clone(),
-            }),
+            axum::Json(mk("run-1-evt-1")),
         )
         .await
         .expect("first enqueue");
@@ -14456,7 +14482,7 @@ Final paragraph after the rule.";
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
             Path(run_id),
-            axum::Json(body),
+            axum::Json(mk("run-1-evt-1")),
         )
         .await
         .expect("replay is a no-op receipt, not an error");
@@ -14546,6 +14572,7 @@ Final paragraph after the rule.";
                 topic: "workflow/log".to_string(),
                 payload_json: "{}".to_string(),
                 idempotency_key: "k".to_string(),
+                parent_event_id: None,
             }),
         )
         .await
@@ -17918,5 +17945,340 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(u, 0, "NULL created_at → sentinel epoch 0");
+    }
+
+    /// post_event_parents_and_returns_event_id
+    #[tokio::test]
+    async fn post_event_parents_and_returns_event_id() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, "{}").await;
+        let mk = |key: &str, parent: Option<i64>| crate::handlers::workflow::PostEventRequest {
+            topic: "workflow/log".to_string(),
+            payload_json: "{}".to_string(),
+            idempotency_key: key.to_string(),
+            parent_event_id: parent,
+        };
+        let root = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(mk("root-k", None)),
+        )
+        .await
+        .expect("root enqueue");
+        let root_id = root.0["event_id"].as_i64().expect("event_id");
+        assert!(root.0["first"].as_bool().unwrap());
+        let child = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(mk("child-k", Some(root_id))),
+        )
+        .await
+        .expect("child enqueue");
+        let child_id = child.0["event_id"].as_i64().expect("child event_id");
+        assert_ne!(root_id, child_id);
+        let parent: Option<i64> = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT parent_id FROM outbox WHERE id=?1",
+                [child_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(parent, Some(root_id), "the child stored its parent link");
+    }
+
+    /// rewind_creates_branch_not_deletion
+    #[tokio::test]
+    async fn rewind_creates_branch_not_deletion() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, r#"{"status":"active"}"#).await;
+        // Seed a chain: root event -> checkpoint (snapshot A) -> log (B).
+        let mk = |topic: &str, payload: &str, key: &str, parent: Option<i64>| {
+            crate::handlers::workflow::PostEventRequest {
+                topic: topic.to_string(),
+                payload_json: payload.to_string(),
+                idempotency_key: key.to_string(),
+                parent_event_id: parent,
+            }
+        };
+        let root = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(mk("workflow/log", "{}", "seed-root", None)),
+        )
+        .await
+        .expect("root");
+        let ckpt = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(mk(
+                "workflow/checkpoint",
+                r#"{"step":1,"note":"before the wrong turn"}"#,
+                "seed-ckpt",
+                Some(root.0["event_id"].as_i64().unwrap()),
+            )),
+        )
+        .await
+        .expect("checkpoint");
+        let _ = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(mk(
+                "workflow/log",
+                r#"{"line":"wrong turn"}"#,
+                "seed-tail",
+                Some(ckpt.0["event_id"].as_i64().unwrap()),
+            )),
+        )
+        .await
+        .expect("tail");
+
+        let target = ckpt.0["event_id"].as_i64().unwrap();
+        let resp = crate::handlers::workflow_lineage::post_rewind(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow_lineage::RewindRequest {
+                to_event_id: target,
+                reason: "the last step went sideways; resume from the snapshot".to_string(),
+            }),
+        )
+        .await
+        .expect("rewind");
+        assert_eq!(resp.0["branched_from"], serde_json::json!(target));
+
+        // The branch marker landed in state; nothing was deleted.
+        let (state_json, rev): (String, i64) = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT state_json, state_revision FROM workflow_runs WHERE id=?1",
+                [run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        let v: serde_json::Value = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(
+            v["branches"][0]["from_event"], target,
+            "the branch marker names the rewind target"
+        );
+        assert_eq!(v["step"], 1, "state restored from the checkpoint snapshot");
+        let n: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND idempotency_key='seed-ckpt'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(n, 1, "no events deleted — rewind branches");
+        assert_eq!(rev, 1, "CAS advanced once for the rewind write");
+
+        // The engine seeds its lineage cursor from the LAST branch marker, so
+        // the next emission parents at the rewind target.
+        let cursor =
+            crate::workflow::outbox::branch_chain(&state.pool.get().unwrap(), run_id, target)
+                .unwrap();
+        assert!(!cursor.is_empty());
+        assert!(crate::audit::verify_chain(&state.pool.get().unwrap()));
+    }
+
+    /// rewind_requires_checkpoint_target_and_approve_role
+    #[tokio::test]
+    async fn rewind_requires_checkpoint_target_and_approve_role() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, "{}").await;
+        // Non-checkpoint, non-root target → refused: seed a checkpoint root
+        // first, then a plain log CHILD, and try to rewind to the child.
+        let ckpt0 = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow::PostEventRequest {
+                topic: "workflow/checkpoint".to_string(),
+                payload_json: "{}".to_string(),
+                idempotency_key: "root-ckpt".to_string(),
+                parent_event_id: None,
+            }),
+        )
+        .await
+        .expect("root checkpoint");
+        let ev = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow::PostEventRequest {
+                topic: "workflow/log".to_string(),
+                payload_json: "{}".to_string(),
+                idempotency_key: "plain-log".to_string(),
+                parent_event_id: Some(ckpt0.0["event_id"].as_i64().unwrap()),
+            }),
+        )
+        .await
+        .expect("log event");
+        let err = crate::handlers::workflow_lineage::post_rewind(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow_lineage::RewindRequest {
+                to_event_id: ev.0["event_id"].as_i64().unwrap(),
+                reason: "not a checkpoint".to_string(),
+            }),
+        )
+        .await
+        .expect_err("non-checkpoint target must be refused");
+        assert_eq!(err.inner.code, "rewind_target_invalid", "{err:?}");
+
+        // A role-less principal is refused on the approve gate even when the
+        // target IS valid (a real checkpoint).
+        let ckpt = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow::PostEventRequest {
+                topic: "workflow/checkpoint".to_string(),
+                payload_json: r#"{"v":1}"#.to_string(),
+                idempotency_key: "gate-ckpt".to_string(),
+                parent_event_id: None,
+            }),
+        )
+        .await
+        .expect("checkpoint");
+        let gated = Some(auth::Principal {
+            sub: "agent".to_string(),
+            tenant: "global".to_string(),
+            scopes: vec![],
+            jti: "jti-rewind".to_string(),
+            roles: vec!["no-such-role".to_string()],
+            manages: vec![],
+        });
+        let err = crate::handlers::workflow_lineage::post_rewind(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(gated),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow_lineage::RewindRequest {
+                to_event_id: ckpt.0["event_id"].as_i64().unwrap(),
+                reason: "valid target but no role".to_string(),
+            }),
+        )
+        .await
+        .expect_err("approve-role gate must refuse");
+        assert_eq!(err.inner.code, "forbidden", "{err:?}");
+    }
+
+    /// events_branch_query_walks_ancestors
+    #[tokio::test]
+    async fn events_branch_query_walks_ancestors() {
+        use crate::handlers::workflow_lineage as lin;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, "{}").await;
+        let mut prev: Option<i64> = None;
+        let mut ids = Vec::new();
+        for i in 1..=3 {
+            let resp = crate::handlers::workflow::post_event(
+                State(state.clone()),
+                crate::handlers::auth::OptPrincipal(None),
+                Path(run_id),
+                axum::Json(crate::handlers::workflow::PostEventRequest {
+                    topic: "workflow/log".to_string(),
+                    payload_json: format!(r#"{{"i":{i}}}"#),
+                    idempotency_key: format!("k-{i}"),
+                    parent_event_id: prev,
+                }),
+            )
+            .await
+            .expect("enqueue");
+            let eid = resp.0["event_id"].as_i64().unwrap();
+            ids.push(eid);
+            prev = Some(eid);
+        }
+        // Full read: ordered with parent links.
+        let all = lin::get_run_events(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Query(Default::default()),
+        )
+        .await
+        .expect("all events");
+        let events = all.0["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events[0]["parent_id"].is_null());
+        assert_eq!(events[1]["parent_id"], events[0]["event_id"]);
+        // Branch read at the tip: the full ancestor chain, root-first.
+        let mut q = std::collections::HashMap::new();
+        q.insert("branch".to_string(), ids[2].to_string());
+        let branch = lin::get_run_events(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Query(q),
+        )
+        .await
+        .expect("branch");
+        let got: Vec<i64> = branch.0["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["event_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(got, ids, "root-first ancestor chain");
+    }
+
+    /// handoff_route_assembles_five_pass_sections
+    #[tokio::test]
+    async fn handoff_route_assembles_five_pass_sections() {
+        use crate::handlers::workflow_lineage as lin;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, r#"{"pending_question":"which NL group?"}"#).await;
+        let _ = crate::handlers::workflow::post_event(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(crate::handlers::workflow::PostEventRequest {
+                topic: "workflow/checkpoint".to_string(),
+                payload_json: r#"{"progress":1}"#.to_string(),
+                idempotency_key: "h-ckpt".to_string(),
+                parent_event_id: None,
+            }),
+        )
+        .await
+        .expect("checkpoint");
+        let packet = lin::get_handoff(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+        )
+        .await
+        .expect("packet");
+        for section in ["illness", "patient", "action", "situation", "safety"] {
+            let s = &packet.0[section];
+            assert!(s["title"].is_string(), "{section} missing title");
+            assert!(s["lines"].is_array(), "{section} missing lines");
+        }
+        // Open question + SLA + completeness exactly as derived.
+        assert!(
+            packet.0["situation"]["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l.as_str().unwrap_or("").contains("which NL group?")),
+            "the open pending_question rides the Situation section"
+        );
+        assert!(packet.0["safety"]["lines"].is_array());
+        assert_eq!(packet.0["handoff_complete"], serde_json::json!(false));
+        assert_eq!(packet.0["run_id"], serde_json::json!(run_id));
     }
 }

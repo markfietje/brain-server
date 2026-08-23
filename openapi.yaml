@@ -3885,16 +3885,133 @@ paths:
                 topic: { type: string }
                 payload_json: { type: string }
                 idempotency_key: { type: string, maxLength: 128 }
+                parent_event_id: { type: integer, description: "optional outbox id this event follows (lineage)" }
       responses:
         "200":
-          description: "`{first: bool}` — false when the key replayed"
+          description: "`{first, event_id}` — first=false when the key replayed; event_id resolves the surviving row either way"
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   first: { type: boolean }
-        "400": { description: topic_invalid | payload_invalid | payload_too_large | key_invalid }
+                  event_id: { type: integer }
+        "400": { description: topic_invalid | payload_invalid | payload_too_large | key_invalid | parent_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+    get:
+      summary: The run's lineage read — ordered events with parent links (Read)
+      description: >
+        Ordered outbox events for the run, each carrying its `parent_id`
+        ancestry link. `?branch=<event_id>` narrows to that event's ancestor
+        chain, root-first (the rewind/UI timeline view). Payloads ride the
+        read seam.
+      operationId: getWorkflowEvents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: branch
+          in: query
+          required: false
+          schema: { type: integer, description: "event id whose ancestor chain is returned" }
+      responses:
+        "200":
+          description: "`{events: [{event_id, parent_id, topic, payload_json, status}]} ordered by id"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event_id: { type: integer }
+                        parent_id: { type: integer, nullable: true }
+                        topic: { type: string }
+                        payload_json: { type: string }
+                        status: { type: string }
+        "400": { description: branch_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/rewind:
+    post:
+      summary: Rewind = branch, never delete (Write + approve role gate)
+      description: >
+        Verify the target is a `workflow/checkpoint` event (or the run root)
+        of THIS run, then CAS-write the checkpoint's state snapshot back over
+        the live state appending a `branches[]` marker
+        (`{from_event, reason, at}`). Nothing is deleted; the abandoned branch
+        stays fully queryable via GET /events. The engine's next emitted event
+        parents at the rewind target.
+      operationId: rewindWorkflowRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_event_id, reason]
+              properties:
+                to_event_id: { type: integer, description: "checkpoint event (or run root) to branch from" }
+                reason: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: Branched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  revision: { type: integer }
+                  branched_from: { type: integer }
+        "400": { description: reason_invalid | reason_rejected | rewind_target_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (domain Write or approve role gate) }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/handoff:
+    get:
+      summary: The I-PASS handoff packet (Read on domain)
+      description: >
+        Assembled from what exists: Illness = intent/is_seed/is_not_seed +
+        opening event; Patient = domain + subject rows; Action = steps + step
+        events; Situation = latest checkpoint digest + open pending_question;
+        Safety = SLA envelope, legal-hold status, escalation flag.
+        `handoff_complete` derives exactly as the scoreboard derives it
+        (`status == "completed"`). Every text field rides the read seam.
+      operationId: workflowHandoff
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The packet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  domain: { type: string }
+                  illness: { $ref: "#/components/schemas/IpassSection" }
+                  patient: { $ref: "#/components/schemas/IpassSection" }
+                  action: { $ref: "#/components/schemas/IpassSection" }
+                  situation: { $ref: "#/components/schemas/IpassSection" }
+                  safety: { $ref: "#/components/schemas/IpassSection" }
+                  handoff_complete: { type: boolean }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
@@ -3963,7 +4080,7 @@ paths:
                 message: { type: string, maxLength: 4000 }
       responses:
         "200":
-          description: Accepted — `{ok: true}`
+          description: 'Accepted — `{ok: true}`'
           content:
             application/json:
               schema:
@@ -4208,6 +4325,14 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    IpassSection:
+      type: object
+      description: One rendered I-PASS handoff section.
+      properties:
+        title: { type: string }
+        lines:
+          type: array
+          items: { type: string }
     DpaTerms:
       type: object
       description: >

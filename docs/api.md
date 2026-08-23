@@ -159,7 +159,10 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/workflow/runs` | Open a governed run (`{domain, kind, state_json}` → `{run_id, revision}`); Write + `workflow` role gate; open + audit row commit atomically |
 | GET | `/workflow/runs/{id}/state` | Engine-exact `{state_json, revision}` (machine CAS round-trip; NOT read-seam sanitized — the human view is `GET /workflow/runs/{id}`); Read + `workflow` role gate; audited read |
 | PUT | `/workflow/runs/{id}/state` | CAS advance (`200 {revision}` / `409 {actual_revision}`); Write + `workflow` role gate |
-| POST | `/workflow/runs/{id}/events` | Outbox enqueue, exactly-once by idempotency key (`{first}`); Write + `workflow` role gate |
+| POST | `/workflow/runs/{id}/events` | Outbox enqueue, exactly-once by idempotency key (`{first, event_id}`; optional `parent_event_id` links ancestry); Write + `workflow` role gate |
+| GET | `/workflow/runs/{id}/events?branch=` | The lineage read: ordered events with `parent_id` links (Read on the run's domain); `branch=<event_id>` narrows to that event's ancestor chain, root-first |
+| POST | `/workflow/runs/{id}/rewind` | Rewind = branch, never delete: verify the target is a `workflow/checkpoint` event (or the run root), CAS-restore its state snapshot appending a `branches[]` marker, audit — one tx (`{ok, revision, branched_from}`); Write + approve role gate |
+| GET | `/workflow/runs/{id}/handoff` | The I-PASS handoff packet assembled from the run's records (illness/patient/action/situation/safety + `handoff_complete = status=="completed"`); Read on the run's domain |
 | POST | `/workflow/runs/{id}/answer` | The AskHuman closer: digest-bound to the live `pending_question`, appends `answers[]`, clears the question, CAS — one tx; Write + approve role gate |
 | GET | `/workflow/runs/{id}/steering?since=` | Drain the advisory steering outbox (Read on the run's domain) |
 | POST | `/workflow/plugins/mount` | UI-plugin mount/unmount evidence (Art 12 record-keeping): server verifies the claimed bundle SHA-256 against the boot manifest before writing the audited row (`409` on uncertified bytes) |

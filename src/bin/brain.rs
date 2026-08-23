@@ -317,7 +317,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "workflow",
         json: true,
         run: cmd_workflow,
-        usage: "brain workflow open [DOMAIN]\n  brain workflow status <run>\n  brain workflow answer <run> <text>\n  brain workflow approve <run> <step>\n  brain workflow crank <run> [steps]",
+        usage: "brain workflow open [DOMAIN]\n  brain workflow status <run>\n  brain workflow answer <run> <text>\n  brain workflow approve <run> <step>\n  brain workflow crank <run> [steps]\n  brain workflow handoff <run>",
     },
     Subcommand {
         name: "bench",
@@ -4552,7 +4552,8 @@ fn cmd_workflow(args: &[String]) -> Result<(), String> {
 brain workflow status <run>\n  \
 brain workflow answer <run> <text>\n  \
 brain workflow approve <run> <step>\n  \
-brain workflow crank <run> [steps]";
+brain workflow crank <run> [steps]\n  \
+brain workflow handoff <run>";
     let sub = args.first().map(String::as_str).unwrap_or("");
     let base = base_url();
     let token = auth_token();
@@ -4704,6 +4705,33 @@ brain workflow crank <run> [steps]";
                 "crank run {run}: stopped_at={} steps_executed={}",
                 v["stopped_at"], v["steps_executed"]
             );
+            Ok(())
+        }
+        "handoff" => {
+            let Some(run) = rest.first() else {
+                return Err(usage.into());
+            };
+            let resp = http::get(
+                &base,
+                &format!("/workflow/runs/{run}/handoff"),
+                &[],
+                token.as_deref(),
+            )?;
+            let v: serde_json::Value =
+                serde_json::from_str(&resp.body).map_err(|e| format!("bad response: {e}"))?;
+            if json_out {
+                return emit_json_ok("workflow", v);
+            }
+            println!(
+                "I-PASS handoff — run {} (domain {}) complete={}",
+                v["run_id"], v["domain"], v["handoff_complete"]
+            );
+            for section in ["illness", "patient", "action", "situation", "safety"] {
+                println!("\n[{}]", v[section]["title"].as_str().unwrap_or(section));
+                for line in v[section]["lines"].as_array().unwrap_or(&vec![]) {
+                    println!("  {}", line.as_str().unwrap_or(""));
+                }
+            }
             Ok(())
         }
         _ => Err(usage.into()),
