@@ -180,3 +180,13 @@ envelope), see the brain-server repo's `API_CONTRACT.md` and `GET /openapi.yaml`
 
 See [`CHANGELOG.md`](./CHANGELOG.md). Released from the openclaw repo at
 `extensions/brain-server`; mirror under `plugin/` in the brain-server repo.
+
+## Continuity contract (v1.28.21 Fathom)
+
+A workflow run is ONE unbounded session — the GUI has no "new session" action
+by design. When the live context grows, consumers derive a window from
+`GET /workflow/runs/{id}/context?at_event=&budget=` (checkpoint anchor + delta
++ finding digests + open question, field-budgeted) and compact on their side
+(LLM summarization is the consumer's contract, never brain-server's). The
+event stream resumes with `Last-Event-ID`; missed nodes backfill via
+`GET /workflow/runs/{id}/events?since=` before going live.

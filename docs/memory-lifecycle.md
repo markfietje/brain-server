@@ -266,3 +266,30 @@ Follow the documented procedure in [Human in the loop §7](./human-in-the-loop.m
 - [Features](./features.md) — the capability tour.
 - [API contract](./API_CONTRACT.md) — the endpoint reference for `/ingest` + the gate.
 - [OpenClaw integration](./openclaw-integration.md) — the capture flows as wired in the plugin.
+
+## The continuity contract (v1.28.21 Fathom)
+
+Workflow runs are **unbounded durable sessions**: a case lives in ONE run from
+intake to close — there is no session rotation, no "start a new chat when the
+context fills". Consumers derive context on demand instead:
+
+- **Derivation API** — `GET /workflow/runs/{id}/context?at_event=&budget=`
+  returns the deterministic window: latest `workflow/checkpoint` at-or-before
+  the anchor + the delta events after it + per-finding digests + the open
+  question. Field-budgeted (delta drops oldest-first; anchor and question
+  never drop) with a `truncated` marker. One counted field ≈ one token — an
+  approximation, documented, not guessed.
+- **Checkpoint cadence** — the engine emits checkpoints at fixed, replayable
+  boundaries: every AskHuman pause, every phase transition (`Advance`), every
+  N events (`BRAIN_CHECKPOINT_EVERY`, default 25, ceiling 100), and once at
+  completion.
+- **LLM-side compaction is the consumer's contract** — brain-server never
+  summarizes (zero-token rule). The consumer calls the derivation API and
+  compresses the returned window on its side.
+- **Rewind replaces rotation** — a wrong turn is a branch
+  (`POST /workflow/runs/{id}/rewind`), never a new session; history stays
+  fully queryable.
+- **Stream resume** — SSE consumers carry `Last-Event-ID`; the server replays
+  the gap and `GET /workflow/runs/{id}/events?since=` backfills anything older.
+
+See [OpenClaw integration](./openclaw-integration.md) for the plugin-side wiring.
