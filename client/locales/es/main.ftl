@@ -581,3 +581,4 @@ dock_sla = quedan {0}
 dock_approve_aria = Aprobar propuesta #{0}
 dock_reject_aria = Rechazar propuesta #{0}
 dock_load_failed = No se pudo cargar la cola de aprobaciones.
+dock_invisible_removed = caracteres invisibles eliminados: {0}

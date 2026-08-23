@@ -624,3 +624,4 @@ dock_sla = {0} left to decide
 dock_approve_aria = Approve proposal #{0}
 dock_reject_aria = Reject proposal #{0}
 dock_load_failed = Could not load the approval queue.
+dock_invisible_removed = invisible characters removed: {0}

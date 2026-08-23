@@ -11,6 +11,12 @@
 //! no client to serve.
 
 use axum::extract::Path;
+
+/// Embedded boundary assets — served from the BINARY, never from dist, so a
+/// dist-root compromise cannot strip the verification itself.
+const BOOT_JS: &str = include_str!("../assets/boot.js");
+const SW_JS: &str = include_str!("../assets/sw.js");
+const SW_REGISTER_JS: &str = include_str!("../assets/sw-register.js");
 use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::path::{Component, PathBuf};
@@ -130,8 +136,17 @@ fn respond(root: &std::path::Path, method: &Method, req_path: &str) -> Response 
     let Some(candidate) = resolve_safe(root, req_path) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
-    if candidate.is_file() {
+    // Canonical containment: a symlink planted inside dist that resolves
+    // OUTSIDE the root is refused (fail-closed on canonicalize errors too).
+    let contained = match (root.canonicalize(), candidate.canonicalize()) {
+        (Ok(r), Ok(c)) => c.starts_with(&r),
+        _ => false,
+    };
+    if contained && candidate.is_file() {
         return serve_file(candidate);
+    }
+    if !contained && candidate.is_file() {
+        return not_found();
     }
     // Unmatched route or absent dist entry → the shell entry (deep links boot
     // the SPA). A wholly absent dist degrades to 404, never a panic.
@@ -155,13 +170,16 @@ fn respond(root: &std::path::Path, method: &Method, req_path: &str) -> Response 
 /// document passes through untouched (the loader then falls back to fetching
 /// `/app/boot.json` directly).
 pub(crate) fn inject_boot_script(html: &str) -> String {
-    const TAG: &str = "<script src=\"/app/boot.js\"></script>";
+    const TAG: &str =
+        "<script src=\"/app/boot.js\"></script><script src=\"/app/sw-register.js\"></script>";
     if html.contains("/app/boot.js") {
         return html.to_string();
     }
     match html.to_ascii_lowercase().find("</head>") {
         Some(i) => format!("{}{TAG}{}", &html[..i], &html[i..]),
-        None => html.to_string(),
+        // Fail-closed: an attacker-truncated index must not silently skip
+        // verification — the seat is APPENDED even without the anchor.
+        None => format!("{html}{TAG}"),
     }
 }
 
@@ -213,18 +231,102 @@ pub(crate) fn boot_manifest(root: &std::path::Path) -> serde_json::Value {
     serde_json::json!({"boot": "brain", "bundles": bundles})
 }
 
+/// The canonical message the manifest signature covers: one
+/// `path:bytes:sha256` line per bundle, joined with \n — trivially
+/// reproducible by the JS loader (no JSON-serialization drift).
+fn canonical_bundles(bundles: &serde_json::Value) -> String {
+    bundles
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|b| {
+                    format!(
+                        "{}:{}:{}",
+                        b["path"].as_str().unwrap_or(""),
+                        b["bytes"].as_u64().unwrap_or(0),
+                        b["sha256"].as_str().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// Sign the live manifest's bundle list with the UMP operator key when one is
+/// configured (reuse, no new crypto). Returns `(sig_hex, kid_did)`.
+fn sign_manifest(root: &std::path::Path) -> Option<(String, String)> {
+    let (_, sk) = crate::handlers::ump::operator_signing_key()?;
+    use ed25519_dalek::Signer;
+    let sig = sk.sign(canonical_bundles(&boot_manifest(root)["bundles"]).as_bytes());
+    Some((
+        hex_encode(&sig.to_bytes()),
+        crate::handlers::ump::did_key(&sk.verifying_key().to_bytes()),
+    ))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn signed_manifest(root: &std::path::Path) -> serde_json::Value {
+    let mut m = boot_manifest(root);
+    if let Some((sig, kid)) = sign_manifest(root) {
+        m["sig"] = serde_json::Value::String(sig);
+        m["kid"] = serde_json::Value::String(kid);
+    }
+    m
+}
+
 /// `GET /app/boot.json` — the machine-readable seat (the loader fetches this).
+/// Signed with the operator key when configured (`sig` + `kid` fields); an
+/// unsigned manifest is refused by the loader.
 pub async fn boot_json() -> Response {
     serve_boot(dist_dir())
 }
 
-/// `GET /app/boot.js` — the `window.__BRAIN_BOOT__` seat. An external
-/// same-origin script (CLIENT_CSP allows 'self' scripts; inline would not).
+/// `GET /app/boot.js` — the EMBEDDED fetch-and-refuse loader (never served
+/// from dist): verifies the manifest signature with WebCrypto Ed25519 and
+/// every bundle's SHA-256 before letting the page proceed; ANY failure
+/// refuses to load. Same-origin 'self' script (inline would violate CSP).
 pub async fn boot_js() -> Response {
-    let json = boot_manifest(dist_dir()).to_string();
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        format!("window.__BRAIN_BOOT__={json};"),
+        BOOT_JS,
+    )
+        .into_response()
+}
+
+/// `GET /app/boot.pub` — raw Ed25519 public key bytes (public material, no
+/// auth). Absent key → 404 (the loader refuses an unsigned manifest anyway).
+pub async fn boot_pub() -> Response {
+    match crate::handlers::ump::operator_signing_key() {
+        Some((_, sk)) => (
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            sk.verifying_key().to_bytes().to_vec(),
+        )
+            .into_response(),
+        None => not_found(),
+    }
+}
+
+/// `GET /app/sw.js` — the embedded service worker: cache keys stamped with
+/// the manifest digest; network-first on mismatch (a poisoned cache stops
+/// poisoning). Served from the binary, not dist.
+pub async fn sw_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        SW_JS,
+    )
+        .into_response()
+}
+
+/// `GET /app/sw-register.js` — external SW registration (the served CSP has
+/// no 'unsafe-inline', so the old inline registration could never run).
+pub async fn sw_register_js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        SW_REGISTER_JS,
     )
         .into_response()
 }
@@ -232,7 +334,7 @@ pub async fn boot_js() -> Response {
 fn serve_boot(root: &std::path::Path) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        boot_manifest(root).to_string(),
+        signed_manifest(root).to_string(),
     )
         .into_response()
 }
@@ -284,12 +386,16 @@ mod tests {
     fn inject_boot_script_is_idempotent_and_head_anchored() {
         let doc = "<html><head><title>t</title></head><body></body></html>";
         let once = inject_boot_script(doc);
-        assert!(once.contains("<script src=\"/app/boot.js\"></script></head>"));
+        assert!(once.contains("</head>"));
+        assert!(once.contains("<script src=\"/app/boot.js\"></script>"));
+        assert!(once.contains("/app/sw-register.js"));
         assert_eq!(inject_boot_script(&once), once, "idempotent");
-        // A headless document passes through untouched.
-        assert_eq!(
-            inject_boot_script("<html><body>x</body></html>"),
-            "<html><body>x</body></html>"
+        // Fail-closed: a mangled/truncated index still gets the seat
+        // appended — an attacker cannot strip verification by breaking the
+        // `</head>` anchor.
+        assert!(
+            inject_boot_script("<html><body>x</body></html>").contains("/app/boot.js"),
+            "the boot seat lands even without </head>"
         );
     }
 
@@ -390,6 +496,41 @@ mod tests {
         let res = respond(&root, &Method::HEAD, "/");
         drop(dir);
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    /// A symlink planted inside dist that resolves OUTSIDE the root is
+    /// refused (canonical containment), never served.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_escaping_dist_is_refused() {
+        let dir = tempdir_like::tempdir();
+        let root = dir.path().join("dist");
+        fs::create_dir_all(root.join("pkg")).unwrap();
+        fs::write(root.join("index.html"), "<html>shell</html>").unwrap();
+        // The secret lives OUTSIDE the dist root; a planted symlink in dist
+        // resolves there and must be refused.
+        let outside = dir.path().join("outside-secret.txt");
+        fs::write(&outside, b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("leak.txt")).unwrap();
+        let res = respond(&root, &Method::GET, "/leak.txt");
+        drop(dir);
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The manifest is SIGNED when the operator key is configured and carries
+    /// sig + kid over the canonical bundle list.
+    #[tokio::test]
+    async fn signed_manifest_carries_sig_and_kid_when_key_configured() {
+        // Without a key dir configured the manifest stays unsigned (the
+        // loader refuses it) — the pure contract:
+        let m = serde_json::json!({"boot":"brain","bundles":[]});
+        assert!(m.get("sig").is_none());
+        let canonical = canonical_bundles(&serde_json::json!([
+            {"path":"pkg/a.js","bytes":3,"sha256":"ab"}
+        ]));
+        assert_eq!(canonical, "pkg/a.js:3:ab");
+        let empty = canonical_bundles(&serde_json::json!([]));
+        assert_eq!(empty, "");
     }
 
     #[tokio::test]

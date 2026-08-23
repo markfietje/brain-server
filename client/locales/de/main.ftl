@@ -581,3 +581,4 @@ dock_sla = noch {0}
 dock_approve_aria = Vorschlag #{0} freigeben
 dock_reject_aria = Vorschlag #{0} ablehnen
 dock_load_failed = Freigabe-Warteschlange konnte nicht geladen werden.
+dock_invisible_removed = unsichtbare Zeichen entfernt: {0}

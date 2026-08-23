@@ -88,6 +88,25 @@ pub(crate) fn strip_invisible(input: &str) -> String {
     input.chars().filter(|&c| !is_invisible(c)).collect()
 }
 
+/// Counted variant (same predicate): returns the cleaned text AND how many
+/// invisible chars were removed. Decision surfaces show the count as a badge
+/// so the operator knows smuggling was attempted on the bytes they bind.
+pub(crate) fn strip_invisible_counted(input: &str) -> (String, usize) {
+    let mut removed = 0usize;
+    let out: String = input
+        .chars()
+        .filter(|&c| {
+            if is_invisible(c) {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    (out, removed)
+}
+
 /// True for a char that renders invisibly and is used to smuggle
 /// instruction/exfiltration bytes or defeat substring matching.
 fn is_invisible(c: char) -> bool {
@@ -2478,6 +2497,19 @@ mod tests {
     /// v1.27.21 (read-seam audit): the F-32 pins — U+061C (ALM) and the
     /// supplementary variation selectors — guard the copy's sync contract
     /// with the server lib (this copy had drifted behind exactly these two).
+    /// Counted variant (decision-surface badge): same predicate, reports how
+    /// many invisible chars were removed.
+    #[test]
+    fn strip_invisible_counted_matches_strip_and_counts() {
+        let input = "a\u{200B}b\u{FEFF}c";
+        let (clean, removed) = crate::strip_invisible_counted(input);
+        assert_eq!(clean, "abc");
+        assert_eq!(removed, 2);
+        // Clean text: zero removed, byte-identical.
+        let (clean0, removed0) = crate::strip_invisible_counted("plain");
+        assert_eq!((clean0.as_str(), removed0), ("plain", 0));
+    }
+
     #[test]
     fn strip_invisible_removes_smuggling_but_keeps_visible_text() {
         for c in [

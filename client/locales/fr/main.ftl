@@ -581,3 +581,4 @@ dock_sla = {0} restant
 dock_approve_aria = Approuver la proposition #{0}
 dock_reject_aria = Rejeter la proposition #{0}
 dock_load_failed = Impossible de charger la file d'approbation.
+dock_invisible_removed = caractères invisibles supprimés : {0}

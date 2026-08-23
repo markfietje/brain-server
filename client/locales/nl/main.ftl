@@ -581,3 +581,4 @@ dock_sla = nog {0}
 dock_approve_aria = Voorstel #{0} goedkeuren
 dock_reject_aria = Voorstel #{0} afwijzen
 dock_load_failed = Kon de goedkeuringswachtrij niet laden.
+dock_invisible_removed = onzichtbare tekens verwijderd: {0}

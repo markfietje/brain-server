@@ -1136,6 +1136,10 @@ pub fn detail(proposal_id: i64) -> Element {
                             }
                         }
                         div { class: "card-body space-y-2",
+                            // Actions ABOVE the content block: padded memory
+                            // content can no longer push the decision below
+                            // the fold (scroll-evasion loses its target).
+                            DetailActions { api, proposal_id, digest: p.content_digest.clone() }
                             p { class: "text-sm text-foreground", "{crate::strip_invisible(&p.content)}" }
                             p { class: "text-xs text-muted-foreground tabular",
                                 {crate::i18n::t_fmt("novelty_salience_created", &[format!("{:.2}", p.novelty), format!("{:.2}", p.salience), p.created_at.to_string()])} }
@@ -1158,7 +1162,6 @@ pub fn detail(proposal_id: i64) -> Element {
                                 }
                             }
                         }
-                        div { class: "card-footer", DetailActions { api, proposal_id, digest: p.content_digest.clone() } }
                     }
                 }
             }

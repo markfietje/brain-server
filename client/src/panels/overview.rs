@@ -123,7 +123,6 @@ pub fn panel() -> Element {
     use_document_title(|| "Overview — brain".into());
     let api = use_context::<Signal<ApiClient>>();
     let ui = use_context::<UiState>();
-    let writes = (ui.writes_enabled)();
     let quarantine = (ui.quarantine_count)();
     let auth_fail = (ui.auth_failures_count)();
     let refresh = use_signal(|| 0u32);
@@ -135,8 +134,6 @@ pub fn panel() -> Element {
     let open_queue = crate::i18n::t("open_queue");
     let no_alerts = crate::i18n::t("no_alerts");
     let no_pending = crate::i18n::t("no_pending");
-    let approve = crate::i18n::t("approve");
-    let reject = crate::i18n::t("reject");
     let alerts_title = crate::i18n::t("overview_alerts");
     let kinds = crate::i18n::t("kinds");
 
@@ -230,31 +227,6 @@ pub fn panel() -> Element {
         _ => Vec::new(),
     };
 
-    // M2.4: one-click queue actions (mirrors the review panel's decide). The
-    // `refresh += 1` happens inside the spawned task, so the closure only
-    // copies the Copy signals into the future → it stays `Fn` + `Copy`.
-    // v1.27.19 "Scrub" (D-7): a failed decide is surfaced, never swallowed.
-    let action_err = use_signal(String::new);
-    let decide = move |id: i64, reject: bool, digest: Option<String>| {
-        let api = api;
-        let mut refresh = refresh;
-        let mut action_err = action_err;
-        spawn(async move {
-            let res: Result<(), crate::api::ApiError> = if reject {
-                api().reject_proposal(id, None).await.map(|_| ())
-            } else {
-                api()
-                    .approve_proposal(id, None, digest.as_deref())
-                    .await
-                    .map(|_| ())
-            };
-            if let Err(e) = res {
-                action_err.set(crate::api::error_message(&e));
-            }
-            refresh += 1;
-        });
-    };
-
     rsx! {
         PageTitle { {crate::i18n::t("overview_title")} }
         // The approval control center dock — the HITL queue on the
@@ -346,24 +318,12 @@ pub fn panel() -> Element {
                 match &*proposals.read() {
                     Some(Ok(list)) if !list.is_empty() => rsx! {
                         ul { class: "divide-y divide-border",
-                            for (pid, kind, dg) in preview {
-                                li { class: "flex items-center gap-3 py-2",
+                            for (pid, kind, _dg) in preview {
+                                li { class: "py-2",
                                     Link {
                                         to: Route::ReviewDetail { proposal_id: pid },
-                                        class: "font-mono text-sm text-accent hover:underline truncate flex-1",
+                                        class: "font-mono text-sm text-accent hover:underline truncate",
                                         "proposal #{pid} · {kind}"
-                                    }
-                                    button {
-                                        class: "btn btn-primary btn-sm",
-                                        disabled: !writes,
-                                        onclick: move |_| decide(pid, false, dg.clone()),
-                                        "{approve}"
-                                    }
-                                    button {
-                                        class: "btn btn-ghost btn-sm",
-                                        disabled: !writes,
-                                        onclick: move |_| decide(pid, true, None),
-                                        "{reject}"
                                     }
                                 }
                             }
@@ -402,6 +362,18 @@ fn severity_dot(sev: Severity) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    /// One-click decide buttons are gone from the overview queue — the row is
+    /// link-only (the decision happens on a surface that renders the bytes).
+    #[test]
+    fn overview_queue_is_link_only_no_inline_decide() {
+        let src = include_str!("overview.rs");
+        let call = concat!("decide(", "pid,");
+        assert!(!src.contains(call), "inline decide must not return");
+        let btn = concat!("btn ", "btn-primary btn-sm");
+        assert!(!src.contains(btn), "no approve button");
+        assert!(src.contains("Route::ReviewDetail"));
+    }
+
     use super::*;
 
     /// The empty case renders as no alerts (the panel shows "no alerts").

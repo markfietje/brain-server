@@ -133,14 +133,24 @@ pub fn ApprovalDock() -> Element {
                 if proposals().is_empty() && error().is_none() {
                     p { class: "text-sm text-muted-foreground", {t("dock_empty")} }
                 }
-                for p in proposals() {
+                for (p, clean_content, invisible_removed) in proposals().iter().map(|p| {
+                    let (clean, removed) = crate::strip_invisible_counted(&p.content);
+                    (p.clone(), clean, removed)
+                }) {
                     div {
                         class: "rounded-lg border border-border p-3 hover-lift will-animate",
                         div { class: "flex items-start justify-between gap-3",
-                            p { class: "text-sm line-clamp-2 flex-1",
-                                {crate::strip_invisible(&p.content)}
+                            // The full content, in a bounded scroll box — a
+                            // two-line clamp is truncation-evasion by default.
+                            div { class: "max-h-40 overflow-y-auto whitespace-pre-wrap flex-1 rounded border border-border/50 p-2 text-sm text-foreground",
+                                "{clean_content}"
                             }
                             span { class: "badge tabular shrink-0", "#{p.id}" }
+                        }
+                        if invisible_removed > 0 {
+                            p { class: "mt-1 badge badge-warn",
+                                {t_fmt("dock_invisible_removed", &[invisible_removed.to_string()])}
+                            }
                         }
                         div { class: "mt-1 text-xs text-ink-faint tabular",
                             {t_fmt(
@@ -177,6 +187,19 @@ pub fn ApprovalDock() -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dock decides from FULL content in a bounded scroll box — never a
+    /// two-line clamp (truncation-evasion by default). Source-pinned.
+    #[test]
+    fn dock_renders_full_content_not_a_clamp() {
+        let src = include_str!("approvals.rs");
+        assert!(
+            src.contains("max-h-40 overflow-y-auto whitespace-pre-wrap"),
+            "dock content must use the bounded scroll box pattern"
+        );
+        let clamp = concat!("line-clamp", "-2");
+        assert!(!src.contains(clamp), "no clamp class may remain");
+    }
 
     #[test]
     fn dock_order_is_approval_then_queue() {

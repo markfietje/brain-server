@@ -4655,18 +4655,18 @@ async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
 /// CSP for API routes — the strictest possible (JSON-only, no content executes).
 const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
 
-/// CSP for client routes — allows WASM compilation + the wasm-bindgen glue's
-/// dynamic Function() instantiation, same-origin API calls, self-hosted
-/// fonts/CSS. No CDN, no inline scripts.
-/// ponytail: script-src 'unsafe-eval' is required because wasm-bindgen emits
-/// a `new Function()` for module instantiation — 'wasm-unsafe-eval' alone
-/// permits WASM compile/instantiate but not JS eval(), so the glue throws
-/// "call to Function() blocked by CSP". A build-time hash
-/// or a bundler that emits instantiateStreaming without eval is the upgrade
-/// path. style-src 'unsafe-inline' covers Dioxus runtime <style> injection.
+/// CSP for client routes — allows WASM compilation, same-origin API calls,
+/// self-hosted fonts/CSS. No CDN, no inline scripts, NO eval.
+/// The old `'unsafe-eval'` rung existed because wasm-bindgen emitted a
+/// `new Function()` for module instantiation; since wasm-bindgen 0.2.109 the
+/// glue uses `WebAssembly.instantiateStreaming`-shaped code that only needs
+/// `'wasm-unsafe-eval'` — and this client pins 0.2.126. MANUAL GATE: boot the
+/// built client once under the trimmed policy before shipping; if a glue path
+/// still demands eval, restore `'unsafe-eval'` and re-document with evidence.
+/// style-src 'unsafe-inline' covers Dioxus runtime <style> injection.
 const CLIENT_CSP: &str = concat!(
     "default-src 'self'; ",
-    "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; ",
+    "script-src 'self' 'wasm-unsafe-eval'; ",
     "style-src 'self' 'unsafe-inline'; ",
     "connect-src 'self'; ",
     "img-src 'self' data:; ",
@@ -5841,6 +5841,12 @@ async fn main_inner() -> Result<()> {
         .route("/app/{*path}", get(handlers::frontend::spa_static))
         .route("/app/boot.json", get(handlers::frontend::boot_json))
         .route("/app/boot.js", get(handlers::frontend::boot_js))
+        .route("/app/boot.pub", get(handlers::frontend::boot_pub))
+        .route("/app/sw.js", get(handlers::frontend::sw_js))
+        .route(
+            "/app/sw-register.js",
+            get(handlers::frontend::sw_register_js),
+        )
         .route("/health", get(health))
         .route("/health/db", get(health_db))
         .route("/ready", get(ready))
@@ -15274,8 +15280,8 @@ Final paragraph after the rule.";
                 "client CSP must allow WASM"
             );
             assert!(
-                hdr.contains("'unsafe-eval'"),
-                "client CSP must allow the wasm-bindgen Function() glue (v1.16.2 live fix)"
+                !hdr.contains("'unsafe-eval'"),
+                "client CSP must NOT allow JS eval (wasm-bindgen >= 0.2.109 needs only wasm-unsafe-eval)"
             );
             assert!(
                 hdr.contains("connect-src 'self'"),
