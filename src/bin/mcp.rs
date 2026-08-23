@@ -13,6 +13,11 @@
 //! (2025-11-25) clients, an `initialize` request selects legacy semantics
 //! scoped to this stdio process: bare requests without `_meta` dispatch
 //! directly and responses keep the legacy shape (no `resultType` envelope).
+//! Era selection never punishes interop: post-handshake requests keep
+//! dispatching even when hosts attach `_meta.progressToken`, and a `_meta`
+//! block that declares no protocolVersion (legacy-era vocabulary) serves
+//! bare instead of erroring — only a DECLARED version triggers strict
+//! modern validation.
 
 #[path = "../bin_common/http.rs"]
 mod http;
@@ -225,17 +230,15 @@ fn handle_line(line: &str, legacy: &mut bool) -> Option<String> {
             // pinned by `initialize_with_meta_still_selects_legacy`.
             *legacy = true;
             (method_initialize().map_err(|e| (-32603, e)), false)
-        } else if params.get("_meta").is_some() {
-            // Modern protocol: validate the mandatory per-request `_meta` fields,
-            // then dispatch on the 2026-07-28 surface.
-            match check_meta(&params) {
-                Ok(()) => (dispatch(method, &params), true),
-                Err(e) => return Some(error_response(&id, e.code, &e.message, e.data)),
-            }
         } else if *legacy {
-            // Legacy mode: bare requests dispatch without `_meta` or `resultType`.
+            // Legacy mode is process-sticky: once the handshake selected
+            // 2025-11-25 semantics, EVERY request dispatches bare. Hosts
+            // attach `_meta.progressToken` to post-handshake calls (2025-11-25
+            // vocabulary); routing those onto the modern validator instead
+            // rejected real legacy traffic with -32602 "'_meta' is missing
+            // 'io.modelcontextprotocol/protocolVersion'".
             (dispatch(method, &params), false)
-        } else {
+        } else if params.get("_meta").is_none() {
             return Some(error_response(
                 &id,
                 -32602,
@@ -244,6 +247,22 @@ fn handle_line(line: &str, legacy: &mut bool) -> Option<String> {
              io.modelcontextprotocol/clientCapabilities)",
                 None,
             ));
+        } else if params["_meta"]
+            .get("io.modelcontextprotocol/protocolVersion")
+            .is_none()
+        {
+            // `_meta` WITHOUT a declared version is legacy-era request shape
+            // (a bare `progressToken`); a 2026-07-28 client cannot produce it
+            // — the version is mandatory per request. Serve it bare rather
+            // than reject: interop where the eras are unambiguous.
+            (dispatch(method, &params), false)
+        } else {
+            // Modern protocol: validate the mandatory per-request `_meta` fields,
+            // then dispatch on the 2026-07-28 surface.
+            match check_meta(&params) {
+                Ok(()) => (dispatch(method, &params), true),
+                Err(e) => return Some(error_response(&id, e.code, &e.message, e.data)),
+            }
         };
 
     match result {
@@ -1216,9 +1235,10 @@ mod tests {
     }
 
     #[test]
-    fn missing_meta_fields_are_rejected() {
+    fn declared_version_validates_undeclared_serves_bare() {
         let mut legacy = false;
-        // Version present, capabilities missing.
+        // A DECLARED modern version validates strictly: capabilities missing
+        // → -32602.
         let out = handle_line(
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}"#,
             &mut legacy,
@@ -1227,14 +1247,44 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
         assert_eq!(v["error"]["code"], -32602);
 
-        // Capabilities present, version missing.
+        // No declared version at all → legacy-era vocabulary (e.g. a bare
+        // `progressToken`); served bare, never rejected.
         let out = handle_line(
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/clientCapabilities":{}}}}"#,
             &mut legacy,
         )
         .expect("reply");
         let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
-        assert_eq!(v["error"]["code"], -32602);
+        assert!(
+            v.get("error").is_none(),
+            "legacy-shaped _meta must dispatch, not reject: {out}"
+        );
+        assert!(v["result"].get("resultType").is_none(), "legacy envelope");
+    }
+
+    /// The host-class regression this fixes: a 2025-11-25 host attaches
+    /// `_meta.progressToken` to post-handshake calls. Era stickiness must win
+    /// over `_meta` sniffing — the call dispatches bare instead of dying with
+    /// -32602 "'_meta' is missing 'io.modelcontextprotocol/protocolVersion'".
+    #[test]
+    fn progress_token_meta_after_handshake_still_dispatches() {
+        let mut legacy = false;
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host","version":"1"}}}"#;
+        handle_line(init, &mut legacy).expect("handshake reply");
+        assert!(legacy, "handshake must select legacy mode");
+        let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{"progressToken":7}}}"#;
+        let out = handle_line(call, &mut legacy).expect("reply");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert!(
+            v.get("error").is_none(),
+            "post-handshake _meta.progressToken must dispatch: {out}"
+        );
+        assert_eq!(v["id"], 2);
+        assert_eq!(v["result"]["tools"].as_array().expect("tools").len(), 12);
+        assert!(
+            v["result"].get("resultType").is_none(),
+            "legacy envelope only"
+        );
     }
 
     #[test]
@@ -1507,6 +1557,22 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).expect("valid json-rpc response");
         assert_eq!(v["id"], 1);
         assert!(v["result"]["tools"].as_array().is_some());
+    }
+
+    /// The interop law holds over Streamable HTTP too: a stateless request
+    /// whose `_meta` carries no protocolVersion (legacy-era shape) dispatches
+    /// bare — the transport never turns `_meta` sniffing into a -32602.
+    #[tokio::test]
+    async fn http_legacy_shaped_meta_dispatches_bare() {
+        let body = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list","params":{"_meta":{"progressToken":1}}}"#;
+        let res = post_json(sse_app(), body, "application/json").await;
+        assert_eq!(res.status(), 200);
+        let raw = body_bytes(res).await;
+        let text = String::from_utf8_lossy(&raw);
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid json-rpc response");
+        assert!(v.get("error").is_none(), "{text}");
+        assert!(v["result"].get("resultType").is_none());
+        assert_eq!(v["id"], 9);
     }
 
     /// An `Accept: text/event-stream` client gets the SSE framing of the SAME
