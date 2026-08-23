@@ -13,9 +13,12 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness probe (minimal `{status, version}`; detail on `/health/db`) |
+| GET | `/ready` | Readiness probe for load balancers |
 | GET | `/health/db` | Read-gated detail — capacity, pool, hardening, model, otel, DPO |
 | GET | `/stats`, `/version` | Counts, model, version |
 | GET | `/openapi.yaml` | Full API contract |
+| GET | `/.well-known/security.txt` · `/openid-configuration` · `/jwks.json` | RFC 9116 disclosure file, OIDC discovery (RFC 8414), JWKS key set (RFC 7517) — all public, no auth |
+| GET | `/.well-known/ump.json` · `/ai-notice` · `/ai-literacy` · `/cop-notice` | UMP discovery + EU AI Act transparency notices (Art 4 literacy, Art 50, CoP self-attestation) — all public |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | POST | `/ingest/memory` | Structured memory ingest |
 | POST | `/ingest/markdown` | Markdown ingest + graph extraction |
@@ -159,10 +162,27 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/workflow/runs/{id}/events` | Outbox enqueue, exactly-once by idempotency key (`{first}`); Write + `workflow` role gate |
 | POST | `/workflow/runs/{id}/answer` | The AskHuman closer: digest-bound to the live `pending_question`, appends `answers[]`, clears the question, CAS — one tx; Write + approve role gate |
 | GET | `/workflow/runs/{id}/steering?since=` | Drain the advisory steering outbox (Read on the run's domain) |
+| POST | `/workflow/plugins/mount` | UI-plugin mount/unmount evidence (Art 12 record-keeping): server verifies the claimed bundle SHA-256 against the boot manifest before writing the audited row (`409` on uncertified bytes) |
 
 The engine itself lives in `tools/steward-harness` (0.2.0 "FirstLight"): a
 human-cranked loop (`brain workflow crank <run>`) that drives these routes
 through the SDK `WorkflowHost` seam. No engine code runs in the server.
+
+---
+
+## Compliance pack (feature-gated)
+
+These routes exist only when the binary is built with `--features compliance-pack`
+(`scripts/install-service.sh` adds it by default). Without the feature the router
+is empty — the paths return 404, they are not auth failures.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/compliance/inventory` | AI-system inventory (Art 12/13 record-keeping register) |
+| POST | `/compliance/evaluation-record` | Persist one evaluation evidence record |
+| GET · POST | `/ropa` | Records-of-processing-activities register |
+| POST | `/ropa/{id}` | Upsert a RoPA entry |
+| GET | `/audit/export` | Full audit export (JSONL + labelled PDF), every row tagged with its owning domain |
 
 ---
 

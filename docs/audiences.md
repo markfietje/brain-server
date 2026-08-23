@@ -133,7 +133,7 @@ memory.
 
 | Who you are | What you need | What Brain Server gives you | Status |
 |---|---|---|---|
-| **OpenClaw users** | Deterministic memory in the memory slot, zero token cost | Native `kind: "memory"` plugin (autoRecall / autoCapture / Proposal), plugin 0.4.5 | **Shipped** |
+| **OpenClaw users** | Deterministic memory in the memory slot, zero token cost | Native `kind: "memory"` plugin (autoRecall / autoCapture / Proposal), plugin 0.4.7 | **Shipped** |
 | **Agent / LLM developers** | A self-hosted memory store with standard contracts | Open HTTP API, **MCP** binary, OpenAPI, **UMP 1.0 L3** | **Shipped** |
 | **MCP-adopting teams (2026)** | A memory backend that speaks the **current stateless MCP** | The `mcp` binary implements **MCP 2026-07-28**: stateless, `server/discover`, per-request `_meta`, `ttlMs`/`cacheScope` — no `initialize` handshake | **Shipped** |
 | **Edge / privacy-first agent builders** | Memory on-device, no embedding API | Local static `model2vec`, offline, bounded RSS (default 512 MiB) | **Shipped** |
@@ -275,7 +275,7 @@ Not yet. Per-domain isolation is shipped; **multi-team tenancy is the v2.0
   incl. **§7 the erasure procedure** (the documented, audited path a BPO/QA/Admin
   follows to delete memory).
 - **[MCP](./mcp.md)** — the current stateless MCP server + install.
-- **[OpenClaw integration](./openclaw-integration.md)** — the plugin (0.4.5) and
+- **[OpenClaw integration](./openclaw-integration.md)** — the plugin (0.4.7) and
   its token-resolution ladder.
 - **[Roadmap](./roadmap.md)** — the v2.0 "Cortex" trajectory this map points at.
 - **[BENCHMARKS](./BENCHMARKS.md)** — the recall numbers behind the "in numbers"

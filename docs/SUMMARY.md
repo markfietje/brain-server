@@ -84,6 +84,9 @@
 - [From twelve products to one (a preview of Profiles)](./blog/08-profiles-preview.md)
 - [Agent memory for a contact center](./blog/09-contact-center-vertex.md)
 - [DeepSeek Harness (dsh) meets Brain Server](./blog/10-dsh-deepseek-harness.md)
+- [The loop runs: what it means for an engine to ask permission](./blog/11-the-loop-runs.md)
+- [The 500 that proved the audit chain works](./blog/12-the-500-that-proved-the-chain.md)
+- [Dual-era MCP without the handshake tax](./blog/13-dual-era-mcp.md)
 
 # Regulation & trust
 

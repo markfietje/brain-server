@@ -15,5 +15,8 @@ proof map.
 - [From twelve products to one (a preview of Profiles)](./08-profiles-preview.md) — *forward-looking, v1.21.0*
 - [Agent memory for a contact center: what has to be true before you trust it](./09-contact-center-vertex.md) — *BPO / support-center buyer*
 - [DeepSeek Harness (dsh) meets Brain Server: agent memory as an MCP server](./10-dsh-deepseek-harness.md) — *dsh / agent-harness interoperability*
+- [The loop runs: what it means for an engine to ask permission](./11-the-loop-runs.md) — *v1.28 FirstLight / Anvil / Settle*
+- [The 500 that proved the audit chain works](./12-the-500-that-proved-the-chain.md) — *failure post-mortem, fail-closed evidence*
+- [Dual-era MCP without the handshake tax](./13-dual-era-mcp.md) — *MCP 2026-07-28 + 2025-11-25 interoperability*
 
 Positions and one-liners live in the [media kit](../media-kit.md).

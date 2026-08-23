@@ -42,14 +42,16 @@ forward pass — ideal for Jetson/RPi/edge). Opt-in retrieval profiles swap in l
 
 | Profile | Embedding model | Dim |
 |---|---|---|
-| `enterprise` | `BAAI/bge-m3` | 1024 |
-| `desktop` | `Alibaba-NLP/gte-base-en-v1.5` | 768 |
-| `compact` (was `multilingual`) | `minishlab/potion-base-2M` | 512 |
+| `edge-default` (default) · `quality-local` · `air-gapped` | `minishlab/potion-retrieval-32M` (static) | 512 |
+| `compact` (was `multilingual`; legacy) | `minishlab/potion-base-2M` (static) | 512 |
+| `desktop` | `Alibaba-NLP/gte-base-en-v1.5` (ONNX) | 768 |
+| `enterprise` | `BAAI/bge-m3` (ONNX, `neural-embed` feature) | 1024 |
 
 > The old `multilingual` label was wrong — `potion-base-2M` is an **English**
 > model (distilled from `BAAI/bge-base-en-v1.5`), not multilingual. Renamed to
-> **`compact`** (the smallest, fastest static model); `MODEL_PROFILE=multilingual`
-> still resolves to the same profile for backward compatibility.
+> **`compact`** (the smallest static model); `MODEL_PROFILE=multilingual`
+> still resolves to the same profile for backward compatibility. Unknown
+> profile values fall back to `edge-default`.
 
 An optional cross-encoder **rerank tier** (armed on `enterprise` / `desktop` /
 `quality-local`) refines the fused order with `mixedbread-ai/mxbai-rerank-large-v1`
@@ -59,8 +61,8 @@ profile matrix and the `BRAIN_RERANK_*` variables.
 
 ## Minimum hardware requirements
 
-The retrieval profile you pick drives the hardware you need. **compact** uses a
-static 512-d model (no transformer forward pass — it will run on a Raspberry Pi
+The retrieval profile you pick drives the hardware you need. The default static
+profiles use a 512-d embedding (no transformer forward pass — they run on a Raspberry Pi
 or a Jetson); **desktop** and **enterprise** load a neural embedding model via
 ONNX (FastEmbed), which needs real RAM and CPU. All figures are honest
 **minimums for a single host running the server only**, and already include
@@ -68,15 +70,15 @@ headroom for the operating system, your agent application, and background
 services — not a bare-bones, swap-thrashing floor. They assume a modern 64-bit
 CPU (ARM64 or x86_64) with no GPU anywhere in the path.
 
-| | `compact` (edge) | `desktop` | `enterprise` |
-|---|---|---|---|
-| Embedding model | `minishlab/potion-base-2M` (512-d, static) | `Alibaba-NLP/gte-base-en-v1.5` (768-d, ONNX) | `BAAI/bge-m3` (1024-d, ONNX) |
-| RAM | **2 GB** | **8 GB** | **16 GB** |
-| CPU | 2 cores | 4 cores | 8 cores |
-| Free disk (server + DB + model cache) | **4 GB** | **8 GB** | **12 GB** |
-| Device example | Raspberry Pi 4 / Jetson Nano | x86_64 mini-PC or Mac | server-class x86_64 / Mac |
-| Typical process RSS | ~200 MB | ~0.8–1 GB | ~1 GB |
-| OS headroom (included above) | Linux on 4 GB is comfortable | comfortable | comfortable |
+| | static edge (default) | `compact` (legacy) | `desktop` | `enterprise` |
+|---|---|---|---|---|
+| Embedding model | `minishlab/potion-retrieval-32M` (512-d, static) | `minishlab/potion-base-2M` (512-d, static) | `Alibaba-NLP/gte-base-en-v1.5` (768-d, ONNX) | `BAAI/bge-m3` (1024-d, ONNX) |
+| RAM | **2 GB** | **2 GB** | **8 GB** | **16 GB** |
+| CPU | 2 cores | 2 cores | 4 cores | 8 cores |
+| Free disk (server + DB + model cache) | **4 GB** | **4 GB** | **8 GB** | **12 GB** |
+| Device example | Raspberry Pi 4 / Jetson Nano | Raspberry Pi 4 / Jetson Nano | x86_64 mini-PC or Mac | server-class x86_64 / Mac |
+| Typical process RSS | ~200 MB | ~200 MB | ~0.8–1 GB | ~1 GB |
+| OS headroom (included above) | Linux on 4 GB is comfortable | Linux on 4 GB is comfortable | comfortable | comfortable |
 
 Why the jumps look large next to the modest RSS figures: the ONNX embedder
 **warms up its working set at boot** (never in the request path), and the

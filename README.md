@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.28.16-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.28.17-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -21,7 +21,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](docs/universal-memory-protocol.md)
-  [![Tests](https://img.shields.io/badge/tests-1019%20passed-brightgreen.svg)](#)
+  [![Tests](https://img.shields.io/badge/tests-1027%20passed-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
   [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)
@@ -62,11 +62,13 @@ That is the whole pitch: zero per-query cost, zero data egress, zero recall late
 ## Quick start
 
 ```bash
-cargo build --release --features bench
+cargo build --release --features bench,migrate,compliance-pack
 ./target/release/brain-server
 ```
 
 The server listens on `127.0.0.1:8765` and writes SQLite data to `~/.openclaw/workspace/brain.db` by default.
+
+`compliance-pack` is the flag `scripts/install-service.sh` always adds — without it the Art.12/14 decision-evidence routes (`/ropa`, `/audit/export`, `/compliance/inventory`) simply don't exist on the wire, which is an easy drift to miss. The default build stays lean by design; match your feature set to what you deploy.
 
 ### Docker (pilot in under five minutes)
 
@@ -224,6 +226,8 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 | GET | `/dsar/{id}/certificate` · `/recall/{trace_id}/trace` | DSAR certificates and recall decision traces. |
 | GET | `/audit` · `/audit/verify` | Audit log and chain integrity. |
 | POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + feedback and recency metrics. |
+| POST/GET | `/workflow/runs` · GET/PUT `/workflow/runs/{id}/state` · POST `/workflow/runs/{id}/events` · `/workflow/runs/{id}/answer` · GET+POST `/workflow/runs/{id}/steering` | Governed engine loop (v1.28): role-gated (`workflow`/`approve`), CAS state transitions with exactly-once event keys, AskHuman answers digest-bound to the live question, mediated hostcalls (v1.28.16–17). |
+| GET | `/workflow/scoreboard` · POST `/workflow/calibration/sign` · `/workflow/plugins/mount` | Outcome scoreboard over runs (DPO/admin), monthly human-signed calibration, plugin mount evidence. |
 | GET | `/export` · POST `/purge` · DELETE `/memory/{id}` | GDPR export and hard, audited deletion. |
 | GET | `/decayed` · `/retention` · `/art30` · `/retention/report` · `/snapshot/status` | Expiry review, per-kind retention, Art 30 register, snapshot self-check. |
 

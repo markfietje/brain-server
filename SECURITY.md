@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-08-19 against OWASP Top 10:**2025** + Cheat Sheet Series (pass-3 audit refresh: egress inventory truthful; graph-PPR recall leg scoped like the other legs)
+**Last reviewed:** 2026-08-23 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.17 "Settle" refresh: workflow role gates re-checked live, engine hostcall mediations current through Anvil/Settle, public-route list re-verified against a running server)
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
@@ -16,18 +16,16 @@ that shipped it and the exact live `curl`/`brain` command that proves it in
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.16.x  | :white_check_mark: | Current — client ("Integrated") + v1.14/v1.15 governance |
-| 1.14.x  | :white_check_mark: | Gate — PII redaction + record-level access_scope |
-| 1.12.x  | :white_check_mark: | Harden line — AuthZ wiring + audit fixes |
-| 1.2.x   | :white_check_mark: | AuthN line — JWT/JWS + AuthZ foundation (opaque bearer back-compat) |
-| 1.0.x   | :white_check_mark: | LTS line (opaque bearer, domains) |
-| 0.9.x   | :white_check_mark: | Maintained for back-compat |
-| < 0.9   | :x:                | Unsupported |
+| 1.28.x  | :white_check_mark: | Current — governed workflow (FirstLight/Anvil/Settle) + hostcall mediations |
+| 1.27.x  | :white_check_mark: | Previous minor — security fixes only (ends at the AuditRepair re-anchor line) |
+| < 1.27  | :x:                | Unsupported — upgrade before exposing beyond loopback |
 
-**Support window.** The current minor (`1.16.x`) and the previous minor receive
-fixes; the `0.9.x`/`1.0.x`/`1.2.x` lines receive back-compat/security fixes only.
-There is no fixed end-of-life date; any line's deprecation is announced at least
-one minor release in advance. A machine-readable disclosure endpoint is published
+**Support window.** The current minor (`1.28.x`) and the previous minor
+(`1.27.x`) receive fixes; older lines receive nothing — the audit-chain format
+changed in 1.27.31 (`--re-audit` re-anchor), so pre-1.27.31 deployments are a
+different evidence regime, not a supported target. There is no fixed
+end-of-life date; any line's deprecation is announced at least one minor
+release in advance. A machine-readable disclosure endpoint is published
 at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
 (RFC 9116) — `Expires`/`Canonical` always, and `Contact` only when
 `BRAIN_SECURITY_CONTACT` is set (`BRAIN_PUBLIC_BASE_URL` adds `Canonical`).
@@ -271,8 +269,15 @@ no-role principals are unaffected):
 
 - `AUTH_TOKEN_FILE` (preferred; 0600 file) or `AUTH_TOKEN` env var.
 - Constant-time compare via `subtle::ConstantTimeEq` (v1.1.2).
-- Public routes (`/health`, `/health/db`, `/ready`, `/version`, `/.well-known/*`)
-  bypass.
+- Public routes (`/health`, `/ready`, `/version`, `/.well-known/*`,
+  `/ump/capabilities`) bypass. Everything else — including `/health/db`
+  (capacity + backup posture) and `/openapi.yaml` — requires the bearer
+  token.
+- Token files may carry multiple whitespace-separated rotation slots (the
+  server accepts every slot); clients must send exactly ONE — the shared
+  `bin_common::http::first_token` helper is the canonical client-side
+  normalization (a whole-file paste corrupts the header into an empty-body
+  400).
 - File-watch for hot rotation (v1.1 M1.4); fail-safe on delete/empty.
 - Single-user / single-tenant / loopback deployments.
 
@@ -536,7 +541,7 @@ level security (AuthN, AuthZ, audit, isolation).
 
 ---
 
-## Engine hostcall mediations (v1.28.16)
+## Engine hostcall mediations (v1.28.16–1.28.17)
 
 Every engine tool-effect crosses ONE mediated, countable, auditable door: the
 SDK `HostCallContext::dispatch` (interceptor → canonicalization → audited
@@ -544,7 +549,11 @@ capability check → handler). The server registers a handler for every kind in
 the closed 7-word vocabulary — an explicit refusal or mediation, never an
 absence. `Prompt` posture reads as **Denied** server-side (there is no
 interactive prompt without a human; Prompt == Denied until the Witness GUI
-wires the consent path).
+wires the consent path). Since v1.28.17 "Settle", budget enforcement is
+reachable and fail-closed: an exhausted window or an unenforceable budget
+denies the dispatch (`BudgetExceeded`) BEFORE any handler runs, and
+cooperative cancel settles exactly between steps (never mid-step, never
+splitting a CAS/event twin).
 
 | Kind | Handler | Policy (production) | Audit shape |
 |---|---|---|---|
@@ -659,6 +668,10 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.28.17 | 2026-08-23 | "Settle": budget enforcement reachable + fail-closed (`BudgetExceeded` denies dispatch before any handler runs); cooperative cancel settles exactly between steps; event idempotency keys derive from the PERSISTED step count (a cancelled-then-resumed run no longer re-keys from 1 and silently swallow resumed-step event twins); `CancellationToken::clone` shares one signal cell (clone holders observe cancels). SDK settlement invariants pinned as CI gates (`steward-harness-gate`). |
+| 1.28.16 | 2026-08-23 | "Anvil": all four remaining hostcall kinds get server handlers — `exec` (argv-only, operator allowlist, empty = deny ALL, cwd-pinned, 64 KiB/stream caps, 30 s bound, sanitized), `http` (deny-by-default egress allowlist, remote HTTPS-only, redirects refused), `events` (outbox-only door, `workflow/*` topics, ≤64 KiB, idempotency-key required), `ui` (named refusal); every canonicalized dispatch tallies per-run counters (denials count); run-scoped hostcall audit tenants; `/workflow/scoreboard` audited-run linkage repaired to hash-membership over `target_hash` (the plain-text column never existed) and stays fail-closed; client binaries send exactly one bearer slot from multi-slot rotation files (whole-file paste corrupted headers into empty-body 400s). |
+| 1.28.15 | 2026-08-23 | "FirstLight": the governed workflow loop runs for real — role-gated run/state/events/answer/steering routes (`workflow` engine role; `approve` for AskHuman answers), answers digest-bound to the live pending question and prompt-injection-screened before touching state, CAS transitions + audit rows commit atomically, dead executor INSERTs into non-existent columns removed before they could ever fire. |
+| 1.28.14 | 2026-08-23 | Audit-hardening line wrap (1.28.9 → 1.28.14): MCP protocol-version echo hardened (hostile `_meta.protocolVersion` hex-escaped in BOTH `error.message` and `error.data.requested` — same injection carrier, two surfaces). |
 | 1.27.31 | 2026-08-21 | "AuditRepair": the announced audit-chain re-anchor — links commit the FULL row (8 fields) under HMAC-SHA256 keyed by a 32-byte key that never lives in the DB it protects (`BRAIN_AUDIT_CHAIN_KEY`/`_KEY_FILE`/`audit-chain.key` 0600); the head pin `(id, hash, epoch)` is written in the same tx as every audit row and detects truncation/extension; restore verifies the restored chain before certifying + discloses rolled-back heads (F-09); `/audit/verify`, `/audit`, `/metrics`, `/ump/audit/verify` and the retention prune cover EVERY registered domain (F-22); the format flips only via the offline `brain-server --re-audit` (verify-before-replay, per-domain `anchor` evidence row, new head epoch) — fresh DBs bootstrap straight to `hmac256` when a key resolves. Fixed `--re-embed` exiting 2 in the argv guard. |
 | 1.27.12 | 2026-08-15 | "ReviewArmour · Rotate · Provenance": HITL approvals bind to the displayed bytes — `/proposals` serves the read-canonical review form (`sanitize_read`: PII redact → markdown-ref → invisible strip) + a principal-independent `content_digest`; `approve_proposal` accepts the digest and `409`s on any drift, checked inside the `BEGIN IMMEDIATE` tx. `brain token rotate` atomically replaces the bearer token (0600 temp + `create_new`, fsync, rename) and refuses wide secret modes; startup warns on unsigned webhook sinks + wide UMP signing keys. Retrievers thread `source`/`node_kind`/`lawful_basis`/`region` through fusion into `RecallHit` and the plugin renders a deterministic `[src: · mk: · lb: · reg:]` line inside the `UNTRUSTED_*` fence (`sanitizeForBlock` closes fence-marker forging). |---|
 | 1.20.3 | 2026-08-11 | "Classify" (G5): two-layer injection screen — layer 1 deterministic blocklist (always on) + optional feature-gated local ONNX classifier (layer 2, off by default; the blocklist + `flagged`/`untrusted` stay the always-on defense). Canonical invisible-char predicate shared by screen/classifier/client-render boundary (client strips invisible smuggling chars from displayed hits; raw bytes never rewritten). `screen_verdict` review badge recomputed at read. Policy + thresholds read per call |

@@ -4,11 +4,11 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.27.22 "Cascade" (2026-08-18) — a bug-fix release closing two documented-but-unimplemented graph edge behaviors: edge supersession is now wired on re-ingest (a changed window retires the old edge via `superseded_at`, old row preserved) and traversal actually skips superseded edges. New `GET /graph/relationships/{id}/history` (Admin) reconstructs an edge's full version lineage.
-- **Latest client version:** 1.27.21 "Finish" (2026-08-18) — ships alongside the server (offline-queue integrity, salted DSAR digests).
-- **Latest plugin version:** 0.4.5 "Finish" (2026-08-18) — env-token ladder + privacy query log.
-- **Next milestone:** v2.0.0 "Cortex".
-- **v2.0.0 "Cortex"** (multi-team tenancy) is the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
+- **Latest server version:** 1.28.17 "Settle" (2026-08-23) — workflow settlement guarantees become contract law: budget enforcement reachable and fail-closed (`BudgetExceeded` denies dispatch before any handler runs), cooperative cancel settles exactly between steps, event idempotency keys derive from the persisted step count (resumed runs no longer swallow event twins), and `CancellationToken::clone` shares one signal cell. The v1.28 line (FirstLight → Anvil → Settle) shipped the real governed workflow loop: role-gated run/state/events/answer/steering routes, AskHuman answers digest-bound to the live question, all four mediated hostcall kinds (`exec`/`http`/`events`/`ui`), and the repaired fail-closed `/workflow/scoreboard`.
+- **Latest client version:** 1.28.14 — ships alongside the server.
+- **Latest plugin version:** 0.4.7 (2026-08-23) — drift reconciliation + hardening; rides brain-server `v1.28.14` and later.
+- **Next milestone:** v1.29 "Acuity", then v2.0.0 "Cortex".
+- **v2.0.0 "Cortex"** (multi-team tenancy) remains the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 
 ## The release line (v0.9 → v1.17)
 

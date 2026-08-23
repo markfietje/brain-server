@@ -17,12 +17,13 @@ closed erasure + fence-forgeability closes (1.27.19–1.27.21), the backup v3
 envelope (1.27.17), per-IP rate limiting + fail-closed identity (1.27.16),
 review-armour approvals that bind to the displayed bytes (1.27.12), role-gated
 console views + a `--json` CLI envelope (1.27.20), and the i18n truth pass
-(1.27.20). The latest release, 1.27.22 "Cascade", is a correctness/doc-truth
-bug-fix: the graph edge layer now meets its own documentation — re-ingesting a
-relation with a changed window supersedes the old edge (`superseded_at`,
-transaction-time end, old row preserved verbatim), traversal actually skips
-superseded edges, and `GET /graph/relationships/{id}/history` recovers an
-edge's full version lineage.
+(1.27.20). The v1.28 line makes the governed workflow real: 1.28.15
+"FirstLight" runs the loop for real over new role-gated routes, 1.28.16
+"Anvil" mediates every engine tool-effect through one auditable hostcall door,
+and the latest release, 1.28.17 "Settle", turns the engine's settlement
+guarantees into contract tests — budget enforcement fails closed before any
+handler runs, cooperative cancel settles exactly between steps, and resumed
+runs keep exactly-once event keys.
 
 The server core (retrieval, graph, governance) is stable and heavily tested
 (800+ tests across the workspace).
