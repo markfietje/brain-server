@@ -63,7 +63,10 @@ fn main() {
         token.as_deref(),
     ) {
         Ok(resp) => {
-            if resp.status == 200 || resp.status == 201 {
+            // 202 = Seatbelt review posture: the ingest became a pending
+            // proposal (operator approves later). A clean, accepted handoff —
+            // the connector's work is done, so exit 0.
+            if resp.status == 200 || resp.status == 201 || resp.status == 202 {
                 emit_progress("default", 1);
                 emit_done();
                 std::process::exit(0);
