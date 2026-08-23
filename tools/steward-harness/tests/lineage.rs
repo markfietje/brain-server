@@ -2,11 +2,20 @@
 //! cursor seeding from `state.branches[]`, and idempotent replay on a
 //! branched chain.
 
+#![forbid(unsafe_code)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use std::sync::{Arc, Mutex};
 
 use brain_engine_sdk::host::tx::HostTxHandle;
 use brain_engine_sdk::host::{AuditKind, AuditStatus, CasError, HostError, HostTx, WorkflowHost};
 use steward_harness::engine;
+
+type EventRow = (i64, String, String, String, Option<i64>);
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// A file-free host that stores events WITH ancestry: `(id, topic, payload,
 /// key, parent)`. CAS is revision-checked like the real adapter.
@@ -30,17 +39,12 @@ impl HostTxHandle for NoopHandle {
 }
 
 impl TapeHost {
-    fn snapshot(
-        &self,
-    ) -> (
-        Option<(String, i64)>,
-        Vec<(i64, String, String, String, Option<i64>)>,
-    ) {
-        let g = self.inner.lock().unwrap();
+    fn snapshot(&self) -> (Option<(String, i64)>, Vec<EventRow>) {
+        let g = lock(&self.inner);
         (g.state.clone(), g.events.clone())
     }
     fn seed(&self, state_json: &str) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = lock(&self.inner);
         g.state = Some((state_json.to_string(), 0));
     }
 }
@@ -61,14 +65,16 @@ impl WorkflowHost for TapeHost {
         payload: &str,
         key: &str,
     ) -> Result<(bool, i64), HostError> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = lock(&self.inner);
         if g.events.iter().any(|(_, _, _, k, _)| k == key) {
-            let id = g
+            let Some(id) = g
                 .events
                 .iter()
-                .find(|(_, _, _, k, _)| k == key)
+                .find(|(.., k, _)| k == key)
                 .map(|(id, ..)| *id)
-                .unwrap();
+            else {
+                unreachable!("key membership checked above");
+            };
             return Ok((false, id));
         }
         g.next_event_id += 1;
@@ -83,7 +89,7 @@ impl WorkflowHost for TapeHost {
         Ok((true, id))
     }
     fn cas(&self, _run: i64, expected_rev: i64, state_json: &str) -> Result<(), CasError> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = lock(&self.inner);
         match &g.state {
             Some((_, rev)) if *rev == expected_rev => {
                 g.state = Some((state_json.to_string(), expected_rev + 1));
@@ -96,7 +102,7 @@ impl WorkflowHost for TapeHost {
         }
     }
     fn load_state(&self, _run: i64) -> Result<Option<(String, i64)>, HostError> {
-        Ok(self.inner.lock().unwrap().state.clone())
+        Ok(lock(&self.inner).state.clone())
     }
     fn audit(&self, _: AuditKind, _: &str, _: &str, _: AuditStatus, _: &str) {}
 }
@@ -107,7 +113,7 @@ async fn checkpoint_payload_round_trips_state_exactly() {
     host.seed(r#"{"next_step":"inventory","queue":[{"expected":"a","actual":"a"}]}"#);
     let report = engine::crank(host.clone(), 1, 8).await.unwrap();
     assert_eq!(report.stopped_at.as_str(), "done");
-    let (final_state, _) = host.snapshot().0.expect("state");
+    let (final_state, _) = host.snapshot().0.expect("run state exists after crank");
     // The LAST checkpoint event carries the full state snapshot AT ITS STEP
     // BOUNDARY (finalize mutates status afterwards — the rewind contract
     // targets boundaries, never mid-settlement states).
@@ -138,9 +144,7 @@ async fn rewind_creates_branch_and_replay_is_idempotent() {
     assert_eq!(r1.stopped_at.as_str(), "done");
     let (_, events_after_first) = host.snapshot();
     assert!(
-        events_after_first
-            .iter()
-            .any(|(_, t, .., p)| *p == Some(42)),
+        events_after_first.iter().any(|(.., p)| *p == Some(42)),
         "some event parents at the branch target"
     );
     // Every non-root emission threads its predecessor's id.

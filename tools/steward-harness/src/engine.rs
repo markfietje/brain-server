@@ -384,6 +384,7 @@ fn cas_persist(host: &dyn WorkflowHost, run_id: i64, rev: i64, st: &Value) -> Re
 /// the dispatch; otherwise the host trait's lineage-aware enqueue carries it.
 /// Returns the stored event id (the parent cursor). Checkpoint payloads are
 /// bounded — an oversized state is a loud error, never a truncation.
+#[allow(clippy::too_many_arguments)] // the emission seam carries the whole context
 fn emit(
     host: &dyn WorkflowHost,
     effects: &Option<Arc<crate::effects::Effects>>,

@@ -26,22 +26,25 @@ pub async fn get_run_events(
     let principal = principal.0;
     let domain = run_domain(&state, id).await?;
     crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
-    let branch: Option<i64> = match q.get("branch") {
-        None => None,
-        Some(s) => s.parse().map(Some).map_err(|_| {
-            HandlerError::bad_request("branch_invalid", "branch must be an event id")
-        })?,
-    };
+    let branch: Option<i64> = q
+        .get("branch")
+        .map(|s| {
+            s.parse().map_err(|_| {
+                HandlerError::bad_request("branch_invalid", "branch must be an event id")
+            })
+        })
+        .transpose()?;
     let pool = state.pool.clone();
     let rows: Vec<(i64, Option<i64>, String, String, String)> =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let conn = pool.get().map_err(|e| format!("{e}"))?;
-            let chain: Option<Vec<i64>> = match branch {
-                Some(b) => Some(
+            let chain = if let Some(b) = branch {
+                Some(
                     crate::workflow::outbox::branch_chain(&conn, id, b)
                         .map_err(|e| format!("{e}"))?,
-                ),
-                None => None,
+                )
+            } else {
+                None
             };
             let mut stmt = conn
                 .prepare(

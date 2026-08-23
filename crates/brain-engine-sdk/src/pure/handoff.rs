@@ -3,7 +3,7 @@
 //! struct. Five sections mapped onto what a governed run actually records:
 //!
 //! - **I**llness   — the frontdoor seed (intent / is_seed / is_not_seed) plus
-//!                   the run's opening event.
+//!   the run's opening event.
 //! - **P**atient   — the run's domain + subject rows.
 //! - **A**ction    — the step plan and step events on the current branch.
 //! - **S**ituation — the latest checkpoint digest + any open pending_question.
