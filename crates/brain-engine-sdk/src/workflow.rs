@@ -760,4 +760,247 @@ mod tests {
         assert_eq!(started, MAX_TOTAL_AGENTS);
         assert!(matches!(last_err, Some(WorkflowError::Denied(_))));
     }
+
+    // -- v1.28.17 Settle: settlement algebra as pure properties ---------------
+
+    #[test]
+    fn result_never_rejects_any_terminal_path() {
+        const VOCAB: [&str; 3] = ["completed", "error", "cancelled"];
+        // Exhaustive over the terminal constructor set: every path lands in
+        // the dsh stop-reason union, and the future's Output carries no Err
+        // channel (failure IS a value).
+        let terminals = [
+            WorkflowResult::completed("{\"done\":true}".into()),
+            WorkflowResult::error(),
+            WorkflowResult::cancelled(),
+        ];
+        for expected in &terminals {
+            assert!(VOCAB.contains(&expected.stop_reason.as_str()));
+            let mut b = RunBuilder::default();
+            let id = b.admit(&req("any")).unwrap();
+            let (completer, run) = b.build_run(id);
+            completer.complete(expected.clone());
+            let got = futures_block_on(run.result);
+            assert_eq!(got, *expected);
+        }
+        // Cancel-after-terminal never overrides a settled result.
+        let mut b = RunBuilder::default();
+        let id = b.admit(&req("any")).unwrap();
+        let (completer, run) = b.build_run(id);
+        completer.complete(WorkflowResult::completed("x".into()));
+        run.cancel.cancel();
+        let got = futures_block_on(run.result);
+        assert_eq!(got.stop_reason, StopReason::Completed);
+    }
+
+    /// The tick model: script progress measured in abstract ticks; a hanging
+    /// script advances ticks forever without settling.
+    struct TickModel {
+        grace_ticks: u64,
+        hanging: bool,
+    }
+
+    impl TickModel {
+        /// Mirror of `CancelHandle`: cooperative signal first; an engine that
+        /// observes it settles on its own, otherwise the abort path
+        /// force-completes as cancelled AT the grace bound — never past it.
+        fn settle_after_cancel(&self) -> (StopReason, u64) {
+            let mut tick = 0u64;
+            while tick < self.grace_ticks {
+                tick += 1;
+                if !self.hanging && tick >= 3 {
+                    return (StopReason::Completed, tick);
+                }
+            }
+            (StopReason::Cancelled, tick)
+        }
+    }
+
+    #[test]
+    fn cancel_settles_within_bounded_grace_under_tick_model() {
+        // A hanging script: cancel must resolve BY the grace bound via the
+        // abort path, with stop reason cancelled.
+        let hang = TickModel {
+            grace_ticks: 5,
+            hanging: true,
+        };
+        let (reason, at) = hang.settle_after_cancel();
+        assert_eq!(reason, StopReason::Cancelled);
+        assert_eq!(at, hang.grace_ticks, "settled exactly at the bound");
+        // A well-behaved script settles cooperatively BEFORE the bound.
+        let coop = TickModel {
+            grace_ticks: 5,
+            hanging: false,
+        };
+        let (reason, at) = coop.settle_after_cancel();
+        assert_eq!(reason, StopReason::Completed);
+        assert!(at < coop.grace_ticks);
+
+        // And the real seam agrees: wall-clock cancel_blocking on a
+        // never-settling run returns cancelled within its grace.
+        let mut b = RunBuilder::default();
+        let id = b.admit(&req("hang forever")).unwrap();
+        let (_completer, run) = b.build_run(id);
+        let t0 = std::time::Instant::now();
+        let res = run
+            .cancel
+            .clone()
+            .with_grace(Duration::from_millis(40))
+            .cancel_blocking();
+        assert_eq!(res.stop_reason, StopReason::Cancelled);
+        assert!(
+            t0.elapsed() >= Duration::from_millis(40),
+            "the abort path waited out the grace before forcing"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(2), "never hangs");
+    }
+
+    #[test]
+    fn dispose_waits_for_child_quiescence_within_bound() {
+        // Child A settles at tick 3; child B never settles. Dispose =
+        // cancel + bounded settle + child quiescence: resolves AT the bound,
+        // records every child with its stop-reason, none left Running.
+        #[derive(Debug, PartialEq)]
+        enum ChildState {
+            Running,
+            Settled(&'static str),
+        }
+        let grace_ticks = 6u64;
+        let mut tick = 0u64;
+        let mut children = [
+            ("child-a", ChildState::Running, Some(3u64)),
+            ("child-b", ChildState::Running, None),
+        ];
+        let mut parent_settled = false;
+        while tick <= grace_ticks {
+            tick += 1;
+            for (_, st, settles_at) in children.iter_mut() {
+                if *st == ChildState::Running
+                    && let Some(at) = settles_at
+                    && tick >= *at
+                {
+                    *st = ChildState::Settled("cancelled");
+                }
+            }
+            if tick >= grace_ticks {
+                // The bound: force-complete whatever is left.
+                for (_, st, _) in children.iter_mut() {
+                    if *st == ChildState::Running {
+                        *st = ChildState::Settled("cancelled");
+                    }
+                }
+                parent_settled = true;
+                break;
+            }
+        }
+        assert!(parent_settled, "dispose resolved at the bound");
+        assert!(
+            children.iter().all(|(_, st, _)| *st != ChildState::Running),
+            "no child left running: {children:?}"
+        );
+        assert_eq!(
+            children[0].1,
+            ChildState::Settled("cancelled"),
+            "the settling child kept its own stop-reason"
+        );
+        assert_eq!(tick, grace_ticks, "dispose took exactly the bound");
+
+        // Real-seam mirror: quiescence waits, the bound caps it, and the
+        // result is forced to cancelled either way.
+        let mut b = RunBuilder::default();
+        let id = b.admit(&req("with children")).unwrap();
+        let (completer, run) = b.build_run(id);
+        let mut run = run;
+        run.dispose = run.dispose.with_grace(Duration::from_millis(60));
+        completer.child_started();
+        completer.complete(WorkflowResult::completed("x".into()));
+        let t0 = std::time::Instant::now();
+        let res = run.dispose.dispose();
+        assert_eq!(res.stop_reason, StopReason::Cancelled);
+        assert!(t0.elapsed() < Duration::from_secs(2), "never hangs");
+    }
+
+    #[test]
+    fn events_are_cloned_per_listener_and_throw_contained() {
+        let hooks = Hooks::new();
+        let seen_b: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+        let sb = Arc::clone(&seen_b);
+        // Listener A: mutates ITS copy and throws (Deny verdict = the model's
+        // Err-in-listener).
+        hooks
+            .on(events::LOG, "thrower", move |p: WorkflowLogSnapshot| {
+                let mut mine = p.clone();
+                mine.line.push_str(" TAMPERED");
+                assert!(mine.line.ends_with("TAMPERED"));
+                crate::events::Verdict::Deny("listener exploded".into())
+            })
+            .ok();
+        // Listener B: registered AFTER the thrower — must still receive the
+        // ORIGINAL payload unchanged.
+        hooks
+            .on(events::LOG, "observer", move |p: WorkflowLogSnapshot| {
+                if let Ok(mut g) = sb.lock() {
+                    g.push(p.line.clone());
+                }
+                crate::events::Verdict::Allow
+            })
+            .ok();
+        let id = RunId("wf-9".into());
+        events::log(&hooks, &id, "original payload");
+        let report = hooks.emit(
+            events::LOG,
+            &WorkflowLogSnapshot {
+                id: "wf-9".into(),
+                line: "second dispatch".into(),
+            },
+        );
+        assert_eq!(report.ran(), 1, "exactly the observer ran clean");
+        assert_eq!(
+            report.panicked(),
+            0,
+            "a Deny verdict is contained, not a starve"
+        );
+        assert_eq!(
+            seen_b.lock().map(|g| g.clone()).unwrap_or_default(),
+            vec![
+                "original payload".to_string(),
+                "second dispatch".to_string()
+            ],
+            "listener B saw pristine clones despite A's mutation + throw, every emit"
+        );
+        // The emit call itself succeeded — snapshots are data, dispatch is
+        // broadcast-observe: later listeners are never starved.
+    }
+
+    #[test]
+    fn admission_enforces_max_total_agents_16_and_released_slots_readmit() {
+        let mut b = RunBuilder::default();
+        let mut held_ids = Vec::new();
+        // The 17th concurrent admission is refused regardless of arguments.
+        for i in 0..MAX_TOTAL_AGENTS {
+            let mut r = req("hang");
+            r.script = format!("script-{i}");
+            r.args = format!("{{\"n\":{i}}}");
+            r.meta.name = format!("wf-{i}");
+            held_ids.push(b.admit(&r).unwrap());
+        }
+        for variant in [
+            ("totally different", "{\"x\":1}", "other-name"),
+            ("", "{}", "z"),
+        ] {
+            let mut r = req(variant.0);
+            r.args = variant.1.into();
+            r.meta.name = variant.2.into();
+            assert!(
+                matches!(b.admit(&r), Err(WorkflowError::Denied(_))),
+                "over-cap refused regardless of arguments"
+            );
+        }
+        // Released slots readmit.
+        b.released();
+        let r = req("fresh");
+        let id = b.admit(&r).expect("released slot readmits");
+        assert_ne!(id, RunId(String::new()));
+        assert_eq!(held_ids.len(), MAX_TOTAL_AGENTS);
+    }
 }

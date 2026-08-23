@@ -60,6 +60,22 @@ impl InMemHost {
         let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         g.outbox.iter().filter(|(r, ..)| *r == run_id).count()
     }
+
+    /// The run's outbox rows: `(topic, payload, idempotency_key)`.
+    pub fn outbox_of(&self, run_id: i64) -> Vec<(String, String, String)> {
+        let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        g.outbox
+            .iter()
+            .filter(|(r, ..)| *r == run_id)
+            .map(|(_, t, p, k)| (t.clone(), p.clone(), k.clone()))
+            .collect()
+    }
+
+    /// The audit rows written through the host seam.
+    pub fn audit_log(&self) -> Vec<String> {
+        let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        g.events.clone()
+    }
 }
 
 impl Default for InMemHost {

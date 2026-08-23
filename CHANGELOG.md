@@ -19,6 +19,43 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.17] — 2026-08-23 — "Settle": the workflow invariants are law
+
+DeepSeek Harness's settlement guarantees become contract tests BEFORE the engine grows: the result never rejects, cancel/dispose settle within bounded grace, events are observe-only clones, admission is capped, and the budget door fails closed — pinned as pure algebra in the SDK and tokio conformance in the engine. Server `Cargo.toml`/lock 1.28.16 → **1.28.17**; SDK `brain-engine-sdk` 1.28.9 → **1.28.10**; `steward-harness` 0.2.1 → **0.2.2**; client + plugin unchanged; no schema change.
+
+### Release notes
+
+**Improvements**
+
+- The engine can no longer ship without its settlement guarantees: CI now runs the SDK's feature-gated workflow invariants explicitly (`cargo test -p brain-engine-sdk --features harness-kernel`) and a dedicated `steward-harness-gate` job (fmt + clippy + test) for the engine's tokio conformance.
+- Cooperative cancel is real: new `crank_cancellable` observes a shared `CancellationToken` at every step boundary and settles the run as `StoppedAt::Cancelled` exactly between steps — never mid-step, never splitting a CAS/event twin. Existing crank signatures are unchanged (additive).
+- Budget enforcement is now reachable and fail-closed: an exhausted window or an unenforceable budget denies the hostcall dispatch (`BudgetExceeded`) before any handler runs; previously the guard was dead code and `BudgetExceeded` could never fire.
+
+**Bug fixes**
+
+- Event idempotency keys used the PER-CRANK step counter (`run-{id}-evt-{steps_executed}`), so a cancelled-then-resumed run re-keyed its events from 1 and the exactly-once gate silently swallowed EVERY resumed step's event twin. Keys now derive from the PERSISTED step count — deterministic on replay, correct across resumes (pinned by `sigterm_settle_then_resume_exact` artifacts-equal-control plus the no-half-step twin audit).
+- `CancellationToken::clone` snapshotted the flag value instead of sharing it, so a cloned token never observed later cancels — cancellation propagation was silently broken for every clone holder. Clones now share one signal cell.
+
+**Security fixes**
+
+- None (the fail-closed budget denial above is hardening of an unreachable path, counted here as an improvement).
+
+### Engineering record
+
+- **M1 (SDK, pure algebra):** six settlement pins in `workflow.rs`, deterministic, no clocks/threads beyond the existing wall-clock mirrors: `result_never_rejects_any_terminal_path` (exhaustive over `completed|error|cancelled`; failure IS a value; once-semantics; cancel-after-terminal cannot override), `cancel_settles_within_bounded_grace_under_tick_model` (tick model: hanging scripts settle AT the grace bound via the abort path; cooperative engines settle before it), `dispose_waits_for_child_quiescence_within_bound` (a settling child keeps its own stop-reason, a never-settling child is force-completed at the bound, none left Running), `events_are_cloned_per_listener_and_throw_contained` (a mutating + throwing listener cannot tamper with or starve later listeners), `admission_enforces_max_total_agents_16_and_released_slots_readmit` (the 17th concurrent admit is refused regardless of arguments; released slots readmit). Where a pin met reality, reality moved minimally: the dispatch budget guard was rewritten to be live and deny-by-default on unenforceable windows, and `CancellationToken` gained shared-state clone semantics.
+- **M2 (engine conformance, tokio):** four pins in `steward-harness/tests/settle.rs`: `crank_cancelled_mid_run_settles_at_step_boundary` (deterministic mid-run block-on-CAS double; state lands parseable on an exact step boundary, revision == recorded steps, every CAS twin paired with its `run-{id}-evt-{n}` event twin), `sigterm_settle_then_resume_exact` (cancel mid-run then resume; final artifacts equal the uncancelled control run field-for-field), `bounded_grace_beats_a_stuck_step` (without cancel the grace window elapses wedged; cancel ⇒ settled within the bound as `Cancelled` — never a hang, never a panic), `event_listeners_do_not_starve` (a panicking subscriber is contained at dispatch; later listeners receive every payload). Additive seams: `StoppedAt::Cancelled`, `crank_cancellable`, InMemHost `outbox_of`/`audit_log` test accessors; steward-harness tokio gains the `time`/`rt-multi-thread` features (feature-add, no new dependency).
+- **M3 (CI):** `engine-crates` job runs the SDK settlement gate explicitly; new `steward-harness-gate` job compiles and tests the harness tree.
+- Tests: server bin **802** / 6 ignored (+2 — the decision-signing-key serialization pins landed separately in this tree as `d43c060`); lib **166** / 1 ignored; brain CLI 19, mcp 21, bench 6; SDK **97** (+7); harness gold 6 + effects 3 + settle **4** (+4). clippy `-D warnings` + fmt clean across all three workspaces.
+
+### Honest ceilings
+
+- Cancel is COOPERATIVE at step boundaries: a step already executing to completion is not interrupted (there are no await points inside a step); bounded-grace force-settlement lives in the SDK's `CancelHandle::cancel_blocking`/dispose handles, not in the crank loop. Worker-thread isolation remains the deferred sandbox tier.
+- `bounded_grace_beats_a_stuck_step` proves the driver settles without waiting out a stuck child and that the report carries `cancelled`; it does not kill the stuck OS thread (test doubles leak by design; production abort semantics arrive with the async step-executor tier).
+- The budget denial bounds DISPATCH, not handler runtime: exec/http handlers enforce their own timeouts (30 s poll-kill, egress bounds) — an in-handler wall-clock check against `Budget` is Cockpit-tier work.
+- No conformance matrix document — the tests ARE the matrix (per plan non-goals).
+
+---
+
 ## [1.28.16] — 2026-08-23 — "Anvil": the ExecutionEnv is real
 
 Every engine tool-effect goes through one mediated, countable, auditable door. The SDK's hostcall machinery (v1.28.2) was 80% of the idea; this release finishes it and closes the Rule-of-Two posture on the engine side. Server `Cargo.toml`/lock 1.28.15 → **1.28.16**; SDK `brain-engine-sdk` 1.28.8 → **1.28.9**; `steward-harness` 0.2.0 → **0.2.1**; client + plugin unchanged; no schema change.

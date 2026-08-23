@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use brain_engine_sdk::host::{HostError, WorkflowHost};
+use brain_engine_sdk::hostcall::CancellationToken;
 use brain_engine_sdk::workflow_state::Decision;
 use brain_troubleshoot_core::evidence::{EvidenceRef, EvidenceType};
 use brain_troubleshoot_core::gates::{self, ConflictCode, GateResult};
@@ -22,10 +23,17 @@ use serde_json::Value;
 /// contention REPORT, never a panic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoppedAt {
-    AskHuman { question: String },
+    AskHuman {
+        question: String,
+    },
     Done,
     Budget,
-    Stale { actual_revision: i64 },
+    /// A cooperative cancel observed at a step boundary: settled, never a
+    /// half-step (the cancel applies between steps, after the CAS twin).
+    Cancelled,
+    Stale {
+        actual_revision: i64,
+    },
 }
 
 impl StoppedAt {
@@ -34,6 +42,7 @@ impl StoppedAt {
             StoppedAt::AskHuman { .. } => "ask_human",
             StoppedAt::Done => "done",
             StoppedAt::Budget => "budget",
+            StoppedAt::Cancelled => "cancelled",
             StoppedAt::Stale { .. } => "stale",
         }
     }
@@ -109,16 +118,31 @@ pub async fn crank_with_steering(
     run_id: i64,
     max_steps: u32,
 ) -> Result<CrankReport, HarnessError> {
-    crank_full(host, reader, None, run_id, max_steps).await
+    crank_full(host, reader, None, None, run_id, max_steps).await
+}
+
+/// `crank` with a cooperative [`CancellationToken`]: observed at every step
+/// boundary; a cancel settles the run as [`StoppedAt::Cancelled`] exactly
+/// between steps — never mid-step, never hanging past the current step.
+pub async fn crank_cancellable(
+    host: Arc<dyn WorkflowHost>,
+    cancel: CancellationToken,
+    run_id: i64,
+    max_steps: u32,
+) -> Result<CrankReport, HarnessError> {
+    crank_full(host, None, None, Some(cancel), run_id, max_steps).await
 }
 
 /// The full crank: an optional [`Effects`] door makes every event emission
 /// ride the mediated hostcall dispatch (counted, audited); without one the
-/// emissions fall back to the host trait's own audited enqueue seam.
+/// emissions fall back to the host trait's own audited enqueue seam. An
+/// optional cancel token is honored at every step boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn crank_full(
     host: Arc<dyn WorkflowHost>,
     reader: Option<Arc<dyn SteeringReader>>,
     effects: Option<Arc<crate::effects::Effects>>,
+    cancel: Option<CancellationToken>,
     run_id: i64,
     max_steps: u32,
 ) -> Result<CrankReport, HarnessError> {
@@ -134,6 +158,17 @@ pub async fn crank_full(
         };
         let mut st: Value =
             serde_json::from_str(&js).map_err(|e| HarnessError::CorruptState(e.to_string()))?;
+
+        // Cancel check BEFORE executing another step: settle at the boundary
+        // the previous CAS+event twin completed — never mid-step.
+        if cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+            return Ok(report(
+                steps_executed,
+                StoppedAt::Cancelled,
+                warned,
+                hostcalls,
+            ));
+        }
 
         // Budget check BEFORE executing another step.
         if steps_executed >= max_steps {
@@ -244,6 +279,14 @@ pub async fn crank_full(
                     }
                 }
                 steps_executed += 1;
+                // The event ordinal comes from the PERSISTED step count, not
+                // the per-crank counter: a cancelled-then-resumed run must
+                // not re-key its events (the idempotency gate would swallow
+                // every resumed step's event twin).
+                let ordinal = st
+                    .get("steps")
+                    .and_then(|s| s.as_array())
+                    .map_or(steps_executed as usize, Vec::len);
                 emit(
                     &*host,
                     &effects,
@@ -251,7 +294,7 @@ pub async fn crank_full(
                     run_id,
                     "workflow/log",
                     &serde_json::json!({ "line": format!("step {} executed", step) }).to_string(),
-                    &format!("run-{run_id}-evt-{steps_executed}"),
+                    &format!("run-{run_id}-evt-{ordinal}"),
                 )?;
             }
         }

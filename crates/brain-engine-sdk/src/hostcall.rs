@@ -192,9 +192,12 @@ impl<H: WorkflowHost + ?Sized> HostCallContext<H> {
             None => HostCallPayload::canonicalize(kind_wire, name, body)?,
         };
 
-        // 2. Time budget must still be satisfiable.
-        if self.budget.effective_timeout().is_none() && self.budget.manager_secs.is_some() {
-            return Err(DispatchError::BudgetExceeded);
+        // 2. Time budget must still be satisfiable — fail CLOSED: an
+        // exhausted window or an unenforceable ceiling denies the dispatch,
+        // it never falls through unbounded.
+        match self.budget.effective_timeout() {
+            Some(d) if d > Duration::ZERO => {}
+            _ => return Err(DispatchError::BudgetExceeded),
         }
 
         // Countable: every canonicalized dispatch tallies, allowed or not —
@@ -274,10 +277,11 @@ impl Budget {
 }
 
 /// Cooperative cancellation: the region's drop and explicit cancels both
-/// flip the flag handlers poll between steps.
-#[derive(Debug, Default)]
+/// flip the flag handlers poll between steps. Clones SHARE the signal —
+/// a clone observes every later cancel.
+#[derive(Debug, Default, Clone)]
 pub struct CancellationToken {
-    cancelled: AtomicBool,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl CancellationToken {
@@ -499,6 +503,35 @@ mod tests {
         assert!(matches!(
             c.dispatch("http", "fetch", "{}"),
             Err(DispatchError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn budget_manager_secs_default_is_30_and_fails_closed() {
+        // The default manager ceiling is 30s (the dsh manager-budget analog).
+        assert_eq!(Budget::default().manager_secs, Some(30));
+        let (host, mut c) = ctx(ExtensionPolicy::permissive());
+        // Default budget: dispatch proceeds.
+        c.dispatch("log", "boot", "in budget").unwrap();
+        // An EXHAUSTED window (no remaining time) denies the dispatch
+        // before any handler runs — the fail-closed door, never an
+        // unbounded fall-through.
+        c.budget.op_secs = Some(0);
+        assert!(matches!(
+            c.dispatch("log", "late", "past budget"),
+            Err(DispatchError::BudgetExceeded)
+        ));
+        assert_eq!(
+            host.log.lock().unwrap().len(),
+            1,
+            "the denied dispatch left no handler effect"
+        );
+        // And an unenforceable budget (both bounds absent) denies too.
+        c.budget.manager_secs = None;
+        c.budget.op_secs = None;
+        assert!(matches!(
+            c.dispatch("log", "wild", "unbounded"),
+            Err(DispatchError::BudgetExceeded)
         ));
     }
 
