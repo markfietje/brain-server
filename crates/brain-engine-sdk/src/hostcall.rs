@@ -550,7 +550,10 @@ mod tests {
         // A denied call counts too — denials are effects.
         assert!(c.dispatch("exec", "sh", "ls").is_err());
         let counters = c.counters();
-        assert_eq!(counters.get(&("boot".to_string(), "log".to_string())), Some(&2));
+        assert_eq!(
+            counters.get(&("boot".to_string(), "log".to_string())),
+            Some(&2)
+        );
         assert_eq!(
             counters.get(&("sh".to_string(), "exec".to_string())),
             Some(&1),
@@ -562,9 +565,7 @@ mod tests {
     fn hostcall_table_is_exhaustive() {
         // The closed 7-word vocabulary must stay closed: parse accepts every
         // wire name, as_str round-trips, and the capability map covers each.
-        for wire in [
-            "tool", "exec", "http", "session", "events", "ui", "log",
-        ] {
+        for wire in ["tool", "exec", "http", "session", "events", "ui", "log"] {
             let k = HostCallKind::parse(wire).unwrap();
             assert_eq!(k.as_str(), wire);
             assert!(!k.required_capability().is_empty());
