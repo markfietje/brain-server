@@ -21,7 +21,7 @@ use steward_harness::remote_host::{RemoteWorkflowHost, resolve_token};
 fn main() {
     let base = std::env::var("BRAIN_URL").unwrap_or_default();
     let token = resolve_token();
-    let host = match RemoteWorkflowHost::new(base, token) {
+    let host = match RemoteWorkflowHost::new(&base, token) {
         Ok(h) => Arc::new(h),
         Err(e) => {
             eprintln!("harness: {e}");
@@ -61,7 +61,7 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
                 .unwrap_or("{}")
                 .to_string();
             match host
-                .open_run(domain.to_string(), "troubleshoot".to_string(), state_json)
+                .open_run(domain, "troubleshoot", &state_json)
                 .await
             {
                 Ok(run_id) => json!({"ok": true, "run_id": run_id}),

@@ -108,8 +108,8 @@ fn tokio_block<T: Send>(
 }
 
 impl RemoteWorkflowHost {
-    pub fn new(base: String, token: Option<String>) -> Result<Self, String> {
-        let base = resolve_base_url(Some(base))?;
+    pub fn new(base: &str, token: Option<String>) -> Result<Self, String> {
+        let base = resolve_base_url(Some(base.to_string()))?;
         Ok(Self {
             base,
             token,
@@ -261,9 +261,9 @@ impl RemoteWorkflowHost {
     /// `POST /workflow/runs` -> run_id.
     pub async fn open_run(
         &self,
-        domain: String,
-        kind: String,
-        state_json: String,
+        domain: &str,
+        kind: &str,
+        state_json: &str,
     ) -> Result<i64, HostError> {
         let (status, v) = self
             .call(

@@ -20,13 +20,14 @@ const EXEC_TIMEOUT_SECS: u64 = 30;
 /// Operator env: whitespace-separated argv0 prefixes an engine may execute.
 /// Empty/absent = deny ALL engine exec (fail-closed).
 pub(crate) fn exec_allowlist() -> Vec<String> {
-    parse_word_list(std::env::var("BRAIN_ENGINE_EXEC_ALLOWLIST").unwrap_or_default())
+    parse_word_list(&std::env::var("BRAIN_ENGINE_EXEC_ALLOWLIST").unwrap_or_default())
 }
 
 /// Operator env: host names an engine may reach over HTTPS (loopback may use
 /// plain http). Empty/absent = no egress (fail-closed).
 pub(crate) fn http_allowlist() -> Vec<String> {
-    parse_word_list(std::env::var("BRAIN_ENGINE_HTTP_ALLOWLIST").unwrap_or_default())
+    let raw = std::env::var("BRAIN_ENGINE_HTTP_ALLOWLIST").unwrap_or_default();
+    word_list(&raw)
 }
 
 /// Working directory engine exec is pinned to. Defaults to the server's
@@ -39,10 +40,10 @@ fn workdir() -> std::path::PathBuf {
         })
 }
 
-fn parse_word_list(raw: String) -> Vec<String> {
+fn word_list(raw: &str) -> Vec<String> {
     raw.split_whitespace()
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(str::to_string)
         .collect()
 }
 

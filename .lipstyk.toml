@@ -21,16 +21,6 @@ enabled = false
 [rules.cross-file-error-pattern]
 enabled = false
 
-# v1.27.31 diff: trivial-wrapper + redundant-clone are heuristic false
-# positives on this codebase (small pure fns, intentional ownership) and
-# dominate the diff signal (28/41 diagnostics). Disable for diff gating;
-# full scan (`--config /dev/null`) still surfaces them for manual review.
-[rules.trivial-wrapper]
-enabled = false
-
-[rules.redundant-clone]
-enabled = false
-
 # error-swallowing on `unwrap_or_default` is intentional for best-effort
 # fallbacks (e.g. audit chain defaults, optional config); noisy in diff.
 [rules.error-swallowing]

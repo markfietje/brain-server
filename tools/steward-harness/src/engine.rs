@@ -121,22 +121,12 @@ pub async fn crank_with_steering(
     crank_full(host, reader, None, None, run_id, max_steps).await
 }
 
-/// `crank` with a cooperative [`CancellationToken`]: observed at every step
-/// boundary; a cancel settles the run as [`StoppedAt::Cancelled`] exactly
-/// between steps — never mid-step, never hanging past the current step.
-pub async fn crank_cancellable(
-    host: Arc<dyn WorkflowHost>,
-    cancel: CancellationToken,
-    run_id: i64,
-    max_steps: u32,
-) -> Result<CrankReport, HarnessError> {
-    crank_full(host, None, None, Some(cancel), run_id, max_steps).await
-}
-
 /// The full crank: an optional [`Effects`] door makes every event emission
 /// ride the mediated hostcall dispatch (counted, audited); without one the
 /// emissions fall back to the host trait's own audited enqueue seam. An
-/// optional cancel token is honored at every step boundary.
+/// optional cancel token (`brain_engine_sdk::hostcall::CancellationToken`,
+/// clones share the signal) is honored at every step boundary and settles
+/// the run as [`StoppedAt::Cancelled`] exactly between steps.
 #[allow(clippy::too_many_arguments)]
 pub async fn crank_full(
     host: Arc<dyn WorkflowHost>,
@@ -335,23 +325,19 @@ fn queue_remaining(st: &Value) -> usize {
 /// reported (`StoppedAt::Stale`), never panicked on.
 fn cas_persist(host: &dyn WorkflowHost, run_id: i64, rev: i64, st: &Value) -> Result<(), i64> {
     let js = st.to_string();
-    match host.cas(run_id, rev, &js) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            // Reload and retry exactly once (the recovery half of the CAS
-            // contract); if we are stale AGAIN, someone else is actively
-            // driving — report, don't fight.
-            match host.load_state(run_id) {
-                Ok(Some((_, fresh_rev))) => match host.cas(run_id, fresh_rev, &js) {
-                    Ok(()) => Ok(()),
-                    Err(brain_engine_sdk::host::CasError::Stale { actual_revision }) => {
-                        Err(actual_revision)
-                    }
-                    Err(_) => Err(fresh_rev),
-                },
-                _ => Err(rev),
-            }
-        }
+    if host.cas(run_id, rev, &js).is_ok() {
+        return Ok(());
+    }
+    // Reload and retry exactly once (the recovery half of the CAS
+    // contract); if we are stale AGAIN, someone else is actively
+    // driving — report, don't fight.
+    match host.load_state(run_id) {
+        Ok(Some((_, fresh_rev))) => match host.cas(run_id, fresh_rev, &js) {
+            Ok(()) => Ok(()),
+            Err(brain_engine_sdk::host::CasError::Stale { actual_revision }) => Err(actual_revision),
+            Err(_) => Err(fresh_rev),
+        },
+        _ => Err(rev),
     }
 }
 
