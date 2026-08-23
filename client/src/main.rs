@@ -15,7 +15,7 @@
 use dioxus::prelude::*;
 use panels::{
     audit, conversation as runs_panel, create, data, graph, health, ops, overview, recall,
-    register, review, security, subjects, system, ump,
+    register, review, scoreboard, security, subjects, system, ump,
 };
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
@@ -27,6 +27,10 @@ mod api;
 // v1.28.1 M4: the shared two-step confirm for destructive buttons (purge,
 // DSAR erasure, quarantine delete, reindex) — see the module.
 mod confirm;
+// v1.28.20 Cockpit M1: the one download seam — blob save on web, native
+// file write (BRAIN_DOWNLOAD_DIR) on desktop/mobile, one traversal-safe
+// filename gate shared by both.
+mod download;
 // v1.23.0 M3 "Roles": client-side role capability + panel-visibility helpers
 // (defense-in-depth UI only — the server enforces). See the module.
 mod role;
@@ -387,8 +391,14 @@ enum Route {
     ReviewDetail { proposal_id: i64 },
     /// v1.28.19 Witness: the run conversation — a deep-linkable transcript
     /// fed by the persistent stream.
+    #[route("/runs/:run_id/timeline")]
+    RunTimeline { run_id: i64 },
     #[route("/runs/:run_id")]
     RunConversation { run_id: i64 },
+    /// v1.28.20 Cockpit M3: the outcome/efficiency scoreboard (Admin+DPO
+    /// server-side; this panel is presentation only).
+    #[route("/scoreboard")]
+    Scoreboard {},
     #[route("/recall")]
     Recall {},
     /// M4.2: deep-linkable decision-path artifact (`?trace=true` → trace_id).
@@ -1252,6 +1262,7 @@ fn AppShell() -> Element {
     let nav_ops = t("nav_ops");
     let nav_register = t("nav_register");
     let nav_clients = t("nav_clients");
+    let nav_scoreboard = t("nav_scoreboard");
     let review_title = t("review_title");
     let sign_out = t("sign_out");
     let loopback = t("loopback");
@@ -1347,6 +1358,9 @@ fn AppShell() -> Element {
                     }
                     if role::role_can_see(&nav_roles, "audit") {
                         NavLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
+                        // v1.28.20 Cockpit M3: the scoreboard rides the audit
+                        // gate (the endpoint is Admin + DPO server-side).
+                        NavLink { to: Route::Scoreboard {}, "{nav_scoreboard}" }
                     }
                     NavLink { to: Route::Create {}, "{nav_create}" }
                     NavLink { to: Route::Health {}, "{nav_health}" }
@@ -1405,6 +1419,7 @@ fn AppShell() -> Element {
                 }
                 if role::role_can_see(&nav_roles, "audit") {
                     TabLink { to: Route::Audit { since: None, principal: None }, dirty: audit_dirty, "{nav_audit}" }
+                    TabLink { to: Route::Scoreboard {}, "{nav_scoreboard}" }
                 }
                 TabLink { to: Route::Create {}, "{nav_create}" }
                 TabLink { to: Route::Health {}, "{nav_health}" }
@@ -2263,6 +2278,16 @@ fn ReviewDetail(proposal_id: i64) -> Element {
 #[component]
 fn RunConversation(run_id: i64) -> Element {
     runs_panel::panel_run(run_id)
+}
+/// v1.28.20 Cockpit M3: the full-page run lineage timeline.
+#[component]
+fn RunTimeline(run_id: i64) -> Element {
+    runs_panel::panel_timeline(run_id)
+}
+/// v1.28.20 Cockpit M3: the scoreboard panel.
+#[component]
+fn Scoreboard() -> Element {
+    scoreboard::panel_scoreboard()
 }
 #[component]
 fn Recall() -> Element {

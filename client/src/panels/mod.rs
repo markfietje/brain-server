@@ -20,6 +20,7 @@ pub mod procedures;
 pub mod recall;
 pub mod register;
 pub mod review;
+pub mod scoreboard;
 pub mod security;
 pub mod subjects;
 pub mod system;

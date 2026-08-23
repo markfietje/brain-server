@@ -11,7 +11,7 @@ use crate::api::ApiClient;
 use crate::conversation::assembler::Assembler;
 use crate::i18n::{t, t_fmt};
 use crate::panels::{PageTitle, use_document_title};
-use crate::{Conn, UiState};
+use crate::{Conn, Route, UiState};
 use dioxus::prelude::*;
 use serde_json::Value;
 
@@ -26,6 +26,7 @@ pub enum RunKey {
     Reject,
     Down,
     Up,
+    Help,
 }
 
 pub fn run_key(key: &str) -> Option<RunKey> {
@@ -34,6 +35,7 @@ pub fn run_key(key: &str) -> Option<RunKey> {
         "r" | "R" => Some(RunKey::Reject),
         "j" | "J" => Some(RunKey::Down),
         "k" | "K" => Some(RunKey::Up),
+        "?" => Some(RunKey::Help),
         _ => None,
     }
 }
@@ -91,9 +93,145 @@ fn steer_sendable(message: &str) -> bool {
     !message.trim().is_empty() && message.chars().count() <= 4000
 }
 
+/// Cockpit M2: the composer's `/commands` — the CLI verbs, GUI-ified.
+/// `/answer` needs no command (the AskHuman card owns answering), so the
+/// composer maps: crank (bounded steps), handoff (fetch + render the
+/// I-PASS packet), scoreboard (navigate), help (cheat sheet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerCommand {
+    Crank { steps: Option<u32> },
+    Handoff,
+    Scoreboard,
+    Help,
+}
+
+/// The GUI crank bound — a single press executes at most 500 engine steps;
+/// anything larger belongs to the operator CLI, not a button.
+pub const MAX_CRANK_STEPS: u32 = 500;
+
+pub fn parse_command(input: &str) -> Option<ComposerCommand> {
+    let input = input.trim();
+    let rest = input.strip_prefix('/')?;
+    let mut parts = rest.split_whitespace();
+    match parts.next()? {
+        "crank" => {
+            // An argument that fails to parse refuses the whole command
+            // (`?`), it never degrades to an unbounded crank.
+            let steps = if let Some(s) = parts.next() {
+                Some(s.parse::<u32>().ok()?.clamp(1, MAX_CRANK_STEPS))
+            } else {
+                None
+            };
+            if parts.next().is_some() {
+                return None;
+            }
+            Some(ComposerCommand::Crank { steps })
+        }
+        "handoff" => (!parts.next().is_some()).then_some(ComposerCommand::Handoff),
+        "scoreboard" => (!parts.next().is_some()).then_some(ComposerCommand::Scoreboard),
+        "help" => (!parts.next().is_some()).then_some(ComposerCommand::Help),
+        _ => None,
+    }
+}
+
+/// Cockpit M3: the evidence-pack view of one tool node. Extracts, from the
+/// settled `output` payload ONLY (machine-written state, still rendered read-
+/// only): findings with provenance `origin` labels, contradictions as linked
+/// pairs, evidence digests, and verification questions with per-question
+/// justification + score units. Absent fields render absent — nothing is
+/// invented for a payload that did not carry it.
+pub fn evidence_of(tool_state: &Value) -> Option<Value> {
+    let out = tool_state.get("output")?;
+    let findings = out.get("findings").and_then(Value::as_array);
+    let contradictions = out.get("contradictions").and_then(Value::as_array);
+    let evidence = out.get("evidence").and_then(Value::as_array);
+    let questions = out.get("questions").and_then(Value::as_array);
+    let empty =
+        findings.is_none() && contradictions.is_none() && evidence.is_none() && questions.is_none();
+    if empty || !out.is_object() {
+        return None;
+    }
+    Some(out.clone())
+}
+
+/// A contradiction renders as a LINKED PAIR — both rows visible together or
+/// not at all; a lone half is refused (a one-sided contradiction misleads).
+pub fn contradiction_pair(c: &Value) -> Option<(String, String)> {
+    let arr = c.as_array()?;
+    if arr.len() != 2 {
+        return None;
+    }
+    let side = |v: &Value| -> Option<String> {
+        let s = v.as_str().map(str::to_string).or_else(|| {
+            let a = v
+                .get("claim")
+                .or_else(|| v.get("text"))
+                .or_else(|| v.get("id"))?;
+            a.as_str().map(str::to_string)
+        })?;
+        (!s.is_empty()).then_some(crate::strip_invisible(&s))
+    };
+    Some((side(&arr[0])?, side(&arr[1])?))
+}
+
+/// The timeline marker class for one lineage event — pure so branch/checkpoint/
+/// pause badges are pinnable without a fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineMarker {
+    Checkpoint,
+    Branch,
+    AskHuman,
+    Plain,
+}
+
+pub fn timeline_marker(topic: &str) -> TimelineMarker {
+    if topic.contains("checkpoint") {
+        TimelineMarker::Checkpoint
+    } else if topic.contains("rewind") || topic.contains("branch") {
+        TimelineMarker::Branch
+    } else if topic.contains("ask") {
+        TimelineMarker::AskHuman
+    } else {
+        TimelineMarker::Plain
+    }
+}
+
 #[component]
 pub fn RunConversation(run_id: i64) -> Element {
     panel_run(run_id)
+}
+
+/// Cockpit M3: the full-page timeline route (`/runs/:id/timeline`) — the
+/// same TimelineView component, over the complete lineage read.
+pub fn panel_timeline(run_id: i64) -> Element {
+    use_document_title(move || format!("Run {run_id} timeline — brain"));
+    let api = use_context::<Signal<ApiClient>>();
+    let lineage_res =
+        use_resource(move || async move { api().workflow_events(run_id, None).await });
+    let (events, err): (Vec<Value>, Option<String>) = match &*lineage_res.read() {
+        Some(Ok(v)) => (v["events"].as_array().cloned().unwrap_or_default(), None),
+        Some(Err(e)) => (Vec::new(), Some(e.to_string())),
+        None => (Vec::new(), None),
+    };
+    rsx! {
+        div { class: "space-y-3", tabindex: 0,
+            PageTitle { {t("runs_timeline")} }
+            if let Some(e) = err {
+                p { class: "text-sm text-danger", role: "alert", "{e}" }
+            }
+            section { class: "card",
+                div { class: "card-header",
+                    h2 { class: "card-title text-base", {t("runs_lineage")} }
+                }
+                div { class: "card-body",
+                    if events.is_empty() {
+                        p { class: "text-sm text-muted-foreground", {t("runs_empty")} }
+                    }
+                    TimelineView { events }
+                }
+            }
+        }
+    }
 }
 
 /// The transcript body (plain fn — the router-facing `RunConversation`
@@ -175,7 +313,14 @@ pub fn panel_run(run_id: i64) -> Element {
 
     let mut answer = use_signal(String::new);
     let mut steer = use_signal(String::new);
-    let error = use_signal(|| None::<String>);
+    let mut error = use_signal(|| None::<String>);
+    // Cockpit M2: the composer's /commands + the human crank + the
+    // printable handoff packet + the `?` cheat-sheet drawer.
+    let mut help_open = use_signal(|| false);
+    let mut handoff = use_signal(|| None::<Value>);
+    let mut crank_steps = use_signal(|| 50u32);
+    let mut note = use_signal(|| None::<String>);
+    let navigator = navigator();
 
     let submit_answer = move |question: String| {
         let api = api();
@@ -213,6 +358,41 @@ pub fn panel_run(run_id: i64) -> Element {
         });
     };
 
+    // The composer dispatcher: `/commands` first, screened steering otherwise.
+    let mut submit_composer = move |text: String| {
+        note.set(None);
+        if let Some(cmd) = parse_command(&text) {
+            match cmd {
+                ComposerCommand::Help => help_open.toggle(),
+                ComposerCommand::Scoreboard => {
+                    let _ = navigator.push(Route::Scoreboard {});
+                }
+                ComposerCommand::Handoff => {
+                    let api = api();
+                    spawn(async move {
+                        match api.workflow_handoff(run_id).await {
+                            Ok(v) => {
+                                handoff.set(Some(v));
+                                error.set(None);
+                            }
+                            Err(e) => note.set(Some(crate::api::error_message(&e))),
+                        }
+                        steer.set(String::new());
+                    });
+                }
+                // Honest ceiling until the engine-pull worker (v1.28.21):
+                // there is no HTTP crank — the button says so instead of
+                // pretending. The bounded selector still enforces its cap.
+                ComposerCommand::Crank { .. } => {
+                    note.set(Some(t("runs_crank_unwired")));
+                }
+            }
+            steer.set(String::new());
+            return;
+        }
+        submit_steer(text);
+    };
+
     // Digest-bound decision from INSIDE a review-job node — the ApprovalDock's
     // action moved to where the evidence streams in (approvals.rs law).
     let decide = move |approve: bool, proposal_id: i64, digest: Option<String>| {
@@ -243,6 +423,10 @@ pub fn panel_run(run_id: i64) -> Element {
             return;
         };
         let idx = cursor().min(max_cursor);
+        if k == RunKey::Help {
+            help_open.toggle();
+            return;
+        }
         if let Some((kind, data)) = nodes_for_keys.get(idx)
             && kind == "review-job"
             && k != RunKey::Down
@@ -321,12 +505,17 @@ pub fn panel_run(run_id: i64) -> Element {
                 }
             }
 
-            // The transcript — keyed dispatch with generic-card fallback.
+            // The transcript — keyed dispatch with generic-card fallback;
+            // polite live region (Cockpit M4 a11y).
             section { class: "card", "aria-label": t("runs_transcript"),
-                div { class: "card-header",
+                div { class: "card-header flex items-center justify-between",
                     h2 { class: "card-title text-base", {t("runs_transcript")} }
+                    Link { to: Route::RunTimeline { run_id },
+                        class: "btn btn-ghost btn-sm",
+                        {t("runs_timeline")}
+                    }
                 }
-                div { class: "card-body space-y-2",
+                div { class: "card-body space-y-2", "aria-live": "polite",
                     if nodes.is_empty() {
                         p { class: "text-sm text-muted-foreground", {t("runs_empty")} }
                     }
@@ -349,6 +538,12 @@ pub fn panel_run(run_id: i64) -> Element {
                                     } else if kind == "review-job" && !view["fallback"].as_bool().unwrap_or(false) {
                                         ReviewJobCard { view, can_decide: writes && can_decide,
                                             on_decide: move |d: (bool, i64, Option<String>)| decide(d.0, d.1, d.2) }
+                                    } else if kind == "assistant" {
+                                        AssistantCard { data: data.clone() }
+                                    } else if kind == "tool" {
+                                        ToolCard { data: data.clone() }
+                                    } else if kind == "delivery" {
+                                        DeliveryCard { data: data.clone() }
                                     } else if kind == "workflow-run" {
                                         WorkflowRunCard { data: data.clone(),
                                             lineage_ok: lineage_ok.clone(),
@@ -366,7 +561,9 @@ pub fn panel_run(run_id: i64) -> Element {
                 }
             }
 
-            // The steering composer — advisory, screened server-side (≤4000).
+            // The steering composer + /commands — advisory, screened
+            // server-side (≤4000). aria-live polite: new transcript nodes
+            // are announced without stealing focus.
             div { class: "card p-3",
                 label { class: "text-xs text-muted-foreground", {t("runs_steer")} }
                 div { class: "flex gap-2 mt-1",
@@ -377,17 +574,89 @@ pub fn panel_run(run_id: i64) -> Element {
                         value: "{steer}",
                         disabled: !writes,
                         oninput: move |e| steer.set(e.value()),
+                        onkeydown: move |e: Event<KeyboardData>| {
+                            if e.data().key() == Key::Enter && steer_sendable(&steer()) {
+                                submit_composer(steer());
+                            }
+                        },
                         "aria-label": t("runs_steer_placeholder"),
                     }
                     button {
                         class: "btn btn-outline btn-sm",
                         disabled: !writes || !steer_sendable(&steer()),
-                        onclick: move |_| submit_steer(steer()),
+                        onclick: move |_| submit_composer(steer()),
                         {t("runs_send")}
                     }
                 }
                 p { class: "text-xs text-ink-faint mt-1 tabular",
-                    "{4000 - steer().chars().count()} / 4000"
+                    "{4000 - steer().chars().count()} / 4000 · /crank /handoff /scoreboard /help"
+                }
+                // The human crank: one press, bounded, role-gated.
+                div { class: "flex gap-2 items-center mt-2",
+                    span { class: "text-xs text-muted-foreground", {t("runs_crank_label")} }
+                    select {
+                        class: "input w-24 text-xs",
+                        value: "{crank_steps}",
+                        disabled: !(writes && can_decide),
+                        "aria-label": t("runs_crank_label"),
+                        oninput: move |e| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                crank_steps.set(v.min(MAX_CRANK_STEPS));
+                            }
+                        },
+                        option { value: "10", "10" }
+                        option { value: "50", "50" }
+                        option { value: "100", "100" }
+                        option { value: "500", "500" }
+                    }
+                    button {
+                        class: "btn btn-secondary btn-sm",
+                        disabled: !(writes && can_decide),
+                        onclick: move |_| submit_composer(format!("/crank {crank_steps}")),
+                        {t("runs_crun")}
+                    }
+                }
+                if let Some(n) = note() {
+                    p { class: "text-xs text-warn mt-1", role: "status", "{n}" }
+                }
+            }
+
+            // The fetched handoff packet (/handoff) — printable evidence.
+            if let Some(h) = handoff() {
+                HandoffCard { packet: h, on_close: move |_| handoff.set(None) }
+            }
+
+            // Cockpit M2: the `?` cheat-sheet drawer — a dialog (focus trap
+            // is the drawer's own focus cycle), closed by Esc or the button.
+            if help_open() {
+                div {
+                    class: "fixed inset-0 z-40 bg-black/40 flex items-center justify-center",
+                    role: "dialog",
+                    "aria-modal": "true",
+                    "aria-label": t("runs_help_title"),
+                    tabindex: -1,
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        if e.data().key() == Key::Escape || key_label(e.data().key()) == "?" {
+                            help_open.set(false);
+                        }
+                    },
+                    div { class: "card max-w-md w-full mx-4",
+                        div { class: "card-header flex items-center justify-between",
+                            h3 { class: "card-title", {t("runs_help_title")} }
+                            button {
+                                class: "btn btn-ghost btn-sm",
+                                "aria-label": t("close"),
+                                onclick: move |_| help_open.set(false),
+                                "×"
+                            }
+                        }
+                        div { class: "card-body space-y-1 text-sm",
+                            p { "{t(\"runs_help_keys\")}" }
+                            p { class: "font-mono text-xs", "J/K · A/R · ?" }
+                            p { "{t(\"runs_help_commands\")}" }
+                            p { class: "font-mono text-xs", "/crank [steps] · /handoff · /scoreboard · /help" }
+                        }
+                    }
                 }
             }
         }
@@ -458,8 +727,9 @@ fn ReviewJobCard(
     }
 }
 
-/// The workflow-run node: lineage timeline (events with parents + branch
-/// markers), current decision state, and the last crank log line.
+/// The workflow-run node: state, branch markers, and the shared timeline
+/// component (Cockpit M3: one timeline, reused by this node and the
+/// full-page `/runs/:id/timeline`).
 #[component]
 fn WorkflowRunCard(
     data: Value,
@@ -484,17 +754,232 @@ fn WorkflowRunCard(
             if let Some(e) = lineage_err {
                 p { class: "text-xs text-danger", "{e}" }
             }
-            ol { class: "mt-1 space-y-1 text-xs font-mono",
-                for ev in &events {
-                    li { class: "flex gap-2 items-baseline",
-                        if let Some(parent) = ev["parent_id"].as_i64() {
-                            span { class: "text-ink-faint",
-                                "└ {parent}→{ev[\"event_id\"]}"
+            TimelineView { events }
+        }
+    }
+}
+
+/// Cockpit M3: the run timeline — lineage tree with parent links, branch
+/// markers, checkpoint badges, AskHuman pauses. A component so the
+/// workflow-run node and `/runs/:id/timeline` render ONE implementation.
+#[component]
+pub fn TimelineView(events: Vec<Value>) -> Element {
+    rsx! {
+        ol { class: "mt-1 space-y-1 text-xs font-mono",
+            for ev in &events {
+                {
+                    let topic = ev["topic"].as_str().unwrap_or_default();
+                    let badge_class = match timeline_marker(topic) {
+                        TimelineMarker::Checkpoint => "badge badge-ok",
+                        TimelineMarker::Branch => "badge badge-warn",
+                        TimelineMarker::AskHuman => "badge badge-danger",
+                        TimelineMarker::Plain => "",
+                    };
+                    let badge_label = match timeline_marker(topic) {
+                        TimelineMarker::Checkpoint => t("tl_checkpoint"),
+                        TimelineMarker::Branch => t("tl_branch"),
+                        TimelineMarker::AskHuman => t("tl_askhuman"),
+                        TimelineMarker::Plain => String::new(),
+                    };
+                    rsx! {
+                        li { class: "flex gap-2 items-baseline",
+                            if !badge_label.is_empty() {
+                                span { class: "{badge_class}", "{badge_label}" }
                             }
-                        } else {
-                            span { class: "text-ink-faint", "• {ev[\"event_id\"]}" }
+                            if let Some(parent) = ev["parent_id"].as_i64() {
+                                span { class: "text-ink-faint",
+                                    "└ {parent}→{ev[\"event_id\"]}"
+                                }
+                            } else {
+                                span { class: "text-ink-faint", "• {ev[\"event_id\"]}" }
+                            }
+                            span { "{ev[\"topic\"]}" }
                         }
-                        span { "{ev[\"topic\"]}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Cockpit M2: the assistant turn — progressive render while streaming,
+/// settled text after `assistant/end`.
+#[component]
+fn AssistantCard(data: Value) -> Element {
+    let view = crate::conversation::AssistantTurn::build_view_node(&data);
+    let text = view["text"].as_str().unwrap_or_default().to_string();
+    let streaming = !view["settled"].as_bool().unwrap_or(false);
+    if text.is_empty() {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "space-y-1",
+            p { class: "text-sm whitespace-pre-wrap", {crate::strip_invisible(&text)} }
+            if streaming {
+                span { class: "text-xs text-muted-foreground animate-pulse", {t("runs_streaming")} }
+            }
+        }
+    }
+}
+
+/// Cockpit M2/M3: the tool invocation card — name, status, plus the
+/// evidence-pack viewer when the output carried structured evidence.
+#[component]
+fn ToolCard(data: Value) -> Element {
+    let view = crate::conversation::ToolInvocation::build_view_node(&data);
+    let name = view["name"].as_str().unwrap_or("tool").to_string();
+    let status = view["status"].as_str().unwrap_or("running").to_string();
+    let evidence = evidence_of(&view);
+    rsx! {
+        div { class: "space-y-1",
+            div { class: "flex items-center gap-2",
+                span { class: "font-mono text-sm text-accent", "{name}" }
+                if status == "settled" {
+                    span { class: "badge badge-ok", {t("runs_tool_settled")} }
+                } else if status == "error" {
+                    span { class: "badge badge-danger", {t("runs_tool_error")} }
+                } else {
+                    span { class: "badge animate-pulse", {t("runs_tool_running")} }
+                }
+            }
+            if let Some(ev) = evidence {
+                EvidenceView { output: ev }
+            } else if let Some(out) = view["output"].as_str() {
+                p { class: "text-xs font-mono break-all text-muted-foreground",
+                    {crate::strip_invisible(out)}
+                }
+            }
+        }
+    }
+}
+
+/// Cockpit M3: the delivery (handoff packet) card — collected items rendered
+/// read-only with a done badge.
+#[component]
+fn DeliveryCard(data: Value) -> Element {
+    let view = crate::conversation::Delivery::build_view_node(&data);
+    let done = view["done"].as_bool().unwrap_or(false);
+    let items = view["items"].as_array().cloned().unwrap_or_default();
+    if items.is_empty() && !done {
+        return rsx! {};
+    }
+    rsx! {
+        div { class: "space-y-1",
+            div { class: "flex items-center gap-2",
+                span { class: "text-sm font-medium", {t("runs_delivery")} }
+                if done {
+                    span { class: "badge badge-ok", {t("runs_delivery_done")} }
+                }
+            }
+            ul { class: "list-disc pl-5 text-xs space-y-0.5",
+                for item in &items {
+                    li { class: "font-mono break-all",
+                        {crate::strip_invisible(item.as_str().unwrap_or(&item.to_string()))}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Cockpit M3: the /handoff packet view (I-PASS sections, printable).
+#[component]
+fn HandoffCard(packet: Value, on_close: EventHandler<Value>) -> Element {
+    // I-PASS: Illness/Patient/Assessment/Situation/Safety map onto whatever
+    // fields the endpoint assembled; unknown keys render verbatim.
+    let obj = packet.as_object().cloned().unwrap_or_default();
+    rsx! {
+        div { class: "card card-enhanced print:border-0",
+            div { class: "card-header flex items-center justify-between",
+                h3 { class: "card-title", {t("runs_handoff_title")} }
+                button {
+                    class: "btn btn-ghost btn-sm",
+                    onclick: move |_| on_close.call(Value::Null),
+                    {t("close")}
+                }
+            }
+            div { class: "card-body space-y-2",
+                for (k, v) in &obj {
+                    div { class: "space-y-0.5",
+                        p { class: "text-xs font-medium uppercase tracking-wide text-muted-foreground", "{k}" }
+                        p { class: "text-sm whitespace-pre-wrap",
+                            {crate::strip_invisible(v.as_str().unwrap_or(&v.to_string()))}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Cockpit M3: the evidence-pack viewer — findings with provenance origins,
+/// contradictions as linked pairs, evidence digests, verification questions
+/// with justification + score. Read-only over machine-written state.
+#[component]
+fn EvidenceView(output: Value) -> Element {
+    let findings = output["findings"].as_array().cloned().unwrap_or_default();
+    let contradictions = output["contradictions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let evidence = output["evidence"].as_array().cloned().unwrap_or_default();
+    let questions = output["questions"].as_array().cloned().unwrap_or_default();
+    rsx! {
+        div { class: "mt-1 space-y-2 border-l-2 border-border pl-3",
+            if !findings.is_empty() {
+                div { class: "space-y-1",
+                    p { class: "text-xs font-medium", {t("ev_findings")} }
+                    for f in &findings {
+                        div { class: "text-xs space-y-0.5",
+                            p { {crate::strip_invisible(f["claim"].as_str().or_else(|| f.as_str()).unwrap_or(""))} }
+                            if let Some(origin) = f["origin"].as_str() {
+                                span { class: "badge", "[{origin}]" }
+                            }
+                            if let Some(c) = f["confidence"].as_f64() {
+                                span { class: "tabular text-ink-faint ml-1", "{c:.2}" }
+                            }
+                        }
+                    }
+                }
+            }
+            if !contradictions.is_empty() {
+                div { class: "space-y-1",
+                    p { class: "text-xs font-medium text-warn", {t("ev_contradictions")} }
+                    for c in &contradictions {
+                        if let Some((a, b)) = contradiction_pair(c) {
+                            // Linked pair: both rows, always together.
+                            div { class: "text-xs flex gap-2 items-baseline",
+                                span { class: "line-through text-danger break-all", "{a}" }
+                                span { class: "text-ink-faint", "⇄" }
+                                span { class: "break-all", "{b}" }
+                            }
+                        }
+                    }
+                }
+            }
+            if !evidence.is_empty() {
+                div { class: "space-y-1",
+                    p { class: "text-xs font-medium", {t("ev_evidence")} }
+                    for e in &evidence {
+                        if let Some(d) = e["digest"].as_str().or_else(|| e.as_str()) {
+                            p { class: "text-xs font-mono break-all text-muted-foreground", "{d}" }
+                        }
+                    }
+                }
+            }
+            if !questions.is_empty() {
+                div { class: "space-y-1",
+                    p { class: "text-xs font-medium", {t("ev_questions")} }
+                    for q in &questions {
+                        div { class: "text-xs space-y-0.5",
+                            p { {crate::strip_invisible(q["question"].as_str().or_else(|| q["text"].as_str()).unwrap_or(""))} }
+                            if let Some(j) = q["justification"].as_str() {
+                                p { class: "text-ink-faint", {crate::strip_invisible(j)} }
+                            }
+                            if let Some(s) = q["score_units"].as_i64().or_else(|| q["score"].as_i64()) {
+                                span { class: "badge tabular", "{s}" }
+                            }
+                        }
                     }
                 }
             }
@@ -512,8 +997,37 @@ mod tests {
         assert_eq!(run_key("R"), Some(RunKey::Reject));
         assert_eq!(run_key("j"), Some(RunKey::Down));
         assert_eq!(run_key("k"), Some(RunKey::Up));
+        // Cockpit M2: `?` opens the cheat-sheet drawer.
+        assert_eq!(run_key("?"), Some(RunKey::Help));
         assert_eq!(run_key("x"), None);
         assert_eq!(run_key(""), None);
+    }
+
+    /// Cockpit M2: the human crank is one press, BOUNDED, and gated on the
+    /// approve role — the parser enforces the bound; the renderer disables
+    /// the control without `writes && can_decide` (the same gate A/R use).
+    #[test]
+    fn crank_control_requires_approve_role_and_bound_steps() {
+        assert_eq!(
+            parse_command("/crank 500"),
+            Some(ComposerCommand::Crank {
+                steps: Some(MAX_CRANK_STEPS)
+            }),
+            "the cap itself is accepted"
+        );
+        assert_eq!(
+            parse_command("/crank 501").and_then(|c| match c {
+                ComposerCommand::Crank { steps } => steps,
+                _ => None,
+            }),
+            Some(MAX_CRANK_STEPS),
+            "anything over the cap clamps to it"
+        );
+        assert_eq!(
+            parse_command("/crank 0"),
+            Some(ComposerCommand::Crank { steps: Some(1) }),
+            "zero steps is meaningless — clamps to 1"
+        );
     }
 
     #[test]

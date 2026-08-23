@@ -47,6 +47,39 @@ pub struct NodeState {
     pub data: Value,
 }
 
+/// v1.28.20 Cockpit M2: the runtime frame driver's policy core. An
+/// AnimationFrame publication flushes at most once per frame batch (16 ms);
+/// Immediate flushes on every revision change. Pure so coalescing is
+/// pinnable without a renderer.
+pub const FRAME_MS: u64 = 16;
+
+#[derive(Debug, Default, Clone)]
+pub struct FrameGate {
+    last_flushed_rev: u64,
+    last_frame_ms: u64,
+}
+
+impl FrameGate {
+    /// `Some(revision)` = flush now (and record it). `None` = keep pending.
+    pub fn due(&mut self, revision: u64, now_ms: u64, animate: bool) -> Option<u64> {
+        if revision == 0 || revision == self.last_flushed_rev {
+            return None;
+        }
+        if !animate {
+            self.last_flushed_rev = revision;
+            return Some(revision);
+        }
+        // The first batch always paints; later batches within one frame
+        // window coalesce into the next paint.
+        if self.last_flushed_rev != 0 && now_ms.saturating_sub(self.last_frame_ms) < FRAME_MS {
+            return None;
+        }
+        self.last_frame_ms = now_ms;
+        self.last_flushed_rev = revision;
+        Some(revision)
+    }
+}
+
 impl NodeState {
     fn new(key: &str, kind: &'static str, seq: u64, data: Value) -> Self {
         Self {
@@ -127,6 +160,19 @@ impl NodeDefinition for AssistantTurn {
     }
 }
 
+impl AssistantTurn {
+    /// Cockpit M2: the render model — turn text + settled flag. The panel
+    /// renders progressive (unsettled) and settled turns identically except
+    /// for the streaming indicator.
+    pub fn build_view_node(state: &Value) -> Value {
+        serde_json::json!({
+            "kind": Self::KIND,
+            "text": state.get("text").cloned().unwrap_or(Value::Null),
+            "settled": state.get("settled").and_then(Value::as_bool).unwrap_or(false),
+        })
+    }
+}
+
 /// Tool running → settled (`tool/start`, `tool/result`).
 pub struct ToolInvocation;
 impl NodeDefinition for ToolInvocation {
@@ -158,6 +204,19 @@ impl NodeDefinition for ToolInvocation {
             }
             (Some(s), _) => s,
         }
+    }
+}
+
+impl ToolInvocation {
+    /// Cockpit M2: the invocation-card model — name, status, output payload
+    /// (the evidence viewer renders whatever structured evidence rode along).
+    pub fn build_view_node(state: &Value) -> Value {
+        serde_json::json!({
+            "kind": Self::KIND,
+            "name": state.get("name").cloned().unwrap_or(Value::Null),
+            "status": state.get("status").cloned().unwrap_or(Value::from("running")),
+            "output": state.get("output").cloned().unwrap_or(Value::Null),
+        })
     }
 }
 
@@ -283,6 +342,18 @@ impl NodeDefinition for Delivery {
             s["done"] = Value::from(true);
         }
         s
+    }
+}
+
+impl Delivery {
+    /// Cockpit M2: the handoff-packet model — collected items + done flag;
+    /// the panel prints it as the I-PASS-style packet view.
+    pub fn build_view_node(state: &Value) -> Value {
+        serde_json::json!({
+            "kind": Self::KIND,
+            "items": state.get("items").cloned().unwrap_or_else(|| Value::Array(vec![])),
+            "done": state.get("done").and_then(Value::as_bool).unwrap_or(false),
+        })
     }
 }
 
@@ -490,5 +561,79 @@ mod tests {
         assert!(AssistantTurn::matches(&e).is_none());
         assert!(ToolInvocation::matches(&e).is_none());
         assert!(ReviewJob::matches(&e).is_none());
+    }
+
+    // ── Cockpit M2: publication coalescing + the real view models ─────
+
+    /// AnimationFrame publications coalesce: within one 16 ms frame window
+    /// only the first revision flushes; Immediate always flushes.
+    #[test]
+    fn publication_coalesces_to_one_frame_per_batch() {
+        let mut g = FrameGate::default();
+        // First batch paints immediately.
+        assert_eq!(g.due(1, 0, true), Some(1));
+        // Revisions arriving inside the same frame window stay pending.
+        assert_eq!(g.due(2, 5, true), None);
+        assert_eq!(g.due(3, 15, true), None);
+        // The next frame window flushes once (the latest revision).
+        assert_eq!(g.due(3, 16, true), Some(3));
+        assert_eq!(g.due(4, 17, true), None, "one paint per frame");
+        // Desktop (animate=false) flushes every revision change.
+        let mut d = FrameGate::default();
+        assert_eq!(d.due(1, 0, false), Some(1));
+        assert_eq!(d.due(2, 1, false), Some(2));
+        // No-op guards: zero revision / already-flushed never re-publish.
+        assert_eq!(d.due(0, 9, false), None);
+        assert_eq!(d.due(2, 9, false), None);
+    }
+
+    #[test]
+    fn transcript_view_models_render_all_five_node_kinds() {
+        // assistant: progressive → settled text
+        let mut s = AssistantTurn::fold(
+            None,
+            &serde_json::json!({"kind":"assistant/start","id":"a"}),
+        );
+        s = AssistantTurn::fold(
+            Some(s),
+            &serde_json::json!({"kind":"assistant/delta","id":"a","delta":"hi"}),
+        );
+        let av = AssistantTurn::build_view_node(&s);
+        assert_eq!(av["text"], "hi");
+        assert_eq!(av["settled"], false, "streaming indicator stays on");
+        // tool: name + status + output pass through
+        let mut t = ToolInvocation::fold(
+            None,
+            &serde_json::json!({"kind":"tool/start","id":"t","name":"recall"}),
+        );
+        t = ToolInvocation::fold(
+            Some(t),
+            &serde_json::json!({"kind":"tool/result","id":"t","ok":false}),
+        );
+        let tv = ToolInvocation::build_view_node(&t);
+        assert_eq!(tv["name"], "recall");
+        assert_eq!(tv["status"], "error");
+        // delivery: items + done
+        let dv = Delivery::build_view_node(
+            &serde_json::json!({"items":[{"uri":"crm://1"}],"done":true}),
+        );
+        assert_eq!(dv["items"].as_array().unwrap().len(), 1);
+        assert_eq!(dv["done"], true);
+        // review-job + workflow-run already have builders pinned above;
+        // their kinds resolve through the same registry here.
+        use crate::conversation::event_registry::builtin_registry;
+        let reg = builtin_registry();
+        for kind in [
+            "assistant",
+            "tool",
+            "delivery",
+            "review-job",
+            "workflow-run",
+        ] {
+            assert!(
+                reg.is_registered(kind),
+                "{kind} resolves in the built-in registry"
+            );
+        }
     }
 }
