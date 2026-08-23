@@ -370,7 +370,7 @@ mod tests {
     fn host_records_decision_evidence_that_verifies_outside() {
         // deterministic signed path for this process — installed under the
         // same lock the compliance tests use, so env writes never race reads.
-        crate::handlers::compliance::tests::ensure_test_key();
+        let _key = crate::handlers::compliance::tests::ensure_test_key();
         let (host, tmp) = host();
         {
             let unit = host.tx().unwrap();
@@ -399,6 +399,7 @@ mod tests {
         let exported = crate::audit::decision::list_decisions(&conn, None, 10).unwrap();
         assert_eq!(exported.len(), 1);
         assert!(exported[0].sig.is_some());
+        let _g = crate::audit::decision::decision_test_lock();
         assert!(crate::audit::decision::verify_decisions(&conn).unwrap());
         assert!(
             crate::audit::verify_chain(&conn),

@@ -119,6 +119,20 @@ pub(crate) fn install_test_signing_key(seed: [u8; 32]) {
         ChainKey(Some(SigningKey::from_bytes(&seed)));
 }
 
+/// The signing key is ONE process-global; every test that records+verifies
+/// decisions must hold this lock for the whole record→verify sequence or a
+/// sibling's `install_test_signing_key` races mid-test and signatures are
+/// verified under the wrong key (the tip_truncation CI flake).
+#[cfg(test)]
+pub(crate) static DECISION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Poison-tolerant acquisition — a panicking sibling must not cascade
+/// PoisonErrors through unrelated decision tests.
+#[cfg(test)]
+pub(crate) fn decision_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    DECISION_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Re-exported test seam: other modules' tests install the same fixed key so
 /// cross-module evidence tests verify signatures deterministically.
 #[cfg(test)]
@@ -587,6 +601,7 @@ mod tests {
 
     #[test]
     fn chain_and_signatures_verify_roundtrip() {
+        let _g = decision_test_lock();
         install_test_signing_key([7u8; 32]);
         let conn = db();
         let first = record_decision(&conn, &input("alice", "accept")).unwrap();
@@ -697,6 +712,7 @@ mod hardening_tests {
 
     #[test]
     fn signed_chain_without_key_fails_closed() {
+        let _g = decision_test_lock();
         // A stored signature with NO verifying key configured must read as
         // NOT OK — never as structurally-valid silence. Exercised via the
         // injection seam (no process-global key mutation).
@@ -709,6 +725,9 @@ mod hardening_tests {
 
     #[test]
     fn tip_truncation_is_detected_by_the_head_pin() {
+        let _g = decision_test_lock();
+        // Deterministic signing: never inherit a sibling's key mid-test.
+        install_test_signing_key([9u8; 32]);
         let conn = db();
         record_decision(&conn, &input("a", "o1")).unwrap();
         record_decision(&conn, &input("b", "o2")).unwrap();

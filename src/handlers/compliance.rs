@@ -585,14 +585,15 @@ pub(crate) mod tests {
     /// signatures verify deterministically.
     pub(crate) static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     const TEST_SEED_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    pub(crate) fn ensure_test_key() {
-        let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if std::env::var("BRAIN_AUDIT_SIGNING_KEY").is_err() {
-            // test-only process-global, installed under KEY_LOCK
-            unsafe {
-                std::env::set_var("BRAIN_AUDIT_SIGNING_KEY", TEST_SEED_HEX);
-            }
-        }
+    /// Install the FIXED test seed directly into the process-global cache and
+    /// hold the crate-wide decision test lock for the caller's whole
+    /// record→verify span. Env-var racing cannot produce mixed-key
+    /// signatures (the tip_truncation CI flake).
+    #[must_use]
+    pub(crate) fn ensure_test_key() -> std::sync::MutexGuard<'static, ()> {
+        let _g = brain_server::audit::decision::decision_test_lock();
+        brain_server::audit::decision::install_test_signing_key([7u8; 32]);
+        _g
     }
 
     fn db() -> rusqlite::Connection {
@@ -616,7 +617,7 @@ pub(crate) mod tests {
 
     #[test]
     fn oversight_links_a_signed_decision_record() {
-        ensure_test_key();
+        let _key = ensure_test_key();
         let conn = db();
         let id = record_oversight(
             &conn,
@@ -646,6 +647,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(stored, hash);
+        let _g = brain_server::audit::decision::decision_test_lock();
         assert!(brain_server::audit::decision::verify_decisions(&conn).unwrap());
     }
 
@@ -668,7 +670,7 @@ pub(crate) mod tests {
     #[test]
     fn pdf_labelled_export_carries_domain_provenance() {
         let conn = db();
-        ensure_test_key();
+        let _key = ensure_test_key();
         record_oversight(&conn, "dpo-1", "d", "accept", "approve", None, "global");
         let recs = brain_server::audit::decision::list_decisions(&conn, None, 10).unwrap();
         let labels = vec!["acme-us"];
@@ -687,7 +689,7 @@ pub(crate) mod tests {
 
     #[test]
     fn tampered_signature_fails_verification() {
-        ensure_test_key();
+        let _key = ensure_test_key();
         let conn = db();
         record_oversight(
             &conn,
@@ -705,6 +707,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+        let _g = brain_server::audit::decision::decision_test_lock();
         assert!(!brain_server::audit::decision::verify_decisions(&conn).unwrap());
     }
 }
