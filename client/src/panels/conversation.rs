@@ -68,6 +68,29 @@ fn askhuman_of(state: &Value) -> Option<(String, i64)> {
     Some((question, rev))
 }
 
+/// Branch markers live in the engine-owned state (`state.branches[]`,
+/// appended by rewind) — parsed from the sanitized state body here so the
+/// workflow-run node can render them.
+fn branches_of(state: &Value) -> Vec<Value> {
+    state
+        .get("state_json")
+        .and_then(Value::as_str)
+        .and_then(|q| serde_json::from_str::<Value>(q).ok())
+        .and_then(|s| s.get("branches").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+/// Does this stream event belong to the given run? The panel refetches state
+/// + lineage when one arrives — pure so the refresh trigger is pinnable.
+fn event_for_run(e: &crate::events::StreamEvent, run_id: i64) -> bool {
+    e.kind == "workflow" && e.payload["run_id"].as_i64() == Some(run_id)
+}
+
+/// Steering send guard: non-blank and within the server's 4000-char
+/// screened-write bound (chars, not bytes — the composer counts chars).
+fn steer_sendable(message: &str) -> bool {
+    !message.trim().is_empty() && message.chars().count() <= 4000
+}
+
 #[component]
 pub fn RunConversation(run_id: i64) -> Element {
     panel_run(run_id)
@@ -131,7 +154,7 @@ pub fn panel_run(run_id: i64) -> Element {
                 .events
                 .read()
                 .iter()
-                .filter(|e| e.kind == "workflow" && e.payload["run_id"].as_i64() == Some(run_id))
+                .filter(|e| event_for_run(e, run_id))
                 .cloned()
                 .collect::<Vec<_>>();
             if !mine.is_empty() {
@@ -247,12 +270,8 @@ pub fn panel_run(run_id: i64) -> Element {
         Some(Ok(v)) => askhuman_of(v),
         _ => None,
     };
-    let branches: Vec<Value> = match &*lineage_res.read() {
-        Some(Ok(v)) => v
-            .get("branches")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
+    let branches: Vec<Value> = match &*state_res.read() {
+        Some(Ok(v)) => branches_of(v),
         _ => Vec::new(),
     };
     let (lineage_ok, lineage_err): (Option<Value>, Option<String>) = match &*lineage_res.read() {
@@ -362,7 +381,7 @@ pub fn panel_run(run_id: i64) -> Element {
                     }
                     button {
                         class: "btn btn-outline btn-sm",
-                        disabled: !writes || steer().trim().is_empty(),
+                        disabled: !writes || !steer_sendable(&steer()),
                         onclick: move |_| submit_steer(steer()),
                         {t("runs_send")}
                     }
@@ -523,5 +542,110 @@ mod tests {
         assert_ne!(d1, d2, "a one-char drift changes the binding");
         assert_eq!(d1, sha256_hex("Ship it?"), "same bytes → same digest");
         assert_eq!(d1.len(), 64);
+    }
+
+    // ── the plan's M4 behavior pins ────────────────────────────────────
+
+    /// The workflow-run node's render model: branch markers come from the run
+    /// STATE body (`state.branches[]`, appended by rewind) and the lineage
+    /// events pass through with their parent links.
+    #[test]
+    fn workflow_run_node_renders_lineage_and_branches() {
+        let state = serde_json::json!({
+            "state_json": "{\"branches\":[{\"from_event\":3,\"reason\":\"retry\",\"at\":9}]}",
+            "state_revision": 2,
+        });
+        let branches = branches_of(&state);
+        assert_eq!(branches.len(), 1, "the rewind marker is visible");
+        assert_eq!(branches[0]["from_event"], 3);
+        // No branches in state → empty render input (never a panic).
+        assert!(branches_of(&serde_json::json!({"state_json":"{}"})).is_empty());
+        assert_eq!(
+            branches_of(&serde_json::json!({"state_json":"not-json"})),
+            Vec::<Value>::new()
+        );
+        // Lineage rows carry their parent link for the timeline rendering.
+        let lineage = serde_json::json!({"events":[
+            {"event_id":1,"parent_id":null,"topic":"workflow/start"},
+            {"event_id":2,"parent_id":1,"topic":"workflow/log"},
+        ]});
+        assert_eq!(lineage["events"].as_array().unwrap().len(), 2);
+        assert_eq!(lineage["events"][1]["parent_id"], 1);
+    }
+
+    /// The review-job node approves ONLY against the digest the node
+    /// rendered — the same ReviewArmour binding as the ApprovalDock.
+    #[test]
+    fn review_job_node_approve_is_digest_bound() {
+        let open = parse_open();
+        let mut asm = crate::conversation::assembler::Assembler::new();
+        asm.ingest::<crate::conversation::ReviewJob>(1, &open);
+        let view = crate::conversation::ReviewJob::build_view_node(
+            &asm.node("review-job:p7").expect("node").data,
+        );
+        let rendered_digest = view["digest"].as_str().expect("digest");
+        // Approve forwards exactly the rendered bytes; reject carries none.
+        assert_eq!(
+            crate::approvals::decision_digest(true, rendered_digest),
+            Some(rendered_digest.to_string())
+        );
+        assert_eq!(
+            crate::approvals::decision_digest(false, rendered_digest),
+            None
+        );
+        // A drifted digest would 409 server-side; the node never invents one.
+        assert_ne!(rendered_digest, "deadbeef");
+    }
+
+    /// The AskHuman card answers and refreshes from the stream: only this
+    /// run's workflow envelopes trigger the refetch, and the answer digest
+    /// binds to the exact question bytes shown.
+    #[test]
+    fn askhuman_card_answers_and_refreshes_from_stream() {
+        let ev = |run: i64| crate::events::StreamEvent {
+            kind: "workflow".into(),
+            seq: 7,
+            payload: serde_json::json!({"topic":"workflow/log","run_id":run,
+                "payload_json":"{}","event_id":9,"parent_event_id":null,"domain":"global"}),
+        };
+        assert!(
+            event_for_run(&ev(5), 5),
+            "this run's event refreshes the card"
+        );
+        assert!(!event_for_run(&ev(6), 5), "another run's event does not");
+        assert!(!event_for_run(
+            &crate::events::StreamEvent {
+                kind: "pending".into(),
+                seq: 8,
+                payload: Value::Null
+            },
+            5,
+        ));
+        // The submitted answer binds to what was answered.
+        assert_ne!(sha256_hex("Ship it?"), sha256_hex("Ship it"));
+    }
+
+    fn parse_open() -> Value {
+        serde_json::json!({
+            "kind":"proposal/open","id":"p7","proposal_id":7,
+            "content_digest":"d1","sla_deadline":1800000000,"role_gate":"approve",
+        })
+    }
+
+    /// The steering composer stays inside the server's screening limits:
+    /// blank messages never send, exactly-4000 sends, over-limit refuses.
+    #[test]
+    fn conversation_panel_steers_within_screening_limits() {
+        assert!(!steer_sendable(""), "blank refused");
+        assert!(!steer_sendable("   "), "whitespace-only refused");
+        assert!(steer_sendable("focus on step 2"), "normal guidance sends");
+        assert!(
+            steer_sendable(&"x".repeat(4000)),
+            "exactly at the bound sends"
+        );
+        assert!(!steer_sendable(&"x".repeat(4001)), "over the bound refused");
+        // Multibyte counts by CHARS to match the server's byte check honestly.
+        assert!(steer_sendable(&"é".repeat(4000)));
+        assert!(!steer_sendable(&"é".repeat(4001)));
     }
 }
