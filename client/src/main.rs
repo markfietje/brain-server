@@ -533,6 +533,10 @@ fn app() -> Element {
         let stream_ui = ui;
         use_future(move || async move {
             let mut dedup = events::EventDedup::default();
+            // The resume cursor — the highest workflow outbox id
+            // seen this session. Reconnects carry it as `Last-Event-ID`; the
+            // server replays the gap before going live.
+            let mut last_wf_id: Option<i64> = None;
             loop {
                 probe_sleep(1).await;
                 let client = stream_api();
@@ -546,7 +550,12 @@ fn app() -> Element {
                     "pending", "expiry", "screen", "chain", "proposal", "workflow",
                 ];
                 let res = client
-                    .stream_events(&kinds, &mut |ev| {
+                    .stream_events(&kinds, last_wf_id, &mut |ev| {
+                        if ev.kind == "workflow"
+                            && let Some(id) = ev.payload["event_id"].as_i64()
+                        {
+                            last_wf_id = Some(last_wf_id.map_or(id, |m: i64| m.max(id)));
+                        }
                         if dedup.admit(&ev) {
                             ring.with_mut(|v| {
                                 v.push(ev.clone());

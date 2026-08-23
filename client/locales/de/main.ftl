@@ -615,6 +615,9 @@ runs_help_title = Tastatur & Befehle
 runs_help_keys = Tasten: J/K Knoten · A freigeben · R ablehnen · ? diese Hilfe
 runs_help_commands = Befehle: /crank [steps] · /handoff · /scoreboard · /help
 tl_checkpoint = Prüfpunkt
+# v1.28.21 Fathom
+runs_session_age = Sitzungsalter: {0} Ereignisse · {1} Prüfpunkte · ältester #{2}
+runs_load_earlier = Frühere laden
 tl_branch = Zweig
 tl_askhuman = menschlich nötig
 ev_findings = Befunde

@@ -466,9 +466,14 @@ impl ApiClient {
     /// the capped backoff). Uses a dedicated no-total-timeout client: the
     /// shared 15s request cap would sever a healthy live stream. Bearer rides
     /// where browser EventSource cannot (same as [`Self::alert_events`]).
+    ///
+    /// `last_event_id` rides the HTTP `Last-Event-ID` header on
+    /// RECONNECT — the server replays stored workflow rows past that id so a
+    /// dropped connection backfills its gap instead of skipping it.
     pub async fn stream_events(
         &self,
         kinds: &[&str],
+        last_event_id: Option<i64>,
         on_event: &mut dyn FnMut(crate::events::StreamEvent),
     ) -> Result<(), ApiError> {
         use futures_util::StreamExt;
@@ -479,6 +484,9 @@ impl ApiClient {
         }
         let http = stream_client();
         let mut rb = http.get(url);
+        if let Some(id) = last_event_id {
+            rb = rb.header("Last-Event-ID", id.to_string());
+        }
         if let Some(t) = self.access_token() {
             rb = rb.bearer_auth(t);
         }

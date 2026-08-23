@@ -18,6 +18,46 @@ use serde_json::Value;
 /// The ring window the transcript folds from (mirrors the driver's cap).
 const FOLD_WINDOW: usize = 500;
 
+/// The event chain IS the scrollback; "infinite scroll" is windowing over an
+/// append-only log. The renderer shows a bounded keyset slice: the LIVE TAIL
+/// (`size` nodes) plus any earlier range the operator pulled up. No new
+/// dependency — a pure `Vec` slice over ordered nodes, keyed by node index.
+pub const TRANSCRIPT_WINDOW: usize = 100;
+
+/// The rendered keyset: `(skip, take)` over the ordered node list. `earlier`
+/// counts how many nodes beyond the live tail were pulled up; appending new
+/// nodes slides the tail forward without changing what was already fetched
+/// (prefix-stable like the server's window derivation).
+pub fn transcript_window(total: usize, earlier: usize, size: usize) -> (usize, usize) {
+    let size = size.max(1);
+    let tail_start = total.saturating_sub(size);
+    let skip = tail_start.saturating_sub(earlier);
+    (skip, total - skip)
+}
+
+/// The composer's session-age badge input, derived from the lineage read:
+/// `(events, checkpoints, oldest event id)` — there is no "new session" in an
+/// unbounded run, only its age. `None` when no events are readable.
+pub fn session_age(lineage: &Value) -> Option<(usize, usize, i64)> {
+    let events = lineage.get("events")?.as_array()?;
+    if events.is_empty() {
+        return None;
+    }
+    let oldest = events.iter().filter_map(|e| e["event_id"].as_i64()).min()?;
+    Some((
+        events.len(),
+        events
+            .iter()
+            .filter(|e| {
+                e["topic"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("checkpoint"))
+            })
+            .count(),
+        oldest,
+    ))
+}
+
 /// Keyboard conventions reused from the Review panel (A approve / R reject /
 /// J down / K up). Pure so the mapping is pinnable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +310,19 @@ pub fn panel_run(run_id: i64) -> Element {
         .map(|n| (n.kind.to_string(), n.data.clone()))
         .collect();
     let max_cursor = nodes.len().saturating_sub(1);
+    // Render a bounded keyset slice of the transcript — the live
+    // tail plus whatever earlier range was pulled up. Ten-thousand-node runs
+    // never render ten thousand nodes.
+    let mut earlier = use_signal(|| 0usize);
+    let (skip, take) = transcript_window(nodes.len(), earlier(), TRANSCRIPT_WINDOW);
+    let shown: Vec<(usize, String, Value)> = nodes
+        .iter()
+        .skip(skip)
+        .take(take)
+        .enumerate()
+        .map(|(i, n)| (skip + i, n.0.clone(), n.1.clone()))
+        .collect();
+    let has_more = skip > 0;
     let keyed: Vec<bool> = {
         let host_read = host.read();
         nodes
@@ -519,11 +572,21 @@ pub fn panel_run(run_id: i64) -> Element {
                     if nodes.is_empty() {
                         p { class: "text-sm text-muted-foreground", {t("runs_empty")} }
                     }
-                    for (idx, (kind, data)) in nodes.iter().enumerate() {
+                    if has_more {
+                        button {
+                            class: "btn btn-ghost btn-sm w-full",
+                            onclick: move |_| earlier.set(earlier() + TRANSCRIPT_WINDOW),
+                            {t("runs_load_earlier")}
+                        }
+                    }
+                    for (gidx, kind, data) in shown.iter() {
                         {
+                            let idx = *gidx;
+                            let kind = kind.as_str();
+                            let data: Value = data.clone();
                             let has_keyed_view = keyed[idx];
                             let selected = cursor_idx == idx;
-                            let view = crate::conversation::ReviewJob::build_view_node(data);
+                            let view = crate::conversation::ReviewJob::build_view_node(&data);
                             let node_key = kind.to_string();
                             rsx! {
                                 div {
@@ -590,6 +653,17 @@ pub fn panel_run(run_id: i64) -> Element {
                 }
                 p { class: "text-xs text-ink-faint mt-1 tabular",
                     "{4000 - steer().chars().count()} / 4000 · /crank /handoff /scoreboard /help"
+                }
+                // The session-age badge — the run is ONE unbounded
+                // session; the badge states its age instead of any "new
+                // session" affordance (there is none, by design).
+                if let Some((events, ckpts, oldest)) = lineage_ok
+                    .as_ref()
+                    .and_then(|l| session_age(l))
+                {
+                    p { class: "text-xs text-muted-foreground mt-1 tabular",
+                        {t_fmt("runs_session_age", &[events.to_string(), ckpts.to_string(), oldest.to_string()])}
+                    }
                 }
                 // The human crank: one press, bounded, role-gated.
                 div { class: "flex gap-2 items-center mt-2",
@@ -1161,5 +1235,114 @@ mod tests {
         // Multibyte counts by CHARS to match the server's byte check honestly.
         assert!(steer_sendable(&"é".repeat(4000)));
         assert!(!steer_sendable(&"é".repeat(4001)));
+    }
+}
+
+#[cfg(test)]
+mod fathom_tests {
+    use super::*;
+
+    /// transcript_windows_over_ten_thousand_nodes_without_rendering_all
+    #[test]
+    fn transcript_windows_over_ten_thousand_nodes_without_rendering_all() {
+        let total = 10_000;
+        let (skip, take) = transcript_window(total, 0, TRANSCRIPT_WINDOW);
+        assert_eq!(take, TRANSCRIPT_WINDOW, "the live tail is bounded");
+        assert_eq!(skip, total - TRANSCRIPT_WINDOW);
+        assert!(take < total, "never renders the whole chain");
+
+        // Pulling up earlier ranges extends the window, bounded by history.
+        let (skip2, take2) = transcript_window(total, TRANSCRIPT_WINDOW, TRANSCRIPT_WINDOW);
+        assert_eq!(take2, 2 * TRANSCRIPT_WINDOW);
+        assert_eq!(skip2, total - 2 * TRANSCRIPT_WINDOW);
+
+        // Small transcripts render whole.
+        let (skip3, take3) = transcript_window(7, 5_000, TRANSCRIPT_WINDOW);
+        assert_eq!((skip3, take3), (0, 7), "earlier beyond history saturates");
+        // Degenerate size is refused to a floor of one.
+        let (_, take4) = transcript_window(50, 0, 0);
+        assert_eq!(take4, 1);
+
+        // Monotonic: more pulled-up history moves `skip` down, never negative.
+        let mut prev_skip = usize::MAX;
+        for earlier in [0usize, 50, 200, 10_000] {
+            let (skip, _) = transcript_window(total, earlier, TRANSCRIPT_WINDOW);
+            assert!(skip < prev_skip);
+            prev_skip = skip;
+        }
+    }
+
+    /// session_age_badge_reads_lineage_counts
+    #[test]
+    fn session_age_badge_reads_lineage_counts() {
+        let lineage = serde_json::json!({"events":[
+            {"event_id":4,"topic":"workflow/start"},
+            {"event_id":9,"topic":"workflow/log"},
+            {"event_id":12,"topic":"workflow/checkpoint"},
+        ]});
+        assert_eq!(session_age(&lineage), Some((3, 1, 4)));
+        // Empty or unreadable lineage → no badge, never a fabricated age.
+        assert_eq!(session_age(&serde_json::json!({"events":[]})), None);
+        assert_eq!(session_age(&serde_json::json!({})), None);
+        assert_eq!(session_age(&serde_json::json!("junk")), None);
+    }
+
+    /// sse_resume_backfills_gap_without_duplicates
+    #[test]
+    fn sse_resume_backfills_gap_without_duplicates() {
+        use crate::events::{EventDedup, StreamEvent};
+        let wf = |id: i64| StreamEvent {
+            kind: "workflow".into(),
+            seq: 99,
+            payload: serde_json::json!({"topic":"workflow/log","run_id":3,
+                "payload_json":"{}","event_id":id,"parent_event_id":null,"domain":"global"}),
+        };
+        // Live traffic up to id 9; the connection drops; ids 8..=11 were missed.
+        let mut dedup = EventDedup::default();
+        let mut seen = Vec::new();
+        for id in [1i64, 5, 9] {
+            if dedup.admit(&wf(id)) {
+                seen.push(id);
+            }
+        }
+        // The resume replay re-sends 5..=9 (overlap) then the gap fills 10/11.
+        for id in [5i64, 6, 7, 8, 9, 10, 11] {
+            if dedup.admit(&wf(id)) {
+                seen.push(id);
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![1, 5, 9, 6, 7, 8, 10, 11],
+            "no duplicates, gap filled"
+        );
+        // The resume cursor is the max workflow event id seen.
+        let cursor = [wf(5), wf(11), wf(9)]
+            .iter()
+            .filter_map(|e| e.payload["event_id"].as_i64())
+            .max();
+        assert_eq!(cursor, Some(11));
+    }
+
+    /// The honest-UI pin: an unbounded run has NO session-rotation affordance
+    /// anywhere in the panel source. Every literal below (including this
+    /// comment and the test name) is written so it cannot match itself.
+    #[test]
+    fn no_rotation_affordance_in_panel() {
+        let src = include_str!("conversation.rs");
+        let banned = [
+            concat!("new_", "sessi", "on"),
+            concat!("New", "Sessi", "on"),
+        ];
+        for b in banned {
+            assert!(
+                !src.contains(b),
+                "panel must not carry a session-rotation affordance: {b}"
+            );
+        }
+        // The hyphenated wire spelling, assembled from chars so this source
+        // never carries it whole.
+        let hyphenated: String = "new-sess".chars().chain("ion".chars()).collect();
+        assert!(!src.contains(&hyphenated));
     }
 }

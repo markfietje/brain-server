@@ -615,6 +615,9 @@ runs_help_title = Toetsen & commando's
 runs_help_keys = Toetsen: J/K knopen · A goedkeuren · R afwijzen · ? dit overzicht
 runs_help_commands = Commando's: /crank [steps] · /handoff · /scoreboard · /help
 tl_checkpoint = controlepunt
+# v1.28.21 Fathom
+runs_session_age = Sessieleeftijd: {0} gebeurtenissen · {1} controlepunten · oudste #{2}
+runs_load_earlier = Eerdere laden
 tl_branch = tak
 tl_askhuman = mens nodig
 ev_findings = Bevindingen

@@ -658,6 +658,9 @@ runs_help_title = Keyboard & commands
 runs_help_keys = Keys: J/K walk nodes · A approve · R reject · ? this sheet
 runs_help_commands = Commands: /crank [steps] · /handoff · /scoreboard · /help
 tl_checkpoint = checkpoint
+# v1.28.21 Fathom
+runs_session_age = Session age: {0} events · {1} checkpoints · oldest #{2}
+runs_load_earlier = Load earlier
 tl_branch = branch
 tl_askhuman = needs human
 ev_findings = Findings

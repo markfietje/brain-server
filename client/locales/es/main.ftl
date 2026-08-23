@@ -615,6 +615,9 @@ runs_help_title = Teclado y comandos
 runs_help_keys = Teclas: J/K nodos · A aprobar · R rechazar · ? esta ayuda
 runs_help_commands = Comandos: /crank [steps] · /handoff · /scoreboard · /help
 tl_checkpoint = punto de control
+# v1.28.21 Fathom
+runs_session_age = Antigüedad de la sesión: {0} eventos · {1} puntos de control · el más antiguo #{2}
+runs_load_earlier = Cargar anteriores
 tl_branch = rama
 tl_askhuman = requiere humano
 ev_findings = Hallazgos
