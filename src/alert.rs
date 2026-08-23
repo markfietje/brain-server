@@ -124,13 +124,24 @@ pub(crate) fn workflow_event_admissible(
 /// a `pending` handshake, then `alert` events; a lagging consumer drops missed
 /// events (bounded broadcast) and re-syncs via the polling fallback.
 /// `?kinds=` filters to a subset of [`ALERT_KIND_*`].
+///
+/// An HTTP `Last-Event-ID: <outbox event_id>` header resumes the
+/// WORKFLOW coordinate space — stored `workflow/*` rows with a larger id are
+/// replayed (bounded, per-domain Read-gated, sanitized like the live path)
+/// before the live broadcast attaches, so a reconnecting consumer backfills
+/// its gap instead of silently skipping it.
 pub async fn events(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     axum::extract::Query(q): axum::extract::Query<EventsQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Sse<KeepAliveStream<Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>>>>
 {
     let rx = state.alert_events.subscribe();
+    let last_event_id: Option<i64> = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<i64>().ok());
     let kinds: Option<std::collections::HashSet<String>> = q
         .kinds
         .as_deref()
@@ -149,51 +160,136 @@ pub async fn events(
             )))
         } else {
             let principal = principal.0;
+            // The resume replay (bounded): only when the subscriber asked for
+            // workflow events at all — other coordinate spaces have their own
+            // re-sync (the poll fallback).
+            let replay: Vec<Value> = match (last_event_id, kinds.as_ref()) {
+                (Some(since), Some(k)) if k.contains(ALERT_KIND_WORKFLOW) => {
+                    workflow_replay_since(&state, since, &principal).await
+                }
+                _ => Vec::new(),
+            };
             Box::pin(
-                handshake.chain(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-                    move |item| match item {
-                        Ok(v) => {
-                            let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
-                            // `workflow` events are additive and default-off:
-                            // only explicit `?kinds=workflow` subscribers
-                            // receive them, and only when they may read the
-                            // domain the run lives in.
-                            if kind == ALERT_KIND_WORKFLOW {
-                                let domain = v
-                                    .get("payload")
-                                    .and_then(|p| p.get("domain"))
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("global");
-                                let authorized = crate::handlers::authorize(
-                                    &principal,
-                                    crate::auth::Action::Read,
-                                    "",
-                                    domain,
-                                )
-                                .is_ok();
-                                if !workflow_event_admissible(kinds.as_ref(), authorized) {
+                handshake
+                    .chain(tokio_stream::iter(replay.into_iter().map(|v| {
+                        Ok::<Event, Infallible>(
+                            Event::default()
+                                .event("alert")
+                                .json_data(v)
+                                .unwrap_or_default(),
+                        )
+                    })))
+                    .chain(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
+                        move |item| match item {
+                            Ok(v) => {
+                                let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
+                                // `workflow` events are additive and default-off:
+                                // only explicit `?kinds=workflow` subscribers
+                                // receive them, and only when they may read the
+                                // domain the run lives in.
+                                if kind == ALERT_KIND_WORKFLOW {
+                                    let domain = v
+                                        .get("payload")
+                                        .and_then(|p| p.get("domain"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("global");
+                                    let authorized = crate::handlers::authorize(
+                                        &principal,
+                                        crate::auth::Action::Read,
+                                        "",
+                                        domain,
+                                    )
+                                    .is_ok();
+                                    if !workflow_event_admissible(kinds.as_ref(), authorized) {
+                                        return None;
+                                    }
+                                }
+                                // Drop events the caller didn't ask for (per-kind filter).
+                                if let Some(k) = &kinds
+                                    && !k.contains(kind)
+                                {
                                     return None;
                                 }
+                                Some(Ok::<Event, Infallible>(
+                                    Event::default()
+                                        .event("alert")
+                                        .json_data(v)
+                                        .unwrap_or_default(),
+                                ))
                             }
-                            // Drop events the caller didn't ask for (per-kind filter).
-                            if let Some(k) = &kinds
-                                && !k.contains(kind)
-                            {
-                                return None;
-                            }
-                            Some(Ok::<Event, Infallible>(
-                                Event::default()
-                                    .event("alert")
-                                    .json_data(v)
-                                    .unwrap_or_default(),
-                            ))
-                        }
-                        Err(_) => None,
-                    },
-                )),
+                            Err(_) => None,
+                        },
+                    )),
             )
         };
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Bounded replay of stored `workflow/*` events with `id > since` across every
+/// registered domain — the reconnect gap-backfill behind `Last-Event-ID`.
+/// Same envelope shape as the live drain, same read seam (`sanitize_stored`),
+/// same fail-closed per-domain Read gate. Bounded to one drain batch.
+async fn workflow_replay_since(
+    state: &Arc<AppState>,
+    since: i64,
+    principal: &Option<crate::auth::Principal>,
+) -> Vec<Value> {
+    let state = Arc::clone(state);
+    let principal = principal.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for domain in state.registry.known_domains() {
+            if crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &domain)
+                .is_err()
+            {
+                continue;
+            }
+            let Ok(pool) = state.registry.pool_for(&domain) else {
+                continue;
+            };
+            let Ok(conn) = pool.get() else {
+                continue;
+            };
+            let rows: Vec<(i64, i64, String, String, Option<i64>)> = conn
+                .prepare(
+                    "SELECT id, run_id, topic, payload_json, parent_id FROM outbox
+                      WHERE id > ?1 AND topic LIKE 'workflow/%'
+                      ORDER BY id ASC LIMIT ?2",
+                )
+                .and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![since, WORKFLOW_DRAIN_BATCH], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, Option<i64>>(4)?,
+                        ))
+                    })
+                    .and_then(|it| it.collect())
+                })
+                .unwrap_or_default();
+            for (id, run_id, topic, payload_json, parent_event_id) in rows {
+                let payload_json = crate::gate::sanitize_stored(&payload_json, false, &None);
+                out.push(json!({
+                    "kind": ALERT_KIND_WORKFLOW,
+                    "ts": chrono::Utc::now().timestamp(),
+                    "seq": 0,
+                    "payload": {
+                        "topic": topic,
+                        "run_id": run_id,
+                        "payload_json": payload_json,
+                        "event_id": id,
+                        "parent_event_id": parent_event_id,
+                        "domain": domain,
+                    },
+                }));
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Publish an alert: fan out on the SSE broadcast (never blocks); if the webhook

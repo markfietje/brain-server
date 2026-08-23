@@ -34,6 +34,16 @@ pub async fn get_run_events(
             })
         })
         .transpose()?;
+    // `since=<event_id>` backfills the reconnect gap — only rows
+    // strictly after the id, so a resuming consumer replays nothing twice.
+    let since: Option<i64> = q
+        .get("since")
+        .map(|s| {
+            s.parse().map_err(|_| {
+                HandlerError::bad_request("since_invalid", "since must be an event id")
+            })
+        })
+        .transpose()?;
     let pool = state.pool.clone();
     let rows: Vec<(i64, Option<i64>, String, String, String)> =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
@@ -49,11 +59,11 @@ pub async fn get_run_events(
             let mut stmt = conn
                 .prepare(
                     "SELECT id, parent_id, topic, payload_json, status FROM outbox
-                      WHERE run_id = ?1 ORDER BY id ASC LIMIT 1000",
+                      WHERE run_id = ?1 AND (?2 IS NULL OR id > ?2) ORDER BY id ASC LIMIT 1000",
                 )
                 .map_err(|e| format!("{e}"))?;
             let it = stmt
-                .query_map(rusqlite::params![id], |r| {
+                .query_map(rusqlite::params![id, since], |r| {
                     Ok((
                         r.get::<_, i64>(0)?,
                         r.get::<_, Option<i64>>(1)?,
@@ -89,6 +99,104 @@ pub async fn get_run_events(
         })
         .collect();
     Ok(Json(serde_json::json!({ "events": events })))
+}
+
+/// `GET /workflow/runs/{id}/context?at_event=&budget=` — the derived context
+/// window (write→select). Pure SDK derivation over the run's
+/// event chain: latest checkpoint at-or-before `at_event` + delta after it +
+/// findings digests + the open question, field-budgeted (delta drops
+/// oldest-first; anchor and question never drop). This is the consumer
+/// contract that replaces "open a new session": only the window moves.
+/// Read-gated on the run's domain; every emitted text rides the read seam.
+pub async fn get_run_context(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    const DEFAULT_BUDGET: usize = 2_000;
+    const MAX_BUDGET: usize = 100_000;
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let at_event: Option<i64> = q
+        .get("at_event")
+        .map(|s| {
+            s.parse().map_err(|_| {
+                HandlerError::bad_request("at_event_invalid", "at_event must be an event id")
+            })
+        })
+        .transpose()?;
+    let budget: usize = q
+        .get("budget")
+        .map(|s| {
+            s.parse::<usize>()
+                .map_err(|_| {
+                    HandlerError::bad_request("budget_invalid", "budget must be a field count")
+                })
+                .map(|b| b.min(MAX_BUDGET))
+        })
+        .transpose()?
+        .unwrap_or(DEFAULT_BUDGET);
+    let pool = state.pool.clone();
+    let reader = principal.clone();
+    let rows: Vec<(i64, String, String)> =
+        tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let conn = pool.get().map_err(|e| format!("{e}"))?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, topic, payload_json FROM outbox WHERE run_id = ?1 ORDER BY id ASC",
+                )
+                .map_err(|e| format!("{e}"))?;
+            let it = stmt
+                .query_map(rusqlite::params![id], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| format!("{e}"))?;
+            let mut out = Vec::new();
+            for r in it {
+                out.push(r.map_err(|e| format!("{e}"))?);
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?
+        .map_err(HandlerError::internal)?;
+    // Derive on the RAW payloads (the derivation needs parseable JSON), then
+    // sanitize every emitted text field — the read seam covers output, not input.
+    let events: Vec<brain_engine_sdk::workflow_state::EventRow> = rows
+        .into_iter()
+        .map(
+            |(eid, topic, payload)| brain_engine_sdk::workflow_state::EventRow {
+                id: eid,
+                topic,
+                payload_json: payload,
+            },
+        )
+        .collect();
+    let window = brain_engine_sdk::workflow_state::derive_context_at(&events, at_event, budget);
+    let sanitize = |s: &String| crate::gate::sanitize_read(s, false, &reader);
+    Ok(Json(serde_json::json!({
+        "run_id": id,
+        "at_event": at_event,
+        "checkpoint": window.checkpoint.as_ref().map(|c| serde_json::json!({
+            "event_id": c.id,
+            "topic": c.topic,
+            "payload_json": sanitize(&c.payload_json),
+        })),
+        "delta": window.delta.iter().map(|e| serde_json::json!({
+            "event_id": e.id,
+            "topic": e.topic,
+            "payload_json": sanitize(&e.payload_json),
+        })).collect::<Vec<_>>(),
+        "findings_digests": window.findings_digests,
+        "open_question": window.open_question.as_ref().map(&sanitize),
+        "truncated": window.truncated,
+    })))
 }
 
 #[derive(Debug, serde::Deserialize)]

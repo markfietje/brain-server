@@ -6169,6 +6169,10 @@ async fn main_inner() -> Result<()> {
             get(handlers::workflow_lineage::get_handoff),
         )
         .route(
+            "/workflow/runs/{id}/context",
+            get(handlers::workflow_lineage::get_run_context),
+        )
+        .route(
             "/workflow/runs/{id}/answer",
             post(handlers::workflow::post_answer),
         )
@@ -11834,6 +11838,7 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}/events",
             "/workflow/runs/{id}/rewind",
             "/workflow/runs/{id}/handoff",
+            "/workflow/runs/{id}/context",
             "/workflow/runs/{id}/answer",
             "/workflow/runs/{id}/steering",
             "/workflow/runs/{id}/steps",
@@ -13057,6 +13062,9 @@ Final paragraph after the rule.";
             // on the run's domain; rewind is a Write + `approve` role gate.
             ("/workflow/runs/{id}/rewind", "Write"),
             ("/workflow/runs/{id}/handoff", "Read"),
+            // The derived context window — a Read on the run's
+            // domain (pure derivation over the lineage the events read serves).
+            ("/workflow/runs/{id}/context", "Read"),
             ("/workflow/runs/{id}/answer", "Write"),
             // plugin mount evidence: any authenticated principal records its
             // own composition (a Write, metadata-only).
@@ -18239,6 +18247,107 @@ Final paragraph after the rule.";
             .map(|e| e["event_id"].as_i64().unwrap())
             .collect();
         assert_eq!(got, ids, "root-first ancestor chain");
+    }
+
+    /// context_route_derives_checkpoint_delta_and_budget
+    #[tokio::test]
+    async fn context_route_derives_checkpoint_delta_and_budget() {
+        use crate::handlers::workflow_lineage as lin;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, "{}").await;
+        let post = |topic: &str, payload: &str, key: &str, parent: Option<i64>| {
+            let state = state.clone();
+            let topic = topic.to_string();
+            let payload = payload.to_string();
+            let key = key.to_string();
+            async move {
+                crate::handlers::workflow::post_event(
+                    State(state),
+                    crate::handlers::auth::OptPrincipal(None),
+                    Path(run_id),
+                    axum::Json(crate::handlers::workflow::PostEventRequest {
+                        topic,
+                        payload_json: payload,
+                        idempotency_key: key,
+                        parent_event_id: parent,
+                    }),
+                )
+                .await
+                .expect("enqueue")
+                .0["event_id"]
+                    .as_i64()
+                    .unwrap()
+            }
+        };
+        let ckpt = post(
+            "workflow/checkpoint",
+            r#"{"steps":[1],"findings":["disk full"],"pending_question":"extend?"}"#,
+            "c-ckpt",
+            None,
+        )
+        .await;
+        post("workflow/log", r#"{"line":"a"}"#, "c-l1", Some(ckpt)).await;
+        let last = post("workflow/log", r#"{"line":"b"}"#, "c-l2", Some(ckpt)).await;
+
+        // Default window at the tip: checkpoint + both delta events + the
+        // open question + finding digest.
+        let w = lin::get_run_context(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Query(Default::default()),
+        )
+        .await
+        .expect("window");
+        assert_eq!(w.0["checkpoint"]["event_id"], ckpt);
+        assert_eq!(w.0["delta"].as_array().unwrap().len(), 2);
+        assert_eq!(w.0["open_question"], "extend?");
+        assert_eq!(w.0["findings_digests"].as_array().unwrap().len(), 1);
+        assert_eq!(w.0["truncated"], false);
+
+        // A tiny budget truncates the DELTA (oldest first), never the anchor.
+        let mut q = std::collections::HashMap::new();
+        q.insert("budget".to_string(), "1".to_string());
+        let wt = lin::get_run_context(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Query(q),
+        )
+        .await
+        .expect("budgeted window");
+        assert_eq!(wt.0["delta"].as_array().unwrap().len(), 0);
+        assert_eq!(wt.0["truncated"], true);
+        assert_eq!(wt.0["checkpoint"]["event_id"], ckpt);
+
+        // at_event narrows the anchor point (prefix stability on the wire).
+        let mut q = std::collections::HashMap::new();
+        q.insert("at_event".to_string(), ckpt.to_string());
+        let wa = lin::get_run_context(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Query(q),
+        )
+        .await
+        .expect("anchored window");
+        assert_eq!(wa.0["checkpoint"]["event_id"], ckpt);
+        assert_eq!(wa.0["delta"].as_array().unwrap().len(), 0);
+
+        // Unknown at_event ids are refused loudly.
+        let mut q = std::collections::HashMap::new();
+        q.insert("at_event".to_string(), "nope".to_string());
+        let err = lin::get_run_context(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Query(q),
+        )
+        .await
+        .expect_err("invalid at_event refused");
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        let _ = last;
     }
 
     /// handoff_route_assembles_five_pass_sections

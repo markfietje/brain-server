@@ -2649,6 +2649,16 @@ paths:
           schema:
             type: string
             description: "comma-separated kind filter; absent = all except `workflow` (opt-in)"
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: integer
+            description: >
+              Fathom M3: resume the workflow coordinate space — on reconnect,
+              send the highest workflow `event_id` seen; stored rows with a
+              larger id are replayed (bounded, Read-gated) before the live
+              broadcast attaches.
       responses:
         "200":
           description: "text/event-stream"
@@ -3926,6 +3936,10 @@ paths:
           in: query
           required: false
           schema: { type: integer, description: "event id whose ancestor chain is returned" }
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer, description: "Fathom M3: return only rows with event_id > since (reconnect gap backfill)" }
       responses:
         "200":
           description: "`{events: [{event_id, parent_id, topic, payload_json, status}]} ordered by id"
@@ -3944,7 +3958,71 @@ paths:
                         topic: { type: string }
                         payload_json: { type: string }
                         status: { type: string }
-        "400": { description: branch_invalid }
+        "400": { description: branch_invalid | since_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/context:
+    get:
+      summary: The derived context window — write→select (Read on the run's domain)
+      description: >
+        Fathom M2: the deterministic window over the run's unbounded event
+        chain — latest `workflow/checkpoint` at-or-before `at_event` + delta
+        events after it + per-finding digests + the open question. Field-
+        budgeted (`budget`, default 2000, cap 100000): truncation drops the
+        OLDEST delta first and never drops the checkpoint or open question,
+        flagged with `truncated`. Prefix-stable: appending events never
+        changes an earlier window. One counted field ≈ one token — a
+        documented approximation for consumers; LLM-side compaction is the
+        consumer's contract, never the server's.
+      operationId: getWorkflowContext
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: at_event
+          in: query
+          required: false
+          schema: { type: integer, description: "anchor point (event id); absent = latest" }
+        - name: budget
+          in: query
+          required: false
+          schema: { type: integer, description: "field budget over delta payloads (default 2000, cap 100000)" }
+      responses:
+        "200":
+          description: >
+            `{run_id, at_event, checkpoint: {event_id, topic, payload_json} | null,
+            delta: [{event_id, topic, payload_json}], findings_digests: [hex],
+            open_question: string | null, truncated}`
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  at_event: { type: integer, nullable: true }
+                  checkpoint:
+                    type: object
+                    nullable: true
+                    properties:
+                      event_id: { type: integer }
+                      topic: { type: string }
+                      payload_json: { type: string }
+                  delta:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        event_id: { type: integer }
+                        topic: { type: string }
+                        payload_json: { type: string }
+                  findings_digests:
+                    type: array
+                    items: { type: string }
+                  open_question: { type: string, nullable: true }
+                  truncated: { type: boolean }
+        "400": { description: at_event_invalid | budget_invalid }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
