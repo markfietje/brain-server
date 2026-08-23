@@ -1,6 +1,6 @@
 [package]
 name = "brain-engine-sdk"
-version = "1.28.7"
+version = "1.28.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ publish = false
 [features]
 # The plugin kernel + agent harness (v1.28.1). Opt-in: without it the crate
 # is dependency-free and ABI-identical to the previous release.
-harness-kernel = ["dep:serde", "dep:serde_yaml"]
+harness-kernel = ["dep:serde", "dep:serde_yaml", "dep:serde_json"]
 # Frozen gold-pack calibration (v1.28.7). Without it the scorer is pinned by
 # the hand fixtures below; with it the same oracle pins re-run against the
 # versioned gold sets and the κ ≥ 0.70 gate.
@@ -18,6 +18,7 @@ gold-sets = ["dep:gold-sets"]
 
 [dependencies]
 serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
 serde_yaml = { version = "0.9", optional = true }
 gold-sets = { path = "../gold-sets", optional = true }
 

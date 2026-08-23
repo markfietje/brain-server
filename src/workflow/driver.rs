@@ -2,39 +2,12 @@ use super::state::{CasError, cas_update};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum Decision {
-    AskHuman { question: String },
-    RunStep { step: String },
-    Advance { next_state: String },
-    Done,
-}
-
-pub fn decide(state: &Value) -> Decision {
-    let status = state
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("active");
-    if status == "done" || status == "complete" {
-        return Decision::Done;
-    }
-    if let Some(q) = state.get("pending_question").and_then(|v| v.as_str()) {
-        return Decision::AskHuman {
-            question: q.to_string(),
-        };
-    }
-    if let Some(s) = state.get("next_step").and_then(|v| v.as_str()) {
-        return Decision::RunStep {
-            step: s.to_string(),
-        };
-    }
-    if let Some(n) = state.get("next_state").and_then(|v| v.as_str()) {
-        return Decision::Advance {
-            next_state: n.to_string(),
-        };
-    }
-    Decision::Done
-}
+// The state-key routing contract moved home to the SDK: the four keys are
+// the engine ABI, so `Decision`/`decide` live in the SDK
+// (`brain_engine_sdk::workflow_state`) and the server re-exports them.
+// `load_state`/`advance` stay here — they are rusqlite-bound, not ABI.
+#[allow(unused_imports)] // consumed by this module's #[cfg(test)] pins
+pub use brain_engine_sdk::workflow_state::{Decision, decide};
 
 pub fn load_state(conn: &Connection, run_id: i64) -> Option<(Value, i64)> {
     let (js, rev): (String, i64) = conn

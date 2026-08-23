@@ -1,8 +1,26 @@
 [package]
 name = "steward-harness"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "The Steward driver harness: the governed-loop engine over the brain-server workflow substrate (human-cranked, request-scoped)."
+publish = false
 
 [dependencies]
+brain-engine-sdk = { path = "../../crates/brain-engine-sdk", features = ["harness-kernel"] }
+brain-troubleshoot-core = { path = "../../crates/brain-troubleshoot-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+
+[dev-dependencies]
+gold-sets = { path = "../../crates/gold-sets" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

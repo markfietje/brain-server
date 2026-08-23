@@ -153,6 +153,16 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/workflow/calibration/sign` | Monthly human-signed workflow calibration gate (DPO/admin; one signature per calendar month, audited) |
 | GET | `/workflow/runs/{id}` · `/workflow/runs/{id}/steps` · `/workflow/runs/{id}/suggestions` | Run row (state sanitized at the read seam), steps, retrieval-backed suggestions (Read on the run's domain) |
 | POST | `/workflow/runs/{id}/steering` | Queue a steering message: blocklist-screened, Write + approve-class role gate, bounded inbox drop-oldest at 100 |
+| POST | `/workflow/runs` | Open a governed run (`{domain, kind, state_json}` → `{run_id, revision}`); Write + `workflow` role gate; open + audit row commit atomically |
+| GET | `/workflow/runs/{id}/state` | Engine-exact `{state_json, revision}` (machine CAS round-trip; NOT read-seam sanitized — the human view is `GET /workflow/runs/{id}`); Read + `workflow` role gate; audited read |
+| PUT | `/workflow/runs/{id}/state` | CAS advance (`200 {revision}` / `409 {actual_revision}`); Write + `workflow` role gate |
+| POST | `/workflow/runs/{id}/events` | Outbox enqueue, exactly-once by idempotency key (`{first}`); Write + `workflow` role gate |
+| POST | `/workflow/runs/{id}/answer` | The AskHuman closer: digest-bound to the live `pending_question`, appends `answers[]`, clears the question, CAS — one tx; Write + approve role gate |
+| GET | `/workflow/runs/{id}/steering?since=` | Drain the advisory steering outbox (Read on the run's domain) |
+
+The engine itself lives in `tools/steward-harness` (0.2.0 "FirstLight"): a
+human-cranked loop (`brain workflow crank <run>`) that drives these routes
+through the SDK `WorkflowHost` seam. No engine code runs in the server.
 
 ---
 

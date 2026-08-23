@@ -320,7 +320,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "workflow",
         json: true,
         run: cmd_workflow,
-        usage: "brain workflow status <run>\n  brain workflow answer <run> <id> <text>\n  brain workflow approve <run> <step>",
+        usage: "brain workflow open [DOMAIN]\n  brain workflow status <run>\n  brain workflow answer <run> <text>\n  brain workflow approve <run> <step>\n  brain workflow crank <run> [steps]",
     },
     Subcommand {
         name: "bench",
@@ -4551,15 +4551,173 @@ fn setup_render_knobs_shows_every_set_knob() {
 }
 
 fn cmd_workflow(args: &[String]) -> Result<(), String> {
-    if args.is_empty() {
-        return Err("usage: brain workflow status|answer|approve ...".into());
+    let usage = "usage: brain workflow open [DOMAIN]\n  \
+brain workflow status <run>\n  \
+brain workflow answer <run> <text>\n  \
+brain workflow approve <run> <step>\n  \
+brain workflow crank <run> [steps]";
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let base = base_url();
+    let token = auth_token();
+    let rest = args.get(1..).unwrap_or(&[]);
+    let json_out = json_mode();
+    // One-shot helper: POST JSON, parse the envelope.
+    let post_json = |path: &str, body: serde_json::Value| -> Result<serde_json::Value, String> {
+        let resp = http::post(
+            &base,
+            path,
+            &[],
+            "application/json",
+            &body.to_string(),
+            token.as_deref(),
+        )?;
+        serde_json::from_str(&resp.body)
+            .map_err(|e| format!("bad response from {path}: {e}: {}", resp.body))
+    };
+    match sub {
+        "open" => {
+            let domain = rest.first().cloned().unwrap_or_else(|| "global".into());
+            let v = post_json(
+                "/workflow/runs",
+                serde_json::json!({
+                    "domain": domain,
+                    "kind": "troubleshoot",
+                    "state_json": "{}",
+                }),
+            )?;
+            if json_out {
+                return emit_json_ok("workflow", v);
+            }
+            println!("run {} opened (revision {})", v["run_id"], v["revision"]);
+            Ok(())
+        }
+        "status" => {
+            let Some(run) = rest.first() else {
+                return Err(usage.into());
+            };
+            let resp = http::get(
+                &base,
+                &format!("/workflow/runs/{run}"),
+                &[],
+                token.as_deref(),
+            )?;
+            let v: serde_json::Value =
+                serde_json::from_str(&resp.body).map_err(|e| format!("bad response: {e}"))?;
+            if json_out {
+                return emit_json_ok("workflow", v);
+            }
+            println!(
+                "run {run}: status={} revision={} updated_at={}",
+                v["status"], v["state_revision"], v["updated_at"]
+            );
+            Ok(())
+        }
+        "answer" | "approve" => {
+            let Some(run) = rest.first() else {
+                return Err(usage.into());
+            };
+            let text = rest.get(1..).map(|p| p.join(" ")).unwrap_or_default();
+            if text.trim().is_empty() {
+                return Err("answer text must not be empty".into());
+            }
+            // Digest-bind to the live pending_question (ReviewArmour at
+            // question grain): read engine state, hash the question bytes.
+            let st = http::get(
+                &base,
+                &format!("/workflow/runs/{run}/state"),
+                &[],
+                token.as_deref(),
+            )?;
+            let sv: serde_json::Value =
+                serde_json::from_str(&st.body).map_err(|e| format!("bad response: {e}"))?;
+            let question = sv["state_json"]
+                .as_str()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| v["pending_question"].as_str().map(str::to_string))
+                .ok_or_else(|| "run has no pending_question".to_string())?;
+            let digest = brain_server::audit::hash(&question);
+            let body = if sub == "approve" {
+                format!("[approved:{text}]")
+            } else {
+                text
+            };
+            let v = post_json(
+                &format!("/workflow/runs/{run}/answer"),
+                serde_json::json!({"answer": body, "question_digest": digest}),
+            )?;
+            if json_out {
+                return emit_json_ok("workflow", v);
+            }
+            println!("answered run {run} (revision {})", v["revision"]);
+            Ok(())
+        }
+        "crank" => {
+            let Some(run) = rest.first() else {
+                return Err(usage.into());
+            };
+            // Resolve the harness binary beside this executable first, then
+            // the BRAIN_STEWARD_BIN override, then PATH.
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf));
+            let candidate = |dir: &Path| dir.join("steward-harness");
+            let bin: PathBuf = std::env::var("BRAIN_STEWARD_BIN")
+                .map(PathBuf::from)
+                .ok()
+                .or_else(|| {
+                    exe_dir.and_then(|d| {
+                        let p = candidate(&d);
+                        p.exists().then_some(p)
+                    })
+                })
+                .or_else(|| which_path("steward-harness"))
+                .ok_or_else(|| {
+                    "steward-harness binary not found — build tools/steward-harness and install beside `brain` (or set BRAIN_STEWARD_BIN)".to_string()
+                })?;
+            let mut cmd_line = serde_json::json!({
+                "cmd": "crank",
+                "run_id": run.parse::<i64>().map_err(|_| "run id must be an integer")?,
+            });
+            if let Some(steps) = rest.get(1) {
+                cmd_line["max_steps"] = serde_json::json!(
+                    steps
+                        .parse::<u32>()
+                        .map_err(|_| "steps must be a positive integer")?
+                );
+            }
+            let mut child = std::process::Command::new(&bin)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
+            {
+                use std::io::Write as _;
+                let stdin = child.stdin.as_mut().expect("piped stdin captured above");
+                writeln!(stdin, "{cmd_line}").map_err(|e| format!("write stdin: {e}"))?;
+            }
+            let out = child
+                .wait_with_output()
+                .map_err(|e| format!("wait harness: {e}"))?;
+            let v: serde_json::Value =
+                serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
+            if json_out {
+                return emit_json_ok("workflow", v);
+            }
+            println!(
+                "crank run {run}: stopped_at={} steps_executed={}",
+                v["stopped_at"], v["steps_executed"]
+            );
+            Ok(())
+        }
+        _ => Err(usage.into()),
     }
-    let sub = args[0].as_str();
-    let msg =
-        format!("workflow {sub} — harness at tools/steward-harness (line-delimited JSON RPC)");
-    if json_mode() {
-        return emit_json_ok("workflow", serde_json::json!({"sub":sub,"note":msg}));
-    }
-    println!("{msg}");
-    Ok(())
+}
+
+/// Minimal PATH lookup (no external crates).
+fn which_path(name: &str) -> Option<PathBuf> {
+    let paths = std::env::var("PATH").ok()?;
+    paths
+        .split(':')
+        .map(|dir| PathBuf::from(dir).join(name))
+        .find(|p| p.exists())
 }

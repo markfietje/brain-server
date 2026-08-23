@@ -3764,6 +3764,178 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized for the run's domain }
         "404": { description: Workflow run not found }
+  /workflow/runs:
+    post:
+      summary: Open a governed workflow run (Write + workflow role gate)
+      description: >
+        Substrate projection (v1.28.15): an INSERT under WorkflowTx with the
+        `workflow/run/open` audit row in the SAME transaction. No engine
+        logic lives server-side — the steward-harness drives this route.
+      operationId: openWorkflowRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, kind, state_json]
+              properties:
+                domain: { type: string }
+                kind: { type: string }
+                state_json:
+                  type: string
+                  description: Opaque engine state; valid JSON, <= 256 KiB.
+      responses:
+        "200":
+          description: The opened run
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  revision: { type: integer }
+        "400": { description: domain_invalid | kind_invalid | state_invalid | state_too_large }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (domain Write or workflow role gate) }
+  /workflow/runs/{id}/state:
+    get:
+      summary: Engine-exact run state `{state_json, revision}` (Read + workflow role gate)
+      description: >
+        The MACHINE round-trip view. Deliberately NOT sanitized at the read
+        seam (engines CAS against the exact stored bytes); the human view is
+        `GET /workflow/runs/{id}`. The read is audited on the workflow chain.
+      operationId: getWorkflowRunState
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The engine-exact state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state_json: { type: string }
+                  revision: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+    put:
+      summary: CAS-advance a run's state (Write + workflow role gate)
+      operationId: putWorkflowRunState
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_rev, state_json]
+              properties:
+                expected_rev: { type: integer }
+                state_json: { type: string, maxLength: 262144 }
+                status: { type: string }
+      responses:
+        "200":
+          description: Advanced
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revision: { type: integer }
+        "409":
+          description: cas_stale — the body carries `actual_revision`
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  details:
+                    type: object
+                    properties:
+                      actual_revision: { type: integer }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/events:
+    post:
+      summary: Enqueue an outbox event, exactly-once by key (Write + workflow role gate)
+      operationId: postWorkflowEvent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [topic, payload_json, idempotency_key]
+              properties:
+                topic: { type: string }
+                payload_json: { type: string }
+                idempotency_key: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: "`{first: bool}` — false when the key replayed"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  first: { type: boolean }
+        "400": { description: topic_invalid | payload_invalid | payload_too_large | key_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/answer:
+    post:
+      summary: Answer a pending AskHuman question (Write + approve role gate)
+      description: >
+        The AskHuman closer: in ONE WorkflowTx the server re-reads the state,
+        verifies SHA-256(`pending_question`) == `question_digest`, appends to
+        `answers[]`, clears `pending_question`, and CAS-writes. A mismatched
+        digest leaves the run untouched (409).
+      operationId: answerWorkflowRun
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer, question_digest]
+              properties:
+                answer: { type: string, maxLength: 4000 }
+                question_digest: { type: string }
+      responses:
+        "200":
+          description: Answered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  revision: { type: integer }
+        "400": { description: answer_too_long | answer_empty | answer_rejected | digest_invalid }
+        "409": { description: no_pending_question | question_digest_mismatch }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (domain Write or approve role gate) }
   /workflow/runs/{id}/steering:
     post:
       summary: Queue a steering message for a run (Write + approve-class role gate)
@@ -3801,6 +3973,39 @@ paths:
         "400": { description: message_too_long | message_empty | steering_rejected }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (domain Write or role gate) }
+        "404": { description: Workflow run not found }
+    get:
+      summary: Drain a run's steering outbox (Read on the run's domain)
+      description: >
+        The read half of the advisory inbox: post_steering enqueues, the
+        engine drains at the step boundary. Advisory only — never autonomous.
+      operationId: getWorkflowSteering
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The drained messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        outbox_id: { type: integer }
+                        message: { type: string }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized for the run's domain }
         "404": { description: Workflow run not found }
   /workflow/runs/{id}/suggestions:
     get:

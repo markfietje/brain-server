@@ -23,10 +23,8 @@
 #![allow(dead_code)]
 
 pub(crate) mod calibration;
-pub(crate) mod consensus;
 pub(crate) mod driver;
 pub(crate) mod erasure;
-pub(crate) mod executor;
 pub(crate) mod frontdoor;
 pub(crate) mod host;
 pub(crate) mod hostcalls;
@@ -52,7 +50,13 @@ const ACTOR: &str = "workflow";
 /// continuation. The row carries the run's `domain` as tenant so per-tenant
 /// scoping at the SQL layer holds; an unknown run (deleted mid-write) audits
 /// against the `global` default.
-fn audit_write(conn: &Connection, run_id: i64, target: &str, status: AuditStatus, detail: &str) {
+pub(crate) fn audit_write(
+    conn: &Connection,
+    run_id: i64,
+    target: &str,
+    status: AuditStatus,
+    detail: &str,
+) {
     let tenant: String = conn
         .query_row(
             "SELECT domain FROM workflow_runs WHERE id = ?1",

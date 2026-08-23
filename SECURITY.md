@@ -253,6 +253,20 @@ brain-server has two auth modes, resolved at startup from `BRAIN_JWT_ISSUER`
 (and the presence of a key dir). Both modes coexist; JWT is opt-in and the
 opaque mode is the back-compat default.
 
+### Role gates (v1.17.1 presets + v1.28.15 engine roles)
+
+When a principal carries a `roles` claim, each resolved role's `can`
+allowlist gates capability-bearing routes (deny-by-default; loopback and
+no-role principals are unaffected):
+
+- `workflow` — the ENGINE surfaces (`POST /workflow/runs`,
+  `GET|PUT /workflow/runs/{id}/state`, `POST /workflow/runs/{id}/events`).
+- `approve` — the HITL decision surfaces (steering enqueue,
+  `POST /workflow/runs/{id}/answer`; answering an AskHuman question shapes
+  decisions, so it shares the steering gate).
+- Admin/DPO-class gates on `/workflow/scoreboard` +
+  `/workflow/calibration/sign` unchanged.
+
 ### v1.1 — opaque bearer token (default; back-compat)
 
 - `AUTH_TOKEN_FILE` (preferred; 0600 file) or `AUTH_TOKEN` env var.

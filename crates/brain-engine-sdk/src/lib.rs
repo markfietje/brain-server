@@ -67,6 +67,13 @@ pub mod session;
 pub mod tools;
 #[cfg(feature = "harness-kernel")]
 pub mod workflow;
+#[cfg(feature = "harness-kernel")]
+pub mod workflow_state;
+
+/// The state-key routing contract (`Decision` + `decide`) — normative engine
+/// ABI, re-exported at the crate root so engines never path into the module.
+#[cfg(feature = "harness-kernel")]
+pub use workflow_state::{Decision, decide};
 
 /// The scoreboard surface (`sdk::scoreboard::build`) — a re-export of the
 /// pure scorer, never a second implementation.

@@ -123,6 +123,21 @@ pub fn post(
     request("POST", &url, content_type, Some(body), bearer)
 }
 
+/// Perform a single PUT with a `Content-Type` header and a body (the
+/// governed-workflow CAS state surface).
+#[allow(dead_code)]
+pub fn put(
+    base: &str,
+    path: &str,
+    query: &[(String, String)],
+    content_type: &str,
+    body: &str,
+    bearer: Option<&str>,
+) -> Result<HttpResponse, String> {
+    let url = build_url(base, path, query)?;
+    request("PUT", &url, content_type, Some(body), bearer)
+}
+
 /// Perform a single DELETE. Body-less by HTTP convention; `bearer` is sent on
 /// the same footing as `get`/`post`. Used by `DELETE /sources/{id}` via the
 /// `brain source-delete` CLI command. The `mcp` and `bench` binaries include

@@ -19,6 +19,46 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.15] — 2026-08-23 — "FirstLight": the loop runs
+
+The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-harness echo stub (15 lines, canned `{"ok":true}`) becomes the real engine — and the missing AskHuman link closes. Server `Cargo.toml`/lock 1.28.14 → **1.28.15**; SDK `brain-engine-sdk` 1.28.7 → **1.28.8**; `steward-harness` **0.2.0**; client + plugin unchanged; no schema change.
+
+### Release notes
+
+**Improvements**
+
+- The loop runs: `brain workflow crank <run>` drives a real governed loop over the new substrate routes — load state → decide → one troubleshoot-core step per turn with gate waterfall, budget law (default 24, ceiling 1000), advisory steering drains, and an exactly-once event trail (`run-{id}-evt-{n}`).
+- AskHuman closes: `POST /workflow/runs/{id}/answer` digest-binds the answer to the live `pending_question` (SHA-256), appends `answers[]`, clears the question, and CAS-writes in ONE transaction.
+- New role-gated routes: `POST /workflow/runs` (open + audit row atomically), `GET|PUT /workflow/runs/{id}/state` (engine-exact CAS view, `409 {actual_revision}` on stale), `POST /workflow/runs/{id}/events` (exactly-once by key), `GET /workflow/runs/{id}/steering?since=` (advisory inbox drain). Engine paths carry the `workflow` role; answer carries `approve`.
+- `brain workflow` is real: `open` / `status` / `answer` / `approve` / `crank` (spawns the harness binary beside the CLI or via `BRAIN_STEWARD_BIN`; usage string updated).
+
+**Bug fixes**
+
+- Dead code removed: `src/workflow/executor.rs` + `consensus.rs` INSERTed into columns absent from the migrated DDL — they would have failed if ever called. Deleted (zero callers).
+- The workflow handler family (existing run/steps/steering/suggestions/scoreboard surfaces included) used the raw `axum::Extension<Option<Principal>>` extractor, which 500s whenever the auth middleware does not inject an extension of exactly that type (opaque-token mode injects nothing) — found by live smoke. All workflow handlers now use the repo-standard infallible `OptPrincipal` extractor (`None` = loopback superuser posture unchanged); pinned over real HTTP in the smoke path.
+
+**Security fixes**
+
+- Answer text runs the prompt-injection blocklist BEFORE it can reach run state (`400 answer_rejected`); answers are bounded at 4000 chars like steering.
+- A refused answer (wrong digest / no pending question) leaves the run byte-identical — verified by pin.
+
+### Engineering record
+
+- **M1 (SDK):** the four state keys are now NORMATIVE ABI — `Decision` + `decide` moved to `brain-engine-sdk::workflow_state` (behind `harness-kernel`; serde_json joins as an optional dep of that feature — written justification: the routing contract is JSON-typed by design and the server already builds the feature). Server `driver.rs` re-exports; its pins pass unchanged. New pin `decision_keys_are_frozen_abi` (fixture round-trip over all four keys + precedence).
+- **M3 (engine):** `steward-harness` restructured lib+bin: `RemoteWorkflowHost` (loopback-http-only transport law, bearer ladder `BRAIN_TOKEN_FILE`→`BRAIN_TOKEN`→default install path, journaling tx) implements the SDK seam; `crank` loops `decide`→gate waterfall (over DECLARED constraints: `required_evidence[]`, `mutations`, `supporting_lines`, `needs_approval`)→CAS persist (one reload-retry on stale, then REPORT)→outbox log; `Done` folds scoreboard keys (`handoff_complete = status=="completed"`, never upgrading a recorded false) + final `workflow/end` event. Gate rejections become `DI_GATE_OPEN:*` finding rows, never silence. Gold-set pins: all 7 frozen cases replay end-to-end with artifacts equal field-for-field, second cranks enqueue ZERO events, budget stops at max with the 80% warn flag, ask-human stops/resumes, stale reports not panics.
+- **M4:** server-side composition pin `cli_workflow_crank_reports_stopped_at` walks open → AskHuman stop shape → answer → decide-routes-Done through the routes.
+- Tests: server bin **796** passed / 6 ignored (+11); lib 165 (+0 moved); harness crate **6** gold pins; SDK 88 (+1). clippy `-D warnings` + fmt clean on both workspaces.
+
+### Honest ceilings
+
+- `GET /workflow/runs/{id}/state` is deliberately NOT read-seam sanitized (engines CAS against exact stored bytes) — it requires the same domain Read grant PLUS the `workflow` engine role; the human view stays sanitized.
+- The crank is request/CLI-scoped and human-cranked: no background worker, no autonomous steering (drained messages land in `state.steering[]` as advisories only).
+- The remote host's `audit()` hook is a deliberate no-op — every durable effect is already audited server-side in-tx; no second chain entry is forged.
+- Gate evaluation replays DECLARED constraints only; semantic truth is not re-derived from evidence bytes.
+- Full spawn-path coverage of the external harness binary lives in the harness crate's own suite; the server-side pin exercises the route family the CLI composes.
+
+---
+
 ## [1.28.14] — 2026-08-23 — the audit-hardening line (1.28.9 → 1.28.14)
 
 **Security remediation of the 2026-08-23 independent audit** (server `Cargo.toml`/lock 1.28.8 → **1.28.14**; client bumped in-tree; plugin **0.4.7**; no schema change). Six themes shipped as individually-green commits: Gateweld, Seatbelt, Boundary (Fencepost3 + Provenance), Anchor (Legible + boot integrity), Bedrock, Parity.

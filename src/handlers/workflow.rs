@@ -1,3 +1,12 @@
+//! Governed-workflow surfaces.
+//!
+//! Alongside the human/operator views above, this
+//! module now carries the ENGINE-facing substrate projections —
+//! open/state/events/answer. These are storage projections over
+//! [`crate::workflow`] primitives (WorkflowTx / outbox / cas_update), NOT
+//! engine code: no decision logic lives server-side; the steward-harness
+//! drives them over HTTP through the SDK `WorkflowHost` seam.
+
 use axum::{
     Json,
     extract::{Path, State},
@@ -23,9 +32,10 @@ struct RunRow {
 
 pub async fn get_run(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     let pool = state.pool.clone();
     let row: Option<RunRow> = tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -51,9 +61,10 @@ pub async fn get_run(
 
 pub async fn list_steps(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     let pool = state.pool.clone();
     let (domain, steps): (Option<String>, Vec<serde_json::Value>) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -101,10 +112,11 @@ pub struct SteeringRequest {
 
 pub async fn post_steering(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
     Json(body): Json<SteeringRequest>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     if body.message.len() > 4000 {
         return Err(HandlerError::bad_request(
             "message_too_long",
@@ -188,9 +200,10 @@ pub async fn post_steering(
 
 pub async fn get_suggestions(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     let pool = state.pool.clone();
     let st = state.clone();
     let (domain, state_json): (String, String) =
@@ -317,8 +330,9 @@ pub async fn get_suggestions(
 /// audit row actually references it.
 pub async fn get_scoreboard(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
     crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
@@ -415,9 +429,10 @@ pub struct CalibrationSignBody {
 /// workflow audit chain and re-anchors the baseline delta.
 pub async fn post_calibration_sign(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(body): Json<CalibrationSignBody>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
@@ -687,9 +702,10 @@ pub(crate) fn mount_digest_matches(
 /// write is audited in the same tx it lands.
 pub async fn post_plugin_mount(
     State(state): State<Arc<AppState>>,
-    axum::Extension(principal): axum::Extension<Option<Principal>>,
+    principal: crate::handlers::auth::OptPrincipal,
     Json(body): Json<PluginMountRequest>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
     if !valid_plugin_name(&body.plugin) {
         return Err(HandlerError::bad_request(
             "plugin_invalid",
@@ -752,4 +768,489 @@ pub async fn post_plugin_mount(
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
     Ok(Json(serde_json::json!({"ok": true})))
+}
+
+// ── engine-facing substrate projections ───────────────────────────────────
+
+/// State bodies are bounded to match the SDK harness `MAX_BODY_BYTES`
+/// envelope — a run state is a working set, not a document store.
+pub(crate) const MAX_STATE_BYTES: usize = 256 * 1024;
+/// The AskHuman answer bound (same as steering).
+pub(crate) const MAX_ANSWER_BYTES: usize = 4000;
+
+fn valid_domain_label(d: &str) -> bool {
+    !d.is_empty()
+        && d.len() <= 63
+        && d.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+fn valid_kind(k: &str) -> bool {
+    !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic() && b != b'<')
+}
+
+fn valid_state_body(s: &str) -> Result<serde_json::Value, HandlerError> {
+    if s.len() > MAX_STATE_BYTES {
+        return Err(HandlerError::bad_request(
+            "state_too_large",
+            format!("state_json exceeds {} bytes", MAX_STATE_BYTES),
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(s)
+        .map_err(|_| HandlerError::bad_request("state_invalid", "state_json must be valid JSON"))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenRunRequest {
+    pub domain: String,
+    pub kind: String,
+    pub state_json: String,
+}
+
+/// `POST /workflow/runs` — open a governed run. Substrate projection: an
+/// INSERT under [`crate::workflow::tx::WorkflowTx`] with the audit row in the
+/// SAME transaction. Gated Write + the `workflow` role.
+pub async fn post_run(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Json(body): Json<OpenRunRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    if !valid_domain_label(&body.domain) {
+        return Err(HandlerError::bad_request(
+            "domain_invalid",
+            "domain must be 1..=63 lowercase alnum/hyphen",
+        ));
+    }
+    if !valid_kind(&body.kind) {
+        return Err(HandlerError::bad_request(
+            "kind_invalid",
+            "kind must be 1..=64 printable characters",
+        ));
+    }
+    let parsed = valid_state_body(&body.state_json)?;
+    if parsed.is_null() {
+        return Err(HandlerError::bad_request(
+            "state_invalid",
+            "state_json must not be null",
+        ));
+    }
+    let _ = parsed;
+    super::authorize(&principal, crate::auth::Action::Write, "", &body.domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::workflow::authorize_role_gate(&principal, &pool, "workflow")?;
+    let (domain, kind, state_json) = (body.domain, body.kind, body.state_json);
+    let (run_id, _): (i64, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let mut conn = pool.get().map_err(|e| format!("{e}"))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(|e| format!("{e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        tx.tx()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4)",
+                rusqlite::params![domain, kind, state_json, now],
+            )
+            .map_err(|e| format!("{e}"))?;
+        let run_id = tx.tx().last_insert_rowid();
+        crate::workflow::audit_write(
+            tx.tx(),
+            run_id,
+            &format!("run:{run_id}"),
+            crate::audit::AuditStatus::Ok,
+            "open",
+        );
+        tx.commit().map_err(|e| format!("{e}"))?;
+        Ok((run_id, 0i64))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    Ok(Json(serde_json::json!({"run_id": run_id, "revision": 0})))
+}
+
+/// Resolve a run's domain or 404 (probe-blind on missing runs).
+async fn run_domain(state: &Arc<AppState>, id: i64) -> Result<String, HandlerError> {
+    let pool = state.pool.clone();
+    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        conn.query_row(
+            "SELECT domain FROM workflow_runs WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?
+    .ok_or_else(|| HandlerError::not_found("workflow run not found"))
+}
+
+/// The engine-path role gate: `workflow` capability when the principal
+/// carries roles; loopback/no-role principals untouched (Seatbelt posture).
+fn authorize_role_gate(
+    principal: &Option<Principal>,
+    pool: &crate::Pool,
+    capability: &str,
+) -> Result<(), HandlerError> {
+    super::authorize_role(principal, pool, capability)
+}
+
+/// `GET /workflow/runs/{id}/state` — the ENGINE-exact view
+/// `{state_json, revision}`. Machine round-trip: deliberately NOT routed
+/// through `sanitize_read` (the human `GET /workflow/runs/{id}` is); engines
+/// CAS against the exact stored bytes, and a redacted echo would poison every
+/// subsequent write. Documented ceiling: this surface requires the same Read
+/// grant as the human one plus the `workflow` engine role.
+pub async fn get_run_state(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    authorize_role_gate(&principal, &pool, "workflow")?;
+    let row: Option<(String, i64)> = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        let row = conn
+            .query_row(
+                "SELECT state_json, state_revision FROM workflow_runs WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|e| format!("{e}"))?;
+        if row.is_some() {
+            // Audited read: an engine pulling run state is evidence too.
+            crate::workflow::audit_write(
+                &conn,
+                id,
+                &format!("run:{id}"),
+                crate::audit::AuditStatus::Ok,
+                "state_read",
+            );
+        }
+        Ok(row)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    let (state_json, revision) =
+        row.ok_or_else(|| HandlerError::not_found("workflow run not found"))?;
+    Ok(Json(
+        serde_json::json!({"state_json": state_json, "revision": revision}),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutStateRequest {
+    pub expected_rev: i64,
+    pub state_json: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// `PUT /workflow/runs/{id}/state` — CAS state advance
+/// (`200 {revision}` | `409 {actual_revision}`). The engine's persist step.
+pub async fn put_run_state(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<PutStateRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    authorize_role_gate(&principal, &pool, "workflow")?;
+    let status = body.status.clone().unwrap_or_else(|| "active".to_string());
+    if !status.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') || status.len() > 24 {
+        return Err(HandlerError::bad_request(
+            "status_invalid",
+            "status must be lowercase, ≤24 chars",
+        ));
+    }
+    valid_state_body(&body.state_json)?;
+    let new_state = body.state_json;
+    let expected_rev = body.expected_rev;
+    let outcome: Result<i64, crate::workflow::state::CasError> = tokio::task::spawn_blocking(
+        move || -> Result<Result<i64, crate::workflow::state::CasError>, String> {
+            let conn = pool.get().map_err(|e| format!("{e}"))?;
+            let now = chrono::Utc::now().timestamp();
+            Ok(crate::workflow::state::cas_update(
+                &conn,
+                id,
+                expected_rev,
+                &new_state,
+                &status,
+                now,
+            ))
+        },
+    )
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    match outcome {
+        Ok(revision) => Ok(Json(serde_json::json!({"revision": revision}))),
+        Err(crate::workflow::state::CasError::Stale { actual_revision }) => {
+            Err(HandlerError::conflict_with(
+                "cas_stale",
+                "state was advanced concurrently",
+                serde_json::json!({ "actual_revision": actual_revision }),
+            ))
+        }
+        Err(crate::workflow::state::CasError::Gone) => {
+            Err(HandlerError::not_found("workflow run not found"))
+        }
+        Err(crate::workflow::state::CasError::Database(m)) => Err(HandlerError::internal(m)),
+        Err(other) => Err(HandlerError::internal(other.to_string())),
+    }
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostEventRequest {
+    pub topic: String,
+    pub payload_json: String,
+    pub idempotency_key: String,
+}
+
+/// `POST /workflow/runs/{id}/events` — outbox enqueue, idempotent by UNIQUE
+/// key → `{first: bool}`. The exactly-once receipt engines replay against.
+pub async fn post_event(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<PostEventRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    authorize_role_gate(&principal, &pool, "workflow")?;
+    let topic_ok = !body.topic.is_empty()
+        && body.topic.len() <= 64
+        && body
+            .topic
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'/' || b == b'-');
+    if !topic_ok {
+        return Err(HandlerError::bad_request(
+            "topic_invalid",
+            "topic must be 1..=64 lowercase alnum///-",
+        ));
+    }
+    if body.payload_json.len() > MAX_STATE_BYTES {
+        return Err(HandlerError::bad_request(
+            "payload_too_large",
+            "payload_json exceeds the state bound",
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(&body.payload_json).map_err(|_| {
+        HandlerError::bad_request("payload_invalid", "payload_json must be valid JSON")
+    })?;
+    if body.idempotency_key.is_empty() || body.idempotency_key.len() > 128 {
+        return Err(HandlerError::bad_request(
+            "key_invalid",
+            "idempotency_key must be 1..=128 chars",
+        ));
+    }
+    let first: bool = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let mut conn = pool.get().map_err(|e| format!("{e}"))?;
+        let mut tx =
+            crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(|e| format!("{e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        let first = crate::workflow::outbox::enqueue(
+            tx.tx(),
+            id,
+            &body.topic,
+            &body.payload_json,
+            &body.idempotency_key,
+            now,
+        )
+        .map_err(|e| format!("{e}"))?;
+        tx.commit().map_err(|e| format!("{e}"))?;
+        Ok(first)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    Ok(Json(serde_json::json!({"first": first})))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnswerRequest {
+    pub answer: String,
+    /// SHA-256 hex of the exact `pending_question` bytes the answerer saw —
+    /// the approval binds to the question it answered (the ReviewArmour
+    /// digest-binding posture, at question grain).
+    pub question_digest: String,
+}
+
+/// `POST /workflow/runs/{id}/answer` — THE AskHuman closer. In ONE
+/// `WorkflowTx`: re-read state, verify the digest binds to the live
+/// `pending_question`, append `answers[]`, clear `pending_question`, CAS.
+/// Role gate: `approve` (the steering gate — answering shapes decisions).
+pub async fn post_answer(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<AnswerRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    if body.answer.len() > MAX_ANSWER_BYTES {
+        return Err(HandlerError::bad_request(
+            "answer_too_long",
+            "answer exceeds 4000 chars",
+        ));
+    }
+    if body.answer.trim().is_empty() {
+        return Err(HandlerError::bad_request(
+            "answer_empty",
+            "answer must not be empty",
+        ));
+    }
+    if crate::contains_suspicious_pattern(&body.answer) {
+        return Err(HandlerError::bad_request(
+            "answer_rejected",
+            "answer matches a blocked prompt-injection pattern",
+        ));
+    }
+    let want = body.question_digest.trim().to_ascii_lowercase();
+    if want.len() != 64 || !want.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(HandlerError::bad_request(
+            "digest_invalid",
+            "question_digest must be 64 hex chars",
+        ));
+    }
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    authorize_role_gate(&principal, &pool, "approve")?;
+    let answer = body.answer.clone();
+    let result: Result<i64, String> = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let mut conn = pool.get().map_err(|e| format!("{e}"))?;
+        let mut tx =
+            crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(|e| format!("{e}"))?;
+        let (js, rev): (String, i64) = tx
+            .tx()
+            .query_row(
+                "SELECT state_json, state_revision FROM workflow_runs WHERE id=?1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| format!("{e}"))?;
+        let mut st: serde_json::Value =
+            serde_json::from_str(&js).map_err(|_| "corrupt state_json".to_string())?;
+        let Some(question) = st
+            .get("pending_question")
+            .and_then(|q| q.as_str())
+            .map(str::to_string)
+        else {
+            return Err("__no_pending__".to_string());
+        };
+        let got = crate::audit::hash(&question);
+        if got != want {
+            return Err(format!("__digest__:{got}"));
+        }
+        let answers = st
+            .as_object_mut()
+            .ok_or("corrupt state_json".to_string())?
+            .entry("answers".to_string())
+            .or_insert_with(|| serde_json::Value::Array(vec![]));
+        if let Some(arr) = answers.as_array_mut() {
+            arr.push(serde_json::json!({
+                "answer": answer,
+                "question_digest": want,
+                "ts": chrono::Utc::now().timestamp(),
+            }));
+        }
+        st.as_object_mut()
+            .ok_or("corrupt state_json".to_string())?
+            .remove("pending_question");
+        let now = chrono::Utc::now().timestamp();
+        let new_json = serde_json::to_string(&st).map_err(|e| format!("{e}"))?;
+        crate::workflow::state::cas_update(tx.tx(), id, rev, &new_json, "active", now)
+            .map_err(|e| format!("{e:?}"))?;
+        crate::workflow::audit_write(
+            tx.tx(),
+            id,
+            &format!("run:{id}"),
+            crate::audit::AuditStatus::Ok,
+            "answer",
+        );
+        tx.commit().map_err(|e| format!("{e}"))?;
+        Ok(rev + 1)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    match result {
+        Ok(revision) => Ok(Json(serde_json::json!({"ok": true, "revision": revision}))),
+        Err(e) if e == "__no_pending__" => Err(HandlerError::conflict(
+            "no_pending_question: the run has no pending_question to answer",
+        )),
+        Err(e) if e.starts_with("__digest__:") => Err(HandlerError::conflict_with(
+            "question_digest_mismatch",
+            "question_digest does not bind to the live pending_question",
+            serde_json::json!({}),
+        )),
+        Err(e) => Err(HandlerError::internal(e)),
+    }
+}
+
+/// `GET /workflow/runs/{id}/steering?since=` — drain the steering outbox.
+/// The read half of the inbox: post_steering enqueues, the engine drains at
+/// the step boundary via this surface. Advisory only — never autonomous.
+pub async fn get_steering(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let since: i64 = q.get("since").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let pool = state.pool.clone();
+    let rows: Vec<(i64, String)> = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, payload_json FROM outbox
+                 WHERE run_id=?1 AND topic='steering' AND id > ?2 ORDER BY id ASC LIMIT 100",
+            )
+            .map_err(|e| format!("{e}"))?;
+        let it = stmt
+            .query_map(rusqlite::params![id, since], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| format!("{e}"))?;
+        Ok(it.filter_map(Result::ok).collect())
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    let messages: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(oid, payload)| {
+            serde_json::json!({"outbox_id": oid, "message": sanitize_steering_payload(&payload)})
+        })
+        .collect();
+    Ok(Json(serde_json::json!({"messages": messages})))
+}
+
+/// The outbox stores the sanitized message verbatim (post_steering screens +
+/// sanitizes before enqueue), so the read echoes the payload's `message`.
+fn sanitize_steering_payload(payload: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|v| {
+            v.get("message")
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }
