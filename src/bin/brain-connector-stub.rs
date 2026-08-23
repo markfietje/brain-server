@@ -94,24 +94,20 @@ fn main() {
 fn auth_token() -> Option<String> {
     if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE")
         && let Ok(s) = std::fs::read_to_string(path.trim())
+        && let Some(t) = http::first_token(&s)
     {
-        let s = s.trim();
-        if !s.is_empty() {
-            return Some(s.to_string());
-        }
+        return Some(t);
     }
-    if let Ok(t) = std::env::var("BRAIN_TOKEN") {
-        let t = t.trim();
-        if !t.is_empty() {
-            return Some(t.to_string());
-        }
+    if let Ok(t) = std::env::var("BRAIN_TOKEN")
+        && let Some(t) = http::first_token(&t)
+    {
+        return Some(t);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let default_path = std::path::Path::new(&home).join(".config/brain-server/auth-token");
     std::fs::read_to_string(&default_path)
         .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .and_then(|s| http::first_token(&s))
 }
 
 /// Emit one JSON-lines event to stdout (the connector → supervisor protocol).

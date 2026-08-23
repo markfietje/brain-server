@@ -232,28 +232,29 @@ fn resolve_connector_id(db: &rusqlite::Connection, instance: &str) -> Result<i64
 
 /// Resolve the bearer token for brain-server auth. Same ladder as `brain` /
 /// `mcp` / the stub connector — duplicated rather than shared to keep
-/// `bin_common` surface tiny.
+/// `bin_common` surface tiny. Token files may carry multiple rotation slots;
+/// send exactly one (see `bin_common::http::first_token`).
 fn auth_token() -> Option<String> {
+    fn first_token(raw: &str) -> Option<String> {
+        raw.split_whitespace().next().map(str::to_string)
+    }
     if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
         if let Ok(s) = std::fs::read_to_string(path.trim()) {
-            let s = s.trim();
-            if !s.is_empty() {
-                return Some(s.to_string());
+            if let Some(t) = first_token(&s) {
+                return Some(t);
             }
         }
     }
     if let Ok(t) = std::env::var("BRAIN_TOKEN") {
-        let t = t.trim();
-        if !t.is_empty() {
-            return Some(t.to_string());
+        if let Some(t) = first_token(&t) {
+            return Some(t);
         }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let default_path = std::path::Path::new(&home).join(".config/brain-server/auth-token");
     std::fs::read_to_string(&default_path)
         .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+        .and_then(|s| first_token(&s))
 }
 
 // ── JSON-lines event emitters (connector → supervisor protocol) ─────────────

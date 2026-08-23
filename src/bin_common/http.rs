@@ -90,6 +90,20 @@ pub struct HttpResponse {
     pub body: String,
 }
 
+/// Normalize any configured bearer-token source into exactly ONE token.
+///
+/// Token files written by `scripts/install-service.sh` may carry multiple
+/// newline/whitespace-separated rotation slots — the SERVER accepts every
+/// slot ([`crate::config::auth_tokens`] splits on whitespace), but a client
+/// that pastes the whole file into one `Authorization` header corrupts the
+/// request (the embedded newline yields an empty-body 400 before auth even
+/// runs). Every `#[path]` consumer of this module resolves tokens through
+/// this helper; do not re-derive it per binary.
+#[allow(dead_code)]
+pub(crate) fn first_token(raw: &str) -> Option<String> {
+    raw.split_whitespace().next().map(str::to_string)
+}
+
 /// Perform a single GET request. `bearer`, when `Some`, sends
 /// `Authorization: Bearer <token>`; required for non-public routes when the
 /// server has auth enabled. Passing `None` is fine for public routes
@@ -121,21 +135,6 @@ pub fn post(
 ) -> Result<HttpResponse, String> {
     let url = build_url(base, path, query)?;
     request("POST", &url, content_type, Some(body), bearer)
-}
-
-/// Perform a single PUT with a `Content-Type` header and a body (the
-/// governed-workflow CAS state surface).
-#[allow(dead_code)]
-pub fn put(
-    base: &str,
-    path: &str,
-    query: &[(String, String)],
-    content_type: &str,
-    body: &str,
-    bearer: Option<&str>,
-) -> Result<HttpResponse, String> {
-    let url = build_url(base, path, query)?;
-    request("PUT", &url, content_type, Some(body), bearer)
 }
 
 /// Perform a single DELETE. Body-less by HTTP convention; `bearer` is sent on
@@ -261,4 +260,27 @@ fn decode_chunked(body: &str) -> String {
         rest = &rest[data_start + size + 2..];
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_token;
+
+    /// Token files may carry multiple newline-separated rotation slots (the
+    /// server accepts every slot); a client must send exactly ONE — the old
+    /// trim-only normalization kept the embedded newline and corrupted the
+    /// Authorization header into an empty-body 400.
+    #[test]
+    fn first_token_takes_one_slot_and_drops_rotation_remainder() {
+        assert_eq!(
+            first_token("aaaabbbbccccdddd\n1111222233334444\n"),
+            Some("aaaabbbbccccdddd".to_string())
+        );
+        assert_eq!(
+            first_token("  solo-token  "),
+            Some("solo-token".to_string())
+        );
+        assert_eq!(first_token("   \n\t "), None);
+        assert_eq!(first_token(""), None);
+    }
 }

@@ -63,18 +63,19 @@ fn argv0_allowed(argv0: &str, allowlist: &[String]) -> bool {
 fn loopback_host(host: &str) -> bool {
     let h = host.trim();
     // Bracketed IPv6 literal, optionally with a port (`[::1]:8080`).
-    let bare = match h.strip_prefix('[').and_then(|r| r.split_once(']')) {
-        Some((inner, _)) => inner,
-        None => {
-            // Plain host, optionally with ONE port separator (`127.0.0.1:8080`);
+    let bare = h
+        .strip_prefix('[')
+        .and_then(|r| r.split_once(']'))
+        .map(|(inner, _)| inner)
+        .unwrap_or_else(|| {
+            // Plain host with at most ONE port separator (`127.0.0.1:8080`);
             // an IPv6 literal carries many colons and is kept whole.
             if h.matches(':').count() == 1 {
                 h.split(':').next().unwrap_or(h)
             } else {
                 h
             }
-        }
-    };
+        });
     matches!(bare, "localhost" | "127.0.0.1" | "::1")
 }
 

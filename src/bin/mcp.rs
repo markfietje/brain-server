@@ -66,25 +66,22 @@ fn base_url() -> String {
 fn auth_token() -> Option<String> {
     if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
         let p = path.trim();
-        if let Ok(s) = std::fs::read_to_string(p) {
-            let s = s.trim();
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+        if let Ok(s) = std::fs::read_to_string(p)
+            && let Some(t) = http::first_token(&s)
+        {
+            return Some(t);
         }
     }
-    if let Ok(t) = std::env::var("BRAIN_TOKEN") {
-        let t = t.trim();
-        if !t.is_empty() {
-            return Some(t.to_string());
-        }
+    if let Ok(t) = std::env::var("BRAIN_TOKEN")
+        && let Some(t) = http::first_token(&t)
+    {
+        return Some(t);
     }
     let default_path = dirs_home().join(".config/brain-server/auth-token");
-    if let Ok(s) = std::fs::read_to_string(&default_path) {
-        let s = s.trim();
-        if !s.is_empty() {
-            return Some(s.to_string());
-        }
+    if let Ok(s) = std::fs::read_to_string(&default_path)
+        && let Some(t) = http::first_token(&s)
+    {
+        return Some(t);
     }
     None
 }

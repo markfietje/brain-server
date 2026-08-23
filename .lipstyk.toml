@@ -54,3 +54,11 @@ enabled = false
 # diff gating; full scan (`--config /dev/null`) still surfaces it.
 [rules.naming-entropy]
 enabled = false
+
+# v1.28.16 diff: bin_common/http.rs is #[path]-included by the brain/mcp/
+# bench binaries with different call sets — the per-fn allow(dead_code)
+# markers ARE the truthful record of which consumer calls what (bench calls
+# none). The density heuristic misreads shared include-files; full scan
+# (--config /dev/null) still surfaces them for manual review.
+[rules.dead-code-markers]
+enabled = false

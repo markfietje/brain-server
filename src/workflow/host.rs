@@ -241,16 +241,16 @@ fn tenant_for_target(conn: &Connection, target: &str) -> String {
         .match_indices("run:")
         .filter_map(|(i, _)| target[i + 4..].split(['/', ' ']).next())
         .find_map(|rest| rest.parse::<i64>().ok());
-    match run_id {
-        Some(run_id) => conn
-            .query_row(
+    run_id
+        .map(|id| {
+            conn.query_row(
                 "SELECT domain FROM workflow_runs WHERE id = ?1",
-                rusqlite::params![run_id],
+                rusqlite::params![id],
                 |r| r.get::<_, String>(0),
             )
-            .unwrap_or_else(|_| "global".to_string()),
-        None => "global".to_string(),
-    }
+            .unwrap_or_else(|_| "global".to_string())
+        })
+        .unwrap_or_else(|| "global".to_string())
 }
 
 #[cfg(test)]

@@ -341,33 +341,24 @@ pub async fn get_scoreboard(
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let conn = pool.get().map_err(|e| format!("{e}"))?;
             let mut stmt = conn
-                .prepare("SELECT id, status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000")
-                .map_err(|e| format!("{e}"))?;
-            let mut audited_stmt = conn
                 .prepare(
-                    "SELECT DISTINCT CAST(target AS INTEGER) FROM audit_events WHERE kind = 'workflow'",
+                    "SELECT id, status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000",
                 )
                 .map_err(|e| format!("{e}"))?;
-            let audited: std::collections::HashSet<i64> = {
-                let rows = audited_stmt
-                    .query_map([], |r| r.get::<_, i64>(0))
-                    .map_err(|e| format!("{e}"))?;
-                let mut set = std::collections::HashSet::new();
-                for r in rows {
-                    set.insert(r.map_err(|e| format!("{e}"))?);
-                }
-                set
-            };
-
             let mut rows = Vec::new();
             for row in stmt
                 .query_map([], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
                 })
                 .map_err(|e| format!("{e}"))?
             {
                 rows.push(row.map_err(|e| format!("{e}"))?);
             }
+            let audited = audited_run_ids(&conn, rows.iter().map(|(id, _, _)| *id));
             Ok(derive_artifacts(&rows, &audited))
         })
         .await
@@ -485,6 +476,32 @@ pub async fn post_calibration_sign(
     .map(Json)
 }
 
+/// Reconstruct the set of run ids that a workflow audit row references.
+///
+/// `audit_events` stores only SHA-256 target hashes — there is no plain-text
+/// `target` column to cast. Every run-bound substrate write (open, CAS
+/// transition, answer, state_read) targets the canonical `run:{id}` string,
+/// so a run is audit-linked iff `hash("run:{id}")` appears among the
+/// workflow-kind rows. Anything else (outbox/calibration rows) targets other
+/// strings and must never light up a run.
+fn audited_run_ids(
+    conn: &rusqlite::Connection,
+    run_ids: impl Iterator<Item = i64>,
+) -> std::collections::HashSet<i64> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT DISTINCT target_hash FROM audit_events WHERE kind = 'workflow'")
+    else {
+        return Default::default();
+    };
+    let targets: std::collections::HashSet<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    run_ids
+        .filter(|id| targets.contains(&crate::audit::hash(&format!("run:{id}"))))
+        .collect()
+}
+
 /// Pure derivation of scorer artifacts from run rows + the audited-id set.
 /// Fail-closed: `audit_ok` only when a state flag says so OR an audit row
 /// references the run.
@@ -519,15 +536,7 @@ fn score_units_now(conn: &rusqlite::Connection) -> i32 {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .map(|it| it.filter_map(Result::ok).collect())
         .unwrap_or_default();
-    let audited: std::collections::HashSet<i64> = conn
-        .prepare(
-            "SELECT DISTINCT CAST(target AS INTEGER) FROM audit_events WHERE kind = 'workflow'",
-        )
-        .and_then(|mut s| {
-            s.query_map([], |r| r.get::<_, i64>(0))
-                .map(|it| it.filter_map(Result::ok).collect())
-        })
-        .unwrap_or_default();
+    let audited = audited_run_ids(conn, rows.iter().map(|(id, _, _)| *id));
     let runs = derive_artifacts(&rows, &audited);
     if runs.is_empty() {
         0
@@ -644,6 +653,46 @@ mod scoreboard_tests {
         let sb = brain_engine_sdk::scoreboard::build(&[]);
         assert_eq!(sb.fcr_units, 0);
         assert!(sb.audit_green, "vacuous conjunction is true by definition");
+    }
+
+    /// Regression pin: `audit_events` has no plain-text `target` column (the
+    /// old `CAST(target AS INTEGER)` query 500s). The audited set must
+    /// reconstruct via `hash("run:{id}")` membership and stay fail-closed.
+    #[test]
+    fn audited_run_ids_reconstructs_hashed_targets() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE audit_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                kind TEXT NOT NULL,
+                actor TEXT,
+                target_hash TEXT,
+                status TEXT,
+                detail_hash TEXT,
+                tenant_id TEXT NOT NULL DEFAULT 'global',
+                prev_hash TEXT);",
+        )
+        .unwrap();
+        for (target, kind) in [
+            ("run:7", "workflow"),     // canonical run-bound row → links run 7
+            ("outbox:k1", "workflow"), // substrate row bound to no run id
+            ("run:9", "client"),       // wrong kind must never link
+        ] {
+            conn.execute(
+                "INSERT INTO audit_events(kind, actor, target_hash, status)
+                 VALUES (?1, 'workflow', ?2, 'ok')",
+                rusqlite::params![kind, crate::audit::hash(target)],
+            )
+            .unwrap();
+        }
+        let audited = audited_run_ids(&conn, [7i64, 8, 9].into_iter());
+        assert!(audited.contains(&7), "hash(run:7) linkage must reconstruct");
+        assert!(!audited.contains(&8), "absence never counts green");
+        assert!(
+            !audited.contains(&9),
+            "non-workflow kinds must not satisfy workflow audit linkage"
+        );
     }
 }
 
