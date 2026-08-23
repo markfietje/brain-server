@@ -348,10 +348,8 @@ pub fn trace_panel(trace_id: i64) -> Element {
                     button {
                         class: "btn btn-outline btn-md",
                         onclick: move |_| {
-                            let js = format!(
-                                "(function(){{var b=new Blob([{body:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='trace-{trace_id}.json';a.click();URL.revokeObjectURL(u);}})();"
-                            );
-                            let _ = document::eval(&js);
+                            let name = format!("trace-{trace_id}.json");
+                            let _ = crate::download::save_file(&name, &body);
                         },
                         "{export_label}"
                     }

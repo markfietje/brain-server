@@ -198,14 +198,9 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                             onclick: move |_| {
                                 let payload = serde_json::json!({ "events": &rows });
                                 let s = payload.to_string();
-                                // Web: build a blob URL + click it. Desktop: same webview JS.
-                                // ponytail: untestable without `dx serve`; the fallback (no-op
-                                // on a renderer without JS) is acceptable — the data is still
-                                // visible in the table.
-                                let js = format!(
-                                    "(function(){{var b=new Blob([{s:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='audit.json';a.click();URL.revokeObjectURL(u);}})();"
-                                );
-                                let _ = document::eval(&js);
+                                // The one download seam: blob save on web,
+                                // native file write on desktop/mobile.
+                                let _ = crate::download::save_file("audit.json", &s);
                             },
                             {t("audit_export")}
                         }

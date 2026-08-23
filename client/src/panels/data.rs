@@ -147,10 +147,7 @@ pub fn panel() -> Element {
                         _ => "brain-export.json",
                     };
                     let s = body.to_string();
-                    let js = format!(
-                        "(function(){{var b=new Blob([{s:?}],{{type:'application/json'}});var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='{name}';a.click();URL.revokeObjectURL(u);}})();"
-                    );
-                    let _ = document::eval(&js);
+                    let _ = crate::download::save_file(name, &s);
                     status.set(Some(Ok(crate::i18n::t("data_exported"))));
                 }
                 Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
