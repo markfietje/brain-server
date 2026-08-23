@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use std::path::{Component, PathBuf};
 use std::sync::OnceLock;
 
-fn dist_dir() -> &'static PathBuf {
+pub(crate) fn dist_dir() -> &'static PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
         std::env::var("BRAIN_CLIENT_DIST")

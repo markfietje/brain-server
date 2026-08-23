@@ -171,6 +171,30 @@ if [[ -n "$COMPLIANCE_FEATURE" ]]; then
 	ok "service signs decision records via $AUDIT_KEY_FILE"
 fi
 
+# 2d. Seatbelt write posture (v1.28.10): agents propose, operators dispose.
+#     The installed deployment runs BRAIN_WRITE_POSTURE=review, and a SECOND
+#     agent token is provisioned (the token file is whitespace-split
+#     multi-token): line 1 = operator-held (approvals, erasure — never enters
+#     openclaw config), line 2 = agent-held (the one the openclaw plugin
+#     carries; its writes land as proposals under the review posture).
+AGENT_TOKEN_FILE="$HOME/.config/brain-server/auth-agent-token"
+if [[ -f "$TOKEN_FILE" ]]; then
+	plutil -remove EnvironmentVariables.BRAIN_WRITE_POSTURE "$PLIST" 2>/dev/null || true
+	plutil -insert EnvironmentVariables.BRAIN_WRITE_POSTURE -string "review" "$PLIST"
+	ok "BRAIN_WRITE_POSTURE=review installed"
+	if [[ ! -f "$AGENT_TOKEN_FILE" ]]; then
+		openssl rand -hex 32 > "$AGENT_TOKEN_FILE"
+		chmod 600 "$AGENT_TOKEN_FILE"
+		# append as the second whitespace-split token in the server's file.
+		printf '\n%s' "$(cat "$AGENT_TOKEN_FILE")" >> "$TOKEN_FILE"
+		chmod 600 "$TOKEN_FILE" "$AGENT_TOKEN_FILE"
+		ok "generated agent token -> $AGENT_TOKEN_FILE (0600); operator token stays line 1 of $TOKEN_FILE"
+	else
+		chmod 600 "$AGENT_TOKEN_FILE"
+		ok "agent token already present at $AGENT_TOKEN_FILE (contents untouched)"
+	fi
+fi
+
 # 3. Restart the launchd service so it runs the new binary.
 #    bootout is best-effort (service may not be loaded yet); bootstrap reloads
 #    the plist, which always picks up the current binary at the copied path.

@@ -645,9 +645,17 @@ pub struct PluginMountRequest {
     #[serde(default)]
     pub revision: Option<u64>,
     /// SHA-256 of the bundle the plugin shipped in, when the boot manifest
-    /// carries one. Recorded verbatim after a strict shape check.
+    /// carries one. Since the Gateweld closure the digest is SERVER-VERIFIED
+    /// against the live `boot_manifest()` before any audit row is written —
+    /// a mismatch or unknown digest is a `409` (the Art. 12 row can no longer
+    /// certify bytes that were never served).
     #[serde(default)]
     pub bundle_sha256: Option<String>,
+    /// The manifest bundle path the digest claims to cover (`pkg/app.js`).
+    /// Optional; when omitted any manifest bundle with a matching digest
+    /// satisfies the check.
+    #[serde(default)]
+    pub bundle_path: Option<String>,
 }
 
 fn valid_plugin_name(name: &str) -> bool {
@@ -656,6 +664,21 @@ fn valid_plugin_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Pure: does `sha` (with optional pinned `path`) match a bundle in the boot
+/// manifest? The mount-evidence gate — a digest for bytes the server never
+/// served can never be certified.
+pub(crate) fn mount_digest_matches(
+    manifest: &serde_json::Value,
+    sha: &str,
+    path: Option<&str>,
+) -> bool {
+    manifest["bundles"].as_array().is_some_and(|bundles| {
+        bundles
+            .iter()
+            .any(|b| b["sha256"] == *sha && path.is_none_or(|want| b["path"] == want))
+    })
 }
 
 /// `POST /workflow/plugins/mount` — record UI-plugin mount/unmount evidence on
@@ -690,6 +713,17 @@ pub async fn post_plugin_mount(
             "sha_invalid",
             "bundle_sha256 must be 64 hex chars",
         ));
+    }
+    // Server-verify the digest against the LIVE boot manifest BEFORE the audit
+    // row — mount evidence is Art. 12 record-keeping, so a digest for bytes
+    // that were never served must never reach the chain. Fail before write.
+    if let Some(sha) = &body.bundle_sha256 {
+        let manifest = super::frontend::boot_manifest(super::frontend::dist_dir());
+        if !mount_digest_matches(&manifest, sha, body.bundle_path.as_deref()) {
+            return Err(HandlerError::conflict(
+                "bundle_unverified: bundle_sha256 does not match the served boot manifest",
+            ));
+        }
     }
     // Write gate on the shared pool: recording evidence is a write, and an
     // unauthenticated caller has no composition worth evidencing.

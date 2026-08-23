@@ -112,6 +112,29 @@ pub fn proposal_ttl_secs() -> i64 {
         .unwrap_or(DEFAULT_PROPOSAL_TTL_SECS)
 }
 
+/// the agent-write posture (`BRAIN_WRITE_POSTURE`, the Seatbelt posture).
+/// `open` (default, back-compat): write surfaces insert directly.
+/// `review`: the six agent-facing write surfaces route through the proposal
+/// pipeline instead — agents propose, operators dispose. Unknown values are
+/// refused at startup (fail-closed); see `validate_write_posture`.
+pub fn write_posture() -> &'static str {
+    match std::env::var("BRAIN_WRITE_POSTURE").as_deref() {
+        Ok("review") => "review",
+        _ => "open",
+    }
+}
+
+/// startup validation: an unknown `BRAIN_WRITE_POSTURE` value refuses to
+/// boot rather than silently degrading to `open`.
+pub fn validate_write_posture() -> Result<(), String> {
+    match std::env::var("BRAIN_WRITE_POSTURE").as_deref() {
+        Err(_) | Ok("") | Ok("open") | Ok("review") => Ok(()),
+        Ok(other) => Err(format!(
+            "BRAIN_WRITE_POSTURE='{other}' is invalid; must be open or review"
+        )),
+    }
+}
+
 /// the GDPR Art 17/12 DSAR response window (days). How
 /// long after a request's `created_at` the erosive-erasure deadline lapses.
 /// This is a *commitment the ledger shows*, not an enforced bound — a
@@ -914,6 +937,30 @@ mod tests {
     }
 
     /// an explicitly configured but broken token file
+    #[test]
+    fn write_posture_resolves_and_validates() {
+        let prev = std::env::var("BRAIN_WRITE_POSTURE").ok();
+        unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") };
+        assert_eq!(write_posture(), "open", "default stays open (back-compat)");
+        unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", "review") };
+        assert_eq!(write_posture(), "review");
+        assert!(validate_write_posture().is_ok());
+        unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", "yolo") };
+        assert_eq!(
+            write_posture(),
+            "open",
+            "unknown reads fail closed to open…"
+        );
+        assert!(
+            validate_write_posture().is_err(),
+            "…but startup REFUSES the unknown value"
+        );
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) },
+            None => unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") },
+        }
+    }
+
     /// is fatal ONLY when there is no AUTH_TOKEN env fallback — the ladder
     /// (file → env) must keep auth ON, and the no-file default stays off.
     /// Save/restore pattern as in capacity.rs (parallel-runner safe).

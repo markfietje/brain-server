@@ -200,6 +200,10 @@ pub async fn ingest(
         let (req, _) = lowered.pop().ok_or_else(|| {
             HandlerError::internal("single-element batch vanished before dispatch".to_string())
         })??;
+        // Seatbelt (Seatbelt): review posture proposes instead of inserting.
+        if crate::config::write_posture() == "review" {
+            return Err(propose_structured(&_state, &principal.0, req).await);
+        }
         let r = ingest_one(&_state, &principal.0, req).await?;
         return Ok(Json(serde_json::to_value(r).unwrap_or_default()));
     }
@@ -208,7 +212,11 @@ pub async fn ingest(
     let mut results = Vec::with_capacity(lowered.len());
     for lowered_req in lowered {
         match lowered_req {
-            Ok((req, _)) => match ingest_one(&_state, &principal.0, req).await {
+            Ok((req, _)) => match if crate::config::write_posture() == "review" {
+                Err(propose_structured(&_state, &principal.0, req).await)
+            } else {
+                ingest_one(&_state, &principal.0, req).await
+            } {
                 Ok(r) => results.push(serde_json::to_value(r).unwrap_or_default()),
                 Err(e) => results.push(json!({
                     "status": "error",
@@ -289,6 +297,34 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
 
 /// The single-record ingest core shared by the plain, single-UMP, and
 /// batch-UMP paths (`ingest` dispatches; this is the one place that writes).
+/// Seatbelt (Seatbelt): route a structured record through the proposal
+/// pipeline instead of inserting. Always returns `HandlerError::accepted`
+/// carrying the 202 proposal envelope (the caller's `Err` arm renders it).
+async fn propose_structured(
+    state: &Arc<AppState>,
+    principal: &Option<crate::auth::Principal>,
+    req: IngestRequest,
+) -> HandlerError {
+    let p = super::gate::create_proposal(
+        state.clone(),
+        principal.clone(),
+        super::gate::ProposalRequest {
+            content: req.content,
+            kind: req.memory_kind.unwrap_or_else(|| "fact".to_string()),
+            source: Some("structured".to_string()),
+            authority: None,
+            observed_at: None,
+            domain: req.domain,
+            source_prompt: None,
+        },
+    )
+    .await;
+    match p {
+        Ok(p) => HandlerError::accepted(p.id, json!({ "proposal_id": p.id, "status": "pending" })),
+        Err(e) => e,
+    }
+}
+
 pub(crate) async fn ingest_one(
     state: &Arc<AppState>,
     principal: &Option<crate::auth::Principal>,
@@ -639,10 +675,10 @@ pub(crate) async fn ingest_one(
         tx.execute(
             "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner, \
                 node_kind, assertion_kind, confidence, access_scope, expires_at, valid_from, \
-                valid_to, observed_at, ump_id, ump_meta, lawful_basis, purpose) \
+                valid_to, observed_at, ump_id, ump_meta, lawful_basis, purpose, origin) \
              VALUES (?1, ?2, 'structured', ?3, ?4, ?5, ?6, COALESCE(?7, 'fact'), \
                 COALESCE(?8, 'stated'), COALESCE(?9, 1.0), COALESCE(?10, 'private'), \
-                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             rusqlite::params![
                 &title_for_store,
                 &content,
@@ -662,6 +698,14 @@ pub(crate) async fn ingest_one(
                 // the lawful-basis + purpose tags (Art 5/6 evidence).
                 req.lawful_basis.as_deref(),
                 req.purpose.as_deref(),
+                // Seatbelt (Seatbelt): a UMP-lowered record is
+                // agent-authored by definition; plain structured ingest stays
+                // `imported` (the safe fallback).
+                if req.ump_meta.is_some() {
+                    "agent"
+                } else {
+                    crate::gate::origin_for_source(Some("structured"))
+                },
             ],
         )
         .map_err(|e| HandlerError::internal(format!("insert knowledge failed: {e}")))?;

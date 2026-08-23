@@ -1136,6 +1136,21 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // the Seatbelt posture: origin-label truth. `/procedure` self-declared
+    // 'human' was operator authorship, never the user's own human voice; UMP
+    // records are agent-authored by definition. Idempotent, label-only —
+    // `origin` is not consumed for ACL today.
+    db.execute(
+        "UPDATE knowledge SET origin = 'operator'
+         WHERE origin = 'human' AND node_kind IN ('procedure', 'step')",
+        [],
+    )?;
+    db.execute(
+        "UPDATE knowledge SET origin = 'agent'
+         WHERE ump_meta IS NOT NULL AND origin = 'imported'",
+        [],
+    )?;
+
     // ── v1.20.1 "Shield": proposal provenance from the auto-capture path. ─
     // `source_prompt` (a) tells a reviewer which autocapture the proposal came
     // from so they can context-check it before approving, and (b) lets the

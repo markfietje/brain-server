@@ -95,11 +95,26 @@ pub async fn ingest_proposal(
     principal: OptPrincipal,
     Json(req): Json<ProposalRequest>,
 ) -> Result<Json<ProposalResponse>, HandlerError> {
+    Ok(Json(create_proposal(state, principal.0, req).await?))
+}
+
+/// The proposal-creation core, shared by `POST /proposals` and (since
+/// the Seatbelt posture) every agent-facing write surface under
+/// `BRAIN_WRITE_POSTURE=review` — agents propose, operators dispose.
+///
+/// ponytail: does NOT add RBAC/jit-elevation; does NOT gate reads; does NOT
+/// touch the connector fetch loop (its `/ingest/markdown` target inherits the
+/// posture automatically).
+pub(crate) async fn create_proposal(
+    state: Arc<AppState>,
+    principal: Option<crate::auth::Principal>,
+    req: ProposalRequest,
+) -> Result<ProposalResponse, HandlerError> {
     let domain = req
         .domain
         .filter(|d| !d.trim().is_empty())
         .unwrap_or_else(|| "global".to_string());
-    super::authorize(&principal.0, crate::auth::Action::Write, "", &domain)?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     let content = req.content.trim().to_string();
     if content.is_empty() {
         return Err(HandlerError::bad_request(
@@ -156,7 +171,7 @@ pub async fn ingest_proposal(
     // attribute the candidate to the acting agent so the
     // supervisor's QA queue can scope by owner. `None` (loopback/opaque) →
     // unowned, the legacy default.
-    let owner = principal_to_owner(&principal.0);
+    let owner = principal_to_owner(&principal);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<ProposalResponse, HandlerError> {
         let conn = pool
@@ -229,7 +244,7 @@ pub async fn ingest_proposal(
             "screen_verdict",
             crate::otel::screen_verdict_span(screen_res),
         );
-        span.record("principal", super::recall::principal_label(&principal.0));
+        span.record("principal", super::recall::principal_label(&principal));
         span.record("domain", domain.clone());
     }
 
@@ -267,7 +282,7 @@ pub async fn ingest_proposal(
         );
     }
 
-    Ok(Json(resp))
+    Ok(resp)
 }
 
 /// Find a live chunk whose subject conflicts with the candidate content. Reuses
@@ -692,11 +707,18 @@ pub async fn approve_proposal(
         } = p;
 
         // bind the decision to the bytes the reviewer
-        // was shown. The client passes the `content_digest` it rendered; if the
-        // stored content diverged since display (concurrent edit), recompute the
-        // digest from the current row and 409 — never approve bytes the operator
-        // did not see. Deterministic + principal-independent (see `review_digest`).
-        if !review_digest_matches(&content, q.digest.as_deref()) {
+        // was shown. The client passes the `content_digest` it rendered; a
+        // missing digest is a protocol violation (Gateweld: — no legacy
+        // quick-approve), and a diverging stored row (concurrent edit) 409s —
+        // never approve bytes the operator did not see. Deterministic +
+        // principal-independent (see `review_digest`).
+        let Some(want) = q.digest.as_deref() else {
+            return Err(HandlerError::bad_request(
+                "digest_required",
+                "approve must carry the content_digest it was displayed with",
+            ));
+        };
+        if !review_digest_matches(&content, Some(want)) {
             return Err(HandlerError::conflict(
                 "proposal content changed since it was displayed — reload and re-approve",
             ));
@@ -1451,12 +1473,17 @@ pub(crate) fn review_digest(content: &str) -> String {
     sha256_hex(&crate::gate::sanitize_read(content, false, &None))
 }
 
-/// the approve gate predicate — a supplied digest must
+/// the approve gate predicate — the caller MUST supply a digest and it must
 /// equal the current row's canonical fingerprint, or the approval is refused
-/// (the reviewer would be committing bytes they were not shown). `None` = the
-/// caller did not opt in (legacy quick-approve/offline-replay), passes.
+/// (the reviewer would be committing bytes they were not shown). The binding
+/// is mandatory since the Gateweld closure: an absent digest is a protocol
+/// violation (`400 digest_required` at the handler), never a silent pass.
 pub(crate) fn review_digest_matches(content: &str, want: Option<&str>) -> bool {
-    want.is_none() || review_digest(content) == want.unwrap_or("")
+    match want {
+        Some(w) => review_digest(content) == w,
+        // ponytail: no legacy branch — approve without a digest fails closed.
+        None => false,
+    }
 }
 
 // ── decay + GDPR lifecycle ──────────────────────────────────────────────
@@ -2389,13 +2416,16 @@ mod tests {
 
     /// the approve gate. A matching digest passes; a
     /// stale (mismatched) digest is refused — the reviewer would be committing
-    /// bytes other than the ones they saw. `None` (legacy quick-approve /
-    /// offline-replay) passes by design.
+    /// bytes other than the ones they saw. An absent digest fails closed
+    /// (the Gateweld closure — the binding is mandatory, `400 digest_required`).
     #[test]
     fn review_digest_matches_gates_stale_approval() {
         let body = "approve me \u{200B} please";
         let d = review_digest(body);
-        assert!(review_digest_matches(body, None), "no digest → legacy pass");
+        assert!(
+            !review_digest_matches(body, None),
+            "no digest → refused (binding is mandatory)"
+        );
         assert!(
             review_digest_matches(body, Some(&d)),
             "the displayed digest is accepted"

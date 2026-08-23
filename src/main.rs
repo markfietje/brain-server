@@ -637,6 +637,10 @@ pub enum AppError {
     /// HTTP 409 — an erasure refused by an active legal
     /// hold (the quarantine delete path runs on the legacy `AppError` type).
     Conflict(String),
+    /// HTTP 202 — Seatbelt review posture: the write became a pending
+    /// proposal instead of inserting. A success-shaped body on a non-error
+    /// status (rendered verbatim, no `error` envelope).
+    Accepted(serde_json::Value),
     Internal(String),
 }
 
@@ -652,6 +656,7 @@ impl axum::response::IntoResponse for AppError {
             AppError::InsufficientStorage(s) => (StatusCode::INSUFFICIENT_STORAGE, s),
             AppError::Forbidden(s) => (StatusCode::FORBIDDEN, s),
             AppError::Conflict(s) => (StatusCode::CONFLICT, s),
+            AppError::Accepted(v) => return (StatusCode::ACCEPTED, Json(v)).into_response(),
             AppError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal error".to_string(),
@@ -697,7 +702,7 @@ async fn add_chunk(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<AddRequest>,
-) -> Json<AddResponse> {
+) -> Response {
     // AuthZ write gate. `/add` is the legacy
     // path — we return its existing `{ success: false, error }` shape rather
     // than a real 403 so the response stays shape-compatible (mirrors the
@@ -705,14 +710,14 @@ async fn add_chunk(
     if let Err(e) =
         crate::handlers::authorize(&principal.0, crate::auth::Action::Write, "", "global")
     {
-        return Json(AddResponse::error(e.inner.message));
+        return Json(AddResponse::error(e.inner.message)).into_response();
     }
     // capacity guard. `/add` is the legacy path; we return its existing
     // `{ success: false, error }` shape rather than an HTTP 507 so the
     // response stays shape-compatible. The primary paths (`/ingest`,
     // `/ingest/markdown`) return a proper 507 via HandlerError.
     if let Err(AppError::InsufficientStorage(msg)) = guard_capacity(&s) {
-        return Json(AddResponse::error(msg));
+        return Json(AddResponse::error(msg)).into_response();
     }
 
     // strip reasoning/trace blocks from the raw text before
@@ -720,7 +725,7 @@ async fn add_chunk(
     // skip-pattern drop is not applied here — that's for batch `/ingest/memory`).
     let text = hygiene::strip_reasoning_blocks(req.text.trim());
     if text.trim().is_empty() {
-        return Json(AddResponse::error("text cannot be empty"));
+        return Json(AddResponse::error("text cannot be empty")).into_response();
     }
     // `source` is a trust label, not a
     // free-form field. For a JWT (agent) principal the vocabulary is closed —
@@ -734,7 +739,8 @@ async fn add_chunk(
             "invalid source: '{source}' is not allowed for token-authenticated \
              principals; allowed: {}",
             ADD_SOURCES_FOR_JWT.join("|")
-        )));
+        )))
+        .into_response();
     }
     // enforce MAX_CONTENT on the legacy /add path too (its siblings
     // /ingest + /ingest/memory + /ingest/markdown all do). Previously /add
@@ -744,7 +750,40 @@ async fn add_chunk(
         return Json(AddResponse::error(format!(
             "text exceeds {} bytes",
             crate::handlers::MAX_CONTENT
-        )));
+        )))
+        .into_response();
+    }
+
+    // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the agent-facing
+    // write surface proposes instead of inserting — no `knowledge` row until
+    // an operator approves.
+    if crate::config::write_posture() == "review" {
+        let proposal = crate::handlers::gate::create_proposal(
+            s.clone(),
+            principal.0.clone(),
+            crate::handlers::gate::ProposalRequest {
+                content: text.clone(),
+                kind: "fact".to_string(),
+                source: Some(source),
+                authority: None,
+                observed_at: None,
+                domain: Some("global".to_string()),
+                source_prompt: None,
+            },
+        )
+        .await;
+        return match proposal {
+            Ok(p) => (
+                axum::http::StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "success": true,
+                    "status": "proposal_pending",
+                    "proposal_id": p.id
+                })),
+            )
+                .into_response(),
+            Err(e) => e.into_response(),
+        };
     }
 
     // injection screen. Now the full two-layer
@@ -876,9 +915,9 @@ async fn add_chunk(
     });
 
     match timeout(StdDuration::from_secs(30), add_future).await {
-        Ok(Ok(resp)) => Json(resp),
-        Ok(Err(_)) => Json(AddResponse::error("Task join error")),
-        Err(_) => Json(AddResponse::error("Request timed out")),
+        Ok(Ok(resp)) => Json(resp).into_response(),
+        Ok(Err(_)) => Json(AddResponse::error("Task join error")).into_response(),
+        Err(_) => Json(AddResponse::error("Request timed out")).into_response(),
     }
 }
 
@@ -1157,18 +1196,16 @@ async fn ingest_memory(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     body: Body,
-) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+) -> Response {
     // the legacy always-200 JSON-error shell gains
     // two real 4xx rejections for entries that would previously be silently
     // stored or mis-reported; every existing wire shape is unchanged.
-    fn error_json(
-        status: &str,
-        message: &str,
-    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    fn error_json(status: &str, message: &str) -> Response {
         (
             axum::http::StatusCode::OK,
             Json(serde_json::json!({ "success": false, "status": status, "message": message })),
         )
+            .into_response()
     }
     // AuthZ write gate. Legacy shape — see
     // `/add`. `None` principal (no JWT) = superuser.
@@ -1191,7 +1228,8 @@ async fn ingest_memory(
                         "code": "invalid_utf8",
                         "message": "request body is not valid UTF-8"
                     })),
-                );
+                )
+                    .into_response();
             }
         },
         // An over-cap body (the request alone exceeds MAX_REQUEST_SIZE)
@@ -1208,7 +1246,8 @@ async fn ingest_memory(
                         MAX_REQUEST_SIZE
                     )
                 })),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -1221,6 +1260,38 @@ async fn ingest_memory(
     // the primary `/ingest` path returns a proper 507.
     if let Err(AppError::InsufficientStorage(msg)) = guard_capacity(&s) {
         return error_json("error", &msg);
+    }
+
+    // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the capture
+    // proposes instead of inserting — one proposal per request (the raw
+    // content), no `knowledge` row until an operator approves.
+    if crate::config::write_posture() == "review" {
+        let proposal = crate::handlers::gate::create_proposal(
+            s.clone(),
+            principal.0.clone(),
+            crate::handlers::gate::ProposalRequest {
+                content: content.clone(),
+                kind: "fact".to_string(),
+                source: Some("memory".to_string()),
+                authority: None,
+                observed_at: None,
+                domain: Some("global".to_string()),
+                source_prompt: None,
+            },
+        )
+        .await;
+        return match proposal {
+            Ok(p) => (
+                axum::http::StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "success": true,
+                    "status": "proposal_pending",
+                    "proposal_id": p.id
+                })),
+            )
+                .into_response(),
+            Err(e) => e.into_response(),
+        };
     }
 
     let model = Arc::clone(&s.model);
@@ -1330,8 +1401,17 @@ async fn ingest_memory(
             if tx
                 .execute(
                     "INSERT INTO knowledge(content, title, source, content_hash, owner, origin)
-                     VALUES(?, ?, ?, ?, ?, 'model')",
-                    params![text, title, "memory", content_hash, &owner],
+                     VALUES(?, ?, ?, ?, ?, ?6)",
+                    params![
+                        text,
+                        title,
+                        "memory",
+                        content_hash,
+                        &owner,
+                        // derive, never hardcode: the origin is a function of
+                        // the source kind (the Seatbelt posture label truth).
+                        crate::gate::origin_for_source(Some("memory"))
+                    ],
                 )
                 .is_err()
             {
@@ -1475,6 +1555,7 @@ async fn ingest_memory(
                     "similarity_score": 1.0
                 })),
             )
+                .into_response()
         }
         Ok(Ok(Err(MemoryReject::EntryTooLarge { len }))) => (
             axum::http::StatusCode::BAD_REQUEST,
@@ -1488,7 +1569,8 @@ async fn ingest_memory(
                     crate::handlers::MAX_CONTENT
                 )
             })),
-        ),
+        )
+            .into_response(),
         Ok(Ok(Err(MemoryReject::TooManyEntries { count }))) => (
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -1501,11 +1583,13 @@ async fn ingest_memory(
                     crate::handlers::MAX_INGEST_ENTRIES
                 )
             })),
-        ),
+        )
+            .into_response(),
         Ok(Err(_)) => (
             axum::http::StatusCode::OK,
             Json(serde_json::json!({ "status": "error", "error": "internal error" })),
-        ),
+        )
+            .into_response(),
         Err(_) => {
             // The timed-out clone is dropped here — `_tracker_entry`'s
             // Drop has ALREADY released the slot (the closure itself exits
@@ -1518,6 +1602,7 @@ async fn ingest_memory(
                 axum::http::StatusCode::OK,
                 Json(serde_json::json!({ "status": "error", "error": "Ingest timed out" })),
             )
+                .into_response()
         }
     }
 }
@@ -2649,6 +2734,51 @@ async fn ingest_markdown(
     let chunks = chunker::chunk_markdown(&content);
     let document_id = format!("{:016x}", xxh3_64(title.trim().as_bytes()));
 
+    // Resolve domain: explicit payload field > YAML frontmatter > "global".
+    let domain = payload
+        .domain
+        .clone()
+        .filter(|d| !d.trim().is_empty())
+        .or_else(|| fm.domain.clone().filter(|d| !d.trim().is_empty()))
+        .unwrap_or_else(|| "global".to_string());
+
+    // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the vault ingest
+    // proposes instead of inserting — one proposal per chunk (capped), the
+    // connector fetch loop inherits this automatically. No `knowledge` row
+    // until an operator approves.
+    if crate::config::write_posture() == "review" {
+        const MAX_REVIEW_CHUNKS: usize = 50;
+        if chunks.len() > MAX_REVIEW_CHUNKS {
+            return Err(AppError::BadRequest(
+                "too_many_chunks_for_review (max 50 per document under review posture)",
+            ));
+        }
+        let mut proposal_ids = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
+            let p = crate::handlers::gate::create_proposal(
+                state.clone(),
+                principal.0.clone(),
+                crate::handlers::gate::ProposalRequest {
+                    content: chunk.text.clone(),
+                    kind: "fact".to_string(),
+                    source: Some("markdown".to_string()),
+                    authority: None,
+                    observed_at: None,
+                    domain: Some(domain.clone()),
+                    source_prompt: None,
+                },
+            )
+            .await
+            .map_err(|e| AppError::Internal(e.inner.message))?;
+            proposal_ids.push(p.id);
+        }
+        return Err(AppError::Accepted(serde_json::json!({
+            "success": true,
+            "status": "proposal_pending",
+            "proposal_ids": proposal_ids
+        })));
+    }
+
     let pool = state.pool.clone();
     let model = Arc::clone(&state.model);
 
@@ -2665,13 +2795,6 @@ async fn ingest_markdown(
         return Err(AppError::Internal("Embedding count mismatch".into()));
     }
 
-    // Resolve domain: explicit payload field > YAML frontmatter > "global".
-    let domain = payload
-        .domain
-        .clone()
-        .filter(|d| !d.trim().is_empty())
-        .or_else(|| fm.domain.clone().filter(|d| !d.trim().is_empty()))
-        .unwrap_or_else(|| "global".to_string());
     let doc_title = escaped_title.clone();
     let doc_id = document_id.clone();
     let edges = kg_edges.clone();
@@ -5153,6 +5276,13 @@ async fn main_inner() -> Result<()> {
     if let Some(path) = config::auth_token_file() {
         auth::check_secret_permissions(&path)
             .map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
+    }
+
+    // ── fail-closed write posture ─────────────────────
+    // An unknown BRAIN_WRITE_POSTURE value refuses startup rather than
+    // silently degrading to `open` (the Seatbelt posture).
+    if let Err(e) = config::validate_write_posture() {
+        return Err(anyhow::anyhow!("fatal write posture: {e}"));
     }
 
     // ── fail-closed model-artifact pinning ─────────────
@@ -12893,22 +13023,32 @@ Final paragraph after the rule.";
             // shared `run_*`/`*_one` core (the `/recall` + `/ingest` bindings
             // route through `run_recall`/`ingest_one`), so the scan follows
             // the delegation when the handler itself delegates.
-            let delegated_gate = ["run_recall(", "ingest_one(", "post_legal_hold_for_domain("]
-                .into_iter()
-                .find(|d| body.contains(d))
-                .and_then(|core| handler_body(src, &core[..core.len() - 1]))
-                .is_some_and(|b| b.contains("authorize"));
+            let delegated_gate = [
+                "run_recall(",
+                "ingest_one(",
+                "post_legal_hold_for_domain(",
+                "create_proposal(",
+            ]
+            .into_iter()
+            .find(|d| body.contains(d))
+            .and_then(|core| handler_body(src, &core[..core.len() - 1]))
+            .is_some_and(|b| b.contains("authorize"));
             assert!(
                 body.contains("authorize") || delegated_gate,
                 "{method} {route} (`{handler_name}`) has no authorize() gate"
             );
             let action_ok = body.contains(&format!("Action::{action}"))
                 || (delegated_gate
-                    && ["run_recall(", "ingest_one(", "post_legal_hold_for_domain("]
-                        .into_iter()
-                        .find(|d| body.contains(d))
-                        .and_then(|core| handler_body(src, &core[..core.len() - 1]))
-                        .is_some_and(|b| b.contains(&format!("Action::{action}"))));
+                    && [
+                        "run_recall(",
+                        "ingest_one(",
+                        "post_legal_hold_for_domain(",
+                        "create_proposal(",
+                    ]
+                    .into_iter()
+                    .find(|d| body.contains(d))
+                    .and_then(|core| handler_body(src, &core[..core.len() - 1]))
+                    .is_some_and(|b| b.contains(&format!("Action::{action}"))));
             assert!(
                 action_ok,
                 "{method} {route} (`{handler_name}`) does not enforce Action::{action}"
@@ -13430,7 +13570,9 @@ Final paragraph after the rule.";
             (main_src, "ingest_markdown"),
             (ingest_src, "ingest_one"),
             (proc_src, "create"),
-            (gate_src, "ingest_proposal"),
+            // the screen lives in the shared `create_proposal` core since the
+            // review posture made it a multi-caller seam.
+            (gate_src, "create_proposal"),
         ];
         for (src, handler) in sites {
             let body = handler_body(src, handler)
@@ -13982,6 +14124,77 @@ Final paragraph after the rule.";
         assert_eq!(n, 1);
     }
 
+    /// Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the agent-facing
+    /// write surfaces propose instead of inserting — `/add` and `/ump/remember`
+    /// leave ZERO `knowledge` rows and land pending `proposals` rows.
+    #[tokio::test]
+    async fn review_posture_routes_writes_to_proposals() {
+        use axum::extract::State;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+
+        let prev = std::env::var("BRAIN_WRITE_POSTURE").ok();
+        unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", "review") };
+
+        // /add proposes; no knowledge row.
+        let res = add_chunk(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::Json(AddRequest {
+                text: "seatbelt add fact".to_string(),
+                title: None,
+                source: "manual".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(res.status(), axum::http::StatusCode::ACCEPTED);
+
+        // /ump/remember proposes too.
+        let res = crate::handlers::ump_ops::remember(
+            State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            axum::Json(serde_json::json!({
+                "record": {"body": {"text": "seatbelt remember fact"}, "kind": "fact"}
+            })),
+        )
+        .await;
+        match &res {
+            Ok(_) => panic!("remember must divert to the 202 proposal envelope"),
+            Err(e) => assert_eq!(e.status, axum::http::StatusCode::ACCEPTED, "{e:?}"),
+        }
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("BRAIN_WRITE_POSTURE", v),
+                None => std::env::remove_var("BRAIN_WRITE_POSTURE"),
+            }
+        }
+
+        let conn = state.pool.get().unwrap();
+        let knowledge: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(knowledge, 0, "review posture inserts no knowledge rows");
+        let proposals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE status='pending' AND content LIKE 'seatbelt%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(proposals, 2, "both writes became pending proposals");
+        // origin truth: UMP-lowered proposals are agent-sourced.
+        let agent_src: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE source='agent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_src, 1, "the UMP proposal is agent-sourced");
+    }
+
     /// Plugin mount evidence: the audited write lands a Workflow row with the
     /// plugin target + action/revision/bundle detail; invalid input is
     /// refused before any audit write.
@@ -13990,6 +14203,18 @@ Final paragraph after the rule.";
         use axum::extract::State;
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
+
+        // Pin the dist to a deterministic fixture BEFORE any dist_dir() call
+        // (the process-wide OnceLock caches on first use) so the manifest is
+        // known: exactly one bundle, pkg/ui-panel.js.
+        let fix = std::env::temp_dir().join(format!("brain-mount-{}", std::process::id()));
+        std::fs::create_dir_all(fix.join("pkg")).unwrap();
+        std::fs::write(fix.join("pkg/ui-panel.js"), b"panel-bundle").unwrap();
+        unsafe { std::env::set_var("BRAIN_CLIENT_DIST", &fix) };
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"panel-bundle");
+        let real = format!("{:x}", h.finalize());
 
         // Invalid plugin name refused (fail-closed, no row).
         let err = crate::handlers::workflow::post_plugin_mount(
@@ -14000,6 +14225,7 @@ Final paragraph after the rule.";
                 action: None,
                 revision: Some(1),
                 bundle_sha256: None,
+                bundle_path: None,
             }),
         )
         .await
@@ -14015,14 +14241,44 @@ Final paragraph after the rule.";
                 action: None,
                 revision: None,
                 bundle_sha256: Some("nothex".to_string()),
+                bundle_path: None,
             }),
         )
         .await
         .expect_err("malformed digest must be refused");
         assert_eq!(err.inner.code, "sha_invalid", "{err:?}");
 
-        // A valid mount records one Workflow evidence row.
-        let sha = "a".repeat(64);
+        // A well-formed digest that matches NO served bundle is refused before
+        // any audit row — Art. 12 evidence is server-verified (Gateweld).
+        let ghost = "a".repeat(64);
+        let err = crate::handlers::workflow::post_plugin_mount(
+            State(state.clone()),
+            axum::Extension(None),
+            axum::Json(crate::handlers::workflow::PluginMountRequest {
+                plugin: "ui-chat".to_string(),
+                action: None,
+                revision: Some(1),
+                bundle_sha256: Some(ghost),
+                bundle_path: Some("pkg/ghost.js".to_string()),
+            }),
+        )
+        .await
+        .expect_err("unserved digest must be refused");
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT, "{err:?}");
+        assert!(err.inner.message.contains("bundle_unverified"), "{err:?}");
+        {
+            let conn = state.pool.get().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE kind='workflow'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "refused mount writes zero audit rows");
+        }
+
+        // A MATCHING digest is accepted and lands exactly one row.
         let ok = crate::handlers::workflow::post_plugin_mount(
             State(state.clone()),
             axum::Extension(None),
@@ -14030,11 +14286,12 @@ Final paragraph after the rule.";
                 plugin: "ui-control-panel".to_string(),
                 action: Some("mount".to_string()),
                 revision: Some(7),
-                bundle_sha256: Some(sha.clone()),
+                bundle_sha256: Some(real.clone()),
+                bundle_path: Some("pkg/ui-panel.js".to_string()),
             }),
         )
         .await
-        .expect("valid mount must succeed");
+        .expect("verified mount must succeed");
         assert_eq!(ok.0["ok"], serde_json::json!(true));
         {
             // Audit rows are hash-only at rest (target_hash/detail_hash), so
@@ -14049,8 +14306,9 @@ Final paragraph after the rule.";
                 )
                 .unwrap();
             assert_eq!(n, 1, "one mount-evidence row");
-            assert!(sha.len() == 64, "digest rode the event");
+            assert!(real.len() == 64, "digest rode the event");
         }
+        let _ = std::fs::remove_dir_all(&fix);
 
         // Unmount is the reverse evidence.
         let ok = crate::handlers::workflow::post_plugin_mount(
@@ -14061,6 +14319,7 @@ Final paragraph after the rule.";
                 action: Some("unmount".to_string()),
                 revision: None,
                 bundle_sha256: None,
+                bundle_path: None,
             }),
         )
         .await
@@ -16758,14 +17017,18 @@ Final paragraph after the rule.";
             body.len() < config::MAX_REQUEST_SIZE,
             "test body must pass the request cap to exercise the per-entry cap"
         );
-        let (status, json) = ingest_memory(
+        let res = ingest_memory(
             axum::extract::State(state),
             handlers::auth::OptPrincipal(None),
             axum::body::Body::from(body),
         )
         .await;
-        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(json.0["code"], "entry_too_large");
+        assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["code"], "entry_too_large");
     }
 
     #[tokio::test]
@@ -16773,14 +17036,18 @@ Final paragraph after the rule.";
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let state = groundwork_state(&tmp);
         let body: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x80, 0xc3];
-        let (status, json) = ingest_memory(
+        let res = ingest_memory(
             axum::extract::State(state),
             handlers::auth::OptPrincipal(None),
             axum::body::Body::from(body),
         )
         .await;
-        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
-        assert_eq!(json.0["code"], "invalid_utf8");
+        assert_eq!(res.status(), axum::http::StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["code"], "invalid_utf8");
     }
 
     // ── E-1: the PRF df round-trip must be byte-identical to the

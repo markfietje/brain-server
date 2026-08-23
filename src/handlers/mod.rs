@@ -250,6 +250,18 @@ pub struct HandlerError {
 }
 
 impl HandlerError {
+    /// HTTP 202 — Seatbelt review posture: the write became a pending
+    /// proposal. A SUCCESS status rendered through the error channel so a
+    /// handler can divert to `202 proposal_pending` without changing its
+    /// return type; `IntoResponse` renders `{"error":{"code":…}}` uniformly.
+    pub fn accepted(proposal_id: i64, extra: Value) -> Self {
+        let mut body = extra;
+        body["proposal_id"] = serde_json::json!(proposal_id);
+        Self {
+            status: StatusCode::ACCEPTED,
+            inner: ApiError::new("proposal_pending", body.to_string()),
+        }
+    }
     pub fn bad_request(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -396,6 +408,13 @@ pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
 
 impl IntoResponse for HandlerError {
     fn into_response(self) -> axum::response::Response {
+        // Seatbelt 202s ride the error channel but render as a plain JSON
+        // success envelope — `HandlerError` is transport, not semantics.
+        if self.status == StatusCode::ACCEPTED {
+            let body: Value = serde_json::from_str(&self.inner.message)
+                .unwrap_or(serde_json::json!({"proposal_pending": true}));
+            return (self.status, Json(body)).into_response();
+        }
         (self.status, Json(ErrorBody { error: self.inner })).into_response()
     }
 }

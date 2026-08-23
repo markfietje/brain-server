@@ -143,6 +143,29 @@ pub async fn remember(
             ));
         }
     }
+    // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the agent write
+    // proposes instead of inserting; UMP writes are agent-originated by
+    // definition, so the proposal carries source `agent`.
+    if crate::config::write_posture() == "review" {
+        let p = super::gate::create_proposal(
+            state,
+            principal.0.clone(),
+            super::gate::ProposalRequest {
+                content: req.content,
+                kind: req.memory_kind.unwrap_or_else(|| "fact".to_string()),
+                source: Some("agent".to_string()),
+                authority: None,
+                observed_at: None,
+                domain: req.domain,
+                source_prompt: None,
+            },
+        )
+        .await?;
+        return Err(HandlerError::accepted(
+            p.id,
+            json!({ "proposal_id": p.id, "status": "pending", "result": "proposed" }),
+        ));
+    }
     let resp = ingest_one(&state, &principal.0, req).await?;
     // §3.3 `created | merged | rejected` — brain's dedup reports "duplicate".
     let result = match resp.status {
@@ -665,6 +688,33 @@ pub async fn revise(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     let (old_id, new_req) = old_id;
+    // Seatbelt (Seatbelt): under review posture the revision proposes instead
+    // of inserting — supersession is deferred to approval time (the approve
+    // path already handles it). The old chunk stays current until then.
+    if crate::config::write_posture() == "review" {
+        let p = super::gate::create_proposal(
+            state,
+            principal.0.clone(),
+            super::gate::ProposalRequest {
+                content: new_req.content,
+                kind: new_req.memory_kind.unwrap_or_else(|| "fact".to_string()),
+                source: Some("agent".to_string()),
+                authority: None,
+                observed_at: None,
+                domain: new_req.domain,
+                source_prompt: None,
+            },
+        )
+        .await?;
+        return Err(HandlerError::accepted(
+            p.id,
+            json!({
+                "proposal_id": p.id,
+                "status": "pending",
+                "supersedes_deferred": old_id
+            }),
+        ));
+    }
     let resp = ingest_one(&state, &principal.0, new_req).await?;
     let new_id = resp.id;
     if new_id != old_id {
