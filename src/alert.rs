@@ -24,7 +24,8 @@ use crate::AppState;
 
 /// The four fixed alert kinds (mirrors `config::ALERT_KIND_*`).
 pub use crate::config::{
-    ALERT_KIND_CHAIN, ALERT_KIND_EXPIRY, ALERT_KIND_PENDING, ALERT_KIND_PROPOSAL, ALERT_KIND_SCREEN,
+    ALERT_KIND_CHAIN, ALERT_KIND_EXPIRY, ALERT_KIND_PENDING, ALERT_KIND_PROPOSAL,
+    ALERT_KIND_SCREEN, ALERT_KIND_WORKFLOW,
 };
 
 /// The ops-clock SLA tier (mirrors the client clock). `Ok` → `Warn` →
@@ -107,6 +108,18 @@ pub struct EventsQuery {
     kinds: Option<String>,
 }
 
+/// The pure admission decision for one `workflow` event on
+/// one subscriber's stream. Additive + default-off: the subscriber must have
+/// explicitly opted in via `?kinds=workflow` (old consumers never see the new
+/// kind) AND pass the run-domain Read gate (fail-closed — a denied or errored
+/// gate drops the event, never streams it).
+pub(crate) fn workflow_event_admissible(
+    kinds: Option<&std::collections::HashSet<String>>,
+    authorized: bool,
+) -> bool {
+    kinds.is_some_and(|k| k.contains(ALERT_KIND_WORKFLOW)) && authorized
+}
+
 /// `GET /events` — SSE live alert feed (Read-gated). Mirrors `/ump/subscribe`:
 /// a `pending` handshake, then `alert` events; a lagging consumer drops missed
 /// events (bounded broadcast) and re-syncs via the polling fallback.
@@ -135,16 +148,38 @@ pub async fn events(
                 Event::default().event("error").data(format!("{e:?}")),
             )))
         } else {
+            let principal = principal.0;
             Box::pin(
                 handshake.chain(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
                     move |item| match item {
                         Ok(v) => {
-                            // Drop events the caller didn't ask for (per-kind filter).
-                            if let Some(k) = &kinds {
-                                let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
-                                if !k.contains(kind) {
+                            let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
+                            // `workflow` events are additive and default-off:
+                            // only explicit `?kinds=workflow` subscribers
+                            // receive them, and only when they may read the
+                            // domain the run lives in.
+                            if kind == ALERT_KIND_WORKFLOW {
+                                let domain = v
+                                    .get("payload")
+                                    .and_then(|p| p.get("domain"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("global");
+                                let authorized = crate::handlers::authorize(
+                                    &principal,
+                                    crate::auth::Action::Read,
+                                    "",
+                                    domain,
+                                )
+                                .is_ok();
+                                if !workflow_event_admissible(kinds.as_ref(), authorized) {
                                     return None;
                                 }
+                            }
+                            // Drop events the caller didn't ask for (per-kind filter).
+                            if let Some(k) = &kinds
+                                && !k.contains(kind)
+                            {
+                                return None;
                             }
                             Some(Ok::<Event, Infallible>(
                                 Event::default()
@@ -177,6 +212,89 @@ pub(crate) fn publish(state: &Arc<AppState>, kind: &str, payload: Value) {
         let body = event.to_string();
         tokio::spawn(async move { sink(&state, seq, &body).await });
     }
+}
+
+/// Bounded per-tick drain: at most this many `workflow/*` rows per domain per
+/// 2s tick — a burst is spread over ticks (the webhook drainer's discipline),
+/// never a single unbounded scan.
+const WORKFLOW_DRAIN_BATCH: i64 = 100;
+
+/// One drain pass over every registered domain's workflow
+/// outbox. Each drained `workflow/*`-topic row advances to `delivered` via
+/// [`crate::workflow::outbox::deliver`] (its audit row commits in the same tx)
+/// and publishes to the SSE bus with payload
+/// `{topic, run_id, payload_json, event_id, parent_event_id, domain}`.
+/// The payload passes `sanitize_stored` BEFORE broadcast — machine-written
+/// state, but the read seam is unconditional — never certifying silence. Non-workflow
+/// topics (steering, intake) are never touched: engines consume those through
+/// their own surfaces. Returns the number of events published.
+pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
+    let mut published = 0usize;
+    for domain in state.registry.known_domains() {
+        let Ok(pool) = state.registry.pool_for(&domain) else {
+            continue;
+        };
+        let Ok(conn) = pool.get() else {
+            continue;
+        };
+        let rows: Vec<(i64, i64, String, String, Option<i64>)> = conn
+            .prepare(
+                "SELECT id, run_id, topic, payload_json, parent_id FROM outbox
+                  WHERE status = 'pending' AND topic LIKE 'workflow/%'
+                  ORDER BY id ASC LIMIT ?1",
+            )
+            .and_then(|mut stmt| {
+                stmt.query_map(rusqlite::params![WORKFLOW_DRAIN_BATCH], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, Option<i64>>(4)?,
+                    ))
+                })
+                .and_then(|it| it.collect())
+            })
+            .unwrap_or_default();
+        for (id, run_id, topic, payload_json, parent_event_id) in rows {
+            // Deliver first (audit row in its tx); a failed delivery skips the
+            // publish — an undrained event reads as lag, never as a phantom.
+            if crate::workflow::outbox::deliver(&conn, id, chrono::Utc::now().timestamp()).is_err()
+            {
+                continue;
+            }
+            let payload_json = crate::gate::sanitize_stored(&payload_json, false, &None);
+            publish(
+                state,
+                ALERT_KIND_WORKFLOW,
+                json!({
+                    "topic": topic,
+                    "run_id": run_id,
+                    "payload_json": payload_json,
+                    "event_id": id,
+                    "parent_event_id": parent_event_id,
+                    "domain": domain,
+                }),
+            );
+            published += 1;
+        }
+    }
+    published
+}
+
+/// The background worker — every 2s, one drain pass (the
+/// webhook.rs drainer's cadence + fail-soft discipline; a poisoned/broken tick
+/// is skipped, the next tick retries).
+pub fn spawn_workflow_event_worker(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let state = Arc::clone(&state);
+            let _ = tokio::task::spawn_blocking(move || drain_workflow_events(&state))
+                .await
+                .unwrap_or(0);
+        }
+    });
 }
 
 /// Webhook sink: an audit/idempotency `webhook_queue` record (kind='alert',
@@ -429,5 +547,186 @@ mod tests {
         for key in ["kind", "ts", "seq", "payload"] {
             assert!(obj.contains_key(key));
         }
+    }
+
+    // ── v1.28.19 Witness: the workflow-outbox → SSE bridge ─────────────
+
+    use tempfile::TempDir;
+
+    /// A file-backed single-domain fixture: migrated global.db + registry,
+    /// one active workflow run, a subscribed broadcast receiver.
+    fn witness_state() -> (
+        TempDir,
+        std::sync::Arc<crate::AppState>,
+        tokio::sync::broadcast::Receiver<Value>,
+    ) {
+        crate::register_sqlite_vec();
+        let dir = TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("brain.db");
+        let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
+        let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
+        brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0)
+            .expect("migration");
+        let state = Arc::new(crate::AppState {
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+            ),
+            registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+            pool,
+            db_path: db_path.clone(),
+            connection_tracker: Arc::new(crate::ConnectionTracker::new()),
+            rate_limiter: Arc::new(crate::RateLimiter::new()),
+            snapshot: crate::integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: crate::auth::AuthMode::Opaque,
+            key_store: crate::auth::jwks::KeyStore::default(),
+            revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: crate::handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(16).0,
+            alert_events: tokio::sync::broadcast::channel(16).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: ChainWatchState::default(),
+        });
+        let rx = state.alert_events.subscribe();
+        (dir, state, rx)
+    }
+
+    fn seed_run_and_event(state: &crate::AppState) -> i64 {
+        let conn = state.pool.get().expect("conn");
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('global', 'interview', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .expect("run");
+        let (_, id) = crate::workflow::outbox::enqueue_child(
+            &conn,
+            1,
+            None,
+            "workflow/log",
+            r#"{"note":"step done"}"#,
+            "wit-1",
+            1,
+        )
+        .expect("enqueue");
+        id
+    }
+
+    /// The drained event is published on the SSE bus with the full witness
+    /// payload and the outbox row advances to delivered (its audit row
+    /// commits in the same tx).
+    #[test]
+    fn workflow_events_broadcast_with_domain_authz() {
+        let (_dir, state, mut rx) = witness_state();
+        let event_id = seed_run_and_event(&state);
+        assert_eq!(drain_workflow_events(&state), 1, "one drained publish");
+        let v = rx.try_recv().expect("the drained event is on the bus");
+        assert_eq!(v["kind"], ALERT_KIND_WORKFLOW);
+        assert_eq!(v["payload"]["topic"], "workflow/log");
+        assert_eq!(v["payload"]["run_id"], 1);
+        assert_eq!(v["payload"]["event_id"], event_id);
+        assert_eq!(v["payload"]["parent_event_id"], Value::Null);
+        assert_eq!(v["payload"]["domain"], "global");
+        let status: String = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT status FROM outbox WHERE id=?1", [event_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "delivered");
+        // Idempotent: a second tick finds nothing pending.
+        assert_eq!(drain_workflow_events(&state), 0);
+        // Non-workflow topics are never drained by this worker.
+        let conn = state.pool.get().unwrap();
+        crate::workflow::outbox::enqueue_child(&conn, 1, None, "steering", "{}", "st-1", 2)
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            drain_workflow_events(&state),
+            0,
+            "steering stays for the engine's own surface"
+        );
+        let n: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE topic='steering' AND status='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// Admission law: default-off (no `?kinds=` never receives workflow),
+    /// opt-in required, and the per-subscriber run-domain Read gate is
+    /// fail-closed — a denied or errored gate drops the event.
+    #[test]
+    fn kinds_filter_excludes_workflow_by_default() {
+        fn set(items: &[&str]) -> Option<std::collections::HashSet<String>> {
+            Some(items.iter().map(|s| s.to_string()).collect())
+        }
+        // Default consumers (no ?kinds=): workflow never streams.
+        assert!(!workflow_event_admissible(None, true));
+        // Opted-in but unauthorized: dropped (fail-closed).
+        assert!(!workflow_event_admissible(
+            set(&["workflow"]).as_ref(),
+            false
+        ));
+        // Opted-in + authorized: admitted.
+        assert!(workflow_event_admissible(set(&["workflow"]).as_ref(), true));
+        // An explicit kinds list WITHOUT workflow stays silent too.
+        assert!(!workflow_event_admissible(set(&["pending"]).as_ref(), true));
+        // The old kinds keep their existing semantics: no workflow special-case.
+        assert!(
+            set(&["pending"])
+                .as_ref()
+                .is_some_and(|k| k.contains("pending"))
+        );
+    }
+
+    /// The sanitize seam is unconditional on the drain path: invisible chars /
+    /// markdown-ref constructs in an outbox payload never reach the wire raw,
+    /// even though engine state is machine-written.
+    #[test]
+    fn sanitize_applies_to_workflow_payloads() {
+        let (_dir, state, mut rx) = witness_state();
+        {
+            let conn = state.pool.get().expect("conn");
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('global', 'interview', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+            crate::workflow::outbox::enqueue_child(
+                &conn,
+                1,
+                None,
+                "workflow/log",
+                "{\"note\":\"see ![x]\u{200b}(https://evil.example)\u{200b}\"}",
+                "san-1",
+                1,
+            )
+            .unwrap();
+        }
+        assert_eq!(drain_workflow_events(&state), 1);
+        let v = rx.try_recv().expect("event");
+        let payload_json = v["payload"]["payload_json"].as_str().expect("string");
+        assert!(
+            !payload_json
+                .chars()
+                .any(brain_server::strip_invisible::is_invisible),
+            "invisible chars stripped before broadcast: {payload_json:?}"
+        );
+        assert!(
+            !payload_json.contains("](https://"),
+            "markdown-ref construct stripped before broadcast: {payload_json:?}"
+        );
     }
 }

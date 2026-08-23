@@ -60,6 +60,9 @@ pub const ALERT_KIND_CHAIN: &str = "chain";
 /// proposal conversation events (`proposal/open|updated|decided`)
 /// feeding the client's review-job node — metadata-only payloads.
 pub const ALERT_KIND_PROPOSAL: &str = "proposal";
+/// Drained `workflow/*` outbox events on the SSE bus. Additive and default-off — a `/events` subscriber receives these only when
+/// it explicitly asks `?kinds=workflow`, so existing consumers are unaffected.
+pub const ALERT_KIND_WORKFLOW: &str = "workflow";
 
 /// `GET /events` SSE broadcast buffer. Bounded — a slow
 /// consumer drops missed events (broadcast lag semantics), never blocks the

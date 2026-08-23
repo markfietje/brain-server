@@ -31,7 +31,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | POST | `/verify` | Span verification — is a claim supported by a chunk's text? Binds the `X-Brain-Domain` label in SQL (an id cannot cross domains in shim mode) + the record gate. |
 | POST | `/reindex` | Rebuild indexes |
 | GET | `/metrics` | Prometheus metrics (auth-gated) |
-| GET | `/events` | SSE broadcast of memory events |
+| GET | `/events` | SSE broadcast of memory events; `?kinds=` filters. Since 1.28.19 the bus also carries drained `workflow/*` outbox events under kind `workflow` — additive + default-off (only explicit `?kinds=workflow` subscribers receive them), per-subscriber run-domain Read-gated at fan-out, payloads sanitized before broadcast |
 | POST | `/webhooks/{kind}` · `/webhooks/gh` | Webhook delivery receiver (HMAC-verified) |
 
 ---

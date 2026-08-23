@@ -2635,11 +2635,20 @@ paths:
         or PII (payloads are small signal objects; the client fetches detail
         from existing endpoints on demand). Optional `?kinds=pending,expiry`
         filters the stream. Read-gated; lagged subscribers drop missed events.
+        Since 1.28.19 the bus also carries drained `workflow/*` outbox events
+        under kind `workflow` with payload
+        `{topic, run_id, payload_json, event_id, parent_event_id, domain}`:
+        ADDITIVE and default-off — a subscriber receives them only by asking
+        `?kinds=workflow`, and only when it may Read the run's domain (denied
+        events are dropped, never leaked); payloads pass the sanitize seam
+        before broadcast.
       parameters:
         - name: kinds
           in: query
           required: false
-          schema: { type: string, description: "comma-separated kind filter; absent = all" }
+          schema:
+            type: string
+            description: "comma-separated kind filter; absent = all except `workflow` (opt-in)"
       responses:
         "200":
           description: "text/event-stream"

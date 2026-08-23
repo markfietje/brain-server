@@ -6314,6 +6314,11 @@ async fn main_inner() -> Result<()> {
             let cw_state = Arc::clone(&app_state);
             let cw_watch = app_state.chain_watch.clone();
             tokio::spawn(async move { alert::spawn_chain_watcher(cw_state, cw_watch).await });
+            // The workflow-outbox → SSE bridge: every 2s the drained
+            // `workflow/*` events publish on the /events bus (explicitly
+            // subscribed consumers only, per-domain Read-gated at fan-out).
+            let we_state = Arc::clone(&app_state);
+            alert::spawn_workflow_event_worker(we_state);
             // seed the multi-db registry from
             // the clients register — a client's domain must resolve even if
             // its per-domain file vanished between boots (register recreates
