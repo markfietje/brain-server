@@ -94,6 +94,7 @@
 - [CRA evidentiary kit](cra.md)
 - [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
 - [RFP response kit](RFP_RESPONSE_KIT.md)
+- [Contact center standards alignment](CONTACT_CENTER_STANDARDS.md)
 
 # Product site
 
