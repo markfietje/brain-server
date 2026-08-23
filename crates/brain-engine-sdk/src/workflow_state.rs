@@ -61,6 +61,137 @@ pub fn decide(state: &Value) -> Decision {
     Decision::Done
 }
 
+// The context-window derivation (write→select).
+//
+// The session is unbounded; consumers derive the smallest high-signal window
+// from it on demand. The derivation is PURE and deterministic: latest
+// checkpoint at-or-before the anchor + the delta after it + per-branch
+// findings digests + the open question. Appending events never changes an
+// earlier window (prefix stability), so consumers can cache derived slices.
+
+/// One lineage event as the derivation consumes it (the outbox projection).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventRow {
+    pub id: i64,
+    pub topic: String,
+    pub payload_json: String,
+}
+
+/// A derived, field-budgeted view over a run's event chain.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ContextWindow {
+    /// Latest `workflow/checkpoint` at-or-before the anchor (the anchor
+    /// itself). Never truncated away.
+    pub checkpoint: Option<EventRow>,
+    /// Events strictly after the checkpoint up to the anchor (oldest-first).
+    /// Dropped oldest-first when over budget.
+    pub delta: Vec<EventRow>,
+    /// Non-cryptographic fingerprints of the checkpoint state's `findings[]`
+    /// (FNV-1a 64, hex) — the structured notes ride even when the delta is
+    /// truncated away.
+    pub findings_digests: Vec<String>,
+    /// The run's open `pending_question`, if any (never truncated away).
+    pub open_question: Option<String>,
+    /// True when any delta event was dropped to fit the budget.
+    pub truncated: bool,
+}
+
+/// Count JSON fields deterministically (no tokenizer dependency): scalar = 1,
+/// array = sum of elements, object = 1 + sum of values. Documented
+/// approximation for consumers: one counted field ≈ one token, not exactly.
+fn count_fields(v: &Value) -> usize {
+    match v {
+        Value::Null | Value::Bool(_) | Value::Number(_) => 1,
+        Value::String(_) => 1,
+        Value::Array(a) => a.iter().map(count_fields).sum(),
+        Value::Object(o) => 1 + o.values().map(count_fields).sum::<usize>(),
+    }
+}
+
+/// FNV-1a 64 over bytes — a stable, dependency-free fingerprint. NOT a
+/// security primitive; it names a finding so consumers can dedupe notes.
+fn fnv1a(bytes: &[u8]) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Derive the context window at the LATEST event (the common consumer call).
+pub fn derive_context(events: &[EventRow], budget_fields: usize) -> ContextWindow {
+    let anchor = events.last().map(|e| e.id);
+    derive_context_at(events, anchor, budget_fields)
+}
+
+/// Derive the window at-or-before `at_event` (`None` → before anything).
+/// Pure; no clocks; never panics on malformed payloads.
+pub fn derive_context_at(
+    events: &[EventRow],
+    at_event: Option<i64>,
+    budget_fields: usize,
+) -> ContextWindow {
+    let upto = |e: &EventRow| at_event.is_none_or(|a| e.id <= a);
+    let scoped: Vec<&EventRow> = events.iter().filter(|e| upto(e)).collect();
+    let checkpoint = scoped
+        .iter()
+        .rev()
+        .find(|e| e.topic == "workflow/checkpoint")
+        .map(|e| (*e).clone());
+    let delta_start = checkpoint.as_ref().map_or(0, |c| {
+        scoped.iter().position(|e| e.id == c.id).unwrap_or(0) + 1
+    });
+    let mut delta: Vec<EventRow> = scoped
+        .iter()
+        .skip(delta_start)
+        .map(|e| (*e).clone())
+        .collect();
+
+    // Findings digests + open question from the checkpoint snapshot (or the
+    // earliest known state when no checkpoint exists yet).
+    let state_json = checkpoint
+        .as_ref()
+        .map(|c| c.payload_json.clone())
+        .unwrap_or_default();
+    let state: Value = serde_json::from_str(&state_json).unwrap_or(Value::Null);
+    let findings_digests: Vec<String> = state
+        .get("findings")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(|f| fnv1a(f.to_string().as_bytes())).collect())
+        .unwrap_or_default();
+    let open_question = state
+        .get("pending_question")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    // Field budget: drop OLDEST delta first until the payload fields fit.
+    // Checkpoint, notes, and open question are never dropped.
+    let mut truncated = false;
+    if budget_fields > 0 {
+        while !delta.is_empty() {
+            let used: usize = delta
+                .iter()
+                .filter_map(|e| serde_json::from_str::<Value>(&e.payload_json).ok())
+                .map(|v| count_fields(&v))
+                .sum();
+            if used <= budget_fields {
+                break;
+            }
+            delta.remove(0);
+            truncated = true;
+        }
+    }
+
+    ContextWindow {
+        checkpoint,
+        delta,
+        findings_digests,
+        open_question,
+        truncated,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +242,96 @@ mod tests {
             ),
             "pending beats step"
         );
+    }
+
+    fn ev(id: i64, topic: &str, payload: &str) -> EventRow {
+        EventRow {
+            id,
+            topic: topic.to_string(),
+            payload_json: payload.to_string(),
+        }
+    }
+
+    fn chain() -> Vec<EventRow> {
+        vec![
+            ev(1, "workflow/start", r#"{"note":"open"}"#),
+            ev(2, "workflow/log", r#"{"line":"s1"}"#),
+            ev(
+                3,
+                "workflow/checkpoint",
+                r#"{"steps":[1],"findings":["f1"],"pending_question":"ship?"}"#,
+            ),
+            ev(4, "workflow/log", r#"{"line":"s2"}"#),
+            ev(5, "workflow/log", r#"{"line":"s3"}"#),
+        ]
+    }
+
+    #[test]
+    fn window_is_latest_checkpoint_plus_delta_plus_notes() {
+        let w = derive_context(&chain(), 10_000);
+        let cp = w.checkpoint.expect("checkpoint anchor");
+        assert_eq!(cp.id, 3);
+        assert_eq!(
+            w.delta.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![4, 5],
+            "delta = events after the checkpoint"
+        );
+        assert_eq!(w.findings_digests.len(), 1, "the finding rides as a note");
+        assert_eq!(
+            w.open_question.as_deref(),
+            Some("ship?"),
+            "open question surfaced"
+        );
+        assert!(!w.truncated);
+    }
+
+    #[test]
+    fn truncation_drops_oldest_delta_first_and_flags() {
+        // Budget 2 fits only ONE of the two delta payloads ({...}=2 fields
+        // each) → the oldest (id 4) is dropped, newest kept, flag set.
+        let w = derive_context(&chain(), 2);
+        assert_eq!(w.delta.iter().map(|e| e.id).collect::<Vec<_>>(), vec![5]);
+        assert!(w.truncated);
+        // The anchor + notes survive ANY truncation.
+        assert_eq!(w.checkpoint.expect("kept").id, 3);
+        assert_eq!(w.open_question.as_deref(), Some("ship?"));
+        assert_eq!(w.findings_digests.len(), 1);
+        // Zero budget means UNBOUNDED (no budget requested) — documented.
+        let w0 = derive_context(&chain(), 0);
+        assert_eq!(w0.delta.len(), 2);
+        assert!(!w0.truncated, "budget 0 = no budget");
+        assert_eq!(w0.checkpoint.unwrap().id, 3);
+    }
+
+    #[test]
+    fn appending_events_never_changes_earlier_windows() {
+        let events = chain();
+        let before = derive_context_at(&events, Some(4), 10_000);
+        let mut grown = events.clone();
+        grown.push(ev(6, "workflow/log", r#"{"line":"s4"}"#));
+        grown.push(ev(7, "workflow/checkpoint", r#"{"steps":[2]}"#));
+        let after = derive_context_at(&grown, Some(4), 10_000);
+        assert_eq!(
+            before, after,
+            "prefix stability: later events change nothing at id 4"
+        );
+    }
+
+    #[test]
+    fn window_at_askhuman_includes_open_question() {
+        let events = chain();
+        let w = derive_context_at(&events, Some(3), 10_000);
+        assert_eq!(
+            w.open_question.as_deref(),
+            Some("ship?"),
+            "the AskHuman pause is visible in the window"
+        );
+        assert!(w.delta.is_empty(), "checkpoint IS the anchor → no delta");
+        // A malformed checkpoint payload degrades to empty notes, no panic.
+        let mut bad = chain();
+        bad[2].payload_json = "not-json".to_string();
+        let wb = derive_context(&bad, 10_000);
+        assert!(wb.findings_digests.is_empty());
+        assert_eq!(wb.open_question, None);
     }
 }
