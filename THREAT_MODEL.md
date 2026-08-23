@@ -7,6 +7,13 @@ identity), NIST SP 800-207 (zero-trust architecture).
 This document is the engineering-side threat model. For per-release progress
 against the controls below, see [`SECURITY.md`](./SECURITY.md).
 
+**Agentic-AI coverage:** the LLM/agent-specific threat classes (prompt
+injection, memory poisoning, tool misuse, agentic supply chain, lies-in-the-
+loop) are inventoried and mapped to controls in
+[`docs/OWASP_AGENTIC_2026.md`](./docs/OWASP_AGENTIC_2026.md) (OWASP Top 10 for
+Agentic Applications 2026) — read it as the companion layer to this STRIDE
+model, not a substitute.
+
 ---
 
 ## 1. System boundaries

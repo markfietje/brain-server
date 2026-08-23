@@ -47,6 +47,25 @@ use crate::search::{SearchResult, SearchTelemetry};
 /// `tokenizer_config.json`. Override with `BRAIN_RERANK_MODEL_DIR`.
 const DEFAULT_MXBAI_DIR: &str = "models/mxbai-rerank-large-v1";
 
+/// Resolve + VALIDATE the model dir: an absolute path or an explicit env
+/// override only. A CWD-relative default is refused — a writable working
+/// directory would silently swap the model (supply-chain).
+fn resolve_model_dir() -> Option<std::path::PathBuf> {
+    let explicit = std::env::var("BRAIN_RERANK_MODEL_DIR")
+        .ok()
+        .map(std::path::PathBuf::from);
+    let dir = explicit.unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_MXBAI_DIR));
+    if dir.is_absolute() {
+        Some(dir)
+    } else {
+        tracing::warn!(
+            dir = %dir.display(),
+            "rerank model dir is CWD-relative; refusing to load from a writable              CWD — set BRAIN_RERANK_MODEL_DIR to an absolute path"
+        );
+        None
+    }
+}
+
 /// The process-wide reranker handle, loaded lazily on first recall iff
 /// `BRAIN_RERANK_ENABLED=1`. The server boot sets that env var when the active
 /// profile is `enterprise`/`desktop` (search/mod.rs is lib code and must not
@@ -151,29 +170,21 @@ impl Reranker {
     /// back to bge-reranker-v2-m3. `_top_n` is reserved for a future per-call
     /// max_length cap; model_max_length (512) bounds the tokenizer today.
     fn new_mxbai_user_defined(_top_n: usize) -> anyhow::Result<TextRerank> {
-        let dir = std::env::var("BRAIN_RERANK_MODEL_DIR")
-            .unwrap_or_else(|_| DEFAULT_MXBAI_DIR.to_string());
+        // Fail-closed on a CWD-relative dir (writable-CWD model swap).
+        let Some(dir) = resolve_model_dir() else {
+            anyhow::bail!("rerank model dir must be absolute or BRAIN_RERANK_MODEL_DIR set");
+        };
         let model = UserDefinedRerankingModel::new(
-            OnnxSource::File(
-                std::path::PathBuf::from(&dir)
-                    .join("onnx")
-                    .join("model_quantized.onnx"),
-            ),
+            OnnxSource::File(dir.join("onnx").join("model_quantized.onnx")),
             TokenizerFiles {
-                tokenizer_file: std::fs::read(
-                    std::path::PathBuf::from(&dir).join("tokenizer.json"),
-                )
-                .map_err(|e| anyhow::anyhow!("missing tokenizer.json in {dir}: {e}"))?,
-                config_file: std::fs::read(std::path::PathBuf::from(&dir).join("config.json"))
-                    .map_err(|e| anyhow::anyhow!("missing config.json in {dir}: {e}"))?,
-                special_tokens_map_file: std::fs::read(
-                    std::path::PathBuf::from(&dir).join("special_tokens_map.json"),
-                )
-                .map_err(|e| anyhow::anyhow!("missing special_tokens_map.json in {dir}: {e}"))?,
-                tokenizer_config_file: std::fs::read(
-                    std::path::PathBuf::from(&dir).join("tokenizer_config.json"),
-                )
-                .map_err(|e| anyhow::anyhow!("missing tokenizer_config.json in {dir}: {e}"))?,
+                tokenizer_file: std::fs::read(dir.join("tokenizer.json"))
+                    .map_err(|e| anyhow::anyhow!("missing tokenizer.json: {e}"))?,
+                config_file: std::fs::read(dir.join("config.json"))
+                    .map_err(|e| anyhow::anyhow!("missing config.json: {e}"))?,
+                special_tokens_map_file: std::fs::read(dir.join("special_tokens_map.json"))
+                    .map_err(|e| anyhow::anyhow!("missing special_tokens_map.json: {e}"))?,
+                tokenizer_config_file: std::fs::read(dir.join("tokenizer_config.json"))
+                    .map_err(|e| anyhow::anyhow!("missing tokenizer_config.json: {e}"))?,
             },
         );
         let options = RerankInitOptionsUserDefined::new();

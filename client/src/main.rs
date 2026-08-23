@@ -127,6 +127,10 @@ fn is_invisible(c: char) -> bool {
         || cp == 0x061C
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
+        // Mirror of the server's residual-class additions: Mongolian vowel
+        // separator, Hangul fillers, interlinear annotation.
+        || matches!(cp, 0x180E | 0x115F | 0x1160)
+        || (0xFFF9 <= cp && cp <= 0xFFFB)
 }
 
 // ---------------------------------------------------------------------------
@@ -2051,7 +2055,7 @@ fn Drawer() -> Element {
                             p { class: "font-mono text-sm", "proposal #{p.id} · {p.kind}" }
                             p { class: "text-xs text-muted-foreground mt-1",
                                 "novelty {p.novelty:.2} · salience {p.salience:.2}" }
-                            p { class: "text-sm mt-2", "{p.content}" }
+                            p { class: "text-sm mt-2", {crate::strip_invisible(&p.content)} }
                         }
                     }
                 },
@@ -2059,7 +2063,7 @@ fn Drawer() -> Element {
                     div { class: "card",
                         div { class: "card-body",
                             p { class: "font-mono text-sm", "chunk #{h.id}" }
-                            p { class: "text-sm mt-2", "{h.content}" }
+                            p { class: "text-sm mt-2", {crate::strip_invisible(&h.content)} }
                         }
                     }
                 },

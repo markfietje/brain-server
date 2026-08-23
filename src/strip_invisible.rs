@@ -39,6 +39,11 @@ pub fn is_invisible(c: char) -> bool {
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         // Legacy members: BOM, separators, soft hyphen, combining grapheme joiner.
         || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
+        // Residual render-invisible classes: MONGOLIAN VOWEL SEPARATOR
+        // (U+180E, invisible in modern rendering), HANGUL FILLERS
+        // (U+115F/U+1160), INTERLINEAR ANNOTATION chars (U+FFF9–FFFB).
+        || matches!(cp, 0x180E | 0x115F | 0x1160)
+        || (0xFFF9..=0xFFFB).contains(&cp)
 }
 
 /// Strip C0 control chars (except `\t`/`\n`), DEL, and C1 control chars. Used

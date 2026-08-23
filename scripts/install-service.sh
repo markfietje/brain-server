@@ -195,6 +195,20 @@ if [[ -f "$TOKEN_FILE" ]]; then
 	fi
 fi
 
+# 2e. Model-artifact pinning (Bedrock): generate a BRAIN_MODEL_MANIFEST for
+#     the local model artifacts and point the service at it — the server then
+#     verifies every pinned file's SHA-256 at boot (fail-closed).
+if command -v shasum >/dev/null 2>&1; then
+	MANIFEST="$HOME/.config/brain-server/model-manifest.json"
+	if bash "$REPO/scripts/gen-model-manifest.sh" "$MANIFEST" >/dev/null 2>&1; then
+		plutil -remove EnvironmentVariables.BRAIN_MODEL_MANIFEST "$PLIST" 2>/dev/null || true
+		plutil -insert EnvironmentVariables.BRAIN_MODEL_MANIFEST -string "$MANIFEST" "$PLIST"
+		ok "model manifest provisioned -> $MANIFEST"
+	else
+		log "model manifest generation skipped (no model artifacts found)"
+	fi
+fi
+
 # 3. Restart the launchd service so it runs the new binary.
 #    bootout is best-effort (service may not be loaded yet); bootstrap reloads
 #    the plist, which always picks up the current binary at the copied path.

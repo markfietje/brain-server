@@ -48,13 +48,20 @@ fn connector_config_dir() -> PathBuf {
 fn load_webhook_secret() -> Option<Vec<u8>> {
     let dir = connector_config_dir();
     let entries = std::fs::read_dir(&dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("github-") || !name.ends_with(".json") {
-            continue;
-        }
-        let bytes = std::fs::read(entry.path()).ok()?;
+    // Deterministic: collect the matches and take the LEXICOGRAPHICALLY
+    // FIRST — `read_dir` order is filesystem-dependent, so "first match" must
+    // not depend on directory enumeration order.
+    let mut matches: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_string());
+            matches!(n, Some(n) if n.starts_with("github-") && n.ends_with(".json"))
+        })
+        .collect();
+    matches.sort();
+    for entry in matches {
+        let bytes = std::fs::read(&entry).ok()?;
         let cfg: WhConfig = serde_json::from_slice(&bytes).ok()?;
         if let Some(secret_path) = cfg.webhook_secret_path {
             // the webhook signing secret is a bearer capability —

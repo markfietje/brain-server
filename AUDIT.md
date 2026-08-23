@@ -120,3 +120,32 @@ Jetson already ships them separately).
 Carried-forward gaps (G3/G6/G7 and the v1.9.1 carry-forwards) are tracked in
 `IMPLEMENTATION_ROADMAP_v1.5_to_v4.0_EVIDENCE_GATED.md` and the v2.0.0 Cortex
 milestone in `ROADMAP.md`.
+
+---
+
+## Register — 2026-08-23 independent security audit (v1.28.8 line)
+
+Single open-items register for the later audit series (the ATLAS F- / S2- /
+S3- / adversarial / MEMORY_STACK_REPORT entries are folded into CHANGELOG.md
+per release; this table is the live closure view). Findings F-*: audit
+`BRAIN_SECURITY_AUDIT_2026-08-23.md`; remediation per the 1.28.9–1.28.14
+operator prompt.
+
+| Finding | Theme | Status | Closure |
+|---|---|---|---|
+| F-I1 write gate not exclusive | Seatbelt (1.28.10) | closed | `BRAIN_WRITE_POSTURE=review` routes six agent writes through the proposal pipeline (`review_posture_routes_writes_to_proposals`) |
+| F-R4 digest-less approve | Gateweld (1.28.9) | closed | `400 digest_required` (`review_digest_matches_gates_stale_approval`) |
+| F-L5 mount attestation spoofable | Gateweld (1.28.9) | closed | server-verified vs boot manifest, 409 pre-write (`plugin_mount_evidence_is_audited_and_input_gated`) |
+| F-M3 Rust fence welding forge | Boundary (1.28.11) | closed | `fence::wrap_fenced`, control chars before sentinel strip (`wrap_fenced_blocks_control_char_welding`, mcp + CLI pins) |
+| F-I2 taint dropped at boundary | Boundary (1.28.11) | closed | recall hits serialize origin/flagged/authority; UMP records `untrusted:true`; export labeled verbatim (`recall_hit_serializes_provenance_taint_labels`) |
+| F-L1–L3 LITL decision UI | Anchor (1.28.12) | closed | dock full-content scroll box, overview link-only, actions above content (`dock_renders_full_content_not_a_clamp`, `overview_queue_is_link_only_no_inline_decide`) |
+| F-B1–B3 hollow boot chain | Anchor (1.28.12) | closed | symlink containment, Ed25519-signed manifest + `/app/boot.pub`, embedded fetch-and-refuse loader, digest-stamped SW, external SW registration (`symlink_escaping_dist_is_refused`, client/tests/boot.test.mjs) |
+| F-S1 unpinned CI refs | Bedrock (1.28.13) | closed | all `uses:` SHA-pinned with version comments; least-privilege permissions |
+| F-S2 rerank CWD-relative model dir | Bedrock (1.28.13) | closed | absolute-or-env only (`resolve_model_dir`); `scripts/gen-model-manifest.sh` + installer provisioning |
+| F-W2 UMP key dir warn-only | Bedrock (1.28.13) | closed | fail-closed at startup |
+| F-B4 headers missing on 401/429 | Bedrock (1.28.13) | closed | headers layer outermost (`security_headers_present_on_401_and_429`) |
+| F-B4 context drawer unstripped | Bedrock (1.28.13) | closed | strip_invisible on drawer content |
+| F-I3 residual unicode screen evasion | Bedrock (1.28.13) | closed (bounded) | added U+180E/115F/1160/FFF9–FFFB; matching-time fullwidth fold — general NFKC/homoglyph folding stays a documented ceiling (zero-dep rule) |
+| F-D1/D2/D3 doc drift | Bedrock (1.28.13) | down payment | THREAT_MODEL ↔ OWASP_AGENTIC cross-link; this register is the single findings view; full truth pass tracked separately |
+| F-W1 shared static token | partial | mitigated | installer provisions a second agent token under review posture; full workload identity stays v3.7 |
+| F-E1/E2 openclaw UI egress, F-M2 host fingerprint, F-M4 requiresToolAuthority | deferred-upstream (openclaw) | deferred | host/UI findings; not fixable in this repo |
