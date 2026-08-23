@@ -19,7 +19,45 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [1.28.20] — 2026-08-23 — "Cockpit": the console surface is real, one codebase, every platform
+## [1.28.21] — 2026-08-24 — "Fathom": virtual unlimited context — unbounded session, deterministic windowing
+
+A case lives in ONE run from intake to close — no new sessions, ever — and every consumer derives the smallest high-signal window from it on demand. Checkpoints move to a deterministic cadence (replayable windows), a pure context-window derivation ships in the SDK behind one Read-gated route, the transcript scrolls forever via keyset windowing (no virtual-scroll dependency), and the event stream resumes after a disconnect with `Last-Event-ID` + `?since=` backfill. Server + client + sdk + harness versions align at **1.28.21**; schema unchanged; zero new dependencies.
+
+### Release notes
+
+**Improvements**
+
+- The derived context window: `GET /workflow/runs/{id}/context?at_event=&budget=` returns latest checkpoint at-or-before the anchor + delta events after it + per-finding digests + the open question. Field-budgeted (`budget`, default 2000, cap 100000) with truncation dropping OLDEST-delta-first and never dropping the checkpoint or question, flagged `truncated`. Prefix-stable by construction: appending events never changes an earlier window (pinned). One counted field ≈ one token — documented approximation, not guessed.
+- Deterministic checkpoint cadence in the engine: `workflow/checkpoint` fires on every AskHuman pause, every phase transition (`Advance`), every N events (`BRAIN_CHECKPOINT_EVERY`, default 25, ceiling 100 — resolver clamps both degenerates), and once during finalize so a completed run ends ON a checkpoint. Replaces the old every-step emission; idempotency keys derive from persisted facts so replays stay exactly-once.
+- The transcript scrolls forever: the run panel renders a bounded keyset slice of the assembler's ordered nodes (live tail + pulled-up earlier ranges, pure `Vec` slicing — no new dependency); "Load earlier" extends the window; a ten-thousand-node run never renders ten thousand nodes.
+- Session-age badge on the composer (`N events · M checkpoints · oldest #id`) instead of any "new session" affordance — there is none anywhere in the GUI, and a source-scan test keeps it that way.
+- Stream resume: SSE consumers send `Last-Event-ID` (the workflow outbox id) on reconnect; the server replays stored rows past it (bounded to one drain batch per pass, same envelope shape, same read seam, fail-closed per-domain Read gate) before going live; `GET /workflow/runs/{id}/events?since=` backfills older gaps; client dedup admits the gap and drops replays (pinned).
+- Continuity contract documented for consumers ([docs/memory-lifecycle.md](docs/memory-lifecycle.md) §The continuity contract + plugin README): sessions are unbounded; LLM-side compaction is the CONSUMER's contract using the derivation API — brain-server never summarizes (zero-token rule); rewind replaces rotation.
+- wasm-split enabled (operator-requested deviation from the plan's non-goals): `dx build --platform web --release --wasm-split` is green. `.cargo/config.toml` swaps `-C strip=symbols` → `strip=debuginfo` + `-C link-arg=--emit-relocs` (the splitter needs relocations + function names; DWARF-only stripping); `bundle-budget.sh` measures the SHIPPED posture (custom sections stripped via a pure section-frame walk) since the raw artifact legitimately carries splitter metadata. No `#[wasm_split]` boundaries annotated yet — see ceilings.
+
+**Security fixes**
+
+- None (additive release; all gates reused — the context route is Read-gated on the run's domain with row-domain re-auth, and every emitted payload rides the existing `sanitize_read` seam).
+
+### Engineering record
+
+- **M1 (cadence):** `resolve_checkpoint_every(Option<u32>)` (default 25, clamp 1..=100) beside `resolve_budget`; the crank tracks `events_since_ckpt` and fires through ONE checkpoint seam (bounded by the existing ≤256 KiB guard — oversized states still error loudly, never truncate). Keys: `run-{id}-ckpt-ask-{ordinal}` / `-adv-{rev}` / `-n-{ordinal}` / `-ckpt-end` — persisted facts only, so crash-replay dedups. Pinned by `checkpoints_fire_on_askhuman_phase_and_event_count` + `checkpoint_cadence_is_env_tunable_with_ceiling`; predecessor pins (`checkpoint_payload_round_trips_state_exactly`, rewind branch/replay-idempotence) pass UNCHANGED.
+- **M2 (derivation):** SDK `workflow_state::derive_context_at(events, at_event, budget)` + convenience `derive_context` — pure, clock-free, panic-free on malformed payloads (degrades to empty notes); findings digests are FNV-1a 64 (stable, dependency-free, explicitly NOT a security primitive); field counting = scalar 1 / array Σ / object 1+Σ. Route in `handlers/workflow_lineage.rs`: derivation runs on RAW payloads (it needs parseable JSON), sanitization applies to every EMITTED field — the read seam covers output, not input. Wired into router + route-coverage + route-authz guard tables + openapi.yaml (full response schema) + docs/api.md. Pinned by four SDK tests (`window_is_latest_checkpoint_plus_delta_plus_notes`, `truncation_drops_oldest_delta_first_and_flags`, `appending_events_never_changes_earlier_windows`, `window_at_askhuman_includes_open_question`) + the integration pin `context_route_derives_checkpoint_delta_and_budget`.
+- **M3 (scrollback + resume):** `transcript_window(total, earlier, size)` + `session_age(lineage)` are pure panel fns pinned without a runtime (`transcript_windows_over_ten_thousand_nodes_without_rendering_all`, `session_age_badge_reads_lineage_counts`, `sse_resume_backfills_gap_without_duplicates`, `no_rotation_affordance_in_panel` — literals split so the guard cannot match itself, the v1.27.21 lesson). `stream_events` gains the `Last-Event-ID` header; the app-level stream driver threads the max workflow event id across reconnects. Server replay lives in `alert.rs::workflow_replay_since`. i18n keys land in ALL FIVE locales (parity wall intact).
+- **Deviation note:** the plan cites "SDK events::PHASE"; no such constant exists — the phase-transition trigger is `Decision::Advance` (the whole-state-replacement boundary), the closest real seam. Documented rather than invented.
+- Tests: server main bin **813** / 6 ignored (**+1**), lib **166** / 1, brain 19, mcp 30, eval 4, metrics 8; sdk **105** / 0 (**+4**); steward-harness **17** / 0 (**+2**, settle call-site updated for the cadence arg); client **228** / 0 (**+4**); clippy `-D warnings` + fmt clean on ALL FOUR workspace nodes; live smoke on a COPY of the real DB green (`/health ok` @ 1.28.21, `/audit/verify ok:true`, context route default/budgeted/anchored, `?since=` backfill, SSE Last-Event-ID replay observed on the wire).
+
+### Honest ceilings
+
+- **No `#[wasm_split]` boundaries yet** — the splitter runs green but emits only an empty chunk_0; annotating lazy panel boundaries waits until a real second module earns its fetch. The shipped dx artifact measured **3.05 MB** (wasm-opt'ed); the budget gate reads the stripped-posture raw build at **4.11 MB** vs the unchanged 5.5 MiB cap.
+- Field budget ≈ tokens is an approximation by design; consumers wanting token-exact budgets must count on their side.
+- Findings digests name findings; they do not authenticate them (FNV-1a, non-cryptographic — the audit chain remains the integrity surface).
+- SSE resume covers the WORKFLOW coordinate space only (the alert feed's own re-sync remains the poll fallback + lineage read); replay is bounded to one drain batch per domain per request — older gaps go through `/events?since=`.
+- Compaction/summarization is NOT built here (zero-token rule); the openclaw consumer owns its prompt slice construction.
+- The engine-pull worker remains unwired (v1.28.20 ceiling carried): the GUI crank button still says so honestly.
+
+---
+
 
 The client stops being web-only-in-truth: desktop and mobile become cargo features of the same codebase (`default = ["web"]` — every existing gate untouched), the run transcript's three unrendered node kinds (assistant / tool / delivery) get real renderers, evidence becomes a first-class view, the lineage timeline becomes a component with its own deep-linkable route, and `GET /workflow/scoreboard` gets a panel. Server code unchanged; server + client versions align at **1.28.20** (client 1.28.19 → **1.28.20**); schema unchanged.
 
