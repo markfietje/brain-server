@@ -58,5 +58,10 @@ These run in `cargo test` and are the automated subset of this checklist:
   is the v1.18.0 pass (the drawer currently has `role="dialog"`/`aria-modal` +
   Esc-close; the Radix-style Tab cycle and focus restoration are deferred).
 - No aria-live regions for async updates beyond the `role="status"` banners
-  (connection + re-verify). Targeted announcements evaluated per-panel.
+  (connection + re-verify) **and the run transcript (v1.28.20 Cockpit:
+  `aria-live="polite"` on the transcript body — new nodes announce without
+  stealing focus)**. Targeted announcements evaluated per-panel.
+- The Cockpit cheat-sheet drawer (`?` on a run) ships `role="dialog"` +
+  `aria-modal` + Esc/`?`-close; the full Tab-cycle trap + focus restoration
+  remain the same deferred ceiling as the context drawer above.
 - No RTL locale (v1.16.6).

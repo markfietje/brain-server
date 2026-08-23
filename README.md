@@ -155,6 +155,8 @@ The Dioxus app in `client/` runs on web, desktop, iOS, and Android from one Rust
 cd client && ./deploy-web.sh
 ```
 
+Desktop bundles (macOS `.app`/dmg, Windows NSIS, Linux AppImage) build from the same tree — `scripts/build-desktop.sh [macos|nsis|appimage|all]` wraps the documented `dx bundle --desktop` command set (the dx CLI is an operator install, not a repo dependency). The `mobile` feature is a compile-smoke target only; no store submission has shipped.
+
 ## Universal Memory Protocol
 
 Brain Server implements the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) (UMP 1.0) end to end, at conformance level L3: signed records with tamper-evident integrity, capability tokens for consent-based access, batch ingest, and three bindings (HTTP, MCP tools, and a portable Markdown file format). Any UMP 1.0 agent can read memory written here, and this server can read memory exported by other UMP implementations.

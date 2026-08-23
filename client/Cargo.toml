@@ -1,6 +1,6 @@
 [package]
 name = "brain-client"
-version = "1.28.19"
+version = "1.28.20"
 edition = "2024"
 rust-version = "1.98"
 description = "brain-server control surface — web + desktop + iOS + Android (Dioxus)"
@@ -43,3 +43,12 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # → zero wasm impact (dev-deps never compile into the bundle).
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# v1.28.20 Cockpit M1: platform targets are cargo features — one codebase,
+# three renderers. Default stays `web` so every existing gate (wasm build,
+# bundle budget) is untouched; desktop/mobile are additive opt-ins.
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]

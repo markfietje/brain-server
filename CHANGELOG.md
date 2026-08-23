@@ -19,6 +19,45 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.20] — 2026-08-23 — "Cockpit": the console surface is real, one codebase, every platform
+
+The client stops being web-only-in-truth: desktop and mobile become cargo features of the same codebase (`default = ["web"]` — every existing gate untouched), the run transcript's three unrendered node kinds (assistant / tool / delivery) get real renderers, evidence becomes a first-class view, the lineage timeline becomes a component with its own deep-linkable route, and `GET /workflow/scoreboard` gets a panel. Server code unchanged; server + client versions align at **1.28.20** (client 1.28.19 → **1.28.20**); schema unchanged.
+
+### Release notes
+
+**Improvements**
+
+- Desktop is a build target: `cargo check/build --features desktop` compiles a native window shell from the same tree; `scripts/build-desktop.sh [macos|nsis|appimage|all]` wraps the documented `dx bundle --desktop` command set with fail-on-error discipline (the dx CLI stays an operator install — that line was already honest, it stays honest). The `mobile` feature is a compile-smoke target in CI, explicitly allow-fail this release — no store submission has shipped, STORE_READINESS untouched.
+- Downloads work off the browser now: audit exports, UMP/DSAR exports, and recall-trace exports all go through ONE download seam — blob save on web, native file write to `BRAIN_DOWNLOAD_DIR` on desktop/mobile, behind one traversal-safe filename gate.
+- The transcript renders all five node kinds: assistant turns stream progressively and settle, tool invocations render name/status cards, delivery packets render their collected items with a done badge. Unknown kinds still fall through to the generic card — nothing is silently dropped.
+- Evidence as a view: a settled tool node whose output carries structured evidence renders findings with provenance origins, contradictions as LINKED PAIRS (both rows together or not at all — a one-sided half is refused), evidence digests, and verification questions with justification + score. Read-only over machine-written state; absent fields render absent, never invented.
+- New `/runs/:id/timeline` route renders the full lineage (branch markers, checkpoint badges, AskHuman pauses) through the SAME TimelineView component the workflow-run node uses; linked from the transcript header.
+- New `/scoreboard` panel (nav-gated with Audit): nine metric cards + runs-scored + audit-green badge + the weekly calibration-report badge, rendered only from fields the endpoint actually shipped.
+- Composer `/commands`: `/crank [steps]`, `/handoff`, `/scoreboard`, `/help` — the CLI verbs, GUI-ified. `?` opens a keyboard/command cheat-sheet dialog (Esc closes). J/K/A/R conventions unchanged.
+- The human crank control ships bounded (1–500 steps selector) and role-gated (Write+Approve) — but is honestly unwired: there is NO HTTP crank route (crank today spawns the local steward-harness binary, which a browser cannot do). Pressing it says so instead of pretending. The engine-pull worker milestone makes it real next.
+
+**Security fixes**
+
+- The download filename gate refuses any `..` path component BEFORE separator flattening, plus separators/control characters — a download can never escape its target directory (the session-learning traversal rule, applied where new file-write code landed).
+
+### Engineering record
+
+- **M1 (platforms):** `client/Cargo.toml` gains the Dioxus feature triad (`web`/`desktop`/`mobile`, default `web`); `[desktop.window]` lands in Dioxus.toml; CI's client-gate adds `libwebkit2gtk` headers + `cargo check --features desktop --all-targets` (compile correctness, no GUI run) and an honestly-labeled allow-fail mobile smoke row. The three blob-download sites collapse onto the shared `src/download.rs` seam (native path writes to `BRAIN_DOWNLOAD_DIR`, XDG-Downloads fallback, no new dependency).
+- **M2/M3 (surface):** view-model builders ship on the node definitions themselves (`AssistantTurn`/`ToolInvocation`/`Delivery::build_view_node`) so the panel renders models, not raw folds. `FrameGate` — the AnimationFrame coalescing policy core — ships pinned; see ceilings for why it is not yet the runtime driver. Evidence extraction (`evidence_of`, `contradiction_pair`) and timeline classification (`timeline_marker` → Checkpoint/Branch/AskHuman/Plain) are pure fns pinned without fetches.
+- **M4 (honesty):** ~40 new i18n keys land in ALL FIVE locales (translated, en fallback intact) under the existing parity wall. The wasm graph gate (`bundle-budget.sh`) fails CI if the normal-edge tokio graph grows runtime features beyond `sync`. Size posture: `.cargo/config.toml` applies `-C opt-level=z -C strip=symbols` to the wasm target (mirroring the new `[web.wasm_opt] level = "z"` for dx bundles).
+- **Budget ledger note:** the wasm budget gate was ALREADY RED at v1.28.19 as measured locally (5.96 MB raw release build vs the 5.5 MiB cap — the cap was set against a wasm-opt'ed artifact while CI builds raw). This release's `opt-level=z` rustflags bring the raw CI measurement to **4.09 MB**, green with real headroom; the cap itself is unchanged (5,734,400 bytes).
+- Tests: server main bin **812** / 6 ignored (unchanged), lib **166** / 1 (unchanged), brain 19, mcp 30, eval 4, metrics 8 (unchanged); client **224** / 0 (**+12**: frame coalescing, five-kind view models, composer command parsing incl. crank bounds, keyboard help, crank role/bound pins, evidence extraction + linked-pair refusal, scoreboard wire-shape match, download traversal gate, timeline markers). clippy `-D warnings` + fmt clean on both trees AND `--features desktop`; live smoke on a COPY of the real DB green (boots, `/health ok`, `/audit/verify ok:true`).
+
+### Honest ceilings
+
+- **The crank button does not crank.** No HTTP crank route exists; the GUI control is bounded, role-gated, and truthful about being unwired until the engine-pull worker milestone (persistent harness worker claiming steps via CAS — decided during this session as the next release).
+- **AnimationFrame coalescing rides the scheduler, not a clock.** The panel refolds once per committed render batch (Dioxus effects), which is one flush per paint in practice; the pinned `FrameGate` policy core becomes the literal runtime driver when a requestAnimationFrame bridge seam exists (needs a timer primitive on web without a new dependency).
+- Mobile remains a compile-smoke target (allow-fail in CI this release); desktop bundles are operator-built via dx — CI checks compilation, never bundles.
+- The cheat-sheet drawer has `role="dialog"`/`aria-modal`/Esc-close; the full Tab-cycle focus trap + focus restoration remain the documented drawer ceiling.
+- Scoreboard renders only shipped endpoint fields; a new scorer field that doesn't land in `METRIC_FIELDS` silently doesn't render (by design — nothing invented client-side).
+
+---
+
 ## [1.28.19] — 2026-08-23 — "Witness": the client finally testifies
 
 The client-side evidence loop closes: a workflow-outbox drain worker publishes drained `workflow/*` events on the `/events` SSE bus (opt-in, domain-gated, sanitized before broadcast), the GUI holds a persistent reconnecting stream instead of a chunk-and-drop poll, posts per-plugin mount evidence with the Anchor-signed boot-manifest digest, and the review-job / workflow-run chat nodes become real HITL surfaces on a new `/runs/:id` conversation panel. Plus: the standalone `mcp` binary gains the MCP Streamable HTTP/SSE transport alongside stdio. Server `Cargo.toml`/lock 1.28.18 → **1.28.19**; client 1.28.14 → **1.28.19**; schema unchanged (1.28.18 — zero DDL); SDK + harness unchanged.
