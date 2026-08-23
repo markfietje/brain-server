@@ -536,6 +536,34 @@ level security (AuthN, AuthZ, audit, isolation).
 
 ---
 
+## Engine hostcall mediations (v1.28.16)
+
+Every engine tool-effect crosses ONE mediated, countable, auditable door: the
+SDK `HostCallContext::dispatch` (interceptor → canonicalization → audited
+capability check → handler). The server registers a handler for every kind in
+the closed 7-word vocabulary — an explicit refusal or mediation, never an
+absence. `Prompt` posture reads as **Denied** server-side (there is no
+interactive prompt without a human; Prompt == Denied until the Witness GUI
+wires the consent path).
+
+| Kind | Handler | Policy (production) | Audit shape |
+|---|---|---|---|
+| `tool` | `secret_status` (status only, never material), `mediated_exec` (destructive-command refusal), `knowledge_suggest` (domain-scoped, quarantine-clean, sanitized) | always allowed | `workflow/hostcall/tool/...` ok/denied |
+| `log` | structured emit (no raw payload echo) | always allowed | dispatch audit ok |
+| `session` | sanitized run-state read (unprivileged view) | always allowed | dispatch audit ok |
+| `exec` | argv-only, operator allowlist (`BRAIN_ENGINE_EXEC_ALLOWLIST`, empty = deny all), cwd pinned (`BRAIN_ENGINE_WORKDIR`), no shell, 64 KiB output caps per stream, 30 s bound, output sanitized | denied unless the operator allowlist is non-empty AND the engine holds the explicit per-engine allow; global deny still outranks any per-engine grant for other caps | `workflow/hostcall/exec/{ok\|denied}` |
+| `http` | egress mediation on the shared hardened client (redirects refused, 5 s/15 s); destination host must be in `BRAIN_ENGINE_HTTP_ALLOWLIST`; remote = HTTPS only, loopback may speak http | http allowed by profile + handler-level allowlist gate (deny-by-default) | `workflow/hostcall/http/{ok\|denied}` |
+| `events` | outbox-only door: `workflow/*` topics, ≤64 KiB payload, idempotency key required | events allowed by profile | `workflow/hostcall/events/{ok\|denied}` |
+| `ui` | named refusal — `reserved: lands with Cockpit` | prompts → Denied server-side | dispatch audit denied |
+
+Honest ceilings: this gates the hostcall boundary only — it is not a sandbox
+for hostile code running inside an engine (worker-thread isolation is not a
+security boundary); exec timeout is the fixed 30 s budget default (the per-op
+budget seam lands with the GUI crank); DNS-rebinding across the egress
+client's connection-pool TTL remains the documented webhook ceiling.
+
+---
+
 ## Zero Trust for AI (ZT4AI) posture (v1.20.5)
 
 The 2026 enterprise zero-trust-for-AI posture, written against what actually

@@ -4,21 +4,113 @@
 //! handlers — notably secret mediation, where resolution happens host-side
 //! and ONLY status metadata crosses the boundary (never the material).
 
-use brain_engine_sdk::host::WorkflowHost;
+use brain_engine_sdk::host::{AuditKind, AuditStatus, WorkflowHost};
 use brain_engine_sdk::hostcall::{HostCallContext, exec_mediation};
-use brain_engine_sdk::trust::{ExtensionPolicy, HostCallKind};
+use brain_engine_sdk::trust::{EngineOverride, ExtensionPolicy, HostCallKind};
 use std::sync::Arc;
 
 use crate::workflow::host::SqliteWorkflowHost;
 
-/// The production posture: Standard plus the two always-mediated classes
-/// (`tools` runs only the built-in fail-closed handlers above; `log` is a
-/// structured emit). exec/env stay hard-denied, the rest prompt-gated.
+/// Hard cap on captured exec stdout/stderr and HTTP bodies (each stream).
+const EFFECT_OUTPUT_CAP: usize = 64 * 1024;
+/// Exec wall-clock bound (the SDK `Budget` default effective timeout; the
+/// per-op budget seam lands with the GUI crank).
+const EXEC_TIMEOUT_SECS: u64 = 30;
+
+/// Operator env: whitespace-separated argv0 prefixes an engine may execute.
+/// Empty/absent = deny ALL engine exec (fail-closed).
+pub(crate) fn exec_allowlist() -> Vec<String> {
+    parse_word_list(std::env::var("BRAIN_ENGINE_EXEC_ALLOWLIST").unwrap_or_default())
+}
+
+/// Operator env: host names an engine may reach over HTTPS (loopback may use
+/// plain http). Empty/absent = no egress (fail-closed).
+pub(crate) fn http_allowlist() -> Vec<String> {
+    parse_word_list(std::env::var("BRAIN_ENGINE_HTTP_ALLOWLIST").unwrap_or_default())
+}
+
+/// Working directory engine exec is pinned to. Defaults to the server's
+/// current directory (the domain data dir wiring arrives with Cockpit).
+fn workdir() -> std::path::PathBuf {
+    std::env::var("BRAIN_ENGINE_WORKDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+}
+
+fn parse_word_list(raw: String) -> Vec<String> {
+    raw.split_whitespace()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// argv0 admission: exact match, or a trailing-`/` entry acting as a
+/// directory prefix (`/usr/bin/` admits `/usr/bin/ls`). No entry, no exec.
+fn argv0_allowed(argv0: &str, allowlist: &[String]) -> bool {
+    allowlist
+        .iter()
+        .any(|e| e == argv0 || (e.ends_with('/') && argv0.starts_with(e.as_str())))
+}
+
+fn loopback_host(host: &str) -> bool {
+    // A host may carry a port (`127.0.0.1:8080`); strip it for the check.
+    let bare = host.split(':').next().unwrap_or(host);
+    matches!(bare, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// URL construction for mediated egress: remote = HTTPS only; loopback may
+/// speak plain http. Pure seam (the scheme law is pinned directly).
+fn build_url(host_name: &str, path: &str) -> String {
+    let scheme = if loopback_host(host_name) {
+        "http"
+    } else {
+        "https"
+    };
+    format!("{scheme}://{host_name}{path}")
+}
+
+/// The unprivileged read principal handlers sanitize through — an engine's
+/// mediated view is what the most restricted reader would see.
+fn unprivileged() -> Option<crate::auth::Principal> {
+    Some(crate::auth::Principal {
+        sub: "workflow-extension".into(),
+        tenant: "global".into(),
+        scopes: Vec::new(),
+        jti: String::new(),
+        roles: Vec::new(),
+        manages: Vec::new(),
+    })
+}
+
+fn sanitized(json: &str) -> Result<String, String> {
+    Ok(crate::gate::sanitize_read(json, true, &unprivileged()))
+}
+
+/// Production posture: Standard plus the two always-mediated classes
+/// (`tools` runs only the built-in fail-closed handlers; `log` is a
+/// structured emit). exec/env stay denied UNLESS the operator configured a
+/// non-empty exec allowlist — then THIS engine gets the explicit per-engine
+/// allow (global-deny removal + per-engine grant; every other engine still
+/// falls through to Prompt, which server-side reads as Denied — there is no
+/// interactive prompt without a human; Prompt == Denied until Witness wires
+/// the GUI prompt path). ui prompts and therefore never runs; its handler
+/// refuses with a named reason for exhaustiveness.
 pub(crate) fn production_policy(engine: &str) -> ExtensionPolicy {
     let mut policy = ExtensionPolicy::standard();
-    let _ = engine;
     policy.default_caps.push("tools".into());
     policy.default_caps.push("log".into());
+    if !exec_allowlist().is_empty() {
+        policy.deny_caps.retain(|c| c != "exec");
+        policy.per_engine.insert(
+            engine.to_string(),
+            EngineOverride {
+                allow_caps: vec!["exec".into()],
+                deny_caps: vec![],
+            },
+        );
+    }
     policy
 }
 
@@ -28,7 +120,17 @@ pub(crate) fn build(
     engine: &str,
 ) -> HostCallContext<SqliteWorkflowHost> {
     let ctx = HostCallContext::new(host.clone(), production_policy(engine), engine);
+    register_handlers(&ctx, &host, engine);
+    ctx
+}
 
+/// Register every mediated kind handler. Exhaustive over the closed
+/// [`HostCallKind`] vocabulary — pinned by `hostcall_table_is_exhaustive`.
+fn register_handlers(
+    ctx: &HostCallContext<SqliteWorkflowHost>,
+    host: &Arc<SqliteWorkflowHost>,
+    engine: &str,
+) {
     // log → structured emit (host-side tracing, no raw payload echo).
     ctx.set_handler(HostCallKind::Log, |name, body| {
         tracing::info!(target: "brain::workflow", engine_call = %name, "hostcall log");
@@ -45,18 +147,40 @@ pub(crate) fn build(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "run not found".to_string())?
             .0;
-        let unprivileged = Some(crate::auth::Principal {
-            sub: "workflow-extension".into(),
-            tenant: "global".into(),
-            scopes: Vec::new(),
-            jti: String::new(),
-            roles: Vec::new(),
-            manages: Vec::new(),
-        });
-        Ok(crate::gate::sanitize_read(&raw, true, &unprivileged))
+        Ok(crate::gate::sanitize_read(&raw, true, &unprivileged()))
     });
 
-    // tool → the two built-in mediated tools. Everything else fails closed.
+    // exec → the SDK's exec_mediation contract behind an operator allowlist.
+    let h_exec = host.clone();
+    let engine_exec = engine.to_string();
+    ctx.set_handler(HostCallKind::Exec, move |name, body| {
+        run_mediated_exec(&h_exec, &engine_exec, name, body)
+    });
+
+    // http → deny-by-default egress mediation on the shared hardened client.
+    let h_http = host.clone();
+    let engine_http = engine.to_string();
+    ctx.set_handler(HostCallKind::Http, move |_name, body| {
+        run_mediated_http(&h_http, &engine_http, body)
+    });
+
+    // events → the outbox is the only event door; topics outside the
+    // `workflow/*` namespace are refused (the alert bus stays server-owned).
+    let h_events = host.clone();
+    let engine_events = engine.to_string();
+    ctx.set_handler(HostCallKind::Events, move |name, body| {
+        run_mediated_event(&h_events, &engine_events, name, body)
+    });
+
+    // ui → an EXPLICIT refusal, not an absence. Unreachable under policy
+    // today (Prompt == Denied server-side); registered so the dispatch table
+    // is exhaustive over the closed vocabulary and any future policy change
+    // fails loudly instead of Internal-erroring.
+    ctx.set_handler(HostCallKind::Ui, |_name, _body| {
+        Err("reserved: lands with Cockpit".to_string())
+    });
+
+    // tool → the built-in mediated tools. Everything else fails closed.
     let h3 = host.clone();
     ctx.set_handler(HostCallKind::Tool, move |name, body| match name {
         "secret_status" => {
@@ -77,13 +201,361 @@ pub(crate) fn build(
             // before any process seam could exist.
             exec_mediation(body).map(|_| format!("accepted:{}", body.len()))
         }
-        other => {
-            let _ = &h3;
-            Err(format!("unknown tool `{other}`"))
-        }
+        "knowledge_suggest" => run_knowledge_suggest(&h3, body),
+        other => Err(format!("unknown tool `{other}`")),
     });
+}
 
-    ctx
+/// Exec mediation handler. Body shape: `{"argv": ["prog", "--flag", ...]}` —
+/// argv only, never a shell line. Refusal paths audit `denied`; success
+/// audits `ok`. Output is sanitized before it crosses back.
+fn run_mediated_exec(
+    host: &SqliteWorkflowHost,
+    engine: &str,
+    _run: &str,
+    body: &str,
+) -> Result<String, String> {
+    const WHO: &str = "workflow/hostcall/exec";
+    match exec_effect(body) {
+        Ok(out) => {
+            let payload = serde_json::json!({
+                "exit_code": out.exit_code,
+                "stdout": String::from_utf8_lossy(&out.stdout),
+                "stderr": String::from_utf8_lossy(&out.stderr),
+            })
+            .to_string();
+            let result = sanitized(&payload)?;
+            host.audit(
+                AuditKind::Workflow,
+                engine,
+                WHO,
+                AuditStatus::Ok,
+                "mediated exec",
+            );
+            Ok(result)
+        }
+        Err(reason) => {
+            host.audit(
+                AuditKind::Workflow,
+                engine,
+                WHO,
+                AuditStatus::Denied,
+                &reason,
+            );
+            Err(reason)
+        }
+    }
+}
+
+struct ExecOutput {
+    exit_code: i64,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Validate + run one allowlisted command. Pure-ish seam so tests hit the
+/// refusal logic without spawning processes where possible.
+fn exec_effect(body: &str) -> Result<ExecOutput, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "invalid exec payload".to_string())?;
+    let mut argv: Vec<String> = v
+        .get("argv")
+        .and_then(|a| a.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|x| x.as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    if argv.is_empty() || argv.iter().any(String::is_empty) {
+        return Err("exec requires a non-empty argv".into());
+    }
+    let argv0 = argv.remove(0);
+    if !argv0_allowed(&argv0, &exec_allowlist()) {
+        return Err("argv0 not in exec allowlist".into());
+    }
+    exec_mediation(&format!("{argv0} {}", argv.join(" ")))
+        .map_err(|e| format!("dangerous command refused: {e}"))?;
+
+    let cwd = workdir();
+    if !cwd.is_dir() {
+        return Err("workdir does not exist".into());
+    }
+
+    let mut cmd = std::process::Command::new(&argv0);
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    // Drain stdout/stderr on threads so a chatty child can never wedge on a
+    // full pipe while we poll for exit; each stream is capped at 64 KiB.
+    use std::io::Read;
+    fn drain<R: Read + Send + 'static>(
+        pipe: Option<R>,
+        cap: usize,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match p.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let take = n.min(cap.saturating_sub(buf.len()));
+                            buf.extend_from_slice(&chunk[..take]);
+                            // Past the cap: keep draining (discard) so the
+                            // child cannot block, but record nothing more.
+                        }
+                    }
+                }
+            }
+            buf
+        })
+    }
+    let out_reader = drain(child.stdout.take(), EFFECT_OUTPUT_CAP);
+    let err_reader = drain(child.stderr.take(), EFFECT_OUTPUT_CAP);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(EXEC_TIMEOUT_SECS);
+    loop {
+        match child.try_wait().map_err(|e| format!("wait failed: {e}"))? {
+            Some(status) => {
+                let stdout = out_reader
+                    .join()
+                    .map_err(|_| "stdout reader panicked".to_string())?;
+                let stderr = err_reader
+                    .join()
+                    .map_err(|_| "stderr reader panicked".to_string())?;
+                return Ok(ExecOutput {
+                    exit_code: status.code().unwrap_or(-1) as i64,
+                    stdout,
+                    stderr,
+                });
+            }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
+                    return Err("exec exceeded time budget".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+}
+
+/// Http mediation handler. Body shape: `{"host": "...", "path": "/..."}`.
+/// Remote = HTTPS only; loopback hosts may use plain http. The client is the
+/// shared hardened egress client (redirects refused, 5 s / 15 s bounds).
+fn run_mediated_http(
+    host: &SqliteWorkflowHost,
+    engine: &str,
+    body: &str,
+) -> Result<String, String> {
+    const WHO: &str = "workflow/hostcall/http";
+    let deny = |reason: String| {
+        host.audit(
+            AuditKind::Workflow,
+            engine,
+            WHO,
+            AuditStatus::Denied,
+            &reason,
+        );
+        Err(reason)
+    };
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return deny("invalid http payload".into()),
+    };
+    let host_name = v
+        .get("host")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("/");
+    if host_name.is_empty()
+        || !host_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':')
+    {
+        return deny("invalid host".into());
+    }
+    if !http_allowlist()
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(&host_name))
+    {
+        return deny("host not in http allowlist".into());
+    }
+    if !path.starts_with('/') {
+        return deny("path must start with '/'".into());
+    }
+    let url = build_url(&host_name, path);
+    let client = crate::webhook::egress_client();
+    // The handler seam is sync; egress rides a throwaway current-thread
+    // runtime (the webhook drain worker's posture).
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("runtime: {e}"))?;
+    let sent = rt.block_on(async { client.get(&url).send().await });
+    match sent {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            match rt.block_on(resp.bytes()) {
+                Ok(b) => {
+                    let mut text = b.to_vec();
+                    text.truncate(EFFECT_OUTPUT_CAP);
+                    let payload =
+                        serde_json::json!({"status": status, "body": String::from_utf8_lossy(&text)})
+                            .to_string();
+                    let result = sanitized(&payload)?;
+                    host.audit(
+                        AuditKind::Workflow,
+                        engine,
+                        WHO,
+                        AuditStatus::Ok,
+                        &host_name,
+                    );
+                    Ok(result)
+                }
+                Err(e) => deny(format!("read failed: {e}")),
+            }
+        }
+        Err(e) => deny(format!("request failed: {e}")),
+    }
+}
+
+/// Events mediation handler: the outbox is the ONLY event door. Name carries
+/// the run id; body is `{topic, payload, idempotency_key}`. Non-`workflow/*`
+/// topics are refused (the alert bus stays server-owned).
+fn run_mediated_event(
+    host: &SqliteWorkflowHost,
+    engine: &str,
+    run: &str,
+    body: &str,
+) -> Result<String, String> {
+    const WHO: &str = "workflow/hostcall/events";
+    let deny = |reason: String| {
+        host.audit(
+            AuditKind::Workflow,
+            engine,
+            WHO,
+            AuditStatus::Denied,
+            &reason,
+        );
+        Err(reason)
+    };
+    let run_id: i64 = match run.parse() {
+        Ok(id) => id,
+        Err(_) => return deny("invalid run key".into()),
+    };
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return deny("invalid events payload".into()),
+    };
+    let topic = v.get("topic").and_then(|x| x.as_str()).unwrap_or_default();
+    let payload = v.get("payload").and_then(|x| x.as_str()).unwrap_or("");
+    let key = v
+        .get("idempotency_key")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default();
+    if !topic.starts_with("workflow/") || topic.len() > 128 {
+        return deny("topic must be under workflow/*".into());
+    }
+    if payload.len() > EFFECT_OUTPUT_CAP {
+        return deny("payload exceeds 64 KiB".into());
+    }
+    if key.is_empty() || key.len() > 256 {
+        return deny("idempotency_key out of bounds".into());
+    }
+    match host.enqueue(run_id, topic, payload, key) {
+        Ok(created) => {
+            host.audit(AuditKind::Workflow, engine, WHO, AuditStatus::Ok, topic);
+            Ok(format!("enqueued:{created}"))
+        }
+        Err(e) => deny(format!("enqueue failed: {e}")),
+    }
+}
+
+/// knowledge_suggest tool: the domain-scoped, quarantine-clean suggestion
+/// read for `run_id`'s domain, sanitized. Body shape:
+/// `{"run_id": <id>, "query": "..."}`.
+fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String, String> {
+    const WHO: &str = "workflow/hostcall/tool/knowledge_suggest";
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "invalid suggest payload".to_string())?;
+    let run_id = v
+        .get("run_id")
+        .and_then(|x| x.as_i64())
+        .ok_or_else(|| "run_id required".to_string())?;
+    let q = v
+        .get("query")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .trim();
+    if q.is_empty() || q.len() > 512 {
+        host.audit(
+            AuditKind::Workflow,
+            "engine",
+            WHO,
+            AuditStatus::Denied,
+            "query out of bounds",
+        );
+        return Err("query out of bounds".into());
+    }
+    // The LIKE pattern escapes `%`/`_`/`\` so the query cannot inject
+    // wildcards (data-shape class, same posture as the HTTP handler).
+    let mut pattern = String::with_capacity(q.len() * 2);
+    for c in q.chars() {
+        match c {
+            '%' | '_' | '\\' => {
+                pattern.push('\\');
+                pattern.push(c);
+            }
+            _ => pattern.push(c),
+        }
+    }
+    // Substring match on both ends.
+    pattern.insert(0, '%');
+    pattern.push('%');
+    let hits = host.with_conn(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT k.id, k.title, k.content FROM knowledge k \
+                 WHERE k.domain = (SELECT domain FROM workflow_runs WHERE id = ?1) \
+                   AND k.flagged = 0 \
+                   AND (k.expires_at IS NULL OR k.expires_at >= ?2) \
+                   AND k.content LIKE ?3 ESCAPE '\\' LIMIT 5",
+            )
+            .map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now().timestamp();
+        let rows = stmt
+            .query_map(rusqlite::params![run_id, now, pattern], |r| {
+                Ok(serde_json::json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "title": r.get::<_, String>(1)?,
+                    "snippet": r.get::<_, String>(2)?.chars().take(200).collect::<String>(),
+                }))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+        Ok(rows)
+    })?;
+    let payload = serde_json::Value::Array(hits).to_string();
+    let result = sanitized(&payload)?;
+    host.audit(
+        AuditKind::Workflow,
+        "engine",
+        WHO,
+        AuditStatus::Ok,
+        "suggest",
+    );
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -94,6 +566,10 @@ mod tests {
     use brain_engine_sdk::trust::{Decision, EngineOverride, PolicyMode};
     use brain_server::migration::run_migration;
     use brain_server::register_sqlite_vec::register_sqlite_vec;
+
+    /// Env-mutating tests serialize on this lock (the compliance-test
+    /// posture): env reads are process-global.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn host() -> Arc<SqliteWorkflowHost> {
         register_sqlite_vec();
@@ -114,6 +590,8 @@ mod tests {
 
     #[test]
     fn exec_and_env_are_denied_under_production_policy() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") };
         let ctx = build(host(), "engine-a");
         assert!(matches!(
             ctx.dispatch("exec", "sh", "ls"),
@@ -131,12 +609,12 @@ mod tests {
 
     #[test]
     fn secret_mediation_never_publishes_material() {
-        unsafe { std::env::set_var("BRAIN_BROKER_HC_TEST_KEY", "supersecret") };
+        unsafe { std::env::set_var("BRAIN_BROKER_HC_TEST_KEY", "supersecret") }
         let ctx = build(host(), "engine-a");
         let out = ctx
             .dispatch("tool", "secret_status", "broker_hc_test")
             .unwrap();
-        unsafe { std::env::remove_var("BRAIN_BROKER_HC_TEST_KEY") };
+        unsafe { std::env::remove_var("BRAIN_BROKER_HC_TEST_KEY") }
         assert_eq!(out, r#"{"configured":true}"#);
         assert!(!out.contains("supersecret"));
 
@@ -175,6 +653,212 @@ mod tests {
     }
 
     #[test]
+    fn http_denied_by_default_and_allowlisted_host_passes() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
+        let ctx = build(host(), "engine-a");
+        assert!(
+            ctx.dispatch("http", "fetch", r#"{"host":"example.com","path":"/"}"#)
+                .is_err(),
+            "deny-by-default: no allowlist, no egress"
+        );
+
+        // Allowlisted loopback host against a one-shot local HTTP server.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::Write;
+            let (stream, _) = listener.accept().unwrap();
+            let mut w = stream;
+            let _ =
+                w.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi");
+        });
+        unsafe { std::env::set_var("BRAIN_ENGINE_HTTP_ALLOWLIST", format!("127.0.0.1:{port}")) }
+        let ctx = build(host(), "engine-a");
+        let out = ctx
+            .dispatch(
+                "http",
+                "fetch",
+                &format!(r#"{{"host":"127.0.0.1:{port}","path":"/x"}}"#),
+            )
+            .unwrap();
+        assert!(out.contains("\"status\":200"), "got: {out}");
+        server.join().unwrap();
+        unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
+    }
+
+    #[test]
+    fn http_refuses_redirects_and_non_https_remote() {
+        // The scheme law is structural: remote hosts are forced onto https,
+        // loopback may speak plain http; redirects are refused by the shared
+        // egress client (pinned in webhook tests) — this pins the URL law.
+        assert_eq!(build_url("example.com", "/a"), "https://example.com/a");
+        assert_eq!(build_url("localhost", "/a"), "http://localhost/a");
+        assert_eq!(build_url("127.0.0.1:8080", "/b"), "http://127.0.0.1:8080/b");
+
+        // Host-shape validation refuses injection-ish payloads outright, and
+        // a non-allowlisted remote host is denied even when configured.
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("BRAIN_ENGINE_HTTP_ALLOWLIST", "example.com") }
+        let ctx = build(host(), "engine-a");
+        for bad in [
+            r#"{"host":"ex ample.com","path":"/"}"#,
+            r#"{"host":"","path":"/"}"#,
+            r#"{"host":"example.com","path":"no-slash"}"#,
+            r#"{"host":"evil.com","path":"/"}"#,
+        ] {
+            assert!(ctx.dispatch("http", "f", bad).is_err(), "refused: {bad}");
+        }
+        unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
+    }
+
+    #[test]
+    fn events_handler_enforces_workflow_topic_prefix_and_size() {
+        let h = host();
+        let ctx = build(h.clone(), "engine-a");
+        let ok = ctx
+            .dispatch(
+                "events",
+                "1",
+                r#"{"topic":"workflow/log","payload":"{\"a\":1}","idempotency_key":"k-ev-1"}"#,
+            )
+            .unwrap();
+        assert_eq!(ok, "enqueued:true");
+        // Replay by key is an idempotent no-op receipt.
+        let replay = ctx
+            .dispatch(
+                "events",
+                "1",
+                r#"{"topic":"workflow/log","payload":"{}","idempotency_key":"k-ev-1"}"#,
+            )
+            .unwrap();
+        assert_eq!(replay, "enqueued:false");
+
+        // Non-workflow topics are refused — the alert bus stays server-owned.
+        for bad_topic in ["alerts/page", "workflow", "", "../secrets"] {
+            let body =
+                format!(r#"{{"topic":"{bad_topic}","payload":"{{}}","idempotency_key":"k-x"}}"#);
+            assert!(
+                ctx.dispatch("events", "1", &body).is_err(),
+                "topic refused: {bad_topic}"
+            );
+        }
+
+        // Payloads over 64 KiB and missing keys are refused.
+        let big_payload = "y".repeat(64 * 1024 + 1);
+        let body = format!(
+            r#"{{"topic":"workflow/log","payload":"{big_payload}","idempotency_key":"k-big"}}"#
+        );
+        assert!(ctx.dispatch("events", "1", &body).is_err());
+        assert!(
+            ctx.dispatch("events", "1", r#"{"topic":"workflow/x","payload":"{}"}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn ui_denied_with_named_reason() {
+        // Under production policy ui prompts → server-side Denied (Prompt ==
+        // Denied until Witness wires the GUI).
+        let ctx = build(host(), "engine-a");
+        let err = ctx.dispatch("ui", "dialog", "{}").unwrap_err();
+        assert!(matches!(err, DispatchError::Denied(_)));
+
+        // And even where policy would admit it, the handler names its refusal
+        // (an explicit refusal, not an absence).
+        let h = host();
+        let open_ctx = HostCallContext::new(h.clone(), ExtensionPolicy::permissive(), "engine-a");
+        register_handlers(&open_ctx, &h, "engine-a");
+        let err = open_ctx.dispatch("ui", "dialog", "{}").unwrap_err();
+        assert_eq!(err.to_string(), "internal: reserved: lands with Cockpit");
+    }
+
+    #[test]
+    fn hostcall_table_is_exhaustive() {
+        let ctx = build(host(), "engine-a");
+        for wire in ["tool", "exec", "http", "session", "events", "ui", "log"] {
+            assert!(
+                ctx.has_handler(HostCallKind::parse(wire).unwrap()),
+                "kind `{wire}` must have a registered handler"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_counter_increments_per_kind_and_report_carries_it() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "") }
+        let ctx = build(host(), "engine-a");
+        ctx.dispatch("log", "boot", "hello").unwrap();
+        ctx.dispatch("log", "boot", "again").unwrap();
+        assert!(ctx.dispatch("exec", "sh", "ls").is_err()); // denied counts too
+        ctx.dispatch("tool", "secret_status", "nope_missing")
+            .unwrap();
+        let counters = ctx.counters();
+        assert_eq!(
+            counters.get(&("boot".to_string(), "log".to_string())),
+            Some(&2)
+        );
+        assert_eq!(
+            counters.get(&("sh".to_string(), "exec".to_string())),
+            Some(&1),
+            "denials tally"
+        );
+        assert!(counters.contains_key(&("secret_status".to_string(), "tool".to_string())));
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
+    }
+
+    #[test]
+    fn knowledge_suggest_is_domain_scoped_and_sanitized() {
+        let h = host();
+        // Seed knowledge in TWO domains; only the run's domain may answer.
+        h.with_conn(|c| -> Result<(), String> {
+            c.execute(
+                "INSERT INTO knowledge(domain, title, content, flagged, source) VALUES ('acme','Acme runbook','mail jane@example.com for access',0,'manual')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            c.execute(
+                "INSERT INTO knowledge(domain, title, content, flagged, source) VALUES ('other','Other runbook','mail boss@other.example for help',0,'manual')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            c.execute(
+                "INSERT INTO knowledge(domain, title, content, flagged, source) VALUES ('acme','Flagged acme','runbook secret sauce',1,'manual')",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+
+        let ctx = build(h.clone(), "engine-a");
+        let body = serde_json::json!({"run_id": 1, "query": "access"}).to_string();
+        let out = ctx.dispatch("tool", "knowledge_suggest", &body).unwrap();
+        assert!(out.contains("[redacted:"), "PII sanitized: {out}");
+        assert!(!out.contains("jane@example.com"), "raw PII crossed: {out}");
+        assert!(
+            !out.contains("boss@other.example"),
+            "cross-domain row leaked: {out}"
+        );
+        assert!(
+            !out.contains("secret sauce"),
+            "flagged (quarantined) row leaked: {out}"
+        );
+
+        // Query bounds fail closed.
+        assert!(
+            ctx.dispatch("tool", "knowledge_suggest", r#"{"run_id":1,"query":""}"#)
+                .is_err()
+        );
+        let too_long = serde_json::json!({"run_id": 1, "query": "x".repeat(513)}).to_string();
+        assert!(
+            ctx.dispatch("tool", "knowledge_suggest", &too_long)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn unknown_tool_fails_closed() {
         let ctx = build(host(), "engine-a");
         assert!(matches!(
@@ -185,6 +869,8 @@ mod tests {
 
     #[test]
     fn per_engine_allow_cannot_reinstate_denied_exec() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
         let mut policy = production_policy("locked-engine");
         policy.per_engine.insert(
             "locked-engine".into(),
@@ -197,5 +883,85 @@ mod tests {
         assert_eq!(policy.decide("locked-engine", "exec"), Decision::Denied);
         assert_eq!(policy.decide("locked-engine", "env"), Decision::Denied);
         assert_eq!(policy.mode, PolicyMode::Prompt);
+    }
+
+    #[test]
+    fn exec_denied_when_allowlist_empty() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
+        assert!(exec_allowlist().is_empty());
+        let ctx = build(host(), "engine-a");
+        let err = ctx.dispatch("exec", "1", r#"{"argv":["ls"]}"#).unwrap_err();
+        assert!(matches!(err, DispatchError::Denied(_)));
+        // An explicit empty string keeps the same posture.
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "") }
+        let ctx = build(host(), "engine-a");
+        assert!(matches!(
+            ctx.dispatch("exec", "1", r#"{"argv":["ls"]}"#),
+            Err(DispatchError::Denied(_))
+        ));
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
+    }
+
+    #[test]
+    fn exec_runs_only_allowlisted_argv0_with_cwd_and_timeout() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("BRAIN_ENGINE_WORKDIR", tmp.path()) }
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo /bin/ls") }
+        let ctx = build(host(), "engine-a");
+
+        // Allowlisted argv0 runs (cwd pinned — `ls` lists the empty tempdir).
+        let out = ctx
+            .dispatch("exec", "1", r#"{"argv":["/bin/ls","-a"]}"#)
+            .unwrap();
+        assert!(out.contains("\"exit_code\":0"), "got: {out}");
+
+        // Un-allowlisted argv0 is refused.
+        let err = ctx
+            .dispatch("exec", "1", r#"{"argv":["/bin/cat","/etc/hostname"]}"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("not in exec allowlist"));
+
+        // Destructive content is refused even when allowlisted.
+        let err = ctx
+            .dispatch("exec", "1", r#"{"argv":["/bin/echo","rm -rf /"]}"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("dangerous command refused"));
+
+        // Malformed payloads fail loudly.
+        assert!(ctx.dispatch("exec", "1", "not json").is_err());
+        assert!(
+            ctx.dispatch("exec", "1", r#"{"argv":[]}"#).is_err(),
+            "empty argv refused"
+        );
+        unsafe { std::env::remove_var("BRAIN_ENGINE_WORKDIR") }
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
+    }
+
+    #[test]
+    fn exec_output_is_sanitized_and_capped() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo") }
+        let ctx = build(host(), "engine-a");
+        // An email address in the output must cross the boundary redacted.
+        let out = ctx
+            .dispatch(
+                "exec",
+                "1",
+                r#"{"argv":["/bin/echo","mail jane@example.com now"]}"#,
+            )
+            .unwrap();
+        assert!(!out.contains("jane@example.com"), "PII crossed raw: {out}");
+        assert!(out.contains("[redacted:"), "sanitized form: {out}");
+
+        // Oversized output is capped at the 64 KiB bound per stream.
+        let big = "x".repeat(200_000);
+        let body = serde_json::json!({"argv": ["/bin/echo", big]}).to_string();
+        let out = ctx.dispatch("exec", "1", &body).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let stdout_len = v["stdout"].as_str().map(|s| s.len()).unwrap_or(0);
+        assert!(stdout_len <= 64 * 1024, "stdout not capped: {stdout_len}");
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
     }
 }

@@ -19,6 +19,44 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.16] — 2026-08-23 — "Anvil": the ExecutionEnv is real
+
+Every engine tool-effect goes through one mediated, countable, auditable door. The SDK's hostcall machinery (v1.28.2) was 80% of the idea; this release finishes it and closes the Rule-of-Two posture on the engine side. Server `Cargo.toml`/lock 1.28.15 → **1.28.16**; SDK `brain-engine-sdk` 1.28.8 → **1.28.9**; `steward-harness` 0.2.0 → **0.2.1**; client + plugin unchanged; no schema change.
+
+### Release notes
+
+**Improvements**
+
+- All four remaining hostcall kinds now have server handlers: `exec` (argv-only, no shell, operator allowlist, cwd-pinned, output capped + sanitized), `http` (deny-by-default egress on the shared hardened client), `events` (the outbox as the ONLY event door, `workflow/*` topics only), and `ui` (an explicit named refusal — `reserved: lands with Cockpit`, not an absence). The dispatch table is exhaustive over the closed 7-kind vocabulary.
+- New mediated tool: `knowledge_suggest` — the domain-scoped, quarantine-clean (`flagged = 0`) suggestion read, sanitized before it crosses the boundary; cross-domain rows never answer.
+- Engines are countable: every canonicalized dispatch tallies into a per-run counter map (denials count too), surfaced additively as `CrankReport.hostcalls` — the audit chain stays the durable count.
+
+**Security fixes**
+
+- Engine exec is fail-closed by default: `BRAIN_ENGINE_EXEC_ALLOWLIST` empty/absent = deny ALL exec, and the global deny still outranks any per-engine grant for other capabilities. Destructive commands are refused by the SDK mediation table even when allowlisted.
+- Engine egress is deny-by-default: destination hosts must be in `BRAIN_ENGINE_HTTP_ALLOWLIST`; remote destinations are forced onto HTTPS (loopback may speak plain http); redirects are refused by the shared egress client.
+- Exec stdout/stderr are each capped at 64 KiB and the whole result passes `sanitize_read` — PII in process output cannot cross into engine hands raw.
+
+### Engineering record
+
+- **M1 (server):** `src/workflow/hostcalls.rs::build()` registers all seven kinds via the extracted `register_handlers`. `production_policy(engine)` grants the per-engine `exec` allow ONLY when `BRAIN_ENGINE_EXEC_ALLOWLIST` resolves non-empty (deny-cap removal + explicit per-engine override for THAT engine; every other engine falls through to Prompt == Denied). Exec: JSON `{"argv":[...]}` body, argv0 admission (exact or trailing-`/` directory prefix), `exec_mediation` refusal table, `BRAIN_ENGINE_WORKDIR` pin (default: process cwd — see ceilings), pipe-drain threads so a chatty child cannot wedge on a full pipe, poll-kill at the 30 s budget bound, `{exit_code, stdout, stderr}` sanitized. Http: `{"host","path"}` body, host shape validation, `build_url` scheme law (pinned pure), one-shot current-thread runtime for the sync handler seam. Events: run id in the dispatch name, topic prefix + payload size + key bounds enforced, replayed keys return the idempotent `enqueued:false` receipt. Every refusal path audits `workflow/hostcall/{kind}/denied` through the host chain.
+- **M2 (SDK):** `HostCallContext` gains an append-only `BTreeMap<(label, kind), u64>` behind a `counters()` accessor — incremented for every canonicalized dispatch INCLUDING denials; plus `has_handler(kind)` (the exhaustiveness pin's read seam).
+- **M3 (engine):** steward-harness `effects::Effects` is the ONE effect door — `exec`/`http`/`event`/`suggest`/`log` serialize the exact mediated body shapes and ride `dispatch`; crank event emissions route through it when provided (`crank_full`, additive — existing signatures unchanged) with the per-call tally landing in `CrankReport.hostcalls`. The reqwest transport stays solely in `remote_host.rs`, pinned by the include_str! self-grep `engine_has_no_direct_effect_paths`.
+- **M4 (policy posture):** Prompt == Denied server-side documented (no interactive prompt without a human); SECURITY.md gains the engine hostcall mediations table (kind → handler → policy → audit shape).
+- Tests (all plan-named pins green): `exec_denied_when_allowlist_empty`, `exec_runs_only_allowlisted_argv0_with_cwd_and_timeout`, `exec_output_is_sanitized_and_capped`, `http_denied_by_default_and_allowlisted_host_passes` (one-shot loopback HTTP server), `http_refuses_redirects_and_non_https_remote`, `events_handler_enforces_workflow_topic_prefix_and_size`, `ui_denied_with_named_reason`, `hostcall_table_is_exhaustive` (server + SDK sides), `dispatch_counter_increments_per_kind_and_report_carries_it`, `knowledge_suggest_is_domain_scoped_and_sanitized` (cross-domain + flagged-row leak probes), `engine_has_no_direct_effect_paths` (+ effects body-shape and loud-denial pins, SDK `dispatch_counter_increments_per_kind_and_label`). Env-mutating tests serialize on a lock (the compliance-test posture).
+- Tests: server bin **799** passed / 6 ignored (+10); lib 165 / 1 ignored (the connector-stub spawn failure is the known environmental one — fails identically on clean main); brain CLI 18, mcp 20, bench 5, eval 4, metrics 8; harness crate 6 gold pins + 3 effects tests; SDK **90** (+2). clippy `-D warnings` + fmt clean across all three workspaces.
+
+### Honest ceilings
+
+- No sandbox backend (landlock/gVisor/seccomp) — the allowlist+mediation door IS the boundary until one exists; engines hold bash-equivalent trust, this defends against buggy scripts, not hostile code.
+- `Prompt == Denied` until Witness wires the GUI consent path; `ui` refuses with its named reason even where policy would admit it.
+- Exec timeout is the fixed 30 s `Budget` default — the per-op budget seam (`Budget::op_secs` wired into the handler) lands with the GUI crank; workdir defaults to the process cwd when `BRAIN_ENGINE_WORKDIR` is unset (per-domain data-dir wiring arrives with Cockpit).
+- The harness binary's default crank still rides the host trait's audited enqueue when no Effects door is supplied (also mediated, also audited); the tally then reads empty rather than lying about mediations that did not happen.
+- DNS-rebinding across the egress client's connection-pool TTL remains the documented webhook ceiling, inherited here.
+- The counters are an in-process tally, not durable state — the audit chain remains the authoritative count.
+
+---
+
 ## [1.28.15] — 2026-08-23 — "FirstLight": the loop runs
 
 The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-harness echo stub (15 lines, canned `{"ok":true}`) becomes the real engine — and the missing AskHuman link closes. Server `Cargo.toml`/lock 1.28.14 → **1.28.15**; SDK `brain-engine-sdk` 1.28.7 → **1.28.8**; `steward-harness` **0.2.0**; client + plugin unchanged; no schema change.

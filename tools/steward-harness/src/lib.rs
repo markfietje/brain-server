@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod effects;
 pub mod engine;
 pub mod inmem;
 pub mod remote_host;

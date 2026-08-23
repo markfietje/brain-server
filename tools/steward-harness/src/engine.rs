@@ -6,6 +6,7 @@
 //! row in state — never a silent skip. Budgets bound every turn; the 80%
 //! iteration threshold surfaces as `warn_threshold_fired`.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use brain_engine_sdk::host::{HostError, WorkflowHost};
@@ -45,6 +46,10 @@ pub struct CrankReport {
     pub stopped_at: StoppedAt,
     /// The 80% iteration threshold fired at least once this turn.
     pub warn_threshold_fired: bool,
+    /// The in-run hostcall tally, `"<label>/<kind>" -> count` (additive JSON;
+    /// consumers ignore unknown keys). The audit chain is the durable count —
+    /// this is the cheap aggregate the report carries.
+    pub hostcalls: BTreeMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -104,10 +109,24 @@ pub async fn crank_with_steering(
     run_id: i64,
     max_steps: u32,
 ) -> Result<CrankReport, HarnessError> {
+    crank_full(host, reader, None, run_id, max_steps).await
+}
+
+/// The full crank: an optional [`Effects`] door makes every event emission
+/// ride the mediated hostcall dispatch (counted, audited); without one the
+/// emissions fall back to the host trait's own audited enqueue seam.
+pub async fn crank_full(
+    host: Arc<dyn WorkflowHost>,
+    reader: Option<Arc<dyn SteeringReader>>,
+    effects: Option<Arc<crate::effects::Effects>>,
+    run_id: i64,
+    max_steps: u32,
+) -> Result<CrankReport, HarnessError> {
     let max_steps = clamp_max_steps(max_steps);
     let mut steps_executed: u32 = 0;
     let mut warned = false;
     let mut kernel = RunState::new(max_steps);
+    let mut hostcalls: BTreeMap<String, u64> = BTreeMap::new();
 
     loop {
         let Some((js, rev)) = host.load_state(run_id)? else {
@@ -119,7 +138,7 @@ pub async fn crank_with_steering(
         // Budget check BEFORE executing another step.
         if steps_executed >= max_steps {
             warned |= should_warn_at_iteration_threshold(steps_executed, max_steps);
-            return Ok(report(steps_executed, StoppedAt::Budget, warned));
+            return Ok(report(steps_executed, StoppedAt::Budget, warned, hostcalls));
         }
 
         match brain_engine_sdk::decide(&st) {
@@ -129,15 +148,16 @@ pub async fn crank_with_steering(
                     .and_then(|s| s.as_str())
                     .is_some_and(|s| s == "completed");
                 if !already {
-                    finalize(&*host, run_id, rev, &mut st)?;
+                    finalize(&*host, run_id, rev, &mut st, &effects, &mut hostcalls)?;
                 }
-                return Ok(report(steps_executed, StoppedAt::Done, warned));
+                return Ok(report(steps_executed, StoppedAt::Done, warned, hostcalls));
             }
             Decision::AskHuman { question } => {
                 return Ok(report(
                     steps_executed,
                     StoppedAt::AskHuman { question },
                     warned,
+                    hostcalls,
                 ));
             }
             Decision::Advance { next_state } => {
@@ -152,6 +172,7 @@ pub async fn crank_with_steering(
                                 actual_revision: actual,
                             },
                             warned,
+                            hostcalls,
                         ));
                     }
                 }
@@ -218,11 +239,15 @@ pub async fn crank_with_steering(
                                 actual_revision: actual,
                             },
                             warned,
+                            hostcalls,
                         ));
                     }
                 }
                 steps_executed += 1;
-                host.enqueue(
+                emit(
+                    &*host,
+                    &effects,
+                    &mut hostcalls,
                     run_id,
                     "workflow/log",
                     &serde_json::json!({ "line": format!("step {} executed", step) }).to_string(),
@@ -233,11 +258,17 @@ pub async fn crank_with_steering(
     }
 }
 
-fn report(steps: u32, stopped_at: StoppedAt, warned: bool) -> CrankReport {
+fn report(
+    steps: u32,
+    stopped_at: StoppedAt,
+    warned: bool,
+    hostcalls: BTreeMap<String, u64>,
+) -> CrankReport {
     CrankReport {
         steps_executed: steps,
         stopped_at,
         warn_threshold_fired: warned,
+        hostcalls,
     }
 }
 
@@ -281,6 +312,27 @@ fn cas_persist(host: &dyn WorkflowHost, run_id: i64, rev: i64, st: &Value) -> Re
     }
 }
 
+/// Route an event emission through the Effects door when present, tallying
+/// the dispatch; otherwise the host trait's audited enqueue carries it.
+fn emit(
+    host: &dyn WorkflowHost,
+    effects: &Option<Arc<crate::effects::Effects>>,
+    hostcalls: &mut BTreeMap<String, u64>,
+    run_id: i64,
+    topic: &str,
+    payload: &str,
+    key: &str,
+) -> Result<(), HarnessError> {
+    if let Some(fx) = effects {
+        fx.event(run_id, topic, payload, key)
+            .map_err(|e| HarnessError::Host(HostError::Internal(e.to_string())))?;
+        *hostcalls.entry(format!("{key}/events")).or_insert(0) += 1;
+    } else {
+        host.enqueue(run_id, topic, payload, key)?;
+    }
+    Ok(())
+}
+
 /// Fold artifacts into the scoreboard keys the server's scorer derives from,
 /// mark `status: completed`, persist, and emit the final event.
 fn finalize(
@@ -288,6 +340,8 @@ fn finalize(
     run_id: i64,
     rev: i64,
     st: &mut Value,
+    effects: &Option<Arc<crate::effects::Effects>>,
+    hostcalls: &mut BTreeMap<String, u64>,
 ) -> Result<(), HarnessError> {
     let Some(obj) = st.as_object_mut() else {
         return Err(HarnessError::CorruptState("state is not an object".into()));
@@ -310,13 +364,15 @@ fn finalize(
     let js = st.to_string();
     host.cas(run_id, rev, &js)
         .map_err(|e| HarnessError::Host(HostError::Internal(e.to_string())))?;
-    host.enqueue(
+    emit(
+        host,
+        effects,
+        hostcalls,
         run_id,
         "workflow/end",
         &serde_json::json!({ "stop": "completed" }).to_string(),
         &format!("run-{run_id}-end"),
-    )
-    .map_err(HarnessError::Host)?;
+    )?;
     Ok(())
 }
 
