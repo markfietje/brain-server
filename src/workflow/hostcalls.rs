@@ -441,6 +441,16 @@ fn run_mediated_http(
     let sent = rt.block_on(async { client.get(&url).send().await });
     match sent {
         Ok(resp) => {
+            // Refuse declared-oversized bodies BEFORE buffering them — a cap
+            // applied after `bytes()` would still have read it all (memory
+            // amplification via an allowlisted host). Bodies without a length
+            // are caught by the post-read truncate instead.
+            if resp
+                .content_length()
+                .is_some_and(|n| n as usize > EFFECT_OUTPUT_CAP)
+            {
+                return deny("body exceeds 64 KiB".into());
+            }
             let status = resp.status().as_u16();
             match rt.block_on(resp.bytes()) {
                 Ok(b) => {
@@ -617,6 +627,12 @@ mod tests {
     /// posture): env reads are process-global.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Poison-tolerant acquisition: a panicking sibling must not cascade
+    /// PoisonErrors through every other env test (the CI failure mode).
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     fn host() -> Arc<SqliteWorkflowHost> {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -636,7 +652,7 @@ mod tests {
 
     #[test]
     fn exec_and_env_are_denied_under_production_policy() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") };
         let ctx = build(host(), "engine-a");
         assert!(matches!(
@@ -700,7 +716,7 @@ mod tests {
 
     #[test]
     fn http_denied_by_default_and_allowlisted_host_passes() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
         let ctx = build(host(), "engine-a");
         assert!(
@@ -713,9 +729,19 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
-            use std::io::Write;
+            use std::io::{BufRead, BufReader, Write};
             let (stream, _) = listener.accept().unwrap();
-            let mut w = stream;
+            // Read the request to its header terminator BEFORE responding —
+            // writing while the client is still sending races hyper into a
+            // connection reset.
+            let mut r = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            let mut w = r.into_inner();
             let _ =
                 w.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi");
         });
@@ -744,7 +770,7 @@ mod tests {
 
         // Host-shape validation refuses injection-ish payloads outright, and
         // a non-allowlisted remote host is denied even when configured.
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::set_var("BRAIN_ENGINE_HTTP_ALLOWLIST", "example.com") }
         let ctx = build(host(), "engine-a");
         for bad in [
@@ -832,7 +858,7 @@ mod tests {
 
     #[test]
     fn dispatch_counter_increments_per_kind_and_report_carries_it() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "") }
         let ctx = build(host(), "engine-a");
         ctx.dispatch("log", "boot", "hello").unwrap();
@@ -915,7 +941,7 @@ mod tests {
 
     #[test]
     fn hostcall_audits_resolve_the_run_domain_tenant() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo") };
         let h = host();
         let ctx = build(h.clone(), "engine-a");
@@ -958,7 +984,7 @@ mod tests {
 
     #[test]
     fn per_engine_allow_cannot_reinstate_denied_exec() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
         let mut policy = production_policy("locked-engine");
         policy.per_engine.insert(
@@ -976,7 +1002,7 @@ mod tests {
 
     #[test]
     fn exec_denied_when_allowlist_empty() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
         assert!(exec_allowlist().is_empty());
         let ctx = build(host(), "engine-a");
@@ -994,7 +1020,7 @@ mod tests {
 
     #[test]
     fn exec_runs_only_allowlisted_argv0_with_cwd_and_timeout() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         let tmp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("BRAIN_ENGINE_WORKDIR", tmp.path()) }
         unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo /bin/ls") }
@@ -1030,7 +1056,7 @@ mod tests {
 
     #[test]
     fn exec_output_is_sanitized_and_capped() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo") }
         let ctx = build(host(), "engine-a");
         // An email address in the output must cross the boundary redacted.
@@ -1044,9 +1070,18 @@ mod tests {
         assert!(!out.contains("jane@example.com"), "PII crossed raw: {out}");
         assert!(out.contains("[redacted:"), "sanitized form: {out}");
 
-        // Oversized output is capped at the 64 KiB bound per stream.
-        let big = "x".repeat(200_000);
-        let body = serde_json::json!({"argv": ["/bin/echo", big]}).to_string();
+        // Oversized output is capped at the 64 KiB bound per stream. The
+        // volume comes from STDOUT (`cat` on a big file), never from argv —
+        // Linux rejects a single argument over ~128 KiB with E2BIG, which
+        // made this test platform-dependent rather than a real cap probe.
+        let big_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(big_file.path(), vec![b'x'; 200_000]).unwrap();
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo /bin/cat") }
+        let ctx = build(host(), "engine-a");
+        let body = serde_json::json!({
+            "argv": ["/bin/cat", big_file.path().to_str().unwrap()],
+        })
+        .to_string();
         let out = ctx.dispatch("exec", "1", &body).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let stdout_len = v["stdout"].as_str().map(|s| s.len()).unwrap_or(0);
