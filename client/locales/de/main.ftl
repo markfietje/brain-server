@@ -582,3 +582,16 @@ dock_approve_aria = Vorschlag #{0} freigeben
 dock_reject_aria = Vorschlag #{0} ablehnen
 dock_load_failed = Freigabe-Warteschlange konnte nicht geladen werden.
 dock_invisible_removed = unsichtbare Zeichen entfernt: {0}
+
+# v1.28.19 Witness — the run conversation surface
+runs_title = Lauf {0}
+runs_askhuman = Antwort ausstehend
+runs_answer_placeholder = Ihre Antwort an den Lauf…
+runs_submit = Antwort senden
+runs_transcript = Verlauf
+runs_empty = Noch keine Ereignisse — der Stream hört mit.
+runs_steer = Lauf steuern (beratend)
+runs_steer_placeholder = Hinweis für den nächsten Engineschritt…
+runs_send = Steuern
+runs_branches = {0} Zweig(e) im Verlauf dieses Laufs
+connect_needed = Mit brain-server verbinden, um diesem Lauf zu folgen.

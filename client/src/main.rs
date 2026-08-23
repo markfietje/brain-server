@@ -14,8 +14,8 @@
 
 use dioxus::prelude::*;
 use panels::{
-    audit, create, data, graph, health, ops, overview, recall, register, review, security,
-    subjects, system, ump,
+    audit, conversation as runs_panel, create, data, graph, health, ops, overview, recall,
+    register, review, security, subjects, system, ump,
 };
 
 // ponytail: api.rs holds Deserialize-only wire-contract types; serde is the
@@ -55,6 +55,10 @@ mod api_proxy;
 mod approvals;
 mod conversation;
 mod slots;
+// v1.28.19 Witness: the persistent /events stream — pure parse/dedup/backoff
+// cores + the envelope→conversation-event adapter; the coroutine driver is
+// thin plumbing over these.
+mod events;
 // 1.28.8 "PluginUI": shell + chat + control panel are separate Cordis-shaped
 // plugins composed through the slot registry by a mount/unmount kernel
 // (declaration = authorization, double-declare fails loud).
@@ -156,6 +160,50 @@ const CONN_FAILURES_BEFORE_DEGRADE: u32 = 2;
 pub(crate) async fn probe_sleep(secs: u64) {
     let js = format!("return await new Promise(r => setTimeout(r, {secs}*1000));");
     let _ = document::eval(&js).await;
+}
+
+/// v1.28.19 Witness: best-effort console warning — mount evidence is fire-
+/// and-forget, so a failed POST must still be visible to the operator.
+fn warn_console(msg: &str) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = document::eval(&format!("console.warn({msg:?});"));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        eprintln!("brain-client: {msg}");
+    }
+}
+
+/// v1.28.19 Witness: post one mount-evidence row per mounted plugin. The plan
+/// is pure (`plugins::mount_evidence_plan`); this is the transport half. A
+/// failure warns and continues — evidence loss is disclosed, never blocking.
+async fn post_mount_evidence(client: &ApiClient, host: &crate::plugins::PluginHost) {
+    let manifest = match client.boot_manifest().await {
+        Ok(m) => Some(m),
+        Err(e) => {
+            warn_console(&format!(
+                "boot manifest unavailable for mount evidence: {e}"
+            ));
+            None
+        }
+    };
+    for ev in crate::plugins::mount_evidence_plan(&host.mounted_names(), manifest.as_ref()) {
+        if let Err(e) = client
+            .plugin_mount_evidence(
+                &ev.plugin,
+                ev.action,
+                ev.bundle_sha256.clone(),
+                ev.bundle_path.clone(),
+            )
+            .await
+        {
+            warn_console(&format!(
+                "mount evidence for `{}` not recorded: {e}",
+                ev.plugin
+            ));
+        }
+    }
 }
 
 /// v1.16.2: the connect-time base URL. An empty field resolves to the same-origin
@@ -268,6 +316,12 @@ struct UiState {
     drawer: Signal<Option<DrawerContent>>,
     /// v1.16.7 M5: the command palette's open state.
     palette_open: Signal<bool>,
+    /// v1.28.19 Witness: the live event stream — newest last, bounded ring.
+    /// One driver at the app root feeds this; panels fold what they need.
+    events: Signal<Vec<crate::events::StreamEvent>>,
+    /// v1.28.19 Witness: consecutive stream failures. ≥2 flips the ops panel
+    /// to its legacy poll fallback (`events::poll_fallback_active`).
+    stream_failures: Signal<u32>,
 }
 
 /// M2.2: typed drawer content. Panels push already-fetched data in (no
@@ -331,6 +385,10 @@ enum Route {
     /// v1.16.7 M1: a deep-linkable specific proposal (share a review card).
     #[route("/review/:proposal_id")]
     ReviewDetail { proposal_id: i64 },
+    /// v1.28.19 Witness: the run conversation — a deep-linkable transcript
+    /// fed by the persistent stream.
+    #[route("/runs/:run_id")]
+    RunConversation { run_id: i64 },
     #[route("/recall")]
     Recall {},
     /// M4.2: deep-linkable decision-path artifact (`?trace=true` → trace_id).
@@ -397,9 +455,14 @@ fn app() -> Element {
     let api = use_context_provider(|| Signal::new(ApiClient::new("", None)));
     // boot composition — ui-shell → ui-chat → ui-control-panel mount
     // into one shared slot registry provided to every panel. A built-in
-    // conflict cannot happen without an edit; if it ever does, fail loud.
-    let _plugins = use_context_provider(|| {
-        crate::plugins::PluginHost::boot().expect("built-in plugin composition must load")
+    // conflict cannot happen without an edit; if it does, fail loud.
+    // v1.28.19 fix: provided as `Signal<PluginHost>` — consumers
+    // (`approvals::ApprovalDock`, mount evidence) read the signal; providing
+    // the bare value made `use_context::<Signal<_>>()` panic at runtime.
+    let plugins = use_context_provider(|| {
+        Signal::new(
+            crate::plugins::PluginHost::boot().expect("built-in plugin composition must load"),
+        )
     });
     // M1/M2: the shared UI-state bundle. Provided once at the root so it
     // survives every route transition (panels read/write via use_context).
@@ -413,6 +476,8 @@ fn app() -> Element {
         auth_failures_count: Signal::new(0),
         drawer: Signal::new(None),
         palette_open: Signal::new(false),
+        events: Signal::new(Vec::new()),
+        stream_failures: Signal::new(0),
     });
 
     // v1.16.8: restore persisted UI prefs (theme / density / locale) on launch.
@@ -447,6 +512,78 @@ fn app() -> Element {
         }
         booted.set(true);
     });
+
+    // ── v1.28.19 Witness: THE persistent event stream ─────────────────
+    // One connection for the whole app (survives route changes), reconnecting
+    // with capped exponential backoff, deduped per coordinate space, folded
+    // into a bounded ring (`ui.events`). After two consecutive failures the
+    // ops panel's legacy 10s poll takes over — degradation, never removal.
+    {
+        let stream_api = api;
+        let stream_ui = ui;
+        use_future(move || async move {
+            let mut dedup = events::EventDedup::default();
+            loop {
+                probe_sleep(1).await;
+                let client = stream_api();
+                if !client.is_configured() {
+                    continue;
+                }
+                let started = std::time::Instant::now();
+                let mut failures = stream_ui.stream_failures;
+                let mut ring = stream_ui.events;
+                let kinds = [
+                    "pending", "expiry", "screen", "chain", "proposal", "workflow",
+                ];
+                let res = client
+                    .stream_events(&kinds, &mut |ev| {
+                        if dedup.admit(&ev) {
+                            ring.with_mut(|v| {
+                                v.push(ev.clone());
+                                let over = v.len().saturating_sub(500);
+                                v.drain(..over);
+                            });
+                        }
+                    })
+                    .await;
+                // A run that stayed open ≥30s was a healthy connection; only
+                // short-lived runs count as consecutive failures.
+                if started.elapsed() >= std::time::Duration::from_secs(30) {
+                    failures.set(0);
+                } else {
+                    failures.set(failures().saturating_add(1));
+                }
+                let _ = res;
+                probe_sleep(events::backoff_secs(failures())).await;
+            }
+        });
+    }
+
+    // ── v1.28.19 Witness: boot mount evidence ──────────────────────────
+    // On every transition into Connected (and once at boot), each mounted
+    // plugin posts its mount evidence with the Anchor-manifest digest. Fire-
+    // and-forget: evidence loss is visible (console warning), never fatal —
+    // the boot itself is fail-closed by Anchor. Uses the GUI/operator token
+    // (Seatbelt's two-token rule: never the agent token).
+    {
+        let evidence_api = api;
+        let evidence_host = plugins;
+        let evidence_conn = ui.conn;
+        use_future(move || async move {
+            let mut last_connected = false;
+            loop {
+                probe_sleep(CONN_PROBE_SECS).await;
+                let connected = evidence_conn() == Conn::Connected;
+                if connected && !last_connected {
+                    last_connected = true;
+                    let host = evidence_host.read().clone();
+                    post_mount_evidence(&evidence_api(), &host).await;
+                } else if !connected {
+                    last_connected = false;
+                }
+            }
+        });
+    }
 
     // v1.16.8 M3/M4/M2: apply theme + density + RTL dir to the document root.
     // Each effect reads its signal, so it re-runs when the pref changes (no
@@ -2121,6 +2258,11 @@ fn Review() -> Element {
 #[component]
 fn ReviewDetail(proposal_id: i64) -> Element {
     review::detail(proposal_id)
+}
+/// v1.28.19 Witness: the run conversation surface.
+#[component]
+fn RunConversation(run_id: i64) -> Element {
+    runs_panel::panel_run(run_id)
 }
 #[component]
 fn Recall() -> Element {

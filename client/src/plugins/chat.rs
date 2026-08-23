@@ -33,7 +33,19 @@ impl Plugin for Chat {
         // the control panel's approval dock (5) and this.
         ctx.register::<InputDock>(crate::slots::SlotSpec::new("queue", 20))?;
         for kind in BUILTIN_NODE_KINDS {
-            ctx.register::<ChatNodeSlot>(crate::slots::SlotSpec::new(kind, 0))?;
+            let spec = crate::slots::SlotSpec::new(kind, 0);
+            // v1.28.19 Witness: the workflow-run registration carries its
+            // surface metadata (lineage timeline + AskHuman card); the other
+            // built-ins stay bare until their renderers land (Cockpit).
+            if *kind == "workflow-run" {
+                ctx.register::<ChatNodeSlot>(spec.with_store(serde_json::json!({
+                    "surface": "conversation",
+                    "timeline": true,
+                    "askhuman": true,
+                })))?;
+            } else {
+                ctx.register::<ChatNodeSlot>(spec)?;
+            }
         }
         Ok(())
     }

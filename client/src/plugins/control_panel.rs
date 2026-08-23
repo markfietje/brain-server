@@ -35,7 +35,17 @@ impl Plugin for ControlPanel {
             crate::slots::SlotSpec::new(APPROVAL_DOCK_KEY, APPROVAL_DOCK_ORDER)
                 .when("role:approve"),
         )?;
-        ctx.register::<ChatNodeSlot>(crate::slots::SlotSpec::new(REVIEW_NODE_KIND, 0))?;
+        ctx.register::<ChatNodeSlot>(
+            crate::slots::SlotSpec::new(REVIEW_NODE_KIND, 0)
+                // v1.28.19 Witness: the keyed dispatch carries real metadata —
+                // the conversation surface renders the digest-bound decision
+                // card through this registration.
+                .with_store(serde_json::json!({
+                    "surface": "conversation",
+                    "decide": true,
+                    "digest_bound": true,
+                })),
+        )?;
         Ok(())
     }
 }

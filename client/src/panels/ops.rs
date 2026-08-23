@@ -126,51 +126,86 @@ pub fn panel() -> Element {
         }
     });
 
-    // v1.20.8 M3: subscribe to the alert feed. A bounded `/events` read on a
-    // ~10s interval (a real streaming EventSource needs a JS→Rust callback
-    // bridge, which the eval-only web target doesn't have — this poll drains
-    // the handshake + buffered alerts each connect and is the honest, testable
-    // equivalent). On each applied alert, bump the matching region's refresh
-    // signal once (the `should_apply` monotonic seq guard dedups a flood) and
-    // set the aria-live announcement. If the feed is unreachable the 30s tick
-    // poll above is the honest degrade — the console never goes silently stale.
+    // v1.28.19 Witness: the panel consumes the ROOT's persistent stream
+    // (`ui.events`) instead of holding its own connection. Each new event
+    // applies through the same monotonic guard + region mapping as before.
+    // The legacy 10s `/events` chunk-and-drop poll below is DEMOTED, not
+    // removed: it wakes only after two consecutive stream failures
+    // (`events::poll_fallback_active`) — the honest degraded mode.
     let alert_line = use_signal(|| "".to_string());
     let last_seq = use_signal(|| 0u64);
-    use_future(move || {
-        let api = api();
+    {
         let mut alert_line = alert_line;
         let mut last_seq = last_seq;
         let mut refresh = refresh;
         let mut tick = tick;
-        async move {
-            loop {
-                crate::probe_sleep(10).await;
-                let Ok(events) = api.alert_events().await else {
-                    continue; // feed unreachable → the tick poll stands in
+        use_effect(move || {
+            let pending = ui.events.read().clone();
+            for e in pending.iter() {
+                let mut last = last_seq();
+                if !should_apply(e.seq, &mut last) {
+                    continue;
+                }
+                last_seq.set(last);
+                let region = region_for(&e.kind);
+                match region {
+                    Some(Region::Pending) | Some(Region::Flagged) => refresh += 1,
+                    Some(Region::Clock) => tick += 1,
+                    None => {}
+                }
+                let msg = match region {
+                    Some(Region::Pending) => crate::i18n::t("alert_queued"),
+                    Some(Region::Flagged) => crate::i18n::t("alert_screen"),
+                    Some(Region::Clock) => crate::i18n::t("alert_expiring"),
+                    None => continue,
                 };
-                for e in events {
-                    let mut last = last_seq();
-                    if !should_apply(e.seq, &mut last) {
+                alert_line.set(msg);
+            }
+        });
+    }
+    // Degraded mode: the v1.20.8 poll, unchanged in behavior, gated on the
+    // stream having failed twice consecutively (one flap never flips it).
+    // Unconditional future, gated body — hooks stay order-stable.
+    {
+        use_future(move || {
+            let api = api();
+            let mut alert_line = alert_line;
+            let mut last_seq = last_seq;
+            let mut refresh = refresh;
+            let mut tick = tick;
+            async move {
+                loop {
+                    crate::probe_sleep(2).await;
+                    if !crate::events::poll_fallback_active((ui.stream_failures)()) {
                         continue;
                     }
-                    last_seq.set(last);
-                    let region = region_for(&e.kind);
-                    match region {
-                        Some(Region::Pending) | Some(Region::Flagged) => refresh += 1,
-                        Some(Region::Clock) => tick += 1,
-                        None => {}
-                    }
-                    let msg = match region {
-                        Some(Region::Pending) => crate::i18n::t("alert_queued"),
-                        Some(Region::Flagged) => crate::i18n::t("alert_screen"),
-                        Some(Region::Clock) => crate::i18n::t("alert_expiring"),
-                        None => continue,
+                    let Ok(events) = api.alert_events().await else {
+                        continue; // feed unreachable → retry after the sleep
                     };
-                    alert_line.set(msg);
+                    for e in events {
+                        let mut last = last_seq();
+                        if !should_apply(e.seq, &mut last) {
+                            continue;
+                        }
+                        last_seq.set(last);
+                        let region = region_for(&e.kind);
+                        match region {
+                            Some(Region::Pending) | Some(Region::Flagged) => refresh += 1,
+                            Some(Region::Clock) => tick += 1,
+                            None => {}
+                        }
+                        let msg = match region {
+                            Some(Region::Pending) => crate::i18n::t("alert_queued"),
+                            Some(Region::Flagged) => crate::i18n::t("alert_screen"),
+                            Some(Region::Clock) => crate::i18n::t("alert_expiring"),
+                            None => continue,
+                        };
+                        alert_line.set(msg);
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 
     let proposals = use_resource(move || {
         let api = api();

@@ -582,3 +582,16 @@ dock_approve_aria = Approuver la proposition #{0}
 dock_reject_aria = Rejeter la proposition #{0}
 dock_load_failed = Impossible de charger la file d'approbation.
 dock_invisible_removed = caractères invisibles supprimés : {0}
+
+# v1.28.19 Witness — the run conversation surface
+runs_title = Exécution {0}
+runs_askhuman = Réponse attendue
+runs_answer_placeholder = Votre réponse à l'exécution…
+runs_submit = Envoyer la réponse
+runs_transcript = Transcription
+runs_empty = Aucun événement pour l'instant — le flux est à l'écoute.
+runs_steer = Guider l'exécution (consultatif)
+runs_steer_placeholder = Consigne pour la prochaine étape du moteur…
+runs_send = Guider
+runs_branches = {0} branche(s) dans l'historique de cette exécution
+connect_needed = Connectez-vous à brain-server pour suivre cette exécution.

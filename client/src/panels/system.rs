@@ -149,14 +149,13 @@ pub fn panel() -> Element {
             } else if m == "DELETE" {
                 api().delete_raw(&p).await
             } else {
-                api().post_raw(&p, b.clone()).await
+                api().post_raw(&p, &b).await
             };
-            match resp {
-                Ok(v) => status.set(Some(Ok(
-                    serde_json::to_string_pretty(&v).unwrap_or_default()
-                ))),
-                Err(e) => status.set(Some(Err(crate::api::error_message(&e)))),
-            }
+            // The raw response body or the human error — never silence.
+            let rendered = resp
+                .map(|v| serde_json::to_string_pretty(&v).unwrap_or_default())
+                .map_err(|e| crate::api::error_message(&e));
+            status.set(Some(rendered));
         });
     };
 

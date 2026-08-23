@@ -625,3 +625,16 @@ dock_approve_aria = Approve proposal #{0}
 dock_reject_aria = Reject proposal #{0}
 dock_load_failed = Could not load the approval queue.
 dock_invisible_removed = invisible characters removed: {0}
+
+# v1.28.19 Witness — the run conversation surface
+runs_title = Run {0}
+runs_askhuman = Answer owed
+runs_answer_placeholder = Your answer to the run…
+runs_submit = Send answer
+runs_transcript = Transcript
+runs_empty = No events yet — the stream is listening.
+runs_steer = Steer the run (advisory)
+runs_steer_placeholder = Guidance for the engine's next step…
+runs_send = Steer
+runs_branches = {0} branch(es) in this run's history
+connect_needed = Connect to brain-server to follow this run.

@@ -127,6 +127,28 @@ fn build_http_client() -> reqwest::Client {
         reqwest::Client::new()
     }
 }
+/// v1.28.19 Witness: the stream client — same handshake bound (5s) but NO
+/// total timeout: a healthy live SSE connection must never be severed by the
+/// request cap the RPC paths need. One shared instance (the client is cheap
+/// to clone internally; rebuilding per reconnect would churn pools).
+fn stream_client() -> reqwest::Client {
+    static STREAM: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    STREAM
+        .get_or_init(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .expect("reqwest stream client build fails only on invalid config")
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                reqwest::Client::new()
+            }
+        })
+        .clone()
+}
 impl ApiClient {
     pub fn new(base: impl Into<String>, token: Option<String>) -> Self {
         Self::with_principal(base, token, None)
@@ -344,13 +366,32 @@ impl ApiClient {
         })
         .await
     }
+    /// v1.28.19 Witness: PUT a JSON body (the workflow CAS state write).
+    async fn put_json<T, B>(&self, path: &str, body: &B) -> Result<T, ApiError>
+    where
+        T: for<'de> Deserialize<'de>,
+        B: Serialize + ?Sized,
+    {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        let body: serde_json::Value =
+            serde_json::to_value(body).map_err(|e| ApiError::Status(500, e.to_string()))?;
+        self.request(move |tok| {
+            let mut rb = http.put(format!("{base}{path}")).json(&body);
+            if let Some(t) = tok {
+                rb = rb.bearer_auth(t);
+            }
+            rb
+        })
+        .await
+    }
     /// v1.17.7 M4: POST a raw text body (the `/ingest/memory` contract reads
     /// the body as a UTF-8 text block, not JSON).
-    pub async fn post_raw(&self, path: &str, body: String) -> Result<serde_json::Value, ApiError> {
+    pub async fn post_raw(&self, path: &str, body: &str) -> Result<serde_json::Value, ApiError> {
         let base = self.base.clone();
         let http = self.http.clone();
         self.request(move |tok| {
-            let mut rb = http.post(format!("{base}{path}")).body(body.clone());
+            let mut rb = http.post(format!("{base}{path}")).body(body.to_string());
             if let Some(t) = tok {
                 rb = rb.bearer_auth(t);
             }
@@ -418,6 +459,234 @@ impl ApiClient {
         }
         Ok(events)
     }
+
+    /// v1.28.19 Witness: the persistent `/events` read — connects with
+    /// `?kinds=` and pumps every complete SSE `data:` envelope to `on_event`
+    /// until the connection drops (then returns; the driver reconnects with
+    /// the capped backoff). Uses a dedicated no-total-timeout client: the
+    /// shared 15s request cap would sever a healthy live stream. Bearer rides
+    /// where browser EventSource cannot (same as [`Self::alert_events`]).
+    pub async fn stream_events(
+        &self,
+        kinds: &[&str],
+        on_event: &mut dyn FnMut(crate::events::StreamEvent),
+    ) -> Result<(), ApiError> {
+        use futures_util::StreamExt;
+        let mut url = format!("{}/events", self.base);
+        if !kinds.is_empty() {
+            url.push_str("?kinds=");
+            url.push_str(&kinds.join(","));
+        }
+        let http = stream_client();
+        let mut rb = http.get(url);
+        if let Some(t) = self.access_token() {
+            rb = rb.bearer_auth(t);
+        }
+        let resp = rb.send().await.map_err(ApiError::Network)?;
+        if !resp.status().is_success() {
+            let code = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ApiError::Status(code, body));
+        }
+        let mut buf = String::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(ApiError::Network)?;
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            let (lines, rest) = crate::events::sse_data_lines(&buf);
+            buf = rest;
+            for line in lines {
+                if let Some(ev) = crate::events::parse_stream_event(&line) {
+                    on_event(ev);
+                }
+            }
+        }
+        // Server closed the stream cleanly — the driver treats this like any
+        // drop and reconnects.
+        Ok(())
+    }
+
+    /// GET /app/boot.json — the Anchor-signed boot manifest (the machine
+    /// seat). Public surface, no bearer. The mount-evidence path reads the
+    /// bundle digest it attests against from here.
+    pub async fn boot_manifest(&self) -> Result<serde_json::Value, ApiError> {
+        let base = self.base.clone();
+        let http = self.http.clone();
+        let resp = http
+            .get(format!("{base}/app/boot.json"))
+            .send()
+            .await
+            .map_err(ApiError::Network)?;
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !code.is_success() {
+            return Err(ApiError::Status(code.as_u16(), body));
+        }
+        serde_json::from_str(&body).map_err(|e| ApiError::Status(500, e.to_string()))
+    }
+
+    /// POST /workflow/plugins/mount — mount/unmount evidence (Art. 12 record-
+    /// keeping). Fire-and-forget at the call site: evidence loss is visible,
+    /// never fatal (the boot itself is fail-closed by Anchor).
+    pub async fn plugin_mount_evidence(
+        &self,
+        plugin: &str,
+        action: &str,
+        bundle_sha256: Option<String>,
+        bundle_path: Option<String>,
+    ) -> Result<serde_json::Value, ApiError> {
+        #[derive(serde::Serialize)]
+        struct MountBody<'a> {
+            plugin: &'a str,
+            action: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            bundle_sha256: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            bundle_path: Option<String>,
+        }
+        let body = MountBody {
+            plugin,
+            action,
+            bundle_sha256,
+            bundle_path,
+        };
+        self.post_json("/workflow/plugins/mount", &body).await
+    }
+
+    // ── v1.28.19 Witness: the workflow surfaces ────────────────────────
+
+    /// POST /workflow/runs — open a governed run.
+    pub async fn workflow_open(
+        &self,
+        domain: &str,
+        kind: &str,
+        state_json: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        #[derive(serde::Serialize)]
+        struct OpenBody<'a> {
+            domain: &'a str,
+            kind: &'a str,
+            state_json: &'a str,
+        }
+        let body = OpenBody {
+            domain,
+            kind,
+            state_json,
+        };
+        self.post_json("/workflow/runs", &body).await
+    }
+
+    /// GET /workflow/runs/{id} — run row + steps (sanitized server-side).
+    pub async fn workflow_run(&self, id: i64) -> Result<serde_json::Value, ApiError> {
+        self.get_json(&format!("/workflow/runs/{id}")).await
+    }
+
+    /// GET /workflow/runs/{id}/state — the live engine state.
+    pub async fn workflow_state(&self, id: i64) -> Result<serde_json::Value, ApiError> {
+        self.get_json(&format!("/workflow/runs/{id}/state")).await
+    }
+
+    /// PUT /workflow/runs/{id}/state — CAS write (`expected_rev`).
+    pub async fn workflow_state_put(
+        &self,
+        id: i64,
+        expected_rev: i64,
+        state_json: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        #[derive(serde::Serialize)]
+        struct PutBody<'a> {
+            expected_rev: i64,
+            state_json: &'a str,
+        }
+        let body = PutBody {
+            expected_rev,
+            state_json,
+        };
+        self.put_json(&format!("/workflow/runs/{id}/state"), &body)
+            .await
+    }
+
+    /// GET /workflow/runs/{id}/events — ordered lineage (optionally one
+    /// event's ancestor chain).
+    pub async fn workflow_events(
+        &self,
+        id: i64,
+        branch: Option<i64>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut path = format!("/workflow/runs/{id}/events");
+        if let Some(b) = branch {
+            path.push_str(&format!("?branch={b}"));
+        }
+        self.get_json(&path).await
+    }
+
+    /// POST /workflow/runs/{id}/answer — THE AskHuman closer. The digest
+    /// binds the answer to the exact question bytes (ReviewArmour posture).
+    pub async fn workflow_answer(
+        &self,
+        id: i64,
+        answer: &str,
+        question_digest: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        #[derive(serde::Serialize)]
+        struct AnswerBody<'a> {
+            answer: &'a str,
+            question_digest: &'a str,
+        }
+        let body = AnswerBody {
+            answer,
+            question_digest,
+        };
+        self.post_json(&format!("/workflow/runs/{id}/answer"), &body)
+            .await
+    }
+
+    /// POST /workflow/runs/{id}/steering — advisory steering (screened,
+    /// ≤4000 chars).
+    pub async fn workflow_steer(
+        &self,
+        id: i64,
+        message: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        #[derive(serde::Serialize)]
+        struct SteerBody<'a> {
+            message: &'a str,
+        }
+        let body = SteerBody { message };
+        self.post_json(&format!("/workflow/runs/{id}/steering"), &body)
+            .await
+    }
+
+    /// POST /workflow/runs/{id}/rewind — rewind-as-branch.
+    pub async fn workflow_rewind(
+        &self,
+        id: i64,
+        to_event_id: i64,
+        reason: &str,
+    ) -> Result<serde_json::Value, ApiError> {
+        #[derive(serde::Serialize)]
+        struct RewindBody<'a> {
+            to_event_id: i64,
+            reason: &'a str,
+        }
+        let body = RewindBody {
+            to_event_id,
+            reason,
+        };
+        self.post_json(&format!("/workflow/runs/{id}/rewind"), &body)
+            .await
+    }
+
+    /// GET /workflow/runs/{id}/handoff — the I-PASS handoff packet.
+    pub async fn workflow_handoff(&self, id: i64) -> Result<serde_json::Value, ApiError> {
+        self.get_json(&format!("/workflow/runs/{id}/handoff")).await
+    }
+
+    /// GET /workflow/scoreboard.
+    pub async fn workflow_scoreboard(&self) -> Result<serde_json::Value, ApiError> {
+        self.get_json("/workflow/scoreboard").await
+    }
+
     /// v1.17.8 M7.3: the console's raw DELETE.
     pub async fn delete_raw(&self, path: &str) -> Result<serde_json::Value, ApiError> {
         let base = self.base.clone();
@@ -733,7 +1002,7 @@ impl ApiClient {
     /// POST /ingest/memory — a markdown-style block of `## [Title]` entries.
     /// The backend parses entries client-free (raw text body, not JSON).
     pub async fn ingest_memory(&self, content: &str) -> Result<serde_json::Value, ApiError> {
-        self.post_raw("/ingest/memory", content.to_string()).await
+        self.post_raw("/ingest/memory", content).await
     }
     /// POST /procedure — an ordered-step procedure in one tx.
     pub async fn procedure_create(

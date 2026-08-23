@@ -582,3 +582,16 @@ dock_approve_aria = Voorstel #{0} goedkeuren
 dock_reject_aria = Voorstel #{0} afwijzen
 dock_load_failed = Kon de goedkeuringswachtrij niet laden.
 dock_invisible_removed = onzichtbare tekens verwijderd: {0}
+
+# v1.28.19 Witness — the run conversation surface
+runs_title = Run {0}
+runs_askhuman = Antwoord vereist
+runs_answer_placeholder = Uw antwoord aan de run…
+runs_submit = Antwoord versturen
+runs_transcript = Transcript
+runs_empty = Nog geen gebeurtenissen — de stream luistert mee.
+runs_steer = Run sturen (advies)
+runs_steer_placeholder = Aansturing voor de volgende stap van de engine…
+runs_send = Sturen
+runs_branches = {0} vertakking(en) in de geschiedenis van deze run
+connect_needed = Verbind met brain-server om deze run te volgen.

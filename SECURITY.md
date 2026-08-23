@@ -182,6 +182,8 @@ mint a JWT with the same jti as a legitimate one, causing a collision."
 | Source revision hashing | `source_revisions.revision` | ✅ |
 | Webhook HMAC verification | `webhook.rs` | ✅ |
 | HITL approval binds to displayed bytes | `approve_proposal` verifies `content_digest` (SHA-256 of the read-canonical form) inside the tx; stale digest → `409` | ✅ v1.27.12 |
+| Signed boot manifest (Ed25519 over the canonical path:bytes:sha256 list); the loader refuses any bundle it cannot certify | `boot.json` + embedded loader; server-verified before an audited mount-evidence row (`409` on uncertified bytes) | ✅ v1.28.12 |
+| Client mount evidence is fire-and-forget: a failed POST warns and continues — evidence loss is visible, never fatal (the boot itself stays fail-closed by Anchor; the GUI posts with the operator token, never the agent token). Honest ceiling: read-time disclosure, not a delivery guarantee. | `POST /workflow/plugins/mount`, client boot driver | ✅ v1.28.19 |
 | Signed releases (GPG + git tag) | `git tag -s` | 🚧 release process |
 
 ### A09:2025 — Security Logging and Alerting Failures ✅ / 🚧

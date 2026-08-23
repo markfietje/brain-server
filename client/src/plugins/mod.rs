@@ -234,6 +234,62 @@ impl PluginHost {
     }
 }
 
+// ── v1.28.19 Witness: boot mount evidence ──────────────────────────────
+
+/// One `POST /workflow/plugins/mount` payload, planned purely so the boot
+/// attestation is pinnable without a runtime. Art. 12 record-keeping: WHO
+/// mounted WHICH plugin composition against WHICH bundle digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountEvidence {
+    pub plugin: String,
+    pub action: &'static str,
+    pub bundle_sha256: Option<String>,
+    pub bundle_path: Option<String>,
+}
+
+/// The bundle digest the client attests with, from the (Anchor-signed) boot
+/// manifest: the `.wasm` entry is the executing UI code; a manifest without
+/// one falls back to its first bundle; an absent/unparsable manifest means
+/// evidence ships WITHOUT a digest (the server refuses digests it never
+/// served, so an unverifiable one must never be invented).
+pub fn manifest_digest(manifest: Option<&serde_json::Value>) -> (Option<String>, Option<String>) {
+    let Some(m) = manifest else {
+        return (None, None);
+    };
+    let Some(bundles) = m["bundles"].as_array() else {
+        return (None, None);
+    };
+    let pick = bundles
+        .iter()
+        .find(|b| b["path"].as_str().is_some_and(|p| p.ends_with(".wasm")))
+        .or_else(|| bundles.first());
+    pick.map_or((None, None), |b| {
+        (
+            b["sha256"].as_str().map(str::to_string),
+            b["path"].as_str().map(str::to_string),
+        )
+    })
+}
+
+/// The evidence plan for one boot: exactly one `mount` per mounted plugin,
+/// each carrying the same manifest digest (compile-time plugins ship inside
+/// the single UI bundle — per-plugin digests do not exist).
+pub fn mount_evidence_plan(
+    names: &[&str],
+    manifest: Option<&serde_json::Value>,
+) -> Vec<MountEvidence> {
+    let (sha, path) = manifest_digest(manifest);
+    names
+        .iter()
+        .map(|n| MountEvidence {
+            plugin: (*n).to_string(),
+            action: "mount",
+            bundle_sha256: sha.clone(),
+            bundle_path: path.clone(),
+        })
+        .collect()
+}
+
 /// Per-mount registration handle. Bound to one plugin's owner id and declared
 /// families; every successful registration is journaled so the host can undo it.
 pub struct PluginCtx<'a> {
@@ -465,5 +521,72 @@ mod tests {
         // Order is data: approval(5) < queue(20) < the third party's probe(50).
         let keys: Vec<&str> = docks.iter().map(|d| d.key.as_str()).collect();
         assert_eq!(keys, vec!["approval", "queue", "probe"]);
+    }
+
+    // ── v1.28.19 Witness: boot mount evidence ──────────────────────────
+
+    /// Every boot plans exactly one mount evidence per mounted plugin — the
+    /// three built-ins, once each, in boot order.
+    #[test]
+    fn boot_posts_mount_evidence_for_all_three_plugins_once() {
+        let host = PluginHost::boot().expect("boot");
+        let plan = mount_evidence_plan(&host.mounted_names(), None);
+        assert_eq!(
+            plan.iter().map(|e| e.plugin.as_str()).collect::<Vec<_>>(),
+            vec!["ui-shell", "ui-chat", "ui-control-panel"]
+        );
+        assert!(plan.iter().all(|e| e.action == "mount"));
+        // Re-planning is stable (idempotent shape, no duplicates).
+        let again = mount_evidence_plan(&host.mounted_names(), None);
+        assert_eq!(plan, again);
+    }
+
+    /// The digest attested comes from the Anchor-signed boot manifest —
+    /// `.wasm` (the executing UI bundle) preferred; an absent manifest never
+    /// invents a digest (the server refuses unserved ones, so evidence ships
+    /// metadata-only instead of lying).
+    #[test]
+    fn mount_evidence_carries_manifest_digest() {
+        let manifest = serde_json::json!({
+            "bundles": [
+                {"path": "/app/assets/main.js", "sha256": "a".repeat(64)},
+                {"path": "/app/assets/brain.wasm", "sha256": "b".repeat(64)},
+            ]
+        });
+        let (sha, path) = manifest_digest(Some(&manifest));
+        assert_eq!(path.as_deref(), Some("/app/assets/brain.wasm"));
+        assert_eq!(sha.as_deref(), Some("b".repeat(64).as_str()));
+        let plan = mount_evidence_plan(&["ui-shell"], Some(&manifest));
+        assert_eq!(
+            plan[0].bundle_sha256.as_deref(),
+            Some("b".repeat(64).as_str())
+        );
+
+        // No .wasm entry → first bundle.
+        let plain = serde_json::json!({"bundles":[{"path":"/app/x.js","sha256":"c".repeat(64)}]});
+        assert_eq!(
+            manifest_digest(Some(&plain)).0.as_deref(),
+            Some("c".repeat(64).as_str())
+        );
+        // Absent / malformed manifest → no digest invented.
+        assert_eq!(manifest_digest(None), (None, None));
+        assert_eq!(manifest_digest(Some(&serde_json::json!({}))), (None, None));
+        let bare = mount_evidence_plan(&["ui-shell"], None);
+        assert_eq!(bare[0].bundle_sha256, None);
+        assert_eq!(bare[0].bundle_path, None);
+    }
+
+    /// Failure policy (the documented ceiling): evidence is fire-and-forget —
+    /// the transport half logs a warning and continues, it never blocks boot.
+    /// Source-pinned because the policy lives in main.rs's async half.
+    #[test]
+    fn mount_evidence_failure_warns_not_blocks() {
+        let src = include_str!("../main.rs");
+        assert!(
+            src.contains("mount evidence for `{}` not recorded"),
+            "a failed POST must be disclosed via warn_console"
+        );
+        // The plan builder itself cannot fail: absent manifest → bare rows,
+        // so planning never blocks on Anchor being unconfigured either.
     }
 }

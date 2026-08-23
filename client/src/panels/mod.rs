@@ -6,6 +6,9 @@
 pub mod audit;
 pub mod console;
 pub mod consolidate;
+/// v1.28.19 Witness: the /runs/:run_id conversation surface — the run
+/// transcript (assembler-fed nodes), the AskHuman answer card, steering.
+pub mod conversation;
 pub mod create;
 pub mod data;
 pub mod graph;
