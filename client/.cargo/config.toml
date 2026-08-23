@@ -1,5 +1,20 @@
 # v1.28.20 Cockpit M4: size-optimize the wasm target (the dx CLI applies
 # [web.wasm_opt] only to its own bundles; this makes the raw `cargo build
 # --target wasm32-unknown-unknown` CI path match the shipped posture).
+#
+# v1.28.21: keep the build wasm-split-compatible (dx build --wasm-split).
+# The splitter needs relocation records AND function names to partition the
+# binary, so `strip=symbols` is out — it erased the name section and
+# wasm-split failed with "Failed to find `main` function". strip=debuginfo
+# drops only DWARF (the size bulk); the name section survives for splitting,
+# then dx's wasm-opt pass strips it from the SHIPPED artifact.
+# `link-arg=--emit-relocs` feeds the splitter's call-graph reconstruction.
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "opt-level=z", "-C", "strip=symbols"]
+rustflags = [
+    "-C",
+    "opt-level=z",
+    "-C",
+    "strip=debuginfo",
+    "-C",
+    "link-arg=--emit-relocs",
+]

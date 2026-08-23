@@ -22,6 +22,13 @@ base_path = "app"
 [web.wasm_opt]
 level = "z"
 
+# v1.28.21: `dx build --platform web --release --wasm-split` is enabled and
+# green. Requires .cargo/config.toml's wasm32 rustflags to keep function
+# names (--emit-relocs + strip=debuginfo); no #[wasm_split] boundaries are
+# annotated yet — the splitter runs and emits main + one empty chunk.
+# Annotating lazy boundaries (heavy panels) is the follow-up once a real
+# second module earns its fetch.
+
 [tailwind]
 # Dioxus 0.7 auto-detects tailwind.css and downloads the binary.
 # input/output are optional overrides.
