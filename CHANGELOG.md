@@ -31,6 +31,11 @@ Every engine tool-effect goes through one mediated, countable, auditable door. T
 - New mediated tool: `knowledge_suggest` — the domain-scoped, quarantine-clean (`flagged = 0`) suggestion read, sanitized before it crosses the boundary; cross-domain rows never answer.
 - Engines are countable: every canonicalized dispatch tallies into a per-run counter map (denials count too), surfaced additively as `CrankReport.hostcalls` — the audit chain stays the durable count.
 
+**Bug fixes**
+
+- `/workflow/scoreboard` no longer 500s: the audited-run linkage queried a plain-text `audit_events.target` column that the migrated DDL never had (same dead-code class as the removed executor INSERTs). The set now reconstructs via `hash("run:{id}")` membership over `target_hash` — the canonical target every run-bound substrate write emits — and stays fail-closed (unparseable/unlinkable = not green). Pinned by an in-memory DB regression test.
+- Client binaries (`brain`, `mcp`, `bench`, `brain-connector-stub`, `brain-connector-gh`) sent the WHOLE multi-line rotation token file as one Authorization header value; the embedded newline corrupted the request into an empty-body 400 before auth ran. All five now send exactly one slot via the shared `first_token` helper in `bin_common/http.rs` (pinned), which also fixes MCP `brain_search`/`ump.*` calls against rotation-slot files.
+
 **Security fixes**
 
 - Engine exec is fail-closed by default: `BRAIN_ENGINE_EXEC_ALLOWLIST` empty/absent = deny ALL exec, and the global deny still outranks any per-engine grant for other capabilities. Destructive commands are refused by the SDK mediation table even when allowlisted.
