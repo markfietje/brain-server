@@ -117,6 +117,10 @@ pub const SCHEMA_VERSION_V1_28_23: &str = "1.28.23";
 /// windows + declared overlap budgets). One-way; the down-migration is a
 /// documented no-op (keep table, drop code).
 pub const SCHEMA_VERSION_V1_28_25: &str = "1.28.25";
+/// v1.28.26 "Crew": the `presence` / `principal_skills` / `crew_config`
+/// tables (additive; people-visibility without a background worker). One-way;
+/// the down-migration is a documented no-op (keep tables, drop code).
+pub const SCHEMA_VERSION_V1_28_26: &str = "1.28.26";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

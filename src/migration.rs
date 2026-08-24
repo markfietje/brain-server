@@ -1776,7 +1776,47 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.26 "Crew": colleagues become visible. ─────────────────────
+    // Presence piggybacks on authenticated activity: every mutating request
+    // upserts one row per (domain, principal) INSIDE the caller's existing
+    // transaction — there is no background worker and no heartbeat. Reads
+    // compute TTL decay (active < 5 min, away < 30, offline beyond).
+    // `principal_skills` are HITL-maintained: the ONLY write path is the
+    // approval of a `crew_skills_update` proposal. `crew_config` is the DPO
+    // switch — presence reads fail open to HIDDEN when the config cannot be
+    // trusted.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS presence(
+            domain           TEXT NOT NULL,
+            principal        TEXT NOT NULL,
+            ts               INTEGER NOT NULL,
+            activity_kind    TEXT NOT NULL,
+            current_case_ref TEXT,
+            roles_json       TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY(domain, principal)
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS principal_skills(
+            domain     TEXT NOT NULL,
+            principal  TEXT NOT NULL,
+            skill      TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(domain, principal, skill)
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS crew_config(
+            domain           TEXT PRIMARY KEY,
+            presence_enabled INTEGER NOT NULL DEFAULT 1
+         );",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.26 "Crew": presence + principal_skills + crew_config tables → 1.28.26.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
     // v1.27.25 "Scoped": idx_rels_open_unique partial unique index (+ dedup) → 1.27.25.
@@ -1790,8 +1830,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.25')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.25';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.26')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.26';",
         [],
     )?;
 
