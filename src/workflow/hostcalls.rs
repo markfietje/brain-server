@@ -313,8 +313,12 @@ fn exec_effect(body: &str) -> Result<ExecOutput, String> {
     if !argv0_allowed(&argv0, &exec_allowlist()) {
         return Err("argv0 not in exec allowlist".into());
     }
-    exec_mediation(&format!("{argv0} {}", argv.join(" ")))
-        .map_err(|e| format!("dangerous command refused: {e}"))?;
+    // Danger-screen runs per argv element — a file argument containing
+    // shell metacharacters must not evade (or falsely trip) heuristics that
+    // reason about tokenization of a re-joined command line.
+    for arg in std::iter::once(&argv0).chain(argv.iter()) {
+        exec_mediation(arg).map_err(|e| format!("dangerous command refused: {e}"))?;
+    }
 
     let cwd = workdir();
     if !cwd.is_dir() {
@@ -327,6 +331,14 @@ fn exec_effect(body: &str) -> Result<ExecOutput, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // The child gets a MINIMAL environment, never the server's: env_clear
+    // then re-add only what a sane tool needs. Secrets (audit-chain key,
+    // bearer tokens, JWT keys) and configuration must not be exfiltratable
+    // by any allowlisted program that prints its environment.
+    cmd.env_clear();
+    cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+    cmd.env("HOME", &cwd);
+    cmd.env("TMPDIR", std::env::temp_dir());
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     // Drain stdout/stderr on threads so a chatty child can never wedge on a
     // full pipe while we poll for exit; each stream is capped at 64 KiB.
@@ -975,6 +987,30 @@ mod tests {
         // handler's run-scoped denial — only the latter lands on `acme`.
         let acme_denials = rows.iter().filter(|(_, s)| s == "denied").count();
         assert_eq!(acme_denials, 1, "exactly one run-scoped denial audited");
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") };
+    }
+
+    #[test]
+    fn exec_child_gets_minimal_environment_not_the_servers() {
+        let _g = env_lock();
+        unsafe { std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/usr/bin/env") };
+        // A canary the child must NOT see: the server's own configuration.
+        unsafe { std::env::set_var("BRAIN_ENGINE_WORKDIR", std::env::temp_dir()) };
+        let ctx = build(host(), "engine-a");
+        let out = ctx
+            .dispatch("exec", "1", r#"{"argv":["/usr/bin/env"]}"#)
+            .unwrap_or_else(|e| panic!("env exec should run: {e}"));
+        let text = String::from_utf8_lossy(out.as_bytes());
+        assert!(
+            !text.contains("BRAIN_ENGINE_EXEC_ALLOWLIST"),
+            "allowlist config leaked into the child env"
+        );
+        assert!(
+            !text.contains("AUDIT_CHAIN_KEY"),
+            "audit key must never reach a child"
+        );
+        assert!(text.contains("PATH="), "minimal PATH is provided");
+        assert!(text.contains("TMPDIR="), "TMPDIR is provided");
         unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") };
     }
 

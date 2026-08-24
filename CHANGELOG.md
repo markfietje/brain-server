@@ -38,6 +38,41 @@ The KCS v6 double loop, wired to the substrate that already implements most of i
 - **Security fixes:** none (no auth/gate changes; both new routes are role-gated and audited).
 - Tests: server main bin **838** / 6 ignored (**+25**: the eight plan-named pins — two in the SDK pure core, six server-side — plus guard/coverage updates), lib **182** / 1 (unchanged), brain 19, mcp **32** (+2), eval 4, metrics 8; sdk **108** / 0 (**+3**); steward-harness **17** / 0 (unchanged); client **228** / 0 (unchanged count; +1 Evolve render pin inside existing suites). clippy `-D warnings` + fmt clean on ALL FOUR workspace nodes; otel gate 1110 passed; UMP conformance L3 green; recall floor r@5 0.976 / r@10 0.991 / mrr 0.956 (CI recipe, scratch instance).
 
+### Security fixes (deep hardening pass over v1.28.15–v1.28.22)
+- **HIGH — mediated exec no longer leaks the server's environment.** Engine-spawned
+  processes now run with a minimal env (`env_clear` + PATH/HOME/TMPDIR); the
+  audit-chain key, bearer tokens, and JWT material can never be exfiltrated by an
+  allowlisted program that prints its environment
+  (`exec_child_gets_minimal_environment_not_the_servers`).
+- **MCP streamable-HTTP transport hardened from all angles:** non-loopback binds
+  without `MCP_HTTP_TOKEN` now REFUSE to boot (fail-closed — the unauthenticated
+  LAN tool surface is gone); per-peer rate limiting (240 req/min, bounded key map,
+  poison-tolerant lock) sits BEFORE token work; browser-attested `Origin` headers
+  must be loopback (DNS-rebinding posture, IPv6-literal safe); request bodies are
+  capped DURING the read (`DefaultBodyLimit` + `to_bytes` bound → 413), never
+  buffered-then-checked; GET/DELETE probes get 401 for unauthenticated callers
+  (no configuration-distinguishing surface); bearer comparison is constant-time;
+  upstream error bodies are logged to stderr and genericized before reaching any
+  LLM context.
+- **MCP stdio: the line cap finally caps.** The old `read_line` guard fired only
+  after buffering the whole line; reads are now chunked and stop at
+  `MAX_LINE_BYTES` — a multi-GB newline-free stream produces bounded `-32700`
+  refusals, not an OOM.
+- **Rewind role gate judges the right store:** the `approve` capability is now
+  checked against the RUN'S DOMAIN pool, not the global one; CAS conflicts
+  surface as `409 cas_stale` instead of a 500.
+- **Handoff packet read-seam parity:** `intent`, `is_seed`, `is_not_seed`, and
+  `pending_question` pass `sanitize_read` like every other emitted stored-text
+  field (user input lands in run state legitimately via steering/rewind/CRM).
+- **SSE replay amplification bounded:** Last-Event-ID backfill is capped globally
+  (1,000 events across all domains); the workflow-payload shared-broadcast
+  posture (sanitize-once, machine-data, PII enforced at write time) is documented
+  where it lives.
+- **CRM connector lows closed:** Genesys pagination is page-capped (50/run,
+  resumes next tick) so a hostile endpoint cannot spin the connector; vendor
+  contact ids are percent-encoded before URL-path use; Salesforce SOQL interpolates
+  only persisted modstamps that pass a strict ISO-8601 shape check.
+
 ### Engineering record
 - Named pins: `closed_case_generates_kcs_proposal_with_four_sections`,
   `gap_rule_selects_new_update_or_link_only`,
