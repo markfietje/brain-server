@@ -64,7 +64,33 @@ pub fn urlencode(s: &str) -> String {
 }
 
 /// The SOQL query URL for cases modified after `last` (ISO-8601 modstamp).
+/// The persisted timestamp is validated against a strict ISO-8601 shape
+/// BEFORE interpolation — the state file is operator-owned (0600), but a
+/// tampered value must never reach the query grammar.
 pub fn query_url(base: &str, api_version: &str, last: Option<&str>) -> String {
+    let iso_ok = |ts: &str| {
+        // Hand-rolled shape check (no regex dep): 20-char canonical form
+        // `YYYY-MM-DDTHH:MM:SSZ` or longer with fractional seconds.
+        let b = ts.as_bytes();
+        b.len() >= 20
+            && b[4] == b'-'
+            && b[7] == b'-'
+            && b[10] == b'T'
+            && b[13] == b':'
+            && b[16] == b':'
+            && *b.last().unwrap_or(&b' ') == b'Z'
+            && b[..19]
+                .iter()
+                .enumerate()
+                .all(|(i, c)| matches!(i, 4 | 7 | 10 | 13 | 16) || c.is_ascii_digit())
+    };
+    let last = last.filter(|ts| {
+        let ok = iso_ok(ts);
+        if !ok {
+            tracing::warn!("salesforce: ignoring malformed persisted modstamp");
+        }
+        ok
+    });
     let soql = match last {
         Some(ts) => format!(
             "SELECT Id, CaseNumber, Subject, Status, Priority, SystemModstamp, Description \

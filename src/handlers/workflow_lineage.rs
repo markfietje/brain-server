@@ -211,6 +211,7 @@ pub struct RewindRequest {
 enum RewindErr {
     Target(String),
     Corrupt(String),
+    Conflict(String),
     Gone,
 }
 
@@ -244,7 +245,9 @@ pub async fn post_rewind(
     let to_event = body.to_event_id;
     let domain = run_domain(&state, id).await?;
     crate::handlers::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
-    let pool = crate::handlers::resolve_domain_pool(&state.registry, None)?;
+    // The role store is per-domain: judge the approve capability against the
+    // run's OWN domain pool, never the global one.
+    let pool = crate::handlers::resolve_domain_pool(&state.registry, Some(&domain))?;
     crate::handlers::authorize_role(&principal, &pool, "approve")?;
 
     let result: Result<i64, RewindErr> =
@@ -308,7 +311,7 @@ pub async fn post_rewind(
             let new_json = serde_json::to_string(&st)
                 .map_err(|e| RewindErr::Corrupt(format!("serialize: {e}")))?;
             crate::workflow::state::cas_update(tx.tx(), id, rev, &new_json, "active", now)
-                .map_err(|_| RewindErr::Corrupt("cas conflict during rewind".to_string()))?;
+                .map_err(|e| RewindErr::Conflict(format!("{e:?}")))?;
             crate::workflow::audit_write(
                 tx.tx(),
                 id,
@@ -329,6 +332,11 @@ pub async fn post_rewind(
             "branched_from": to_event,
         }))),
         Err(RewindErr::Target(m)) => Err(HandlerError::bad_request("rewind_target_invalid", m)),
+        Err(RewindErr::Conflict(m)) => Err(HandlerError::conflict_with(
+            "cas_stale",
+            "run state was advanced concurrently — reload and re-branch",
+            serde_json::json!({ "detail": m }),
+        )),
         Err(RewindErr::Gone) => Err(HandlerError::not_found("workflow run not found")),
         Err(RewindErr::Corrupt(m)) => Err(HandlerError::internal(m)),
     }
@@ -438,21 +446,29 @@ pub async fn get_handoff(
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| created_at + brain_engine_sdk::policy::Priority::P3.ttl_secs());
         let facts = brain_engine_sdk::pure::handoff::HandoffFacts {
-            intent: st
-                .get("intent")
-                .and_then(|v| v.as_str())
-                .unwrap_or(kind.as_str())
-                .to_string(),
-            is_seed: st
-                .get("is_seed")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            is_not_seed: st
-                .get("is_not_seed")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
+            // Read-seam parity: state-derived strings are stored text —
+            // user input lands in run state legitimately (steering, rewind
+            // reasons, CRM symptom fields), so EVERY emitted field passes
+            // sanitize_read like the opening event always did.
+            intent: crate::gate::sanitize_read(
+                st.get("intent").and_then(|v| v.as_str()).unwrap_or(&kind),
+                false,
+                &reader,
+            ),
+            is_seed: crate::gate::sanitize_read(
+                st.get("is_seed")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+                false,
+                &reader,
+            ),
+            is_not_seed: crate::gate::sanitize_read(
+                st.get("is_not_seed")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default(),
+                false,
+                &reader,
+            ),
             opening_event: opening.map(|o| crate::gate::sanitize_read(&o, false, &reader)),
             domain: domain.clone(),
             // The Patient section already carries the domain header; rows add
@@ -464,7 +480,7 @@ pub async fn get_handoff(
             pending_question: st
                 .get("pending_question")
                 .and_then(|v| v.as_str())
-                .map(str::to_string),
+                .map(|q| crate::gate::sanitize_read(q, false, &reader)),
             sla_deadline: Some(sla_deadline),
             now,
             legal_hold_active: held > 0,

@@ -238,7 +238,14 @@ async fn workflow_replay_since(
     let principal = principal.clone();
     tokio::task::spawn_blocking(move || {
         let mut out = Vec::new();
+        // Global replay cap: the per-domain batch multiplies by registered
+        // domain count, so one reconnect with a stale Last-Event-ID must
+        // still materialize a bounded set. The client resumes by reconnecting.
+        const REPLAY_TOTAL_CAP: usize = 1000;
         for domain in state.registry.known_domains() {
+            if out.len() >= REPLAY_TOTAL_CAP {
+                break;
+            }
             if crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &domain)
                 .is_err()
             {
@@ -270,6 +277,9 @@ async fn workflow_replay_since(
                 })
                 .unwrap_or_default();
             for (id, run_id, topic, payload_json, parent_event_id) in rows {
+                if out.len() >= REPLAY_TOTAL_CAP {
+                    break;
+                }
                 let payload_json = crate::gate::sanitize_stored(&payload_json, false, &None);
                 out.push(json!({
                     "kind": ALERT_KIND_WORKFLOW,
@@ -325,6 +335,14 @@ const WORKFLOW_DRAIN_BATCH: i64 = 100;
 /// topics (steering, intake) are never touched: engines consume those through
 /// their own surfaces. Returns the number of events published.
 pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
+    // Posture (documented ceiling): workflow payloads are machine-to-machine
+    // state — they are sanitized ONCE at drain time with the
+    // superuser-equivalent seam and `pii=false`, then fanned out to every
+    // subscriber who passes that event's run-domain Read gate. Per-subscriber
+    // PII redaction cannot exist on a shared broadcast; engines need payloads
+    // byte-intact for CAS. The no-PII-in-run-state guarantee is therefore
+    // enforced at WRITE time (steering/answer are prompt-screened at their
+    // routes), not by redaction here.
     let mut published = 0usize;
     for domain in state.registry.known_domains() {
         let Ok(pool) = state.registry.pool_for(&domain) else {

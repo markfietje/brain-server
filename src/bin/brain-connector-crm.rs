@@ -188,7 +188,18 @@ fn main() -> Result<()> {
             let mut contacts: HashMap<String, String> = HashMap::new();
             let mut after: Option<String> = cursor.take();
             let mut n = 0;
+            // The pagination loop is server-cursor-driven: bound it (and the
+            // contact map) so a misbehaving endpoint cannot spin the
+            // connector indefinitely. Exceeding the page cap resumes on the
+            // next cron tick from the persisted cursor.
+            const MAX_PAGES: usize = 50;
+            let mut pages = 0usize;
             loop {
+                pages += 1;
+                if pages > MAX_PAGES {
+                    tracing::warn!("genesys: page cap ({MAX_PAGES}) reached — resuming next tick");
+                    break;
+                }
                 let url = crm::genesys::workitems_url(&base, worktype, after.as_deref());
                 let body = t.get_json(&url, &auth)?;
                 // Resolve customer identities through externalcontacts BEFORE
@@ -201,8 +212,11 @@ fn main() -> Result<()> {
                             if cid.is_empty() || contacts.contains_key(cid) {
                                 continue;
                             }
+                            // Vendor-controlled id: percent-encode before it
+                            // touches a URL path (traversal/splitting hygiene).
+                            let cid_enc: String = crm::salesforce::urlencode(cid);
                             if let Ok(rec) = t.get_json(
-                                &format!("{base}/api/v2/externalcontacts/contacts/{cid}"),
+                                &format!("{base}/api/v2/externalcontacts/contacts/{cid_enc}"),
                                 &auth,
                             ) {
                                 let canon = rec.get("id").and_then(|i| i.as_str()).unwrap_or(cid);
