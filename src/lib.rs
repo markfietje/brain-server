@@ -77,6 +77,8 @@ pub mod proposal_events;
 // agent-bound text with. `src/gate.rs` re-exports `strip_markdown_refs` so
 // the server surface keeps its existing call path (single definition).
 pub mod fence;
+pub mod kb;
+pub mod pii_mask;
 
 // The embedding abstraction: the trait + the static
 // (default) backend + the feature-gated neural (bge-m3) backend. Lives in the
