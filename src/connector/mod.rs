@@ -45,6 +45,7 @@
 //! resumes from the last committed checkpoint without duplicating.
 
 pub mod auth;
+pub mod crm;
 #[cfg(feature = "connector-github")]
 pub mod github;
 pub mod kind;

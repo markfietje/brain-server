@@ -187,6 +187,40 @@ See [Client GUI](./client-gui.md).
 
 ---
 
+## CRM case intake (v1.28.22 "Bridges")
+
+`brain-connector-crm` (feature `connector-crm`) pulls support cases from
+Zendesk, Salesforce, or Genesys Cloud into the universal loop — operator-
+cranked via cron, one loop per invocation. Case bodies enter as proposals
+under `BRAIN_WRITE_POSTURE=review`; envelopes open governed runs and post
+`crm/case/updated` / `crm/case/closed` events. Config: 0600 JSON in
+`~/.config/brain-server/connectors/` (`zendesk-*.json` =
+`{subdomain, email, api_token_file}`; `salesforce-*.json` =
+`{instance_url, client_id, client_secret_file, api_version?}`;
+`genesys-*.json` = `{region, client_id, client_secret_file, worktype?, org_id?}`).
+
+```cron
+# Zendesk — every 5 minutes (respects the ~10 req/min incremental cap)
+*/5 * * * * brain-connector-crm --source zendesk \
+  --config ~/.config/brain-server/connectors/zendesk-acme.json \
+  --checkpoint ~/.openclaw/workspace/brain.db >> ~/Library/Logs/brain-crm.log 2>&1
+
+# Salesforce — incremental by SystemModstamp
+*/5 * * * * brain-connector-crm --source salesforce \
+  --config ~/.config/brain-server/connectors/salesforce-acme.json \
+  --checkpoint ~/.openclaw/workspace/brain.db >> ~/Library/Logs/brain-crm.log 2>&1
+
+# Genesys Cloud — workitems by worktype
+*/10 * * * * brain-connector-crm --source genesys \
+  --config ~/.config/brain-server/connectors/genesys-acme.json \
+  --checkpoint ~/.openclaw/workspace/brain.db >> ~/Library/Logs/brain-crm.log 2>&1
+```
+
+Cursors persist in `crm-state-{source}-{org}.json` beside each config file.
+Custom CRMs: see [connector-crm-custom.md](./connector-crm-custom.md).
+
+---
+
 ## Next steps
 
 - [Architecture](./architecture.md) — how the pieces fit together.

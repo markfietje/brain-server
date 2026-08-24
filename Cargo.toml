@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.28.21"
+version = "1.28.22"
 edition = "2024"
 rust-version = "1.98"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
@@ -29,6 +29,11 @@ compliance-pack = []
 # HTTP), so this feature gates only the brain-connector-gh binary (M2.2).
 # Enable when building that binary.
 connector-github = []
+# v1.28.22 "Bridges": the CRM case connectors (Zendesk / Salesforce / Genesys
+# Cloud) + the brain-connector-crm binary. Gates only the networked transport
+# adapters and the binary; the pure contract, mappers, linkage, and sync-loop
+# tests ship in the default build so CI runs them ungated.
+connector-crm = []
 # v1.4.0 "Calibrate" M4: multi-vector retrieval (embedding ensemble). RESERVED
 # but currently a no-op — deferred per the plan's lazy-dev escape hatch ("if
 # the feature isn't worth the watts, defer it"). Cannot be measured until M5's
@@ -253,6 +258,12 @@ path = "src/bin/brain-connector-stub.rs"
 name = "brain-connector-gh"
 path = "src/bin/brain-connector-gh.rs"
 required-features = ["connector-github"]
+
+# v1.28.22 "Bridges": one binary, three CRM sources (--source selected).
+[[bin]]
+name = "brain-connector-crm"
+path = "src/bin/brain-connector-crm.rs"
+required-features = ["connector-crm"]
 
 [profile.release]
 # v1.28.5 "Groundwork" (M6): opt-level "z" (size-minimal) → 2 (speed) — the

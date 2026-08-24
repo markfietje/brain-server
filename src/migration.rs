@@ -1659,6 +1659,26 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // ── v1.28.22 "Bridges": the case↔run linkage. ───────────────────────
+    // One row per CRM case ever synced, keyed on the stable `case_ref`
+    // (`crm:{source}:{org}:{id}`). `run_id` is the governed run whose state
+    // carries the same ref — the invariant Evolve's capture trigger depends
+    // on. Written by the brain-connector-crm binary (idempotent upsert);
+    // additive + rollback-safe.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS crm_cases(
+            case_ref    TEXT PRIMARY KEY,
+            source      TEXT NOT NULL,
+            org_id      TEXT NOT NULL,
+            case_id     TEXT NOT NULL,
+            run_id      INTEGER REFERENCES workflow_runs(id),
+            status      TEXT NOT NULL,
+            updated_rev TEXT NOT NULL,
+            synced_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+         );",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
@@ -1673,8 +1693,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.18')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.18';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.22')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.22';",
         [],
     )?;
 

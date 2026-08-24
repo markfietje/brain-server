@@ -53,6 +53,11 @@ use brain_server::migration::migrate_down_0_9_0;
 use brain_server::migration::run_migration; // tests use the 512-default; boot uses run_migration_with_store_dim
 use brain_server::migration::run_migration_with_store_dim;
 use brain_server::register_sqlite_vec::register_sqlite_vec;
+// The secret-file mode-check seam, re-exported so shared modules compiled in
+// this tree (connector/crm) reach it via the same `crate::secret_file` path
+// as the lib tree.
+#[allow(unused_imports)]
+pub(crate) use brain_server::secret_file;
 mod alert;
 mod auth;
 mod breach;
@@ -10206,6 +10211,8 @@ Final paragraph after the rule.";
             "outbox",
             "findings",
             "contradictions",
+            // v1.28.22 "Bridges": the case↔run linkage.
+            "crm_cases",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10403,10 +10410,11 @@ Final paragraph after the rule.";
         // v1.27.30 for the five governed-workflow tables (the Spine substrate).
         // v1.27.31 for the audit head pin schema_meta stamp (AuditRepair M3).
         // The Lineage release for outbox.parent_id (additive event ancestry).
+        // Bridges for the crm_cases case↔run linkage table.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_18),
-            "schema_version must be recorded as 1.28.18 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_22),
+            "schema_version must be recorded as 1.28.22 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -14665,6 +14673,70 @@ Final paragraph after the rule.";
             ),
             "answered run cranks straight to Done: {v}"
         );
+    }
+
+    /// Seatbelt (Bridges): a CRM case body — untrusted connector content —
+    /// delivered through the UMP single-record path under
+    /// BRAIN_WRITE_POSTURE=review lands as a pending PROPOSAL, never a
+    /// knowledge row. The HITL gate applies to CRM content exactly as to
+    /// web content.
+    #[tokio::test]
+    async fn case_body_routes_to_proposal_under_review_posture() {
+        use tower::ServiceExt;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let app = axum::Router::new()
+            .route("/ingest", axum::routing::post(handlers::ingest::ingest))
+            .with_state(state.clone());
+
+        let prev = std::env::var("BRAIN_WRITE_POSTURE").ok();
+        unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", "review") };
+
+        let body = serde_json::json!({
+            "ump": "1.0",
+            "records": [{
+                "ump": "1.0",
+                "id": "urn:crm:crm://zendesk/acme/42",
+                "kind": "working",
+                "body": {
+                    "text": "# Cannot reset PIN\n\nCustomer locked out after 2FA move.",
+                    "structured": {"title": "Cannot reset PIN"}
+                }
+            }]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/ingest?format=ump")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .expect("request builds"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") };
+        }
+
+        let conn = state.pool.get().unwrap();
+        let knowledge: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(knowledge, 0, "CRM case body must not write memory directly");
+        let proposals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE status='pending' AND content LIKE '%Cannot reset PIN%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(proposals, 1, "case body lands in the review queue");
     }
 
     /// Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the agent-facing

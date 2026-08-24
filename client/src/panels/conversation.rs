@@ -657,9 +657,8 @@ pub fn panel_run(run_id: i64) -> Element {
                 // The session-age badge — the run is ONE unbounded
                 // session; the badge states its age instead of any "new
                 // session" affordance (there is none, by design).
-                if let Some((events, ckpts, oldest)) = lineage_ok
-                    .as_ref()
-                    .and_then(|l| session_age(l))
+                if let Some((events, ckpts, oldest)) =
+                    lineage_ok.as_ref().and_then(session_age)
                 {
                     p { class: "text-xs text-muted-foreground mt-1 tabular",
                         {t_fmt("runs_session_age", &[events.to_string(), ckpts.to_string(), oldest.to_string()])}

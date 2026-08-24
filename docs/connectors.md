@@ -116,6 +116,19 @@ POST /sources/reconcile
 - Sync is **operator-initiated**; there is no autonomous background fetch. The
   connector surfaces its state (`state`, `last_sync_at`) for operator review.
 
+## CRM case connectors (v1.28.22 "Bridges")
+
+`brain-connector-crm` (feature `connector-crm`) is one binary, three sources
+(`--source zendesk|salesforce|genesys`), operator-cranked via cron — the same
+discipline as GitHub: config-derived hosts only, redirects refused, bounded
+timeouts, secrets in 0600 files, cursors in a connector-owned state file.
+Case bodies enter through the UMP ingest path (proposals under
+`BRAIN_WRITE_POSTURE=review`); case envelopes open governed runs and post
+`crm/case/updated` / `crm/case/closed` outbox events; the `crm_cases`
+table binds each stable `case_ref` to its run. Customer identity is stored
+only as a salted SHA-256 subject ref. Cron recipes: [deployment](./deployment.md).
+Custom CRMs (Freshdesk, ServiceNow, JSM): [connector-crm-custom.md](./connector-crm-custom.md).
+
 ## Honest ceiling
 
 - Only `kind=github` is implemented (the CLI rejects any other kind with
@@ -124,6 +137,10 @@ POST /sources/reconcile
   `src/connector/supervisor.rs`) is designed to be extensible to other kinds.
 - It pulls issues via App auth over the GitHub REST API; it does not sync
   arbitrary repository content, PRs, or code.
+- The CRM connectors are pull-only intake — there is no CRM **writeback**
+  (posting resolutions back to the vendor is a later, separately-gated
+  release), no background supervisor sync (cron only), and the custom-CRM
+  path is docs + pure mappers, deliberately no generic JSONPath runtime.
 
 ## Next steps
 
