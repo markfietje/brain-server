@@ -118,7 +118,7 @@ sha2 = "0.10"
 # Prevents LLVM from short-circuiting a hand-rolled fold (the prior `ct_eq`).
 subtle = "2.6"
 # Encrypted backup/restore (v0.9.7 "Guard"). Pure-Rust AES-256-GCM, no native deps.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 # v1.27.17 "Strongbox" (M1/F-08): memory-hard KDF for backup passphrases
 # (Argon2id, 64 MiB / t=3). Pure-Rust, no new transitive surface beyond
 # blake2/password-hash — both pass the cargo audit gate.
