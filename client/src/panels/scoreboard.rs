@@ -23,7 +23,16 @@ pub const METRIC_FIELDS: &[&str] = &[
     "guidance_acceptance_units",
     "handoff_completeness_units",
     "escalation_honored_units",
+    // v1.28.23 "Evolve": the KCS performance measures.
+    "kcs_linkage_rate_units",
+    "searched_found_rate_units",
 ];
+
+/// The freshness measure ships in seconds, not units — rendered separately.
+pub fn freshness_age_secs(v: &Value) -> Option<i64> {
+    v.get("article_freshness_median_age_secs")
+        .and_then(Value::as_i64)
+}
 
 /// Pure card model: (label key, value string) pairs + the two status flags.
 /// Fail-safe over any shape: absent fields are skipped, never defaulted to 0.
@@ -57,6 +66,8 @@ fn field_label(field: &str) -> &'static str {
         "guidance_acceptance_units" => "sb_guidance",
         "handoff_completeness_units" => "sb_handoff",
         "escalation_honored_units" => "sb_escalation",
+        "kcs_linkage_rate_units" => "sb_kcs_linkage",
+        "searched_found_rate_units" => "sb_reuse",
         _ => "sb_fcr",
     }
 }
@@ -92,6 +103,12 @@ pub fn panel_scoreboard() -> Element {
                             }
                         }
                         div { class: "grid gap-3 sm:grid-cols-2 lg:grid-cols-3",
+                            if let Some(age) = freshness_age_secs(v) {
+                                div { key: "{age}", class: "card p-4",
+                                    p { class: "text-xs text-muted-foreground", {t("sb_freshness")} }
+                                    p { class: "text-2xl font-semibold tabular", "{age}" }
+                                }
+                            }
                             for (label, value) in &cards {
                                 div { key: "{label}", class: "card p-4",
                                     p { class: "text-xs text-muted-foreground", {t(label)} }
@@ -132,7 +149,20 @@ mod tests {
             "runs_scored": 42, "calibration_report_emitted": true,
         });
         let (cards, green, runs, cal) = scoreboard_cards(&full);
-        assert_eq!(cards.len(), 9, "all nine metrics render");
+        assert_eq!(cards.len(), 9, "the nine scorer metrics render");
+        // The Evolve measures render when present (additive).
+        let mut evolved = full.clone();
+        evolved["kcs_linkage_rate_units"] = serde_json::json!(8000);
+        evolved["searched_found_rate_units"] = serde_json::json!(7500);
+        assert_eq!(scoreboard_cards(&evolved).0.len(), 11);
+        assert_eq!(
+            freshness_age_secs(&evolved),
+            None,
+            "absent age stays absent"
+        );
+        let mut with_age = evolved.clone();
+        with_age["article_freshness_median_age_secs"] = serde_json::json!(3600);
+        assert_eq!(freshness_age_secs(&with_age), Some(3600));
         assert_eq!(cards[0], ("sb_fcr", "91".to_string()));
         assert!(green && runs == 42 && cal);
         // Absent fields skip; a wrong-typed field never becomes a fake zero.
