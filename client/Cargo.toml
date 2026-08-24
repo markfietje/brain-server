@@ -20,7 +20,7 @@ serde_json = "1"
 # the raw subject never persists, only its one-way hash (re-prompted at
 # replay). Pure Rust, wasm-compatible; hex formatting is hand-rolled (no `hex`
 # dep — a dozen bytes of `format!` beats 30KB of wasm).
-sha2 = "0.10"
+sha2 = "0.11"
 # v1.20.8 M3: the `/events` SSE feed is read as a bounded `bytes_stream` (one
 # chunk = handshake + buffered alerts, then close + reconnect). Already a
 # transitive dep of reqwest; declared directly for the `StreamExt` trait.
