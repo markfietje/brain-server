@@ -189,6 +189,7 @@ impl Reranker {
         );
         let options = RerankInitOptionsUserDefined::new();
         TextRerank::try_new_from_user_defined(model, options)
+            .map_err(|e| anyhow::anyhow!("fastembed rerank init failed: {e}"))
     }
 
     /// Rerank the fused candidates in place. Sets `rerank_score` on each
