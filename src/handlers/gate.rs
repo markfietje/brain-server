@@ -609,6 +609,21 @@ pub(crate) fn expire_if_stale(
         )
     )
 )]
+fn crew_skills_err(e: crate::workflow::crew::CrewError) -> HandlerError {
+    use crate::workflow::crew::CrewError;
+    match e {
+        CrewError::InvalidPrincipal(_) | CrewError::InvalidSkills(_) => {
+            HandlerError::bad_request("skills_change_invalid", e.to_string())
+        }
+        CrewError::TooManySkills => HandlerError::conflict("skills_cap_reached"),
+        CrewError::ProposalNotFound => HandlerError::not_found("proposal not found"),
+        CrewError::ProposalNotPending => {
+            HandlerError::conflict("proposal already decided by a concurrent action")
+        }
+        CrewError::Database(m) | CrewError::InvalidActivity(m) => HandlerError::internal(m),
+    }
+}
+
 pub async fn approve_proposal(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -724,6 +739,21 @@ pub async fn approve_proposal(
             ));
         }
 
+        // Crew presence rides the reviewer's own transaction (no worker): a
+        // review act is "reviewing", whatever the proposal's fate turns out
+        // to be. Best-effort — presence never gates the decision.
+        if let Err(e) = crate::workflow::crew::touch(
+            &tx,
+            "global",
+            &super::recall::principal_label(&principal.0),
+            "reviewing",
+            None,
+            &principal.0.as_ref().map(|p| p.roles.clone()).unwrap_or_default(),
+            chrono::Utc::now().timestamp(),
+        ) {
+            tracing::warn!("presence touch failed on approve: {e}");
+        }
+
         // ── Beacon: the kcs_publish branch. Publishing is an EXTERNAL,
         // irreversible-ish act, so approval demands the distinct `publish`
         // capability ON TOP of `approve` — a reviewer who may approve internal
@@ -832,6 +862,32 @@ pub async fn approve_proposal(
                 "id": knowledge_id,
                 "status": "approved",
                 "kcs_state": new_state,
+            }));
+        }
+
+        // ── Crew: the crew_skills_update branch. Skills tags are HITL-
+        // maintained: the ONLY write to `principal_skills` is this approval
+        // path — CAS on the pending proposal + the tags land in the SAME tx.
+        // An internal act, so `approve` alone gates it (no extra verb).
+        if kind == crate::workflow::crew::KIND_SKILLS_UPDATE {
+            let now_ts = chrono::Utc::now().timestamp();
+            let n_applied = crate::workflow::crew::apply_proposal(&tx, id, "global", now_ts)
+                .map_err(crew_skills_err)?;
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("workflow/crew/skills rows:{n_applied}"),
+                "global",
+            );
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "status": "approved",
+                "applied_rows": n_applied,
             }));
         }
 
@@ -1344,7 +1400,7 @@ pub async fn reject_proposal(
 
     let alert_state = Arc::clone(&state);
     let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
-        let conn = pool
+        let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         // refuse to act on an expired proposal (audits + rejects it).
@@ -1363,12 +1419,35 @@ pub async fn reject_proposal(
                 "proposal aged out of the review window (TTL), refused",
             ));
         }
-        let n = conn
+        // Crew presence rides the reviewer's own write transaction: the
+        // rejection and its presence bump commit atomically or not at all.
+        let now_ts = chrono::Utc::now().timestamp();
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        if let Err(e) = crate::workflow::crew::touch(
+            &tx,
+            "global",
+            &super::recall::principal_label(&principal.0),
+            "reviewing",
+            None,
+            &principal
+                .0
+                .as_ref()
+                .map(|p| p.roles.clone())
+                .unwrap_or_default(),
+            now_ts,
+        ) {
+            tracing::warn!("presence touch failed on reject: {e}");
+        }
+        let n = tx
             .execute(
                 "UPDATE proposals SET status = 'rejected', decided_at = ?1
                  WHERE id = ?2 AND status = 'pending'",
-                rusqlite::params![chrono::Utc::now().timestamp(), id],
+                rusqlite::params![now_ts, id],
             )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         if n > 0 {
             crate::audit::record(

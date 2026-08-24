@@ -6224,6 +6224,12 @@ async fn main_inner() -> Result<()> {
         )
         .route("/ops/shifts", get(handlers::shifts::get_ops_shifts))
         .route("/ops/shifts", post(handlers::shifts::post_ops_shift))
+        .route("/ops/crew", get(handlers::crew::get_ops_crew))
+        .route("/ops/skills", post(handlers::crew::post_ops_skills))
+        .route(
+            "/ops/crew/config",
+            post(handlers::crew::post_ops_crew_config),
+        )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -10236,6 +10242,10 @@ Final paragraph after the rule.";
             "case_articles",
             // v1.28.25 "Watchbill": the shift ring (follow-the-sun data).
             "shifts",
+            // v1.28.26 "Crew": presence, skills, and the DPO switch.
+            "presence",
+            "principal_skills",
+            "crew_config",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10443,8 +10453,8 @@ Final paragraph after the rule.";
         // Evolve for the KCS columns + the case_articles linkage table.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_25),
-            "schema_version must be recorded as 1.28.25 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_26),
+            "schema_version must be recorded as 1.28.26 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -11888,6 +11898,10 @@ Final paragraph after the rule.";
             "/kcs/articles/{id}/preview",
             // v1.28.25 "Watchbill": the shift ring (follow-the-sun data).
             "/ops/shifts",
+            // v1.28.26 "Crew": the roster, the skills proposal, and the DPO switch.
+            "/ops/crew",
+            "/ops/skills",
+            "/ops/crew/config",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13129,6 +13143,13 @@ Final paragraph after the rule.";
             // path; the scan maps to the last registered handler (POST), so
             // Admin is the checked gate.
             ("/ops/shifts", "Admin"),
+            // Crew: the roster is a Read over people-visibility (hidden when
+            // the DPO switch is off); proposing a skills change is a Write —
+            // only approval writes tags; toggling presence visibility is
+            // governance → Admin.
+            ("/ops/crew", "Read"),
+            ("/ops/skills", "Write"),
+            ("/ops/crew/config", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13195,6 +13216,7 @@ Final paragraph after the rule.";
                     "workflow_lineage" => include_str!("handlers/workflow_lineage.rs"),
                     "kcs" => include_str!("handlers/kcs.rs"),
                     "shifts" => include_str!("handlers/shifts.rs"),
+                    "crew" => include_str!("handlers/crew.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),

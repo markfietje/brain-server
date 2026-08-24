@@ -3905,6 +3905,108 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "409":
           description: shift_double_booked — overlaps beyond a declared overlap budget
+  /ops/crew:
+    get:
+      summary: The crew roster — presence, sites, roles, skills (Crew)
+      description: >
+        TTL-decayed presence computed at read time (active < 5 min, away <
+        30 min, offline beyond), joined with the Watchbill shift ring (site
+        badge) and HITL-maintained skills tags. Presence shows WHAT KIND of
+        act (closed vocabulary), never case content — only an opaque
+        `current_case_ref`. When the DPO switch is off (or its config row
+        cannot be read) the roster is EMPTY — hidden, never an error.
+        Requires Read on the domain. Read capped at the newest 500 rows.
+      operationId: opsCrew
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+        - name: now
+          in: query
+          description: Evaluation instant (epoch seconds); defaults to server time.
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: The roster view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  now: { type: integer, format: int64 }
+                  domain: { type: string }
+                  presence_enabled: { type: boolean }
+                  members:
+                    type: array
+                    items: { $ref: "#/components/schemas/CrewMember" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /ops/skills:
+    post:
+      summary: Propose a skills change — the ONLY door to `principal_skills` (audited)
+      description: >
+        Creates ONE pending `crew_skills_update` proposal carrying
+        `{principal, add[], remove[]}`. Tags are lowercase alnum + hyphen,
+        1..=32 chars, at most 32 per principal; the same validation runs again
+        at approval time inside the applying transaction. No direct write to
+        the skills table exists. Requires Write on the domain.
+      operationId: proposeSkillsChange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [principal]
+              properties:
+                domain: { type: string, default: global }
+                principal: { type: string, maxLength: 256 }
+                add: { type: array, items: { type: string } }
+                remove: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: The created proposal reference
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id: { type: integer }
+                  kind: { type: string }
+                  status: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /ops/crew/config:
+    post:
+      summary: The DPO presence switch (Admin, audited)
+      description: >
+        Enables or disables presence visibility for a domain. Fail-open to
+        HIDDEN: when the config cannot be trusted the roster reads as empty.
+        The flip and its audit row ride one transaction. Requires Admin on
+        the domain.
+      operationId: setCrewConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [presence_enabled]
+              properties:
+                domain: { type: string, default: global }
+                presence_enabled: { type: boolean }
+      responses:
+        "200":
+          description: The applied configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  presence_enabled: { type: boolean }
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /workflow/plugins/mount:
     post:
       summary: Record UI-plugin mount/unmount evidence (Art. 12 record-keeping)
@@ -5503,6 +5605,24 @@ components:
           items: { type: string }
           description: Principal ids on this shift.
       required: [id, domain, site, tz, start_epoch, end_epoch, overlap_minutes]
+    CrewMember:
+      type: object
+      description: >
+        v1.28.26 Crew — one colleague's roster projection: TTL-decayed
+        presence state, the KIND of last act (never its content), an opaque
+        case reference, the Watchbill site badge, and role/skills tags.
+      properties:
+        principal: { type: string }
+        state: { type: string, enum: [active, away, offline] }
+        activity_kind: { type: string, enum: [cranking, reviewing, idle] }
+        current_case_ref:
+          type: [string, "null"]
+          description: Opaque run/case reference — never case content.
+        site:
+          type: [string, "null"]
+          description: Site whose current shift roster names this principal.
+        roles: { type: array, items: { type: string } }
+        skills: { type: array, items: { type: string } }
     Scope:
       type: object
       description: >

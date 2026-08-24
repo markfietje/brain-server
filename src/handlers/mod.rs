@@ -24,6 +24,7 @@ pub mod clients;
 pub mod compliance;
 pub mod connectors;
 pub mod consolidate;
+pub mod crew;
 pub mod domains;
 pub mod forget;
 pub mod frontend;

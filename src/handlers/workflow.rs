@@ -109,6 +109,28 @@ pub struct SteeringRequest {
     pub message: String,
 }
 
+/// Crew presence rides the caller's WorkflowTx — no worker, no heartbeat: a
+/// mutating request is its own presence beacon, and a rolled-back tx leaves
+/// no ghost. Best-effort (presence never gates the work).
+fn crew_touch_cranking(
+    conn: &rusqlite::Connection,
+    domain: &str,
+    actor: &str,
+    case_ref: Option<&str>,
+) {
+    if let Err(e) = crate::workflow::crew::touch(
+        conn,
+        domain,
+        actor,
+        "cranking",
+        case_ref,
+        &[],
+        chrono::Utc::now().timestamp(),
+    ) {
+        tracing::warn!("presence touch failed: {e}");
+    }
+}
+
 pub async fn post_steering(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -168,6 +190,7 @@ pub async fn post_steering(
     let sanitized = crate::gate::sanitize_read(&body.message, false, &principal);
     let payload = serde_json::json!({"message": sanitized}).to_string();
     let pool = state.pool.clone();
+    let actor = super::recall::principal_label(&principal);
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
         // The cap and the enqueue commit atomically: drop-oldest + insert in
@@ -191,6 +214,7 @@ pub async fn post_steering(
         let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
         crate::workflow::outbox::enqueue(&tx, id, "steering", &payload, &key, now)
             .map_err(|e| format!("{e}"))?;
+        crew_touch_cranking(&tx, &domain, &actor, Some(&format!("run:{id}")));
         tx.commit().map_err(|e| format!("{e}"))?;
         Ok(())
     }).await.map_err(|e| HandlerError::internal(format!("{e}")))?.map_err(HandlerError::internal)?;
@@ -961,6 +985,7 @@ pub async fn post_run(
     super::authorize(&principal, crate::auth::Action::Write, "", &body.domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    let actor = super::recall::principal_label(&principal);
     let (domain, kind, state_json) = (body.domain, body.kind, body.state_json);
     let (run_id, _): (i64, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -981,6 +1006,7 @@ pub async fn post_run(
             crate::audit::AuditStatus::Ok,
             "open",
         );
+        crew_touch_cranking(tx.tx(), &domain, &actor, Some(&format!("run:{run_id}")));
         tx.commit().map_err(|e| format!("{e}"))?;
         Ok((run_id, 0i64))
     })
@@ -1207,6 +1233,7 @@ pub async fn post_event(
         ));
     }
     let topic = body.topic.clone();
+    let actor = super::recall::principal_label(&principal);
     let topic_check = topic.clone();
     let payload_json = body.payload_json.clone();
     let idempotency_key = body.idempotency_key.clone();
@@ -1226,6 +1253,7 @@ pub async fn post_event(
             now,
         )
         .map_err(|e| format!("{e}"))?;
+        crew_touch_cranking(tx.tx(), &domain, &actor, Some(&format!("run:{id}")));
         tx.commit().map_err(|e| format!("{e}"))?;
         Ok(outcome)
     })
@@ -1309,6 +1337,7 @@ pub async fn post_answer(
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "approve")?;
+    let actor = super::recall::principal_label(&principal);
     let answer = body.answer.clone();
     let result: Result<i64, String> = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -1361,6 +1390,7 @@ pub async fn post_answer(
             crate::audit::AuditStatus::Ok,
             "answer",
         );
+        crew_touch_cranking(tx.tx(), &domain, &actor, Some(&format!("run:{id}")));
         tx.commit().map_err(|e| format!("{e}"))?;
         Ok(rev + 1)
     })
