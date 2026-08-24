@@ -77,7 +77,7 @@ otel = [
 # engines compile against this crate, never against brain-server.
 brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kernel"] }
 # Core Embedding
-model2vec-rs = "0.1.4"
+model2vec-rs = "0.2.1"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +
 # bge-reranker-v2-m3). Optional — only pulled by `neural-embed`/`rerank-tier`.
 # Pinned to 5.x; it exact-pins `ort = =2.0.0-rc.13`, so brain-server's `ort`
