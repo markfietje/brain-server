@@ -22,6 +22,26 @@ use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
 use crate::workflow::crew::{self, CrewError};
 
+/// The default-domain convention shared by every POST surface.
+fn body_domain(body: &serde_json::Value) -> String {
+    body.get("domain")
+        .and_then(|v| v.as_str())
+        .unwrap_or("global")
+        .to_string()
+}
+
+/// Shared `?now=` parsing (epoch seconds; absent = server time).
+fn now_param(params: &HashMap<String, String>) -> Result<i64, HandlerError> {
+    match params.get("now").map(|s| s.parse::<i64>()) {
+        Some(Ok(t)) => Ok(t),
+        Some(Err(_)) => Err(HandlerError::bad_request(
+            "now_invalid",
+            "now must be epoch seconds",
+        )),
+        None => Ok(chrono::Utc::now().timestamp()),
+    }
+}
+
 fn crew_err(e: CrewError) -> HandlerError {
     match e {
         CrewError::InvalidActivity(_) => {
@@ -50,16 +70,7 @@ pub async fn get_ops_crew(
         .get("domain")
         .cloned()
         .unwrap_or_else(|| "global".into());
-    let now = match params.get("now").map(|s| s.parse::<i64>()) {
-        Some(Ok(t)) => t,
-        Some(Err(_)) => {
-            return Err(HandlerError::bad_request(
-                "now_invalid",
-                "now must be epoch seconds",
-            ));
-        }
-        None => chrono::Utc::now().timestamp(),
-    };
+    let now = now_param(&params)?;
     super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     let out = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
@@ -103,11 +114,7 @@ pub async fn post_ops_skills(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let principal = principal.0;
-    let domain = body
-        .get("domain")
-        .and_then(|v| v.as_str())
-        .unwrap_or("global")
-        .to_string();
+    let domain = body_domain(&body);
     let target = body
         .get("principal")
         .and_then(|v| v.as_str())
@@ -196,11 +203,7 @@ pub async fn post_ops_crew_config(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let principal = principal.0;
-    let domain = body
-        .get("domain")
-        .and_then(|v| v.as_str())
-        .unwrap_or("global")
-        .to_string();
+    let domain = body_domain(&body);
     let enabled = body
         .get("presence_enabled")
         .and_then(|v| v.as_bool())

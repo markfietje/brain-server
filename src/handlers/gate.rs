@@ -1398,6 +1398,11 @@ pub async fn reject_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     super::authorize_role(&principal.0, &pool, "reject")?;
 
+    // capture the actor label before the closure moves the principal (the
+    // otel span records read it after the join).
+    let actor_label = super::recall::principal_label(&principal.0);
+    #[cfg(feature = "otel")]
+    let actor_for_span = actor_label.clone();
     let alert_state = Arc::clone(&state);
     let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
         let mut conn = pool
@@ -1428,7 +1433,7 @@ pub async fn reject_proposal(
         if let Err(e) = crate::workflow::crew::touch(
             &tx,
             "global",
-            &super::recall::principal_label(&principal.0),
+            &actor_label,
             "reviewing",
             None,
             &principal
@@ -1511,7 +1516,7 @@ pub async fn reject_proposal(
         {
             let span = tracing::Span::current();
             span.record("outcome", "not_found");
-            span.record("principal", super::recall::principal_label(&principal.0));
+            span.record("principal", &actor_for_span);
         }
         return Err(HandlerError::not_found(format!(
             "no pending proposal with id {id}"
@@ -1521,7 +1526,7 @@ pub async fn reject_proposal(
     {
         let span = tracing::Span::current();
         span.record("outcome", "rejected");
-        span.record("principal", super::recall::principal_label(&principal.0));
+        span.record("principal", &actor_for_span);
     }
     Ok(Json(
         serde_json::json!({ "proposal_id": id, "status": "rejected" }),
