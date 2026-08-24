@@ -45,7 +45,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "brain-engine-sdk"
-version = "1.28.22"
+version = "1.28.23"
 dependencies = [
  "serde",
  "serde_json",

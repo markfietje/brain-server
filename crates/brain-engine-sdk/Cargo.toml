@@ -1,6 +1,6 @@
 [package]
 name = "brain-engine-sdk"
-version = "1.28.22"
+version = "1.28.23"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

@@ -435,7 +435,8 @@ fn generate_key() -> [u8; 32] {
     // boot rather than minting a weak chain key).
     use rand::{TryRng, rngs::SysRng};
     let mut key = [0u8; 32];
-    SysRng.try_fill_bytes(&mut key)
+    SysRng
+        .try_fill_bytes(&mut key)
         .expect("OS entropy source failed while generating the audit chain key");
     key
 }

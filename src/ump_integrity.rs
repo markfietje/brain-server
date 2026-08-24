@@ -363,11 +363,11 @@ pub enum TokenError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{TryRng, rngs::SysRng};
+    use rand::Rng;
 
     fn keypair() -> (SigningKey, [u8; 32]) {
         let mut seed = [0u8; 32];
-        SysRng.try_fill_bytes(&mut seed).expect("OS entropy failed");
+        rand::rng().fill_bytes(&mut seed);
         let sk = SigningKey::from_bytes(&seed);
         let pk = sk.verifying_key().to_bytes();
         (sk, pk)

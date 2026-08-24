@@ -168,6 +168,18 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | GET | `/workflow/runs/{id}/steering?since=` | Drain the advisory steering outbox (Read on the run's domain) |
 | POST | `/workflow/plugins/mount` | UI-plugin mount/unmount evidence (Art 12 record-keeping): server verifies the claimed bundle SHA-256 against the boot manifest before writing the audited row (`409` on uncertified bytes) |
 
+### KCS article lifecycle (Evolve)
+
+Every solved case can become knowledge; the capture generator emits HITL
+proposals (`kcs_new_article` / `kcs_update_article` / `kcs_link_only`) that a
+human approves through `/proposals/{id}/approve`. Approved articles are born
+`kcs_state='draft'` — nothing auto-publishes.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/kcs/articles?state=&stale=1` | The content-health worklist: KCS-carrying articles, filterable by lifecycle state; `stale=1` keeps articles past their freshness-review deadline or carrying open improve flags (Read, per-domain visibility) |
+| POST | `/kcs/articles/{id}/approve` | Move a draft article to `approved`, stamping the 90-day freshness-review deadline (Write on the domain + `approve` role; `409` when not draft; audited in-tx) |
+
 The engine itself lives in `tools/steward-harness` (0.2.0 "FirstLight"): a
 human-cranked loop (`brain workflow crank <run>`) that drives these routes
 through the SDK `WorkflowHost` seam. No engine code runs in the server.

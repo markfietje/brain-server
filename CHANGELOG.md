@@ -19,6 +19,50 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.23] — 2026-08-24 — "Evolve": the KCS loop closes — every solved case becomes knowledge, every case is linked to living knowledge
+
+The KCS v6 double loop, wired to the substrate that already implements most of it. Solve-loop capture/structure/reuse/improve happen in the workflow; Evolve-loop content health and performance assessment land on the scoreboard. Closing a case without an article becomes *visible*, never silent.
+
+**M1 (schema → 1.28.23, one-way additive):** `knowledge` grows `kcs_state` (`none | draft | approved | published`; existing rows stay `none` — KCS applies going forward), `public_slug` (unique WHEN published via a partial index; publishing itself is Beacon's, later), and `freshness_review_due`. New `case_articles(case_ref, knowledge_id, sir, action, ts)` — the solve-loop linkage; `searched_not_found` rows carry NULL `knowledge_id`, so the `(case_ref, knowledge_id, sir)` uniqueness is partial.
+
+**M2 (Solve loop):** the reuse search records SIR rows — `searched_found` for hits the engine cites back via `GET /workflow/runs/{id}/suggestions?used=<ids>`, `searched_not_found` when the zero-hit abstention fires. A completed run that contradicted what it used (diverged steps or skipped verification) emits a `kcs_flag` finding per cited article — content-health input, never an edit (edits stay HITL). On the first `crm/case/closed` event the deterministic capture generator runs exactly once (outbox marker `kcs-capture-{case_ref}`): inputs are the run's recorded steps/findings/SIR rows, output ONE structured HITL proposal — `kcs_new_article` (body assembled from Issue/Environment/Cause/Resolution/Evidence, zero-token), `kcs_update_article` (the improve signal outranks similarity: a diverged reuse means the article needs fixing), or `kcs_link_only`. Approving promotes to a knowledge row born `kcs_state='draft'` (or writes only the linkage for link-only); a closed case with zero linkage emits a `kcs_unlinked_case` finding — operations see the gap, the machine never vetoes closure.
+
+**M3 (lifecycle):** `POST /kcs/articles/{id}/approve` (Write on the domain + `approve` role) moves draft → approved and stamps the 90-day freshness deadline; `GET /kcs/articles?state=&stale=1` is the content-health worklist (past-deadline articles + open improve flags). Superseding an article now follows the linkage: its `case_articles` rows point at the survivor in the same tx.
+
+**M4 (performance assessment):** the scoreboard carries `kcs_linkage_rate_units`, `searched_found_rate_units`, and `article_freshness_median_age_secs` (`repeat_contact_rate_units` was already aggregated). The weekly calibration report rides the same numbers; the monthly human sign-off covers them unchanged.
+
+### Release notes
+- **Improvements:** solved support cases can now become searchable knowledge — the capture generator drafts a structured article proposal (Issue / Environment / Cause / Resolution / Evidence) from the case's own recorded evidence; a human approves it through the existing review queue.
+- **Improvements:** new content-health worklist (`GET /kcs/articles?stale=1`) surfaces articles needing review — stale freshness deadlines plus flags from runs whose evidence contradicted them.
+- **Improvements:** the scoreboard gains three KCS measures (linkage rate, reuse rate, freshness median age); the weekly report carries them.
+- **Security fixes:** none (no auth/gate changes; both new routes are role-gated and audited).
+- Tests: server main bin **838** / 6 ignored (**+25**: the eight plan-named pins — two in the SDK pure core, six server-side — plus guard/coverage updates), lib **182** / 1 (unchanged), brain 19, mcp **32** (+2), eval 4, metrics 8; sdk **108** / 0 (**+3**); steward-harness **17** / 0 (unchanged); client **228** / 0 (unchanged count; +1 Evolve render pin inside existing suites). clippy `-D warnings` + fmt clean on ALL FOUR workspace nodes; otel gate 1110 passed; UMP conformance L3 green; recall floor r@5 0.976 / r@10 0.991 / mrr 0.956 (CI recipe, scratch instance).
+
+### Engineering record
+- Named pins: `closed_case_generates_kcs_proposal_with_four_sections`,
+  `gap_rule_selects_new_update_or_link_only`,
+  `human_approval_moves_draft_state_and_sets_freshness`,
+  `unlinked_closed_case_is_flagged_not_blocked`,
+  `sir_rows_record_found_and_not_found`,
+  `improve_flag_emitted_on_cited_article_contradiction`,
+  `superseded_article_linkage_follows_survivor`,
+  `scoreboard_carries_kcs_fields_and_calibration_signs_them`.
+- New modules: `crates/brain-engine-sdk/src/pure/kcs.rs` (pure decision core),
+  `src/workflow/kcs.rs` (substrate writes), `src/handlers/kcs.rs` (routes).
+- openapi.yaml + route-coverage + route-authz guard tables + docs/api.md updated
+  in the same change.
+- Honest ceilings: per-hit citation tracking depends on engines sending
+  `used=<ids>` (absent = no found-SIR rows recorded, not_found still lands);
+  capture runs on the first `crm/case/closed` event delivery, not on engine-run
+  Done directly (a closed case without a CRM binding captures nothing);
+  pre-Evolve knowledge rows keep `kcs_state='none'` (no backfill); publishing
+  is out (Beacon's); freshness horizon is a constant 90 days (per-domain policy
+  lookup later); proposals carry fixed novelty/salience placeholders (the
+  scorer's inputs do not apply to structured bodies); the KCS measures read the
+  global register only (multi-domain aggregation later).
+
+---
+
 ## [1.28.22] — 2026-08-24 — "Bridges": the universal loop's intake — support cases flow in from the CRMs
 
 One normalized case shape ([`CrmCase`], `src/connector/crm/`), three vendor connectors (Zendesk cursor incremental export, Salesforce client-credentials OAuth + SOQL by `SystemModstamp`, Genesys Cloud workitems + externalcontacts), and one delivery path: case **bodies** enter through the UMP `/ingest` single-record route — under `BRAIN_WRITE_POSTURE=review` they land as pending proposals, never memory (the HITL gate applies to CRM content exactly as to web content); case **envelopes** open governed runs (`POST /workflow/runs`, kind `support-case`, state carries the stable `case_ref`) and post `crm/case/updated` / `crm/case/closed` outbox events — closed-solved is the Evolve capture trigger (v1.28.23). The `crm_cases` linkage table (schema → **1.28.22**, additive) binds each `case_ref` to its run idempotently — the invariant Evolve depends on.
@@ -291,7 +335,7 @@ Every engine tool-effect goes through one mediated, countable, auditable door. T
 - **M3 (engine):** steward-harness `effects::Effects` is the ONE effect door — `exec`/`http`/`event`/`suggest`/`log` serialize the exact mediated body shapes and ride `dispatch`; crank event emissions route through it when provided (`crank_full`, additive — existing signatures unchanged) with the per-call tally landing in `CrankReport.hostcalls`. The reqwest transport stays solely in `remote_host.rs`, pinned by the include_str! self-grep `engine_has_no_direct_effect_paths`.
 - **M4 (policy posture):** Prompt == Denied server-side documented (no interactive prompt without a human); SECURITY.md gains the engine hostcall mediations table (kind → handler → policy → audit shape).
 - Tests (all plan-named pins green): `exec_denied_when_allowlist_empty`, `exec_runs_only_allowlisted_argv0_with_cwd_and_timeout`, `exec_output_is_sanitized_and_capped`, `http_denied_by_default_and_allowlisted_host_passes` (one-shot loopback HTTP server), `http_refuses_redirects_and_non_https_remote`, `events_handler_enforces_workflow_topic_prefix_and_size`, `ui_denied_with_named_reason`, `hostcall_table_is_exhaustive` (server + SDK sides), `dispatch_counter_increments_per_kind_and_report_carries_it`, `knowledge_suggest_is_domain_scoped_and_sanitized` (cross-domain + flagged-row leak probes), `engine_has_no_direct_effect_paths` (+ effects body-shape and loud-denial pins, SDK `dispatch_counter_increments_per_kind_and_label`). Env-mutating tests serialize on a lock (the compliance-test posture).
-- Tests: server bin **800** passed / 6 ignored (+11); lib 165 / 1 ignored (the connector-stub spawn failure is the known environmental one — fails identically on clean main); brain CLI 18, mcp 20, bench 5, eval 4, metrics 8; harness crate 6 gold pins + 3 effects tests; SDK **90** (+2). clippy `-D warnings` + fmt clean across all three workspaces.
+- Tests: server bin **800** passed / 6 ignored (+11); lib 165 / 1 ignored (the connector-stub spawn failure is the known environmental one — fails identically on clean main); brain 19, mcp 20, bench 5, eval 4, metrics 8; harness crate 6 gold pins + 3 effects tests; SDK **90** (+2). clippy `-D warnings` + fmt clean across all three workspaces.
 - Review fixes (same release): hostcall audit targets are now `workflow/hostcall/<kind>/run:<id>` and `tenant_for_target` resolves a `run:` reference ANYWHERE in a target — handler audit rows land on the run's domain tenant instead of `global` (pinned by `hostcall_audits_resolve_the_run_domain_tenant`); `knowledge_suggest` against a missing run fails closed (`run not found`) instead of answering an empty ok.
 
 ### Honest ceilings
@@ -445,7 +489,7 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 ### Engineering record
 
 - Audit closure: P0-1 (recall review-flag clamp + pure predicate `review_flags_allowed`, loopback/Admin regression pins), P1-1 (ASCII lowering + hostile-input test), P1-2 (`QueuedAction::Approve.digest` field, serde-default legacy decode pin, ops/overview/replay/main forwarding), P1-3 (steering screen/gate/atomic cap + route-authz guard-table entries + openapi paths), P2-1..P2-10 as listed above, P3 (DSAR exact-match option).
-- Tests: server main bin **760 passed** / 6 ignored (+5: review-flag clamp, temporal regression, steering hardening, jwks duplicate-kid, model-pin), lib **156**, brain CLI 18, mcp 19, eval 4 (+2 scale/gold-set pins), metrics 8, bench 8; client **186** (+1 digest round-trip); crates workspace green; clippy `-D warnings` + fmt clean everywhere; `cargo audit` clean (2 pre-existing allowed warnings).
+- Tests: server main bin **760 passed** / 6 ignored (+5: review-flag clamp, temporal regression, steering hardening, jwks duplicate-kid, model-pin), lib **156**, brain 19, mcp 19, eval 4 (+2 scale/gold-set pins), metrics 8, bench 8; client **186** (+1 digest round-trip); crates workspace green; clippy `-D warnings` + fmt clean everywhere; `cargo audit` clean (2 pre-existing allowed warnings).
 - Honest ceilings: opaque-token mode has no principal identity, so the per-principal limiter applies in JWT mode only; legacy capability tokens without `jti` stay expiry-only until re-minted; legacy queued approvals without a stored digest replay digest-less; model pinning activates only when the operator sets `BRAIN_MODEL_MANIFEST`; minisign verification requires the operator's public key; eval numbers are our-baseline deltas on dev hardware, not external parity claims; DNS-rebinding egress validation remains a documented v2.x ceiling.
 
 ---
@@ -573,7 +617,7 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 - **Server hostcall wiring (`workflow::hostcalls`):** production posture = Standard plus always-mediated `tools`/`log`; handlers are log (structured emit), session (sanitized view via `WorkflowHost::load_state`), `secret_status` (broker resolves host-side, publishes `{configured}` only, name-shape validated), and `mediated_exec` (exec_mediation gate). Per-engine allow cannot reinstate the global exec/env deny.
 - **Erasure reach (`workflow::erasure`):** subject sweep deletes matched runs with their dependents (contradictions via finding joins, findings, steps, outbox, run row) in the caller's tx; frozen runs (`knowledge_id = -run_id` active-hold convention — chunk ids are positive, so no collision) are deferred and certificate-listed beside held chunks; dry-run counts `workflow_rows` (matched runs incl. frozen + dependents) into the additive `Footprint` field (openapi updated).
 - **Secrets broker (`src/secrets.rs`):** `BRAIN_<NAME>_KEY_FILE` (mode-checked via the existing `check_secret_permissions`) → inline env fallback; a wide-mode FILE refuses fail-closed WITHOUT falling through to any other source.
-- Tests: server bin **742** / 6 ignored (+9), lib **147** / 1 ignored, brain CLI 18, mcp 19, bench 8, eval/metrics unchanged; client **158**; SDK **68** (+23 across trust/hostcall/session); crates workspace green. Clippy `-D warnings` clean on server (bench) and crates (default + harness-kernel); fmt clean; `cargo audit`: zero vulnerabilities (2 pre-allowed warnings).
+- Tests: server bin **742** / 6 ignored (+9), lib **147** / 1 ignored, brain 19, mcp 19, bench 8, eval/metrics unchanged; client **158**; SDK **68** (+23 across trust/hostcall/session); crates workspace green. Clippy `-D warnings` clean on server (bench) and crates (default + harness-kernel); fmt clean; `cargo audit`: zero vulnerabilities (2 pre-allowed warnings).
 - Honest ceilings: workflow scripts hold bash-equivalent trust — the harness contains buggy scripts (bounded grace + force-terminate), it does not defend against hostile code; sandboxing needs an out-of-process engine (future work). Worker-thread isolation is not a security boundary; real isolation is process/container. The run-hold freeze is read-time enforcement over stored rows using the negative-id convention; a future first-class `run_id` column would supersede it. The secret-status tool reveals configuration presence, not material — but a probing engine can still enumerate names.
 
 ---

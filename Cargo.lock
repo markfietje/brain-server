@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "brain-engine-sdk"
-version = "1.28.22"
+version = "1.28.23"
 dependencies = [
  "serde",
  "serde_json",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "brain-server"
-version = "1.28.22"
+version = "1.28.23"
 dependencies = [
  "aes-gcm",
  "aho-corasick",

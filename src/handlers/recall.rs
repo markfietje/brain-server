@@ -682,8 +682,7 @@ pub(crate) async fn run_recall(
     );
     let trace_id = if audit_on {
         let rate = crate::config::audit_read_sample_rate();
-        let sampled = rate >= 1.0
-            || rand::random::<f64>() < rate.min(1.0);
+        let sampled = rate >= 1.0 || rand::random::<f64>() < rate.min(1.0);
         if !sampled {
             None
         } else {

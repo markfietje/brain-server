@@ -3638,6 +3638,98 @@ paths:
           description: Not authenticated
         "403":
           description: Not DPO/admin
+  /kcs/articles:
+    get:
+      summary: KCS content-health worklist (Evolve)
+      description: >
+        Lists knowledge rows that carry a KCS lifecycle state
+        (`draft`/`approved`/`published`). `state=` filters by lifecycle;
+        `stale=1` keeps only the content-health worklist: articles past their
+        freshness-review deadline or carrying open improve flags
+        (`kcs_flag` findings from runs that contradicted them). Every text
+        field passes the read seam; rows in domains the principal cannot
+        read are filtered.
+      operationId: listKcsArticles
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, approved, published]
+        - name: stale
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The filtered article worklist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  articles:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        title:
+                          type: string
+                        snippet:
+                          type: string
+                        kcs_state:
+                          type: string
+                          enum: [none, draft, approved, published]
+                        freshness_review_due:
+                          type: integer
+                          nullable: true
+                        open_flags:
+                          type: integer
+                        stale:
+                          type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /kcs/articles/{id}/approve:
+    post:
+      summary: Approve a draft KCS article (HITL gate)
+      description: >
+        Moves an article `draft -> approved` and stamps its freshness-review
+        deadline (90 days). Requires Write on the article's domain plus the
+        `approve` role. Publishing is deliberately out of scope — nothing
+        auto-publishes. Audited in the same transaction as the transition.
+      operationId: approveKcsArticle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The approved article summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  kcs_state:
+                    type: string
+                  freshness_review_due:
+                    type: integer
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Article is not in the draft state (or changed concurrently)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /workflow/plugins/mount:
     post:
       summary: Record UI-plugin mount/unmount evidence (Art. 12 record-keeping)

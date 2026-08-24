@@ -2522,7 +2522,9 @@ fn cmd_ump_keygen(args: &[String]) -> Result<String, String> {
     }
     use rand::{TryRng, rngs::SysRng};
     let mut seed = [0u8; 32];
-    SysRng.try_fill_bytes(&mut seed).expect("OS entropy source failed");
+    SysRng
+        .try_fill_bytes(&mut seed)
+        .expect("OS entropy source failed");
     let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
     let pk = sk.verifying_key().to_bytes();
     let did = brain_server::ump_integrity::did_key_from_ed25519(&pk);
@@ -3352,7 +3354,9 @@ fn rotate_token_file_at(path: &Path) -> Result<(), String> {
 fn random_hex_token() -> String {
     use rand::{TryRng, rngs::SysRng};
     let mut bytes = [0u8; 32];
-    SysRng.try_fill_bytes(&mut bytes).expect("OS entropy source failed");
+    SysRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS entropy source failed");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
