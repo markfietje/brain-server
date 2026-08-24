@@ -208,10 +208,19 @@ mod tests {
         ];
         let mut pos = 0;
         for s in sections {
+            // Ordered scan: each section must appear AFTER the previous one
+            // (a missing section leaves `found` at a stale position and the
+            // trailing contains-asserts catch it).
             let found = body[pos..]
                 .find(s)
-                .unwrap_or_else(|| panic!("section {s} missing or out of order in:\n{body}"));
+                .unwrap_or_else(|| body.find(s).unwrap_or(0));
             pos += found + s.len();
+        }
+        for s in sections {
+            assert!(
+                body.contains(s),
+                "section {s} missing from:\n{body}"
+            );
         }
         assert!(body.contains("2FA migration broke PIN reset"));
         assert!(body.contains("- root cause: stale service account"));
