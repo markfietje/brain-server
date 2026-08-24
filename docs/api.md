@@ -181,6 +181,8 @@ human approves through `/proposals/{id}/approve`. Approved articles are born
 | POST | `/kcs/articles/{id}/approve` | Move a draft article to `approved`, stamping the 90-day freshness-review deadline (Write on the domain + `approve` role; `409` when not draft; audited in-tx) |
 | POST | `/kcs/articles/{id}/publish` | Propose publishing to the public KB (`kcs_publish` proposal; approval needs `approve` + the distinct `publish` capability). `action=retract` returns a published article to `approved` — the next build drops its page (Write to propose) |
 | GET | `/kcs/articles/{id}/preview` | The exact sanitized public page for an approved/published article — same render path as `brain kb build`, unconditional PII redaction, no operator bypass (Read) |
+| GET | `/ops/shifts?domain=&now=` | The shift-ring view: which site owns the queue at `now` (`queue_scope_site` re-scopes to the incoming site at the start of the derived overlap window — the queue follows the sun, cases don't), overlap state, next boundary, and the newest 500 shifts for the domain. Deterministic read-time arithmetic; no scheduler daemon (Read on the domain) |
+| POST | `/ops/shifts` | Declare a site's on-call window `(site, tz, start/end epoch, overlap_minutes ≤ 120, roster)`. `400` on bad window/overlap/tz/roster bounds (tz ≤ 64 chars, roster ≤ 64 ids × ≤ 256 chars), `409 shift_double_booked` when the window starts before the earlier shift's final overlap period; validation + insert + audit ride one tx (Admin — pure operator configuration). Read capped at the newest 500 shifts |
 
 ### Public knowledge base (Beacon)
 

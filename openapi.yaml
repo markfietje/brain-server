@@ -3818,6 +3818,93 @@ paths:
                     type: string
         "404":
           $ref: "#/components/responses/NotFound"
+  /ops/shifts:
+    get:
+      summary: The shift ring view — which site owns the queue right now (Watchbill)
+      description: >
+        Follow-the-sun as data: pure read-time arithmetic over stored shift
+        rows. Returns the site whose queue is in scope at `now` (the queue
+        re-scopes to the incoming site at the START of the derived overlap
+        window, never the open cases), whether an overlap window is running,
+        and when the next boundary lands. Deterministic; no scheduler daemon.
+        Requires Read on the domain.
+      operationId: opsShifts
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+        - name: now
+          in: query
+          description: Evaluation instant (epoch seconds); defaults to server time.
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: The ring view plus every stored shift for the domain
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  now: { type: integer, format: int64 }
+                  domain: { type: string }
+                  queue_scope_site:
+                    type: [string, "null"]
+                    description: Site that owns the queue at `now` (null before the first shift).
+                  incoming_site:
+                    type: [string, "null"]
+                    description: Set while inside an overlap window.
+                  in_overlap: { type: boolean }
+                  next_boundary_epoch:
+                    type: [integer, "null"]
+                    format: int64
+                  shifts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Shift" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      summary: Declare a site's on-call window (audited)
+      description: >
+        Stores one shift `(site, tz, window, overlap_minutes, roster)`.
+        Refuses bad windows (`400 shift_window_invalid` / `shift_overlap_invalid`,
+        overlap capped at 120 minutes) and double booking (`409
+        shift_double_booked`) — two shifts may share time only inside the
+        earlier shift's declared overlap budget. Validation, insert, and the
+        audit row ride one transaction. Requires Admin on the domain (pure operator
+        configuration — an agent-class principal must not re-anchor the queue).
+      operationId: createShift
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                domain: { type: string, default: global }
+                site: { type: string }
+                tz: { type: string, default: UTC }
+                start_epoch: { type: integer, format: int64 }
+                end_epoch: { type: integer, format: int64 }
+                overlap_minutes: { type: integer, default: 0 }
+                roster:
+                  type: array
+                  items: { type: string }
+              required: [site, start_epoch, end_epoch]
+      responses:
+        "200":
+          description: The stored shift id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  domain: { type: string }
+                  site: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: shift_double_booked — overlaps beyond a declared overlap budget
   /workflow/plugins/mount:
     post:
       summary: Record UI-plugin mount/unmount evidence (Art. 12 record-keeping)
@@ -5397,6 +5484,25 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Scope" }
       required: [sub, jti, tenant]
+    Shift:
+      type: object
+      description: >
+        v1.28.25 Watchbill — one site's on-call window. `overlap_minutes`
+        declares the handover budget with the NEXT shift; the boundary's
+        overlap window derives from the pair at read time.
+      properties:
+        id: { type: integer }
+        domain: { type: string }
+        site: { type: string }
+        tz: { type: string }
+        start_epoch: { type: integer, format: int64 }
+        end_epoch: { type: integer, format: int64 }
+        overlap_minutes: { type: integer, maximum: 120 }
+        roster:
+          type: array
+          items: { type: string }
+          description: Principal ids on this shift.
+      required: [id, domain, site, tz, start_epoch, end_epoch, overlap_minutes]
     Scope:
       type: object
       description: >

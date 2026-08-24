@@ -6222,6 +6222,8 @@ async fn main_inner() -> Result<()> {
             "/kcs/articles/{id}/preview",
             get(handlers::kcs::get_kcs_article_preview),
         )
+        .route("/ops/shifts", get(handlers::shifts::get_ops_shifts))
+        .route("/ops/shifts", post(handlers::shifts::post_ops_shift))
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -10232,6 +10234,8 @@ Final paragraph after the rule.";
             "crm_cases",
             // v1.28.23 "Evolve": the KCS solve-loop linkage.
             "case_articles",
+            // v1.28.25 "Watchbill": the shift ring (follow-the-sun data).
+            "shifts",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10439,8 +10443,8 @@ Final paragraph after the rule.";
         // Evolve for the KCS columns + the case_articles linkage table.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_23),
-            "schema_version must be recorded as 1.28.23 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_25),
+            "schema_version must be recorded as 1.28.25 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -11882,6 +11886,8 @@ Final paragraph after the rule.";
             "/kcs/articles/{id}/approve",
             "/kcs/articles/{id}/publish",
             "/kcs/articles/{id}/preview",
+            // v1.28.25 "Watchbill": the shift ring (follow-the-sun data).
+            "/ops/shifts",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13117,6 +13123,12 @@ Final paragraph after the rule.";
             // sanitized public render path.
             ("/kcs/articles/{id}/publish", "Write"),
             ("/kcs/articles/{id}/preview", "Read"),
+            // Watchbill: the ring view is a Read; declaring a shift is pure
+            // operator configuration → Admin (an agent-class principal must
+            // not re-anchor the follow-the-sun queue). GET and POST share the
+            // path; the scan maps to the last registered handler (POST), so
+            // Admin is the checked gate.
+            ("/ops/shifts", "Admin"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13182,6 +13194,7 @@ Final paragraph after the rule.";
                     "workflow" => include_str!("handlers/workflow.rs"),
                     "workflow_lineage" => include_str!("handlers/workflow_lineage.rs"),
                     "kcs" => include_str!("handlers/kcs.rs"),
+                    "shifts" => include_str!("handlers/shifts.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
