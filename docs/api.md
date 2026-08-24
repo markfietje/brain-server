@@ -179,6 +179,21 @@ human approves through `/proposals/{id}/approve`. Approved articles are born
 |---|---|---|
 | GET | `/kcs/articles?state=&stale=1` | The content-health worklist: KCS-carrying articles, filterable by lifecycle state; `stale=1` keeps articles past their freshness-review deadline or carrying open improve flags (Read, per-domain visibility) |
 | POST | `/kcs/articles/{id}/approve` | Move a draft article to `approved`, stamping the 90-day freshness-review deadline (Write on the domain + `approve` role; `409` when not draft; audited in-tx) |
+| POST | `/kcs/articles/{id}/publish` | Propose publishing to the public KB (`kcs_publish` proposal; approval needs `approve` + the distinct `publish` capability). `action=retract` returns a published article to `approved` — the next build drops its page (Write to propose) |
+| GET | `/kcs/articles/{id}/preview` | The exact sanitized public page for an approved/published article — same render path as `brain kb build`, unconditional PII redaction, no operator bypass (Read) |
+
+### Public knowledge base (Beacon)
+
+The public KB is a **generated static artifact**, never a live data path:
+`brain kb build --domain <d> --out <dir>` emits a deterministic static site
+(article pages under strict sanitization, index, client-side-only search
+index, sitemap, robots, 404, redirect pages for superseded slugs, and a
+SHA-256 `kb_manifest.json`). The operator hosts it and verifies the hosted
+bytes against the manifest. On-page "Did this solve it?" votes return through
+an operator-hosted relay into `POST /webhooks/kb-feedback`
+(Standard-Webhooks HMAC-gated via `BRAIN_KB_FEEDBACK_SECRET_FILE`; aggregate
+counters only — no visitor identifiers by construction); deflection is
+indicative only, see `docs/kb-deflection.md`.
 
 The engine itself lives in `tools/steward-harness` (0.2.0 "FirstLight"): a
 human-cranked loop (`brain workflow crank <run>`) that drives these routes

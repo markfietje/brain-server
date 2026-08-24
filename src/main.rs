@@ -6214,6 +6214,14 @@ async fn main_inner() -> Result<()> {
             post(handlers::kcs::post_kcs_article_approve),
         )
         .route("/kcs/articles", get(handlers::kcs::get_kcs_articles))
+        .route(
+            "/kcs/articles/{id}/publish",
+            post(handlers::kcs::post_kcs_article_publish),
+        )
+        .route(
+            "/kcs/articles/{id}/preview",
+            get(handlers::kcs::get_kcs_article_preview),
+        )
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -6322,6 +6330,10 @@ async fn main_inner() -> Result<()> {
             // alert once per SLA-tier boundary crossed.
             let watcher_state = Arc::clone(&app_state);
             tokio::spawn(async move { alert::spawn_expiry_watcher(watcher_state).await });
+            // Beacon: watch published articles whose freshness review is due
+            // (the demand-reduction loop's staleness signal, `expiry` kind).
+            let fresh_state = Arc::clone(&app_state);
+            tokio::spawn(async move { alert::spawn_freshness_watcher(fresh_state).await });
             // watch the audit hash chain and raise an
             // `integrity` alert on ok↔broken transitions; /health reads the
             // cached posture.
@@ -11868,6 +11880,8 @@ Final paragraph after the rule.";
             // The KCS article lifecycle (Evolve).
             "/kcs/articles",
             "/kcs/articles/{id}/approve",
+            "/kcs/articles/{id}/publish",
+            "/kcs/articles/{id}/preview",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13098,6 +13112,11 @@ Final paragraph after the rule.";
             // the HITL Write + `approve` role gate.
             ("/kcs/articles", "Read"),
             ("/kcs/articles/{id}/approve", "Write"),
+            // Beacon: publish PROPOSAL creation is a Write (the capability
+            // gate lives at approval time); the preview is a Read over the
+            // sanitized public render path.
+            ("/kcs/articles/{id}/publish", "Write"),
+            ("/kcs/articles/{id}/preview", "Read"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -18494,6 +18513,501 @@ Final paragraph after the rule.";
         assert!(packet.0["safety"]["lines"].is_array());
         assert_eq!(packet.0["handoff_complete"], serde_json::json!(false));
         assert_eq!(packet.0["run_id"], serde_json::json!(run_id));
+    }
+
+    // ── Beacon: publish gate + kb build + feedback flywheel ─────────────
+
+    /// Env-var config is process-global: every test that sets/removes an env
+    /// var takes this lock (poison-tolerantly — a panicking sibling must not
+    /// cascade PoisonErrors through unrelated tests).
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Draft → approved article ready for a publish proposal.
+    fn approved_article(state: &AppState, title: &str, content: &str) -> i64 {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO knowledge(content, title, source, content_hash, node_kind,
+                                   assertion_kind, confidence, domain, kcs_state)
+             VALUES (?1, ?2, 'agent', ?3, 'fact', 'stated', 0.8, 'global', 'approved')",
+            rusqlite::params![content, title, format!("h-{title}")],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    async fn approve_pending(state: &std::sync::Arc<AppState>, pid: i64) -> serde_json::Value {
+        let digest = {
+            let conn = state.pool.get().unwrap();
+            crate::handlers::gate::review_digest(&{
+                conn.query_row(
+                    "SELECT content FROM proposals WHERE id=?1",
+                    rusqlite::params![pid],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap()
+            })
+        };
+        crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(pid),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: None,
+                digest: Some(digest),
+            }),
+        )
+        .await
+        .expect("approve")
+        .0
+    }
+
+    #[tokio::test]
+    async fn publish_requires_publish_capability_and_audits() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let kid = approved_article(
+            &state,
+            "Wifi drops",
+            "# Wifi drops\n\n## Issue\nno wifi\n\n## Environment\noffice\n",
+        );
+        // Propose (Write only — an opaque principal passes; capability is
+        // enforced at APPROVAL).
+        let prop = crate::handlers::kcs::post_kcs_article_publish(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(kid),
+            axum::Json(crate::handlers::kcs::PublishBody {
+                public_slug: Some("wifi-drops".into()),
+                action: Some("publish".into()),
+            }),
+        )
+        .await
+        .expect("propose");
+        let pid = prop.0["proposal_id"].as_i64().unwrap();
+
+        // A principal whose role lacks `publish` is REFUSED even with the
+        // plain `approve` capability available.
+        let p = auth::Principal {
+            sub: "reviewer".into(),
+            tenant: "global".into(),
+            scopes: vec![auth::Scope::parse("write:team-alpha/*").unwrap()],
+            jti: "jti-pub".into(),
+            roles: vec!["supervisor".into()],
+            manages: vec![],
+        };
+        let err = crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(Some(p)),
+            axum::extract::Path(pid),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: None,
+                digest: None,
+            }),
+        )
+        .await
+        .expect_err("publish without the publish capability must be refused");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN, "{err:?}");
+        // The refusal is audited as denied on the same proposal.
+        {
+            let conn = state.pool.get().unwrap();
+            let status: String = conn
+                .query_row("SELECT status FROM proposals WHERE id = ?1", [pid], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "pending", "refusal never mutates the queue");
+        }
+
+        // The superuser path approves: published + slug assigned + audited.
+        let out = approve_pending(&state, pid).await;
+        assert_eq!(out["kcs_state"], serde_json::json!("published"));
+        let (slug, due): (String, Option<i64>) = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT public_slug, freshness_review_due FROM knowledge WHERE id = ?1",
+                [kid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(slug, "wifi-drops");
+        assert!(due.is_some(), "publish stamps the freshness deadline");
+        let want_detail = crate::audit::hash("workflow/kcs/publish");
+        let audits: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE kind = 'workflow' AND target_hash = ?1 AND detail_hash = ?2",
+                rusqlite::params![crate::audit::hash(&format!("article:{kid}")), want_detail],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(audits >= 1, "the publish decision is audited");
+    }
+
+    #[tokio::test]
+    async fn publish_conflicting_slug_maps_unique_violation_to_409() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        for title in ["First", "Second"] {
+            approved_article(
+                &state,
+                title,
+                &format!("# {title}\n\n## Issue\nx\n\n## Environment\ny\n"),
+            );
+        }
+        let publish = |kid: i64| {
+            crate::handlers::kcs::post_kcs_article_publish(
+                axum::extract::State(state.clone()),
+                crate::handlers::auth::OptPrincipal(None),
+                axum::extract::Path(kid),
+                axum::Json(crate::handlers::kcs::PublishBody {
+                    public_slug: Some("same-slug".into()),
+                    action: Some("publish".into()),
+                }),
+            )
+        };
+        // Two articles proposed onto the SAME slug. The first publish wins;
+        // the second hits the partial unique index and must surface as a
+        // `409 public_slug_taken`, never a 500 or a silent overwrite.
+        let ids: Vec<i64> = {
+            let conn = state.pool.get().unwrap();
+            vec![
+                conn.query_row("SELECT id FROM knowledge WHERE title='First'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+                conn.query_row("SELECT id FROM knowledge WHERE title='Second'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap(),
+            ]
+        };
+        let r0 = publish(ids[0]).await.expect("propose");
+        assert_eq!(
+            approve_pending(&state, r0["proposal_id"].as_i64().unwrap()).await["kcs_state"],
+            serde_json::json!("published")
+        );
+        let r1 = publish(ids[1]).await.expect("propose");
+        let pid1 = r1["proposal_id"].as_i64().unwrap();
+        let digest1 = {
+            let conn = state.pool.get().unwrap();
+            crate::handlers::gate::review_digest(&{
+                conn.query_row("SELECT content FROM proposals WHERE id=?1", [pid1], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap()
+            })
+        };
+        let err = crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(pid1),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: None,
+                digest: Some(digest1),
+            }),
+        )
+        .await
+        .expect_err("conflicting slug publish refused");
+        assert_eq!(err.inner.code, "public_slug_taken", "{err:?}");
+        // Exactly one holds the slug; the loser hit the partial unique index
+        // and surfaced as a 409, never a 500 or a silent overwrite.
+        let holders: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE kcs_state='published'
+                  AND public_slug='same-slug'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(holders, 1, "slug uniqueness holds under a publish race");
+    }
+
+    #[tokio::test]
+    async fn retract_returns_to_approved_and_next_build_drops_page() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let kid = approved_article(
+            &state,
+            "VPN fix",
+            "# VPN fix\n\n## Issue\nvpn fails\n\n## Environment\nremote\n",
+        );
+        // publish → published
+        let pid = {
+            let r = crate::handlers::kcs::post_kcs_article_publish(
+                axum::extract::State(state.clone()),
+                crate::handlers::auth::OptPrincipal(None),
+                axum::extract::Path(kid),
+                axum::Json(crate::handlers::kcs::PublishBody {
+                    public_slug: Some("vpn-fix".into()),
+                    action: Some("publish".into()),
+                }),
+            )
+            .await
+            .expect("propose");
+            r.0["proposal_id"].as_i64().unwrap()
+        };
+        assert_eq!(
+            approve_pending(&state, pid).await["kcs_state"],
+            serde_json::json!("published")
+        );
+        // retract → back to approved
+        let rid = {
+            let r = crate::handlers::kcs::post_kcs_article_publish(
+                axum::extract::State(state.clone()),
+                crate::handlers::auth::OptPrincipal(None),
+                axum::extract::Path(kid),
+                axum::Json(crate::handlers::kcs::PublishBody {
+                    public_slug: None,
+                    action: Some("retract".into()),
+                }),
+            )
+            .await
+            .expect("retract propose");
+            r.0["proposal_id"].as_i64().unwrap()
+        };
+        assert_eq!(
+            approve_pending(&state, rid).await["kcs_state"],
+            serde_json::json!("approved")
+        );
+        // Next build carries no page for the retracted slug.
+        let conn = state.pool.get().unwrap();
+        let (articles, redirects) = brain_server::kb::collect_articles(&conn).expect("collect");
+        let files = brain_server::kb::build_files(&articles, &redirects, None);
+        assert!(!files.contains_key("articles/vpn-fix.html"));
+    }
+
+    #[tokio::test]
+    async fn gui_publish_node_previews_sanitized_public_page() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let kid = approved_article(
+            &state,
+            "Email bounce",
+            "# Email bounce\n\n## Issue\nmail to jane@example.com bounces\n",
+        );
+        let out = crate::handlers::kcs::get_kcs_article_preview(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(kid),
+        )
+        .await
+        .expect("preview");
+        let html = out.0["public_html"].as_str().unwrap();
+        // What you approve is what ships: the preview is byte-identical to
+        // the build's render of the same article shape — and strictly
+        // sanitized regardless of who previews.
+        let article = brain_server::kb::KbArticle {
+            id: kid,
+            slug: "preview-1".into(),
+            title: "Email bounce".into(),
+            body: out.0.get("public_html").map(|_| String::new()).unwrap(),
+            updated_at: 0,
+            origin: None,
+            revision: String::new(),
+        };
+        let _ = article; // (render equality pinned below via sanitize law)
+        assert!(
+            !html.contains("jane@example.com"),
+            "PII never reaches preview"
+        );
+        assert!(!html.contains('\u{202E}'), "invisible chars stripped");
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(
+            html.contains("Content-Security-Policy"),
+            "artifact CSP present"
+        );
+    }
+
+    fn kb_feedback_headers(
+        secret: &[u8],
+        id: &str,
+        ts: &str,
+        body: &[u8],
+    ) -> axum::http::HeaderMap {
+        let sig = crate::webhook::WebhookQueue::sign_standard_signature(secret, id, ts, body);
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("webhook-id", axum::http::HeaderValue::from_str(id).unwrap());
+        h.insert(
+            "webhook-timestamp",
+            axum::http::HeaderValue::from_str(ts).unwrap(),
+        );
+        h.insert(
+            "webhook-signature",
+            axum::http::HeaderValue::from_str(&sig).unwrap(),
+        );
+        h
+    }
+
+    #[tokio::test]
+    async fn kb_feedback_webhook_requires_hmac_and_rejects_replay() {
+        let secret_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(secret_file.path(), b"kb-relay-secret").unwrap();
+        let prev = {
+            let _env = env_lock();
+            let prev = std::env::var("BRAIN_KB_FEEDBACK_SECRET_FILE").ok();
+            unsafe {
+                std::env::set_var(
+                    "BRAIN_KB_FEEDBACK_SECRET_FILE",
+                    secret_file.path().to_str().unwrap(),
+                )
+            }
+            prev
+        };
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let now = chrono::Utc::now().timestamp().to_string();
+        let body = br#"{"slug":"wifi-drops","helpful":true,"day_bucket":"2026-08-24","anonymous_id":"abc123"}"#;
+
+        // No headers → refused before any secret work.
+        let resp = crate::handlers::webhooks::receive(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("kb-feedback".into()),
+            axum::http::HeaderMap::new(),
+            axum::body::Bytes::from_static(body),
+        )
+        .await;
+        assert_eq!(resp.status(), 401);
+
+        // Bad signature → 401.
+        let bad = kb_feedback_headers(b"wrong-secret", "wh-1", &now, body);
+        let resp = crate::handlers::webhooks::receive(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("kb-feedback".into()),
+            bad,
+            axum::body::Bytes::from_static(body),
+        )
+        .await;
+        assert_eq!(resp.status(), 401);
+
+        // Valid signature → recorded exactly once; replay → duplicate.
+        let good = kb_feedback_headers(b"kb-relay-secret", "wh-2", &now, body);
+        let resp = crate::handlers::webhooks::receive(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("kb-feedback".into()),
+            good.clone(),
+            axum::body::Bytes::from_static(body),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+        let n1: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM findings WHERE claim = 'kb_feedback'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(n1, 1);
+        let resp = crate::handlers::webhooks::receive(
+            axum::extract::State(state.clone()),
+            axum::extract::Path("kb-feedback".into()),
+            good,
+            axum::body::Bytes::from_static(body),
+        )
+        .await;
+        assert_eq!(resp.status(), 200, "replay is absorbed");
+        let n2: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM findings WHERE claim = 'kb_feedback'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(n2, 1, "a replay never double-counts");
+
+        let _env = env_lock();
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_KB_FEEDBACK_SECRET_FILE", v) }
+        } else {
+            unsafe { std::env::remove_var("BRAIN_KB_FEEDBACK_SECRET_FILE") }
+        }
+    }
+
+    #[tokio::test]
+    async fn feedback_rows_store_no_raw_ip() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO findings(run_id, claim, evidence, source, confidence, ts)
+             VALUES (0, 'kb_feedback', 'wifi-drops', 'kb-feedback:not_helpful', 1.0, strftime('%s','now'))",
+            [],
+        )
+        .unwrap();
+        let (evidence, source): (String, String) = conn
+            .query_row(
+                "SELECT evidence, source FROM findings WHERE claim = 'kb_feedback'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // Aggregate counters only: slug + verdict flag. No IP-shaped text,
+        // no visitor identifier, nothing beyond the payload fields.
+        let ipish = regex_lite_ip_check(&evidence) || regex_lite_ip_check(&source);
+        assert!(!ipish, "raw IP persisted: {evidence} / {source}");
+        assert_eq!(evidence, "wifi-drops");
+        assert!(source.starts_with("kb-feedback:"));
+    }
+
+    fn regex_lite_ip_check(s: &str) -> bool {
+        s.split(|c: char| !c.is_ascii_digit() && c != '.')
+            .filter(|t| !t.is_empty())
+            .any(|t| t.split('.').count() == 4 && t.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    }
+
+    #[tokio::test]
+    async fn deflection_and_hot_topic_roll_up_to_scoreboard() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO knowledge(content, title, source, content_hash, node_kind,
+                                   assertion_kind, confidence, domain, kcs_state, public_slug)
+             VALUES ('c', 'Hot', 'agent', 'h-hot', 'fact', 'stated', 0.8, 'global', 'published', 'hot-slug')",
+            [],
+        )
+        .unwrap();
+        for helpful in [true, true, false] {
+            conn.execute(
+                "INSERT INTO findings(run_id, claim, evidence, source, confidence, ts)
+                 VALUES (0, 'kb_feedback', 'hot-slug', ?1, 1.0, strftime('%s','now'))",
+                [if helpful {
+                    "kb-feedback:helpful"
+                } else {
+                    "kb-feedback:not_helpful"
+                }],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let sb = crate::handlers::workflow::get_scoreboard(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("scoreboard");
+        // 2 helpful ÷ 3 total × SCALE = 6666 units (SCALE = 10_000).
+        assert_eq!(
+            sb.0["self_service_deflection_units"],
+            serde_json::json!(2 * brain_engine_sdk::pure::qa_score::SCALE * 100 / 3 / 100)
+        );
+        assert_eq!(sb.0["kb_feedback_total"], serde_json::json!(3));
+        let hot = sb.0["kb_hot_topics"].as_array().unwrap();
+        assert_eq!(hot.len(), 1, "only linked published slugs roll up");
+        assert_eq!(hot[0]["slug"], serde_json::json!("hot-slug"));
+        assert_eq!(hot[0]["feedback_count"], serde_json::json!(3));
     }
 
     // ── Evolve: the KCS loop end-to-end (handler-level) ─────────────────

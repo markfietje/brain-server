@@ -19,6 +19,33 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.24] — 2026-08-24 — "Beacon": knowledge goes public, demand drops
+
+The demand-reduction half of KCS: approved articles become a **publicly published KB** as a generated static artifact an operator hosts — brain-server stays loopback/local-first; publishing is a human decision with its own verb, and a mistake's blast radius is an artifact rebuild, never a live data path.
+
+**M1 (`brain kb build`):** new CLI subcommand emits a deterministic static site from `kcs_state='published'` articles in a domain: per-slug article pages (title + the four KCS sections + updated date/revision/provenance/canonical), index, client-side-only JSON search index, sitemap.xml, robots.txt, 404 — CSP `default-src 'none'; style-src 'unsafe-inline'` at the artifact level, no JS beyond the static index reader, no external assets. **Every field passes the strict public seam (`kb::sanitize_public`: unconditional PII redact → invisible strip → markdown-ref strip — no principal argument, no operator bypass)**, pinned by `pii_never_reaches_public_html`. Superseded slugs emit redirect pages to their survivor by reusing the existing `supersedes` evidence chain (`superseded_slug_redirects_to_survivor`). Same DB state ⇒ byte-identical output (`kb_build_is_deterministic_byte_for_byte`); a content-addressed SHA-256 `kb_manifest.json` lets the operator verify what they host (`kb_manifest_digests_match_files`). New lib modules `kb.rs` + `pii_mask.rs` — the mask primitives moved verbatim from `gate.rs` so the read gate, the write screen, and the public seam share ONE definition (`redact_unconditional`). Signing stays the shipped convention: sign the artifact tarball with `scripts/release-sign.sh` (documented in the command output).
+
+**M2 (the publish gate):** proposal kind `kcs_publish {knowledge_id, public_slug, action}` created via `POST /kcs/articles/{id}/publish` (Write proposes; the capability is enforced at APPROVAL where it belongs). Approval requires `approve` AND the NEW distinct `publish` capability — a reviewer who may approve internal drafts is not thereby allowed to push content public (`publish_requires_publish_capability_and_audits`; existing roles unchanged — operators grant `publish` through the roles table). In-tx CAS: approved→published + slug assigned (uniqueness via the v1.28.23 partial unique index → `409 public_slug_taken`) + freshness stamped COALESCE-style; audited `workflow/kcs/publish`. `action=retract` returns published→approved; the next build drops the page (`retract_returns_to_approved_and_next_build_drops_page`). `GET /kcs/articles/{id}/preview` renders the EXACT public page through the same function the build uses under the same strict seam — what you approve is byte-identical to what ships (`gui_publish_node_previews_sanitized_public_page`).
+
+**M3 (feedback flywheel):** `POST /webhooks/kb-feedback` is ALWAYS Standard-Webhooks HMAC-verified (secret via 0600-checked `BRAIN_KB_FEEDBACK_SECRET_FILE`, fail-closed; replay-window + seen-claim dedup) and converts each verified delivery into ONE anonymous `kb_feedback` finding row — `{slug, helpful, day_bucket, anonymous_id}` validated, no raw IP anywhere by construction (`kb_feedback_webhook_requires_hmac_and_rejects_replay`, `feedback_rows_store_no_raw_ip`). Scoreboard grows `self_service_deflection_units` + `kb_feedback_total` + `kb_hot_topics` (published slugs whose feedback repeats ≥ `KB_HOT_TOPIC_THRESHOLD`=3 — "article stale/missing" made visible; `deflection_and_hot_topic_roll_up_to_scoreboard`). Alerts ride existing kinds: a freshness watcher fires `expiry` once per past-due published article, and crossing the hot-topic threshold fires `workflow`.
+
+**M4 (metrics honesty):** `docs/kb-deflection.md` — on-page deflection is INDICATIVE, repeat-contact rate (CRM/Bridges) stays the primary demand metric; both land on the weekly report + monthly human sign-off; no industry-lift claims anywhere.
+
+### Release notes
+- **Improvements:** `brain kb build --domain <d> --out <dir>` turns solved-case knowledge into a hostable static KB — deterministic bytes, SHA-256 manifest, superseded-slug redirects.
+- **Improvements:** two-gate publishing (approve → publish) with preview: reviewers see exactly the sanitized page that will ship; retract-and-rebuild is the documented operational rollback.
+- **Improvements:** the scoreboard gains self-service-deflection and hot-topic signals from an anonymous, PII-free on-page feedback webhook; stale-published-article alerts fire on the existing expiry kind.
+- **Security fixes:** none new (all surfaces are role/HMAC-gated and fail closed); the strict public sanitize seam is stricter than the internal read gate by design.
+- Tests: server main bin **845** / 6 ignored (**+7**: five plan-named pins + slug-vocabulary + artifact-write pins in `kb`/`pii_mask`), lib **201** / 1 (**+10**: 8 kb + 2 pii_mask), brain CLI, mcp, bench unchanged counts pending CI; clippy `-D warnings` + fmt clean. No schema change (schema stays 1.28.23 — publish rides the pre-scaffolded columns).
+
+### Honest ceilings
+- The public site has no JS framework/analytics by design; search is one static JSON index read client-side.
+- Artifact signing delegates to the operator (`scripts/release-sign.sh` over the tarball) — no minisign integration inside `brain kb build`.
+- `revision` renders the article `content_hash`, not a CRM envelope law-version stamp (the envelope isn't persisted per-article).
+- Deflection is vote-based and indicative; hot topics count feedback volume only, not CRM repeater clustering (that join lands when Bridges exports per-contact linkage).
+- Public CDN caches after retract are the operator's concern (documented).
+- The client console does not yet render a dedicated publish node; the preview endpoint is the render contract a Cockpit node consumes (server-side pin ships here).
+
 ## [1.28.23] — 2026-08-24 — "Evolve": the KCS loop closes — every solved case becomes knowledge, every case is linked to living knowledge
 
 The KCS v6 double loop, wired to the substrate that already implements most of it. Solve-loop capture/structure/reuse/improve happen in the workflow; Evolve-loop content health and performance assessment land on the scoreboard. Closing a case without an article becomes *visible*, never silent.

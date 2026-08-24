@@ -434,6 +434,25 @@ pub async fn get_scoreboard(
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
     let (emitted, kcs) = emitted;
+    // Beacon: the feedback flywheel rides the same read — deflection is
+    // INDICATIVE (docs/kb-deflection.md governs; repeat-contact rate stays
+    // the primary demand metric).
+    let pool_fb = super::resolve_domain_pool(&state.registry, None)?;
+    let (fb, hot) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let conn = pool_fb.get().map_err(|e| format!("{e}"))?;
+        let fb = crate::workflow::kcs::kb_feedback_measures(&conn).map_err(|e| format!("{e}"))?;
+        let hot =
+            crate::workflow::kcs::kb_hot_topics(&conn, crate::config::KB_HOT_TOPIC_THRESHOLD, 5)
+                .map_err(|e| format!("{e}"))?;
+        Ok((fb, hot))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    let hot_topics: Vec<serde_json::Value> = hot
+        .into_iter()
+        .map(|(slug, n)| serde_json::json!({ "slug": slug, "feedback_count": n }))
+        .collect();
     // The SDK stays dependency-free; the host owns the wire shape.
     Ok(Json(serde_json::json!({
         "fcr_units": sb.fcr_units,
@@ -452,6 +471,10 @@ pub async fn get_scoreboard(
         "kcs_linkage_rate_units": kcs.linkage_rate_units,
         "searched_found_rate_units": kcs.searched_found_rate_units,
         "article_freshness_median_age_secs": kcs.article_freshness_median_age_secs,
+        // Beacon: on-page feedback aggregates (additive; indicative only).
+        "self_service_deflection_units": fb.self_service_deflection_units,
+        "kb_feedback_total": fb.total_feedback,
+        "kb_hot_topics": hot_topics,
     })))
 }
 

@@ -12,6 +12,7 @@ on the HTTP API or the client console.
 | Command | Purpose |
 |---|---|
 | `brain doctor` [`--backup <path> [--passphrase-file PATH]`] | Health + readiness; optionally verify a backup file |
+| `brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>]` | Build the public KB as a static artifact from published articles (deterministic bytes + SHA-256 manifest; sign before hosting) |
 | `brain status` | Counts, model, version |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
 | `brain snapshot-status` | Show the point-in-time snapshot state |

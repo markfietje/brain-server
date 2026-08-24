@@ -3730,6 +3730,94 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /kcs/articles/{id}/publish:
+    post:
+      summary: Propose publishing a KCS article to the public KB (Beacon)
+      description: >
+        Creates a pending `kcs_publish` proposal. Approval (which requires the
+        `approve` role AND a distinct `publish` capability) flips the article
+        `approved -> published`, assigns its `public_slug` (unique among
+        published articles), and stamps the freshness deadline.
+        `action=retract` is the operational rollback: state back to
+        `approved`; the next `brain kb build` drops the page. Proposing needs
+        Write on the article's domain; the publish capability is enforced at
+        APPROVAL time. Audited (`workflow/kcs/publish` / `workflow/kcs/retract`).
+      operationId: proposeKcsPublish
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                public_slug:
+                  type: string
+                  description: Required for action=publish; lowercase alnum + hyphen.
+                action:
+                  type: string
+                  enum: [publish, retract]
+                  default: publish
+      responses:
+        "200":
+          description: The pending proposal summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id:
+                    type: integer
+                  knowledge_id:
+                    type: integer
+                  action:
+                    type: string
+                  status:
+                    type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Article is not in the state the action requires
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /kcs/articles/{id}/preview:
+    get:
+      summary: Preview the exact sanitized public page for an article (Beacon)
+      description: >
+        Renders the article through the SAME function the static KB build uses,
+        under the strict public seam — unconditional PII redaction, invisible-
+        Unicode strip, markdown-ref strip, no operator bypass. What you approve
+        is byte-identical to what ships. Requires Read.
+      operationId: previewKcsArticle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The public HTML plus lifecycle state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  kcs_state:
+                    type: string
+                  public_html:
+                    type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workflow/plugins/mount:
     post:
       summary: Record UI-plugin mount/unmount evidence (Art. 12 record-keeping)
