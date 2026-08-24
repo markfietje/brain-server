@@ -90,6 +90,17 @@ on the HTTP API or the client console.
 |---|---|
 | `brain token rotate` | Atomically rotate the bearer token (v1.27.12): a fresh 32-byte hex token is written to a 0600 temp file (`create_new`, never umask-dependent), fsync'd, and renamed over the configured token file. Refuses to overwrite a group/world-readable target. Restart the server to pick it up. |
 
+## Governed workflow runs (v1.28)
+
+| Command | Purpose |
+|---|---|
+| `brain workflow open [DOMAIN]` | Open a governed `troubleshoot` run in the domain (default `global`) — `POST /workflow/runs`. |
+| `brain workflow status <run>` | Fetch a run's state, revision, and pending question. |
+| `brain workflow answer <run> <text>` | Answer the run's pending AskHuman question (digest-bound to the live question). |
+| `brain workflow approve <run> <step>` | Approve a step gated on human approval. |
+| `brain workflow crank <run> [steps]` | Advance the engine loop up to `[steps]` transitions. |
+| `brain workflow handoff <run>` | Emit the I-PASS handoff packet for a run (read-seam sanitized). Supports `--json`. |
+
 ## UMP (Universal Memory Protocol)
 
 | Command | Purpose |

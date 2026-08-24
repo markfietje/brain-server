@@ -65,7 +65,7 @@ from `client/dist`). To serve the UI from the container, build the bundle
     volumes:
       - ./client/dist:/app/client/dist:ro
     environment:
-      BRAIN_CLIENT_DIR: /app/client/dist
+      BRAIN_CLIENT_DIST: /app/client/dist
 ```
 
 ## Backup / restore
@@ -81,7 +81,7 @@ docker run --rm -v "$PWD/data:/data" brain-server:local \
 docker start brain-server
 ```
 
-Retention + restore drill are queued as **v1.19 A5** (`BRAIN_BACKUP_RETENTION`).
+Snapshot retention is a compile-time constant (`SNAPSHOT_KEEP = 4` in `src/integrity.rs`) — the last four verified copies are kept, older ones pruned. An operator-tunable `BRAIN_BACKUP_RETENTION` env var is not implemented (the old v1.19 A5 note overstated it); edit the constant if you need a different window.
 
 ## Publishing (A1 follow-up)
 

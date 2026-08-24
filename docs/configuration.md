@@ -12,7 +12,7 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_DATA_ROOT` | — | v1.0 relocation knob — root for all on-disk paths |
 | `BRAIN_WORKER_THREADS` | # cores | Tokio runtime worker threads (set `2` on Jetson) |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist |
-| `BRAIN_CLIENT_DIR` | `client/dist` | Directory served at `/app` (the web GUI) |
+| `BRAIN_CLIENT_DIST` | `client/dist` | Directory served at `/app` (the web GUI) |
 | `BRAIN_CHAIN_CHECK_SECS` | `60` | How often the background audit-chain integrity check runs |
 | `BRAIN_MULTI_DB` | — | Enables per-domain SQLite files (multi-DB mode) |
 | `BRAIN_CONTROLLER_NAME` | — | Operator/controller identity label |
@@ -116,6 +116,8 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | Variable | Default | Description |
 |---|---|---|
 | `BRAIN_SUGGEST_ENABLED` | `true` | v1.9 kill switch: when `false`, the `/suggest/*` routes return `501`. |
+| `BRAIN_RECALL_GRAPH_ENABLED` | `true` | v1.12 kill switch for the graph (Personalized PageRank) recall leg — `false` disables it process-wide (per-request `graph=false` still works). |
+| `BRAIN_MAX_DOMAIN_DBS` | `256` | v1.27.16 cap on registered per-domain SQLite files; registration beyond the cap fails closed (`507 insufficient_storage`). |
 
 ## Capacity envelope (v0.9.9)
 
