@@ -16,6 +16,12 @@
 # bumps land — remove the matching ignore entry then.
 version: 2
 updates:
+  # Automate the GitHub Actions bumps themselves (checkout/rust-cache/…)
+  # — the Node-runtime deprecation class gets fixed by PR, not by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
   - package-ecosystem: cargo
     directory: /client
     schedule:

@@ -2,6 +2,7 @@
 name = "steward-harness"
 version = "0.2.2"
 edition = "2024"
+rust-version = "1.98"
 license = "MIT OR Apache-2.0"
 description = "The Steward driver harness: the governed-loop engine over the brain-server workflow substrate (human-cranked, request-scoped)."
 publish = false
