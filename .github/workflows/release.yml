@@ -28,9 +28,11 @@ jobs:
         # Full binary set: `bench`/`brain-migrate-rehearse` need `--features
         # bench,migrate`, `brain-connector-gh` needs `--features
         # connector-github` (both empty features that gate compilation).
+        # brain-connector-crm likewise via `connector-crm`.
         run: |
           cargo build --release --features bench,migrate
           cargo build --release --features connector-github --bin brain-connector-gh
+          cargo build --release --features connector-crm --bin brain-connector-crm
         continue-on-error: true
 
       - name: Build (linux aarch64 via cross)
@@ -38,6 +40,7 @@ jobs:
           cargo install cross --locked
           cross build --release --features bench,migrate --target aarch64-unknown-linux-gnu
           cross build --release --features connector-github --bin brain-connector-gh --target aarch64-unknown-linux-gnu
+          cross build --release --features connector-crm --bin brain-connector-crm --target aarch64-unknown-linux-gnu
         continue-on-error: true
 
       - name: Generate CycloneDX SBOM
@@ -54,7 +57,7 @@ jobs:
         # per target. Feature-gated bins present only if their feature built.
         run: |
           mkdir -p dist
-          for b in brain-server brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh; do
+          for b in brain-server brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh brain-connector-crm; do
             cp -f "target/release/$b" "dist/${b}-linux-x86_64" 2>/dev/null || true
             cp -f "target/aarch64-unknown-linux-gnu/release/$b" "dist/${b}-linux-aarch64" 2>/dev/null || true
           done
@@ -83,18 +86,20 @@ jobs:
         run: |
           cargo build --release --features bench,migrate
           cargo build --release --features connector-github --bin brain-connector-gh
+          cargo build --release --features connector-crm --bin brain-connector-crm
         continue-on-error: true
 
       - name: Build (macOS x86_64)
         run: |
           cargo build --release --features bench,migrate --target x86_64-apple-darwin
           cargo build --release --features connector-github --bin brain-connector-gh --target x86_64-apple-darwin
+          cargo build --release --features connector-crm --bin brain-connector-crm --target x86_64-apple-darwin
         continue-on-error: true
 
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          for b in brain-server brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh; do
+          for b in brain-server brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh brain-connector-crm; do
             cp -f "target/release/$b" "dist/${b}-darwin-arm64" 2>/dev/null || true
             cp -f "target/x86_64-apple-darwin/release/$b" "dist/${b}-darwin-x86_64" 2>/dev/null || true
           done

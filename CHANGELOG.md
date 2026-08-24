@@ -26,6 +26,16 @@ One normalized case shape ([`CrmCase`], `src/connector/crm/`), three vendor conn
 **Security posture** (mirrors the GitHub connector): all URLs built from config-derived hosts only, enforced by a transport-level host allowlist (`no_crm_url_from_memory_content`); Salesforce `nextRecordsUrl` reduced to an instance-relative path (a forged next-page cannot move the bearer); redirects refused; 5s/15s bounded timeouts; response bodies capped BEFORE buffering; secrets in 0600 files via the shared mode-check, fail-closed (`connector_secrets_refuse_wide_modes`); customer identity stored only as salted SHA-256 `subject_ref`; token refresh fail-closed (`salesforce_modstamp_sync_refreshes_token_fail_closed`). Vendor sync loops are pure functions over a `VendorTransport` trait — mock-transport tested with zero network in the DEFAULT build; only the reqwest adapter (`connector/crm/http.rs`) and `brain-connector-crm` are feature-gated (`connector-crm`). Operator-cranked via cron (300s cadence floor, `zendesk_cursor_sync_is_idempotent_and_respects_cadence`); the supervisor stays unwired. Structured symptom fields ride as `is_seed`/`is_not_seed` straight into the frontdoor Handoff contract. Custom CRMs (Freshdesk/ServiceNow/JSM): docs + pure-mapping recipe only — deliberately NO generic JSONPath runtime (`docs/connector-crm-custom.md`). No new server routes, no openapi change, zero new dependencies.
 
 ### Release notes
+- **New: support cases flow in from your CRM.** One binary (`brain-connector-crm`)
+  pulls Zendesk tickets, Salesforce Cases, and Genesys Cloud workitems into the
+  universal loop — each case opens one governed run and every update lands as a
+  `crm/case/updated` or `crm/case/closed` event.
+- **Human review by default:** under `BRAIN_WRITE_POSTURE=review`, case content
+  enters as proposals for operator approval — it never writes memory directly.
+- **Privacy unchanged:** customer identities are stored only as salted SHA-256
+  subject refs; no CRM writeback; no background syncing (cron-cranked).
+- **Custom CRMs** (Freshdesk, ServiceNow, JSM): configuration recipe in
+  `docs/connector-crm-custom.md`.
 - Tests: named pins shipped — `zendesk_cursor_sync_is_idempotent_and_respects_cadence`,
   `salesforce_modstamp_sync_refreshes_token_fail_closed`,
   `genesys_workitem_maps_to_case_with_external_contact`,
