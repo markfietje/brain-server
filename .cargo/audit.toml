@@ -3,21 +3,43 @@
 # RUSTSEC-2023-0071 (rsa 0.9.10 "Marvin Attack", timing sidechannel on RSA
 # private-key operations, severity 5.9) — accepted with documentation:
 #
-# 1. NO fixed version exists anywhere. Verified 2026-08-04: the advisory is
-#    still active against rsa 0.10.0-rc.18, and jsonwebtoken 11.0.0 (latest)
-#    still depends on rsa ^0.9.6, so bumping the JWT stack cannot clear it.
+# 1. NO fixed version exists anywhere. Verified 2026-08-24: jsonwebtoken 11
+#    still depends on rsa ^0.9 internally for RS256 verify (we ship rsa
+#    0.10.0-rc.18 for our own keygen; it still carries no Marvin fix).
 # 2. Threat model: brain-server mints/verifies JWTs for its own local daemon
 #    (loopback, single-tenant default). The advisory's own workaround is that
-#    local use on a non-compromised computer is acceptable — an attacker with
-#    local process timing access already controls the machine.
+#    local use on a non-compromised computer is acceptable.
 # 3. Defense in depth: signing keys are PEM files at mode 0600 in a 0700 dir
-#    (enforced + tested), and deployments that must minimize RSA exposure
-#    can issue EdDSA (Ed25519) keys, which use no RSA and have been supported
-#    since v1.2.0.
-# 4. Re-audit trigger: this ignore should be revisited whenever rsa publishes
-#    a patched release (watch the advisory page) or a dependency stops
-#    depending on rsa.
+#    (enforced + tested); deployments minimizing RSA exposure can issue
+#    EdDSA (Ed25519) keys, supported since v1.2.0.
+#
+# ── Unmaintained transitive crates (informational; zero known vulns) ──────
+#
+# RUSTSEC-2024-0436 (paste, proc-macro): archived upstream; successor is
+# `pastey`. Enters ONLY via `tokenizers` (Hugging Face, actively maintained —
+# 0.23.1 is current and still uses paste). Compile-time codegen macro: zero
+# runtime surface. Every consumer of HF tokenizers carries this warning today;
+# it clears when tokenizers migrates to pastey. NOT removable locally — our
+# direct tokenizers 0.23 and model2vec-rs' pinned 0.21 both use it.
+#
+# RUSTSEC-2025-0119 (number_prefix): unmaintained formatting helper used by
+# indicatif 0.17. Chain: model2vec-rs 0.2.1 → hf-hub ^0.4 → indicatif ^0.17.
+# indicatif 0.18 dropped it, and hf-hub 0.5/1.0 use indicatif ^0.18 — the fix
+# lands when model2vec-rs bumps hf-hub. model2vec-rs itself is ACTIVELY
+# maintained (MinishLab, 0.2.1 published 2026-05). Not droppable: it is the
+# default edge/Jetson embedder (`potion-retrieval-32M`) and fastembed ships NO
+# model2vec/static-model equivalent — swapping embedders would invalidate the
+# retrieval-quality golden pins and the recall floors.
+#
+# Re-check triggers (any one → revisit these ignores):
+#   - model2vec-rs releases with hf-hub >= 0.5  (clears number_prefix)
+#   - tokenizers release without paste          (clears paste)
+#   - a real vulnerability lands against either crate (re-evaluate posture)
 #
 # Re-check with: cargo audit (exit 0 required for green CI).
 [advisories]
-ignore = ["RUSTSEC-2023-0071"]
+ignore = [
+    "RUSTSEC-2023-0071",
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2025-0119",
+]
