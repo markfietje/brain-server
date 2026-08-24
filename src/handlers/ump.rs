@@ -668,7 +668,7 @@ pub fn operator_signing_key() -> Option<(String, SigningKey)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::RngCore;
+    use rand::{TryRng, rngs::SysRng};
 
     fn fixture_row() -> Value {
         json!({
@@ -882,7 +882,7 @@ mod tests {
     #[test]
     fn emit_record_signed_and_verified_with_operator_key() {
         let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
+        SysRng.try_fill_bytes(&mut seed).expect("OS entropy failed");
         let sk = SigningKey::from_bytes(&seed);
         let pk = sk.verifying_key().to_bytes();
         let did = brain_server::ump_integrity::did_key_from_ed25519(&pk);

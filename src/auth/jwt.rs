@@ -341,7 +341,7 @@ mod tests {
     /// tests are #[ignore]-free but parallelism within the binary is fine —
     /// `once_cell` would be the next step if this showed up in flame graphs).
     fn test_keypair() -> (RsaPrivateKey, rsa::RsaPublicKey) {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand08::thread_rng();
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA keypair for tests");
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
         (priv_key, pub_key)

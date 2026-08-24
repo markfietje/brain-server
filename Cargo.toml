@@ -77,7 +77,7 @@ otel = [
 # engines compile against this crate, never against brain-server.
 brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kernel"] }
 # Core Embedding
-model2vec-rs = "0.1.4"
+model2vec-rs = "0.2"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +
 # bge-reranker-v2-m3). Optional — only pulled by `neural-embed`/`rerank-tier`.
 # Pinned to 5.x; it exact-pins `ort = =2.0.0-rc.13`, so brain-server's `ort`
@@ -100,7 +100,7 @@ r2d2_sqlite = "0.35.0"
 # `sse` feature: v1.17.3 "UMP" M2 `GET /ump/subscribe` (§3.8 change feed).
 axum = "0.8.9"
 hyper = "1.10.1"
-tower-http = { version = "0.6.11", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header", "fs" ] }
+tower-http = { version = "0.7", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header", "fs" ] }
 tokio = { version = "1.53.0", features = ["full"] }
 
 # Serialization - Latest Releases
@@ -127,7 +127,7 @@ argon2 = "0.5"
 hex = "0.4"
 chrono = "0.4.45"
 dirs = "6.0.0"
-sysinfo = "0.38.2"
+sysinfo = "0.39"
 zerocopy = { version = "0.8", features = ["derive"] }
 uuid = { version = "1.24", features = ["v4", "serde"] }
 
@@ -178,7 +178,12 @@ rsa = "0.9"
 # `Uuid::new_v4()` — the comment previously said UUIDv7, the code never used
 # it. Corrected in audit G5, v1.11.0).
 # `getrandom` feature is the only one needed; `serde`/`v4` already on `uuid`.
-rand = "0.8"
+rand = "0.10"
+# Bridge for `rsa` 0.9 (the RS256 backend under jsonwebtoken): its keygen takes
+# a rand_core-0.6 RNG. rsa 0.10 (still RC upstream) moves to the new core —
+# this alias is deleted then. Not a new dependency: rand 0.8 already rides the
+# transitive graph.
+rand08 = { package = "rand", version = "0.8" }
 # Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
 # Tiny, stable, already a transitive dep; declared directly so the JWKS emitter
 # doesn't silently break if a transitive consumer swaps backends.

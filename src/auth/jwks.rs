@@ -421,7 +421,7 @@ mod tests {
     /// owner-only (0o600), as `install-service.sh` enforces in production.
     fn write_keypair(dir: &Path, kid: &str) -> RsaPrivateKey {
         use std::os::unix::fs::PermissionsExt;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand08::thread_rng();
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
         let pub_pem = pub_key
@@ -467,7 +467,7 @@ mod tests {
     fn loads_public_only_for_verify_only_deployments() {
         let dir = tempdir().unwrap();
         // Write just the public half — simulates an IdP-imported key.
-        let mut rng = rand::thread_rng();
+        let mut rng = rand08::thread_rng();
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
         let pub_pem = pub_key

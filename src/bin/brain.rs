@@ -2520,9 +2520,9 @@ fn cmd_ump_keygen(args: &[String]) -> Result<String, String> {
             "refusing to overwrite existing operator key {path:?}; delete it first to rotate"
         ));
     }
-    use rand::RngCore;
+    use rand::{TryRng, rngs::SysRng};
     let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
+    SysRng.try_fill_bytes(&mut seed).expect("OS entropy source failed");
     let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
     let pk = sk.verifying_key().to_bytes();
     let did = brain_server::ump_integrity::did_key_from_ed25519(&pk);
@@ -3350,9 +3350,9 @@ fn rotate_token_file_at(path: &Path) -> Result<(), String> {
 /// 32 random bytes hex-encoded (64 hex chars). Local (no `hex` dep): the token
 /// is a high-entropy bearer secret, matching the server's opaqueness.
 fn random_hex_token() -> String {
-    use rand::RngCore;
+    use rand::{TryRng, rngs::SysRng};
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    SysRng.try_fill_bytes(&mut bytes).expect("OS entropy source failed");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -3392,7 +3392,9 @@ fn cmd_key_generate(args: &[String]) -> Result<(), String> {
     // matching every major IdP's minimum.
     use rsa::RsaPrivateKey;
     use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
-    let mut rng = rand::thread_rng();
+    // rsa 0.9 speaks rand_core 0.6 — the aliased rand08 bridge provides it
+    // (see Cargo.toml; removed when rsa 0.10 lands).
+    let mut rng = rand08::thread_rng();
     let priv_key = RsaPrivateKey::new(&mut rng, 2048)
         .map_err(|e| format!("RSA keypair generation failed: {e}"))?;
     let pub_key = rsa::RsaPublicKey::from(&priv_key);

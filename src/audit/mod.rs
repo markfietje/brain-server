@@ -430,9 +430,13 @@ fn read_key_file(path: &Path) -> Result<[u8; 32], ChainKeyError> {
 }
 
 fn generate_key() -> [u8; 32] {
-    use rand::RngCore;
+    // rand 0.10: the OS entropy source is `rngs::SysRng` (fallible — it can
+    // only fail if the OS entropy source itself is broken, which aborts the
+    // boot rather than minting a weak chain key).
+    use rand::{TryRng, rngs::SysRng};
     let mut key = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut key);
+    SysRng.try_fill_bytes(&mut key)
+        .expect("OS entropy source failed while generating the audit chain key");
     key
 }
 
