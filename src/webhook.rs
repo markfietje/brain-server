@@ -36,7 +36,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 /// Max accepted clock-skew for a future-dated timestamp (seconds). Beyond this
 /// a sender's timestamp is treated as a forgery.
-const WEBHOOK_TS_FUTURE_SKEW_SECS: u64 = 300;
+pub(crate) const WEBHOOK_TS_FUTURE_SKEW_SECS: u64 = 300;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -221,6 +221,29 @@ impl WebhookQueue {
             detail,
         );
         Ok(outcome)
+    }
+
+    /// Replay-window check WITHOUT queueing: prune expired entries, then
+    /// atomically claim the delivery id (true = first sight, false = replay).
+    /// The Beacon kb-feedback receiver uses this — its payload is consumed
+    /// synchronously into a findings row, so there is nothing to enqueue.
+    pub fn seen_claim(&self, delivery_id: &str) -> Result<bool, HandlerError> {
+        let conn = self
+            .pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("webhook pool: {e}")))?;
+        conn.execute(
+            "DELETE FROM webhook_seen WHERE seen_at < datetime('now', ?1)",
+            params![format!("-{} seconds", WEBHOOK_REPLAY_SECS)],
+        )
+        .ok();
+        let changed = conn
+            .execute(
+                "INSERT OR IGNORE INTO webhook_seen(delivery_hash) VALUES (?1)",
+                params![format!("{:016x}", xxh3_64(delivery_id.as_bytes()))],
+            )
+            .map_err(|e| HandlerError::internal(format!("webhook seen-write: {e}")))?;
+        Ok(changed > 0)
     }
 
     /// Like [`enqueue`], but with an optional caller-supplied receipt time.

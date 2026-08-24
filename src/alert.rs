@@ -545,6 +545,46 @@ pub(crate) async fn spawn_chain_watcher(state: Arc<AppState>, watch: ChainWatchS
     }
 }
 
+pub(crate) async fn spawn_freshness_watcher(state: Arc<AppState>) {
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+        crate::config::ALERT_WATCH_INTERVAL_SECS,
+    ));
+    loop {
+        interval.tick().await;
+        let pool = state.pool.clone();
+        let stale: Vec<(i64, i64)> = tokio::task::spawn_blocking(move || {
+            let conn = match pool.get() {
+                Ok(c) => c,
+                Err(_) => return Vec::new(),
+            };
+            let now = chrono::Utc::now().timestamp();
+            let mut stmt = match conn.prepare(
+                "SELECT id, freshness_review_due FROM knowledge
+                 WHERE kcs_state = 'published' AND freshness_review_due IS NOT NULL
+                   AND freshness_review_due < ?1",
+            ) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            stmt.query_map([now], |r| Ok((r.get(0)?, r.get(1)?)))
+                .and_then(|m| m.collect::<rusqlite::Result<_>>())
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
+        for (id, due) in stale {
+            if seen.insert(id) {
+                publish(
+                    &state,
+                    ALERT_KIND_EXPIRY,
+                    json!({ "kb_article_id": id, "freshness_review_due": due }),
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

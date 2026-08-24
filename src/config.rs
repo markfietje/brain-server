@@ -302,6 +302,16 @@ pub const BIND_PUBLIC_OPT_IN: &str = "BIND_PUBLIC";
 /// skew / forged). GitHub sends `X-GitHub-Delivery` + `X-Hub-Signature-256`.
 pub const WEBHOOK_REPLAY_SECS: u64 = 300;
 
+/// The Beacon hot-topic threshold: when a published slug's kb_feedback
+/// count first reaches this many deliveries, the rising-repeat `workflow`
+/// alert fires (edge-triggered at == threshold).
+pub const KB_HOT_TOPIC_THRESHOLD: i64 = 3;
+
+/// The Beacon feedback flood bound: more than this many `kb_feedback` rows in
+/// the trailing hour makes the receiver refuse (503) — the synchronous path
+/// bypasses the webhook queue cap, so it carries its own bounded-ingest guard.
+pub const KB_FEEDBACK_MAX_PER_HOUR: i64 = 500;
+
 /// when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
 /// webhook receiver requires the Standard Webhooks header set
 /// (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies the

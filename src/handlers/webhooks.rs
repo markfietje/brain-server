@@ -8,7 +8,7 @@
 
 use crate::AppState;
 use crate::handlers::HandlerError;
-use crate::webhook::{EnqueueOutcome, WebhookQueue};
+use crate::webhook::{EnqueueOutcome, WEBHOOK_TS_FUTURE_SKEW_SECS, WebhookQueue};
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -85,6 +85,12 @@ pub async fn receive(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // The Beacon kb-feedback kind is ALWAYS HMAC-gated (Standard Webhooks),
+    // independent of the legacy GitHub-only posture below.
+    if kind == "kb-feedback" {
+        return receive_kb_feedback(&state, &headers, &body).await;
+    }
+
     // when `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`, the
     // receiver demands the Standard Webhooks header set (id/timestamp/
     // signature) and verifies the signature over `{id}.{timestamp}.{body}`, so
@@ -299,5 +305,222 @@ fn deny(state: &Arc<AppState>, kind: &str, detail: &str) {
             crate::audit::AuditStatus::Denied,
             detail,
         );
+    }
+}
+
+/// The Beacon kb-feedback signing secret. The operator-hosted relay holds the
+/// Standard Webhooks secret; brain-server verifies. `BRAIN_KB_FEEDBACK_SECRET_FILE`
+/// (0600-checked, fail-closed like every secret file). Absent/unreadable → None
+/// → the route 500s rather than accepting unverified feedback.
+fn load_kb_feedback_secret() -> Option<Vec<u8>> {
+    let path = std::env::var("BRAIN_KB_FEEDBACK_SECRET_FILE").ok()?;
+    if crate::auth::check_secret_permissions(std::path::Path::new(&path)).is_err() {
+        tracing::warn!(path = %path,
+            "kb-feedback secret file is not owner-only; refusing to trust it");
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// A verified kb-feedback payload: aggregate counters only, no PII by
+/// construction. `anonymous_id` is the RELAY's salted day-bucket hash — the
+/// raw IP never reaches this handler, and nothing here is stored verbatim
+/// beyond these fields.
+#[derive(serde::Deserialize)]
+struct KbFeedbackPayload {
+    slug: String,
+    helpful: bool,
+    day_bucket: String,
+    #[serde(default)]
+    anonymous_id: Option<String>,
+}
+
+fn day_bucket_valid(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && s.chars()
+            .enumerate()
+            .all(|(i, c)| matches!(i, 4 | 7) || c.is_ascii_digit())
+}
+
+/// The kb-feedback receiver: ALWAYS Standard-Webhooks HMAC-verified (regardless
+/// of the timestamp-required flag — this kind has no legacy path), synchronously
+/// converted into one `kb_feedback` finding row (aggregate counters only), with
+/// replay protection via the shared seen-window.
+async fn receive_kb_feedback(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes) -> Response {
+    let state = Arc::clone(state);
+    let id = headers
+        .get("webhook-id")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ts = headers
+        .get("webhook-timestamp")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let sig = headers
+        .get("webhook-signature")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if id.is_empty() || ts.is_empty() || sig.is_empty() {
+        deny(&state, "kb-feedback", "missing standard-webhooks headers");
+        return HandlerError::unauthorized("missing webhook-id/timestamp/signature")
+            .into_response();
+    }
+    let Some(secret) = load_kb_feedback_secret() else {
+        warn!("webhook: no kb-feedback secret configured");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": "no kb-feedback secret configured" })),
+        )
+            .into_response();
+    };
+    if !WebhookQueue::verify_standard_signature(&secret, &id, &ts, body, &sig) {
+        deny(&state, "kb-feedback", "bad standard-webhooks signature");
+        return HandlerError::unauthorized("standard-webhooks signature verification failed")
+            .into_response();
+    }
+    let received_at = ts
+        .parse::<u64>()
+        .ok()
+        .and_then(|s| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(s)));
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Some(t) = received_at {
+        let t_secs = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(u64::MAX);
+        if t_secs.abs_diff(now_ms) > WEBHOOK_TS_FUTURE_SKEW_SECS {
+            deny(&state, "kb-feedback", "timestamp outside replay window");
+            return HandlerError::unauthorized("timestamp check failed").into_response();
+        }
+    } else {
+        deny(&state, "kb-feedback", "unparseable webhook-timestamp");
+        return HandlerError::unauthorized("timestamp check failed").into_response();
+    }
+
+    let payload: KbFeedbackPayload = match serde_json::from_slice(body) {
+        Ok(p) => p,
+        Err(_) => {
+            deny(&state, "kb-feedback", "payload invalid");
+            return HandlerError::bad_request(
+                "webhook_bad_request",
+                "kb-feedback payload must be {slug, helpful, day_bucket}",
+            )
+            .into_response();
+        }
+    };
+    let slug_ok = brain_server::kb::is_valid_slug(&payload.slug);
+    let bucket_ok = day_bucket_valid(&payload.day_bucket);
+    let anon_ok = payload.anonymous_id.as_deref().is_none_or(|a| {
+        !a.is_empty()
+            && a.len() <= 128
+            && a.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'=' || b == b'/' || b == b'+')
+    });
+    if !slug_ok || !bucket_ok || !anon_ok {
+        deny(&state, "kb-feedback", "payload fields invalid");
+        return HandlerError::bad_request(
+            "webhook_bad_request",
+            "kb-feedback slug/day_bucket/anonymous_id failed validation",
+        )
+        .into_response();
+    }
+
+    let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
+    let first_sight = tokio::task::spawn_blocking(move || queue.seen_claim(&id))
+        .await
+        .unwrap_or_else(|e| Err(crate::handlers::HandlerError::internal(format!("{e}"))));
+    match first_sight {
+        Ok(true) => {}
+        Ok(false) => {
+            return (StatusCode::OK, axum::Json(json!({ "status": "duplicate" }))).into_response();
+        }
+        Err(e) => return e.into_response(),
+    }
+
+    let source = if payload.helpful {
+        "kb-feedback:helpful"
+    } else {
+        "kb-feedback:not_helpful"
+    };
+    enum Ingest {
+        Recorded { hot: Option<i64> },
+        Flood,
+    }
+    let stored = tokio::task::spawn_blocking({
+        let slug = payload.slug.clone();
+        let state = Arc::clone(&state);
+        move || -> Result<Ingest, String> {
+            let conn = state.pool.get().map_err(|e| format!("{e}"))?;
+            // Flood bound: the synchronous path bypasses the webhook queue
+            // cap, so it enforces its own trailing-hour ingest bound (503 =
+            // back off; a legitimate relay retries later).
+            let recent: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM findings
+                     WHERE claim = 'kb_feedback' AND ts > strftime('%s','now') - 3600",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("{e}"))?;
+            if recent >= crate::config::KB_FEEDBACK_MAX_PER_HOUR {
+                return Ok(Ingest::Flood);
+            }
+            conn.execute(
+                "INSERT INTO findings(run_id, claim, evidence, source, confidence, ts)
+                 VALUES (0, 'kb_feedback', ?1, ?2, 1.0, strftime('%s','now'))",
+                rusqlite::params![slug, source],
+            )
+            .map_err(|e| format!("{e}"))?;
+            crate::audit::record(
+                &conn,
+                crate::audit::AuditKind::Webhook,
+                "kb-feedback",
+                &slug,
+                crate::audit::AuditStatus::Ok,
+                "feedback recorded",
+            );
+            // Rising-repeat signal: when a slug's feedback count first crosses
+            // the hot-topic threshold, emit the existing workflow alert kind.
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM findings WHERE claim = 'kb_feedback' AND evidence = ?1",
+                    rusqlite::params![slug],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("{e}"))?;
+            let threshold = crate::config::KB_HOT_TOPIC_THRESHOLD;
+            Ok(Ingest::Recorded {
+                hot: (count == threshold).then_some(count),
+            })
+        }
+    })
+    .await;
+    match stored {
+        Ok(Ok(Ingest::Flood)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "feedback_rate_limited" })),
+        )
+            .into_response(),
+        Ok(Ok(Ingest::Recorded { hot })) => {
+            if let Some(n) = hot {
+                crate::alert::publish(
+                    &state,
+                    crate::alert::ALERT_KIND_WORKFLOW,
+                    json!({ "hot_topic": payload.slug, "feedback_count": n }),
+                );
+            }
+            (StatusCode::OK, axum::Json(json!({ "status": "recorded" }))).into_response()
+        }
+        Ok(Err(e)) => HandlerError::internal(e).into_response(),
+        Err(e) => HandlerError::internal(format!("{e}")).into_response(),
     }
 }

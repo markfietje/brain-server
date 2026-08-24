@@ -337,6 +337,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_doctor,
         usage: "brain doctor [--backup <path> [--passphrase-file PATH]]",
     },
+    Subcommand {
+        name: "kb",
+        json: false,
+        run: cmd_kb,
+        usage: "brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>]\n                 (the public KB is a static build artifact; sign the tarball with\n                  scripts/release-sign.sh before hosting)",
+    },
 ];
 
 fn main() {
@@ -552,6 +558,8 @@ const VALUE_FLAGS: &[&str] = &[
     "note",
     "onward",
     "out",
+    "db",
+    "base-url",
     "passphrase-file",
     "phrase",
     "profile",
@@ -4749,4 +4757,64 @@ fn which_path(name: &str) -> Option<PathBuf> {
         .split(':')
         .map(|dir| PathBuf::from(dir).join(name))
         .find(|p| p.exists())
+}
+
+/// `brain kb build --domain <d> --out <dir>`: emit the public KB as a static
+/// build artifact from the domain's `published` articles. Local-only (opens
+/// the domain DB file directly — no server, no network path from the site).
+fn cmd_kb(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    let verb = require_positional(&positionals, "build")?;
+    if verb != "build" {
+        return Err(format!(
+            "unknown kb verb '{verb}' (only 'build' is supported)"
+        ));
+    }
+    let domain = flags
+        .get("domain")
+        .and_then(|o| o.clone())
+        .ok_or("kb build requires --domain <d>")?;
+    let out = flags
+        .get("out")
+        .and_then(|o| o.clone())
+        .ok_or("kb build requires --out <dir>")?;
+    let base_url = flags.get("base-url").and_then(|o| o.clone());
+
+    let db_path = if let Some(p) = flags.get("db").and_then(|o| o.clone()) {
+        PathBuf::from(p)
+    } else {
+        brain_server::storage_layout::StorageLayout::detect()
+            .map_err(|e| format!("storage layout: {e}"))?
+            .domain_db(&domain)
+            .map_err(|e| format!("domain: {e}"))?
+    };
+    if !db_path.exists() {
+        return Err(format!("no database file at {}", db_path.display()));
+    }
+
+    let mut conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("open {}: {e}", db_path.display()))?;
+    // Idempotent: guarantees the KCS columns exist on a pre-1.28.23 DB.
+    brain_server::migration::run_migration(&mut conn, 1).map_err(|e| format!("migration: {e}"))?;
+
+    let (articles, redirects) = brain_server::kb::collect_articles(&conn)
+        .map_err(|e| format!("collect published articles: {e}"))?;
+    if articles.is_empty() {
+        println!("no published articles in domain '{domain}' — nothing to build");
+        return Ok(());
+    }
+    let files = brain_server::kb::build_files(&articles, &redirects, base_url.as_deref());
+    let n = brain_server::kb::write_artifact(std::path::Path::new(&out), &files)
+        .map_err(|e| format!("write artifact: {e}"))?;
+    println!(
+        "kb built: {} articles (+{} redirect pages) → {out} ({n} files)",
+        articles.len(),
+        redirects.len()
+    );
+    println!(
+        "verify what you host: sha256 each file against {out}/{}",
+        brain_server::kb::MANIFEST_NAME
+    );
+    println!("sign before hosting: scripts/release-sign.sh <artifact.tar.gz>");
+    Ok(())
 }
