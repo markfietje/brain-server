@@ -954,9 +954,10 @@ pub(crate) fn notify_art19(subject: String, certificate_id: i64, certified_at: S
 /// `None` on an invalid key length — the caller signs with no header
 /// (fail-soft, matching `notify_art19`'s never-rolls-back posture).
 fn hmac_hex(secret: &[u8], body: &[u8]) -> Option<String> {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     type HmacSha256 = Hmac<sha2::Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret).ok()?;
+    // HMAC accepts any key length — construction cannot fail.
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts keys of any length");
     mac.update(body);
     Some(hex::encode(mac.finalize().into_bytes()))
 }

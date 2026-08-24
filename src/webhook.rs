@@ -26,7 +26,7 @@ use crate::audit::{self, AuditKind, AuditStatus};
 use crate::config::{WEBHOOK_QUEUE_MAX, WEBHOOK_REPLAY_SECS};
 use crate::handlers::HandlerError;
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 use sha2::Sha256;
@@ -77,10 +77,7 @@ impl WebhookQueue {
             Ok(b) => b,
             Err(_) => return false,
         };
-        let mut mac = match HmacSha256::new_from_slice(secret) {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts keys of any length");
         mac.update(body);
         mac.verify_slice(&expected).is_ok()
     }
@@ -106,10 +103,7 @@ impl WebhookQueue {
             Ok(b) => b,
             Err(_) => return false,
         };
-        let mut mac = match HmacSha256::new_from_slice(secret) {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts keys of any length");
         mac.update(id.as_bytes());
         mac.update(b".");
         mac.update(timestamp.as_bytes());
@@ -128,7 +122,7 @@ impl WebhookQueue {
         timestamp: &str,
         payload: &[u8],
     ) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts keys of any length");
         mac.update(id.as_bytes());
         mac.update(b".");
         mac.update(timestamp.as_bytes());

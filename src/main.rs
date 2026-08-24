@@ -14828,7 +14828,7 @@ Final paragraph after the rule.";
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(b"panel-bundle");
-        let real = format!("{:x}", h.finalize());
+        let real = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
 
         // Invalid plugin name refused (fail-closed, no row).
         let err = crate::handlers::workflow::post_plugin_mount(

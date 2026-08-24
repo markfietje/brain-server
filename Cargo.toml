@@ -111,14 +111,14 @@ serde_json = "1.0.150"
 anyhow = "1.0.104"
 xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
 # Webhook HMAC-SHA256 verification (v0.9.7 "Guard"). Pure-Rust, no native deps.
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 # Constant-time comparison for bearer-token auth + audit hash-chain checks.
 # Already a transitive dep via sha2/hmac/aes-gcm; declaring it directly is free.
 # Prevents LLVM from short-circuiting a hand-rolled fold (the prior `ct_eq`).
 subtle = "2.6"
 # Encrypted backup/restore (v0.9.7 "Guard"). Pure-Rust AES-256-GCM, no native deps.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 # v1.27.17 "Strongbox" (M1/F-08): memory-hard KDF for backup passphrases
 # (Argon2id, 64 MiB / t=3). Pure-Rust, no new transitive surface beyond
 # blake2/password-hash — both pass the cargo audit gate.
@@ -168,7 +168,7 @@ tracing-opentelemetry = { version = "0.33.0", default-features = false, optional
 # primitives used both to verify and to sign. Context7-verified 2026-07-29:
 # v10 is current; API is `Validation::new(alg)` + `set_required_spec_claims`
 # + `validate_exp`/`validate_nbf` + `leeway`.
-jsonwebtoken = { version = "10.4", default-features = false, features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
 # RSA key loading for JWT signing key rotation (v1.2.0 "AuthN" M5). Pure-Rust,
 # no system OpenSSL dep — consistent with the bundled philosophy. Already a
 # transitive dep of `jsonwebtoken` when `rust_crypto` is on; declared directly
@@ -182,7 +182,7 @@ rand = "0.8"
 # Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
 # Tiny, stable, already a transitive dep; declared directly so the JWKS emitter
 # doesn't silently break if a transitive consumer swaps backends.
-base64 = "0.22"
+base64 = "0.23"
 
 # Outbound HTTP (v1.15.0 "Observe" M3): the DSAR Art 19 onward-notification
 # webhook + the brain-connector-gh binary (M2.2). REQUIRED since v1.15.0 — the
@@ -201,7 +201,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 blake3 = "1"
 bs58 = "0.5"
 tokio-stream = { version = "0.1", features = ["sync"] }
-ed25519-dalek = "2.2"
+ed25519-dalek = "3"
 # v1.27.17 "Strongbox" (M3/F-30): URL host parsing for the GitHub pagination
 # `Link` host pin. Already a transitive dep of reqwest; declared directly so
 # the pin doesn't silently break if a transitive consumer swaps backends.

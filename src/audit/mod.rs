@@ -54,10 +54,15 @@
 //! );
 //! ```
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// Lowercase-hex encode any hash output (sha2 0.11 dropped `LowerHex` on its array type).
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 pub mod decision;
 pub use decision::{DecisionInput, DecisionRecord};
@@ -163,7 +168,7 @@ impl AuditStatus {
 /// stored form is not a fast non-cryptographic fingerprint of low-entropy data
 /// (see the module doc).
 pub fn hash(s: &str) -> String {
-    format!("{:x}", Sha256::digest(s.as_bytes()))
+    hex_encode(&Sha256::digest(s.as_bytes()))
 }
 
 /// SHA-256 hex digest of the chain-link payload. The payload is the
@@ -181,7 +186,7 @@ fn chain_link(ts: &str, kind: &str, actor: &str, target_hash: &str, prev_hash: &
     h.update(target_hash.as_bytes());
     h.update(b"|");
     h.update(prev_hash.as_bytes());
-    format!("{:x}", h.finalize())
+    hex_encode(&h.finalize())
 }
 
 // ── chain epochs, keyed links, head pin ──────────────────────────────
@@ -298,7 +303,7 @@ fn row_link(scheme: &Scheme, row: &ChainRowFull) -> String {
 /// an attacker-controlled `actor`/`kind` string could shift. `id` is included
 /// as raw LE bytes so a renumbered restore cannot keep its links.
 fn chain_link_hmac(key: &[u8], row: &ChainRowFull) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any length");
     mac.update(&row.id.to_le_bytes());
     for field in [
         row.ts.as_bytes(),
@@ -312,7 +317,7 @@ fn chain_link_hmac(key: &[u8], row: &ChainRowFull) -> String {
         mac.update(&(field.len() as u64).to_le_bytes());
         mac.update(field);
     }
-    format!("{:x}", mac.finalize().into_bytes())
+    hex_encode(&mac.finalize().into_bytes())
 }
 
 // ── the chain key ─────────────────────────────────────────────────────
@@ -2301,7 +2306,7 @@ mod tests {
                 h.update((f.len() as u64).to_le_bytes());
                 h.update(f);
             }
-            format!("{:x}", h.finalize())
+            hex_encode(&h.finalize())
         };
 
         // Attacker rewrites row 2's actor and re-signs row 3's backref with

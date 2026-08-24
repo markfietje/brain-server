@@ -1455,7 +1455,10 @@ pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(s.as_bytes());
-    format!("{:x}", h.finalize())
+    h.finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// the canonical review fingerprint the approve verb

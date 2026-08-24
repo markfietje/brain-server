@@ -47,10 +47,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// GCM nonce = 96 bits, by construction everywhere we write.
+type Nonce12 = aes_gcm::aead::array::Array<u8, aes_gcm::aead::array::typenum::consts::U12>;
+
 #[allow(deprecated)]
 use aes_gcm::{
-    Aes256Gcm,
-    aead::{Aead, KeyInit, Payload, generic_array::GenericArray},
+    Aes256Gcm, Key,
+    aead::{Aead, KeyInit, Payload},
 };
 use sha2::{Digest, Sha256};
 use xxhash_rust::xxh3::xxh3_64;
@@ -164,15 +167,16 @@ fn derive_key_v1(passphrase: &[u8]) -> [u8; 32] {
     key
 }
 
-/// Legacy v1 nonce derivation — see [`derive_key_v1`].
-fn derive_nonce_v1(passphrase: &[u8], created_at: &str) -> aes_gcm::aead::Nonce<Aes256Gcm> {
+/// Legacy v1 nonce derivation — see [`derive_key_v1`]. Returns the raw 12
+/// bytes; wrap with `aes_gcm::Nonce::<Aes256Gcm>::from_slice` at the call site.
+fn derive_nonce_v1(passphrase: &[u8], created_at: &str) -> [u8; 12] {
     let mut h = Sha256::new();
     h.update(passphrase);
     h.update(created_at.as_bytes());
     let out = h.finalize();
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&out[..12]);
-    *aes_gcm::aead::Nonce::<Aes256Gcm>::from_slice(&nonce)
+    nonce
 }
 
 /// v2 KDF: Argon2id(passphrase, salt, m, t, p) → 32-byte AES key. The m/t/p are
@@ -311,9 +315,9 @@ fn file_xxh3(path: &Path) -> Result<u64> {
 fn encrypt_v1(bundle: &[u8], passphrase: &[u8], created_at: &str) -> Result<Vec<u8>> {
     let key = derive_key_v1(passphrase);
     let nonce = derive_nonce_v1(passphrase, created_at);
-    let cipher = Aes256Gcm::new(&key.into());
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
     let ciphertext = cipher
-        .encrypt(&nonce, bundle.as_ref())
+        .encrypt(Nonce12::from_slice(&nonce), bundle.as_ref())
         .map_err(|e| anyhow::anyhow!("AES-256-GCM encrypt failed: {e}"))?;
     let mut out = Vec::with_capacity(created_at.len() + 1 + ciphertext.len());
     out.extend_from_slice(created_at.as_bytes());
@@ -343,7 +347,7 @@ fn encrypt_versioned(
         ARGON2_T_COST,
         ARGON2_P_COST,
     )?;
-    let cipher = Aes256Gcm::new(&GenericArray::from(key));
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
     let header = Header {
         kdf: "argon2id".to_string(),
         m: ARGON2_M_COST,
@@ -456,15 +460,15 @@ fn decrypt_versioned(
     let mut salt_bytes = [0u8; 16];
     salt_bytes.copy_from_slice(&salt);
     let key = kdf_v2(passphrase, &salt_bytes, header.m, header.t, header.p)?;
-    let cipher = Aes256Gcm::new(&GenericArray::from(key));
-    let nonce = *aes_gcm::aead::Nonce::<Aes256Gcm>::from_slice(&nonce_raw);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let nonce = Nonce12::from_slice(&nonce_raw);
     // v3: the header bytes are the AAD — any header bit-flip fails here.
     // v2: legacy no-AAD decrypt (read-compat with pre-v3 writers).
 
     if version == VERSION_V3 {
         cipher
             .decrypt(
-                &nonce,
+                nonce,
                 Payload {
                     msg: ct,
                     aad: header_bytes,
@@ -474,7 +478,7 @@ fn decrypt_versioned(
                 anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase or tampered backup)")
             })
     } else {
-        cipher.decrypt(&nonce, ct).map_err(|_| {
+        cipher.decrypt(nonce, ct).map_err(|_| {
             anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase or tampered backup)")
         })
     }
@@ -764,9 +768,9 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 fn decrypt_bundle_v1(ciphertext: &[u8], passphrase: &[u8], created_at: &str) -> Result<Vec<u8>> {
     let key = derive_key_v1(passphrase);
     let nonce = derive_nonce_v1(passphrase, created_at);
-    let cipher = Aes256Gcm::new(&key.into());
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
     cipher
-        .decrypt(&nonce, ciphertext)
+        .decrypt(Nonce12::from_slice(&nonce), ciphertext)
         .map_err(|e| anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase?): {e}"))
 }
 

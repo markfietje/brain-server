@@ -438,7 +438,10 @@ fn derive_chain_id(claims: &Claims) -> String {
     h.update(claims.iss.as_bytes());
     h.update(b"|");
     h.update(claims.sub.as_bytes());
-    format!("{:x}", h.finalize())
+    h.finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// Parse the `jti` out of a just-minted token (without verifying — we just

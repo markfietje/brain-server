@@ -220,7 +220,11 @@ pub(crate) fn boot_manifest(root: &std::path::Path) -> serde_json::Value {
             };
             let mut h = Sha256::new();
             h.update(&bytes);
-            let digest = format!("{:x}", h.finalize());
+            let digest = h
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
             bundles.push(serde_json::json!({
                 "path": format!("pkg/{name}"),
                 "bytes": bytes.len(),
@@ -415,7 +419,13 @@ mod tests {
         assert_eq!(bundles[0]["bytes"], 10);
         let mut h = Sha256::new();
         h.update(b"wasm-bytes");
-        assert_eq!(bundles[0]["sha256"], format!("{:x}", h.finalize()));
+        assert_eq!(
+            bundles[0]["sha256"],
+            h.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
         drop(dir);
     }
 
