@@ -26,6 +26,16 @@ pub const KIND_NEW: &str = "kcs_new_article";
 pub const KIND_UPDATE: &str = "kcs_update_article";
 pub const KIND_LINK_ONLY: &str = "kcs_link_only";
 
+/// The Beacon publish proposal (`{knowledge_id, public_slug, action}` JSON in
+/// `content`). Approval flips the article to `published` / back to `approved`
+/// on `action=retract`. Publishing is an EXTERNAL act, so it needs its own
+/// verb: approval requires the `approve` capability AND a distinct `publish`.
+pub const KIND_PUBLISH: &str = "kcs_publish";
+
+/// The freshness-review horizon stamped at approve/publish. Single definition
+/// shared by the lifecycle routes and the publish gate.
+pub const KCS_FRESHNESS_SECS: i64 = 90 * 24 * 3600;
+
 /// The `case_ref` bound to a run by the Bridges register, if any.
 pub(crate) fn case_ref_for_run(conn: &Connection, run_id: i64) -> Option<String> {
     conn.query_row(
@@ -494,6 +504,74 @@ pub(crate) fn kcs_summary(conn: &Connection, now: i64) -> rusqlite::Result<Strin
         m.linkage_rate_units, m.searched_found_rate_units, m.article_freshness_median_age_secs
     ))
 }
+
+/// The Beacon feedback flywheel measures (aggregate counters only — each
+/// `kb_feedback` finding is one anonymous helpful/not-helpful vote).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KbFeedbackMeasures {
+    /// helpful ÷ total feedback × SCALE (indicative self-service deflection,
+    /// NOT a savings claim — see docs/kb-deflection.md).
+    pub self_service_deflection_units: i32,
+    pub total_feedback: i64,
+}
+
+pub(crate) fn kb_feedback_measures(conn: &Connection) -> rusqlite::Result<KbFeedbackMeasures> {
+    let total: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM findings WHERE claim = 'kb_feedback'",
+        [],
+        |r| r.get(0),
+    )?;
+    let helpful: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM findings WHERE claim = 'kb_feedback'
+          AND source = 'kb-feedback:helpful'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(KbFeedbackMeasures {
+        self_service_deflection_units: if total == 0 {
+            0
+        } else {
+            (helpful * SCALE as i64 / total) as i32
+        },
+        total_feedback: total,
+    })
+}
+
+/// Hot topics: published slugs whose feedback volume keeps repeating — the
+/// "this symptom keeps coming back" demand signal. Deterministic order
+/// (count DESC, slug ASC), bounded.
+pub(crate) fn kb_hot_topics(
+    conn: &Connection,
+    min_count: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.evidence, COUNT(*) AS n FROM findings f
+          WHERE f.claim = 'kb_feedback'
+            AND EXISTS (SELECT 1 FROM knowledge k
+                         WHERE k.public_slug = f.evidence AND k.kcs_state = 'published')
+          GROUP BY f.evidence
+         HAVING n >= ?1
+          ORDER BY n DESC, f.evidence ASC
+          LIMIT ?2",
+    )?;
+    stmt.query_map(params![min_count, limit as i64], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?
+    .filter_map(Result::ok)
+    .collect::<Vec<_>>()
+    .pipe(Ok)
+}
+
+trait Pipe: Sized {
+    fn pipe<F, T>(self, f: F) -> T
+    where
+        F: FnOnce(Self) -> T,
+    {
+        f(self)
+    }
+}
+impl<T> Pipe for T {}
 
 #[cfg(test)]
 mod tests {

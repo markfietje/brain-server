@@ -724,6 +724,117 @@ pub async fn approve_proposal(
             ));
         }
 
+        // ── Beacon: the kcs_publish branch. Publishing is an EXTERNAL,
+        // irreversible-ish act, so approval demands the distinct `publish`
+        // capability ON TOP of `approve` — a reviewer who may approve internal
+        // drafts is not thereby allowed to push content to the public KB.
+        // Same-tx CAS on the article state + slug uniqueness via the partial
+        // unique index + audited `workflow/kcs/publish`.
+        if kind == crate::workflow::kcs::KIND_PUBLISH {
+            super::authorize_role(&principal.0, &pool, "publish")?;
+            let payload: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| HandlerError::bad_request("kcs_publish_payload_invalid", e.to_string()))?;
+            let knowledge_id = payload
+                .get("knowledge_id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| {
+                    HandlerError::bad_request(
+                        "kcs_publish_payload_invalid",
+                        "missing knowledge_id",
+                    )
+                })?;
+            let action = payload
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("publish")
+                .to_string();
+            if !matches!(action.as_str(), "publish" | "retract") {
+                return Err(HandlerError::bad_request(
+                    "action_invalid",
+                    "action must be publish or retract",
+                ));
+            }
+            let now_ts = chrono::Utc::now().timestamp();
+            let n_state = if action == "publish" {
+                let slug = payload
+                    .get("public_slug")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        HandlerError::bad_request(
+                            "kcs_publish_payload_invalid",
+                            "publish requires public_slug",
+                        )
+                    })?;
+                if !brain_server::kb::is_valid_slug(slug) {
+                    return Err(HandlerError::bad_request(
+                        "public_slug_invalid",
+                        "slug must be lowercase alnum + hyphen",
+                    ));
+                }
+                tx.execute(
+                    "UPDATE knowledge SET kcs_state = 'published', public_slug = ?2,
+                            freshness_review_due = COALESCE(freshness_review_due, ?3)
+                      WHERE id = ?1 AND kcs_state = 'approved'",
+                    rusqlite::params![knowledge_id, slug, now_ts + crate::workflow::kcs::KCS_FRESHNESS_SECS],
+                )
+            } else {
+                tx.execute(
+                    "UPDATE knowledge SET kcs_state = 'approved', public_slug = NULL
+                      WHERE id = ?1 AND kcs_state = 'published'",
+                    rusqlite::params![knowledge_id],
+                )
+            }
+            .map_err(|e| {
+                if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
+                    HandlerError::conflict_with(
+                        "public_slug_taken",
+                        "another published article already holds that slug",
+                        serde_json::json!([]),
+                    )
+                } else {
+                    HandlerError::internal(format!("state update failed: {e}"))
+                }
+            })?;
+            if n_state == 0 {
+                tx.rollback().map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Err(HandlerError::conflict_with(
+                    "kcs_state_invalid",
+                    format!("article {knowledge_id} is not in the state {action} requires (or changed concurrently)"),
+                    serde_json::json!([]),
+                ));
+            }
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("article:{knowledge_id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("workflow/kcs/{action}"),
+                "global",
+            );
+            let n = tx
+                .execute(
+                    "UPDATE proposals SET status = 'approved', decided_at = ?1
+                     WHERE id = ?2 AND status = 'pending'",
+                    rusqlite::params![now_ts, id],
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if n == 0 {
+                tx.rollback().map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Err(HandlerError::conflict(format!(
+                    "proposal {id} was already decided by a concurrent action"
+                )));
+            }
+            let new_state = if action == "publish" { "published" } else { "approved" };
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": knowledge_id,
+                "status": "approved",
+                "kcs_state": new_state,
+            }));
+        }
+
         // ── Evolve: the KCS capture-kind branch. ───────────────────────────
         // `kcs_new_article` / `kcs_update_article` promote to a knowledge
         // row born in `kcs_state='draft'`; `kcs_link_only` writes ONLY the
