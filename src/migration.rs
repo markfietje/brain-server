@@ -1751,6 +1751,31 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.25 "Watchbill": shifts and the sun. ────────────────────────
+    // One row per site's on-call window: `overlap_minutes` declares the
+    // handover budget with the NEXT shift (the ring boundary's overlap
+    // window derives from the pair at read time); `roster_json` is a JSON
+    // array of principal ids. Pure time-table arithmetic — computed at
+    // read, no scheduler daemon. Additive + rollback-safe.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS shifts(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain          TEXT NOT NULL,
+            site            TEXT NOT NULL,
+            tz              TEXT NOT NULL DEFAULT 'UTC',
+            start_epoch     INTEGER NOT NULL,
+            end_epoch       INTEGER NOT NULL,
+            overlap_minutes INTEGER NOT NULL DEFAULT 0,
+            roster_json     TEXT NOT NULL DEFAULT '[]',
+            created_at      INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shifts_domain_window ON shifts(domain, start_epoch);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
@@ -1765,8 +1790,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.23')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.23';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.25')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.25';",
         [],
     )?;
 

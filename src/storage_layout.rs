@@ -113,6 +113,10 @@ pub const SCHEMA_VERSION_V1_28_22: &str = "1.28.22";
 /// the `case_articles` solve-loop linkage table. One-way; the down-migration
 /// is a documented no-op (keep columns, drop code).
 pub const SCHEMA_VERSION_V1_28_23: &str = "1.28.23";
+/// v1.28.25 "Watchbill": the `shifts` ring table (additive; site on-call
+/// windows + declared overlap budgets). One-way; the down-migration is a
+/// documented no-op (keep table, drop code).
+pub const SCHEMA_VERSION_V1_28_25: &str = "1.28.25";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
