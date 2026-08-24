@@ -36,6 +36,9 @@ pub(crate) struct SweepReport {
     pub deferred: Vec<(i64, Vec<String>)>,
     /// Total runs matched (deleted + deferred) — the honest footprint number.
     pub runs_matched: usize,
+    /// Crew rows erased with the subject: presence rows, skills tags, and
+    /// shift-roster memberships rewritten to drop the subject.
+    pub crew_rows: usize,
 }
 
 /// Sweep every workflow table in this pool for rows carrying `subject`,
@@ -107,6 +110,58 @@ pub(crate) fn sweep_subject(
             rusqlite::params![run_id],
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
+    }
+
+    // ── Crew sweep: a principal id is
+    // personal data wherever it sits. Presence + skills rows go by exact
+    // principal; shift rosters are REWRITTEN to drop the subject (the shift
+    // itself survives — it is schedule evidence, not subject data).
+    report.crew_rows += tx
+        .execute(
+            "DELETE FROM presence WHERE principal = ?1",
+            rusqlite::params![subject],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    report.crew_rows += tx
+        .execute(
+            "DELETE FROM principal_skills WHERE principal = ?1",
+            rusqlite::params![subject],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let mut stmt = tx
+        .prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1")
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let rostered: Vec<(i64, String)> = stmt
+        .query_map(rusqlite::params![format!("%{subject}%")], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .map_err(|e| HandlerError::internal(e.to_string()))?
+        .flatten()
+        .collect();
+    drop(stmt);
+    for (id, json) in rostered {
+        let Ok(roster) = serde_json::from_str::<Vec<String>>(&json) else {
+            // A corrupt roster cell fails closed: the whole DSAR errors (tx
+            // rolls back) rather than certifying an erasure that skipped it.
+            return Err(HandlerError::internal(format!(
+                "shift {id} roster_json is corrupt; erasure refused"
+            )));
+        };
+        let kept: Vec<String> = roster
+            .iter()
+            .filter(|p| p.as_str() != subject)
+            .cloned()
+            .collect();
+        if kept.len() != roster.len() {
+            report.crew_rows += roster.len() - kept.len();
+            let new_json =
+                serde_json::to_string(&kept).map_err(|e| HandlerError::internal(e.to_string()))?;
+            tx.execute(
+                "UPDATE shifts SET roster_json = ?1 WHERE id = ?2",
+                rusqlite::params![new_json, id],
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        }
     }
     Ok(report)
 }
@@ -221,5 +276,94 @@ mod tests {
         assert_eq!(none.runs_matched, 0);
         tx.commit().unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_runs"), 1);
+    }
+
+    #[test]
+    fn dsar_sweep_erases_crew_rows_and_scrubs_rosters() {
+        use crate::workflow::crew::touch;
+        use crate::workflow::shifts::{ShiftDraft, insert_shift};
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // Presence + skills for two principals; only jane's must go.
+        touch(&conn, "acme", "jane", "cranking", Some("run:1"), &[], 10).unwrap();
+        touch(&conn, "acme", "bob", "reviewing", None, &[], 11).unwrap();
+        conn.execute(
+            "INSERT INTO principal_skills(domain, principal, skill, created_at)
+             VALUES ('acme','jane','networking',1), ('acme','bob','voip',1)",
+            [],
+        )
+        .unwrap();
+        // One shift rostering both; one rostering only bob.
+        let both = ["jane".to_string(), "bob".to_string()];
+        let bob_only = ["bob".to_string()];
+        insert_shift(
+            &conn,
+            &ShiftDraft {
+                domain: "acme",
+                site: "manila",
+                tz: "UTC",
+                start_epoch: 0,
+                end_epoch: 100,
+                overlap_minutes: 0,
+                roster: &both,
+            },
+        )
+        .unwrap();
+        insert_shift(
+            &conn,
+            &ShiftDraft {
+                domain: "acme",
+                site: "ams",
+                tz: "UTC",
+                start_epoch: 100,
+                end_epoch: 200,
+                overlap_minutes: 0,
+                roster: &bob_only,
+            },
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            rep.crew_rows, 3,
+            "presence row + skill tag + one roster membership"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM presence WHERE principal='jane'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM presence WHERE principal='bob'"),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM principal_skills WHERE principal='jane'"
+            ),
+            0
+        );
+        let roster: String = conn
+            .query_row(
+                "SELECT roster_json FROM shifts WHERE site='manila'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            roster, r#"["bob"]"#,
+            "the shift survives; the subject does not"
+        );
+        let untouched: String = conn
+            .query_row("SELECT roster_json FROM shifts WHERE site='ams'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(untouched, r#"["bob"]"#);
     }
 }
