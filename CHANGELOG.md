@@ -19,6 +19,32 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.25] — 2026-08-24 — "Watchbill": shifts and the sun
+
+Follow-the-sun is a *schedule* problem before it is a handover problem: the envelope SLA (P1–P4, ttl) exists but nothing knew when Site Manila ends and Site Amsterdam begins. Watchbill makes "queue follows the sun, cases don't" literal data — pure time-table arithmetic over stored shift rows, computed at read time; no scheduler daemon.
+
+**M1 (the ring):** new `shifts` table in every domain DB (schema → **1.28.25**, additive + rollback-safe, guarded by the schema-contract test): one row per site's on-call window `(site, tz, start/end epoch, overlap_minutes, roster_json)`, indexed `(domain, start_epoch)`. The pure core (`src/workflow/shifts.rs`) derives everything at read: [`overlap_window`] computes each boundary's handover window from its shift pair (the incoming shift's first minutes up to the outgoing shift's end), and `ring_view` answers for any instant — which site owns the queue (`queue_scope_site` re-scopes to the INCOMING site at the START of the derived overlap window, not at the hard boundary), whether an overlap window is running, and when the next boundary lands. Open runs are never consulted or mutated — the plan-named pin `ring_boundary_rescopes_queue_not_cases` proves a run row survives byte-identical across a boundary.
+
+**M2 (the surfaces):** `GET /ops/shifts?domain=&now=` (Read on the domain) serves the ring view plus the newest 500 shifts; `POST /ops/shifts` (**Admin** — declaring shifts is pure operator configuration; an agent-class principal must not re-anchor the follow-the-sun queue) stores one window with validation, insert, and the audit row riding ONE `BEGIN IMMEDIATE` transaction — a refused shift writes nothing. Refusals are loud and specific: `400 shift_window_invalid` / `shift_overlap_invalid` (overlap capped at 120 minutes) / `tz_invalid` / `roster_invalid` (≤ 64 ids × ≤ 256 chars — row-size bounds), `409 shift_double_booked` when a candidate starts before the earlier shift's final overlap period. Wired into openapi.yaml (GET+POST + `Shift` schema), docs/api.md, the route-coverage guard array, the route-authz guard table (+ handler source mapping).
+
+**M3 (hardening passes 2–3):** the live smoke on a DB copy exposed the first double-booking rule as anchor-wrong — a shift starting mid-way through another was accepted as "declared overlap" because the budget anchored at the INCOMING start; the rule now anchors at the earlier shift's END (an overlapping pair may share only `e.end − e.overlap` onward, exactly where `overlap_window` derives the read-time boundary). Read cap added per the v1.20.18 "Bound" law (newest 500); input caps on tz/roster close the storage-amplification lever; POST gate tightened Write → Admin.
+
+### Release notes
+- **Improvements:** the shift ring — declare site on-call windows with declared overlap budgets and get, for any instant, which site owns the queue; the queue re-scopes to the incoming site during the overlap window while open cases keep their envelopes untouched.
+- **Improvements:** deterministic read-time arithmetic over stored rows — no scheduler daemon, no background worker.
+- **Security fixes:** none new; all surfaces are gated (Read / Admin), every mutation audited in-tx, reads bounded, inputs size-capped, and the double-booking validator refuses windows that don't respect the declared overlap budget.
+- Tests: server main bin **849** / 6 ignored (**+4**: the three plan-named pins `overlap_window_derives_from_shift_pair` / `shift_table_validates_no_double_booking` / `ring_boundary_rescopes_queue_not_cases` + storage round-trip), lib **194** / 1; clippy `-D warnings` + fmt clean; lipstyk diff-strict clean. Schema 1.28.23 → **1.28.25** (additive `shifts` table + index). Live smoke on a DB copy: mid-shift refusal 409, final-hour accept, queue re-scope across the boundary, bad-window 400 — all green; `brain doctor` integrity ok.
+
+### Honest ceilings
+- The ring view is advisory scheduling DATA — nothing yet *enforces* follow-the-sun routing (Relay .27 schedules handovers into the overlap windows; the enforcement wiring is its scope).
+- `roster` holds principal ids = personal data; the DSAR erasure sweep does NOT cover the `shifts` table yet (no subject-erasure path for rosters — flag for Crew .26, which owns people-visibility).
+- Shift rows have no retention/TTL; stale sites accumulate until an operator deletes them (no DELETE surface this release — SQL-only).
+- Refused inserts write no Denied audit row (nothing commits); consistent with the KCS conflict path, but contention evidence is thinner than the CAS-denial precedent.
+- The 500-shift read cap means a ring whose active shift falls outside the newest-500 window degrades to "no scope" rather than erroring — irrelevant at realistic roster sizes.
+- `previous_shift` pairs by nearest earlier start regardless of adjacency; gapped rings produce no overlap window unless windows actually share time.
+
+---
+
 ## [1.28.24] — 2026-08-24 — "Beacon": knowledge goes public, demand drops
 
 The demand-reduction half of KCS: approved articles become a **publicly published KB** as a generated static artifact an operator hosts — brain-server stays loopback/local-first; publishing is a human decision with its own verb, and a mistake's blast radius is an artifact rebuild, never a live data path.
