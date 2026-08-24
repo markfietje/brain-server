@@ -23,7 +23,7 @@
 mod http;
 
 use http::{get, post};
-use std::io::{BufRead, Write};
+use std::io::Write;
 
 use axum::response::IntoResponse;
 
@@ -111,7 +111,6 @@ fn main() {
     }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    let mut buf = String::new();
     // Legacy (2025-11-25) semantics are selected by a legacy client's
     // `initialize` request and stay active for this stdio process.
     // `legacy` is process-sticky and never reset. Under
@@ -122,23 +121,48 @@ fn main() {
     let mut legacy = false;
 
     loop {
-        buf.clear();
-        // bound the line read. `read_line` grows `buf` without
-        // limit; a multi-GB line (or a hostile parent process) would OOM. We
-        // cap at MAX_LINE_BYTES — generous for any real JSON-RPC message —
-        // and bail with -32700 on overflow. Same class as the WS maxPayload
-        // rule (AGENTS.md §5.3).
-        let read_result = stdin.lock().read_line(&mut buf);
-        let n = match read_result {
-            Ok(0) => break, // EOF
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("mcp: stdin read error: {e}");
-                break;
+        // Bound the line read AT READ TIME, not after: read in fixed chunks
+        // and stop the moment a line exceeds MAX_LINE_BYTES. (`read_line`
+        // grows its buffer for as long as the peer keeps sending, so a
+        // multi-GB newline-free stream would OOM the process before any
+        // post-read cap could fire.) On overflow: refuse with -32700 and
+        // keep consuming — the remainder of the oversized line arrives as
+        // further over-cap chunks, each refused, until a newline or EOF.
+        let mut line: Vec<u8> = Vec::with_capacity(4096);
+        let mut overflow = false;
+        let mut eof = false;
+        {
+            use std::io::Read;
+            let mut reader = stdin.lock();
+            let mut chunk = [0u8; 8192];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) => {
+                        eof = true;
+                        break;
+                    }
+                    Ok(n) => {
+                        if let Some(pos) = chunk[..n].iter().position(|&b| b == b'\n') {
+                            line.extend_from_slice(&chunk[..pos]);
+                            break;
+                        }
+                        line.extend_from_slice(&chunk[..n]);
+                        if line.len() > MAX_LINE_BYTES {
+                            overflow = true;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("mcp: stdin read error: {e}");
+                        return;
+                    }
+                }
             }
-        };
-        if buf.len() > MAX_LINE_BYTES {
-            // Overflow: refuse the line + emit a parse error with null id.
+        }
+        if eof && line.is_empty() && !overflow {
+            break;
+        }
+        if overflow || line.len() > MAX_LINE_BYTES {
             let _ = stdout.write_all(
                 serde_json::json!({
                     "jsonrpc": "2.0",
@@ -152,14 +176,14 @@ fn main() {
                 .as_bytes(),
             );
             let _ = stdout.write_all(b"\n");
-            buf.clear();
             continue;
         }
-        let line = buf[..n].trim();
-        if line.is_empty() {
+        let text = String::from_utf8_lossy(&line);
+        let line_str = text.trim();
+        if line_str.is_empty() {
             continue;
         }
-        if let Some(response) = handle_line(line, &mut legacy) {
+        if let Some(response) = handle_line(line_str, &mut legacy) {
             let _ = stdout.write_all(response.as_bytes());
             let _ = stdout.write_all(b"\n");
             let _ = stdout.flush();
@@ -883,12 +907,16 @@ fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
 
 fn format_response(status: u16, body: &str) -> String {
     // Same seam discipline as `tool_result_payload` — one shared envelope.
-    let body = brain_server::fence::wrap_fenced(body);
     if status == 200 {
-        body
-    } else {
-        format!("HTTP {status}: {body}")
+        return brain_server::fence::wrap_fenced(body);
     }
+    // Error bodies stay OUT of the LLM context: upstream internals (paths,
+    // SQL text, principal labels) are logged to stderr, never proxied.
+    eprintln!(
+        "mcp: upstream error HTTP {status}: {}",
+        body.chars().take(512).collect::<String>()
+    );
+    brain_server::fence::wrap_fenced(&format!("upstream returned HTTP {status}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -950,15 +978,95 @@ fn sse_frame(body: &str) -> String {
 
 /// Bearer gate. Fail-closed: a configured token must be presented EXACTLY;
 /// with no token configured the loopback-only default posture applies.
+/// The comparison is constant-time — a local timing oracle against an
+/// optional gate is still an oracle.
 fn check_auth(provided: Option<&str>, expected: Option<&str>) -> bool {
     expected.is_none_or(|want| {
         provided.is_some_and(|p| {
             p.strip_prefix("Bearer ")
                 .or_else(|| p.strip_prefix("bearer "))
-                .is_some_and(|tok| tok == want)
+                .is_some_and(|tok| ct_eq(tok.as_bytes(), want.as_bytes()))
         })
     })
 }
+
+/// Constant-time byte equality (XOR fold). Length differences leak only
+/// length, which is public configuration, not secret material.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Is this socket address loopback? Pure so the bind-refusal law is pinnable.
+fn is_loopback_addr(addr: &std::net::SocketAddr) -> bool {
+    addr.ip().is_loopback()
+}
+
+/// DNS-rebinding / cross-origin posture (MCP spec: servers MUST validate
+/// Origin on streamable HTTP). A browser-attested `Origin` is allowed ONLY
+/// for loopback origins; absent Origin (non-browser clients: curl, SDKs,
+/// the harness) passes — the bearer gate remains the real boundary.
+fn origin_allowed(origin: Option<&str>) -> bool {
+    let Some(o) = origin else { return true };
+    // host portion of scheme://host[:port]/
+    let rest = o.split_once("://").map(|(_, r)| r).unwrap_or(o);
+    let host = rest.split('/').next().unwrap_or("").to_ascii_lowercase();
+    // IPv6 literals are bracketed: strip `[...]` first, ports only apply
+    // to unbracketed (ip:port / name:port) forms.
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("")
+    } else {
+        host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h)
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// Fixed-window per-peer request limiter for the MCP listener. Deliberately
+/// tiny: one Mutex-protected map, oldest-key eviction at the cap, and a
+/// poison-tolerant lock acquisition (a panicking sibling must not cascade).
+struct McpLimiter {
+    map: std::collections::HashMap<std::net::IpAddr, (u64, std::time::Instant)>,
+    max_per_window: u64,
+    window: std::time::Duration,
+}
+impl McpLimiter {
+    const MAX_KEYS: usize = 1024;
+    fn new(max_per_window: u64) -> Self {
+        Self {
+            map: Default::default(),
+            max_per_window,
+            window: std::time::Duration::from_secs(60),
+        }
+    }
+    fn allow(&mut self, peer: std::net::IpAddr) -> bool {
+        let now = std::time::Instant::now();
+        if self.map.len() > Self::MAX_KEYS {
+            // Evict the stalest half by renewal time before growing further.
+            let mut keys: Vec<(std::net::IpAddr, std::time::Instant)> =
+                self.map.iter().map(|(k, (_, t))| (*k, *t)).collect();
+            keys.sort_by_key(|(_, t)| *t);
+            let drop_n = self.map.len() / 2;
+            for (k, _) in keys.into_iter().take(drop_n) {
+                self.map.remove(&k);
+            }
+        }
+        let entry = self.map.entry(peer).or_insert((0, now));
+        if now.duration_since(entry.1) >= self.window {
+            *entry = (0, now);
+        }
+        entry.0 += 1;
+        entry.0 <= self.max_per_window
+    }
+}
+
+use std::sync::Mutex;
+static MCP_LIMITER: Mutex<Option<McpLimiter>> = Mutex::new(None);
 
 /// Run the HTTP transport until interrupted. Never returns under normal
 /// operation; errors fail loud on stderr with exit code 1.
@@ -974,7 +1082,22 @@ fn run_http() -> Result<(), String> {
         },
         (a, _) => a,
     };
+    let has_token = expected_token.is_some();
     let app = mcp_router(expected_token);
+    // Non-loopback binds are an explicit operator act AND require a token:
+    // an unauthenticated tool surface (ump.forget included) must never be
+    // LAN-reachable, whatever the operator's bind says.
+    {
+        let parsed: std::net::SocketAddr = addr
+            .parse()
+            .map_err(|e| format!("MCP_HTTP_ADDR `{addr}`: {e}"))?;
+        if !is_loopback_addr(&parsed) && !has_token {
+            return Err(format!(
+                "refusing to serve MCP on non-loopback {addr} without MCP_HTTP_TOKEN — \
+                 fail-closed, set the token or bind 127.0.0.1"
+            ));
+        }
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -984,9 +1107,12 @@ fn run_http() -> Result<(), String> {
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .map_err(|e| format!("bind {addr}: {e}"))?;
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| format!("serve: {e}"))
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .map_err(|e| format!("serve: {e}"))
     })
 }
 
@@ -994,19 +1120,69 @@ fn run_http() -> Result<(), String> {
 /// `tower::ServiceExt::oneshot` — no sockets needed.
 fn mcp_router(expected_token: Option<String>) -> axum::Router {
     use axum::routing::post;
+    if let Ok(mut g) = MCP_LIMITER.lock() {
+        *g = Some(McpLimiter::new(240)); // 4 req/s sustained per peer
+    }
     axum::Router::new()
         .route("/mcp", post(mcp_post).get(mcp_refused).delete(mcp_refused))
-        .with_state(expected_token)
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_LINE_BYTES))
+        .with_state(McpState(expected_token))
 }
 
-type McpState = Option<String>;
+/// Newtype so the router state survives extension lookup unambiguously
+/// (`Option<String>` as a bare state type is ambiguous under extraction).
+#[derive(Clone)]
+struct McpState(Option<String>);
+
+/// The caller's IP when the listener provides ConnectInfo (production);
+/// `None` for in-memory test requests. Infallible by construction.
+struct Peer(Option<std::net::IpAddr>);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Peer {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Peer(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0.ip()),
+        ))
+    }
+}
 
 async fn mcp_post(
     axum::extract::State(expected): axum::extract::State<McpState>,
+    Peer(peer_ip): Peer,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::http::{StatusCode, header};
+    let expected = expected.0;
+    // Per-peer rate limit BEFORE any token work (same layer order as the
+    // main server: an unauthenticated flood is refused cheaply).
+    if let Some(ip) = peer_ip {
+        let limited = {
+            let mut g = MCP_LIMITER.lock().unwrap_or_else(|p| p.into_inner());
+            g.as_mut().is_none_or(|l| !l.allow(ip))
+        };
+        if limited {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"rate limited"}}"#,
+            )
+                .into_response();
+        }
+    }
+    // DNS-rebinding posture: a browser-attested Origin must be loopback.
+    if !origin_allowed(headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())) {
+        return (
+            StatusCode::FORBIDDEN,
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"origin refused"}}"#,
+        )
+            .into_response();
+    }
     // Auth gate BEFORE any parsing work (fail-closed ordering).
     if !check_auth(
         headers
@@ -1025,10 +1201,19 @@ async fn mcp_post(
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    // Bodies are capped at the stdio line bound — no multi-GB POSTs.
-    if body.len() > MAX_LINE_BYTES {
-        return (StatusCode::PAYLOAD_TOO_LARGE, "payload exceeds max length").into_response();
-    }
+    // Bodies are capped DURING the read (to_bytes refuses past the bound),
+    // never buffered-then-checked: a cap applied after a full read is not a
+    // cap. DefaultBodyLimit on the router backs this up.
+    let body = match axum::body::to_bytes(body.into(), MAX_LINE_BYTES).await {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"payload exceeds max length"}}"#,
+            )
+                .into_response()
+        }
+    };
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -1058,10 +1243,27 @@ async fn mcp_post(
     }
 }
 
-/// GET/DELETE /mcp → 405: stateless server, no listen stream, nothing to
-/// terminate (both spec-permitted refusals).
-async fn mcp_refused() -> axum::response::Response {
+/// GET/DELETE /mcp → 405 for AUTHENTICATED callers: stateless server, no
+/// listen stream, nothing to terminate (both spec-permitted refusals). An
+/// unauthenticated probe gets 401 — no surface distinguishes configuration.
+async fn mcp_refused(
+    axum::extract::State(expected): axum::extract::State<McpState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
     use axum::http::StatusCode;
+    let expected = expected.0;
+    if !check_auth(
+        headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok()),
+        expected.as_deref(),
+    ) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"unauthorized"}}"#,
+        )
+            .into_response();
+    }
     (
         StatusCode::METHOD_NOT_ALLOWED,
         "stateless mcp server: only POST /mcp is served",
@@ -1494,10 +1696,10 @@ mod tests {
     fn format_response_strips_invisible_unicode() {
         let body = format_response(200, "ok \u{2066}payload");
         assert!(body.contains("ok payload") && !body.contains('\u{2066}'));
-        // Non-200 keeps the prefix and still strips.
-        let err = format_response(404, "missing\u{FEFF}");
-        assert!(err.starts_with("HTTP 404: "));
-        assert!(!err.contains('\u{FEFF}'));
+        // Non-200 genericizes: upstream internals stay on stderr, never the
+        // LLM context.
+        let err = format_response(404, "missing secret detail");
+        assert!(err.contains("HTTP 404") && !err.contains("secret detail"));
         // Straight-line seam strips control chars too.
         assert!(format_response(200, "bad\u{001B}esc").contains("bades"));
         // Markdown-ref strip on the straight-line seam.
@@ -1668,6 +1870,102 @@ mod tests {
     /// The bearer gate fails closed: configured token + missing/wrong
     /// credential → 401 before any parsing; exact match passes. With NO token
     /// configured the loopback default posture applies.
+    #[test]
+    fn bearer_compare_is_constant_time_and_exact() {
+        // Behavioral pin: the XOR-fold compare never short-circuits on the
+        // first differing byte, and never accepts a prefix or different case.
+        assert!(ct_eq(b"secret", b"secret"));
+        assert!(!ct_eq(b"secret", b"secreT"));
+        assert!(!ct_eq(b"sec", b"secret"));
+        assert!(!ct_eq(b"", b"secret"));
+        assert!(ct_eq(b"", b""));
+    }
+
+    #[test]
+    fn browser_origin_must_be_loopback() {
+        assert!(
+            origin_allowed(None),
+            "non-browser clients pass (bearer is the boundary)"
+        );
+        assert!(origin_allowed(Some("http://127.0.0.1:3000")));
+        assert!(origin_allowed(Some("http://localhost:5173")));
+        assert!(origin_allowed(Some("http://[::1]:8080")));
+        assert!(!origin_allowed(Some("http://evil.example")));
+        assert!(
+            !origin_allowed(Some("http://127.0.0.1.evil.net")),
+            "suffix games refused"
+        );
+        assert!(
+            !origin_allowed(Some("https://attacker.test/path")),
+            "path smuggle refused"
+        );
+    }
+
+    #[test]
+    fn non_loopback_bind_without_token_refused_fail_closed() {
+        let lan: std::net::SocketAddr = "0.0.0.0:8766".parse().unwrap();
+        let lo: std::net::SocketAddr = "127.0.0.1:8766".parse().unwrap();
+        assert!(!is_loopback_addr(&lan));
+        assert!(is_loopback_addr(&lo));
+    }
+
+    #[tokio::test]
+    async fn http_get_delete_require_auth_then_405() {
+        use tower::ServiceExt;
+        let app = mcp_router(Some("t".into()));
+        for method in ["GET", "DELETE"] {
+            let bare = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri("/mcp")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                bare.status(),
+                401,
+                "unauthenticated {method} probe gets no surface"
+            );
+            let authed = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri("/mcp")
+                        .header("authorization", "Bearer t")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(authed.status(), 405);
+        }
+    }
+
+    #[tokio::test]
+    async fn http_oversized_body_is_refused_413_not_buffered() {
+        use tower::ServiceExt;
+        let app = mcp_router(None);
+        let big = vec![b'x'; MAX_LINE_BYTES + 1];
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json")
+                    .body(axum::body::Body::from(big))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     #[tokio::test]
     async fn http_token_gate_fails_closed() {
         assert!(!check_auth(None, Some("secret")));
