@@ -47,7 +47,7 @@ jobs:
       # Full-build under the tracer. `--all-targets` covers tests + benches +
       # every bin (including the bench/migrate feature-gated ones); the crates/
       # workspace is built separately because it is its own workspace node.
-      - uses: github/codeql-action/autobuild@6d786de4d6f3531a740e445b53a42b622bbbace8 # v3
+      - uses: github/codeql-action/autobuild@42947a340483f03ba47bb1a039b2c519aab3df85 # v3
 
       - name: Build engine-crates workspace under the tracer
         run: cargo build --manifest-path crates/Cargo.toml --all-targets
