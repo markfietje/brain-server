@@ -111,7 +111,7 @@ serde_json = "1.0.150"
 anyhow = "1.0.104"
 xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
 # Webhook HMAC-SHA256 verification (v0.9.7 "Guard"). Pure-Rust, no native deps.
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 # Constant-time comparison for bearer-token auth + audit hash-chain checks.
 # Already a transitive dep via sha2/hmac/aes-gcm; declaring it directly is free.
