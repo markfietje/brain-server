@@ -178,7 +178,7 @@ rsa = "0.9"
 # `Uuid::new_v4()` — the comment previously said UUIDv7, the code never used
 # it. Corrected in audit G5, v1.11.0).
 # `getrandom` feature is the only one needed; `serde`/`v4` already on `uuid`.
-rand = "0.8"
+rand = "0.10"
 # Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
 # Tiny, stable, already a transitive dep; declared directly so the JWKS emitter
 # doesn't silently break if a transitive consumer swaps backends.

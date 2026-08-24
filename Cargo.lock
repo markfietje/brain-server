@@ -401,7 +401,7 @@ dependencies = [
  "pulldown-cmark",
  "r2d2",
  "r2d2_sqlite",
- "rand 0.8.7",
+ "rand 0.10.2",
  "reqwest 0.13.4",
  "rsa",
  "rusqlite",
