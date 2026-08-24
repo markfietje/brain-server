@@ -173,17 +173,15 @@ jsonwebtoken = { version = "11", default-features = false, features = ["use_pem"
 # no system OpenSSL dep — consistent with the bundled philosophy. Already a
 # transitive dep of `jsonwebtoken` when `rust_crypto` is on; declared directly
 # so the key-management code doesn't silently break if jsonwebtoken swaps backends.
-rsa = "0.9"
+# RSA backend for RS256 verification. 0.10 is still an RC upstream — pinned
+# deliberately so the keygen path uses the same rand_core as our `rand` 0.10
+# direct dep (the rand08 bridge alias is deleted with this bump).
+rsa = { version = "=0.10.0-rc.18" }
 # Random key generation (`brain key generate`) + UUIDv4 `jti` minting (v1.2.0;
 # `Uuid::new_v4()` — the comment previously said UUIDv7, the code never used
 # it. Corrected in audit G5, v1.11.0).
 # `getrandom` feature is the only one needed; `serde`/`v4` already on `uuid`.
 rand = "0.10"
-# Bridge for `rsa` 0.9 (the RS256 backend under jsonwebtoken): its keygen takes
-# a rand_core-0.6 RNG. rsa 0.10 (still RC upstream) moves to the new core —
-# this alias is deleted then. Not a new dependency: rand 0.8 already rides the
-# transitive graph.
-rand08 = { package = "rand", version = "0.8" }
 # Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
 # Tiny, stable, already a transitive dep; declared directly so the JWKS emitter
 # doesn't silently break if a transitive consumer swaps backends.

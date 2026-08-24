@@ -12388,7 +12388,7 @@ Final paragraph after the rule.";
     /// RSA keypair so tests are isolated from each other.
     fn test_jwt_state(key_dir: &std::path::Path) -> (Arc<JwtMiddlewareState>, rsa::RsaPrivateKey) {
         use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
-        let mut rng = rand08::thread_rng();
+        let mut rng = rand::rngs::ThreadRng::default();
         let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("test keypair");
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
         let pub_pem = pub_key
@@ -15650,7 +15650,7 @@ Final paragraph after the rule.";
         let tmp = tempfile::tempdir().expect("temp dir");
         use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
         use std::os::unix::fs::PermissionsExt;
-        let mut rng = rand08::thread_rng();
+        let mut rng = rand::rngs::ThreadRng::default();
         let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("test keypair");
         let pub_pem = rsa::RsaPublicKey::from(&priv_key)
             .to_public_key_pem(rsa::pkcs8::LineEnding::LF)

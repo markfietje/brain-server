@@ -371,8 +371,8 @@ fn jwk_from_pem(kid: &str, alg: Algorithm, pem: &str) -> Result<JsonWebKey, Load
         // `n` and `e` are behind the `PublicKeyParts` trait. JWK RFC 7518
         // requires them as base64url of the big-endian magnitude.
         use rsa::traits::PublicKeyParts as _;
-        let n = rsa_pub.n().to_bytes_be();
-        let e = rsa_pub.e().to_bytes_be();
+        let n = rsa_pub.n().to_be_bytes_trimmed_vartime();
+        let e = rsa_pub.e().to_be_bytes_trimmed_vartime();
         return Ok(JsonWebKey {
             kty: "RSA",
             alg: alg_str(alg),
@@ -421,7 +421,7 @@ mod tests {
     /// owner-only (0o600), as `install-service.sh` enforces in production.
     fn write_keypair(dir: &Path, kid: &str) -> RsaPrivateKey {
         use std::os::unix::fs::PermissionsExt;
-        let mut rng = rand08::thread_rng();
+        let mut rng = rand::rngs::ThreadRng::default();
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
         let pub_pem = pub_key
@@ -467,7 +467,7 @@ mod tests {
     fn loads_public_only_for_verify_only_deployments() {
         let dir = tempdir().unwrap();
         // Write just the public half — simulates an IdP-imported key.
-        let mut rng = rand08::thread_rng();
+        let mut rng = rand::rngs::ThreadRng::default();
         let priv_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let pub_key = rsa::RsaPublicKey::from(&priv_key);
         let pub_pem = pub_key

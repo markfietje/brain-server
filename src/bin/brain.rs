@@ -3392,9 +3392,7 @@ fn cmd_key_generate(args: &[String]) -> Result<(), String> {
     // matching every major IdP's minimum.
     use rsa::RsaPrivateKey;
     use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
-    // rsa 0.9 speaks rand_core 0.6 — the aliased rand08 bridge provides it
-    // (see Cargo.toml; removed when rsa 0.10 lands).
-    let mut rng = rand08::thread_rng();
+    let mut rng = rand::rngs::ThreadRng::default();
     let priv_key = RsaPrivateKey::new(&mut rng, 2048)
         .map_err(|e| format!("RSA keypair generation failed: {e}"))?;
     let pub_key = rsa::RsaPublicKey::from(&priv_key);
