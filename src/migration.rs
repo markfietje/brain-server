@@ -1679,6 +1679,78 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.23 "Evolve": the KCS article lifecycle. ───────────────────
+    // `knowledge` grows its KCS life: `kcs_state` (`none | draft | approved |
+    // published`; existing rows stay `none` — KCS applies going forward, the
+    // documented ceiling), `public_slug` (unique WHEN published via the
+    // partial index; publishing itself is Beacon's, later), and
+    // `freshness_review_due` (epoch; set at approve). `case_articles` is the
+    // Solve-loop linkage: one row per (case, article) reuse/capture record;
+    // `searched_not_found` rows carry NULL `knowledge_id` (the documented
+    // zero-hit signal), so the uniqueness is partial.
+    {
+        let has_kcs_state: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='kcs_state'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_kcs_state {
+            db.execute(
+                "ALTER TABLE knowledge ADD COLUMN kcs_state TEXT NOT NULL DEFAULT 'none'",
+                [],
+            )?;
+        }
+        let has_public_slug: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='public_slug'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_public_slug {
+            db.execute("ALTER TABLE knowledge ADD COLUMN public_slug TEXT", [])?;
+        }
+        let has_freshness: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('knowledge') WHERE name='freshness_review_due'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_freshness {
+            db.execute(
+                "ALTER TABLE knowledge ADD COLUMN freshness_review_due INTEGER",
+                [],
+            )?;
+        }
+    }
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS case_articles(
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            case_ref     TEXT NOT NULL,
+            knowledge_id INTEGER REFERENCES knowledge(id),
+            sir          TEXT NOT NULL,
+            action       TEXT NOT NULL,
+            ts           INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_case_articles_link
+         ON case_articles(case_ref, knowledge_id, sir) WHERE knowledge_id IS NOT NULL;",
+        [],
+    )?;
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_published_slug
+         ON knowledge(public_slug) WHERE kcs_state = 'published';",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
@@ -1693,8 +1765,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.22')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.22';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.23')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.23';",
         [],
     )?;
 

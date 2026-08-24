@@ -108,6 +108,11 @@ pub const SCHEMA_VERSION_V1_28_18: &str = "1.28.18";
 /// v1.28.22 "Bridges": the `crm_cases` case↔run linkage table (additive;
 /// written by the brain-connector-crm binary, idempotent by `case_ref`).
 pub const SCHEMA_VERSION_V1_28_22: &str = "1.28.22";
+/// v1.28.23 "Evolve": the KCS article lifecycle — `knowledge.kcs_state` /
+/// `public_slug` / `freshness_review_due` (additive-NULL/default columns) +
+/// the `case_articles` solve-loop linkage table. One-way; the down-migration
+/// is a documented no-op (keep columns, drop code).
+pub const SCHEMA_VERSION_V1_28_23: &str = "1.28.23";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
