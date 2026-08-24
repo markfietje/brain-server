@@ -1,0 +1,29 @@
+# Dependabot configuration.
+#
+# The recurring red "cargo in /client for glib|rand - Update" runs are
+# Dependabot SECURITY updates that can never resolve:
+#
+# - rand 0.7.3 arrives transitively via phf_generator 0.8.0 (proc-macro
+#   build chain). The client never calls rand directly; no lockfile edit
+#   resolves the advisory without upstream releasing a phf_generator that
+#   uses rand >= 0.8.6.
+# - glib 0.18.x is pinned by the gtk4-rs stack under dioxus-desktop. The
+#   advisory requires >= 0.20.0, which does not exist in this dependency
+#   graph until gtk4-rs/dioxus ship it.
+#
+# Both are ignored here so Dependabot stops attempting (and failing) the
+# impossible update each run. Revisit when dioxus-desktop or phf_generator
+# bumps land — remove the matching ignore entry then.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /client
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: rand
+        versions: [">=0.7, <0.8.6"]
+        # transitive via phf_generator 0.8 — no resolvable fix
+      - dependency-name: glib
+        versions: ["<0.20"]
+        # pinned by gtk4-rs under dioxus-desktop — no resolvable fix
