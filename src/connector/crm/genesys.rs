@@ -173,11 +173,10 @@ mod tests {
     /// The named pin: workitem → case translation with external-contact
     /// identity resolution, structured seed passthrough, terminal mapping.
     #[test]
-    fn genesys_workitem_maps_to_case_with_external_contact()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn genesys_workitem_maps_to_case_with_external_contact() {
         let mut contacts = HashMap::new();
         contacts.insert("ec-77".to_string(), "cust-uuid-42".to_string());
-        let c = map_workitem("acme", &workitem("closed"), &contacts)?;
+        let c = map_workitem("acme", &workitem("closed"), &contacts).expect("workitem maps");
         assert_eq!(c.case_ref(), "crm:genesys:acme:wi-9");
         assert_eq!(c.status, CaseStatus::ClosedSolved);
         assert_eq!(c.is_seed.as_deref(), Some("2FA migration broke PIN reset"));
@@ -188,13 +187,13 @@ mod tests {
 
         // Unresolved contact id still hashes (never raw into storage).
         let empty = HashMap::new();
-        let c2 = map_workitem("acme", &workitem("open"), &empty)?;
+        let c2 = map_workitem("acme", &workitem("open"), &empty).expect("unresolved maps");
         assert_eq!(c2.status, CaseStatus::Open);
         assert_ne!(c.subject_ref, c2.subject_ref);
 
-        let complete = map_workitem("acme", &workitem("complete"), &contacts)?;
+        let complete =
+            map_workitem("acme", &workitem("complete"), &contacts).expect("complete maps");
         assert_eq!(complete.status, CaseStatus::ClosedSolved);
-        Ok(())
     }
 
     struct MockGenesys;
@@ -214,20 +213,22 @@ mod tests {
     }
 
     #[test]
-    fn page_translation_and_cursor_paging_stay_pinned() -> Result<(), Box<dyn std::error::Error>> {
-        let base = api_base("us-east-1.mypurecloud.com")?;
+    fn page_translation_and_cursor_paging_stay_pinned() {
+        let base = api_base("us-east-1.mypurecloud.com").expect("api base");
         assert_eq!(base, "https://api.us-east-1.mypurecloud.com");
         assert_eq!(
-            login_base("us-east-1.mypurecloud.com")?,
+            login_base("us-east-1.mypurecloud.com").expect("login base"),
             "https://login.us-east-1.mypurecloud.com"
         );
         let contacts = HashMap::new();
         let t = MockGenesys;
         let (cases, cursor) = translate_page(
             "acme",
-            &t.get_json(&workitems_url(&base, "support", None), "Bearer x")?,
+            &t.get_json(&workitems_url(&base, "support", None), "Bearer x")
+                .expect("page fetch"),
             &contacts,
-        )?;
+        )
+        .expect("page translates");
         assert_eq!(cases.len(), 1);
         assert_eq!(cursor.as_deref(), Some("page-2"));
         // Cursor rides as an encoded query param on the pinned base only.
@@ -235,6 +236,5 @@ mod tests {
         assert!(next.starts_with("https://api.us-east-1.mypurecloud.com/"));
         assert!(next.contains("after=page-2"));
         assert!(api_base("../evil").is_err());
-        Ok(())
     }
 }

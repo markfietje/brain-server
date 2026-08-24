@@ -192,9 +192,8 @@ mod tests {
     /// identical case sets (idempotent translation), and every URL stays on
     /// the pinned host with the cadence floor holding at 300s.
     #[test]
-    fn zendesk_cursor_sync_is_idempotent_and_respects_cadence()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let base = api_base("acme")?;
+    fn zendesk_cursor_sync_is_idempotent_and_respects_cadence() {
+        let base = api_base("acme").expect("subdomain");
         assert_eq!(base, "https://acme.zendesk.com");
         let mk = || MockZendesk {
             pages: RefCell::new(vec![serde_json::json!({
@@ -206,8 +205,8 @@ mod tests {
         };
         let pass_a = mk();
         let pass_b = mk();
-        let a = fetch_page(&pass_a, &base, "Basic x", None, 0, "acme")?;
-        let b = fetch_page(&pass_b, &base, "Basic x", None, 0, "acme")?;
+        let a = fetch_page(&pass_a, &base, "Basic x", None, 0, "acme").expect("page");
+        let b = fetch_page(&pass_b, &base, "Basic x", None, 0, "acme").expect("page");
         assert_eq!(
             a.cases, b.cases,
             "identical responses translate identically"
@@ -229,7 +228,6 @@ mod tests {
             300,
             "poll cadence must respect the ~10 req/min incremental cap"
         );
-        Ok(())
     }
 
     #[test]

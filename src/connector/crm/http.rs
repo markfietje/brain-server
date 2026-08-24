@@ -153,12 +153,11 @@ impl HttpBrainSink {
     }
 
     fn authed(&self, rb: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
-        match &self.token {
-            Some(t) => rb.header("Authorization", format!("Bearer {t}")),
-            None => rb,
+        if let Some(t) = &self.token {
+            return rb.header("Authorization", format!("Bearer {t}"));
         }
+        rb
     }
-
     fn check(&self, resp: reqwest::blocking::Response, what: &str) -> Result<serde_json::Value> {
         let status = resp.status();
         let len = resp.content_length().unwrap_or(0);

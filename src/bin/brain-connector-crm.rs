@@ -254,10 +254,10 @@ fn cfg_str(cfg: &serde_json::Map<String, serde_json::Value>, key: &str) -> Resul
 }
 
 fn host_of(url: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(u) => u.host_str().unwrap_or_default().to_ascii_lowercase(),
-        Err(_) => String::new(),
-    }
+    url::Url::parse(url)
+        .ok()
+        .map(|u| u.host_str().unwrap_or_default().to_ascii_lowercase())
+        .unwrap_or_default()
 }
 
 fn dedup_hosts(mut v: Vec<String>) -> Vec<String> {

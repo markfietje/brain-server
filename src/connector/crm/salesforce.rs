@@ -21,10 +21,10 @@ pub struct CachedToken {
 impl CachedToken {
     /// True when the token needs a refresh (<60s left, or already expired).
     pub fn needs_refresh(&self) -> bool {
-        match self.expires_at.duration_since(SystemTime::now()) {
-            Ok(remaining) => remaining < Duration::from_secs(60),
-            Err(_) => true,
-        }
+        self.expires_at
+            .duration_since(SystemTime::now())
+            .map(|remaining| remaining < Duration::from_secs(60))
+            .unwrap_or(true)
     }
 }
 
@@ -238,29 +238,32 @@ mod tests {
     /// the error propagates and NO case fetch is attempted with a stale or
     /// empty bearer. A successful refresh caches and reuses.
     #[test]
-    fn salesforce_modstamp_sync_refreshes_token_fail_closed()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn salesforce_modstamp_sync_refreshes_token_fail_closed() {
         // Happy path first: token fetched once, cached until near-expiry.
         let ok = MockToken {
             calls: Default::default(),
             fail_token: false,
         };
-        let base = api_base("https://acme.my.salesforce.com")?;
+        let base = api_base("https://acme.my.salesforce.com").expect("instance url");
         assert_eq!(base, "https://acme.my.salesforce.com");
         let tok: super::CachedToken = {
-            let resp = ok.post_form(
-                &format!("{base}/services/oauth2/token"),
-                &token_form("id", "sec"),
-                None,
-            )?;
+            let resp = ok
+                .post_form(
+                    &format!("{base}/services/oauth2/token"),
+                    &token_form("id", "sec"),
+                    None,
+                )
+                .expect("token fetch");
             let expires_in = resp
                 .get("expires_in")
                 .and_then(|e| e.as_i64())
-                .context("expires_in")?;
+                .context("expires_in")
+                .expect("expires_in");
             super::CachedToken {
                 access_token: resp["access_token"]
                     .as_str()
-                    .context("access_token")?
+                    .context("access_token")
+                    .expect("access_token")
                     .into(),
                 expires_at: SystemTime::now() + Duration::from_secs(expires_in.max(0) as u64),
             }
@@ -289,7 +292,6 @@ mod tests {
             1,
             "fail-closed: no retry storm, no fallback bearer"
         );
-        Ok(())
     }
 
     #[test]
@@ -309,13 +311,13 @@ mod tests {
     }
 
     #[test]
-    fn page_translates_and_carries_next() -> Result<(), Box<dyn std::error::Error>> {
+    fn page_translates_and_carries_next() {
         let body = serde_json::json!({
             "records": [row("Closed")],
             "done": false,
             "nextRecordsUrl": "/services/data/v62.0/query/01gXX/next-100"
         });
-        let (cases, next) = translate_page("acme", &body)?;
+        let (cases, next) = translate_page("acme", &body).expect("page translates");
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].status, CaseStatus::ClosedSolved);
         assert_eq!(cases[0].updated_rev, "2026-08-24T10:00:00.000+0000");
@@ -323,7 +325,6 @@ mod tests {
             next.as_deref(),
             Some("/services/data/v62.0/query/01gXX/next-100")
         );
-        Ok(())
     }
 
     #[test]

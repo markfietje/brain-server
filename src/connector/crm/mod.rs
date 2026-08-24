@@ -320,41 +320,45 @@ mod tests {
     }
 
     #[test]
-    fn crm_cases_upsert_is_idempotent_by_case_ref() -> Result<(), Box<dyn std::error::Error>> {
+    fn crm_cases_upsert_is_idempotent_by_case_ref() {
         let dir = std::env::temp_dir().join(format!("brain-crm-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
+        std::fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("linkage.db");
         let _ = std::fs::remove_file(&path);
-        let db = Connection::open(&path)?;
+        let db = Connection::open(&path).expect("open file DB");
         db.execute_batch(
             "CREATE TABLE crm_cases(
                 case_ref TEXT PRIMARY KEY, source TEXT NOT NULL, org_id TEXT NOT NULL,
                 case_id TEXT NOT NULL, run_id INTEGER, status TEXT NOT NULL,
                 updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);",
-        )?;
+        )
+        .expect("schema");
         let c = sample(CaseStatus::Open);
-        upsert_crm_case(&db, &c, None)?;
-        upsert_crm_case(&db, &c, None)?;
-        let count: i64 = db.query_row("SELECT COUNT(*) FROM crm_cases", [], |r| r.get(0))?;
+        upsert_crm_case(&db, &c, None).expect("upsert");
+        upsert_crm_case(&db, &c, None).expect("re-upsert");
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM crm_cases", [], |r| r.get(0))
+            .expect("count");
         assert_eq!(count, 1, "re-upsert must not duplicate");
-        assert_eq!(run_for_case(&db, &c.case_ref())?, None);
+        assert_eq!(run_for_case(&db, &c.case_ref()).expect("lookup"), None);
 
         // Bind a run; later passes must not lose it.
-        upsert_crm_case(&db, &c, Some(7))?;
-        assert_eq!(run_for_case(&db, &c.case_ref())?, Some(7));
-        upsert_crm_case(&db, &c, None)?;
+        upsert_crm_case(&db, &c, Some(7)).expect("bind run");
+        assert_eq!(run_for_case(&db, &c.case_ref()).expect("lookup"), Some(7));
+        upsert_crm_case(&db, &c, None).expect("re-upsert keeps binding");
         assert_eq!(
-            run_for_case(&db, &c.case_ref())?,
+            run_for_case(&db, &c.case_ref()).expect("lookup"),
             Some(7),
             "None preserves the binding"
         );
 
         // Status advance lands on the same row.
-        upsert_crm_case(&db, &sample(CaseStatus::ClosedSolved), None)?;
-        let status: String = db.query_row("SELECT status FROM crm_cases", [], |r| r.get(0))?;
+        upsert_crm_case(&db, &sample(CaseStatus::ClosedSolved), None).expect("status advance");
+        let status: String = db
+            .query_row("SELECT status FROM crm_cases", [], |r| r.get(0))
+            .expect("status");
         assert_eq!(status, "closed_solved");
         let _ = std::fs::remove_file(&path);
-        Ok(())
     }
 
     /// Records calls; replays answer identically — the harness for the
@@ -411,24 +415,28 @@ mod tests {
     }
 
     #[test]
-    fn closed_solved_event_opens_capture() -> Result<(), Box<dyn std::error::Error>> {
+    fn closed_solved_event_opens_capture() {
         // Fixture: the closed-solved transition is the event shape the Evolve
         // release consumes. First pass opens the run + posts `crm/case/closed`.
         let closed = sample(CaseStatus::ClosedSolved);
         let db = temp_linkage_db(&sample(CaseStatus::Open), CaseStatus::Open);
         let sink = RecordingSink::new();
-        let r1 = deliver_case(&sink, &db, &closed)?;
+        let r1 = deliver_case(&sink, &db, &closed).expect("first delivery");
         assert_eq!(r1.run_id, 101);
         assert_eq!(r1.topic_posted.as_deref(), Some(TOPIC_CASE_CLOSED));
-        assert_eq!(run_for_case(&db, "crm:zendesk:acme:42")?, Some(101));
+        assert_eq!(
+            run_for_case(&db, "crm:zendesk:acme:42").expect("linkage"),
+            Some(101)
+        );
 
         let events = sink.events.borrow();
         let (_, body) = &events[0];
         let payload: serde_json::Value = body
             .splitn(3, '|')
             .nth(2)
-            .context("payload segment")?
-            .parse()?;
+            .expect("payload segment")
+            .parse()
+            .expect("payload json");
         assert_eq!(payload["status"], "closed_solved");
         assert_eq!(payload["case_ref"], "crm:zendesk:acme:42");
         assert_eq!(
@@ -438,10 +446,9 @@ mod tests {
         drop(events);
 
         // Replay of the same revision is a no-op on the event stream.
-        let r2 = deliver_case(&sink, &db, &closed)?;
+        let r2 = deliver_case(&sink, &db, &closed).expect("replay delivery");
         assert_eq!(r2.topic_posted, None, "idempotent replay posts nothing new");
         assert_eq!(sink.events.borrow().len(), 1);
-        Ok(())
     }
 
     #[test]
