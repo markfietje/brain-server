@@ -66,18 +66,22 @@ pub(crate) fn record_report(
     conn: &Connection,
     score_units: i32,
     now: i64,
+    kcs_summary: &str,
 ) -> Result<(), rusqlite::Error> {
     let baseline = last_baseline_units(conn);
-    let uplift = match baseline {
-        Some(b) => score_units - b,
-        None => 0,
-    };
+    // Baseline absent → uplift 0 (the first report anchors, never scores).
+    let uplift = baseline.map_or(0, |b| score_units - b);
     let record = CalibrationRecord::new(last_kappa_units(conn), uplift, "");
+    let detail = if kcs_summary.is_empty() {
+        record.detail()
+    } else {
+        format!("{} {kcs_summary}", record.detail())
+    };
     super::audit_write_global(
         conn,
         "calibration/report",
         crate::audit::AuditStatus::Ok,
-        &record.detail(),
+        &detail,
     );
     meta_set(conn, KEY_LAST_REPORT_AT, &now.to_string())?;
     if baseline.is_none() {
@@ -130,7 +134,7 @@ mod tests {
     fn report_due_then_stamped_for_a_week() {
         let conn = db();
         assert!(report_due(&conn, 1000));
-        record_report(&conn, 9000, 1000).unwrap();
+        record_report(&conn, 9000, 1000, "").unwrap();
         assert!(!report_due(&conn, 1000 + 7 * 86400 - 1));
         assert!(report_due(&conn, 1000 + 7 * 86400));
         // First report anchors the baseline; uplift 0.
@@ -140,7 +144,7 @@ mod tests {
     #[test]
     fn signed_gate_blocks_within_month_and_anchors_kappa() {
         let conn = db();
-        record_report(&conn, 8000, 1000).unwrap();
+        record_report(&conn, 8000, 1000, "").unwrap();
         assert!(!signature_blocked(&conn, 2000));
         record_signed(&conn, 8500, 8200, "dpo-1", 2000).unwrap();
         assert!(signature_blocked(&conn, 3000));
@@ -148,14 +152,14 @@ mod tests {
         // Signature re-anchored the baseline to the signed score.
         assert_eq!(last_baseline_units(&conn), Some(8200));
         // A later report carries the human κ, not the sentinel.
-        record_report(&conn, 8300, 1000 + 8 * 86400).unwrap();
+        record_report(&conn, 8300, 1000 + 8 * 86400, "").unwrap();
         assert!(verify_chain(&conn), "chain stays green");
     }
 
     #[test]
     fn records_land_on_the_audit_chain_with_their_detail() {
         let conn = db();
-        record_report(&conn, 9000, 100).unwrap();
+        record_report(&conn, 9000, 100, "").unwrap();
         record_signed(&conn, 8000, 9100, "dpo-9", 200).unwrap();
         let n: i64 = conn
             .query_row(

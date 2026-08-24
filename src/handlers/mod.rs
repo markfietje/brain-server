@@ -31,6 +31,7 @@ pub mod gate;
 pub mod govern;
 pub mod holds;
 pub mod ingest;
+pub mod kcs;
 pub mod observe;
 pub mod procedure;
 pub mod profiles;

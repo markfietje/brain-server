@@ -6209,6 +6209,11 @@ async fn main_inner() -> Result<()> {
             "/workflow/plugins/mount",
             post(handlers::workflow::post_plugin_mount),
         )
+        .route(
+            "/kcs/articles/{id}/approve",
+            post(handlers::kcs::post_kcs_article_approve),
+        )
+        .route("/kcs/articles", get(handlers::kcs::get_kcs_articles))
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -10213,6 +10218,8 @@ Final paragraph after the rule.";
             "contradictions",
             // v1.28.22 "Bridges": the case↔run linkage.
             "crm_cases",
+            // v1.28.23 "Evolve": the KCS solve-loop linkage.
+            "case_articles",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10368,7 +10375,13 @@ Final paragraph after the rule.";
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        for col in ["node_kind", "parent_id"] {
+        for col in [
+            "node_kind",
+            "parent_id",
+            "kcs_state",
+            "public_slug",
+            "freshness_review_due",
+        ] {
             assert!(
                 k_cols.contains(col),
                 "v1.4.0: knowledge.{col} column must exist after migration"
@@ -10411,10 +10424,11 @@ Final paragraph after the rule.";
         // v1.27.31 for the audit head pin schema_meta stamp (AuditRepair M3).
         // The Lineage release for outbox.parent_id (additive event ancestry).
         // Bridges for the crm_cases case↔run linkage table.
+        // Evolve for the KCS columns + the case_articles linkage table.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_22),
-            "schema_version must be recorded as 1.28.22 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_23),
+            "schema_version must be recorded as 1.28.23 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -11851,6 +11865,9 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}/steering",
             "/workflow/runs/{id}/steps",
             "/workflow/runs/{id}/suggestions",
+            // The KCS article lifecycle (Evolve).
+            "/kcs/articles",
+            "/kcs/articles/{id}/approve",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13077,6 +13094,10 @@ Final paragraph after the rule.";
             // plugin mount evidence: any authenticated principal records its
             // own composition (a Write, metadata-only).
             ("/workflow/plugins/mount", "Write"),
+            // The KCS article lifecycle: the worklist is a Read; approve is
+            // the HITL Write + `approve` role gate.
+            ("/kcs/articles", "Read"),
+            ("/kcs/articles/{id}/approve", "Write"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13141,6 +13162,7 @@ Final paragraph after the rule.";
                     "breaches" => include_str!("handlers/breaches.rs"),
                     "workflow" => include_str!("handlers/workflow.rs"),
                     "workflow_lineage" => include_str!("handlers/workflow_lineage.rs"),
+                    "kcs" => include_str!("handlers/kcs.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
@@ -14828,7 +14850,11 @@ Final paragraph after the rule.";
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(b"panel-bundle");
-        let real = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let real = h
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
 
         // Invalid plugin name refused (fail-closed, no row).
         let err = crate::handlers::workflow::post_plugin_mount(
@@ -14983,6 +15009,7 @@ Final paragraph after the rule.";
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
             Path(run_id),
+            axum::extract::Query(Default::default()),
         )
         .await
         .expect("suggestions must resolve");
@@ -15010,6 +15037,7 @@ Final paragraph after the rule.";
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
             Path(run_id),
+            axum::extract::Query(Default::default()),
         )
         .await
         .expect("suggestions must resolve");
@@ -18466,5 +18494,231 @@ Final paragraph after the rule.";
         assert!(packet.0["safety"]["lines"].is_array());
         assert_eq!(packet.0["handoff_complete"], serde_json::json!(false));
         assert_eq!(packet.0["run_id"], serde_json::json!(run_id));
+    }
+
+    // ── Evolve: the KCS loop end-to-end (handler-level) ─────────────────
+
+    fn kcs_proposal(
+        conn: &rusqlite::Connection,
+        kind: &str,
+        case_ref: &str,
+        article: Option<i64>,
+        title: &str,
+    ) -> i64 {
+        let mut content = format!("kcs: case={case_ref}\n");
+        if let Some(a) = article {
+            content.push_str(&format!("kcs: article={a}\n"));
+        }
+        content.push_str(&format!("\n# {title}\n\n## Issue\nsymptom\n\n## Environment\nenv\n\n## Cause\nc cause\n\n## Resolution\n- fix\n\n## Evidence\n- case={case_ref}\n"));
+        conn.execute(
+            "INSERT INTO proposals(kind, content, source, novelty, salience, created_at)
+             VALUES (?1, ?2, 'agent', 1.0, 0.5, strftime('%s','now'))",
+            rusqlite::params![kind, content],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[tokio::test]
+    async fn human_approval_moves_draft_state_and_sets_freshness() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let pid = {
+            let conn = state.pool.get().unwrap();
+            kcs_proposal(
+                &conn,
+                crate::workflow::kcs::KIND_NEW,
+                "crm:z:a:99",
+                None,
+                "Symptom phrase",
+            )
+        };
+        let digest = crate::handlers::gate::review_digest(&{
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT content FROM proposals WHERE id=?1",
+                rusqlite::params![pid],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap()
+        });
+        let resp = crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(pid),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: None,
+                digest: Some(digest),
+            }),
+        )
+        .await
+        .expect("approve");
+        assert_eq!(resp.0["kcs_state"], serde_json::json!("draft"));
+        let (kid, kcs_state): (i64, String) = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT id, kcs_state FROM knowledge ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(kcs_state, "draft", "promotion is draft, never published");
+
+        // The lifecycle route moves draft → approved and stamps freshness.
+        let out = crate::handlers::kcs::post_kcs_article_approve(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(kid),
+        )
+        .await
+        .expect("kcs approve");
+        assert_eq!(out.0["kcs_state"], serde_json::json!("approved"));
+        assert!(out.0["freshness_review_due"].as_i64().unwrap() > 0);
+        // Second approve conflicts (only drafts are approvable).
+        let err = crate::handlers::kcs::post_kcs_article_approve(
+            axum::extract::State(state),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(kid),
+        )
+        .await
+        .expect_err("double approve refused");
+        assert_eq!(err.inner.code, "kcs_state_invalid", "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn superseded_article_linkage_follows_survivor() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let (old_id, pid) = {
+            let conn = state.pool.get().unwrap();
+            let old_id = seed_chunk(&state, "global", None, None, "old guidance text");
+            conn.execute(
+                "INSERT INTO crm_cases(case_ref, source, org_id, case_id, run_id, status, updated_rev, synced_at)
+                 VALUES ('crm:z:a:7','z','a','7',NULL,'closed_solved','r','ts')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO case_articles(case_ref, knowledge_id, sir, action, ts)
+                 VALUES ('crm:z:a:7', ?1, 'searched_found', 'linked', 1)",
+                [old_id],
+            )
+            .unwrap();
+            let pid = kcs_proposal(&conn, "fact", "ignored", None, "replacement");
+            // Rewrite the proposal to a plain fact body so the standard
+            // promote path runs (the KCS branch only takes kcs_* kinds).
+            conn.execute(
+                "UPDATE proposals SET content='fresh replacement guidance' WHERE id=?1",
+                [pid],
+            )
+            .unwrap();
+            (old_id, pid)
+        };
+        let digest = crate::handlers::gate::review_digest("fresh replacement guidance");
+        let resp = crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::extract::Path(pid),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: Some(old_id),
+                digest: Some(digest),
+            }),
+        )
+        .await
+        .expect("superseding approve");
+        let new_id = resp.0["chunk_id"].as_i64().expect("new chunk id");
+        let linked: Option<i64> = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT knowledge_id FROM case_articles WHERE case_ref='crm:z:a:7'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            linked,
+            Some(new_id),
+            "the reuse record must follow the survivor"
+        );
+        // And the old row is bi-temporally retired by the same tx.
+        let valid_to: Option<String> = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT valid_to FROM knowledge WHERE id=?1",
+                [old_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(valid_to.is_some(), "superseded article expired");
+    }
+
+    #[tokio::test]
+    async fn scoreboard_carries_kcs_fields_and_calibration_signs_them() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        {
+            let conn = state.pool.get().unwrap();
+            // One closed-solved case linked, one not: linkage rate 5000.
+            conn.execute(
+                "INSERT INTO crm_cases(case_ref, source, org_id, case_id, run_id, status, updated_rev, synced_at)
+                 VALUES ('crm:z:a:1','z','a','1',NULL,'closed_solved','r','ts'),
+                        ('crm:z:a:2','z','a','2',NULL,'closed_solved','r','ts')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO knowledge(content, title, content_hash, domain, kcs_state, created_at)
+                 VALUES ('guide','G','hkcs','global','draft',100)",
+                [],
+            )
+            .unwrap();
+            let art = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO case_articles(case_ref, knowledge_id, sir, action, ts)
+                 VALUES ('crm:z:a:1', ?1, 'searched_found', 'linked', 1),
+                        ('crm:z:a:2', NULL, 'searched_not_found', 'linked', 2)",
+                [art],
+            )
+            .unwrap();
+        }
+        let view = crate::handlers::workflow::get_scoreboard(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("scoreboard");
+        assert_eq!(view.0["kcs_linkage_rate_units"], serde_json::json!(5000));
+        assert_eq!(view.0["searched_found_rate_units"], serde_json::json!(5000));
+        assert!(view.0["article_freshness_median_age_secs"].is_i64());
+
+        // The weekly report carries the same numbers on the audit chain.
+        {
+            let conn = state.pool.get().unwrap();
+            let now = chrono::Utc::now().timestamp();
+            crate::workflow::calibration::record_report(
+                &conn,
+                9000,
+                now,
+                &crate::workflow::kcs::kcs_summary(&conn, now).unwrap(),
+            )
+            .unwrap();
+            let ok = crate::audit::verify_chain(&conn);
+            assert!(ok, "report rides the chain intact");
+        }
+        // The monthly human sign-off covers the measures unchanged.
+        let signed = crate::handlers::workflow::post_calibration_sign(
+            axum::extract::State(state),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::Json(crate::handlers::workflow::CalibrationSignBody {
+                reviewer_id: "dpo".to_string(),
+                human_agreement_kappa_units: 8500,
+            }),
+        )
+        .await
+        .expect("sign");
+        assert_eq!(signed.0["signed"], serde_json::json!(true));
     }
 }

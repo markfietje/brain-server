@@ -724,6 +724,128 @@ pub async fn approve_proposal(
             ));
         }
 
+        // ── Evolve: the KCS capture-kind branch. ───────────────────────────
+        // `kcs_new_article` / `kcs_update_article` promote to a knowledge
+        // row born in `kcs_state='draft'`; `kcs_link_only` writes ONLY the
+        // case_articles linkage. Every path CASes the proposal approved in
+        // the same tx; nothing auto-publishes.
+        if kind == crate::workflow::kcs::KIND_NEW
+            || kind == crate::workflow::kcs::KIND_UPDATE
+            || kind == crate::workflow::kcs::KIND_LINK_ONLY
+        {
+            let (case_ref, article) =
+                crate::workflow::kcs::parse_preamble(&content).ok_or_else(|| {
+                    HandlerError::bad_request(
+                        "kcs_preamble_invalid",
+                        "KCS proposal is missing its `kcs: case=` preamble",
+                    )
+                })?;
+            let now_ts = chrono::Utc::now().timestamp();
+            let action: &str = match kind.as_str() {
+                crate::workflow::kcs::KIND_NEW => "created",
+                crate::workflow::kcs::KIND_UPDATE => "updated",
+                _ => "linked",
+            };
+            let chunk_id = if kind == crate::workflow::kcs::KIND_LINK_ONLY {
+                article.ok_or_else(|| {
+                    HandlerError::bad_request(
+                        "kcs_article_missing",
+                        "link-only capture must name its article (`kcs: article=`)",
+                    )
+                })?
+            } else {
+                // Title = the symptom phrase heading; body keeps the four
+                // fixed sections (the searchable KCS structure).
+                let title: Option<String> = content
+                    .lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l[2..].trim().to_string());
+                let embedding = model.encode_one(&content);
+                if embedding.is_empty() {
+                    return Err(HandlerError::internal("embedding generation failed"));
+                }
+                let content_hash =
+                    format!("{:016x}", xxhash_rust::xxh3::xxh3_64(content.as_bytes()));
+                tx.execute(
+                    "INSERT INTO knowledge(content, title, source, content_hash, authority,
+                                           observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, kcs_state)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'fact', 'stated', 0.8, ?7, ?8, 0, 'draft')",
+                    rusqlite::params![
+                        content,
+                        title,
+                        source.clone().unwrap_or_else(|| "agent".to_string()),
+                        content_hash,
+                        authority,
+                        observed_at.map(|o| o.to_string()),
+                        principal_to_owner(&principal.0),
+                        crate::gate::origin_for_source(Some("agent")),
+                    ],
+                )
+                .map_err(|e| HandlerError::internal(format!("insert failed: {e}")))?;
+                let new_id = tx.last_insert_rowid();
+                tx.execute(
+                    "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                     VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'agent', datetime('now'))",
+                    rusqlite::params![
+                        new_id,
+                        embedding.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>()
+                    ],
+                )
+                .map_err(|e| HandlerError::internal(format!("vec0 insert failed: {e}")))?;
+                new_id
+            };
+            // The capture linkage — idempotent against the solve-time SIR
+            // row for the same (case, article): one row per pair, the action
+            // reflects the latest capture. (The uniqueness is a PARTIAL
+            // index, so an explicit update-then-insert is the portable
+            // idempotency form.)
+            let n_link = tx
+                .execute(
+                    "UPDATE case_articles SET action = ?3
+                     WHERE case_ref = ?1 AND knowledge_id = ?2 AND sir = 'searched_found'",
+                    rusqlite::params![case_ref, chunk_id, action],
+                )
+                .map_err(|e| HandlerError::internal(format!("case_articles update failed: {e}")))?;
+            if n_link == 0 {
+                tx.execute(
+                    "INSERT INTO case_articles(case_ref, knowledge_id, sir, action, ts)
+                     VALUES (?1, ?2, 'searched_found', ?3, ?4)",
+                    rusqlite::params![case_ref, chunk_id, action, now_ts],
+                )
+                .map_err(|e| HandlerError::internal(format!("case_articles insert failed: {e}")))?;
+            }
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("article:{chunk_id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("kcs/approve {kind} case:{case_ref}"),
+                "global",
+            );
+            let n = tx
+                .execute(
+                    "UPDATE proposals SET status = 'approved', decided_at = ?1
+                     WHERE id = ?2 AND status = 'pending'",
+                    rusqlite::params![now_ts, id],
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if n == 0 {
+                tx.rollback()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Err(HandlerError::conflict(format!(
+                    "proposal {id} was already decided by a concurrent action"
+                )));
+            }
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": chunk_id,
+                "status": "approved",
+                "kcs_state": if kind == crate::workflow::kcs::KIND_LINK_ONLY { "unchanged" } else { "draft" },
+            }));
+        }
+
         // Embed + insert the chunk through the same knowledge + vec0 path.
         let embedding = model.encode_one(&content);
         if embedding.is_empty() {
@@ -801,6 +923,13 @@ pub async fn approve_proposal(
             }
             crate::consolidate::resolve_supersession(&tx, chunk_id, supersedes, &now_utc)
                 .map_err(|e| HandlerError::internal(format!("supersession failed: {e}")))?;
+            // Evolve: the superseded article's case linkage follows the
+            // survivor — the reuse record must not orphan with the old row.
+            tx.execute(
+                "UPDATE OR IGNORE case_articles SET knowledge_id = ?1 WHERE knowledge_id = ?2",
+                rusqlite::params![chunk_id, supersedes],
+            )
+            .map_err(|e| HandlerError::internal(format!("linkage follow failed: {e}")))?;
         }
 
         // CAS the proposals row — `AND status = 'pending'` so a

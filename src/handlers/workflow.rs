@@ -201,6 +201,7 @@ pub async fn get_suggestions(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let principal = principal.0;
     let pool = state.pool.clone();
@@ -301,7 +302,7 @@ pub async fn get_suggestions(
     if hits.is_empty() {
         let pool3 = st.pool.clone();
         tokio::task::spawn_blocking(move || {
-            if let Ok(conn) = pool3.get() {
+            if let Ok(mut conn) = pool3.get() {
                 let now = chrono::Utc::now().timestamp();
                 // Never certify silence: a failed abstention record is
                 // announced, not swallowed (the silent-write sweep convention).
@@ -311,9 +312,40 @@ pub async fn get_suggestions(
                 ) {
                     tracing::warn!("abstention finding write failed for run {id}: {e}");
                 }
+                // The documented KCS signal for a zero-hit reuse search.
+                let n = crate::workflow::kcs::record_sir_not_found(&mut conn, id, now);
+                if n == 0 && crate::workflow::kcs::case_ref_for_run(&conn, id).is_some() {
+                    tracing::warn!("sir not-found record failed for run {id}");
+                }
             }
         }).await.ok();
         return Ok(Json(serde_json::json!({"suggestions": []})));
+    }
+    // The Reuse practice: cited hits (the `used` id list the engine sends
+    // back once it actually cites them in step evidence) land `searched_found`
+    // SIR rows. Best-effort; a failed record reads as a gap, never a fork.
+    if let Some(used) = params.get("used").cloned() {
+        let hit_ids: std::collections::HashSet<i64> = hits
+            .iter()
+            .filter_map(|h| h.get("id").and_then(|v| v.as_i64()))
+            .collect();
+        let cited: Vec<i64> = used
+            .split(',')
+            .filter_map(|s| s.trim().parse::<i64>().ok())
+            .filter(|i| hit_ids.contains(i))
+            .take(64)
+            .collect();
+        if !cited.is_empty() {
+            let pool4 = st.pool.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = pool4.get() {
+                    let now = chrono::Utc::now().timestamp();
+                    crate::workflow::kcs::record_sir_found(&conn, id, &cited, now);
+                }
+            })
+            .await
+            .ok();
+        }
     }
     let suggestions: Vec<serde_json::Value> = hits
         .into_iter()
@@ -375,19 +407,33 @@ pub async fn get_scoreboard(
             .sum::<i32>()
             / runs.len() as i32
     };
-    let emitted = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-        let conn = pool_cal.get().map_err(|e| format!("{e}"))?;
-        let now = chrono::Utc::now().timestamp();
-        if !crate::workflow::calibration::report_due(&conn, now) {
-            return Ok(false);
-        }
-        crate::workflow::calibration::record_report(&conn, score_units, now)
-            .map_err(|e| format!("{e}"))?;
-        Ok(true)
-    })
+    let emitted = tokio::task::spawn_blocking(
+        move || -> Result<(bool, crate::workflow::kcs::KcsMeasures), String> {
+            let conn = pool_cal.get().map_err(|e| format!("{e}"))?;
+            let now = chrono::Utc::now().timestamp();
+            // The Evolve loop's measures ride the weekly report: linkage,
+            // reuse (SIR), and freshness, computed from the same tables the
+            // scoreboard serves — the report and the board measure the same
+            // numbers.
+            let kcs = crate::workflow::kcs::kcs_measures(&conn, now).map_err(|e| format!("{e}"))?;
+            if !crate::workflow::calibration::report_due(&conn, now) {
+                return Ok((false, kcs));
+            }
+            let summary = format!(
+                "kcs_linkage_rate:{} reuse_rate:{} freshness_median_age_secs:{}",
+                kcs.linkage_rate_units,
+                kcs.searched_found_rate_units,
+                kcs.article_freshness_median_age_secs
+            );
+            crate::workflow::calibration::record_report(&conn, score_units, now, &summary)
+                .map_err(|e| format!("{e}"))?;
+            Ok((true, kcs))
+        },
+    )
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
+    let (emitted, kcs) = emitted;
     // The SDK stays dependency-free; the host owns the wire shape.
     Ok(Json(serde_json::json!({
         "fcr_units": sb.fcr_units,
@@ -402,6 +448,10 @@ pub async fn get_scoreboard(
         "escalation_honored_units": sb.escalation_honored_units,
         "runs_scored": runs.len(),
         "calibration_report_emitted": emitted,
+        // Evolve: the KCS performance measures (additive).
+        "kcs_linkage_rate_units": kcs.linkage_rate_units,
+        "searched_found_rate_units": kcs.searched_found_rate_units,
+        "article_freshness_median_age_secs": kcs.article_freshness_median_age_secs,
     })))
 }
 
@@ -410,8 +460,8 @@ pub async fn get_scoreboard(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalibrationSignBody {
-    reviewer_id: String,
-    human_agreement_kappa_units: i32,
+    pub(crate) reviewer_id: String,
+    pub(crate) human_agreement_kappa_units: i32,
 }
 
 /// `POST /workflow/calibration/sign` — the monthly human-signed calibration
@@ -1016,6 +1066,8 @@ pub async fn put_run_state(
     valid_state_body(&body.state_json)?;
     let new_state = body.state_json;
     let expected_rev = body.expected_rev;
+    let completed_status = status.clone();
+    let flag_state = new_state.clone();
     let outcome: Result<i64, crate::workflow::state::CasError> = tokio::task::spawn_blocking(
         move || -> Result<Result<i64, crate::workflow::state::CasError>, String> {
             let conn = pool.get().map_err(|e| format!("{e}"))?;
@@ -1034,7 +1086,31 @@ pub async fn put_run_state(
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
     match outcome {
-        Ok(revision) => Ok(Json(serde_json::json!({"revision": revision}))),
+        Ok(revision) => {
+            // The Improve practice hook: a run completing with contradictions
+            // or skipped verification flags its cited articles (content-health
+            // input; never an edit). Best-effort, announced on failure.
+            if completed_status == "completed" {
+                let pool_flag = super::resolve_domain_pool(&state.registry, None)?;
+                let state_json = flag_state;
+                tokio::task::spawn_blocking(move || {
+                    if let Ok(mut conn) = pool_flag.get() {
+                        let now = chrono::Utc::now().timestamp();
+                        let parsed: serde_json::Value =
+                            serde_json::from_str(&state_json).unwrap_or(serde_json::Value::Null);
+                        let flagged = crate::workflow::kcs::flag_contradicted_articles(
+                            &mut conn, id, &parsed, now,
+                        );
+                        if !flagged.is_empty() {
+                            tracing::info!(run = id, ?flagged, "kcs improve flags emitted");
+                        }
+                    }
+                })
+                .await
+                .ok();
+            }
+            Ok(Json(serde_json::json!({"revision": revision})))
+        }
         Err(crate::workflow::state::CasError::Stale { actual_revision }) => {
             Err(HandlerError::conflict_with(
                 "cas_stale",
@@ -1107,6 +1183,11 @@ pub async fn post_event(
             "parent_event_id must be a positive outbox id",
         ));
     }
+    let topic = body.topic.clone();
+    let topic_check = topic.clone();
+    let payload_json = body.payload_json.clone();
+    let idempotency_key = body.idempotency_key.clone();
+    let parent_event_id = body.parent_event_id;
     let outcome: (bool, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
         let mut tx =
@@ -1115,10 +1196,10 @@ pub async fn post_event(
         let outcome = crate::workflow::outbox::enqueue_child(
             tx.tx(),
             id,
-            body.parent_event_id,
-            &body.topic,
-            &body.payload_json,
-            &body.idempotency_key,
+            parent_event_id,
+            &topic,
+            &payload_json,
+            &idempotency_key,
             now,
         )
         .map_err(|e| format!("{e}"))?;
@@ -1128,6 +1209,28 @@ pub async fn post_event(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
+    // Evolve trigger: a FIRST `crm/case/closed` event fires the deterministic
+    // KCS capture generator (exactly-once via the outbox marker). Best-effort:
+    // a failed capture is announced; the case-close itself already committed.
+    if topic_check == crate::connector::crm::TOPIC_CASE_CLOSED && outcome.0 {
+        let pool_cap = super::resolve_domain_pool(&state.registry, None)?;
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut conn = pool_cap.get().map_err(|e| format!("{e}"))?;
+            let now = chrono::Utc::now().timestamp();
+            match crate::workflow::kcs::capture_on_case_close(&mut conn, id, now) {
+                Ok(outcome) => {
+                    tracing::info!(?outcome, run = id, "kcs capture pass");
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::warn!("kcs capture failed for run {id}: {e}");
+                    Err(e.to_string())
+                }
+            }
+        })
+        .await
+        .ok();
+    }
     Ok(Json(
         serde_json::json!({"first": outcome.0, "event_id": outcome.1}),
     ))
