@@ -217,10 +217,7 @@ mod tests {
             pos += found + s.len();
         }
         for s in sections {
-            assert!(
-                body.contains(s),
-                "section {s} missing from:\n{body}"
-            );
+            assert!(body.contains(s), "section {s} missing from:\n{body}");
         }
         assert!(body.contains("2FA migration broke PIN reset"));
         assert!(body.contains("- root cause: stale service account"));
