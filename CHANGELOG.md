@@ -19,6 +19,37 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.26] — 2026-08-25 — "Crew": colleagues become visible
+
+Swarming and shared-queue models live or die on seeing the crew; until now the console showed cases and proposals, never people. Crew ships presence WITHOUT a background worker: presence piggybacks on authenticated activity, every upsert riding the caller's existing transaction — no heartbeat, and a rolled-back transition leaves no ghost. Reads compute TTL decay at read time (active < 5 min, away < 30 min, offline beyond); the roster merges the Watchbill shift ring (site badge), role badges (the JWT claim snapshot taken at last act), and HITL-maintained skills tags.
+
+**M1 (presence):** new additive tables in every domain DB (schema → **1.28.26**, guarded by the schema-contract test): `presence` (one row per `(domain, principal)`, UPSERT refreshes ts/kind/ref/roles), `principal_skills`, and `crew_config`. The write seam is [`crew::touch`] — called inside the reviewer's own tx on every proposal decision ("reviewing") and inside the WorkflowTx of run open/event/answer/steering ("cranking", case ref `run:{id}`). Activity kinds are a closed vocabulary (`cranking|reviewing|idle`); unknown kinds refuse before any write.
+
+**M2 (roster + privacy ceiling):** `GET /ops/crew?domain=&now=` (Read on the domain) serves the TTL-decayed roster — WHAT KIND of act plus an opaque `current_case_ref`, never case content; every emitted string passes the invisible-strip read seam (a planted zero-width/bidi principal id cannot smuggle a fence marker through the view), and an unknown stored activity kind degrades to `idle`. The DPO switch `POST /ops/crew/config` (Admin, audited) flips visibility per domain — **fail-open to HIDDEN**: an unreadable config row reads as disabled, never as more visibility than configured.
+
+**M3 (skills, HITL-gated):** `POST /ops/skills` (Write) is the ONLY door toward tags and it never touches `principal_skills` directly — it creates one pending `crew_skills_update` proposal carrying `{domain, principal, add[], remove[]}` (the domain rides INSIDE the proposal so approval applies to exactly what was proposed). Approval runs the same validation again inside its IMMEDIATE transaction, CASes the proposal pending→approved, applies adds/removes idempotently (≤ 32 lowercase alnum-hyphen tags per principal), and audits `workflow/crew/skills` — replay refused, never double-applied.
+
+**M4 (DSAR coverage — lifts the Watchbill ceiling):** the subject sweep now erases presence + skills rows by principal and REWRITES shift rosters to drop the subject (the shift survives — schedule evidence, not subject data); a corrupt roster cell fails the whole erasure rather than certifying a partial one. Counted honestly on the report as `crew_rows`.
+
+**Hardening passes:** context7 doc verification against current rusqlite/axum guidance moved both new mutating handlers from raw `BEGIN IMMEDIATE` strings to RAII `transaction_with_behavior(Immediate)` — a panic mid-tx rolls back on drop instead of leaking an open transaction into the pool. Role snapshots are size-bounded at write (16 × 64 visible chars).
+
+### Release notes
+- **Improvements:** the crew roster — who is active/away/offline, on which site's shift, working which kind of task, with which skills; deterministic read-time arithmetic over activity rows, no scheduler daemon.
+- **Improvements:** skills-based routing prerequisite — colleague skill tags maintained exclusively through human review (agents cannot self-tag).
+- **Security fixes:** people-visibility is DPO-switchable per domain and fails to HIDDEN; roster output is invisible-character-stripped; skills changes are proposal-gated with in-tx CAS + audit; DSAR erasure now reaches presence, skills, and shift rosters (closing the roster gap left by the previous release).
+- Tests: server main bin **856** / 6 ignored (**+7**: the four plan-named pins `presence_upserts_ride_existing_transactions_no_worker` / `presence_decays_by_ttl_at_read` / `roster_never_exposes_case_content` / `skills_changes_are_proposal_gated`, plus cross-domain application, Watchbill site/skills join, and the DSAR crew sweep), lib **194** / 1; clippy `-D warnings` + fmt clean. Schema 1.28.25 → **1.28.26** (additive `presence` / `principal_skills` / `crew_config`). Live smoke on a DB copy: propose → digest-bound approve → tags land under the proposed domain → reviewer presence recorded by the approval itself → DPO-off hides everyone → DSAR purge scrubs all three people-tables → proposal replay refused → `/audit/verify` ok on every domain.
+
+### Honest ceilings
+- Presence reflects MUTATING authenticated acts only (workflow writes + review decisions); read-only surfaces do not bump it — an operator reading cases all day shows offline. Wiring reads would put a write on every GET; deliberately not done this release.
+- `current_case_ref` is an opaque reference (`run:{id}`); resolving it back to case content still requires Read on the run's domain — but the roster alone does not re-authorize per-member, so a roster reader learns WHO works on run N without access to run N.
+- Roster assembly is O(members) queries for skills (capped 500); fine on loopback SQLite, batchable later.
+- DSAR dry-run footprint does not yet count crew rows (live purge does; the certificate understates the dry-run preview).
+- Legal holds do not freeze crew rows (holds protect knowledge chunks/runs; people-metadata erasure proceeds).
+- No retention/TTL for stale presence rows (they are one-per-principal upserts, so growth is bounded by principals, not by time); skills have no DELETE surface outside DSAR + explicit remove proposals.
+- Skills-proposal approvals audit under the `global` tenant label while tags land under the proposed domain (all crew tables live in the single default pool file).
+
+---
+
 ## [1.28.25] — 2026-08-24 — "Watchbill": shifts and the sun
 
 Follow-the-sun is a *schedule* problem before it is a handover problem: the envelope SLA (P1–P4, ttl) exists but nothing knew when Site Manila ends and Site Amsterdam begins. Watchbill makes "queue follows the sun, cases don't" literal data — pure time-table arithmetic over stored shift rows, computed at read time; no scheduler daemon.
