@@ -36,7 +36,14 @@ tokio = { version = "1", default-features = false, features = ["sync"] }
 # `android-native-keyring-store` crate (Keystore-encrypted prefs) — documented
 # ceiling, wired by `dx` at bundle time.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# keyring 4 split platform backends into `*-keyring-store` crates; `v1` keeps
+# the Entry API this code uses.
+keyring = { version = "4", default-features = false, features = [
+    "v1",
+    "apple-native-keyring-store",
+    "windows-native-keyring-store",
+    "zbus-secret-service-keyring-store",
+] }
 
 # v1.27.20 "Console" (F-36): `client_times_out_on_hung_connection` needs an
 # async runtime; the shipped `sync`-only tokio dep gets rt+macros here. Dev-only
