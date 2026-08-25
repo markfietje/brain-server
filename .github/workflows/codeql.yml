@@ -64,6 +64,13 @@ jobs:
         run: cargo build --manifest-path crates/Cargo.toml --all-targets
       - name: Trace steward-harness workspace
         run: cargo build --manifest-path tools/steward-harness/Cargo.toml --all-targets
+      # The client is its own workspace node INSIDE the repo; leaving it
+      # unbuilt puts a large extracted-but-uncompiled Rust tree into the
+      # database — the main drag on the call-target quality metric.
+      - name: Install client keyring headers
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: Trace client workspace
+        run: cargo build --manifest-path client/Cargo.toml --all-targets
 
       - name: Build engine-crates workspace under the tracer
         run: cargo build --manifest-path crates/Cargo.toml --all-targets
