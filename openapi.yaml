@@ -3848,15 +3848,18 @@ paths:
                   now: { type: integer, format: int64 }
                   domain: { type: string }
                   queue_scope_site:
-                    type: [string, "null"]
+                    type: string
+                    nullable: true
                     description: Site that owns the queue at `now` (null before the first shift).
                   incoming_site:
-                    type: [string, "null"]
+                    type: string
+                    nullable: true
                     description: Set while inside an overlap window.
                   in_overlap: { type: boolean }
                   next_boundary_epoch:
-                    type: [integer, "null"]
+                    type: integer
                     format: int64
+                    nullable: true
                   shifts:
                     type: array
                     items: { $ref: "#/components/schemas/Shift" }
@@ -4471,6 +4474,171 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
+  /workflow/runs/{id}/handover/offer:
+    post:
+      summary: Offer a one-click handover (Write on domain + workflow role)
+      description: >
+        Relay: gated by the packet-completeness check over the run's I-PASS
+        fields — open question, un-breached SLA, current step, linked
+        evidence/checkpoint, resolved escalation. An incomplete packet
+        refuses with the MISSING list and writes nothing. The offer, its
+        lineage event (`workflow/handover`), and its audit row land in ONE
+        transaction; a retried POST is idempotent (same offer id).
+      operationId: handoverOffer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_principal]
+              properties:
+                to_principal: { type: string, maxLength: 256 }
+                overlap_minutes: { type: integer, minimum: 0, maximum: 120, default: 0 }
+      responses:
+        "200":
+          description: The open offer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offer_id: { type: integer }
+                  run_id: { type: integer }
+                  to_principal: { type: string }
+                  state: { type: string, enum: ["offered"] }
+                  sla_deadline: { type: integer }
+        "400":
+          description: packet_incomplete (details.missing lists the gaps) | principal_invalid (bounds, control/invisible chars) | handover_self | overlap_invalid
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+        "409": { description: run_not_active — only active runs can change hands }
+  /workflow/runs/{id}/handover/{offer_id}/accept:
+    post:
+      summary: Accept an offer — CAS owner transfer (Write on domain + workflow role)
+      description: >
+        In the SAME WorkflowTx as the offer state move, the run `owner` is
+        CAS-transferred to the acceptor and the SLA clock is untouched; the
+        reply points at the resume-at checkpoint. Deciding a decided offer
+        replays the receipt (`moved: false`).
+      operationId: handoverAccept
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: offer_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Acceptance receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offer_id: { type: integer }
+                  run_id: { type: integer }
+                  moved: { type: boolean }
+                  owner: { type: string }
+                  resume_at_checkpoint: {}
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Offer or run not found }
+        "409": { description: cas_stale — state advanced concurrently, or run_not_active — a finished run is never resurrected by acceptance }
+  /workflow/runs/{id}/handover/{offer_id}/decline:
+    post:
+      summary: Decline an offer with a REQUIRED reason (Write on domain + workflow role)
+      description: >
+        An audited refusal beats a silent bounce: the reason is screened,
+        bounded at 4000 chars, stored with the offer row, and rides the
+        lineage event.
+      operationId: handoverDecline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: offer_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: Decline receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  offer_id: { type: integer }
+                  run_id: { type: integer }
+                  moved: { type: boolean }
+        "400": { description: reason_required (missing or empty after trim) | reason_too_long }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Offer or run not found }
+  /ops/handovers:
+    get:
+      summary: The handover-due board ranked by SLA remaining (Read on domain)
+      description: >
+        Follow-the-sun board over active runs: SLA remaining per run
+        (recorded deadline wins, else P3-from-created), ranked soonest-first,
+        flagged while `now` sits inside the ring boundary's derived overlap
+        window (Watchbill). Pure read-time arithmetic.
+      operationId: opsHandovers
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+        - name: now
+          in: query
+          schema: { type: integer, description: epoch seconds; defaults to server now }
+      responses:
+        "200":
+          description: The board
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  now: { type: integer }
+                  board:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run_id: { type: integer }
+                        owner: { type: string, nullable: true }
+                        sla_deadline: { type: integer }
+                        remaining_secs: { type: integer }
+                        in_overlap: { type: boolean }
+                  corrupt_state_rows_skipped:
+                    type: integer
+                    description: active runs skipped because their stored state_json was corrupt — counted loudly, never silently absorbed
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
   /workflow/runs/{id}/answer:
     post:
       summary: Answer a pending AskHuman question (Write + approve role gate)
@@ -5616,10 +5784,12 @@ components:
         state: { type: string, enum: [active, away, offline] }
         activity_kind: { type: string, enum: [cranking, reviewing, idle] }
         current_case_ref:
-          type: [string, "null"]
+          type: string
+          nullable: true
           description: Opaque run/case reference — never case content.
         site:
-          type: [string, "null"]
+          type: string
+          nullable: true
           description: Site whose current shift roster names this principal.
         roles: { type: array, items: { type: string } }
         skills: { type: array, items: { type: string } }

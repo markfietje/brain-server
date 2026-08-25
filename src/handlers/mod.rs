@@ -37,6 +37,7 @@ pub mod observe;
 pub mod procedure;
 pub mod profiles;
 pub mod recall;
+pub mod relay;
 pub mod roles;
 pub mod shifts;
 pub mod sources;

@@ -6174,6 +6174,19 @@ async fn main_inner() -> Result<()> {
             get(handlers::workflow_lineage::get_handoff),
         )
         .route(
+            "/workflow/runs/{id}/handover/offer",
+            post(handlers::relay::post_handover_offer),
+        )
+        .route(
+            "/workflow/runs/{id}/handover/{offer_id}/accept",
+            post(handlers::relay::post_handover_accept),
+        )
+        .route(
+            "/workflow/runs/{id}/handover/{offer_id}/decline",
+            post(handlers::relay::post_handover_decline),
+        )
+        .route("/ops/handovers", get(handlers::relay::get_ops_handovers))
+        .route(
             "/workflow/runs/{id}/context",
             get(handlers::workflow_lineage::get_run_context),
         )
@@ -10246,6 +10259,8 @@ Final paragraph after the rule.";
             "presence",
             "principal_skills",
             "crew_config",
+            // v1.28.27 "Relay": handover offers over the I-PASS packet.
+            "handover_offers",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10453,8 +10468,8 @@ Final paragraph after the rule.";
         // Evolve for the KCS columns + the case_articles linkage table.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_26),
-            "schema_version must be recorded as 1.28.26 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_27),
+            "schema_version must be recorded as 1.28.27 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -11902,6 +11917,11 @@ Final paragraph after the rule.";
             "/ops/crew",
             "/ops/skills",
             "/ops/crew/config",
+            // v1.28.27 "Relay": the one-click handover.
+            "/workflow/runs/{id}/handover/offer",
+            "/workflow/runs/{id}/handover/{offer_id}/accept",
+            "/workflow/runs/{id}/handover/{offer_id}/decline",
+            "/ops/handovers",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13150,6 +13170,13 @@ Final paragraph after the rule.";
             ("/ops/crew", "Read"),
             ("/ops/skills", "Write"),
             ("/ops/crew/config", "Admin"),
+            // Relay: the offer/accept/decline are Writes on the run's domain
+            // (accept performs the owner CAS); the handover-due board is a
+            // Read over the ring.
+            ("/workflow/runs/{id}/handover/offer", "Write"),
+            ("/workflow/runs/{id}/handover/{offer_id}/accept", "Write"),
+            ("/workflow/runs/{id}/handover/{offer_id}/decline", "Write"),
+            ("/ops/handovers", "Read"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13216,6 +13243,7 @@ Final paragraph after the rule.";
                     "workflow_lineage" => include_str!("handlers/workflow_lineage.rs"),
                     "kcs" => include_str!("handlers/kcs.rs"),
                     "shifts" => include_str!("handlers/shifts.rs"),
+                    "relay" => include_str!("handlers/relay.rs"),
                     "crew" => include_str!("handlers/crew.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
