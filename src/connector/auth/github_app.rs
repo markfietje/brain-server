@@ -345,6 +345,22 @@ impl AuthProvider for GitHubAppProvider {
 mod tests {
     use super::*;
 
+    /// Write a key file the way a real operator would hold one: owner-only.
+    /// `check_secret_permissions` refuses group/world-readable secrets, so a
+    /// plain `fs::write` (0600-umask-dependent) is a latent red.
+    fn write_key_file(path: &std::path::Path, bytes: &[u8]) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
+
     /// We don't ship a real RSA keypair with the tests. Instead, the JWT
     /// signing test generates a throwaway keypair at test time. This requires
     /// the `rsa` crate (RustCrypto, pure Rust) as a dev-dep — already pulled
@@ -356,11 +372,15 @@ mod tests {
     /// guarantee locally is the structure.
     fn throwaway_rsa_pem() -> Vec<u8> {
         // The `rsa` crate's `RsaPrivateKey::new(&mut rng, 2048)` is the
-        // standard way to generate a keypair for tests. We use `rand`'s
-        // thread_rng() — already a transitive dep of `rsa`.
-        use rand::rngs::OsRng;
+        // standard way to generate a keypair for tests. A seeded `StdRng`
+        // satisfies rsa's `CryptoRng` bound (`Error = Infallible`, which the
+        // fallible OS RNG does not); the key is throwaway test scaffolding —
+        // GitHub verifies signatures against the App's registered public
+        // key, so only the JWT SHAPE matters here.
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
         use rsa::{RsaPrivateKey, pkcs8::EncodePrivateKey};
-        let mut rng = OsRng;
+        let mut rng = StdRng::seed_from_u64(0x5EED_5EED);
         let key = RsaPrivateKey::new(&mut rng, 2048).expect("generate RSA keypair");
         key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
             .expect("encode PKCS#8 PEM")
@@ -394,7 +414,7 @@ mod tests {
     fn test_sign_app_jwt_has_correct_claims_shape() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("test-key.pem");
-        std::fs::write(&key_path, throwaway_rsa_pem()).unwrap();
+        write_key_file(&key_path, &throwaway_rsa_pem());
 
         let provider =
             GitHubAppProvider::new(sample_config(&key_path), test_http_client()).unwrap();
@@ -443,8 +463,8 @@ mod tests {
         };
         let err = GitHubAppProvider::new(cfg, test_http_client()).unwrap_err();
         assert!(
-            err.to_string().contains("failed to read"),
-            "error should mention read failure, got: {err}"
+            err.to_string().contains("cannot stat secret file"),
+            "error should name the unreadable secret, got: {err}"
         );
     }
 
@@ -452,7 +472,7 @@ mod tests {
     fn test_new_fails_loudly_on_malformed_pem() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("bad.pem");
-        std::fs::write(&key_path, b"not a PEM file").unwrap();
+        write_key_file(&key_path, b"not a PEM file");
         let err = GitHubAppProvider::new(sample_config(&key_path), test_http_client()).unwrap_err();
         assert!(
             err.to_string().contains("failed to parse RSA PEM"),
@@ -467,7 +487,7 @@ mod tests {
         // 'not wired yet' stub). With a 100ms timeout, this fails fast.
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("test-key.pem");
-        std::fs::write(&key_path, throwaway_rsa_pem()).unwrap();
+        write_key_file(&key_path, &throwaway_rsa_pem());
         let provider =
             GitHubAppProvider::new(sample_config(&key_path), test_http_client()).unwrap();
         let err = provider.access_token().unwrap_err();
