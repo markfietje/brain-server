@@ -457,21 +457,12 @@ mod tests {
     /// shifts + skills round-trip through the same stable reads the
     /// `GET /ops/shifts` + `GET /ops/skills` handlers serve.
     #[test]
-    fn wfm_feed_round_trips_shifts_and_skills() -> Result<(), Box<dyn std::error::Error>> {
+    fn wfm_feed_round_trips_shifts_and_skills() {
         use crate::workflow::crew;
-
-        fn ok<T>(
-            r: Result<T, crate::workflow::crew::CrewError>,
-        ) -> Result<T, Box<dyn std::error::Error>> {
-            r.map_err(|e| e.to_string().into())
-        }
-        fn ok_shift<T>(r: Result<T, ShiftError>) -> Result<T, Box<dyn std::error::Error>> {
-            r.map_err(|e| e.to_string().into())
-        }
 
         let conn = seed();
         let roster = ["op-a".to_string(), "op-b".to_string()];
-        ok_shift(insert_shift(
+        insert_shift(
             &conn,
             &ShiftDraft {
                 domain: "acme",
@@ -482,9 +473,11 @@ mod tests {
                 overlap_minutes: 60,
                 roster: &roster,
             },
-        ))?;
+        )
+        .expect("insert shift");
         // Skills are HITL-maintained; the feed only READS them. Seed via the
-        // approval-side primitive's own table writes (same rows the feed sees).
+        // same table writes the approval-side primitive performs (the rows
+        // the feed sees).
         for (principal, skill) in [
             ("op-a", "billing"),
             ("op-a", "retention"),
@@ -494,17 +487,18 @@ mod tests {
                 "INSERT INTO principal_skills(domain, principal, skill, created_at)
                  VALUES ('acme', ?1, ?2, 100)",
                 rusqlite::params![principal, skill],
-            )?;
+            )
+            .expect("seed skill");
         }
 
         // Shift feed: stored rows round-trip field-complete.
-        let shifts = ok_shift(list_shifts(&conn, "acme"))?;
+        let shifts = list_shifts(&conn, "acme").expect("read shifts");
         assert_eq!(shifts.len(), 1);
         assert_eq!(shifts[0].site, "manila");
         assert_eq!(shifts[0].roster.len(), 2);
 
         // Skills feed: ordered, grouped-by-principal shape, domain-scoped.
-        let skills = ok(crew::list_skills(&conn, "acme"))?;
+        let skills = crew::list_skills(&conn, "acme").expect("read skills");
         assert_eq!(
             skills,
             vec![
@@ -514,8 +508,11 @@ mod tests {
             ]
         );
         // Another domain sees nothing — the feed carries the tenant boundary.
-        assert!(ok(crew::list_skills(&conn, "other"))?.is_empty());
-        assert!(ok_shift(list_shifts(&conn, "other"))?.is_empty());
-        Ok(())
+        assert!(
+            crew::list_skills(&conn, "other")
+                .expect("read skills")
+                .is_empty()
+        );
+        assert!(list_shifts(&conn, "other").expect("read shifts").is_empty());
     }
 }

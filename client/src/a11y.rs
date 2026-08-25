@@ -20,7 +20,10 @@ fn trust_doc(name: &str) -> String {
 fn wcag_22_aa_gate_blocks_release() {
     let checklist = trust_doc("wcag22-aa-checklist.md");
     let mut criteria = 0usize;
-    for line in checklist.lines().filter(|l| l.trim_start().starts_with("- ")) {
+    for line in checklist
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- "))
+    {
         let t = line.trim_start().trim_start_matches("- ");
         if !t.chars().next().is_some_and(|c| c.is_ascii_digit()) {
             continue;
@@ -58,9 +61,6 @@ fn acr_lists_known_ceilings_honestly() {
         "Focus restoration after modal close is not yet guaranteed everywhere",
         "EN 301 549",
     ] {
-        assert!(
-            acr.contains(needle),
-            "ACR must honestly state `{needle}`"
-        );
+        assert!(acr.contains(needle), "ACR must honestly state `{needle}`");
     }
 }
