@@ -314,10 +314,11 @@ that were NOT deferred are the ones this component serves directly.
 **Art 50 went live on schedule — and so did this server's disclosure.**
 Article 50 transparency obligations apply from **2 August 2026** (untouched
 by the Omnibus), and `GET /.well-known/ai-notice` has carried
-`art_50: true` with `effective_date: 2026-08-02` since that exact date.
-Machine-readable marking of content generated before go-live has a grace
-period ending 2 December 2026; new content marking obligations were live on
-2 August 2026.
+`art_50: true` with `effective_date: 2026-08-02` since that exact date. Providers of
+generative-AI systems already placed on the market before
+2 August 2026 have a grace period ending 2 December 2026 to comply with the
+Article 50(2) machine-readable-marking duty; systems placed on the market
+from 2 August 2026 mark from day one.
 
 ## 7. Machine-Readable Origin Metadata (Art 50 transparency bridge)
 
@@ -341,9 +342,10 @@ GPAI timeline). The AI Act's phased application is set by Regulation (EU)
 2 August 2025**, and the Commission's enforcement powers over GPAI providers
 begin 2 August 2026 — neither date was changed by the Digital Omnibus
 (§6.6). Regulation (EU) 2026/1744 is the high-risk deferral instrument, not a
-GPAI one. The **2 December 2026** date is the end of the Article 50(2)
-grace period for machine-readable marking of synthetic content that already
-existed before go-live. brain-server does not train or host GPAI models —
+GPAI one. The **2 December 2026** date ends the Article 50(2) grace period that the
+Digital Omnibus grants to providers of generative-AI systems already on the
+market before go-live for machine-readable marking of their synthetic
+content output. brain-server does not train or host GPAI models —
 the GPAI obligations fall on the model providers whose outputs may be
 ingested — so the memory component's duty is provenance, not watermarking:
 every stored row keeps `source` / `origin` / `assertion_kind` / `confidence`
