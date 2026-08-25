@@ -865,6 +865,68 @@ pub async fn approve_proposal(
             }));
         }
 
+        // ── Complaints: the complaint_remedy branch.
+        // The remedy matrix is HITL with DETERMINISTIC role-tier caps: within
+        // cap the approval lands (proposal approved + lifecycle lineage in
+        // the same tx); over cap nothing is approved — an escalation
+        // proposal one rung up is created with the packet attached and the
+        // original stays pending. An approver role that does not resolve on
+        // the closed ladder denies loudly.
+        if kind == crate::workflow::complaint::KIND_REMEDY {
+            let payload: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                HandlerError::bad_request("remedy_packet_invalid", e.to_string())
+            })?;
+            let now_ts = chrono::Utc::now().timestamp();
+            let roles = principal
+                .0
+                .as_ref()
+                .map(|p| p.roles.clone())
+                .unwrap_or_default();
+            match crate::workflow::complaint::apply_remedy_approval(
+                &tx, id, &payload, &roles, now_ts,
+            ) {
+                Ok(crate::workflow::complaint::RemedyApproval::Approved) => {
+                    crate::audit::record_tenant(
+                        &tx,
+                        crate::audit::AuditKind::Workflow,
+                        principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                        &format!("proposal:{id}"),
+                        crate::audit::AuditStatus::Ok,
+                        "gate/complaint_remedy approved",
+                        "global",
+                    );
+                    tx.commit()
+                        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+                    return Ok(serde_json::json!({
+                        "id": id,
+                        "status": "approved",
+                    }));
+                }
+                Ok(crate::workflow::complaint::RemedyApproval::Escalated {
+                    escalation_proposal_id,
+                    to,
+                }) => {
+                    tx.commit()
+                        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+                    return Ok(serde_json::json!({
+                        "id": id,
+                        "status": "escalated",
+                        "escalation_proposal_id": escalation_proposal_id,
+                        "escalated_to": to.as_str(),
+                    }));
+                }
+                Err(crate::workflow::complaint::ComplaintError::Invalid(m)) => {
+                    return Err(HandlerError::bad_request("remedy_approval_denied", m));
+                }
+                Err(crate::workflow::complaint::ComplaintError::NotFound(m)) => {
+                    return Err(HandlerError::not_found(m));
+                }
+                Err(crate::workflow::complaint::ComplaintError::Database(m)) => {
+                    return Err(HandlerError::internal(m));
+                }
+            }
+        }
+
         // ── Crew: the crew_skills_update branch. Skills tags are HITL-
         // maintained: the ONLY write to `principal_skills` is this approval
         // path — CAS on the pending proposal + the tags land in the SAME tx.
@@ -899,6 +961,7 @@ pub async fn approve_proposal(
         if kind == crate::workflow::kcs::KIND_NEW
             || kind == crate::workflow::kcs::KIND_UPDATE
             || kind == crate::workflow::kcs::KIND_LINK_ONLY
+            || kind == crate::workflow::complaint::KIND_RCA
         {
             let (case_ref, article) =
                 crate::workflow::kcs::parse_preamble(&content).ok_or_else(|| {

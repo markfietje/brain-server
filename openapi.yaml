@@ -4551,6 +4551,146 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
+  /workflow/runs/{id}/complaint/lifecycle:
+    post:
+      summary: Advance the complaint lifecycle one legal step (Write on domain + workflow role)
+      description: >
+        Goodwill (v1.28.34): the ISO 10002 lifecycle — received → acknowledged
+        → investigated → remedy_proposed → remedy_approved → closed →
+        adr_referred. Transitions validate against the CLOSED table; anything
+        else is a loud 400. The lineage event (`workflow/complaint`) and its
+        audit row land in ONE transaction.
+      operationId: complaintLifecycleTransition
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to:
+                  type: string
+                  enum: [received, acknowledged, investigated, remedy_proposed, remedy_approved, closed, adr_referred]
+      responses:
+        "200":
+          description: The transition landed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  from: { type: string }
+                  to: { type: string }
+        "400":
+          description: complaint_invalid (transition not in the table | non-complaint run | unknown state) | actor unbounded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/complaint/remedy:
+    post:
+      summary: Propose a remedy from the ISO 10002 matrix (Write on domain + workflow role)
+      description: >
+        Goodwill (v1.28.34): creates ONE pending HITL proposal citing its
+        legal basis (closed anchor set) and its published code-of-conduct
+        clause (ISO 10001). A remedy contradicting the published promise is
+        FLAGGED visibly on the packet — never silently blocked. Nothing
+        financial is ever executed here. Approval rides the standard
+        proposal-approve gate with deterministic role-tier caps; over cap it
+        escalates exactly one level with the packet attached.
+      operationId: complaintRemedyPropose
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, amount_cents, code_clause_id, tier]
+              properties:
+                kind:
+                  type: string
+                  enum: [repair, replace, refund, goodwill_payment, explanation_only]
+                amount_cents: { type: integer, minimum: -100000000, maximum: 100000000 }
+                code_clause_id: { type: string, maxLength: 128 }
+                tier: { type: integer, minimum: 1, maximum: 4 }
+      responses:
+        "200":
+          description: The pending remedy proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id: { type: integer }
+                  status: { type: string, enum: [pending] }
+                  legal_basis: { type: string }
+                  conflicts: { type: array, items: { type: string } }
+                  contradicts_published_code: { type: boolean }
+        "400":
+          description: remedy_kind_invalid | amount_unbounded | clause_id_unbounded | complaint_invalid (missing citation | non-complaint run)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run or cited conduct clause not found }
+  /workflow/runs/{id}/complaint/adr-packet:
+    get:
+      summary: The ISO 10003 external-dispute packet for a member state's national ADR body (Read on domain + workflow role)
+      description: >
+        Goodwill (v1.28.34): run identity, audited remedy history, and the
+        competent NATIONAL ADR body from the DPO-maintained registry
+        (knowledge source `adr_body`). The EU ODR platform is discontinued
+        (Reg. 2024/3228) — every packet states that basis and targets the
+        national body; humans file. An unregistered member state denies
+        loudly (fail closed).
+      operationId: complaintAdrPacket
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: member_state
+          in: query
+          required: true
+          schema: { type: string, maxLength: 64 }
+      responses:
+        "200":
+          description: The dispute packet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  lifecycle_state: { type: string }
+                  remedy_history: { type: array, items: { type: object } }
+                  adr_body: { type: string }
+                  member_state: { type: string }
+                  odr_note: { type: string }
+                  filing: { type: string }
+        "400":
+          description: complaint_invalid (non-complaint run | member_state unbounded)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run or national ADR body not found }
   /workflow/runs/{id}/handover/offer:
     post:
       summary: Offer a one-click handover (Write on domain + workflow role)

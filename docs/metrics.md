@@ -32,6 +32,9 @@ telephony/CRM numbers) — see "Deliberately absent" at the end.
 | `refund_cycle_time_median_secs` | median seconds from run creation to terminal resolution over resolved return/warranty runs; 0 when none resolved. | `workflow_runs.created_at`/`updated_at` + terminal `status` | last 1000 runs | refund cycle-time KPI set |
 | `returnless_share_units` | share of RETURN runs disposed returnless-refund, over all return runs; 0 when the cohort is empty. Returnless refunds pair with fraud review (disposition ranking gates it). | `workflow_runs.state_json.returnless` over `kind='return'` | last 1000 runs | returnless-refund/fraud-detection pairing (2026 practice) |
 | `aftersales_fraud_flag_rate_units` | share of RETURN runs whose deterministic fraud signals flagged them, over all return runs; 0 when the cohort is empty. Signals inform HITL — they never auto-deny. | `workflow_runs.state_json.fraud_flagged` over `kind='return'` | last 1000 runs | fraud-signals-feed-HITL posture |
+| `goodwill_total_cents_30d` | sum of amount_cents over APPROVED remedy proposals in the trailing 30 days whose approval audit row verifies (fail-closed — an unaudited remedy never aggregates). | `proposals kind='complaint_remedy' status='approved'` × `audit_events` target/detail hash linkage | trailing 30 days | ISO 10002 remedy discipline; goodwill-ledger-visible posture |
+| `goodwill_entries_30d` | count of audited approved remedies in the window. | same as `goodwill_total_cents_30d` | trailing 30 days | — |
+| `goodwill_unaudited_excluded_30d` | approved remedies EXCLUDED for missing audit linkage — surfaced, never folded away. | same scan | trailing 30 days | fail-closed evidence law |
 
 ## Report-cadence fields (same read, weekly report ride)
 

@@ -7,6 +7,7 @@
 
 pub mod aftersales;
 pub mod calibration;
+pub mod complaint;
 pub mod evidence;
 pub mod handoff;
 pub mod kcs;

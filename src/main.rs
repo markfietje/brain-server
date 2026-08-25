@@ -6244,6 +6244,18 @@ async fn main_inner() -> Result<()> {
             get(handlers::workflow::get_suggestions),
         )
         .route(
+            "/workflow/runs/{id}/complaint/lifecycle",
+            post(handlers::workflow::post_complaint_lifecycle),
+        )
+        .route(
+            "/workflow/runs/{id}/complaint/remedy",
+            post(handlers::workflow::post_complaint_remedy),
+        )
+        .route(
+            "/workflow/runs/{id}/complaint/adr-packet",
+            get(handlers::workflow::get_complaint_adr_packet),
+        )
+        .route(
             "/workflow/scoreboard",
             get(handlers::workflow::get_scoreboard),
         )
@@ -11973,6 +11985,10 @@ Final paragraph after the rule.";
             "/ops/agents/cards",
             "/workflow/runs/{id}/delegations",
             "/workflow/runs/{id}/delegations/{delegation_id}/result",
+            // v1.28.34 "Goodwill": the complaint lifecycle surface.
+            "/workflow/runs/{id}/complaint/lifecycle",
+            "/workflow/runs/{id}/complaint/remedy",
+            "/workflow/runs/{id}/complaint/adr-packet",
             // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
             "/parcels",
             "/parcels/export",
@@ -13195,6 +13211,12 @@ Final paragraph after the rule.";
             // Lineage: the events read + handoff packet are Reads
             // on the run's domain; rewind is a Write + `approve` role gate.
             ("/workflow/runs/{id}/rewind", "Write"),
+            // v1.28.34 "Goodwill": the complaint lifecycle — transitions and
+            // remedy proposals are Writes + `workflow` role; the ADR packet
+            // is a Read on the run's domain.
+            ("/workflow/runs/{id}/complaint/lifecycle", "Write"),
+            ("/workflow/runs/{id}/complaint/remedy", "Write"),
+            ("/workflow/runs/{id}/complaint/adr-packet", "Read"),
             ("/workflow/runs/{id}/handoff", "Read"),
             // The derived context window — a Read on the run's
             // domain (pure derivation over the lineage the events read serves).

@@ -19,6 +19,109 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.34] — 2026-08-26 — "Goodwill": complaints, the full ISO 10002/10003 lifecycle
+
+Charter seeded the complaint class; this release gives it the full lifecycle —
+the closed state chain as lineage events on the audit chain, the remedy matrix
+as HITL proposals with deterministic role-tier approval caps that escalate one
+level over cap, the goodwill ledger aggregated ONLY from audited remedies, the
+ISO 10003 external-dispute packet targeting the competent NATIONAL ADR body
+(the EU ODR platform is discontinued — Reg. 2024/3228), code-of-conduct
+citations on every financial remedy with visible contradiction flags, and the
+KCS capture priority where complaint clusters outrank incident repeaters.
+Financial execution still never happens here — every remedy is a decision
+with an approval trail.
+
+### Release notes
+
+**Improvements**
+- **The full complaint lifecycle:** received → acknowledged → investigated →
+  remedy_proposed → remedy_approved → closed → adr_referred, validated against
+  a CLOSED transition table (skips, reversals and self-transitions deny
+  loudly). Every step is a lineage event (`workflow/complaint`) audited in the
+  caller's transaction — the register IS the audit chain.
+- **The remedy matrix as proposals:** repair / replace / refund / goodwill
+  payment / explanation-only. Every proposal cites its legal basis from the
+  closed anchor set (2019/771 art. 13(2), 2011/83 art. 16, goodwill-policy,
+  ISO 10002 clause 9) AND its published code-of-conduct clause (ISO 10001).
+  Nothing financial ever executes here.
+- **Role-capped approvals that escalate deterministically:** each approval
+  level (agent / supervisor / manager / executive) binds up to a fixed
+  per-tier cent cap; one cent over creates an escalation proposal exactly one
+  rung up with the full packet attached — the original stays pending. An
+  approver role that does not resolve on the closed ladder denies loudly.
+- **Published-promise gate:** conduct clauses live in the KB
+  (`knowledge.source='code_of_conduct'`) and carry a machine preamble
+  (`coc: excludes=…`, `coc: max_goodwill_cents=…`). A remedy the published
+  promise excludes or funds above its ceiling is FLAGGED on the packet at
+  raised salience — visible to the human, never silently blocked.
+- **ADR handoff done right for 2026:** the dispute packet carries the run's
+  lifecycle state, audited remedy history, and the competent NATIONAL ADR
+  body from the DPO-maintained registry; every packet states the
+  Reg. 2024/3228 discontinuation basis and that humans file. An unregistered
+  member state denies — the packet never guesses where a consumer files.
+- **Complaint clusters are the top KCS input:** closing a complaint case
+  captures `complaint_rca` into the same HITL pipeline at cluster-boosted
+  salience (0.9) — strictly above incident repeaters (0.7) and plain capture
+  (0.5), deterministically.
+- **Goodwill ledger on the scoreboard:** trailing-30-day aggregate over
+  APPROVED remedies whose approval audit row verifies; unaudited rows are
+  excluded AND counted — absence is surfaced, never folded away.
+
+### Engineering record
+
+- SDK `pure/complaint.rs` owns the deterministic policy once: `RemedyKind`
+  (+ legal anchors), the `ApprovalLevel` ladder + `CAP_TABLE` (level × tier),
+  `approval_decision` (one-cent-over escalates one level; negative amounts
+  escalate to the top; explanation-only always passes), the closed
+  lifecycle table, `capture_salience`, `flywheel_for_case`
+  (`FlywheelProposal::ComplaintRca` variant added — additive on a
+  `#[non_exhaustive]` enum), and `ODR_DISCONTINUATION_BASIS`. Pins:
+  `approval_caps_escalate_deterministically`,
+  `complaint_lifecycle_is_a_closed_chain`,
+  `complaint_clusters_outrank_incident_repeaters_in_capture_priority`.
+- `workflow/complaint.rs` is the service core: `transition` /
+  `current_state` (lineage-backed), `propose_remedy` (citation validation,
+  conflict computation, salience raise), `apply_remedy_approval` (cap check,
+  escalation packet, legal-predecessor lifecycle landing), `adr_packet`,
+  `goodwill_ledger` (audit-presence matched on target/detail HASHES — audit
+  targets are stored hashed by law). Pins:
+  `remedy_citations_include_code_clause_and_legal_basis`,
+  `approval_caps_escalate_deterministically` (service leg),
+  `adr_packet_targets_national_body_not_odr`,
+  `goodwill_ledger_aggregates_only_from_audited_remedies`.
+- KCS wiring: `capture_on_case_close` reads the run kind + 30-day complaint
+  window; complaint runs capture `complaint_rca` at
+  `capture_salience`-computed salience. Pin:
+  `complaint_capture_outranks_repeater_capture`. The gate's approve path
+  handles `complaint_remedy` (cap branch) and `complaint_rca` (same promote
+  path as KCS capture kinds).
+- Routes: `POST /workflow/runs/{id}/complaint/lifecycle`,
+  `POST /workflow/runs/{id}/complaint/remedy`,
+  `GET /workflow/runs/{id}/complaint/adr-packet?member_state=` — openapi.yaml,
+  route-coverage guard, authz-guard table, docs/api.md in the same commit;
+  input bounds pinned (amount ≤ 1e8 cents, clause id ≤ 128 chars,
+  member_state ≤ 64 + `..` refused); KB-sourced text passes sanitize_read.
+- Scoreboard: three additive ledger fields +
+  `scoreboard_fields_have_dictionary_entries` extended; docs/metrics.md is
+  the normative dictionary.
+- Schema unchanged at 1.28.30 — the lifecycle rides lineage events, remedies
+  ride proposals, clauses and ADR bodies ride governed knowledge rows.
+
+**Test delta:** server bin +7 (4 service pins/wiring, 1 KCS wiring pin, 3 SDK
+pure pins counted under the crates workspace), engine-sdk crate 111 → 114.
+
+**Honest ceilings:** remedy amounts are decision records only — no payment,
+refund, or replacement execution exists or belongs here. Approval caps are a
+fixed table compiled into the binary (per-deployment calibration is a future
+config surface). The ADR registry ships EMPTY by design (DPO-maintained via
+the ordinary knowledge write path) — packets fail closed until populated.
+Confirm-gate/effort-proxy remain unwired into run-close flows (v1.28.32
+ceiling unchanged); consent-gated outreach stays v1.28.35 scope. The ledger
+is trailing-30-day, global (no per-domain split yet).
+
+---
+
 ## [1.28.33] — 2026-08-26 — "Returns": aftersales objects with the same evidence law
 
 Returns/RMA/repair/recall get their decision machinery on the Frontdesk

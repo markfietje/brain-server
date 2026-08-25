@@ -316,6 +316,30 @@ pub(crate) fn capture_on_case_close(
     if status != "closed_solved" {
         return Ok(CaptureOutcome::Skipped);
     }
+    // Complaint clusters are the highest-value KCS input — a
+    // complaint run captures as `complaint_rca` with the cluster-boosted
+    // salience (pure::complaint::capture_salience; complaint clusters
+    // outrank incident repeaters deterministically).
+    let run_kind: String = conn
+        .query_row(
+            "SELECT kind FROM workflow_runs WHERE id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    let is_complaint = run_kind == "complaint";
+    let cluster_count = if is_complaint {
+        conn.query_row(
+            "SELECT COUNT(*) FROM workflow_runs
+              WHERE kind = 'complaint' AND created_at BETWEEN ?1 - 30*86400 AND ?1",
+            params![now],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as usize
+    } else {
+        0
+    };
+    let salience = brain_engine_sdk::pure::complaint::capture_salience(is_complaint, cluster_count);
     let key = format!("kcs-capture-{case_ref}");
     let payload = serde_json::json!({"case_ref": case_ref, "run_id": run_id}).to_string();
     // The whole close-out — marker, proposal, linkage-invariant finding,
@@ -351,17 +375,21 @@ pub(crate) fn capture_on_case_close(
         .unwrap_or(0);
     let action = capture_decision(!cited.is_empty(), None, diverged);
 
-    let kind = match action {
-        CaptureAction::NewArticle => KIND_NEW,
-        CaptureAction::UpdateArticle => KIND_UPDATE,
-        CaptureAction::LinkOnly => KIND_LINK_ONLY,
+    let kind = if is_complaint {
+        crate::workflow::complaint::KIND_RCA
+    } else {
+        match action {
+            CaptureAction::NewArticle => KIND_NEW,
+            CaptureAction::UpdateArticle => KIND_UPDATE,
+            CaptureAction::LinkOnly => KIND_LINK_ONLY,
+        }
     };
     let content = build_proposal_content(&action, &case_ref, &cited, &inputs);
     tx.execute(
         "INSERT INTO proposals(kind, content, source, authority, observed_at,
                               novelty, conflict_with, salience, created_at, source_prompt, owner)
-         VALUES (?1, ?2, 'agent', NULL, NULL, 1.0, NULL, 0.5, ?3, NULL, NULL)",
-        params![kind, content, now],
+         VALUES (?1, ?2, 'agent', NULL, NULL, 1.0, NULL, ?3, ?4, NULL, NULL)",
+        params![kind, content, salience, now],
     )?;
     let proposal_id = tx.last_insert_rowid();
 
@@ -588,10 +616,23 @@ mod tests {
 
     /// Seed a run bound to a closed-solved CRM case; returns (run_id, case_ref).
     fn seed_closed_case(conn: &Connection, state_json: &str) -> (i64, String) {
+        seed_closed_case_kind(conn, "interview", state_json)
+    }
+
+    fn seed_closed_case_kind(conn: &Connection, kind: &str, state_json: &str) -> (i64, String) {
+        seed_closed_case_kind_at(conn, kind, state_json, 1)
+    }
+
+    fn seed_closed_case_kind_at(
+        conn: &Connection,
+        kind: &str,
+        state_json: &str,
+        created_at: i64,
+    ) -> (i64, String) {
         conn.execute(
             "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
-             VALUES ('global', 'interview', ?1, 0, 'completed', 1, 1)",
-            params![state_json],
+             VALUES ('global', ?1, ?2, 0, 'completed', ?3, ?3)",
+            params![kind, state_json, created_at],
         )
         .unwrap();
         let run_id = conn.last_insert_rowid();
@@ -603,6 +644,64 @@ mod tests {
         )
         .unwrap();
         (run_id, case_ref)
+    }
+
+    /// complaint_clusters_outrank_incident_repeaters_in_capture_priority
+    /// (the wired capture leg: kind + salience land on the proposal row).
+    #[test]
+    fn complaint_capture_outranks_repeater_capture() {
+        let mut conn = db();
+        // A complaint CLUSTER: three complaint runs inside the window.
+        let (r1, _) = seed_closed_case_kind(&conn, "complaint", "{}");
+        let (r2, _) = seed_closed_case_kind(&conn, "complaint", "{}");
+        let (r3, _) = seed_closed_case_kind(&conn, "complaint", "{}");
+        for r in [r1, r2] {
+            capture_on_case_close(&mut conn, r, 1_000).unwrap();
+        }
+        let third = capture_on_case_close(&mut conn, r3, 2_000).unwrap();
+        let CaptureOutcome::Proposed(kind, id) = third else {
+            panic!("a closed complaint must capture");
+        };
+        assert_eq!(kind, crate::workflow::complaint::KIND_RCA);
+        let salience: f64 = conn
+            .query_row(
+                "SELECT salience FROM proposals WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(salience, 0.9, "cluster members capture at the top priority");
+        // A single complaint (no cluster yet — it is the only complaint run
+        // in its window) sits at the repeater tier.
+        let (solo, _) = seed_closed_case_kind_at(&conn, "complaint", "{}", 3_000_000);
+        if let CaptureOutcome::Proposed(kind_s, id_s) =
+            capture_on_case_close(&mut conn, solo, 3_000_001).unwrap()
+        {
+            assert_eq!(kind_s, crate::workflow::complaint::KIND_RCA);
+            let s: f64 = conn
+                .query_row(
+                    "SELECT salience FROM proposals WHERE id = ?1",
+                    params![id_s],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(s, 0.7);
+        }
+        // A plain interview close keeps the base salience and the plain kinds.
+        let (plain, _) = seed_closed_case(&conn, "{}");
+        if let CaptureOutcome::Proposed(kind_p, id_p) =
+            capture_on_case_close(&mut conn, plain, 4_000).unwrap()
+        {
+            assert_ne!(kind_p, crate::workflow::complaint::KIND_RCA);
+            let p: f64 = conn
+                .query_row(
+                    "SELECT salience FROM proposals WHERE id = ?1",
+                    params![id_p],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(p, 0.5);
+        }
     }
 
     #[test]

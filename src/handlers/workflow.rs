@@ -9,7 +9,7 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -476,6 +476,19 @@ pub async fn get_scoreboard(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
+    // The goodwill ledger rides the same read — a
+    // trailing-30-day aggregate over APPROVED remedies whose approval audit
+    // row actually verifies. Unaudited rows are excluded AND counted.
+    let pool_gw = super::resolve_domain_pool(&state.registry, None)?;
+    let ledger = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let conn = pool_gw.get().map_err(|e| format!("{e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        crate::workflow::complaint::goodwill_ledger(&conn, now - 30 * 86400, now)
+            .map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
     let hot_topics: Vec<serde_json::Value> = hot
         .into_iter()
         .map(|(slug, n)| serde_json::json!({ "slug": slug, "feedback_count": n }))
@@ -511,6 +524,11 @@ pub async fn get_scoreboard(
         "refund_cycle_time_median_secs": ak.refund_cycle_time_median_secs,
         "returnless_share_units": ak.returnless_share_units,
         "aftersales_fraud_flag_rate_units": ak.aftersales_fraud_flag_rate_units,
+        // Goodwill ledger (trailing 30 days): aggregate ONLY over audited
+        // remedies — the unaudited count is the honest gap signal.
+        "goodwill_total_cents_30d": ledger.total_cents,
+        "goodwill_entries_30d": ledger.entries.len(),
+        "goodwill_unaudited_excluded_30d": ledger.unaudited_excluded,
     })))
 }
 
@@ -958,6 +976,9 @@ mod scoreboard_tests {
             "ftfr_units",
             "returnless_share_units",
             "aftersales_fraud_flag_rate_units",
+            "goodwill_total_cents_30d",
+            "goodwill_entries_30d",
+            "goodwill_unaudited_excluded_30d",
         ];
         let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
         let doc = std::fs::read_to_string(&doc_path)
@@ -1664,4 +1685,168 @@ fn sanitize_steering_payload(payload: &str) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_default()
+}
+
+// ── The ISO 10002/10003 complaint lifecycle surface.
+// Protocol adapters only — every invariant lives in workflow::complaint.
+
+fn complaint_err(e: crate::workflow::complaint::ComplaintError) -> HandlerError {
+    use crate::workflow::complaint::ComplaintError;
+    match e {
+        ComplaintError::NotFound(m) => HandlerError::not_found(m),
+        ComplaintError::Invalid(m) => HandlerError::bad_request("complaint_invalid", m),
+        ComplaintError::Database(m) => HandlerError::internal(m),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ComplaintTransitionRequest {
+    pub to: String,
+}
+
+/// `POST /workflow/runs/{id}/complaint/lifecycle` — advance the lifecycle
+/// one legal step (closed table; anything else is a loud 400).
+pub async fn post_complaint_lifecycle(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<ComplaintTransitionRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    let actor = super::recall::principal_label(&principal);
+    type CErr = crate::workflow::complaint::ComplaintError;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, CErr> {
+        let mut conn = pool.get().map_err(|e| CErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(CErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        let to = brain_engine_sdk::pure::complaint::ComplaintState::parse(&body.to)
+            .ok_or_else(|| CErr::Invalid(format!("unknown lifecycle state '{}'", body.to)))?;
+        let (from, to) = crate::workflow::complaint::transition(tx.tx(), id, to, &actor, now)?;
+        tx.commit().map_err(CErr::from)?;
+        Ok((from.as_str().to_string(), to.as_str().to_string()))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(complaint_err)?;
+    let (from, to) = result;
+    Ok(Json(
+        serde_json::json!({"run_id": id, "from": from, "to": to}),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ComplaintRemedyRequest {
+    pub kind: String,
+    pub amount_cents: i64,
+    pub code_clause_id: String,
+    pub tier: u8,
+}
+
+/// Input bounds for the remedy surface (the bounds law).
+const REMEDY_MAX_AMOUNT_CENTS: i64 = 100_000_000;
+const REMEDY_MAX_CLAUSE_ID_LEN: usize = 128;
+
+/// `POST /workflow/runs/{id}/complaint/remedy` — propose a remedy from the
+/// matrix. Always creates a PENDING HITL proposal with its citations and
+/// conflict flags; nothing financial is ever executed here.
+pub async fn post_complaint_remedy(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<ComplaintRemedyRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    if body.amount_cents.abs() > REMEDY_MAX_AMOUNT_CENTS {
+        return Err(HandlerError::bad_request(
+            "amount_unbounded",
+            "amount_cents exceeds the input bound",
+        ));
+    }
+    if body.code_clause_id.len() > REMEDY_MAX_CLAUSE_ID_LEN {
+        return Err(HandlerError::bad_request(
+            "clause_id_unbounded",
+            "code_clause_id exceeds the input bound",
+        ));
+    }
+    let kind =
+        brain_engine_sdk::pure::complaint::RemedyKind::parse(&body.kind).ok_or_else(|| {
+            HandlerError::bad_request(
+                "remedy_kind_invalid",
+                "kind must be repair|replace|refund|goodwill_payment|explanation_only",
+            )
+        })?;
+    let proposed_by = super::recall::principal_label(&principal);
+    type CErr = crate::workflow::complaint::ComplaintError;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, CErr> {
+        let mut conn = pool.get().map_err(|e| CErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(CErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        let draft = crate::workflow::complaint::RemedyDraft {
+            run_id: id,
+            kind,
+            amount_cents: body.amount_cents,
+            code_clause_id: &body.code_clause_id,
+            tier: body.tier,
+            proposed_by: &proposed_by,
+        };
+        let p = crate::workflow::complaint::propose_remedy(tx.tx(), &draft, now)?;
+        tx.commit().map_err(CErr::from)?;
+        Ok(p)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(complaint_err)?;
+    Ok(Json(serde_json::json!({
+        "proposal_id": result.proposal_id,
+        "status": "pending",
+        "legal_basis": result.legal_basis,
+        "conflicts": result.conflicts.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>(),
+        "contradicts_published_code": !result.conflicts.is_empty(),
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct AdrPacketQuery {
+    pub member_state: String,
+}
+
+/// `GET /workflow/runs/{id}/complaint/adr-packet` — the ISO 10003
+/// external-dispute packet for the national ADR body of `member_state`.
+/// Read-seam: KB-sourced text passes sanitize_read before emission.
+pub async fn get_complaint_adr_packet(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Query(q): Query<AdrPacketQuery>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    type CErr = crate::workflow::complaint::ComplaintError;
+    let mut packet = tokio::task::spawn_blocking(move || -> Result<_, CErr> {
+        let conn = pool.get().map_err(|e| CErr::Database(e.to_string()))?;
+        crate::workflow::complaint::adr_packet(&conn, id, &q.member_state)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(complaint_err)?;
+    // The read seam covers every KB-sourced text field.
+    if let Some(body) = packet
+        .get_mut("adr_body")
+        .and_then(|v| v.as_str().map(String::from))
+    {
+        packet["adr_body"] =
+            serde_json::json!(crate::gate::sanitize_read(&body, false, &principal));
+    }
+    Ok(Json(packet))
 }

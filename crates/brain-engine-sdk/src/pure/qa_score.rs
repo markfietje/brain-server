@@ -187,6 +187,9 @@ pub fn repeater_detected(count_same_30d: usize) -> bool {
 pub enum FlywheelProposal {
     Gap(GapAction),
     Rca,
+    /// v1.28.34: an RCA born from a complaint cluster — same HITL pipeline,
+    /// ranked above incident repeaters (see [`super::complaint`]).
+    ComplaintRca,
 }
 
 pub fn flywheel_proposals(similarity_units: i32, repeater_count: usize) -> Vec<FlywheelProposal> {
@@ -381,7 +384,7 @@ mod tests {
         let proposals = flywheel_proposals(3000, 3);
         for p in proposals {
             match p {
-                FlywheelProposal::Gap(_) | FlywheelProposal::Rca => {}
+                FlywheelProposal::Gap(_) | FlywheelProposal::Rca | FlywheelProposal::ComplaintRca => {}
             }
         }
         // no FlywheelProposal variant writes knowledge directly — enforced by type system
@@ -479,7 +482,7 @@ mod tests {
                 let steps = a.steps.clone();
                 for p in flywheel_proposals(3000, 3) {
                     match p {
-                        FlywheelProposal::Gap(_) | FlywheelProposal::Rca => {}
+                        FlywheelProposal::Gap(_) | FlywheelProposal::Rca | FlywheelProposal::ComplaintRca => {}
                     }
                 }
                 let _ = (steps, override_rate(&a.steps));
