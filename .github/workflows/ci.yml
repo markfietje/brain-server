@@ -23,6 +23,26 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The embedder fixture downloads minishlab/potion-retrieval-32M from
+      # the HuggingFace Hub at test time; anonymous Hub fetches rate-limit
+      # and transiently 5xx. Cache the model dir and prefetch with retries
+      # so a Hub blip cannot red the whole matrix.
+      - name: cache huggingface model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('src/config.rs') }}
+      - name: prefetch model (retried)
+        run: |
+          pip install -q huggingface_hub
+          for i in 1 2 3 4 5; do
+            if python3 -c "from huggingface_hub import snapshot_download; snapshot_download('minishlab/potion-retrieval-32M')"; then
+              echo "model cached"; exit 0
+            fi
+            echo "attempt $i failed; backing off"; sleep $((i * 20))
+          done
+          echo "::warning::HuggingFace Hub unreachable — tests will rely on whatever is cached"
+          exit 0
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy (default, all targets)
@@ -104,6 +124,24 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Same Hub-blip defense as lint-test: the otel build runs the same
+      # embedder fixtures.
+      - name: cache huggingface model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('src/config.rs') }}
+      - name: prefetch model (retried)
+        run: |
+          pip install -q huggingface_hub
+          for i in 1 2 3 4 5; do
+            if python3 -c "from huggingface_hub import snapshot_download; snapshot_download('minishlab/potion-retrieval-32M')"; then
+              echo "model cached"; exit 0
+            fi
+            echo "attempt $i failed; backing off"; sleep $((i * 20))
+          done
+          echo "::warning::HuggingFace Hub unreachable — tests will rely on whatever is cached"
+          exit 0
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy (--features otel, all targets)
