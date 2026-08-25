@@ -266,24 +266,35 @@ jobs:
             exit 1
           fi
 
-          # 4. ONLY categorized bullets leave the block. Validation counts
-          #    and milestone detail placed INSIDE it violate the changelog
-          #    contract — refuse naming the offending lines instead of
-          #    stripping them silently.
+          # 4. ONLY categorized content leaves the block, in EITHER shipped
+          #    shape: a bullet leading with its own category
+          #    (`- **Improvements:** …`) or grouped under a bold category
+          #    sub-heading (`**Bug fixes**` followed by `- ` bullets).
+          #    Validation counts / milestone detail placed INSIDE the block
+          #    violate the changelog contract — refuse naming the offending
+          #    lines instead of stripping them silently.
           awk -v ver="$version" '
             /^## \[/ { insec = ($0 ~ "^## \\[" ver "\\]"); next }
             !insec { next }
             /^### Release notes/ { notes=1; next }
             notes && /^### / { exit }
-            notes && /^- / { print }
+            notes && /^\*\*(Improvements|New|Changed|Bug fixes|Security fixes)\*\*/ {
+              print; cat = 1; next
+            }
+            notes && /^- \*\*(Improvements|New|Changed|Bug fixes|Security fixes):/ {
+              print; cat = 1; next
+            }
+            notes && NF && !/^- / && !/^ / { cat = 0 }
+            notes && /^- / { if (cat) print; else print "UNCATEGORIZED " $0 }
           ' CHANGELOG.md > NOTES_BULLETS.raw
 
-          bad=$(grep -Ev '^- \*\*(Improvements|New|Changed|Bug fixes|Security fixes):\*\*' NOTES_BULLETS.raw || true)
-          if [ -n "$bad" ]; then
-            echo "::error::CHANGELOG.md '### Release notes' for $version carries non-user-facing bullets. Move validation counts / engineering detail under '### Engineering record' (below the block). Offending lines:"
-            printf '%s\n' "$bad" | head -5 | sed 's/^/::error::  /'
+          bad=$(grep -c '^UNCATEGORIZED ' NOTES_BULLETS.raw || true)
+          if [ "$bad" -gt 0 ]; then
+            echo "::error::CHANGELOG.md '### Release notes' for $version carries uncategorized bullets. Put them under a **Improvements**/**Bug fixes**/**Security fixes** sub-heading or lead each bullet with its category. Offending bullet count: $bad"
+            grep '^UNCATEGORIZED ' NOTES_BULLETS.raw | sed 's/^UNCATEGORIZED //' | head -5 | sed 's/^/::error::  /'
             exit 1
           fi
+          grep -v '^UNCATEGORIZED ' NOTES_BULLETS.raw > NOTES_BULLETS.tmp && mv NOTES_BULLETS.tmp NOTES_BULLETS.raw
 
           if [ "$(grep -c '^- ' NOTES_BULLETS.raw)" -lt 1 ]; then
             echo "::error::CHANGELOG.md '### Release notes' block for $version produced no bullets. Add real notes, then re-tag."
