@@ -134,6 +134,11 @@ pub const SCHEMA_VERSION_V1_28_28: &str = "1.28.28";
 /// agent identity + agent→agent work orders). One-way; the down-migration is
 /// a documented no-op.
 pub const SCHEMA_VERSION_V1_28_29: &str = "1.28.29";
+
+/// v1.28.30 "Parcels": the `parcel_ledger` table (additive; signed site-to-site
+/// knowledge crossings, import-as-proposals). One-way; the down-migration is
+/// a documented no-op.
+pub const SCHEMA_VERSION_V1_28_30: &str = "1.28.30";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

@@ -6212,6 +6212,10 @@ async fn main_inner() -> Result<()> {
             "/workflow/runs/{id}/delegations/{delegation_id}/result",
             post(handlers::mesh::post_delegation_result),
         )
+        // Parcels: signed site-to-site knowledge — export, import, ledger.
+        .route("/parcels/export", post(handlers::parcels::post_export))
+        .route("/parcels/import", post(handlers::parcels::post_import))
+        .route("/parcels", get(handlers::parcels::get_ledger))
         .route("/ops/handovers", get(handlers::relay::get_ops_handovers))
         .route(
             "/workflow/runs/{id}/context",
@@ -10293,6 +10297,8 @@ Final paragraph after the rule.";
             // v1.28.29 "Mesh": agent cards + delegations.
             "agent_cards",
             "delegations",
+            // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
+            "parcel_ledger",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10500,10 +10506,11 @@ Final paragraph after the rule.";
         // Evolve for the KCS columns + the case_articles linkage table.
         // Channel for the case_notes table (notes + swarm invites).
         // Mesh for agent_cards + delegations.
+        // Parcels for the parcel_ledger table.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_29),
-            "schema_version must be recorded as 1.28.28 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_30),
+            "schema_version must be recorded as 1.28.30 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -11963,6 +11970,10 @@ Final paragraph after the rule.";
             "/ops/agents/cards",
             "/workflow/runs/{id}/delegations",
             "/workflow/runs/{id}/delegations/{delegation_id}/result",
+            // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
+            "/parcels",
+            "/parcels/export",
+            "/parcels/import",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13239,6 +13250,13 @@ Final paragraph after the rule.";
                 "/workflow/runs/{id}/delegations/{delegation_id}/result",
                 "Write",
             ),
+            // Parcels: exporting signed knowledge off-site is governance →
+            // Admin; importing lands rows as pending proposals (a Write —
+            // nothing reaches knowledge without human approval); the ledger
+            // view is a Read.
+            ("/parcels", "Read"),
+            ("/parcels/export", "Admin"),
+            ("/parcels/import", "Write"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13309,6 +13327,7 @@ Final paragraph after the rule.";
                     "crew" => include_str!("handlers/crew.rs"),
                     "channel" => include_str!("handlers/channel.rs"),
                     "mesh" => include_str!("handlers/mesh.rs"),
+                    "parcels" => include_str!("handlers/parcels.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),

@@ -1914,7 +1914,31 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.30 "Parcels": sites share knowledge, governed. ─────────────
+    // One row per parcel crossing a site boundary: `direction` is `out`
+    // (signed export) or `in` (imported as pending proposals — never direct
+    // knowledge writes). `signer` is the exporter's `did:key`; `reviewer` the
+    // importing operator; the audit chain links every crossing in-tx.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS parcel_ledger(
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain      TEXT NOT NULL,
+            direction   TEXT NOT NULL,
+            parcel_hash TEXT NOT NULL,
+            signer      TEXT NOT NULL,
+            row_count   INTEGER NOT NULL DEFAULT 0,
+            reviewer    TEXT NOT NULL DEFAULT '',
+            created_at  INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_parcel_ledger_domain ON parcel_ledger(domain, id);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.30 "Parcels": parcel_ledger table → 1.28.30.
     // v1.28.29 "Mesh": agent_cards + delegations tables → 1.28.29.
     // v1.28.28 "Channel": case_notes table → 1.28.28.
     // v1.28.27 "Relay": handover_offers table → 1.28.27.
@@ -1932,8 +1956,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.29')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.29';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.30')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.30';",
         [],
     )?;
 

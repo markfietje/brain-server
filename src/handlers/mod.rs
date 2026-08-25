@@ -36,6 +36,7 @@ pub mod ingest;
 pub mod kcs;
 pub mod mesh;
 pub mod observe;
+pub mod parcels;
 pub mod procedure;
 pub mod profiles;
 pub mod recall;

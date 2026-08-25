@@ -4929,6 +4929,135 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
+  /parcels/export:
+    post:
+      summary: Build + sign a knowledge parcel for a domain's approved rows (Admin on domain)
+      description: >
+        v1.28.30 "Parcels" — sites share knowledge, governed. The bundle carries
+        only promoted (non-quarantined) knowledge with provenance + residency
+        stamps copied read-only, signed with the UMP operator key over the exact
+        manifest bytes. No key refuses (409 `operator_key_missing`); an
+        over-cap selection refuses (`400 parcel_too_large`). The export crossing
+        is ledgered + audited in the same transaction.
+      operationId: postParcelsExport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string }
+                since:
+                  type: integer
+                  nullable: true
+                  description: Export only rows created after this cursor.
+      responses:
+        "200":
+          description: The signed parcel bundle.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parcel:
+                    type: object
+                    properties:
+                      manifest: { type: object }
+                      signature: { type: string }
+                      signed_by: { type: string }
+                  parcel_hash: { type: string }
+                  source_domain: { type: string }
+                  region: { type: string, nullable: true }
+                  row_count: { type: integer }
+        "400": { description: input_invalid | parcel_too_large }
+        "401": { description: Not authenticated }
+        "403": { description: Admin on domain required }
+        "409": { description: operator_key_missing }
+  /parcels/import:
+    post:
+      summary: Import a signed parcel as pending proposals — never direct writes (Write on domain)
+      description: >
+        v1.28.30 "Parcels". The signature is verified BEFORE any write; an
+        unsigned or tampered parcel refuses (`400 parcel_unsigned` /
+        `parcel_tampered`), and `expected_signer` (recommended) refuses a
+        publisher mismatch. Surviving rows land as PENDING proposals in the
+        target domain (HITL), deduplicated by content hash against knowledge
+        and pending proposals; injection-screened rows are refused and counted.
+        Ledger + audit ride the same transaction.
+      operationId: postParcelsImport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, parcel]
+              properties:
+                domain: { type: string }
+                expected_signer:
+                  type: string
+                  nullable: true
+                  description: Out-of-band expected signer did:key.
+                parcel:
+                  type: object
+                  required: [manifest, signature, signed_by]
+                  properties:
+                    manifest: { type: object }
+                    signature: { type: string }
+                    signed_by: { type: string }
+      responses:
+        "200":
+          description: Import outcome — proposals created, duplicates, screened-out counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ledger_id: { type: integer }
+                  parcel_hash: { type: string }
+                  proposals_created: { type: integer }
+                  duplicates: { type: integer }
+                  screened_out: { type: integer }
+                  status: { type: string }
+        "400": { description: input_invalid | parcel_unsigned | parcel_tampered | signer_mismatch | parcel_too_large }
+        "401": { description: Not authenticated }
+        "403": { description: Write on domain required }
+  /parcels:
+    get:
+      summary: The parcel ledger for a domain — every signed crossing (Read)
+      description: >
+        v1.28.30 "Parcels" — in/out crossings with hash, signer did, row count,
+        and reviewer, chronological and bounded (limit <= 200).
+      operationId: getParcelsLedger
+      parameters:
+        - { name: domain, in: query, schema: { type: string }, required: false }
+        - { name: limit, in: query, schema: { type: integer }, required: false }
+        - { name: offset, in: query, schema: { type: integer }, required: false }
+      responses:
+        "200":
+          description: The bounded ledger view.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  parcels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        direction: { type: string, enum: [in, out] }
+                        parcel_hash: { type: string }
+                        signer: { type: string }
+                        row_count: { type: integer }
+                        reviewer: { type: string }
+                        created_at: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Read on domain required }
   /workflow/runs/{id}/delegations/{delegation_id}/result:
     post:
       summary: Submit a delegation's result — delegatee-only, exactly once (Write on domain)

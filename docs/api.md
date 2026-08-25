@@ -132,6 +132,29 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 
 ---
 
+## Knowledge parcels (v1.28.30)
+
+Signed, human-gated site-to-site knowledge — deliberately slower than live
+federation (a v3.x concern): every crossing of a site boundary is a signed,
+reviewed act.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/parcels/export` | Build + sign a parcel of a domain's approved knowledge (Admin). Only promoted (non-quarantined) rows leave; residency stamps are copied read-only; signed with the UMP operator key; the export crossing is ledgered + audited in-tx. `400 parcel_too_large` over the 500-row cap; `409 operator_key_missing` without a key |
+| POST | `/parcels/import` | Verify-then-import: signature checked BEFORE any write (`400 parcel_unsigned` / `parcel_tampered`; optional `expected_signer` refuses publisher mismatch). Rows land as PENDING proposals in the target domain — never direct knowledge writes — deduplicated by content hash; injection-screened rows refused and counted. Ledger + audit in-tx |
+| GET | `/parcels` | The parcel ledger: direction (in/out), hash, signer did, row count, reviewer — bounded (`limit` ≤ 200) |
+
+CLI: `brain parcel export --domain <d> [--since <ts>] --out <file>` ·
+`brain parcel import --file <file> --domain <d> [--expected-signer <did>]` ·
+`brain parcel ledger [--domain <d>]`.
+
+Honest ceilings: proposals are global until approval (no per-domain review
+queue yet — planned v1.28.53 "Triage"); parcels sign with the UMP operator
+key, not minisign; no encryption-at-rest on the bundle yet; gold-set packs do
+not ride the envelope.
+
+---
+
 ## UMP (Universal Memory Protocol)
 
 | Method | Path | Purpose |

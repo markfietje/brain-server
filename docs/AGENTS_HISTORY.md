@@ -8,6 +8,29 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.29 "Mesh" shipped 2026-08-25** — a server-only
+> release (schema 1.28.28 → **1.28.29**, additive `agent_cards` +
+> `delegations`; client + plugin unchanged) — agents become named
+> colleagues: A2A-shaped **Agent Cards** signed with the UMP operator key at
+> provisioning (`POST /ops/agents/cards`, Admin) and RE-VERIFIED at every
+> use point (reads fail the whole list closed on one tampered row);
+> agent→agent **delegation** on a run's lineage (`POST/GET
+> /workflow/runs/{id}/delegations{,/{id}/result}`) — the target's card is
+> verified BEFORE any write (`400 agent_unknown` / `card_tampered`), task/
+> result content screened by `channel::screen_content` and stored in-table
+> while lineage payloads carry ids+actors only; results are delegatee-only,
+> exactly-once CAS; a pure **working-set arbiter**
+> (`mesh::working_set_domain`) pins the per-agent scratch-domain vocabulary.
+> Wired: router + openapi + route-coverage + route-authz (+ mesh source
+> mapping) + docs/api.md in the same change. Tests: bin 883/6 ignored (+4),
+> lib 194/1; clippy `-D warnings` + fmt clean; lipstyk diff-strict clean;
+> live smoke on a DB COPY green (doctor clean, `/audit/verify` ok). Honest
+> ceilings: delegation results ride the lineage like steering (no auto-
+> ingest into evidence/shared knowledge — promotion stays HITL); working-set
+> isolation pins vocabulary only (no read-side filter yet); key rotation
+> invalidates cards until re-provisioned; no client surface. See
+> `CHANGELOG.md` §[1.28.29].
+
 > **Version note:** **v1.28.27 "Relay" shipped 2026-08-25** — a
 > **server-only** release (server `Cargo.toml`/lock 1.28.26 →
 > **1.28.27**; schema 1.28.26 → **1.28.27** — additive `handover_offers`

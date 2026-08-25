@@ -343,6 +343,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_kb,
         usage: "brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>]\n                 (the public KB is a static build artifact; sign the tarball with\n                  scripts/release-sign.sh before hosting)",
     },
+    Subcommand {
+        name: "parcel",
+        json: false,
+        run: cmd_parcel,
+        usage: "brain parcel export --domain <d> [--since <ts>] --out <file>\n       brain parcel import --file <file> --domain <d> [--expected-signer <did>]\n       brain parcel ledger [--domain <d>]",
+    },
 ];
 
 fn main() {
@@ -543,7 +549,9 @@ const VALUE_FLAGS: &[&str] = &[
     "dir",
     "domain",
     "exclude",
+    "expected-signer",
     "features",
+    "file",
     "floor",
     "format",
     "install-id",
@@ -4816,5 +4824,115 @@ fn cmd_kb(args: &[String]) -> Result<(), String> {
         brain_server::kb::MANIFEST_NAME
     );
     println!("sign before hosting: scripts/release-sign.sh <artifact.tar.gz>");
+    Ok(())
+}
+
+/// `brain parcel export|import|ledger` — the operator surface for signed
+/// knowledge parcels. Talks to the running server (the same governed paths
+/// as `POST /parcels/export`, `POST /parcels/import`, `GET /parcels`), so
+/// authz, screening, dedup, and the ledger stay server-side law.
+fn cmd_parcel(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()) {
+        Some("export") => cmd_parcel_export(&args[1..]),
+        Some("import") => cmd_parcel_import(&args[1..]),
+        Some("ledger") => cmd_parcel_ledger(&args[1..]),
+        _ => Err(
+            "usage: brain parcel export --domain <d> [--since <ts>] --out <file>\n       brain parcel import --file <file> --domain <d> [--expected-signer <did>]\n       brain parcel ledger [--domain <d>]"
+                .into(),
+        ),
+    }
+}
+
+fn cmd_parcel_export(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    let domain = flags
+        .get("domain")
+        .and_then(|o| o.clone())
+        .or_else(|| positionals.first().cloned())
+        .ok_or("--domain is required")?;
+    let out = flags
+        .get("out")
+        .and_then(|o| o.clone())
+        .ok_or("--out is required (parcel file destination)")?;
+    let mut body = serde_json::json!({ "domain": domain });
+    if let Some(since) = flags.get("since").and_then(|o| o.clone()) {
+        let ts: i64 = since
+            .parse()
+            .map_err(|_| "--since must be an epoch timestamp".to_string())?;
+        body["since"] = serde_json::json!(ts);
+    }
+    let resp = post(
+        &base_url(),
+        "/parcels/export",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    std::fs::write(&out, resp.body).map_err(|e| format!("write {out}: {e}"))?;
+    println!("wrote {out}");
+    Ok(())
+}
+
+fn cmd_parcel_import(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args)?;
+    let file = flags
+        .get("file")
+        .and_then(|o| o.clone())
+        .ok_or("--file is required (parcel file from export)")?;
+    let domain = flags
+        .get("domain")
+        .and_then(|o| o.clone())
+        .ok_or("--domain is required (receiving target domain)")?;
+    let raw = std::fs::read_to_string(&file).map_err(|e| format!("read {file}: {e}"))?;
+    let bundle: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("{file} is not a parcel JSON: {e}"))?;
+    let parcel = bundle
+        .get("parcel")
+        .cloned()
+        .ok_or("parcel file missing the 'parcel' object (run brain parcel export)")?;
+    let mut body = serde_json::json!({ "domain": domain, "parcel": parcel });
+    if let Some(signer) = flags.get("expected-signer").and_then(|o| o.clone()) {
+        body["expected_signer"] = serde_json::json!(signer);
+    }
+    let resp = post(
+        &base_url(),
+        "/parcels/import",
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    println!("{}", resp.body);
+    if resp.status != 200 {
+        return Err(format!("server returned status {}", resp.status));
+    }
+    Ok(())
+}
+
+fn cmd_parcel_ledger(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    let domain = flags
+        .get("domain")
+        .and_then(|o| o.clone())
+        .or_else(|| positionals.first().cloned())
+        .unwrap_or_else(|| "global".to_string());
+    let q = vec![("domain".to_string(), url_encode(&domain))];
+    let resp = get(&base_url(), "/parcels", &q, auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    println!("{}", resp.body);
     Ok(())
 }

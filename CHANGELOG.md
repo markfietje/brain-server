@@ -19,6 +19,38 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.30] — 2026-08-25 — "Parcels": sites share knowledge, governed
+
+"Large domain brain per site, then site-to-site": Parcels ships the governed answer to islands of knowledge — signed, human-gated **knowledge parcels**, deliberately slower than live federation because every crossing of a site boundary is a reviewed act (federation itself stays v3.x). Export builds a bundle of a domain's *approved* knowledge only (promoted rows; quarantined `flagged` rows and other domains' data never leave) with provenance + residency stamps copied READ-ONLY, signed with the UMP operator key over the exact manifest bytes — no key refuses loudly. Import verifies BEFORE any write (tampered/unsigned refuses with nothing written; an optional out-of-band `expected_signer` check refuses publisher mismatch), then lands every surviving row as a **PENDING proposal** in the target domain — never a direct knowledge write — deduplicated by content fingerprint against knowledge AND still-pending proposals, injection-screened rows refused and counted. A **parcel ledger** (direction in/out, hash, signer did, reviewer) records every crossing chained into the audit trail in the same transaction.
+
+### Release notes
+
+**Improvements**
+- Signed site-to-site knowledge parcels: `POST /parcels/export` (Admin on domain), `POST /parcels/import` (Write; verify-first, import-as-proposals), `GET /parcels` (the bounded ledger view) — openapi.yaml + guard tables updated in the same change.
+- New CLI surface: `brain parcel export --domain <d> [--since <ts>] --out <file>`, `brain parcel import --file <file> --domain <d> [--expected-signer <did>]`, `brain parcel ledger [--domain <d>]` — all through the server's governed paths.
+- Schema 1.28.29 → **1.28.30** (additive `parcel_ledger` table per domain DB).
+
+**Security fixes**
+- Import is fail-closed end to end: signature verification precedes any write; row content hashes are re-bound to actual content so edited content cannot sneak past dedup; write-time injection screening refuses flagged rows before they reach the review queue.
+
+**Bug fixes**
+- None.
+
+### Engineering record
+
+- Pure core `src/workflow/parcels.rs` (`&Connection`, caller's tx): `build_parcel` / `record_export` / `import_parcel` / `list_ledger`; handler adapters in `src/handlers/parcels.rs`. Ledger writes chain via `record_tenant` (SAVEPOINT-nested) inside the caller's transaction. Content screening reuses the two-layer `screen` at import; dedup rides the xxh3-64 content-fingerprint convention and the existing UNIQUE-index law.
+- Tests: bin **883** / 6 ignored (+4 plan-named pins: `parcel_export_contains_only_approved_rows_with_region_stamps`, `import_creates_proposals_never_direct_writes`, `content_hash_dedup_across_parcels`, `parcel_ledger_chains_into_audit`); lib **194** / 1 ignored. fmt + clippy `-D warnings` clean. Schema-contract test extended (`parcel_ledger`); route-coverage + route-authz guard tables extended; live smoke on a DB COPY green.
+- Zero new dependencies (ed25519-dalek, sha2, hex, bs58, xxhash-rust already declared).
+
+### Honest ceilings
+
+- The `proposals` table predates domains: imported rows are GLOBAL pending proposals until approval, distinguishable by their `parcel:{domain}:{signer}` source label only — no per-domain review queue yet. Planned as **v1.28.53 "Triage"** (additive `proposals.domain`/`title`, per-domain scoping, gate-core extraction).
+- Signing uses the UMP Ed25519 operator key (the Mesh convention), NOT minisign — there is no Rust minisign, and shelling out would add an untestable external runtime dependency. Publisher identity at import rests on the optional `expected_signer` check + the ledger record; without it, a self-consistent forged parcel can land as PENDING proposals only (nothing reaches knowledge without human approval).
+- No encryption-at-rest on the parcel bundle yet (backup v3 AES-GCM/Argon2 exists as the seam); no gold-set sync on the envelope (frozen packs stay crate-owned); no client/plugin surface — API + CLI first.
+- The 500-row export cap refuses loudly instead of paging; narrow the `since` cursor.
+
+---
+
 ## [1.28.29] — 2026-08-25 — "Mesh": agents as named colleagues
 
 Within one deployment, "each agent has a brain db, collaborating" means agents get IDENTITY, capability discovery, and delegation — the A2A protocol's shape without its network layer (live federation stays v3.x territory). Mesh ships three governed primitives: **Agent Cards** (the A2A-standard JSON manifest per agent principal, Ed25519-signed with the UMP operator key at provisioning and RE-VERIFIED at every use point — a card whose signature no longer matches refuses loudly), **delegation** (agent→agent work orders as lineage events on a run: the request names the target's VERIFIED card first — an unknown or tampered card refuses with nothing written; results return delegatee-only, exactly once by CAS), and the **working-set arbiter** (a pure mapping from base domain + agent to the agent's own scratch-domain name; promotion into shared domains stays behind the existing HITL proposal gate).

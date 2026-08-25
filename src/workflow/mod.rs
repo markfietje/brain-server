@@ -34,6 +34,7 @@ pub(crate) mod interview;
 pub(crate) mod kcs;
 pub(crate) mod mesh;
 pub(crate) mod outbox;
+pub(crate) mod parcels;
 pub(crate) mod relay;
 pub(crate) mod session;
 pub(crate) mod shifts;
