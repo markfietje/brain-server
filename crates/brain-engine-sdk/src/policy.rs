@@ -145,7 +145,9 @@ impl Worktype {
         match self {
             Worktype::SafetyRecall => Priority::P1,
             Worktype::Account | Worktype::RepairField | Worktype::Complaint => Priority::P2,
-            Worktype::Troubleshoot | Worktype::CareInquiry | Worktype::Return
+            Worktype::Troubleshoot
+            | Worktype::CareInquiry
+            | Worktype::Return
             | Worktype::WarrantyClaim => Priority::P3,
             Worktype::RetentionOutreach => Priority::P4,
         }

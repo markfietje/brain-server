@@ -9,13 +9,13 @@
 /// One lineage event as the gate reads it: the outbox topic plus the
 /// channel it rode (empty for channel-less events).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LineageEvent {
-    pub topic: String,
-    pub channel: String,
+pub(crate) struct LineageEvent {
+    pub(crate) topic: String,
+    pub(crate) channel: String,
 }
 
 impl LineageEvent {
-    pub fn new(topic: &str, channel: &str) -> Self {
+    pub(crate) fn new(topic: &str, channel: &str) -> Self {
         Self {
             topic: topic.to_string(),
             channel: channel.to_string(),
@@ -24,15 +24,15 @@ impl LineageEvent {
 }
 
 /// The topics the close gate recognizes.
-pub const TOPIC_CUSTOMER_CONFIRMATION: &str = "customer/confirmation";
-pub const TOPIC_CLOSE_ATTEMPT: &str = "outreach/close_attempt";
+pub(crate) const TOPIC_CUSTOMER_CONFIRMATION: &str = "customer/confirmation";
+pub(crate) const TOPIC_CLOSE_ATTEMPT: &str = "outreach/close_attempt";
 /// The documented consent-absent exception: this many logged attempts and
 /// no objection lets a case close without confirmation (the peak-end rule's
 /// escape hatch, fully audited).
-pub const CLOSE_ATTEMPT_EXCEPTION_MIN: usize = 3;
+pub(crate) const CLOSE_ATTEMPT_EXCEPTION_MIN: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CloseDecision {
+pub(crate) enum CloseDecision {
     /// A confirmation event exists on the lineage.
     Confirmed,
     /// No confirmation, but the consent-absent exception is documented.
@@ -44,7 +44,7 @@ pub enum CloseDecision {
 /// The confirm-gate: terminal `closed` requires a customer-confirmation
 /// event on the lineage, OR the documented consent-absent exception (at
 /// least [`CLOSE_ATTEMPT_EXCEPTION_MIN`] logged outreach attempts).
-pub fn evaluate_close(events: &[LineageEvent]) -> CloseDecision {
+pub(crate) fn evaluate_close(events: &[LineageEvent]) -> CloseDecision {
     if events
         .iter()
         .any(|e| e.topic == TOPIC_CUSTOMER_CONFIRMATION)
@@ -71,7 +71,7 @@ pub fn evaluate_close(events: &[LineageEvent]) -> CloseDecision {
 ///
 /// Score = repeats×2 + switches×1 + handovers×3 — a repeat costs more than
 /// a switch, an unowned handover costs most.
-pub fn effort_proxy(events: &[LineageEvent]) -> i64 {
+pub(crate) fn effort_proxy(events: &[LineageEvent]) -> i64 {
     use std::collections::BTreeSet;
     let mut subjects_asked = BTreeSet::new();
     let mut repeats = 0i64;

@@ -64,15 +64,15 @@ mod tests {
     #[test]
     fn aftersales_gates_are_a_waterfall() {
         // All legs hold → Pass.
-        assert_eq!(
-            fulfillment_waterfall(true, true, true),
-            GateResult::Pass
-        );
+        assert_eq!(fulfillment_waterfall(true, true, true), GateResult::Pass);
         // Entitlement failure is THE answer even when later gates would
         // fail too — order is the law.
         match fulfillment_waterfall(false, false, false) {
             GateResult::Reject(reason) => {
-                assert!(reason.starts_with("G_ENTITLEMENT"), "first rejection wins: {reason}");
+                assert!(
+                    reason.starts_with("G_ENTITLEMENT"),
+                    "first rejection wins: {reason}"
+                );
             }
             other => panic!("expected a rejection, got {other:?}"),
         }
