@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "brain-server"
-version = "1.28.26"
+version = "1.28.27"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
