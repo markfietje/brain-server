@@ -13,7 +13,7 @@
 
 use super::audit_write;
 use crate::audit::AuditStatus;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Enqueue a payload for a topic. Returns the event id plus `true` if a new
 /// row was created, `(existing_id, false)` when the key already replayed
@@ -82,6 +82,39 @@ pub(crate) fn enqueue_child(
         );
     }
     Ok((n == 1, id))
+}
+
+/// Append a lineage event at the run's CURRENT tip: the child-parent idiom
+/// every governed flow shares (handover offers, case notes). The tip read
+/// and the insert ride the CALLER's transaction, so a `BEGIN IMMEDIATE`
+/// transition can never fork the chain. Same exactly-once discipline as
+/// [`enqueue_child`]; returns the new event's row id.
+pub(crate) fn append_lineage(
+    conn: &Connection,
+    run_id: i64,
+    topic: &str,
+    payload_json: &str,
+    idempotency_key: &str,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    let parent: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(id) FROM outbox WHERE run_id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let (_, id) = enqueue_child(
+        conn,
+        run_id,
+        parent,
+        topic,
+        payload_json,
+        idempotency_key,
+        now,
+    )?;
+    Ok(id)
 }
 
 /// Chain-integrity check beside the audit chain: every non-root `parent_id`

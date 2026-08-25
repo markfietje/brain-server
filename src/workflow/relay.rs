@@ -208,24 +208,8 @@ fn emit_event(
     payload_json: &str,
     now: i64,
 ) -> Result<(), OfferError> {
-    let parent: Option<i64> = conn
-        .query_row(
-            "SELECT MAX(id) FROM outbox WHERE run_id = ?1",
-            params![run_id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
-    outbox::enqueue_child(
-        conn,
-        run_id,
-        parent,
-        TOPIC,
-        payload_json,
-        idempotency_key,
-        now,
-    )
-    .map_err(|e| OfferError::Database(e.to_string()))?;
+    outbox::append_lineage(conn, run_id, TOPIC, payload_json, idempotency_key, now)
+        .map_err(|e| OfferError::Database(e.to_string()))?;
     Ok(())
 }
 

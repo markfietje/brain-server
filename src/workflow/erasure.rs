@@ -39,6 +39,9 @@ pub(crate) struct SweepReport {
     /// Crew rows erased with the subject: presence rows, skills tags, and
     /// shift-roster memberships rewritten to drop the subject.
     pub crew_rows: usize,
+    /// Channel rows erased with the subject: notes and invites authored by
+    /// or addressed to them (exact-principal match, crew posture).
+    pub channel_rows: usize,
 }
 
 /// Sweep every workflow table in this pool for rows carrying `subject`,
@@ -98,6 +101,30 @@ pub(crate) fn sweep_subject(
                 rusqlite::params![run_id],
             )
             .map_err(|e| HandlerError::internal(e.to_string()))?;
+        // Channel + handover + CRM-linkage rows are FK children of the run:
+        // they MUST go before the run row or the delete violates the foreign
+        // key and the whole erasure fails (offers predated the case_notes
+        // sweep; the Bridges linkage predates both — all three families clear
+        // here, before their parent row; the external CRM case itself is out
+        // of reach by design, only this server's link row dies).
+        report.dependent_rows += tx
+            .execute(
+                "DELETE FROM case_notes WHERE run_id = ?1",
+                rusqlite::params![run_id],
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        report.dependent_rows += tx
+            .execute(
+                "DELETE FROM handover_offers WHERE run_id = ?1",
+                rusqlite::params![run_id],
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        report.dependent_rows += tx
+            .execute(
+                "UPDATE crm_cases SET run_id = NULL WHERE run_id = ?1",
+                rusqlite::params![run_id],
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
         report.dependent_rows += tx
             .execute(
                 "DELETE FROM outbox WHERE run_id = ?1",
@@ -125,6 +152,16 @@ pub(crate) fn sweep_subject(
     report.crew_rows += tx
         .execute(
             "DELETE FROM principal_skills WHERE principal = ?1",
+            rusqlite::params![subject],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    // Channel sweep: a note or invite carries the subject's personal data
+    // BOTH as authorship/addressee ids and possibly in content — the exact-
+    // principal sweep covers rows on ANY run (the over-match, erasure-safe
+    // direction; run-level matches above took their dependents already).
+    report.channel_rows += tx
+        .execute(
+            "DELETE FROM case_notes WHERE author = ?1 OR addressed_to = ?1",
             rusqlite::params![subject],
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -365,5 +402,76 @@ mod tests {
             })
             .unwrap();
         assert_eq!(untouched, r#"["bob"]"#);
+    }
+
+    /// dsar_sweep_erases_channel_rows_and_fk_children_of_the_run
+    #[test]
+    fn dsar_sweep_erases_channel_rows_and_fk_children_of_the_run() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // A run with EVERY dependent family: a handover offer, channel notes,
+        // and a Bridges CRM-case link (each references workflow_runs without
+        // a cascade — any one left behind fails the whole erasure).
+        let run = seed_run(&conn, "acme", r#"{"subject":"jane@example.com"}"#);
+        conn.execute(
+            "INSERT INTO handover_offers(domain, run_id, from_principal, to_principal,
+                 state, sla_deadline, created_at)
+             VALUES ('acme', ?1, 'jane', 'bob', 'offered', 9999, 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO case_notes(domain, run_id, author, kind, content, state, created_at)
+             VALUES ('acme', ?1, 'jane', 'note', 'working the queue', 'visible', 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO crm_cases(case_ref, source, org_id, case_id, run_id, status, updated_rev)
+             VALUES ('CR-1', 'github', 'o', 'c-1', ?1, 'open', 'r1')",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        // A note authored by the subject on a DIFFERENT principal's run goes
+        // too (exact-principal arm), but that run itself survives.
+        let other = seed_run(&conn, "acme", r#"{"subject":"bob@example.com"}"#);
+        conn.execute(
+            "INSERT INTO case_notes(domain, run_id, author, kind, content, state, created_at)
+             VALUES ('acme', ?1, 'jane', 'note', 'lenders context', 'visible', 2)",
+            rusqlite::params![other],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(rep.runs_deleted, 1);
+        assert_eq!(
+            rep.channel_rows, 1,
+            "the cross-run authored note; the run-dependent pair counted as dependents"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM case_notes"),
+            0,
+            "every channel row carrying the subject is gone"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM workflow_runs WHERE id={other}")
+            ),
+            1,
+            "bob's run survives"
+        );
+        // The external CRM case outlives its erased run: the LINK unlinks
+        // (nullable by design), the sync row survives.
+        let linked: Option<i64> = conn
+            .query_row(
+                "SELECT run_id FROM crm_cases WHERE case_ref='CR-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, None, "the erased run's linkage is gone");
     }
 }

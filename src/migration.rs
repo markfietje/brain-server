@@ -1842,7 +1842,37 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.28 "Channel": the case gets a room. ────────────────────────
+    // Case-scoped channel messages: one row per note (kind `note`) and per
+    // swarm invite (kind `invite`, addressed_to = the invited principal,
+    // pending → accepted by the SAME accept machinery as Relay, smaller).
+    // Everything is case-scoped — no DMs, no channels without a run; content
+    // is screened + bounded at write, retained per domain policy (read-time
+    // filter), and swept by DSAR with the run. The outbox rows on the
+    // `case/note` topic are the lineage events + the SSE ping.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS case_notes(
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain         TEXT NOT NULL,
+            run_id         INTEGER NOT NULL REFERENCES workflow_runs(id),
+            author         TEXT NOT NULL,
+            kind           TEXT NOT NULL DEFAULT 'note',
+            content        TEXT NOT NULL,
+            addressed_to   TEXT,
+            parent_note_id INTEGER,
+            state          TEXT NOT NULL DEFAULT 'visible',
+            decided_at     INTEGER,
+            created_at     INTEGER NOT NULL
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_notes_run ON case_notes(run_id, id);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.28 "Channel": case_notes table → 1.28.28.
     // v1.28.27 "Relay": handover_offers table → 1.28.27.
     // v1.28.26 "Crew": presence + principal_skills + crew_config tables → 1.28.26.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
@@ -1858,8 +1888,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.27')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.27';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.28')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.28';",
         [],
     )?;
 

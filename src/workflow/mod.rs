@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod calibration;
+pub(crate) mod channel;
 pub(crate) mod crew;
 pub(crate) mod driver;
 pub(crate) mod erasure;
