@@ -142,3 +142,7 @@ a:focus-visible, button:focus-visible {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* mermaid diagrams (client-rendered from fenced ```mermaid blocks) */
+.mermaid { display: flex; justify-content: center; margin: 1rem 0; }
+.mermaid svg { max-width: 100%; height: auto; }

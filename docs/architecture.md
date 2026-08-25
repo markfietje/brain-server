@@ -25,6 +25,117 @@ an on-disk SQLite database.
 
 ---
 
+## The governed agentic loop
+
+The customer journey, the AI's role, and the human's role in one view. The
+engine **cranks** through a bounded, checkpointed loop; when it runs out of
+evidence it stops and asks one precise, digest-bound question — it never
+guesses, and it never writes memory without a human approval.
+
+```mermaid
+flowchart TD
+    subgraph CUST["CUSTOMER JOURNEY"]
+        C1["Customer has a problem"] --> C2["Opens ticket<br/>CRM · WhatsApp · portal"]
+        C10["Resolved fast —<br/>or self-served instantly"] --> C11["Happier · no repeat contact"]
+    end
+
+    subgraph EDGE["GOVERNED EDGES — bridge processes holding zero brain tokens"]
+        E1["CRM connector<br/>Zendesk · Salesforce · Genesys"]
+        E2["Channel bridge<br/>WhatsApp · Slack · Teams"]
+    end
+
+    C2 --> E1
+    C2 -.-> E2
+
+    subgraph KERNEL["BRAIN-SERVER KERNEL (loopback · audited)"]
+        direction TB
+        I1["Case opens ONE governed run<br/>POST /workflow/runs"]
+        subgraph LOOP["THE AGENTIC LOOP (bounded crank · checkpointed)"]
+            direction TB
+            L1["1 ASSEMBLE CONTEXT<br/>recall: vector + FTS + graph<br/>provenance-labeled · fenced"]
+            L2["2 REASON AND ACT<br/>investigate · record findings<br/>evidence · confidence"]
+            L3["3 CHECKPOINT<br/>durable state · resumable"]
+            L4{"4 ENOUGH EVIDENCE<br/>TO DECIDE?"}
+            L5["5 ASK THE HUMAN<br/>pending_question, digest-bound<br/>engine PAUSES — never guesses"]
+            L6["6 RESUME AT CHECKPOINT<br/>answer verified against digest"]
+            L1 --> L2 --> L3 --> L4
+            L4 -- "no" --> L5
+            L6 --> L1
+            L4 -- "yes" --> L7
+        end
+        L7["7 PROPOSE — never write<br/>findings · draft answer · KCS article"]
+        G1["HITL WRITE GATE<br/>human approves by digest<br/>quarantine- and legal-hold-aware"]
+        K1["KNOWLEDGE PUBLISHED<br/>KCS article → static KB"]
+        A1["EVERY STEP AUDITED<br/>hash-chained · tamper-evident · DSAR-erasable"]
+        I1 --> LOOP
+        LOOP --> L7 --> G1
+        G1 -- "approved" --> K1
+        G1 -.-> A1
+        LOOP -.-> A1
+    end
+
+    subgraph HUMAN["HUMAN AGENT — owns judgment, not drudgery"]
+        H1["Console · Slack · Teams<br/>review queue and case rooms"]
+        H2["Answers the judgment call<br/>digest-bound approve / reject / edit"]
+        H3["Talks inside the case room<br/>notes · skill invites"]
+        H4["Shift handover<br/>I-PASS packet · one click"]
+    end
+
+    E1 --> I1
+    E2 --> I1
+    L5 -- "question surfaces where the agent already works" --> H1
+    H1 --> H2
+    H2 -- "POST /workflow/runs/id/answer" --> L6
+    H3 --> LOOP
+    H4 --> LOOP
+    G1 --> H2
+
+    K1 -- "serves the next customer" --> R1["RECALL WITH PROVENANCE<br/>approved knowledge only"]
+    R1 --> C10
+    K1 -.->|deflection measured on the scoreboard| C11
+```
+
+### Inside one crank cycle
+
+```mermaid
+flowchart LR
+    S(["run open · SLA envelope stamped"]) --> W["WORK: one bounded step"]
+    W --> R["recall context<br/>(provenance + fences)"]
+    R --> T["think: finding? contradiction?<br/>evidence link? nothing?"]
+    T --> REC["record to lineage<br/>(event · parent-linked)"]
+    REC --> CK{"checkpoint due?"}
+    CK -- "yes" --> CP["checkpoint event<br/>(state snapshot)"]
+    CK -- "no" --> Q
+    CP --> Q{"can decide?"}
+    Q -- "yes" --> DONE["propose resolution<br/>→ HITL gate"]
+    Q -- "no · blocked on judgment" --> ASK["AskHuman:<br/>pending_question + digest"]
+    ASK --> PAUSE["engine STOPS here<br/>SLA clock keeps running"]
+    PAUSE -- "human answers (digest verified)" --> W
+    DONE --> CLOSE(["case closed ·<br/>knowledge captured"])
+```
+
+### Who does what — and why the human wins
+
+| | The AI agent does | The human agent does | Benefit to the human |
+|---|---|---|---|
+| Investigation | Reads every past case, article, and graph relation; assembles evidence with confidence scores | Sees an assembled dossier, not twelve tabs | Minutes of digging become seconds of reading |
+| Judgment calls | Detects it is stuck and asks one precise, digest-bound question | Answers once — in the console or from their phone via Signal/Slack | No guessing games: the machine knows what it does not know |
+| Writing memory | Drafts the KCS article from the case's own recorded evidence | Approves or rejects by digest — nothing enters memory unreviewed | The knowledge base stays clean without being policed |
+| Repetition | Cranks around the clock, resumes at checkpoints, never loses context | Handles exceptions and the customer relationship | Shift handovers take one click; context survives the shift change |
+| Trust | Every action lands on a tamper-evident hash chain; content screened, fenced, provenance-stamped | Can prove to any auditor exactly what the AI did and who approved it | The AI is accountable by construction — safe to delegate to |
+
+**The flywheel in one sentence:** every human-approved resolution becomes
+retrievable knowledge, so the next customer either gets answered faster or
+deflects to self-service entirely — and the scoreboard proves which happened.
+
+> Rendering note: diagrams are fenced <code>```mermaid</code> blocks rendered
+> client-side by the vendored `theme/js/mermaid.min.js` +
+> `theme/js/mermaid-init.js` (no CDN, no CI preprocessor). To export a static
+> PNG/SVG instead:
+> `npx -y @mermaid-js/mermaid-cli@11 -i diagram.mmd -o diagram.svg -b white`.
+
+---
+
 ## Retrieval engine
 
 Recall is **hybrid**: a vector leg and a lexical leg run concurrently on independent

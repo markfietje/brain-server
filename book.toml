@@ -20,7 +20,9 @@ preferred-dark-theme = "coal"
 git-repository-url = "https://github.com/markfietje/brain-server"
 edit-url-template = "https://github.com/markfietje/brain-server/edit/main/{path}"
 additional-css = ["theme/css/brain-server.css"]
-additional-js = []
+# mermaid is vendored (no CDN): the UMD bundle + an init script that renders
+# fenced ```mermaid blocks client-side. No preprocessor binary in CI.
+additional-js = ["theme/js/mermaid.min.js", "theme/js/mermaid-init.js"]
 no-section-label = true
 
 [output.html.print]
