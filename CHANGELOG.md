@@ -25,16 +25,11 @@ been run, it is marked **pending** rather than asserted.
 
 ### Release notes
 
-**Improvements**
-- Signed site-to-site knowledge parcels: `POST /parcels/export` (Admin on domain), `POST /parcels/import` (Write; verify-first, import-as-proposals), `GET /parcels` (the bounded ledger view) — openapi.yaml + guard tables updated in the same change.
-- New CLI surface: `brain parcel export --domain <d> [--since <ts>] --out <file>`, `brain parcel import --file <file> --domain <d> [--expected-signer <did>]`, `brain parcel ledger [--domain <d>]` — all through the server's governed paths.
-- Schema 1.28.29 → **1.28.30** (additive `parcel_ledger` table per domain DB).
+- **Improvements:** Signed site-to-site knowledge parcels: `POST /parcels/export` (Admin on domain), `POST /parcels/import` (Write; verify-first, import-as-proposals), `GET /parcels` (the bounded ledger view) — openapi.yaml + guard tables updated in the same change.
+- **Improvements:** New CLI surface: `brain parcel export --domain <d> [--since <ts>] --out <file>`, `brain parcel import --file <file> --domain <d> [--expected-signer <did>]`, `brain parcel ledger [--domain <d>]` — all through the server's governed paths.
+- **Improvements:** Schema 1.28.29 → **1.28.30** (additive `parcel_ledger` table per domain DB).
 
-**Security fixes**
-- Import is fail-closed end to end: signature verification precedes any write; row content hashes are re-bound to actual content so edited content cannot sneak past dedup; write-time injection screening refuses flagged rows before they reach the review queue.
-
-**Bug fixes**
-- None.
+- **Security fixes:** Import is fail-closed end to end: signature verification precedes any write; row content hashes are re-bound to actual content so edited content cannot sneak past dedup; write-time injection screening refuses flagged rows before they reach the review queue.
 
 ### Engineering record
 
