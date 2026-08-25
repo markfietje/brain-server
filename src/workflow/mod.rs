@@ -32,6 +32,7 @@ pub(crate) mod hostcalls;
 pub(crate) mod interview;
 pub(crate) mod kcs;
 pub(crate) mod outbox;
+pub(crate) mod relay;
 pub(crate) mod session;
 pub(crate) mod shifts;
 pub(crate) mod state;

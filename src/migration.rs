@@ -1815,7 +1815,35 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.27 "Relay": the one-click handover. ───────────────────────
+    // One row per handover offer over a run's I-PASS packet: offer refuses
+    // on an incomplete packet (the missing list is the coaching surface);
+    // accept/decline are lineage events audited in the same tx as the state
+    // move; accept transfers `owner` by CAS and never touches the SLA clock.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS handover_offers(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain          TEXT NOT NULL,
+            run_id          INTEGER NOT NULL REFERENCES workflow_runs(id),
+            from_principal  TEXT NOT NULL,
+            to_principal    TEXT NOT NULL,
+            state           TEXT NOT NULL DEFAULT 'offered',
+            reason          TEXT,
+            overlap_minutes INTEGER NOT NULL DEFAULT 0,
+            sla_deadline    INTEGER NOT NULL,
+            created_at      INTEGER NOT NULL,
+            decided_at      INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_handover_offers_run
+         ON handover_offers(run_id, state);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.27 "Relay": handover_offers table → 1.28.27.
     // v1.28.26 "Crew": presence + principal_skills + crew_config tables → 1.28.26.
     // v1.27.18 "Groundwork": indexes added/dropped → 1.27.18.
     // v1.27.22 "Cascade": relationships.superseded_at + idx_rels_bt → 1.27.22.
@@ -1830,8 +1858,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.26')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.26';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.27')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.27';",
         [],
     )?;
 
