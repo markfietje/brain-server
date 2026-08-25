@@ -534,7 +534,7 @@ mod tests {
         }
     }
 
-    fn card<'a>(principal: &'a str) -> CardDraft<'a> {
+    fn card(principal: &str) -> CardDraft<'_> {
         CardDraft {
             domain: "acme",
             principal,
