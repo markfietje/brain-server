@@ -39,15 +39,31 @@ jobs:
           # Explicit query pack: the default suite plus security-extended for
           # deeper coverage of the auth/audit surfaces.
           queries: security-extended
+          # The cargo-fuzz harness is a separate nightly-only workspace (its
+          # `fuzz_target!` macro cannot expand under the tracer's stable
+          # toolchain), so extracting it only produces macro-failure
+          # diagnostics — the source of every "Warnings detected" banner on an
+          # otherwise-green run. Shipped code is fully covered without it.
+          paths-ignore: |
+            fuzz
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      # Full-build under the tracer. `--all-targets` covers tests + benches +
-      # every bin (including the bench/migrate feature-gated ones); the crates/
-      # workspace is built separately because it is its own workspace node.
-      - uses: github/codeql-action/autobuild@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
+      # Full-build under the tracer — explicitly, because autobuild's bare
+      # `cargo build --all-targets` SKIPS every required-features binary
+      # (bench, migrate-rehearse, the three connectors): their source sits in
+      # the tree but never reaches rustc, and uncompiled-but-extracted source
+      # is exactly what dragged the database below the 50% call-target
+      # quality threshold. Build every shipped surface: root workspace with
+      # all gated features + tests, then each satellite workspace node.
+      - name: Trace root workspace (all targets + gated bins)
+        run: cargo build --all-targets --features bench,migrate,connector-github,connector-crm
+      - name: Trace engine-crates workspace
+        run: cargo build --manifest-path crates/Cargo.toml --all-targets
+      - name: Trace steward-harness workspace
+        run: cargo build --manifest-path tools/steward-harness/Cargo.toml --all-targets
 
       - name: Build engine-crates workspace under the tracer
         run: cargo build --manifest-path crates/Cargo.toml --all-targets
