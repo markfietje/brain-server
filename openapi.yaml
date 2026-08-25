@@ -3658,6 +3658,26 @@ paths:
                           type: string
                         feedback_count:
                           type: integer
+                  return_rate_units:
+                    type: integer
+                    description: Share of runs that are return/RMA runs (ten-thousandths).
+                  warranty_claim_rate_units:
+                    type: integer
+                    description: Share of runs that are warranty-claim runs (ten-thousandths).
+                  ftfr_units:
+                    type: integer
+                    description: >-
+                      First-time-fix rate over the repair-field cohort — the FCR
+                      repeat-window method applied to first-visit resolution.
+                  refund_cycle_time_median_secs:
+                    type: integer
+                    description: Median seconds to terminal resolution over resolved return/warranty runs.
+                  returnless_share_units:
+                    type: integer
+                    description: Share of return runs disposed returnless-refund (ten-thousandths).
+                  aftersales_fraud_flag_rate_units:
+                    type: integer
+                    description: Share of return runs flagged by deterministic fraud signals (ten-thousandths).
         "401":
           description: Not authenticated
         "403":

@@ -8,6 +8,7 @@
 // fixtures); the production-code denies stay absolute.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod disposition;
 pub mod evidence;
 pub mod gates;
 

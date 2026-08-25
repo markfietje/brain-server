@@ -19,6 +19,76 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.33] — 2026-08-26 — "Returns": aftersales objects with the same evidence law
+
+Returns/RMA/repair/recall get their decision machinery on the Frontdesk
+substrate: a deterministic disposition ranker whose candidates always cite
+their legal basis, GPSR recall mode over the entitlement registry's
+serial/batch spine (a blast PROPOSAL — never an autonomous send), and the
+aftersales KPI set on the scoreboard with the metrics dictionary extended to
+match. Financial execution still never happens here.
+
+### Release notes
+
+**Improvements**
+- **Deterministic disposition ranking:** every return claim ranks four
+  candidates — replace-first / return-for-inspection / returnless refund /
+  deny — from item value × fraud signals (repeat-return rate per subject
+  hash, serial mismatch against the registry, window abuse). Signals inform,
+  the human disposes: nothing auto-executes, and at the hard-signal cap
+  every candidate escalates.
+- **Every disposition cites its basis:** withdrawal (2011/83 art. 16),
+  warranty replacement (2019/771 art. 13(2)), goodwill policy, inspection
+  clause, or the fraud schedule — distinct legal-anchored paths, the
+  decision trail regulators actually want.
+- **Returnless refunds pair with fraud review:** above the composite fraud
+  threshold the no-inspection path carries mandatory review; a serial
+  mismatch kills its rank entirely (the goods' identity is unproven).
+- **GPSR recall mode:** deterministic traceability query over
+  `memory_kind='entitlement'` rows by product + serial/batch inside the
+  region stamp (malformed registry rows deny loudly); recall campaigns build
+  as blast proposals carrying Safety Gate reference fields
+  (notification id, member state, hazard class, corrective action) per
+  Reg. 2023/988 — human-triggered, DPO-visible.
+- **Aftersales KPIs on the scoreboard:** return rate, warranty claim rate,
+  **FTFR** for repair-field work (FCR's repeat-window method applied to
+  first-visit resolution), refund cycle time median, returnless-refund
+  share, and the fraud-flag rate — formulas defined once in the SDK,
+  mirrored in docs/metrics.md, empty cohorts score 0 honestly.
+
+### Engineering record
+
+- `brain-aftersales-core` gains `disposition.rs` (closed basis table,
+  `FraudSignals.score()` clamped arithmetic,
+  `FRAUD_REVIEW_THRESHOLD_UNITS`, `HARD_ESCALATION_UNITS`): plan pins
+  `disposition_ranking_is_deterministic_and_cites_basis`,
+  `returnless_refund_requires_fraud_review_over_threshold`.
+- SDK gains `pure/aftersales.rs` (`AftersalesKind` maps the workflow kinds;
+  `aftersales_kpis` owns all six formulas): pin
+  `ftfr_uses_repeat_window_method`.
+- `workflow/recall.rs`: `traceability_query` (capped read, region-stamped,
+  fail-closed parse) + `build_recall_campaign` (fail-closed Safety Gate
+  refs, refuses an empty affected set): pins
+  `serial_batch_query_backs_traceability`,
+  `recall_campaign_is_a_blast_proposal_with_safety_gate_refs`. File-backed
+  integration tests.
+- Scoreboard wiring: `GET /workflow/scoreboard` derives the aftersales
+  cohort in the same spawn-blocking read (`kind`, timestamps, terminal
+  status, state flags; FTFR reuses the exact FCR window expression) and
+  emits six new fields; openapi.yaml, docs/metrics.md, and the
+  `scoreboard_fields_have_dictionary_entries` meta-test extended together.
+- `EntitlementRecord` grows an optional `batch` field (additive parse;
+  schema unchanged at 1.28.30).
+- Test deltas: bin **900** / 6 ignored (**+2**), SDK lib **111** (**+1**),
+  aftersales-core lib **3** (**+2**).
+- Honest ceilings: dispositions and recall campaigns ship as service-level
+  builders — no HTTP route or proposal-table write path yet; the fraud
+  signals consume inputs no run writer populates yet
+  (`returnless`/`fraud_flagged` state flags are reserved vocabulary);
+  consent-gated customer notification stays v1.28.35 scope.
+
+---
+
 ## [1.28.32] — 2026-08-26 — "Frontdesk": one intake for every post-sale worktype
 
 Universality is decided at the front door: the intake classifier grows from

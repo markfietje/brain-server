@@ -77,6 +77,12 @@ pub use workflow_state::{Decision, decide};
 
 /// The scoreboard surface (`sdk::scoreboard::build`) — a re-export of the
 /// pure scorer, never a second implementation.
+pub mod aftersales {
+    pub use crate::pure::aftersales::{
+        AftersalesKind, AftersalesKpis, AftersalesRun, aftersales_kpis,
+    };
+}
+
 pub mod scoreboard {
     pub use crate::pure::qa_score::{RunArtifacts, Scoreboard, StepRow, scoreboard as build};
 }

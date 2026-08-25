@@ -392,34 +392,37 @@ pub async fn get_scoreboard(
     super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
     crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
     let pool_cal = pool.clone();
-    let runs: Vec<brain_engine_sdk::scoreboard::RunArtifacts> =
-        tokio::task::spawn_blocking(move || -> Result<_, String> {
-            let conn = pool.get().map_err(|e| format!("{e}"))?;
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000",
-                )
-                .map_err(|e| format!("{e}"))?;
-            let mut rows = Vec::new();
-            for row in stmt
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                })
-                .map_err(|e| format!("{e}"))?
-            {
-                rows.push(row.map_err(|e| format!("{e}"))?);
-            }
-            let audited = audited_run_ids(&conn, rows.iter().map(|(id, _, _)| *id));
-            Ok(derive_artifacts(&rows, &audited))
-        })
-        .await
-        .map_err(|e| HandlerError::internal(format!("{e}")))?
-        .map_err(HandlerError::internal)?;
+    let runs: (
+        Vec<brain_engine_sdk::scoreboard::RunArtifacts>,
+        Vec<brain_engine_sdk::aftersales::AftersalesRun>,
+    ) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        let mut stmt = conn
+            .prepare("SELECT id, status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000")
+            .map_err(|e| format!("{e}"))?;
+        let mut rows = Vec::new();
+        for row in stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| format!("{e}"))?
+        {
+            rows.push(row.map_err(|e| format!("{e}"))?);
+        }
+        let audited = audited_run_ids(&conn, rows.iter().map(|(id, _, _)| *id));
+        let aft = aftersales_cohort(&conn)?;
+        Ok((derive_artifacts(&rows, &audited), aft))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    let (runs, aft_cohort) = runs;
     let sb = brain_engine_sdk::scoreboard::build(&runs);
+    let ak = brain_engine_sdk::aftersales::aftersales_kpis(&aft_cohort);
     // Pair efficiency with correctness, then honor the weekly REPORT cadence:
     // when due, a machine-generated CalibrationRecord lands on the workflow
     // audit chain (best-effort; a missed report is re-due next read).
@@ -499,7 +502,71 @@ pub async fn get_scoreboard(
         "self_service_deflection_units": fb.self_service_deflection_units,
         "kb_feedback_total": fb.total_feedback,
         "kb_hot_topics": hot_topics,
+        // Aftersales KPI set: formulas live once in the SDK
+        // (docs/metrics.md is the normative dictionary). Empty cohorts
+        // score 0 — absence is never dressed up as perfection.
+        "return_rate_units": ak.return_rate_units,
+        "warranty_claim_rate_units": ak.warranty_claim_rate_units,
+        "ftfr_units": ak.ftfr_units,
+        "refund_cycle_time_median_secs": ak.refund_cycle_time_median_secs,
+        "returnless_share_units": ak.returnless_share_units,
+        "aftersales_fraud_flag_rate_units": ak.aftersales_fraud_flag_rate_units,
     })))
+}
+
+/// The aftersales KPI cohort: return / warranty_claim / repair_field runs of
+/// the last 1000, derived from the same columns the scoreboard reads.
+/// `repeat_within_window` uses the FCR window expression verbatim so FTFR
+/// and FCR measure repeats identically; resolution rides terminal status.
+fn aftersales_cohort(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<brain_engine_sdk::aftersales::AftersalesRun>, String> {
+    use brain_engine_sdk::aftersales::{AftersalesKind, AftersalesRun};
+    let mut stmt = conn
+        .prepare(
+            "SELECT kind, status, state_json, created_at, updated_at FROM workflow_runs
+             ORDER BY id DESC LIMIT 1000",
+        )
+        .map_err(|e| format!("{e}"))?;
+    let mut rows = Vec::new();
+    let result = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    });
+    for row in result.map_err(|e| format!("{e}"))?.filter_map(Result::ok) {
+        let Some(kind) = AftersalesKind::from_kind(&row.0) else {
+            continue;
+        };
+        let v: serde_json::Value = serde_json::from_str(&row.2).unwrap_or(serde_json::Value::Null);
+        let repeat_within_window = v
+            .get("repeat_contact")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+            || v.get("prev_contact_age_secs")
+                .and_then(|a| a.as_i64())
+                .map(|age| age >= 0 && age <= crate::config::fcr_window_days() * 86400)
+                .unwrap_or(false);
+        rows.push(AftersalesRun {
+            kind,
+            created_at: row.3,
+            resolved_at: matches!(row.1.as_str(), "completed" | "closed").then_some(row.4),
+            repeat_within_window,
+            returnless: v
+                .get("returnless")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+            fraud_flagged: v
+                .get("fraud_flagged")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false),
+        });
+    }
+    Ok(rows)
 }
 
 /// The body of a monthly human-signed calibration. `human_agreement_kappa_units`
@@ -886,6 +953,11 @@ mod scoreboard_tests {
             "self_service_deflection_units",
             "kb_feedback_total",
             "kb_hot_topics",
+            "return_rate_units",
+            "warranty_claim_rate_units",
+            "ftfr_units",
+            "returnless_share_units",
+            "aftersales_fraud_flag_rate_units",
         ];
         let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
         let doc = std::fs::read_to_string(&doc_path)

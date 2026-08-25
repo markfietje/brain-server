@@ -21,6 +21,10 @@ pub struct EntitlementRecord {
     /// Contract SLA tier label, when a contract exists.
     #[serde(default)]
     pub contract_tier: Option<String>,
+    /// Manufacturing batch, where recorded — the recall side of the GPSR
+    /// traceability spine.
+    #[serde(default)]
+    pub batch: Option<String>,
     /// Residency stamp copied from the source site; empty = unstamped.
     #[serde(default)]
     pub region: String,
