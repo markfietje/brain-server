@@ -181,16 +181,28 @@ jobs:
           merge-multiple: true
 
       - name: Generate release notes from CHANGELOG
-        # The published body is USER-FACING, not the engineering log. Each
-        # CHANGELOG section (v1.21.0+) carries a `### Release notes` block
-        # written for users — Bug fixes / Improvements / Security fixes — and
-        # that block is what gets published. Internal references
-        # (IMPLEMENTATION_PLAN files, USE_CASES.md, agent history) are
-        # stripped before publishing. The block is MANDATORY: a release that
-        # lacks it FAILS this step (no release is created) rather than shipping
-        # a degraded body — forgetting to write the notes is a blocking error,
-        # never a silent fallback. Written outside dist/ so it isn't uploaded
-        # as an asset.
+        # The published body is USER-FACING, not the engineering log. The
+        # contract lives in CHANGELOG.md's preamble: each section carries a
+        # `### Release notes` block written for users and restricted to the
+        # categorized bullets (**Improvements / New / Changed / Bug fixes /
+        # Security fixes**); validation counts and milestone detail live
+        # BELOW that heading (`### Engineering record`) and never publish.
+        #
+        # Body shape follows Keep a Changelog 2.0 + common GitHub practice:
+        #   1. a short prose summary (the section intro),
+        #   2. the categorized bullets,
+        #   3. the Full Changelog compare link.
+        # The release TITLE comes from the section heading
+        # (`## [x.y.z] — DATE — Title`) so releases render human-readable
+        # ("v1.28.28 — Channel: …"), not as bare tag names.
+        #
+        # Enforcement fails LOUDLY rather than degrading silently:
+        #   - missing section or missing `### Release notes` → error;
+        #   - a bullet OUTSIDE the user-facing category set → error naming
+        #     the offending line (it must move below the block);
+        #   - zero bullets → error;
+        #   - primary per-platform binaries absent from dist/ → error (the
+        #     guard against publishing an empty release; see next step).
         run: |
           set -e
           if [ -n "${{ inputs.version }}" ]; then
@@ -199,10 +211,52 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
           fi
           echo "version=${version}" >> "$GITHUB_ENV"
+
+          # 0. The section must exist.
+          if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [${version}]' section."
+            exit 1
+          fi
+
+          # 1. Release title from the heading; fallback = bare tag so the
+          #    `name:` input below always resolves.
+          title=$(awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" {
+              n = split($0, parts, /—/)
+              if (n >= 3) {
+                t = parts[3]
+                gsub(/^[ \t]+|[ \t]+$/, "", t)
+                # Codenames are heading-quoted ("Channel": tagline) — strip
+                # ALL quotes from the rendered title.
+                gsub(/"/, "", t)
+                print t
+              }
+              exit
+            }' CHANGELOG.md)
+          if [ -n "$title" ]; then
+            printf 'RELEASE_TITLE=v%s — %s\n' "$version" "$title" >> "$GITHUB_ENV"
+          else
+            printf 'RELEASE_TITLE=v%s\n' "$version" >> "$GITHUB_ENV"
+          fi
+
           # Internal plan/doc references never belong in the published notes
-          # (IMPLEMENTATION_PLAN_*, IMPLEMENTATION_ROADMAP_*, USE_CASES.md,
-          # agent history).
+          # (IMPLEMENTATION_*, IMPLEMENTATION_ROADMAP_*, USE_CASES.md, agent
+          # history). Defense-in-depth behind the category gate below.
           sanitize() { awk '!/IMPLEMENTATION_|USE_CASES\.md|docs\/AGENTS/ { sub(/[ \t]*See[ \t]*$/, ""); print }'; }
+
+          # 2. The prose summary: everything after the heading until the
+          #    first milestone block (`**M1`) or subsection heading.
+          awk -v ver="$version" '
+            /^## \[/ { insec = ($0 ~ "^## \\[" ver "\\]"); next }
+            !insec { next }
+            /^### / { exit }
+            /^\*\*M[0-9]/ { exit }
+            { print }
+          ' CHANGELOG.md > RELEASE_INTRO.md
+
+          # 3. The `### Release notes` block is MANDATORY: a release without
+          #    it FAILS here (no release is created) rather than shipping a
+          #    degraded body — forgetting the notes is a blocking error.
           if ! awk -v ver="$version" '
                 /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); next }
                 insec && /^### Release notes/ { found=1; exit }
@@ -211,37 +265,54 @@ jobs:
             echo "::error::CHANGELOG.md section '## [$version]' is missing a '### Release notes' block — refusing to publish a release without user-facing notes. Add the block, then re-tag."
             exit 1
           fi
-          # The explicit user-facing block: the section heading + the
-          # `### Release notes` subsection, stopping at the next
-          # section/subsection heading. Skip everything above it (intro
-          # prose, engineering bullets).
+
+          # 4. ONLY categorized bullets leave the block. Validation counts
+          #    and milestone detail placed INSIDE it violate the changelog
+          #    contract — refuse naming the offending lines instead of
+          #    stripping them silently.
           awk -v ver="$version" '
-            /^## \[/ { if (insec) exit; insec = ($0 ~ "^## \\[" ver "\\]"); if (insec) print; next }
+            /^## \[/ { insec = ($0 ~ "^## \\[" ver "\\]"); next }
             !insec { next }
-            /^### Release notes/ { notes=1; print ""; print; next }
-            !notes { next }
-            /^### / { exit }
-            { print }
-          ' CHANGELOG.md | sanitize > RELEASE_BODY.md
-          # Guard against an empty / bullet-free body (e.g. a `### Release
-          # notes` heading with nothing under it): shipping no notes would be
-          # worse than refusing. Only actual bullet lines count as content —
-          # the `## [version]` heading is always present and must not satisfy
-          # the check.
-          if [ "$(grep -c '^- ' RELEASE_BODY.md)" -lt 1 ]; then
+            /^### Release notes/ { notes=1; next }
+            notes && /^### / { exit }
+            notes && /^- / { print }
+          ' CHANGELOG.md > NOTES_BULLETS.raw
+
+          bad=$(grep -Ev '^- \*\*(Improvements|New|Changed|Bug fixes|Security fixes):\*\*' NOTES_BULLETS.raw || true)
+          if [ -n "$bad" ]; then
+            echo "::error::CHANGELOG.md '### Release notes' for $version carries non-user-facing bullets. Move validation counts / engineering detail under '### Engineering record' (below the block). Offending lines:"
+            printf '%s\n' "$bad" | head -5 | sed 's/^/::error::  /'
+            exit 1
+          fi
+
+          if [ "$(grep -c '^- ' NOTES_BULLETS.raw)" -lt 1 ]; then
             echo "::error::CHANGELOG.md '### Release notes' block for $version produced no bullets. Add real notes, then re-tag."
             exit 1
           fi
-          # Previous release = the largest CHANGELOG version numerically below
-          # this one (heading order is not strictly sorted; [Unreleased] must
-          # be skipped).
+
+          # 5. Assemble: summary → bullets → compare link (blank-trimmed).
+          #    Previous release = the largest CHANGELOG version numerically
+          #    below this one (heading order not strictly sorted;
+          #    [Unreleased] skipped by the numeric filter).
           prev=""
           while IFS= read -r v; do
             if [ "$v" = "$version" ]; then break; fi
             prev="$v"
           done < <(sed -nE 's/^## \[([0-9][0-9.]*)\].*/\1/p' CHANGELOG.md | sort -V)
-          printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...v%s\n' \
-            "$GITHUB_REPOSITORY" "$prev" "$version" >> RELEASE_BODY.md
+
+          {
+            cat RELEASE_INTRO.md
+            printf '\n'
+            sanitize < NOTES_BULLETS.raw
+            printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...v%s\n' \
+              "$GITHUB_REPOSITORY" "$prev" "$version"
+          } | awk '
+            { line[NR] = $0 }
+            END {
+              first = 1; while (first <= NR && line[first] == "") first++
+              last = NR; while (last >= 1 && line[last] == "") last--
+              for (i = first; i <= last; i++) print line[i]
+            }' > RELEASE_BODY.md
           echo "notes lines: $(wc -l <RELEASE_BODY.md)"
 
       - name: Platform manifest
@@ -265,10 +336,27 @@ jobs:
           done
           echo "manifest:"; cat dist/PLATFORMS.txt
 
+      - name: Verify required assets
+        # The build jobs are continue-on-error by design (one optional
+        # feature binary failing must not sink a whole release), so THIS is
+        # the release-integrity gate: the four primary brain-server binaries
+        # must be present or publishing is refused — never shipped
+        # half-empty with only source archives.
+        run: |
+          set -e
+          for f in \
+            brain-server-linux-x86_64 \
+            brain-server-linux-aarch64 \
+            brain-server-darwin-arm64 \
+            brain-server-darwin-x86_64; do
+            [ -f "dist/$f" ] || { echo "::error::required asset missing: dist/$f"; exit 1; }
+          done
+
       - name: Create release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: v${{ env.version }}
+          name: ${{ env.RELEASE_TITLE }}
           body_path: RELEASE_BODY.md
           files: dist/*
           fail_on_unmatched_files: false
