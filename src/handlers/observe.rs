@@ -1018,12 +1018,44 @@ pub(crate) fn build_export_bundle(
             rows.push(v);
         }
     }
+    // Channel rows the subject can access under Art 15 — the SAME three
+    // match arms the purge's sweep erases (author / addressee / content),
+    // so what the certificate erases and what the bundle discloses stay
+    // symmetric. Raw text matches the knowledge rows' posture (the bundle
+    // goes to the subject or their DPO, never to a public surface).
+    let mut notes: Vec<serde_json::Value> = Vec::new();
+    let mut note_stmt = tx
+        .prepare(
+            "SELECT id, run_id, kind, author, content, addressed_to, created_at
+             FROM case_notes
+              WHERE author = ?1 OR addressed_to = ?1 OR content LIKE ?2
+              ORDER BY id",
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let q = note_stmt
+        .query_map(rusqlite::params![subject, format!("%{subject}%")], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "run_id": row.get::<_, i64>(1)?,
+                "kind": row.get::<_, String>(2)?,
+                "author": row.get::<_, String>(3)?,
+                "content": row.get::<_, String>(4)?,
+                "addressed_to": row.get::<_, Option<String>>(5)?,
+                "created_at": row.get::<_, i64>(6)?,
+            }))
+        })
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    for v in q.flatten() {
+        notes.push(v);
+    }
+    drop(note_stmt);
     Ok(serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
         // the residency stamp on the DSAR bundle too.
         "region": brain_server::storage_layout::region(),
         "subject": subject,
         "knowledge": rows,
+        "channel_notes": notes,
     })
     .to_string())
 }
@@ -1573,11 +1605,25 @@ mod tests {
 
     /// A fresh connection with the tables the M1 helpers touch: `knowledge`
     /// (owner + export columns), `evidence_links` (derived walk), `tombstones`
-    /// (deletion registry), `dsar_requests` (ledger history).
+    /// (deletion registry), `dsar_requests` (ledger history), and
+    /// `case_notes` (the export builder's channel arm).
     fn helper_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE knowledge (
+            "CREATE TABLE case_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                run_id INTEGER NOT NULL,
+                author TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'note',
+                content TEXT NOT NULL,
+                addressed_to TEXT,
+                parent_note_id INTEGER,
+                state TEXT NOT NULL DEFAULT 'visible',
+                decided_at INTEGER,
+                created_at INTEGER NOT NULL
+             );
+             CREATE TABLE knowledge (
                 id INTEGER PRIMARY KEY,
                 content TEXT,
                 content_hash TEXT,
@@ -1693,13 +1739,28 @@ mod tests {
     /// extracted builder produces the same JSON the live purge path embeds.
     #[test]
     fn dsar_export_bundle_builder_matches_live_shape() {
-        let mut conn = helper_conn();
+        // Full-migration fixture: the bundle now also reads case_notes.
+        crate::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        brain_server::migration::run_migration(&mut conn, 1).unwrap();
         conn.execute_batch(
             "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
                  (1, 'alice root', 'h1', 'alice@example.com'),
                  (2, 'alice derived', 'h2', NULL);
              INSERT INTO evidence_links(kind, from_chunk, to_chunk)
                  VALUES ('derived_from', 1, 2);",
+        )
+        .unwrap();
+        // Channel rows across all three match arms: authored by the subject,
+        // addressed to her, and content-bearing on someone else's note.
+        conn.execute_batch(
+            "INSERT INTO workflow_runs(id, domain, kind, state_json, status, created_at, updated_at)
+             VALUES (7,'acme','interview','{}','active',1,1);
+             INSERT INTO case_notes(domain, run_id, author, kind, content, addressed_to, state, created_at) VALUES
+                 ('acme', 7, 'alice@example.com', 'note', 'my own note', NULL, 'visible', 1),
+                 ('acme', 7, 'bob', 'invite', 'ping', 'alice@example.com', 'pending', 2),
+                 ('acme', 7, 'carol', 'note', 'call alice@example.com back', NULL, 'visible', 3),
+                 ('acme', 7, 'dave', 'note', 'unrelated chatter', NULL, 'visible', 4);",
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
@@ -1714,6 +1775,17 @@ mod tests {
         // Same per-row shape the live handler relies on.
         assert!(k[0].get("content").is_some());
         assert!(k[0].get("memory_kind").is_some());
+        // Art-15 symmetry: the bundle discloses exactly what the purge
+        // erases — author + addressee + content arms, never the unrelated row.
+        let notes = v["channel_notes"].as_array().unwrap();
+        assert_eq!(
+            notes
+                .iter()
+                .map(|n| n["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "authored + addressed-to + content-bearing; unrelated excluded"
+        );
     }
 
     /// a multi-domain DSAR purges the subject in EVERY

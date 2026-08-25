@@ -45,6 +45,21 @@ fn channel_err(e: ChannelError) -> HandlerError {
             ),
             serde_json::json!({ "resolved": n }),
         ),
+        ChannelError::ChannelFull => HandlerError::conflict_with(
+            "channel_full",
+            "this run's channel reached its ceiling — archive or close the case",
+            serde_json::json!({
+                "cap": channel::MAX_NOTES_PER_RUN,
+                "note": "notes and their invites share one per-run budget"
+            }),
+        ),
+        ChannelError::InvalidPrincipal(_) => HandlerError::bad_request(
+            "principal_invalid",
+            format!(
+                "invitee id must be 1..={} visible chars",
+                channel::MAX_PRINCIPAL_LEN
+            ),
+        ),
         ChannelError::NotFound(m) => HandlerError::not_found(m),
         ChannelError::Database(m) => HandlerError::internal(m),
     }

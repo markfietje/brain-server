@@ -156,13 +156,21 @@ pub(crate) fn sweep_subject(
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     // Channel sweep: a note or invite carries the subject's personal data
-    // BOTH as authorship/addressee ids and possibly in content — the exact-
-    // principal sweep covers rows on ANY run (the over-match, erasure-safe
-    // direction; run-level matches above took their dependents already).
+    // BOTH as authorship/addressee ids AND possibly in content — the exact-
+    // principal arms cover rows on ANY run (over-match, erasure-safe
+    // direction), and the content arm matches the proposals-sweep posture
+    // (a `LIKE %subject%` over stored text, not a semantic owner join).
+    // Run-level dependents above took their rows already.
     report.channel_rows += tx
         .execute(
             "DELETE FROM case_notes WHERE author = ?1 OR addressed_to = ?1",
             rusqlite::params![subject],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    report.channel_rows += tx
+        .execute(
+            "DELETE FROM case_notes WHERE content LIKE ?1",
+            rusqlite::params![format!("%{subject}%")],
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     let mut stmt = tx
@@ -433,11 +441,19 @@ mod tests {
         )
         .unwrap();
         // A note authored by the subject on a DIFFERENT principal's run goes
-        // too (exact-principal arm), but that run itself survives.
+        // too (exact-principal arm), but that run itself survives — and so
+        // does a content-bearing note ABOUT the subject authored by someone
+        // else (the proposals-sweep LIKE posture, erasure-safe direction).
         let other = seed_run(&conn, "acme", r#"{"subject":"bob@example.com"}"#);
         conn.execute(
             "INSERT INTO case_notes(domain, run_id, author, kind, content, state, created_at)
              VALUES ('acme', ?1, 'jane', 'note', 'lenders context', 'visible', 2)",
+            rusqlite::params![other],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO case_notes(domain, run_id, author, kind, content, state, created_at)
+             VALUES ('acme', ?1, 'bob', 'note', 'jane@example.com asked for a callback', 'visible', 3)",
             rusqlite::params![other],
         )
         .unwrap();
@@ -447,8 +463,8 @@ mod tests {
         tx.commit().unwrap();
         assert_eq!(rep.runs_deleted, 1);
         assert_eq!(
-            rep.channel_rows, 1,
-            "the cross-run authored note; the run-dependent pair counted as dependents"
+            rep.channel_rows, 2,
+            "the cross-run authored note + the content-bearing note"
         );
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM case_notes"),

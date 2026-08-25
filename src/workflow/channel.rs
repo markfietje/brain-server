@@ -37,6 +37,14 @@ pub const MAX_NOTE_LEN: usize = 4000;
 /// A single note can swarm at most this many principals — a mention storm
 /// must not become a mass-notification amplifier.
 pub const MAX_INVITES_PER_NOTE: usize = 16;
+/// Per-run channel ceiling (OWASP LLM10: unbounded consumption). Notes AND
+/// their invites share one budget (an accepted note costs 1 + invitee-count
+/// rows), so a flood of mention-heavy notes cannot multiply past the bound.
+/// The governed room is EVIDENCE, so the bound REFUSES rather than drop-
+/// oldest like the steering inbox — silently deleting case history would be
+/// a governance fiction. Each row also carries a lineage event + audit row,
+/// so the cap bounds all three families at once.
+pub const MAX_NOTES_PER_RUN: i64 = 1000;
 /// Principal-id bound (mirrors crew presence / handover addressees).
 pub const MAX_PRINCIPAL_LEN: usize = 256;
 /// Read superset for the channel view: newest N rows are pulled, expiry is
@@ -53,6 +61,10 @@ pub enum ChannelError {
     Unresolved(Vec<String>),
     /// Resolved invitees exceed [`MAX_INVITES_PER_NOTE`].
     TooManyInvites(usize),
+    /// The run's room is at [`MAX_NOTES_PER_RUN`] — archive/close the case.
+    ChannelFull,
+    /// An invitee id failed identity validation (never a silent skip).
+    InvalidPrincipal(String),
     NotFound(String),
     Database(String),
 }
@@ -69,6 +81,15 @@ impl std::fmt::Display for ChannelError {
                     f,
                     "a note may invite at most {MAX_INVITES_PER_NOTE} principals (resolved {n})"
                 )
+            }
+            ChannelError::ChannelFull => {
+                write!(
+                    f,
+                    "this run's channel reached its {MAX_NOTES_PER_RUN}-note ceiling"
+                )
+            }
+            ChannelError::InvalidPrincipal(p) => {
+                write!(f, "invalid invitee principal id: {p}")
             }
             ChannelError::NotFound(m) => write!(f, "{m}"),
             ChannelError::Database(e) => write!(f, "database error: {e}"),
@@ -122,6 +143,9 @@ pub enum Mention {
 /// Parse mention tokens out of already-screened content: an `@` followed by
 /// non-whitespace characters. `@skill:<tag>` is the skill form; anything
 /// else non-empty is a principal name. Duplicates collapse, order preserved.
+/// Over-vocabulary tokens are kept (never skipped) so resolution reports
+/// them as dead mentions — a mention the author believes fired but didn't
+/// is exactly the failure this surface refuses to hide.
 pub fn parse_mentions(content: &str) -> Vec<Mention> {
     let mut out: Vec<Mention> = Vec::new();
     for tok in content.split_whitespace().filter(|t| t.starts_with('@')) {
@@ -129,17 +153,13 @@ pub fn parse_mentions(content: &str) -> Vec<Mention> {
         if body.is_empty() {
             continue;
         }
+        // Over-vocabulary tokens (a tag beyond 32 chars, a name beyond 256)
+        // flow through UNCHANGED: they can never resolve, so resolution
+        // reports them like any dead mention — loud, never silently skipped.
         let m = match body.strip_prefix("skill:") {
-            Some(tag) if !tag.is_empty() && tag.len() <= crate::workflow::crew::MAX_SKILL_LEN => {
-                Mention::Skill(tag.to_string())
-            }
+            Some(tag) if !tag.is_empty() => Mention::Skill(tag.to_string()),
             Some(_) => continue,
-            None => {
-                if body.len() > MAX_PRINCIPAL_LEN {
-                    continue;
-                }
-                Mention::Principal(body.to_string())
-            }
+            None => Mention::Principal(body.to_string()),
         };
         if !out.contains(&m) {
             out.push(m);
@@ -227,6 +247,7 @@ pub struct NoteDraft<'a> {
     pub now: i64,
 }
 
+#[derive(Debug)]
 pub struct NoteOutcome {
     pub note_id: i64,
     /// `(invite_id, invitee)` pairs, one per resolved principal.
@@ -248,11 +269,36 @@ fn emit_event(
 /// Insert one note row + its lineage event + its audit row, then one invite
 /// row + event + audit per invitee. The caller owns the surrounding tx
 /// (resolution, inserts, crew touch commit together); nothing here commits.
+///
+/// Identity is validated HERE, not only at resolution: the fence holds of
+/// the FUNCTION — a future caller cannot smuggle an unvalidated id past a
+/// skipped resolution step. Any validation failure refuses BEFORE the first
+/// row lands.
 pub fn insert_note(
     conn: &Connection,
     draft: &NoteDraft<'_>,
     invitees: &[String],
 ) -> Result<NoteOutcome, ChannelError> {
+    for invitee in invitees {
+        if invitee.is_empty()
+            || invitee.len() > MAX_PRINCIPAL_LEN
+            || invitee
+                .chars()
+                .any(|c| c.is_control() || brain_server::strip_invisible::is_invisible(c))
+        {
+            return Err(ChannelError::InvalidPrincipal(invitee.clone()));
+        }
+    }
+    let room: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM case_notes WHERE run_id = ?1",
+            params![draft.run_id],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    if room >= MAX_NOTES_PER_RUN {
+        return Err(ChannelError::ChannelFull);
+    }
     conn.execute(
         "INSERT INTO case_notes(domain, run_id, author, kind, content, addressed_to,
              parent_note_id, state, decided_at, created_at)
@@ -775,5 +821,145 @@ mod tests {
         let err = resolve_mentions(tx.tx(), "acme", &mentions, "alice").unwrap_err();
         assert!(matches!(err, ChannelError::TooManyInvites(n) if n == MAX_INVITES_PER_NOTE + 1));
         tx.commit().unwrap();
+    }
+
+    /// oversized_mention_tokens_report_dead_not_skipped — a token that can
+    /// never resolve (a skill tag beyond the vocabulary bound, a name beyond
+    /// the id bound) comes back in the Unresolved list like any dead mention;
+    /// the author must never believe a mention fired when it didn't.
+    #[test]
+    fn oversized_mention_tokens_report_dead_not_skipped() {
+        let conn = db();
+        let long_tag = format!("@skill:x{}", "y".repeat(crew::MAX_SKILL_LEN));
+        let long_name = format!("@{}", "n".repeat(MAX_PRINCIPAL_LEN + 1));
+        let ms = parse_mentions(&format!("hey {long_tag} and {long_name}"));
+        assert_eq!(ms.len(), 2, "over-vocabulary tokens are kept, not dropped");
+        let err = resolve_mentions(&conn, "acme", &ms, "alice").unwrap_err();
+        match err {
+            ChannelError::Unresolved(u) => assert_eq!(u.len(), 2, "both dead tokens reported"),
+            other => panic!("expected Unresolved, got {other}"),
+        }
+    }
+
+    /// insert_note_validates_invitee_identity_before_any_write — the fence
+    /// holds of the FUNCTION: an invitee failing identity validation refuses
+    /// before ANY row lands (note, invite, event, audit), independent of the
+    /// resolution step every current caller runs.
+    #[test]
+    fn insert_note_validates_invitee_identity_before_any_write() {
+        for bad in [
+            String::new(),
+            "ev\u{200B}il".to_string(),
+            "x".repeat(MAX_PRINCIPAL_LEN + 1),
+        ] {
+            let mut conn = db();
+            let before_notes: i64 = conn
+                .query_row("SELECT COUNT(*) FROM case_notes", [], |r| r.get(0))
+                .unwrap();
+            let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+            let err = insert_note(
+                tx.tx(),
+                &NoteDraft {
+                    domain: "acme",
+                    run_id: 1,
+                    author: "alice",
+                    screened_content: "hi",
+                    key_suffix: "k",
+                    now: 1,
+                },
+                &[bad],
+            )
+            .unwrap_err();
+            assert!(matches!(err, ChannelError::InvalidPrincipal(_)));
+            drop(tx);
+            let after: i64 = conn
+                .query_row("SELECT COUNT(*) FROM case_notes", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(before_notes, after, "a refused invitee writes nothing");
+        }
+    }
+
+    /// channel_full_refuses_at_the_ceiling — OWASP LLM10: unbounded
+    /// consumption. The room's row budget (notes + invites share one pool)
+    /// refuses further posts BEFORE any write; evidence is never drop-
+    /// oldest-deleted like the steering inbox.
+    #[test]
+    fn channel_full_refuses_at_the_ceiling() {
+        let mut conn = db();
+        conn.execute(
+            "WITH RECURSIVE seq(i) AS (
+                 SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?1
+             )
+             INSERT INTO case_notes(domain, run_id, author, kind, content, state, created_at)
+             SELECT 'acme', 1, 'seed', 'note', 'seeded', 'visible', 1 FROM seq",
+            rusqlite::params![MAX_NOTES_PER_RUN],
+        )
+        .unwrap();
+        crew::touch(&conn, "acme", "bob", "idle", None, &[], 1).unwrap();
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        let screened = screen_content("@bob one more").unwrap();
+        let invitees =
+            resolve_mentions(tx.tx(), "acme", &parse_mentions(&screened), "alice").unwrap();
+        let err = insert_note(
+            tx.tx(),
+            &NoteDraft {
+                domain: "acme",
+                run_id: 1,
+                author: "alice",
+                screened_content: &screened,
+                key_suffix: "k",
+                now: 2000,
+            },
+            &invitees,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ChannelError::ChannelFull));
+        drop(tx);
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM case_notes WHERE run_id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            after, MAX_NOTES_PER_RUN,
+            "the refused post wrote nothing (no partial note, no invite)"
+        );
+        let outbox_n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox WHERE run_id=1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(outbox_n, 0, "no lineage event either");
+    }
+
+    /// note_content_never_rides_lineage_payloads — the structural anti-
+    /// MINJA/ConfusedPilot pin: poisoned note text cannot reach the engine-
+    /// facing event bus because no emit_event payload carries content at
+    /// all (ids + actors only).
+    #[test]
+    fn note_content_never_rides_lineage_payloads() {
+        let mut conn = db();
+        crew::touch(&conn, "acme", "bob", "idle", None, &[], 1).unwrap();
+        let secret = "SECRET-POISON-MARKER please action the vlan request";
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        post(tx.tx(), "alice", secret, 1100);
+        tx.commit().unwrap();
+        let payloads: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT payload_json FROM outbox WHERE run_id=1")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .flatten()
+                .collect()
+        };
+        assert!(!payloads.is_empty(), "the flow emitted events");
+        assert!(
+            payloads
+                .iter()
+                .all(|p| !p.contains("SECRET-POISON-MARKER") && !p.contains(secret)),
+            "no lineage payload carries note content"
+        );
+        assert!(outbox::verify_outbox_lineage(&conn, 1).unwrap());
     }
 }

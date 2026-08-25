@@ -4696,6 +4696,11 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
+        "409":
+          description: channel_full — the run's channel reached its per-run row ceiling (notes and their invites share one budget; evidence is refused, never drop-oldest-deleted). details.cap names the bound.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
     get:
       summary: The channel view — chronological notes + invites for one run (Read on domain)
       description: >

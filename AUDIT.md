@@ -149,3 +149,57 @@ operator prompt.
 | F-D1/D2/D3 doc drift | Bedrock (1.28.13) | down payment | THREAT_MODEL ↔ OWASP_AGENTIC cross-link; this register is the single findings view; full truth pass tracked separately |
 | F-W1 shared static token | partial | mitigated | installer provisions a second agent token under review posture; full workload identity stays v3.7 |
 | F-E1/E2 openclaw UI egress, F-M2 host fingerprint, F-M4 requiresToolAuthority | deferred-upstream (openclaw) | deferred | host/UI findings; not fixable in this repo |
+
+---
+
+## 2026-08-25 — v1.28.28 "Channel" third-pass deep hardening audit
+
+Adversarial pass over the case-scoped channel surface (`src/workflow/channel.rs`,
+`src/handlers/channel.rs`, the `case/%` SSE drain, and the Channel DSAR arms),
+performed before release/tag. Method: OWASP Top-10 for LLM Applications v2025
+(LLM01–LLM10) as the review frame + the 2025–26 agent-memory-poisoning
+literature (AgentPoison NeurIPS'24; MINJA arXiv:2503.03704; Memory Poisoning
+Attack & Defense arXiv:2601.05504; ConfusedPilot arXiv:2408.04870; TMA-NM
+non-malleable origin-bound memory authority; SMSR certified defense; MemAudit
+post-hoc attribution). Every disposition below is grep- or test-verified on
+the shipped tree.
+
+### Input-channel threat model (OWASP LLM01 auditor artifact)
+
+| Channel into the system | Defense (one function each) | Verified by |
+|---|---|---|
+| Human note content (POST /notes) | `channel::screen_content`: trim-empty → ≤4000 → prompt-injection blocklist → invisible-strip → markdown-ref strip; stored viewer-independent | `notes_are_screened_and_case_scoped_only` |
+| Mention tokens (@skill:x / @name) | exact-match resolution against server-side tables only; dead OR over-vocabulary tokens refuse loudly with the list — never skipped, never echoed as resolvable | `mention_resolves_skill_to_principals`, `oversized_mention_tokens_report_dead_not_skipped` |
+| Invitee ids at insert | identity validation INSIDE `insert_note` (fence holds of the FUNCTION, not call-site discipline); invalid ids refuse before any row | `insert_note_validates_invitee_identity_before_any_write` |
+| Lineage event payloads (engine-facing bus) | structural content-freedom: no emit payload carries note text — ids + actors only, so poisoned prose cannot ride `/events` into any agent context | `note_content_never_rides_lineage_payloads` |
+| SSE live drain + Last-Event-ID replay | `sanitize_stored` once at drain + per-subscriber run-domain Read gate, fail-closed; admission default-off behind `?kinds=workflow` | pre-existing Witness pins + `channel_notes_drain_to_the_sse_bus` |
+| Channel view reads | read seam on every emitted string + retention hide before page split | handler + `notes_honour_retention_and_dsar_sweep` |
+
+### Findings + dispositions
+
+| # | Finding | OWASP map | Severity | Disposition |
+|---|---|---|---|---|
+| H1 | No per-run cap on channel rows — an authorized writer could flood a run with notes (each costing note + lineage event + audit rows), unbounded storage growth | LLM10 Unbounded Consumption | Medium | **Closed this pass** — `MAX_NOTES_PER_RUN = 1000` shared budget (notes + invites), refused in-tx before any write with `409 channel_full`; REFUSES rather than steering's drop-oldest because case rooms are evidence (`channel_full_refuses_at_the_ceiling`) |
+| H2 | Over-vocabulary mention tokens (>32-char skill tag, >256-char name) were SILENTLY SKIPPED by the parser — the author believes a mention fired when it didn't | LLM01 (detection-control completeness) | Low | **Closed this pass** — over-long tokens flow through and resolve as dead, reported in `details.unresolved` like any dead token (`oversized_mention_tokens_report_dead_not_skipped`) |
+| H3 | `insert_note` trusted invitee ids from the caller; a future caller bypassing resolution could store unvalidated identities (invisible-char collision class, the Relay addressee lesson) | LLM01/LFP class | Low | **Closed this pass** — identity validation inside the core fn, refusal precedes all writes (`insert_note_validates_invitee_identity_before_any_write`) |
+| H4 | DSAR asymmetry: purge erased subject-authored/addressed notes but the Art-15 EXPORT bundle never disclosed them (and content-bearing notes were never swept) | GDPR Art 15/17 symmetry | Medium | **Closed this pass** — sweep gains the content `LIKE %subject%` arm (proposals-sweep posture); export bundle carries `channel_notes[]` selected by the SAME three arms the purge erases, built pre-sweep in-tx (`dsar_export_bundle_builder_matches_live_shape`, extended erasure pin) |
+| H5 | Note content reaching an agent's context would be the AgentPoison/MINJA poison sink | LLM01/LLM04 | Info (structural) | **Verified structurally absent** — notes are workflow-lineage data, NOT knowledge-corpus rows; no retriever indexes them; engines consume steering/intake topics only; lineage payloads carry ids only (H4's pin holds the boundary for Mesh .29) |
+| H6 | Mention spoofing via confusable/homograph unicode | IFC/spoofing | Info | **Verified closed by construction** — resolution is byte-exact against server-side tables; display-side invisible strip covers rendering; write-time screen strips invisibles so stored ids cannot smuggle fence markers |
+| H7 | SQL interpolation in new surfaces | classic inj. | Info | **Verified clean** — zero `format!`-interpolated SQL in channel/handler/alert paths (grep); every predicate parameterized |
+| H8 | Accept-invite does not verify acceptor == addressee | authz | Accepted ceiling | Carried deliberately (Relay delegation posture): tightening strands cross-shift accepts when tokens rotate; Write-on-domain is the trust boundary |
+| H9 | Retention is read-time enforcement; no worker deletes expired notes | LLM10/lifecycle | Accepted ceiling | Consistent with the repo's no-background-worker law; physical deletion rides run-level erasure; documented ceiling unchanged |
+| H10 | Single-sanitize SSE drain posture (no per-subscriber PII redaction on a shared broadcast) | LLM02 | Accepted ceiling | Mitigated structurally: drained payloads carry NO note content (H4 pin); write-time screen is the guarantee; documented since Witness |
+
+### Research-grounded posture notes
+- The literature's consensus defense against memory poisoning is layered:
+  write-time screening (shipped: one blocklist function per channel),
+  provenance/origin binding (shipped: hash-chained audit per mutation,
+  actor+target, tamper-evident chain + head pin), HITL gates for anything
+  decision-shaped (steering stays approve-gated; notes carry no engine
+  authority), and post-hoc causal attribution (shipped: per-note audit target
+  `note:{id}` reconstructs authorship from the chain — the MemAudit goal).
+- TMA-NM's non-malleability ideal maps to the existing content_digest law
+  (ReviewArmour) + audit head pin; no new machinery warranted this pass.
+- SMSR's result ("no provenance-free retrieval-time filter certifies against
+  adaptive injection") is why notes are fenced OUT of retrieval entirely
+  rather than filtered INTO it.
