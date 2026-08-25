@@ -5,32 +5,47 @@ Brain Server is a single Rust binary that couples a **retrieval engine**, an
 versioned HTTP API. Everything runs in one process; the only external dependency is
 an on-disk SQLite database.
 
-```
-                    ┌───────────────────────────────────────────────┐
-                    │              brain-server (one process)        │
-  HTTP clients ───▶ │                                               │
-  (agent plugin,   │   ┌──────────┐   ┌───────────┐   ┌──────────┐  │
-   brain CLI, MCP, │   │  Handlers│──▶│  Recall   │──▶│ SQLite   │  │
-   Dioxus client)  │   │  (Axum)  │   │  Engine   │   │ (WAL)    │  │
-                    │   └────┬─────┘   └─────┬─────┘   │  vec0    │  │
-                    │        │ auth/AuthZ    │         │  FTS5    │  │
-                    │        ▼               ▼         │  KG      │  │
-                    │   ┌──────────┐   ┌───────────┐   └──────────┘  │
-                    │   │ Audit log│   │ Static    │                 │
-                    │   │ (hash    │   │ embeddings │                 │
-                    │   │  chain)  │   │ (model2vec)│                 │
-                    │   └──────────┘   └───────────┘                 │
-                    └───────────────────────────────────────────────┘
+## How memory moves — three nested loops
+
+Troubleshooting here is not one process but **three loops turning at
+different speeds**, converging on what ISO 10002, the KCS Solve loop, ITIL,
+and COPC each describe separately:
+
+```mermaid
+flowchart LR
+    subgraph L1["LOOP 1 · SOLVE (per case — minutes)"]
+        direction LR
+        A1["case opens"] --> A2["agentic crank:<br/>recall · reason · checkpoint"] --> A3["AskHuman when stuck"] --> A4["resolved + evidence"]
+    end
+    subgraph L2["LOOP 2 · EVOLVE (per pattern — days)"]
+        B1["captured article<br/>proposed FROM the case"] --> B2["human approves by digest"] --> B3["published to KB"] --> B4["reuse counted ·<br/>freshness reviewed"]
+    end
+    subgraph L3["LOOP 3 · DEFLECT (per corpus — weeks)"]
+        C1["published knowledge serves<br/>customers AND agents first"] --> C2["fewer repeat contacts"] --> C3["feedback + hot topics<br/>flag the gaps"] --> C1
+    end
+    A4 -- "capture" --> B1
+    B4 --> C1
+    C3 -.->|"gaps become new cases"| A1
 ```
 
----
+Loop 1 never skips its human gate; Loop 2 exists only because Loop 1 left
+evidence worth keeping; Loop 3 is why the knowledge base pays rent. The
+rest of this page zooms into Loop 1.
 
 ## The governed agentic loop
 
-The customer journey, the AI's role, and the human's role in one view. The
-engine **cranks** through a bounded, checkpointed loop; when it runs out of
-evidence it stops and asks one precise, digest-bound question — it never
-guesses, and it never writes memory without a human approval.
+The customer journey, the AI’s role, and the human’s role in one view.
+The engine **cranks** through a bounded, checkpointed loop; when it runs
+out of evidence it stops and asks one precise, digest-bound question —
+it never guesses, and it never writes memory without the configured
+gate in front of it.
+
+> **Write posture, stated precisely:** with `BRAIN_WRITE_POSTURE=review`
+> (recommended for teams; the installer provisions an agent token in this
+> mode) every agent write to memory becomes a digest-bound proposal a human
+> approves. Screened direct writes remain available under the default
+> `open` posture when an operator explicitly chooses them. Either way:
+> screened, provenance-stamped, audit-chained.
 
 ```mermaid
 flowchart TD
@@ -133,6 +148,34 @@ deflects to self-service entirely — and the scoreboard proves which happened.
 > `theme/js/mermaid-init.js` (no CDN, no CI preprocessor). To export a static
 > PNG/SVG instead:
 > `npx -y @mermaid-js/mermaid-cli@11 -i diagram.mmd -o diagram.svg -b white`.
+
+---
+
+
+---
+
+## What’s inside the process
+
+Same process, same SQLite — the loops above are the *control story*,
+not a separate service:
+
+```
+                    ┌───────────────────────────────────────────────┐
+                    │              brain-server (one process)        │
+  HTTP clients ───▶ │                                               │
+  (agent plugin,   │   ┌──────────┐   ┌───────────┐   ┌──────────┐  │
+   brain CLI, MCP, │   │  Handlers│──▶│  Recall   │──▶│ SQLite   │  │
+   Dioxus client)  │   │  (Axum)  │   │  Engine   │   │ (WAL)    │  │
+                    │   └────┬─────┘   └─────┬─────┘   │  vec0    │  │
+                    │        │ auth/AuthZ    │         │  FTS5    │  │
+                    │        ▼               ▼         │  KG      │  │
+                    │   ┌──────────┐   ┌───────────┐   └──────────┘  │
+                    │   │ Audit log│   │ Static    │                 │
+                    │   │ (hash    │   │ embeddings │                 │
+                    │   │  chain)  │   │ (model2vec)│                 │
+                    │   └──────────┘   └───────────┘                 │
+                    └───────────────────────────────────────────────┘
+```
 
 ---
 
