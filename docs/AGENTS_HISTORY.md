@@ -8,6 +8,1360 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.27 "Relay" shipped 2026-08-25** — a
+> **server-only** release (server `Cargo.toml`/lock 1.28.26 →
+> **1.28.27**; schema 1.28.26 → **1.28.27** — additive `handover_offers`
+> table; client + plugin unchanged) — the one-click handover over the I-PASS
+> packet Lineage already builds: `POST /workflow/runs/{id}/handover/offer`
+> refuses an incomplete packet with the MISSING list (five gate predicates
+> in `src/workflow/relay.rs::packet_missing`; the refusal writes nothing),
+> accept CAS-transfers run `owner` to the acceptor inside the SAME
+> WorkflowTx as the offer state move (SLA clock byte-untouched; reply names
+> the resume-at checkpoint), decline REQUIRES a screened reason ≤4000 — all
+> three are `workflow/handover` lineage events audited in their own tx;
+> offers are idempotent by open-state key. `GET /ops/handovers?domain=&now=`
+> ranks active runs by SLA remaining, flagged inside the Watchbill ring's
+> derived overlap window. Wired: router + openapi + route-coverage +
+> route-authz (+ relay source mapping) + docs/api.md in the same change.
+> Tests: bin **864**/6 ignored (+8), lib **194**/1; clippy `-D warnings` +
+> fmt clean; live smoke on a DB COPY green end-to-end (`/audit/verify` ok)
+> plus a hardening smoke (invisible-char addressee 400, accept-on-finished
+> run 409 no-resurrection, empty decline reason 400, corrupt board row
+> skipped + counted). Honest ceilings: packet completeness reads the STORED
+> shape (form, not quality); any Write principal may accept for the
+> addressee; board caps at 500 active runs with per-row state_json reads;
+> the offer's `overlap_minutes` is recorded but not yet enforced against
+> the derived ring window; no client/plugin surface yet. See `CHANGELOG.md`
+> §[1.28.27].
+
+> **Version note:** **v1.28.26 "Crew" shipped 2026-08-25** — a
+> **server-only** release (server `Cargo.toml`/lock 1.28.25 →
+> **1.28.26**; schema 1.28.25 → **1.28.26** — additive `presence` /
+> `principal_skills` / `crew_config` tables; client + plugin unchanged) —
+> colleagues become visible: presence WITHOUT a background worker (every
+> mutating request upserts one row inside its own tx via `crew::touch`;
+> reads TTL-decay active <5min / away <30min / offline), the roster view
+> `GET /ops/crew` joining presence × Watchbill shift sites × role/skills
+> tags, skills changes proposal-gated (`crew_skills_update`; the domain
+> rides INSIDE the payload so approval applies exactly what was proposed;
+> approval CAS + tags + audit in one IMMEDIATE tx), the DPO switch
+> `POST /ops/crew/config` failing open to HIDDEN, and DSAR erasure now
+> reaching presence + skills + shift rosters (lifting the Watchbill roster
+> ceiling). Roster output passes the invisible-strip read seam; activity
+> kinds are closed vocabulary. RAII immediate transactions in both new
+> mutating handlers (context7 doc pass vs rusqlite DropBehavior guidance).
+> Tests: bin **856**/6 ignored (+7), lib **194**/1; clippy `-D warnings` +
+> fmt clean. Honest ceilings: presence bumps on MUTATING acts only
+> (read-only work shows offline); `current_case_ref` is opaque but the
+> roster does not re-authorize per member; DSAR dry-run doesn't count crew
+> rows; legal holds don't freeze people-metadata; approvals audit under
+> `global` tenant while tags land under the proposed domain. See
+> `CHANGELOG.md` §[1.28.26].
+
+> **Version note:** **v1.28.25 "Watchbill" shipped 2026-08-24** — a
+> **server-only** release (server `Cargo.toml`/lock 1.28.24 →
+> **1.28.25**; schema 1.28.23 → **1.28.25** — additive `shifts` table +
+> `(domain, start_epoch)` index; client + plugin unchanged) — follow-the-sun
+> as data: the `shifts` ring (site, tz, window, declared overlap budget,
+> principal-id roster) + the pure read-time core (`src/workflow/shifts.rs`)
+> that derives each boundary's overlap window from its shift pair and answers
+> which site owns the queue at any instant (`GET /ops/shifts?now=`) — the
+> queue re-scopes to the INCOMING site at the START of the derived overlap
+> window while open runs stay byte-identical (`ring_boundary_rescopes_queue_not_cases`).
+> `POST /ops/shifts` is **Admin** (pure operator config), validation + insert +
+> audit ride one `BEGIN IMMEDIATE` tx, double booking refuses unless the later
+> shift starts inside the earlier's final overlap period (anchored at e.end −
+> e.overlap — a mid-shift start is 409, caught by live smoke on a DB copy).
+> Reads capped newest-500 (Bound law); tz ≤64 chars, roster ≤64×256.
+> Tests: bin **849**/6 ignored (+4), lib **194**/1; clippy `-D warnings` +
+> fmt clean; lipstyk diff-strict clean. Honest ceilings: advisory scheduling
+> data only (no enforcement until Relay .27); DSAR sweep does NOT cover shift
+> rosters yet (Crew .26); no DELETE surface / retention for stale shifts;
+> refused inserts write no Denied audit row. See `CHANGELOG.md`
+> §[1.28.25].
+
+> **Version note:** **v1.28.24 "Beacon" shipped 2026-08-24** — a
+> **server-only** release (server `Cargo.toml`/lock 1.28.23 →
+> **1.28.24**; schema unchanged at 1.28.23 — publish rides the
+> pre-scaffolded KCS columns; client + plugin unchanged) — the
+> demand-reduction half of KCS: approved knowledge becomes a **publicly
+> published KB** as a generated static artifact an operator hosts; the server
+> stays loopback, publishing is a human decision with its own verb.
+> **M1:** `brain kb build --domain <d> --out <dir>` emits a deterministic
+> static site (per-slug article pages, index, client-side-only search index,
+> sitemap/robots/404, CSP `default-src 'none'`, superseded-slug redirects via
+> the existing `supersedes` evidence chain) + a SHA-256 `kb_manifest.json`;
+> every field passes the new strict public seam (`kb::sanitize_public` —
+> unconditional PII redact, NO principal argument, no operator bypass);
+> mask primitives moved verbatim to shared lib `pii_mask.rs` so gate +
+> screen + public seam share one definition. **M2:** proposal kind
+> `kcs_publish` (created via `POST /kcs/articles/{id}/publish`; approval
+> requires `approve` + the NEW distinct `publish` capability — existing roles
+> unchanged); in-tx CAS publish/retract + slug uniqueness via the partial
+> unique index + audited `workflow/kcs/publish`; `GET /kcs/articles/{id}/preview`
+> renders the EXACT public page (what you approve is what ships). **M3:**
+> `POST /webhooks/kb-feedback` — ALWAYS Standard-Webhooks HMAC-verified
+> (`BRAIN_KB_FEEDBACK_SECRET_FILE`, 0600 fail-closed) with seen-claim replay
+> dedup → anonymous `kb_feedback` finding rows (no raw IP by construction);
+> scoreboard gains `self_service_deflection_units` + `kb_feedback_total` +
+> `kb_hot_topics`; freshness watcher fires the existing `expiry` kind;
+> hot-topic threshold fires `workflow`. **M4:** `docs/kb-deflection.md` —
+> deflection is INDICATIVE, repeat-contact rate stays primary; no lift
+> claims. Tests: bin **845**/6 ignored (+7), lib **191**/1 (+10), brain 19,
+> mcp 37, eval 4, metrics 8; clippy `-D warnings` + fmt clean. Honest
+> ceilings: signing delegates to `scripts/release-sign.sh`; `revision`
+> renders content_hash (envelope law-version not persisted per-article);
+> deflection/hot-topics are vote-based signals, not CRM repeater clustering;
+> CDN caches after retract are operator-side; no client GUI publish node yet
+> (the preview endpoint is the render contract).
+
+> **Version note:** **v1.27.31 "AuditRepair" shipped 2026-08-21** — a
+> **server-only** security release (server `Cargo.toml`/lock 1.27.30 →
+> **1.27.31**; schema 1.27.30 → **1.27.31** — schema_meta keys only, no
+> tables/columns; client + plugin unchanged) — the **announced audit-chain
+> re-anchor**: the items v1.27.26 "Notarize" deliberately deferred because
+> they change what an audit row MEANS once stored. **M6+M2 (keyed full-row
+> links):** an `hmac256` epoch (per-DB `schema_meta.audit_chain_epoch`; absent
+> = `legacy`, the byte-identical 5-field SHA-256 link) whose links are
+> HMAC-SHA256 over the FULL row — id, ts, kind, actor, target_hash, status,
+> detail_hash, prev_hash — under a 32-byte key that NEVER lives in the DB it
+> protects (`BRAIN_AUDIT_CHAIN_KEY` → `BRAIN_AUDIT_CHAIN_KEY_FILE` → a
+> generated 0600 `audit-chain.key` beside the DB; wide modes refused, the
+> auth-secret posture; init at server + `brain` CLI boot). A reconstructed
+> chain from attacker-chosen content cannot pass verify even when every
+> SHA-256 recomputes; mutating any committed field (incl. renumbered ids)
+> breaks verify. Writes to a keyed chain without its key fail CLOSED (row
+> refused, `/health` counter, verify not-ok) — never an unkeyed downgrade.
+> **M3 (head pin + restore attestation):** `schema_meta.audit_chain_head`
+> pins `(id, hash, epoch)` in the same tx as every audit row
+> (`record_tenant` re-pins per commit; prune re-pins in-tx; the migration
+> stamps the initial legacy pin for existing chains); `verify_chain`
+> compares pin vs recomputed head → truncation/extension of an
+> internally-valid chain is DETECTED; `backup::restore` verifies the restored
+> chain BEFORE certifying (broken chain → refuse, `.bak` preserved) +
+> classifies pre/post pins — a rolled-back head is disclosed at error level
+> and the `restore complete (head=…)` row records where the chain landed.
+> **M4 (multi-db chain sweep):** `/audit/verify` (additive `domains`
+> breakdown + failing domains in the alert payload), `/audit` (rows tagged
+> `domain`, merged newest-first across every registered chain), `/metrics`
+> (`brain_audit_chain_ok` aggregates all domains), `/ump/audit/verify`, and
+> the read-event retention prune all iterate every registered domain — a
+> broken second-domain chain is reported, never absorbed by an ok global
+> pool. **Re-anchor operator step:** `brain-server --re-audit` (offline,
+> instead of serving): verify-before-replay (no laundering), keyed replay,
+> epoch flip + new pin + an `anchor` evidence row per domain on the NEW
+> chain; idempotent; per-domain failures fail the run. Fresh row-less DBs
+> bootstrap straight to `hmac256` when a key resolves (server boot + lazy
+> domain open); existing chains stay legacy until re-anchered (an audit
+> chain is evidence — its format flips only under the documented protocol:
+> snapshot → quiesce → `--re-audit` → verify every domain → snapshot the new
+> baseline). New `AuditKind::Anchor`. Also fixed `--re-embed` exiting 2 in
+> the argv guard. Tests: server bin **717** / 6 ignored (+2), lib **147** /
+> 1 ignored (+10 — full-row commitment, attacker rejection, pin-on-commit,
+> truncation, keyless fail-closed, re-anchor replay/idempotence/refusal,
+> bootstrap, restore rollback classification + refusal); clippy `-D
+> warnings` + fmt clean (`--all-targets --features bench`); live `--re-audit`
+> smoke green (key 0600, epoch + pin stamped, anchor rows chained, tamper
+> refused). Honest ceilings: legacy chains keep 5-field links until the
+> operator re-anchors; pin detection reads at verify time, not write time;
+> `/health`'s chain watcher stays global-only (`/audit/verify` is the
+> multi-domain authority); the key is part of the DR baseline (a restore
+> without it refuses certification); key rotation = re-anchor under the new
+> key. See `IMPLEMENTATION_PLAN_v1.27.31_AuditRepair.md` +
+> `CHANGELOG.md` §[1.27.31].
+
+> **Version note:** **v1.27.29 "Survey" shipped 2026-08-21** — a
+> **server-only** scaffold release (server `Cargo.toml`/lock 1.27.28 →
+> **1.27.29**; client + plugin unchanged) — the `crates/` engine-crate
+> workspace: five intentionally-empty crates (`brain-interview-core`,
+> `brain-consensus-core`, `brain-executor-core`, `brain-troubleshoot-core`,
+> `legal-rules-db`) as their own workspace node, `edition 2024`,
+> `rust-version 1.97`, clippy `-D warnings` clean, zero dependencies; the
+> driver harness stays in `tools/steward-harness/` (1.27.35 — the cores are
+> harness-independent). **No schema, no migration, no endpoints, no server
+> code change.** See `IMPLEMENTATION_PLAN_v1.27.29_Survey.md` +
+> `CHANGELOG.md` §[1.27.29].
+
+> **Version note:** **v1.27.30 "Spine" shipped 2026-08-21** — a
+> **server-only** foundation release (server `Cargo.toml`/lock 1.27.29 →
+> **1.27.30**; schema 1.27.25 → **1.27.30**; client + plugin unchanged) — the
+> governed-workflow substrate for the Steward line: **no engine code, no new
+> endpoints, no wire change, no telemetry.** **M1/M2 (docs):** the architecture
+> contract, the G0 audit (PASSED — adopt the pi_agent_rust fork; execution in
+> 1.27.35), the Restate awakeable mapping, the three SHA-pinned port specs, the
+> rubric pin (written 2026-08-20), and the diagnostics-loop spec — **all in the
+> PRIVATE IP repo `brain-steward-ip`** (moved 2026-08-21; `.gitignore` defends
+> the doc names). The M6 compliance mapping (primitive→workflow + the §A.4
+> customer table) moved private with them (same repo). **M3 (schema):** five
+> additive tables in every domain DB — `workflow_runs` (CAS `state_revision`),
+> `workflow_steps`, `outbox` (`idempotency_key UNIQUE` — exactly-once by key,
+> not retry count), `findings`, `contradictions` — guarded by the extended
+> schema-contract test; new `AuditKind::Workflow`. **M4/M5 (substrate):**
+> `src/workflow/{tx,outbox,state,evidence}.rs` — `WorkflowTx` (RAII `BEGIN
+> IMMEDIATE`), `enqueue`/`deliver` (`UPDATE … RETURNING`), `cas_update`
+> (`Stale`/`Gone` conflict vocabulary), and the pure evidence-reducer (O(n)
+> seen-set dedup, contradiction surfacing, deterministic order; oracle-pinned,
+> not mathematically closed). **Audit-per-write is structural:** every mutating
+> primitive emits its own `AuditKind::Workflow` row via `record_tenant`
+> (SAVEPOINT-nested — transition + audit commit atomically and roll back
+> together; CAS conflicts audit `denied`); pinned by
+> `audit_rolls_back_with_the_transition` +
+> `outbox_enqueue_audits_once_not_on_replay`. **M7:** the engine-crate
+> workspace shipped one release earlier as v1.27.29 "Survey" (extracted from
+> this plan; see `IMPLEMENTATION_PLAN_v1.27.29_Survey.md`).
+> **Toolchain:** built/tested on rustc **1.97.1** stable;
+> server package stays edition 2021 (an edition flip is its own release); ZERO
+> new dependencies — the substrate wires onto existing `rusqlite` + audit chain
+> only. Tests: server bin **715** / 6 ignored (+11), lib **137** / 1, brain 18,
+> mcp 19, bench 8; clippy `-D warnings` + fmt clean on both workspaces; the
+> migration boots green on a copy of the live DB (schema 1.27.30 stamped,
+> `verify_chain` intact). Honest ceilings: no engine code yet (1.27.32–34
+> consume this substrate); the oracle-fixture commits are deferred to the port
+> milestones; G0 is a written decision, not an executed fork. See
+> `IMPLEMENTATION_PLAN_v1.27.30_Spine.md` + `CHANGELOG.md` §[1.27.30].
+
+> **Version note:** **v1.27.27 "Seal" shipped 2026-08-20** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.26 → **1.27.27**;
+> client + plugin unchanged) — the capstone of the 1.27.21→1.27.27 hardening
+> lineage — **no schema, no migration, no new endpoints, no wire change, no
+> telemetry.** **M1:** the fail-closed sweep found the named gates already
+> closed by v1.27.16/21/25; the one genuine residual was
+> `govern.rs::retention_report` silently degrading to code defaults on a
+> pool/profile-store error (compliance evidence certifying a possibly-wrong
+> policy) — now `500 internal` ("no overrides stored" ≠ "overrides
+> unreadable"). New pins: `revocation_lookup_error_denies` (valid JWS over a
+> broken pool → 401, the F-28 class as a store-ERROR not a revoked jti),
+> `role_lookup_empty_degrades_to_no_access` (the Ok-side complement:
+> unresolvable role names → empty permit), `poisoned_chain_watch_reads_as_not_ok`
+> + `poisoned_snapshot_reads_as_not_ok` (real catch_unwind poisoning; the
+> `unwrap_or_default()` reads are load-bearing fail-closed), and the
+> consolidated source-shape pin `poisoned_lock_denies_every_gate`.
+> **M2/M4 verified shipped:** `/ump/forget {"hard":true}` + the
+> ingest-replace/vault sweeps + domain-delete all run `refuse_if_held`
+> (v1.27.21/25), and `purge_chunk_ids` carries the structural backstop so the
+> fence holds of the FUNCTION, not call-site discipline; added the soft-branch
+> pin `ump_forget_soft_flags_but_not_held_chunks`. **M3 (F-61 + S2-44, the
+> code change):** `contains_suspicious_pattern` is now phrase-aware — entries
+> in canonical spaced form matched as contiguous token runs (a spaced entry
+> can never be dead; "you are analyzing" no longer matches "you are an"),
+> jammed forms still matched inside single tokens (whitespace-stripping
+> obfuscation gains nothing), `jailbreak`/`override` kept as stem-tolerant
+> single tokens; the matcher feeds `blocklist_hit`/PRF, so the recall gate was
+> re-run — floors held at baseline. **M5:** the lipstyk de-slop watchdog lands
+> in CI (`lipstyk` job, diff-scoped strict: any diagnostic on changed lines
+> fails; `.lipstyk.toml` disables only the two group-attributed cross-file
+> rules that fire on untouched files; Rust + TS across src/client/plugin) —
+> this release's own code passed it after fixing its three initial findings;
+> absolute-zero across the tree is NOT claimed (~918 documented-class
+> diagnostics remain, per the v1.27.24 honest ceiling). **M6:** the total gate
+> ran green in one pass — fmt, clippy `-D warnings` (default/bench/otel),
+ tests, lipstyk strict-diff, `badges.sh --selfcheck`, recall floors. Tests:
+> server bin **704**/6 ignored (+8), lib **137**/1. See `CHANGELOG.md` §[1.27.27].
+
+> **Version note:** **v1.27.26 "Notarize" shipped 2026-08-20** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.25 → **1.27.26**;
+> client + plugin unchanged) — the audit-integrity follow-up on v1.27.25 —
+> **no schema, no migration, no telemetry.** **M5 (F-23, the headline): the
+> one remaining audit chain-fork window closes.** `record_tenant` previously
+> fell through to an unserialized tip-read + INSERT when `BEGIN IMMEDIATE`/
+> `SAVEPOINT` failed — exactly the read-modify-write race the exclusive start
+> exists to prevent (two writers could read the same tip and insert rows
+> sharing a `prev_hash`, which `verify_chain` then reports forever). Now the
+> write is **dropped, not forked**: the row is skipped (an absent entry reads
+> as a gap in a later verify, never as a forged continuation), `audit_commit_failures`
+> on `/health` is bumped, and an error log fires. Pinned by
+> `begin_immediate_failure_skips_and_warns_not_forks` — a real file-backed
+> two-connection lock conflict (busy_timeout 0 + held write lock): the write
+> is refused, no partial fork row lands, the counter increments, the surviving
+> chain still verifies. **M2/M6 (F-03 full 8-field hash + HMAC keyed chain)
+> are deliberately deferred** to the announced audit-repair milestone
+> (`IMPLEMENTATION_PLAN_v1.27.31_AuditRepair.md`): both change the chain
+> format and require an operator re-anchor — an audit chain is evidence; its
+> format changes only with explicit re-anchor, never silently. This release
+> closes only the fork window that needed no format change. **Plus** the
+> rerank-tier model retune: the opt-in cross-encoder tier (armed on
+> `enterprise`/`desktop`/`quality-local`) prefers
+> **`mixedbread-ai/mxbai-rerank-large-v1`** (DeBERTa-v3-large cross-encoder →
+> `logits[:,0]`, loaded via fastembed's BYO-ONNX user-defined seam from
+> `BRAIN_RERANK_MODEL_DIR`, default `models/mxbai-rerank-large-v1/`) with
+> **`BAAI/bge-reranker-v2-m3`** as the automatic in-enum fallback — same
+> fail-open + boot-warmed + top-50 (`BRAIN_RERANK_TOP_N`) contract; `Qwen3-Reranker-0.6B`/
+> `mxbai-rerank-large-v2` are documented exclusions (causal-LM/ChatML + last-
+> token logit, incompatible with the `logits[:,0]` seam). Model-truth fixes:
+> `minishlab/potion-base-2M` is **English** (not multilingual) → retrieval
+> profile renamed **`compact`** (`PROFILE_COMPACT`; `multilingual` stays as a
+> deprecated alias, no behavior change), `mxbai-rerank-large-v1` → DeBERTa-v3
+> (~435M), `gte-base-en-v1.5` → ~137M. Tests: server bin **696**/6 ignored
+> (+1), lib **137**/1; clippy `-D warnings` + fmt clean. Honest ceilings:
+> the skip-on-failure is read-time enforcement over stored rows — it prevents
+> new forks, it cannot repair a chain that already forked (restore + verify
+> M4/F-22 stays deferred); the fail-open rerank contract is unchanged; full
+> chain hardening (F-03 + HMAC + head pin) is the re-anchor milestone, not
+> this release. See `CHANGELOG.md` §[1.27.26].
+
+> **Version note:** **v1.27.25 "Scoped" shipped 2026-08-19** — a
+> **server + plugin** release (server `Cargo.toml`/lock 1.27.24 → **1.27.25**;
+> plugin 0.4.5 behavior fix, no package bump) closing the pass-3 audit's
+> actionable findings — **no schema, no migration, no telemetry.** **M1 (the
+> headline, S3-01 CRITICAL):** the graph-PPR third recall leg (unreleased
+> default-on from `00a79fe`) now applies the SAME tenant/owner/scope boundary
+> as the vector/FTS legs — `graph_retrieve` takes `&SearchFilters`, composes
+> `k.domain = ?` + the shared `push_gate_filters` set on the chunk fetch, and
+> carries `k.pii` into the hit (was hardcoded `pii:false` → graph hits were
+> structurally unredactable). Pinned by two lib tests with the exact
+> shared-entity cross-domain fixture. **M2:** the `/get/{id}` idiom (label in
+> SQL + row-domain re-auth + `RecordReadGate`) extended to `/verify`,
+> `/ump/memory/{id}` (MCP `ump.get`-reachable), `/procedure/{id}/steps`;
+> `/suggest` gains the v1.14 scope filter + v1.23 role gate (owner-restricted
+> roles no longer get other owners' private rows as suggestions).
+> **M3 (S3-03):** the rate limiter moved OUTSIDE the auth layers (an
+> unauthenticated flood now trips 429 before any token work or audit write —
+> previously 401-before-bucket + a sync Connection::open + audit INSERT per
+> free request, unthrottled DB-write amplification); deny-path audit writes on
+> `spawn_blocking`; source-inspection layer-order pin. **M4:** edge-history
+> endpoint gate Read → **Admin** (four doc surfaces already claimed Admin;
+> code now agrees) + warn on dropped read-audit; `/domains/{name}/export`
+> **Admin in shim mode** (the snapshot IS the whole shared pool there) +
+> escaped `vacuum_into`; `/add` quarantine flag IN-TX (failed flag → rollback,
+> the `/ingest/memory` posture); `XFF` rightmost-untrusted; limiter
+> fail-closed on poison; dead `"developermode"` blocklist entry fixed;
+> audit BEGIN-failure bumps `audit_commit_failures`; boot `VACUUM INTO`s
+> escaped. **Plugin:** `autoRecallGraph:false` explicitly sends `graph:false`
+> (the server default-on had silently re-enabled the leg for every plugin
+> user). **Docs:** openapi `/health`+`/health/db` schemas match the shipped
+> shapes; SECURITY.md egress inventory truthful (three enumerated bounded
+> paths). Tests: server bin **694** / 6 ignored (+5), lib 133 / 1, brain 18,
+> mcp 19, bench 5; clippy `-D warnings` + fmt clean. Honest ceilings: PPR
+> mass still crosses domains via shared entity names in shim (ranking only —
+> every emitted hit is scoped; the S2-41 entity oracle stays the documented
+> ceiling); the audit chain stays unkeyed/5-of-8 (F-03 + S2-16/S2-35 deferred
+> to the audit-repair milestone); S2-28 restore-holds still deferred. See
+> `CHANGELOG.md` §[1.27.25]. Wave 2 (same release): audit prune
+> verify-before-prune + `retention` evidence row (S2-16/S2-35), NULL-prefix
+> verify rule (F-03 half, no hash change), restore re-applies legal holds +
+> discloses resurrections (S2-28), `idx_rels_open_unique` partial unique
+> index + legacy dedup (S3-08, schema → **1.27.25**), /decayed +/quarantine
+> +/stats +/consolidate shim scoping (S2-31/43), domain_invalid no longer
+> leaks the inventory (S2-32), ingest auto-route re-authorizes on the routed
+> target (S2-33), /clients 403 on empty grants (S2-15), DSAR remanence after
+> the pragma (S2-18), chunker unterminated-fence + newline fixes (S2-19/20),
+> evidence self-link dedupe (S2-38), domain delete archives tombstones +
+> evidence_links (S2-21). Tests: bin **696**/6, lib **136**/1. The plugin was
+> tested + rebuilt in `~/Sites/openclaw` (145 vitest + oxlint + tsc green).
+
+> **Version note:** **v1.27.24 "Brushed" shipped 2026-08-18** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.23 → **1.27.24**;
+> client + plugin unchanged) — the dead-code + fail-closed pass from the
+> lipstyk de-slop audit. **No schema, no migration, no wire change, no
+> telemetry.** **M5** removes the `handlers/mod.rs` blanket
+> `#![allow(dead_code)]`/`#![allow(unused_imports)]` and deletes the real dead
+> code it hid (unused imports in auth/recall/ump/govern; the never-used
+> `authorize_read_domain`; the never-read `ProposalRow.created_at`; the UMP
+> recall `ranking_hints` field → `_ranking_hints`, serde-preserved wire key) —
+> clippy `-D warnings` is now the dead-code watchdog. `connector/mod.rs` keeps
+> a **truthful** allow (it is the `brain-connector-gh` binary's library, not
+> server-runtime cruft — deleting would remove a shipped, tested feature
+> binary). **M3** closes the one genuine poisoning-control swallow the sweep
+> surfaced: `breach::row_from` propagates a corrupt `jurisdictions` JSON cell
+> as a `FromSqlConversionFailure` instead of silently deserializing to an empty
+> list (D-1 "never certify silence"), pinned by
+> `row_decode_fails_closed_on_corrupt_jurisdictions`. Tests: server bin **689**
+> / 6 ignored (+1), lib **133** / 1; clippy `-D warnings` clean on default +
+> bench + otel; fmt clean; `connector-github` feature still compiles. Honest
+> ceiling: this delivers the headline M5 + genuine-M3 items and **deliberately
+> does not chase the residual lipstyk heuristic hits** — the bulk are false
+> positives by inspection (`Option<String>`→`""` wire shapes, best-effort
+> cleanup, clones into owned/Arc/spawn_blocking contexts, the feature-gated
+> connector library); a blind sweep to force "zero" would risk behavior changes
+> the hard rule forbids. See `CHANGELOG.md` §[1.27.24].
+
+> **Version note:** **v1.27.23 "Medicate" shipped 2026-08-18** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.22 → **1.27.23**;
+> client + plugin unchanged) closing the three security findings the
+> adversarial pass left open — **no new schema, no new endpoints, no wire
+> change, no telemetry.** **M1 (A-01)** the outbound-egress bound was already
+> shipped in v1.27.21 (5 s connect / 15 s total, `webhook.rs` `egress_client`)
+> — re-verified, not re-built. **M2 (A-02)** public `/health` shrinks to the
+> minimal load-balancer probe shape `{status, version}`; every
+> deployment-fingerprinting field (`model`, `otel.endpoint`, `pool`, `backup`,
+> `webhook`, `hardening`, `compliance.dpo_contact`, `integrity`) moved behind
+> the existing Read gate on `/health/db` — an unauthenticated probe can no
+> longer fingerprint a regulated BPO deployment (intentional surface reduction,
+> same class as v1.20.2 F2; operator monitors must switch to the gated detail).
+> The pure `health_body` builder is reused (no dead code). **M3 (A-03)** the
+> feature-gated neural embedders (`bge-m3` / `gte-base-en-v1.5`) now `warn!` on
+> lock/model failure instead of silently returning an empty vector — the
+> D-1 "never certify silence" invariant; callers already skip on empty (no
+> corrupt zero-vec write existed), so this closes only the missing signal.
+> Tests: server bin **688** / 6 ignored (+2), lib **133** / 1; clippy
+> `-D warnings` + fmt clean; route-authz + openapi guard tables unchanged.
+> Honest ceilings: `/health` shrinking is the intended behavior change; the
+> neural warn path is reachable only under `--features neural-embed`
+> (enterprise/desktop — the default edge static model is infallible); an embed
+> failure still returns empty (caller skips) — now loud, not silent;
+> `compliance.dpo_contact` stays on the Read-gated detail (the privacy notice
+> remains the public subject-contact channel). See `CHANGELOG.md` §[1.27.23].
+
+> **Version note:** **v1.27.22 "Cascade" shipped 2026-08-18** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.21 → **1.27.22**;
+> client + plugin unchanged) — a bug-fix release closing two
+> *documented-but-unimplemented* behaviors in the graph edge layer, making the
+> code true to its own documentation. Reuses the shipped bi-temporal columns +
+> hash-chained audit + quarantine machinery; no new endpoints except the history
+> surface, no new storage, no schema columns/tables, no wire change, no
+> telemetry (schema stamp → **1.27.22** for `relationships.superseded_at` +
+> the `idx_rels_unique`→`idx_rels_bt` swap). **M1 (BUG-1)** the ingest path's
+> write-once `INSERT OR IGNORE` → the new pure lib `src/graph_supersede.rs`
+> `resolve_edge_insert` (`EdgeAction::{SameWindow, Created, Superseded}`):
+> unchanged re-ingest stays an idempotent no-op (history not churned); a changed
+> window retires the old version at `superseded_at` = transaction-time END (old
+> row preserved verbatim), handoff exact (`old.superseded_at == new.created_at`),
+> audit `Ingest` detail `created:<id>` / `superseded:<old_id>->:<new_id>`.
+> **M2 (BUG-2)** traversal meets its own doc: the recursive walk + seed filter
+> edges to *current beliefs* (`superseded_at IS NULL` **AND** no newer live
+> same-triple row via `NOT EXISTS` — a no-op on well-formed/legacy DBs so
+> default recall/traversal is byte-identical; corrects the backdated-supersession
+> double-edge). Superseded edges are hidden everywhere (`/graph/relations`,
+> `entity_relations`, `relations_for`, `ump_ops::relations_for_chunk`,
+> `graph_ppr` adjacency). **M3** new `GET /graph/relationships/{id}/history`
+> (Admin, `AuditKind::GraphRead`) reconstructs the full version lineage of an
+> edge triple — every version, four timestamps + `current` flag, given any one
+> version id (`404 Relationship not found` on miss) — route + route-coverage +
+> route-authz guard tables + openapi + docs/api.md + README. Tests: server bin
+> **686** / 6 ignored, lib **133** / 1 (incl. **5** graph_supersede), brain 18,
+> mcp 19, bench 8; clippy `-D warnings` + fmt clean; `badges.sh --selfcheck`
+> clean. Recall gate held on the new build (the M5 byte-identity pin):
+> `brain eval --floor r5=0.85,r10=0.85,mrr=0.85` over the frozen 37-query
+> 10-doc smoke corpus → r@5 0.919 / r@10 0.919 / mrr 0.905 / ndcg@10 0.909,
+> exit 0 (recorded in `BENCHMARKS.md`). Honest ceilings: edge supersession is
+> deterministic on the temporal interval, not LLM-judged (semantic
+> contradictions stay out of scope); history is the versioned edge rows, not a
+> per-field audit diff; the graph-label read-seam posture is unchanged from
+> v1.27.21; a correctness/doc-truth fix, not a recall-quality claim —
+> LongMemEval parity stays `PENDING`. Rollback is minimal (supersession only
+> *sets* `superseded_at`, never destructively mutates). Verify `brain doctor`
+> post-install. See `IMPLEMENTATION_PLAN_v1.27.22_Cascade.md` +
+> `CHANGELOG.md` §[1.27.22].
+
+> **Version note:** **v1.27.21 "Finish" shipped 2026-08-18** — a
+> **server + client + plugin** release (server + client `Cargo.toml`/locks
+> 1.27.20 → **1.27.21**; plugin **0.4.4 → 0.4.5**) completing the pass-2
+> hardening audit's **S2-** findings + client **N5–N15** + plugin seams — the
+> fail-closed-erasure + fence-forgeability class the audit rates CRITICAL. No
+> new schema, no new columns/tables, no telemetry; the one wire change is the
+> bit-stable **backup v3** writer (`brain backup` now defaults to `v3`).
+> **M1** backup v3: header bound as GCM AAD (S2-13), Argon2id params bounded
+> pre-allocation (S2-14, `kdf_params_out_of_range`); v1/v2 keep read paths.
+> **M2** the fence-forgeability close (S2-02): shared `strip_sentinels` on MCP
+> `tool_result_payload` + `format_response` + the plugin banner, invisible-
+> strip-first. **M3** (S2-03 CRIT, S2-04) the legal-hold fence now guards the two
+> erasure paths that bypassed it — `POST /ump/forget {"hard":true}` (MCP
+> `ump.forget`-reachable) and the ingest-replace/vault sweep — both run
+> `refuse_if_held` in-tx → `409 legal_hold_active` all-or-nothing. **M4** (S2/N1)
+> empty `live_uris` reconcile 400s `live_set_empty` unless `allow_empty: true`
+> (no silent mass retirement). **M5** (F-27) auth fail-closed: `read:<team>/*`
+> wildcard grants only the shared `global` pool; a no-role token passes
+> `require_dpo_role` only when the role store defines no roles at all.
+> **M6** client offline-queue integrity (N5–N8: retry-park at 5, identity-not-
+> history key, salted DSAR digest + per-install salt, purge-owner persisted) +
+> replay drift (N9/N13 char-boundary hash + kept-set drift). **M7** plugin
+> 0.4.5: env-token ladder (`BRAIN_TOKEN_FILE`→`BRAIN_TOKEN`→config, never
+> writes), query-length-only logging, composed-fence sentinel strip. **M9** webhook
+> egress bound (5 s connect / 15 s total). Tests: server lib **128**, main bin
+> **674** / 6 ignored, brain 18, mcp 19, bench 5, eval 2, metrics 8; client **152**;
+> clippy `-D warnings` + fmt clean (both trees); wasm **5.3 MB**; plugin 144 vitest +
+> oxlint + tsc; the three client gate failures found during the pass (`&mut Vec`→
+> slice, slice-clone, and a grep-guard matching its own literal) fixed with new pins.
+> Honest ceilings: v3 AAD is write/read-time (existing v2 `.bak` files stay readable
+> via the no-AAD path, not migrated); the hold fences are read-time enforcement over
+> stored rows; N7's salt is uniqueness, not secrecy; the role-empty gate is governance
+> narrowing; F-09/S2-28 (restore-path audit-chain verify + hold/tombstone reapply)
+> deliberately deferred to the audit-repair milestone. See
+> `IMPLEMENTATION_PLAN_v1.27.21_Finish.md` + `CHANGELOG.md` §[1.27.21].
+
+> **Version note:** **v1.27.20 "Console" shipped 2026-08-17** — a
+> **client + CLI** release (server `Cargo.toml`/lock 1.27.19 → **1.27.20**;
+> client `Cargo.toml`/lock 1.27.19 → **1.27.20**; plugin unchanged at 0.4.4) —
+> the operator-surface bar: no server code, no wire changes, no schema. **M3
+> the i18n truth (F-38):** the five bundles expose one identical key set
+> (parity wall), every render surface sits behind `t()`/`t_fmt()` — pinned by
+> the new `no_raw_strings_in_rsx` source-scan test in `client/src/i18n.rs`
+> (rsx-region tracking + `// i18n-exempt: <reason>` escape; skips test
+> modules, prop values, wire keys, CSS classes, glyph-only strings) — and the
+> review-queue label gains the missing `E` key. **M4 the CLI (F-37):**
+> `--json` envelope mode on every data command (query/explain/get/ingest-dir/
+> suggest/suggest-metrics/retention/snapshot-status/connector-status/status/
+> eval; interactive flows refuse it exit 2); the flag parser learns its
+> vocabulary (`BOOL_FLAGS` never consume the next token — `ingest-dir
+> --dry-run ~/vault` works; unknown flag → exit 2 "unknown flag"; `--` ends
+> flags; `--k abc` → exit 2 instead of silently 5); `ingest-dir` counts
+> failures separately and exits non-zero on every-file-failed
+> (`all_files_failed`); `status` prints `n/a` for `-1` sentinels; help is
+> generated from the one `SUBCOMMANDS` table the dispatcher consumes (the
+> flush-left `brain client add` survivor line + missing `brain token
+> rotate`/`brain ump …` lines fixed; `flags:`/`exit codes:` sections
+> documented); `brain suggest` gains the recall/get strip chain parity.
+> Tests: server main bin **670** / 6 ignored (unchanged), brain CLI bin 12 →
+> **18**, client 140 → **143**; clippy `-D warnings` + fmt clean (both trees);
+> `badges.sh --selfcheck` clean (855 passed weighted); `brain --help` diff
+> line-by-line reviewed — only intended moves. Honest ceilings: `--json`
+> covers the data commands (interactive flows refuse); the flag vocabulary is
+> a fixed list, added flags must land there + in the table (both
+> single-sourced); the scan skips prop values by design (placeholders are
+> keyed, the rule targets labels); modal focus-traps/digest display shipped
+> with their tests in earlier v1.27.x sessions and are re-verified here. See
+> `IMPLEMENTATION_PLAN_v1.27.20_Console.md` + `CHANGELOG.md` §[1.27.20].
+
+> **Version note:** **v1.27.19 "Scrub" shipped 2026-08-16** — a
+> **server + client** release (server `Cargo.toml`/lock 1.27.18 → **1.27.19**;
+> client `Cargo.toml`/lock 1.27.15 → **1.27.19**; plugin unchanged at 0.4.4) —
+> the silent-failure pass: no new endpoints, no wire changes, no schema
+> change, no telemetry. **F-54** `POST /auth/logout` + `POST /auth/revoke`
+> wrote the denylist best-effort and returned 204 regardless — a failed
+> INSERT left the token live for its full shelf life with the operator told it
+> was dead; both now surface the failure as `500 revoke_failed` (success
+> meaningfully means dead). **D-1 (the day's headline): the `let _ =`
+> residue sweep — 24 sites.** The worst: chunk-purge residue deletes
+> (relationships/vec0/evidence/traces) ran `let _ =` inside the purge tx — one
+> failing DELETE silently left partial erasure the purge then certified
+> complete; every residue now propagates and rolls back the whole purge.
+> Same class fixed elsewhere: stale vec0 rows on reindex, chunk stored
+> without its evidence links, webhook seen-writes, retention prunes, refresh
+> failures, orphan PII residues, `secure_delete`/`wal_checkpoint(TRUNCATE)`
+> failures on purge now `warn!` (certified-silence ended). **D-2** the
+> best-effort audit settle failure is never silent: monotonic
+> `audit_commit_failures` on `/health` `hardening` (0 = green, reports-not-
+> retries). **D-8** the prompt-injection blocklist screen runs ONCE at
+> `SearchResult::raw()` construction and rides as an internal
+> `#[serde(skip)] blocklist_hit` flag — both PRF extractors consume the flag
+> instead of re-normalizing content per query (behavior-identical, pinned by
+> `blocklist_flag_one_shot_at_construction_and_consumed` +
+> `prf_skips_injection_flagged_content` re-routed through `raw()`). **D-7**
+> client outcomes announce: Ops gate-strip decide/reject status, Security
+> quarantine release/delete `aria-live` lines, Data decayed/tombstones load
+> errors (all were `let _ =`/`if let Ok`). **D-6** the singleton UMP path's
+> `.next().unwrap()` → `pop()` + `?` (last write-path panic gone). **D-5**
+> dead "reserved for v1.6" trace-prefix vocabulary removed (v1.6 closed
+> without consuming it). Tests: server bin **670** / 6 ignored, lib **126** /
+> 1, brain 12, mcp 17, bench 8, client **132**; clippy `-D warnings` + fmt
+> clean (both trees); `badges.sh --selfcheck` clean. Honest ceilings:
+> `audit_commit_failures` reports, it does not retry; the blocklist flag is a
+> construction snapshot (content is immutable post-construction by design);
+> client status lines are announcements, not an action log (v2.x); D-1 warns
+> where the sweep judged propagation too invasive (`warn!` with context),
+> never certifies silence. See `CHANGELOG.md` §[1.27.19].
+
+> **Version note:** **v1.27.18 "Groundwork" shipped 2026-08-16** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.17 → **1.27.18**;
+> client + plugin unchanged at 1.27.15 / 0.4.4) — the read-path cost pass. No
+> new endpoints, no wire changes, no telemetry. **E-1 (the day's headline):
+> the FTS-vocabulary PRF weighting shipped in v0.9.1 NEVER ran.** Bundled
+> SQLite 3.53.2's `fts5vocab` 'instance' table exposes `(term, doc, col,
+> offset)` — one row per occurrence — while the v0.9.1 query referenced the
+> pre-3.40 `cnt`/`rowid` columns, so every `prf_extract_terms_fts` call
+> silently errored into the unweighted pure-DF fallback. E-1 rewrites the
+> two legs against the real schema: per-term occurrence counts (`COUNT(*)`
+> = old `SUM(cnt)`) scoped `doc IN (window)`, then a corpus-df round-trip
+> (`COUNT(DISTINCT doc)`) for ONLY the locally-selected terms, capped at
+> `MAX_DF_TERMS` = 4096 leaders (adversarial-vocab bound; escape hatch stays
+> the pure fallback). Output now really is corpus-idf ranked — expansion
+> lists change vs 1.27.17 (eval rows shift; no parity claim made). Pinned by
+> `prf_df_matches_legacy_corpus_scan` (legacy-as-intended oracle),
+> `prf_vocab_schema_is_occurrence_shaped` (schema freeze), the re-stemmed
+> `test_prf_extract_terms_fts_weights_corpus`. **E-4** evidence enrichment
+> batched — and its placeholder-pair bug (one of two `IN` groups never
+> bound → silent empty links) fixed + pinned. **E-5** migration indexes:
+> add `idx_knowledge_domain`/`idx_knowledge_owner`/
+> `idx_knowledge_title_heading`, drop `idx_tombstones_kid`/
+> `idx_entities_name`/`idx_evidence_links_from` (UNIQUE duplicates) →
+> schema **1.27.18**. **E-7/E-8/E-12** `SearchFilters` → `Arc`, per-query
+> vec0-existence probe → process `VEC0_READY` flag (`migrate_down_0_9_0`
+> clears it), `sanitize_read_cow` zero-copy on provably-clean rows.
+> **F-31** O(m) mention dedup (oracle-pinned). **F-44** `/import` dial
+> 1 GiB — layered BEFORE the 1 MiB global cap (meta-testing the production
+> order; the old single-cap pre-empted large imports). **F-45**
+> `/ingest/memory` hard-rejects: per-entry >`MAX_CONTENT` →
+> `400 entry_too_large` all-or-nothing, invalid UTF-8 → `400 invalid_utf8`
+> (was silently mis-stored/"Empty content"). **F-46** retention read-gate
+> `strftime('%s',…)` → `unixepoch(COALESCE(…))` (value-identical, pinned
+> both SQL-side and SQLite-side). **F-53** tracker slot is RAII — released
+> on timeout/panic, never swept (pinned). **M6** release `opt-level` "z"→2
+> (speed; strip+LTO unchanged). Tests: server bin **673** / 6 ignored, lib
+> 125 / 1, brain 12, mcp 17, bench 8; clippy `-D warnings` + fmt clean.
+> Honest ceilings: PRF expansion output changes (now weighted — not a
+> regression claim, a behavior completion); `revoked_at` DDL defaults keep
+> their single-format TEXT `strftime`; the schema bump drops three indexes
+> once on first boot after upgrade; verify `brain doctor` post-install —
+> this release is the first since v0.9.1 where expansion lists change.
+> See `CHANGELOG.md` §[1.27.18].
+
+> **Version note:** **v1.27.17 "Strongbox" shipped 2026-08-16** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.16 → **1.27.17**;
+> client + plugin unchanged at 1.27.15 / 0.4.4) — the one-file audit follow-up:
+> the **backup envelope** gets a real KDF + per-backup random keys, and the
+> plaintext snapshot can never be world-readable, never survives a failure,
+> and never clobbers a live file. No new endpoints, no schema change, no
+> telemetry. **M1 (F-08/F-10) format v2:** `BSBK` magic + u16 version + u32
+> length-prefixed JSON header (`{"kdf":"argon2id","t":3,"m":65536,"p":1,
+> "salt":…,"nonce":…,"created_at":…}`); the key is argon2id (64 MiB/3
+> passes, < 2 s soft-benchmarked) with a **per-backup** 16-byte salt + 12-byte
+> random nonce (F-08's same-second GCM-nonce-reuse exploit killed:
+> `two_v2_backups_same_second_use_different_nonces`); header bytes are GCM
+> AAD (bit-flips fail decryption); the KDF vocabulary is closed (`argon2id`
+> only); the passphrase is verified by decryption, so
+> same-passphrase-any-header restores work; `decrypt_backup` is the one
+> decrypt seam for restore AND verify; legacy v1 files (no magic) restore
+> through the original path with a `warn!` (read compat forever, `--format
+> v1` kept for byte-identical archives). **M2 (F-11) snapshot hygiene:**
+> `create_private_file` = 0600 + `create_new` (a planted path aborts, never
+> writes through), `vacuum_into` = quote-escaped SQL literal (pinned),
+> `SnapshotGuard` removes the plaintext snapshot on EVERY failure path
+> (pinned by an unreadable config-dir injection); backup refuses a stale
+> `<db>.bak` (fail-closed). **M3 (F-17):** restore refuses to clobber the
+> previous safety snapshot (clear message, fail-closed) and the whole
+> restore/verify path runs off `decrypt_backup` + `vacuum_into` (no inline
+> SQL format strings). **M5:** `brain backup --format v1|v2` (default v2).
+> Tests: server bin **659** / 6 ignored, lib **124** / 1 (incl. **20** backup
+> tests), brain 12, mcp 17, bench 5; clippy `-D warnings` + fmt clean; live
+> E2E smoke green (v2 roundtrip → doctor verify → .bak 0600 → v1 legacy read
+> → wrong-passphrase rejected). Honest ceilings: the passphrase stays the only
+> secret (no KMS/rotation); the .bak is the rollback path, not a journal
+> (restoring twice requires moving it); v1 files are never migrated in place.
+> See `CHANGELOG.md` §[1.27.17].
+
+> **Version note:** **v1.27.16 "Drawbridge" shipped 2026-08-16** — a
+> **server-only** release (server `Cargo.toml`/lock 1.27.15 → **1.27.16**;
+> client + plugin unchanged at 1.27.15 / 0.4.4) — the fail-closed pass over
+> the identity + read surfaces the audit itemized: no new endpoints, no new
+> columns, no telemetry. **M1 (F-04/05/06) the domain read-gate:** pure
+> `can_read_domain`/`authorize_read_domain` (read:team/* = everywhere; `None`
+> principal = superuser, unchanged); `/search` authorizes the domain it
+> actually queries (was always `global`); `/get/{id}` + `/multi-get` bind the
+> `X-Brain-Domain` label in SQL (ids cannot cross domains in shim mode),
+> re-authorize on the row's own domain, and run the composite `RecordReadGate`
+> (v1.14 scopes + v1.23 roles — recall parity on by-id reads, probe-blind 404
+> for foreign rows); recall federation + graph traversal `retain` only
+> readable targets (explicit foreign domains stay loudly 403); shim-mode graph
+> edges scope by chunk-provenance label (unlinked edges invisible to scoped
+> readers, `graph_domain_scope`). **M2 (F-07) per-IP rate limiting:** the
+> plain `axum::serve` never injected the peer `SocketAddr`, so every client
+> shared ONE bucket — a global limiter in practice; now
+> `into_make_service_with_connect_info::<SocketAddr>`, production pin tested
+> by source inspection; key set bounded (evict oldest 25% at
+> `RATE_LIMIT_MAX_KEYS`). **M3 fail-closed identity:** M3.1/F-26
+> `auth::TokenRead` (NotConfigured|Active|ReadFailed) — poisoned lock = `500
+> auth_store_unavailable` (was: empty set = auth-off = allow-all), configured-
+> but-empty store = 401 (was: allow); M3.2/F-27 `role_retrieval_gate` degrades
+> to the EMPTY permit + `AND 1 = 0` guards (was `None` = no narrowing =
+> fail-open on incident); M3.3/F-28 JWT revocation check refuses on ANY store
+> error (was `if let Ok(conn)` + `unwrap_or(false)` skip); M3.4/F-13
+> `/auth/logout` behind the bearer middleware (public logout could only
+> "revoke nothing"); M3.5/F-25 UMP L3 signing-key seed refuses wide modes
+> (fails closed to L2). **M4 (F-33) write-boundary trust labels:**
+> `MemoryKind::is_strict_valid` round-trip on `/proposals` + `/ingest` (no
+> silent fallback to fact), `confidence` ∈ 0.0..=1.0 hard-reject (no clamped
+> lies); M4.3 `/add` closed `source` vocabulary for JWT principals —
+> ingest kinds + connector family kinds, `manual` EXCLUDED (no forged human
+> authorship). **M5 (F-41) the domain-registration cap:** `MAX_DOMAIN_DBS` =
+> 256 (`BRAIN_MAX_DOMAIN_DBS`), `DomainRegistry::register` is the ONE creation
+> path (idempotent), `seed_registered` boot-seeds the clients-table domains
+> WITHOUT opening pools (vanished files recreate on first access, cap-bounded),
+> registered-only `pool_for` REFUSES (`Unknown`) a never-registered name and
+> never creates a file — a probeable surface cannot fill the disk; the
+> `map_domain_error` seam: 400 `domain_invalid` / 404 `domain_unknown`
+> (probe-blind) / 507 `insufficient_storage` / 500 internal. Contract:
+> openapi.yaml (logout auth, /add vocab, /ingest fields, /domains 507,
+> NotFound `domain_unknown`); `x-api-version` stamp stays "1.21.0". Tests:
+> server bin **659** / 6 ignored, lib 113 / 1, mcp 17, brain 12, bench 5;
+> badges **825 passed** (bench,migrate), clippy `-D warnings` + fmt clean,
+> selfcheck clean. Honest ceilings: the gates are read-time enforcement over
+> stored labels (a write storing a wrong label is out of scope); graph scope
+> keys on the chunk link (NULL `knowledge_id` edges have no domain atom);
+> the cap bounds multi-db registrations only (shim mode shares one file);
+> fail-closed role degradation means a role-store outage denies retrieval
+> (monitor for the `warn!`). See `CHANGELOG.md` §[1.27.16].
+
+> **Version note:** **v1.27.14 "Fencepost2" shipped 2026-08-16** — a
+> **server + plugin** patch release (server `Cargo.toml`/lock 1.27.13 →
+> **1.27.14**; plugin **0.4.3 → 0.4.4**; client unchanged at 1.27.13) landing
+> the information-flow-integrity follow-up of v1.27.12/0.4.3 — the `untrusted`
+> fence becomes a **structural** (not decorative) boundary on every LLM-facing
+> seam, and the quarantine taint can no longer be lost or silently written.
+> **Plugin (F-01):** `sanitizeForBlock` in `plugin/src/format.ts` moved the
+> sentinel strip to the END of the pipeline (it was first), so a near-marker a
+> transform then synthesizes (NBSP/TAB/zero-width split across the
+> `CONTEXT|END` boundary, or a markdown-ref shortening) cannot forge the fence
+> close after it was stripped; the `U+E0000–U+E007F`-inclusive invisible strip
+> now runs BEFORE the `\s` collapse so `U+FEFF` (which JS `\s` treats as
+> whitespace) is removed, not widened to a space — a regression the openclaw
+> `vitest` run caught (`"ig nore"` → `"ignore"`); plus the recall `snippet`
+> is now routed through the same block boundary (was the one raw detail
+> field). New near-marker forgery suite: 47 format tests / 142 extension
+> tests, all green on the openclaw tree. **Server read-seam (M3):** the
+> `sanitize_read(_opt)`/`sanitize_stored` seam in `src/gate.rs` now covers
+> every stored-content read surface — UMP reads (F-10), legacy `/search`
+> (F-18), `/quarantine` review list (F-17), recall/suggest metadata (F-19/21) —
+> with a wiring meta-test pinning the seam to every response-forming site.
+> **MCP/CLI (F-20/F-63):** new `src/fence.rs` exports the shared
+> `FENCE_BEGIN/END` + `strip_markdown_refs` + `strip_control_chars`;
+> `tool_result_payload` wraps results in the fence, `format_response` + the
+> `brain` recall/get prints gain strip parity. **Quarantine fail-closed
+> (F-14/F-15):** `flag_if_quarantined` returns `rusqlite::Result<bool>` and
+> every ingest path (structured, procedure, `/add`, `/ingest/memory`) rolls
+> back or errors rather than store an injection chunk with a silently-missed
+> flag; `/ingest/memory` now flags a `Reject` verdict (stricter, never
+> dropped) under the default quarantine posture. Tests: server bin **627** / 6
+> ignored, lib **113** / 1 ignored, brain 12, mcp **17**, bench 5
+> (`--features bench`); client 124 unchanged; plugin **142** extension tests;
+> clippy `-D warnings` + fmt clean; `badges.sh --selfcheck` clean (**793
+> passed / 7 ignored**); UMP L3. Honest ceilings: the fence is transport-layer
+> data/instruction separation, not a CaMeL/FIDES capability lattice (mantra
+> #2); the plugin is validated via the openclaw `vitest` suite + `tsc` — no
+> standalone runner here; the restore on flag-write failure drops the
+> uncommitted tx (chunk never stored), it does not re-flag. See
+> `CHANGELOG.md` §[1.27.14].
+
+> **Version note:** **v1.27.13 "Contract" shipped 2026-08-16** — a
+> **server + client** patch release (server + client `Cargo.toml`/locks
+> 1.27.12 → **1.27.13**; plugin **0.4.3** first released here) shipping the
+> two post-1.27.12 integrity fixes + the documentation-contract completion —
+> no new storage, no new endpoints, no wire changes. **Fix 1 (client):**
+> `DetailActions` in `client/src/panels/review.rs` now forwards the server
+> `content_digest` on detail-modal approvals (`Some(&digest)`, matching the
+> queue quick-approve + batch paths; previously the modal sent `None`, so a
+> drifted proposal could still be approved from the detail view — the
+> key-accelerator/ops/offline paths deliberately stay `None`, the documented
+> legacy seam). **Fix 2 (plugin, 0.4.3):** the v1.27.12 provenance
+> `[src: · mk: · lb: · reg:]` labels now run through `sanitizeForBlock`
+> like hit bodies — a recalled chunk cannot forge its attribution line or
+> the `UNTRUSTED_*` fence markers through a label. **Contract pass:**
+> `openapi.yaml` documents the response body of every 200/201 (51
+> description-only responses now carry wire-exact examples extracted from
+> the handler sources — BreachView, Transfer, TiaTemplate, DpaTerms,
+> Client, LegalHoldRow, DsarResponse/LedgerRow, AuditRow, capabilities,
+> recall trace, ProposalView; `/auth/logout` corrected to 204-on-success +
+> 401-no-principal); `docs/api.md` endpoint inventory + README API tables
+> completed (profiles/roles/connectors, domains family, clients register,
+> transfers, breach, holds); README badges refreshed from the real build
+> (version 1.27.13, **782 passed / 7 ignored** via `scripts/badges.sh`,
+> `bench,migrate`). The `x-api-version: "1.27.13"`-style contract stamp is
+> unchanged at "1.21.0" (the wire contract did not move — the same
+> convention as every release since v1.21.0; the runtime `X-Api-Version`
+> header follows `CARGO_PKG_VERSION`). Tests: server bin **626** / 6
+> ignored, lib 105 / 1 ignored, brain 12, mcp 15, bench 5; client **124**;
+> clippy `-D warnings` + fmt clean (both trees); `cargo audit` clean;
+> UMP conformance **L3**; recall gate r@5 0.919 / r@10 0.919 / mrr 0.905.
+> ROADMAP.md untouched (the v1.27 line has never updated its Caliber-line
+> header). See `CHANGELOG.md` §[1.27.13].
+
+> **Version note:** **v1.27.12 "ReviewArmour · Rotate · Provenance" shipped
+> 2026-08-15** — a **server + client** release (server `Cargo.toml`/lock
+> 1.27.10 → **1.27.12**; client `Cargo.toml`/lock 1.27.11 → **1.27.12**;
+> plugin touched) landing three security themes against the 2026 agentic-AI
+> threat landscape (OWASP Agentic Top 10 / MS AI Red Team v2 lines) — no new
+> storage, no new endpoints, no telemetry. **ReviewArmour** (LITL): `/proposals`
+> serves the read-canonical review form (`sanitize_read`: PII redact →
+> markdown-ref → invisible strip) + a stable, principal-independent
+> `content_digest` (SHA-256 over the stripped form; PII kept OUT so the
+> fingerprint is identical across admin/non-admin readers and across
+> list/edit/approve); `approve_proposal` accepts an optional `digest` and 409s
+> on ANY drift (checked against the fresh row inside the `BEGIN IMMEDIATE`
+> tx) — an approval binds to the bytes the reviewer was shown; the client
+> queue + detail-modal paths both forward the digest (legacy quick-approve /
+> offline-replay pass `None`, server enforces when present). **Rotate**:
+> `brain token rotate` generates a fresh 32-byte hex bearer and atomically
+> replaces the token file — temp created at 0600 (`OpenOptions` +
+> `create_new`, never umask-dependent), fsync'd, renamed over the target;
+> refuses group/world-readable secrets (fail-closed mirror of
+> `check_secret_permissions`); server startup warns on unsigned alert/DSAR
+> webhook sinks + group/world-readable UMP signing keys. **Provenance** (IFC):
+> the vec0 + FTS retrievers select `k.source`/`k.node_kind`/`k.lawful_basis`/
+> `k.region`, threaded through fusion → `RecallHit` (`Option<String>`, absent
+> when NULL, `#[serde(skip)]` on `SearchResult` so the wire shape is
+> additive); the plugin renders a deterministic `[src: · mk: · lb: · reg:]`
+> line inside the `UNTRUSTED_*` fence, labels run through `sanitizeForBlock`
+> (fence-marker forging closed). Tests: server bin **626** / 6 ignored, lib
+> 105, brain 12, mcp 15, bench 5; client **124**; clippy `-D warnings` + fmt
+> clean (default, bench, otel); full CI green (fmt/clippy/test, otel gate,
+> recall eval, cargo audit, UMP conformance, release build; client
+> fmt+clippy+test+wasm). Honest ceilings: approve *binds* — it does not force
+> full-read or rewrite at-rest rows (verbatim evidence fidelity preserved);
+> rotation coordinates the token FILE only (the openclaw env source is a
+> printed operator step, not auto-edited); provenance tags are labels, not an
+> enforced taint grid; the optional domain-isolation "Boundary" federation
+> flag is deliberately not in this release (it changes recall breadth and
+> ships gated, later). See `CHANGELOG.md` §[1.27.12].
+
+> **Version note:** **v1.27.11 "Console" shipped 2026-08-15** — a **client**
+> release (client `Cargo.toml`/lock 1.23.0 → **1.27.11**; server stays 1.27.10;
+> plugin unchanged) — the v1.27 series capstone: the role-gated BPO dashboard
+> views. **M1** `role::ConsoleView` + `console_view()` (pure): `client-auditor`
+> → `ClientAdmin` (its own single-client dashboard), `bpo-ops` + the full-
+> control roles (`admin`/`solo`/`controller`) → `BpoOps` (the all-clients
+> board), everything else → `Undefined` (stock console). **M2** `Route::Clients
+> {}` gated into the desktop rail + mobile tab bar only when `console_view`
+> resolves, plus a palette entry (coverage test → 15 targets). **M3**
+> `panels/console.rs`: `client_admin` is the honest single-tenant-per-client
+> poster — renders ONLY the clients granted by the client-side allowlist
+> (`api::client_auditor_domains`, the token mirror of the server
+> `client_authorized_domains` seam; `filter_granted` pure re-filter, `Some([])`
+> denies all), no client switcher, server R9 row filter as backstop; `bpo_ops`
+> is read-only (`/clients` + `/connectors` + `/proposals` depth). Tests: client
+> **122** passed; clippy `-D warnings` + fmt clean; release wasm 5.1 MB (budget
+> 7). Honest ceilings: the console is read-only UI over the shipped API (no new
+> server surface); the plan's Overview/Data/Rights/Audit client-admin panels
+> reduce to the register overview here — the rest are the existing per-role-
+> gated panels; auditor tokens are operator-issued (scopes → client domain).
+> See `IMPLEMENTATION_PLAN_v1.27.11_Console.md` + `CHANGELOG.md` §[1.27.11].
+
+> **Version note:** **v1.27.9 "Roles" shipped 2026-08-15** — a **server**
+> release (server `Cargo.toml`/lock 1.27.8 → 1.27.9; schema unchanged 1.27.8;
+> client + plugin unchanged) — the BPO role postures + domain-scoped client
+> views. **M1** `role::PRESETS_RAW` seeds `client-auditor` (read-only on ONE
+> client domain, `can:["read"]` — the min-necessary wedge) + `bpo-ops` (the
+> all-clients operations read), INSERT OR IGNORE so edits survive. **M2**
+> `auth::client_authorized_domains` — the allowlist seam mapping a
+> `client-auditor` principal to the non-wildcard domains of its `scopes`
+> (None = unrestricted; empty = sees nothing). **M3** `GET /clients` +
+> `GET /clients/{name}` row-filter to the auditor's granted client-domain(s)
+> (parent verification #7); the handler still calls `authorize` (defense-in-
+> depth); every other principal keeps the Admin path gate, so
+> `bpo-ops`/admin/opaque see the full register. No migration, no schema bump
+> (roles are seeded rows). Tests: server bin 617 → **619** / 6 ignored
+> (`client_auditor_sees_only_their_domain` + `client_auditor_can_read_only`),
+> lib role presets at 12, schema-contract pins 12 seeded roles; clippy
+> `-D warnings` + fmt clean. Honest ceilings: a read-time row filter on one
+> register, not true multi-tenancy (v2.0 Cortex); auditor tokens are operator-
+> bound (scopes → client domain), not auto-provisioned; `POST /clients` stays
+> Admin. See `CHANGELOG.md` §[1.27.9].
+
+> **Version note:** **v1.27.5 "Holds" shipped 2026-08-15** — a **server**
+> release (server `Cargo.toml`/lock 1.27.4 → 1.27.5; client + plugin unchanged)
+> — the proof + thin-CLI pass of the v1.22 per-client legal-hold isolation: the
+> isolation already exists (each domain's own `legal_holds` table). `POST
+> /clients/{name}/hold` (Admin, audited) resolves the client's `domain` from
+> the register (404 unknown, 409 archived) and delegates to the shared
+> `observe`-style seam `handlers::holds::post_legal_hold_for_domain` (the
+> `/legal-hold` body extracted once; no new hold logic). `brain client hold
+> add|list <name>` drives it; tests `legal_hold_per_client_isolates_domains`
+> (identical autoincrement ids across acme-us + beta-eu — acme's held, beta's
+> free) + `client_hold_unknown_or_archived_rejected` pin the cross-domain
+> boundary. Server bin 603 → **605** / 6 ignored, lib 105; clippy `-D warnings`
+> + fmt clean; route + authz + openapi audits green. No schema change. Honest
+> ceilings: proof + ergonomics, not new semantics — holds stay per-domain and
+> archiving a client does not auto-release them (R6 termination). See
+> `CHANGELOG.md` §[1.27.5].
+
+> **Version note:** **v1.27.4 "Dsar" shipped 2026-08-15** — a **server**
+> release (server `Cargo.toml`/lock 1.27.3 → 1.27.4; client + plugin unchanged)
+> — the R4 per-client jurisdiction-aware DSAR. `POST /clients/{name}/dsar`
+> (Admin, audited) resolves the client's `domain` + `jurisdiction` from the
+> register (404 unknown, 409 archived) and delegates to the shared DSAR core via
+> the new `observe::run_dsar_subject` seam — a single domain-pool run + the
+> client-stamped `DsarResponse` (deadline/rights per its law, certificate
+> carrying its jurisdiction + transfer mechanism). No new purge logic: locate/
+> purge/export/certificate/hold-deferral all stay in `run_dsar_pool`; the shared
+> `normalize_dsar_subject` is the one subject/action trust boundary (post_dsar
+> refactored onto it, behavior-preserving). `brain client dsar <name> <subject>
+> [--action purge|export|both] [--dry-run]` drives it. Tests: server bin 600 →
+> **603** / 6 ignored, lib 105; clippy `-D warnings` (default + bench + otel) +
+> fmt clean; route + authz + openapi audits green. Honest ceilings: subject
+> erasure, not a blanket domain wipe (R6 termination); mechanism advisory, not
+> gating; the audit anchor stays the global chain while the ledger/certificate
+> live in the client's domain. See `CHANGELOG.md` §[1.27.4].
+
+> **Version note:** **v1.26.3 "Cross-Border (fourth pass)" shipped 2026-08-15**
+> — a **server** release (server `Cargo.toml`/lock 1.26.2 → 1.26.3; client +
+> plugin unchanged) — the pass-4/5 validator + evidence-fidelity follow-up of
+> v1.26.2. **4th pass:** `validate_register` now rejects `expires_at <
+> signed_at` (`transfer_timestamp_invalid`) — an evidence register must not
+> accept an instrument expiring before it was signed (signed == expiry stays
+> valid); openapi 400 description notes the ordering. **5th pass:** the DSAR
+> certificate `mechanism` is whitespace-trimmed like the jurisdiction field
+> beside it (still free-text). Re-verified clean: panic/unsafe sweep (zero
+> `unwrap()`/`unsafe` outside `#[cfg(test)]` in the new modules), pedantic/
+> perf/complexity lint scan of the new modules, route/schema/openapi guard
+> audits, otel gate. Tests: server bin **592** / 6 ignored, lib 105, otel 594 /
+> 6; clippy `-D warnings` (default + bench + otel) + fmt clean; client wasm
+> untouched. See `CHANGELOG.md` §[1.26.3].
+
+> **Version note:** **v1.26.2 "Cross-Border (third pass)" shipped 2026-08-15**
+> — a **server** release (server `Cargo.toml`/lock 1.26.1 → 1.26.2; client +
+> plugin unchanged) — the deep-review follow-up of v1.26.1, same feature set.
+> Evidence fidelity at the row boundary: `Transfer.lawful_basis` →
+> `Option<String>` (`transfer_row` no longer `unwrap_or_default()`s — a NULL
+> basis serializes `null`, never `""`, in the list + DPA artifact), and
+> `register` stores the basis in its canonical lowercase vocabulary form
+> (`b.trim().to_ascii_lowercase()`, matching mechanism/jurisdiction — the
+> validator already accepted `Contract`, storage now agrees). New regression
+> `lawful_basis_stored_canonical_and_null_semantics_preserved`; panic/unsafe
+> sweep: zero `unwrap()`/`unsafe` outside `#[cfg(test)]` in the new modules;
+> openapi 400 description covers the timestamp bounds. Tests: server bin
+> 591 → **592** / 6 ignored, lib 105; clippy `-D warnings` (default + bench +
+> otel) + fmt clean; route audits green. See `CHANGELOG.md` §[1.26.2].
+
+> **Version note:** **v1.26.1 "Cross-Border (second pass)" shipped 2026-08-15**
+> — a **server** release (server `Cargo.toml`/lock 1.26.0 → 1.26.1; client +
+> plugin unchanged) — the post-review cleanup of v1.26.0, same feature set.
+> Mechanisms re-verified 2026-08-15: EU SCC 2021 + UK IDTA/Addendum still in
+> force (ICO plans an in-2026 update — the curated register stays human
+> re-checked), EU-US DPF adequacy live since 2023-07-10 — the vocabulary
+> needs no change. Fixes: `signed_at`/`expires_at` bounds moved into the one
+> shared `validate_register` (handler-only `expires_at` check removed;
+> `signed_at` now validated — `400 transfer_timestamp_invalid`), the dead
+> `MAX_LIMIT*10` pre-clamp dropped from `GET /transfers` (`list` is the single
+> bound), `dsar_deadline_for` deduped via `and_then` on `deadline_days`
+> (identical fallback branches collapsed), `POST /transfers` response key
+> `transfer_id` → `id` (matches GET rows + the `{id}` artifact routes; the
+> same `jurisdiction_invalid` code/message as the DSAR gate), openapi.yaml
+> schema drift closed (`/dsar` jurisdiction/mechanism + rights, `/ingest`
+> lawful_basis/purpose + compliance.lawful_basis_missing), and six
+> module-internal types tightened `pub` → `pub(crate)` (no dead exports).
+> Tests: server bin 591 / 6 ignored (all assertions live in the existing
+> bounds test), lib 105; clippy `-D warnings` (default + bench + otel) + fmt
+> clean; route audits green. See `CHANGELOG.md` §[1.26.1].
+
+> **Version note:** **v1.26.0 "Cross-Border" shipped 2026-08-15** — a
+> **server** release (server `Cargo.toml`/lock 1.25.0 → 1.26.0; client + plugin
+> unchanged) landing the **evidence + tagging** layer for a PH BPO serving
+> US/UK/EU/AU/SG/CA clients — honestly framed: no new enforcement; the BPO
+> stays processor/sub-processor. **M1** the cross-border transfer register:
+> `src/transfers.rs` (`register`/`list`/`validate_register`/`transfer_by_id`) +
+> `src/handlers/transfers.rs` (`POST`/`GET /transfers`, Admin + audited
+> `AuditKind::Transfer`), the `transfers` table (schema → 1.26.0, guarded by
+> the schema-contract test), validated `MECHANISMS`
+> (scc-eu-2021/uk-idta/dpf-us/cbpr/bcr/adequacy) + any-short-lowercase
+> `is_jurisdiction_code` (a future law adds without a release). **M2**
+> `JurisdictionRule` — the curated code-versioned table (eu/uk/us/au/sg/ca/ph →
+> law + deadline_days + rights); `dsar_deadline_for` is pure (law's fixed days,
+> else PH "reasonable" → `BRAIN_DSAR_WINDOW_DAYS`), wired into `POST /dsar`
+> (`jurisdiction` param → deadline + certificate jurisdiction/mechanism + the
+> response `rights` list). **M3** `IngestRequest.purpose` +
+> `knowledge.lawful_basis/purpose` columns; `lawful_basis_flag(strict_domain,
+> basis)` flags a strict-posture record with no basis as
+> `compliance.lawful_basis_missing` (Art 5/6 + NPC 2024-04 evidence). **M4** the
+> TIA (Schrems II, from `SurveillancePosture` + destination law) + DPA (Art 28)
+> templates on `GET /transfers/{id}/tia` + `/dpa` — **pre-filled evidence
+> a human DPO/legal reviews + signs**; nothing renders legal judgment. 4 routes
+> in the router + route-coverage + route-authz guard tables + openapi.yaml.
+> Tests: server bin 582 → **591** / 6 ignored, lib 105 (unchanged); clippy
+> `-D warnings` (default + bench + otel) + fmt clean; route audits green.
+> **Fixed on review:** the initial `get_dpa` draft resolved only the **newest**
+> register row (`list(…, 1)` then filter) — now a by-id `transfer_by_id`
+> lookup, pinned by `dpa_fields_resolve_any_row_by_id`. Honest ceilings: this
+> is evidence + tagging, **not enforcement** — nothing gates a transfer on the
+> registered mechanism (blocking policies v2.x); the jurisdiction rules +
+> surveillance postures are a curated snapshot a human re-checks (law evolves);
+> PH "reasonable" uses the operator window; the client keeps its own
+> controller obligations. See `CHANGELOG.md` §[1.26.0].
+
+> **Version note:** **v1.25.0 "PH-Compliant" shipped 2026-08-15** — a
+> **server** release (server `Cargo.toml`/lock 1.24.0 → 1.25.0; client + plugin
+> unchanged) landing the Philippines home-jurisdiction posture, honestly
+> framed: **no PH AI statute yet** — RA 10173 (DPA 2012) + NPC advisories
+> (2024-04 AI; 2026-01 scraping) + EO 119 (gov-data residency) are the law in
+> force; **HB 7396 (risk-based AI) is pending, not enacted** (structured to
+> absorb, never pre-implemented). **M1** `COMPLIANCE_PH.md` maps every RA 10173
+> control to a shipped feature (`src/ph.rs::DPA_CONTROLS` cross-ref test). **M2
+> the one new primitive** — the breach-notification workflow:
+> `src/breach.rs` (`open`/`add_event`/`close`/`list`/`get`) + `src/handlers/
+> breaches.rs` (`POST /breach`, `/breach/{id}/event`, `/breach/{id}/close`,
+> `GET /breaches`, `GET /breaches/{id}`); DPO/admin role-gated
+> (`can_act_on_breach`: `dpo` role or `admin` capability, v1.23.0); per-
+> jurisdiction notification deadlines computed from `discovered_at` (ph NPC
+> 72h, eu Art-33 authority 72h, subject-notification per law); every event
+> hash-chained into the audit via new `AuditKind::Breach`; `breaches` +
+> `breach_events` tables (schema → 1.25.0), wired into the router, route-
+> coverage + route-authz guard tables, and openapi.yaml. **M3** `PIA_TEMPLATE.
+> md` (pre-filled, not auto-filed) + scraping provenance: a scrape ingest
+> without a documented `lawful_basis` quarantines (the v0.9.7 flag), never
+> stored (`IngestRequest.source` + `lawful_basis`; `ph::scrape_posture`).
+> **DPO contact** — `BRAIN_DPO_CONTACT` surfaced on `/health`
+> (`compliance.dpo_contact`, null when unset). Tests: server bin 571 → **582**
+> / 6 ignored, lib 105 (unchanged); clippy `-D warnings` (default + bench +
+> otel) + fmt clean; route-coverage + route-authz audits green. Honest
+> ceilings: breach detection is **human-opened** (anomaly/leak sensors v2.x);
+> a jurisdiction absent from the deadline table yields no deadline (the DPO
+> confirms); HB 7396 is forward-watch only; each BPO client's own
+> jurisdiction is v1.26.0 (cross-border); the client Security-panel countdown
+> surfacing is a client release. See `IMPLEMENTATION_PLAN_v1.25.0_PH_
+> Compliant.md` + `CHANGELOG.md` §[1.25.0].
+
+> **Version note:** **v1.24.0 "Connectors" shipped 2026-08-15** — a
+> **server** release (server `Cargo.toml`/lock 1.23.0 → 1.24.0; client +
+> plugin unchanged) landing the vertical-integration foundation: the v0.9.6
+> supervised connector pipeline (backfill + reconcile + source/revision
+> linkage) gains a profile-gated registry + a shared translate template for
+> the USE_CASES.md verticals (CRM, Slack, Jira/Linear, read-only HRIS/EHR). No
+> new pipeline — each connector is a translate+ingest module on the GitHub
+> template, gated by a profile's `connectors_allowed` (v1.21.0). **M1**
+> `src/connector/kind.rs` pins the shipped vocabulary (`CONNECTOR_KINDS`,
+> `is_connector_kind`, `family`) and `Profile::connector_allowed()` is the
+> pure gate (absent → allow; explicit empty → deny-all air-gap; exact or
+> bare-family grant for `a-b` sub-kinds); `POST /connectors/register` (Admin,
+> audited) validates the kind and enforces the domain's bound profile →
+> `403 connector_not_in_profile`, wired into the router, route-authz guard
+> table, and openapi.yaml. **M2** `src/connector/pipeline.rs` is the pure
+> translate template: `ConnectorDoc` + `connector_source_kind` + `live_uris`
+> + `translate_*` for crm/slack/issue/structured-fact, linking stable
+> `crm://`/`slack://`/`jira://` source URIs into the existing source/revision
+> model and feeding kind-scoped `/sources/reconcile`; read-only PII records
+> (HRIS/EHR) default to `private` scope. **M3** supervised: reconcile is
+> never auto-sync and every translated record flows through the injection
+> screen (poisoned records quarantine, not memory). **M4** CLI messages are
+> vocabulary-aware (the github connector stays the only runnable backfill
+> binary). Tests: server bin 569 → **571** / 6 ignored, lib 95 → **105**
+> (kind vocab/family, `connector_allowed` gating, pipeline translate +
+> source-kind + live-uri linkage, kind-scoped slack reconcile sweep,
+> translated-record quarantine); route-coverage + route-authz audit green
+> with the new route; clippy `-D warnings` + fmt clean. Honest ceilings:
+> connectors are supervised backfill + reconcile (streaming is v2.x), the
+> per-source transport needs per-connector handling (github is the only
+> runnable network binary; the other kinds ship in registry + translate
+> template only), and read-only into memory (no write-back to the source).
+> The client Health panel still reads `/connectors` (with `last_sync`), card
+> unchanged. Schema stays **1.23.0** — M1 adds no DDL (the `connectors` table
+> already carried `kind TEXT`); the server Cargo bump is release alignment
+> only, independent of the shared contract. See
+> `IMPLEMENTATION_PLAN_v1.24.0_Connectors.md` + `CHANGELOG.md` §[1.24.0].
+
+> **Version note:** **v1.23.0 "Roles" shipped 2026-08-15** — a
+> **server + client** release (both `Cargo.toml`/locks 1.22.0/1.21.0 →
+> 1.23.0; plugin unchanged) landing the role-based UI posture the v1.17.1
+> operator roles promised without a UI gate — the operator console now
+> *renders what your role can act on*. **Server-side, zero new endpoints or
+> fields**: the MCP surface already accepts `{name, roles[]}` and stamps the
+> JWT `roles` claim; this release only mirrors delegated/server roles into
+> the existing claims shape. **Client M3** (`role.rs` + `api.rs`): a
+> pure `role_can_see(roles, panel)` table maps resolved
+> `server/delegated` role names → panels/actions, resolved once per token via
+> `api().roles()` (`server` = always-grant all, incumbent-equivalent; JWT
+> `roles` claim = delegated; absent token = unrestricted, loopback
+> incumbent). The **Review queue** is the enforcement surface: `role_allows`
+> gates approve/reject/edit (approve requires `role_can_see("dpo")` unless
+> `server`-root; reject is always safe; edit only to non-approved) — so a
+> `qa`/`agent` token can no longer rubber-stamp approvals. **Nav gating**:
+> the desktop rail + mobile tab bar hide Subjects / Security / Audit / Data
+> unless the resolved roles grant them (defense-in-depth — the server still
+> enforces every endpoint). `role.rs` has a unit test per posture (exec hides
+> sensitive panels but keeps the dashboard; qa can't approve/purge;
+> supervisor approves but doesn't purge; agent hides audit+subjects; solo and
+> no-roles see all). Tests: client 113 → **119**; server suite + schema
+> contract + clippy `-D warnings` + fmt clean on both trees; client wasm
+> unchanged in budget. Honest ceilings: gating is UI posture + JWT-presented
+> roles — the server-authoritative RBAC the roles claim points at is
+> delegated/scoped-role enforcement (v1.25+); `roles` from the JWT are as
+> trusted as the token itself (local signing key, not an external IdP). See
+> `IMPLEMENTATION_PLAN_v1.23.0_Roles.md` + `CHANGELOG.md` §[1.23.0].
+
+> **Version note:** **v1.22.0 "Regulated" shipped 2026-08-15** — a
+> **server-only** release (server `Cargo.toml`/lock 1.21.0 → 1.22.0; client +
+> plugin unchanged) landing the **enforcement** the v1.21.0 policy fields
+> promise, for the regulated buyer — the compliance line stays separate and
+> green. **M1 legal hold** (`src/legal_hold.rs` + `src/handlers/holds.rs`):
+> a new `legal_holds` table in every domain DB (partial active-hold index);
+> `POST /legal-hold` / `POST /legal-hold/{id}/release` / `GET /legal-holds`
+> (Admin, audited). Enforcement is the freeze: `page_decayed` drops held ids
+> from `/decayed`, `purge` returns `409 legal_hold_active` (+ per-id reasons,
+> via new `HandlerError::conflict_with`), and `run_dsar_pool` *defers* (never
+> purges) held targets while listing `{id, reasons}` on the certificate's
+> `held_ids[]` — the WORM-lite posture. Multiple concurrent holds supported;
+> frozen until EVERY hold is explicitly released. **M2 retention report**
+> (`govern::retention_report`): `GET /retention/report` = per domain × kind →
+> ttl_days → count → expiring-within-30d, the storage-limitation evidence
+> HIPAA/SOX/FedRAMP reviewers read. **M3 region pin**:
+> `storage_layout::region`/`region_from` (fail-closed label: lowercase
+> alnum+hyphen 1..=63) + additive `knowledge.region` wired via an `AFTER
+> INSERT` trigger (all ingest paths, zero per-site churn), backfilled legacy
+> NULLs once, never rewritten (region change preserves history); surfaced on
+> every chunk + `/export` + the DSAR certificate + bundle. **M4 compliance
+> pack**: `COMPLIANCE.md` §10 HIPAA/SOX/FedRAMP posture maps (posture, not
+> certification). Tests: main bin 554 → **556** / 6 ignored, lib 86 → **87**
+> (+ the `region_from` resolver); schema-contract test pins **1.22.0**; the
+> route-authz audit learned the `holds` module; clippy `-D warnings` + fmt
+> clean. The new integration test drops bare `unwrap()` for a
+> `Result<_, Box<dyn Error>>` + `?` shape (only `.expect(msg)` + safe
+> `unwrap_or`/`filter_map`). Honest ceilings: legal hold is per-id manual (no
+> e-discovery search-to-hold yet; v1.23), region is a stamp not routing
+> (multi-region v2.x), retention reports rather than auto-enforces (decay
+> marks, the human purges, holds block even that), and the compliance pack
+> documents posture only. See `IMPLEMENTATION_PLAN_v1.22.0_Regulated.md` +
+> `CHANGELOG.md` §[1.22.0].
+
+> **Version note:** **v1.21.0 "Profiles" shipped 2026-08-15** — a
+> **server + client** release (server `Cargo.toml`/lock 1.20.30 → 1.21.0;
+> client 1.20.25 → 1.21.0; plugin unchanged) landing the preset system: a
+> **Profile** is a typed JSON bundle of the *existing* v1.14/v1.15/v1.17.1
+> knobs (access_scope default, PII posture, per-kind retention, audit level,
+> kind vocabulary) — no new governance primitives, no new columns. **M1**
+> `src/profile.rs` (new lib module) + migration: `profiles` + `domain_profiles`
+> tables (schema → 1.21.0, additive); apply-at-request-time semantics under the
+> invariant **the profile sets defaults, the row wins** — `pii_mode: strict`
+> masks title+content at the write boundary via the existing `screen_source_prompt`
+> maskers (one-way `[redacted:*]` placeholders, deliberately NOT a vault — the
+> v1.20.19 posture), `default_access_scope` fills only absent values, `kinds`
+> rejects out-of-vocabulary ingests (`kind_not_allowed`), unreadable bound
+> profiles fail CLOSED; new friendly `ttl_days` ingest field; at retrieval a
+> bound profile's `retention` block REPLACES the server-wide policy for that
+> domain (JSON `null` = no decay; empty block = nothing decays) — recall's
+> per-domain loop + `/decayed`'s per-row filter both honor it (the SQL superset
+> unions kinds + the least-restrictive cutoff, so the superset property holds);
+> `audit_level` drives `/recall` read-events when `BRAIN_AUDIT_READ_EVENTS` is
+> unset (verbose on / minimal off / standard = JWT posture; env = kill-switch).
+> **M2** the 12 USE_CASES.md presets seeded INSERT OR IGNORE (operator edits
+> survive re-migrations; every field editable via `POST /profiles/{name}`).
+> **M3** `brain setup` (interactive pick → knob preview → bind; `--profile
+> NAME --yes` scriptable) + the client connect-flow "What best describes your
+> team?" step (shows when the home domain is unbound; Skip persists via the
+> web pref seam). **M4** `GET /profiles`, `GET|POST /profiles/{name}` (Admin +
+> audited), `GET|POST /domains/{name}/profile` (bind/unbind, `null` unbinds)
+> in openapi.yaml (+ Profile schemas + a NotFound component); the client
+> Health panel gains the profile/knobs card. Tests: main bin 542 → **548** /
+> 6 ignored (incl. the `#[ignore]`d e2e: strict masking stores only
+> placeholders, explicit `ttl_days` beats the profile default, unbound domain
+> byte-identical), lib 80 → **86**, brain CLI **+1**, client 111 → **113**;
+> clippy `-D warnings` + fmt clean on default + bench + otel; client wasm
+> 4.99 MB (budget 7). Honest ceilings: strict masking runs after auto-routing
+> (the quantized embedding + caller entities derive from raw text; neither
+> practically invertible); the HITL propose/approve flow keeps its v1.14
+> posture (promotion lands in `global` with column defaults — v1.22);
+> `audit_level` covers `/recall` only; `connectors_allowed` is stored +
+> surfaced only (registry not domain-scoped; v1.24); `legal_hold_default` is
+> a flag (enforcement v1.22); the wizard binds `global` (per-domain targeting
+> is `brain setup`). See Agent 94 + `CHANGELOG.md` §[1.21.0].
+
+> **Version note:** **v1.20.30 "Caliber (foundation)" shipped 2026-08-14** — a
+> **server-only** release (Cargo.toml/lock 1.20.29 → 1.20.30; client + plugin
+> unchanged) landing the v1.28 "Caliber" M1+M2 groundwork EARLY, so it does not
+> sit unreleased across the v1.21–v1.27 compliance line (the lines are
+> independent; discipline rule: every Profiles-line release keeps the Caliber
+> seams green — they live in the default suite). **The default build is
+> behavior-identical**: edge-default stays potion/512-d/no-rerank; every neural
+> path is `--features neural-embed,rerank-tier` + `MODEL_PROFILE` opt-in.
+> **M2** `src/embed.rs`: the object-safe `Embedder` trait
+> (`encode`/`encode_one`/`store_dim`), `AppState.model: Arc<dyn Embedder>`, all
+> ~13 encode sites profile-agnostic; `migration::run_migration_with_store_dim`
+> interpolates the vec0 dim + stamps `embedding_dim` in `schema_meta`, **failing
+> closed** on a cross-dim profile switch (a 512-d DB under enterprise refuses
+> with the `--re-embed` instruction); tiers: enterprise=BGE-M3 1024-d (verified
+> end-to-end — dense+sparse+colbert from one FastEmbed pass; sparse/colbert
+> unconsumed until v1.30), desktop=gte-base-en-v1.5 768-d (ponytail: modernbert
+> is better but not in FastEmbed's enum — custom-ONNX is the upgrade path);
+> fastembed 5 optional, ort rc.12 → rc.13. **M1** `src/search/rerank.rs`:
+> bge-reranker-v2-m3 via `TextRerank`, LazyLock, **fail-open**, writing the
+> reserved `rerank_score`/`rerank_truncated` slots post-fusion; boot arms it on
+> enterprise/desktop/quality-local and **warms at boot** (a lazy first-recall
+> load put the download in the request path — observed as a first-query 503,
+> fixed live). **Escape hatch** `brain-server --re-embed <profile>`
+> (`rebuild_vec_store_at_dim` + the /reindex loop; clears the legacy
+> `embeddings` backfill source — old-dim f32 rows re-backfilled would be
+> cross-dim corruption). **Capacity**: Desktop RSS 512 → 1024 MiB (neural tiers
+> measured ~830 MiB; Jetson stays 512). Tests: main bin 534 → **542** / 5
+> ignored, lib 76 → **80** / 1 ignored (incl. the `#[ignore]`d BGE-M3 load
+> test); clippy `-D warnings` + fmt clean across default AND
+> `neural-embed,rerank-tier`. **Tier smoke (directional, not a parity claim —
+> BENCHMARKS.md §v1.28):** all three tiers live through `/recall` (10-doc
+> corpus, `brain eval`, 37 queries): edge = the v1.17.4 baseline byte-consistent
+> (MRR 0.905); desktop/enterprise = MRR 0.919 / nDCG 0.917 — the rerank lift on
+> a recall-saturated set. Honest ceilings: the ≥100-query frozen set + the
+> IronCurtain head-to-head (v1.31 "Proven") stay `pending` — **no parity claim
+> is made**; the running launchd service still executes 1.20.29 until
+> `install-service.sh`. See Agent 93 + `CHANGELOG.md` §[1.20.30].
+
+> **Version note:** **v1.20.24 "Sweep" shipped 2026-08-13** — a
+> **server + client + plugin** release (all three `Cargo.toml`/locks
+> 1.20.23 → 1.20.24) paying the **seven audit gaps** the post-v1.20.23 audit
+> itemized on the closed harden line — **no new endpoints, no new fields, no
+> telemetry**. **G1** the v1.20.3 `strip_invisible` pair becomes a shared lib
+> module (`src/strip_invisible.rs`; screen.rs re-exports) applied at the MCP
+> tool envelope (`tool_result_payload` seam) + `format_response`, the CLI
+> recall/get prints, and the openclaw plugin (`sanitizeForBlock` +
+> `\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF`; titles + graph tool).
+> **G7** client strips + bounded source-prompt scroll box (CSS-only). **G2**
+> PII read-path uniformity (`/get/{id}`, `/multi-get`, search, proposals —
+> `redact_content` for non-admin on every read). **G3** auth fails closed:
+> `auth_token_misconfigured` + `check_secret_permissions` (mode & 0o077) on
+> token file + JWT key; `main_inner` refuses to start. **G4** DSAR erases
+> every domain DB (per-pool `run_dsar_pool`, global last with the aggregate
+> SHA-256 on its ledger row). **G5** `/decayed` narrowed to an index-served
+> superset WHERE (`decayed_superset_sql`, min-days cutoff; `page_decayed`
+> stays arbiter) — **and the regression test caught `/decayed` returning `[]`
+> since v1.14**: `strftime('%s')` is TEXT so `get::<i64>` dropped every row;
+> `unixepoch()` fixes it. **G6** purge tombstones + DSAR ledger digests are
+> SHA-256 of deleted content, not brute-forceable xxh3-64. +5 server tests
+> (main bin 527 → 532 passed / 5 ignored), MCP bin 13 → 15, client 111
+> unchanged, plugin 94 → 96; all clippy `-D warnings` + fmt clean. Honest
+> ceilings: G3 is startup-only enforcement; G5's superset is exact for the
+> CURRENT_TIMESTAMP format; G4's aggregate is a domain-list digest
+> (per-pool bundles hash at write time; no crash-recovery protocol). See
+> Agent 91 + `CHANGELOG.md` §[1.20.24].
+
+> **Version note:** **v1.20.25 "Consolidate" shipped 2026-08-13** — a
+> **server + client + plugin** release (server `Cargo.toml`/lock + client
+> 1.20.24 → 1.20.25; plugin 0.2.1 → 0.2.2) consolidating the tail the v1.20.24
+> "Sweep" left — **no new endpoints, no new fields**. **M1** `audit::hash` goes
+> xxh3-64 → **SHA-256** (64 hex), and the recall-trace `query_hash` + `otel.rs`
+> delegate to it — the G6 "no offline-recoverable digest" rule now reaches the
+> audit + trace family, not just tombstones. **M2** a shared read seam
+> `gate::sanitize_read`/`sanitize_read_opt` = `strip_invisible`∘`redact_content`
+> now covers **every** emitted text field — title/content/snippet/evidence/
+> heading on recall/search hits + `/get/{id}` + `/multi-get` — closing the
+> raw-invisible-Unicode gap on the HTTP JSON boundary. **M3** DSAR + chunk
+> purge erase the **graph + review-queue residue**: the v1.20.24
+> relationship-delete referenced a non-existent `entities.knowledge_id` column
+> ("no such column" silently aborted the DELETE, so relationships + PII-named
+> entity nodes survived every purge) — the clause is removed, `purge_chunk_ids`
+> now collects affected entity ids and orphans-sweeps them (shared entities
+> survive), and `run_dsar_pool` additionally sweeps `proposals` by subject
+> verbatim (raw candidate content with no owner column). **M4** the webhook
+> signing secret fails closed on wide modes (`check_secret_permissions`, the G3
+> posture). +3 server tests (main bin 532 → 534 passed / 5 ignored), MCP 15
+> unchanged, client 111 unchanged, plugin 97 (+1: memory_store default/direct
+> routing); both trees + plugin clippy `-D warnings` + fmt clean. Honest
+> ceilings: the proposal sweep is a literal `LIKE %subject%` (no owner join);
+> the orphan sweep is scoped to the purge's affected set (standalone entities
+> untouched by design); M1's stored hash is a fingerprint, not a content lease
+> (audit-chain verification unchanged). See Agent 92 + `CHANGELOG.md`
+> §[1.20.25].
+
+> **Version note:** **v1.20.23 "Calibrate" shipped 2026-08-13** — a
+> **server + client** release (both `Cargo.toml`/lock 1.20.22 → 1.20.23)
+> delivering the HITL essay's fourth condition — **evaluative feedback to the
+> reviewer** (anti-rubber-stamp). The signals shipped since v1.14/v1.20.3/v1.20.14;
+> what was missing was visibility of `decided_at` (written on approve/reject/
+> expire but never read). **M1** exposes it: `ProposalView.decided_at` (column
+> 11, `Option<i64>`) + a `since` window param on `GET /proposals` (`WHERE
+> created_at >= ?`; absent → byte-identical legacy query), extracted as
+> `list_proposals_page` (the `page_decayed`/`list_dsar_page` idiom, unit-testable
+> with a bare `Connection`). **M2** the client computes the four reviewer signals
+> (`calibration_stats`: approve-rate, median `decided_at - created_at` latency,
+> edit-rate, screen-override-rate — zero denominators → `0.0`/`None`, no NaN) and
+> renders a dismissable strip above the Review queue with a rubber-stamp warn
+> (approve-rate > 0.9 over ≥ 20 decisions); fetch-failed → nothing (offline
+> degrade). **No new telemetry, no new server logic.** +2 server tests (main bin
+> 525 → 527 passed / 5 ignored), +3 client tests (108 → 111 passed); both trees
+> clippy `-D warnings` + fmt clean; wasm + all 5 binaries + `badges.sh --selfcheck`
+> clean. Honest ceilings: the window is `since`-bounded **and** list-capped
+> (LIMIT 200 → "last 200 decisions" label); `override_rate` keys on read-time
+> `screen_verdict`; the strip is per-operator-global; the warn threshold is a
+> constant heuristic (reviewer baselines are v2.x). **This was the planned last
+> release of the v1.20.x line** — the v1.20.24 "Sweep" audit-followup shipped
+> after (see above) — closure note in CHANGELOG §[1.20.23] + the Hardening-Line
+> INDEX. See Agent 90 + `CHANGELOG.md` §[1.20.23].
+
+> **Version note:** **v1.20.22 "Clocks" shipped 2026-08-13** — a
+> **server + client** release (both `Cargo.toml`/lock 1.20.21 → 1.20.22)
+> extending the v1.20.15 "queue is a clock" core (reused unchanged) to
+> **erasure + retention**: GDPR Art 17's 30-day window and Art 12's response
+> deadline become **visible, not assumed**. **M1** the DSAR surface (`observe.rs`
+> + `config.rs`) — pure `dsar_deadline(created_at) = created_at +
+> dsar_window_secs()` (`DEFAULT_DSAR_WINDOW_DAYS = 30`, `BRAIN_DSAR_WINDOW_DAYS`
+> override, the `BRAIN_PROPOSAL_TTL_SECS` pattern); `DsarResponse` gains
+> `created_at` + `deadline` (computed, the client's source of truth). **M1.2**
+> `GET /dsar` ledger list (Admin): bounded page (`limit` default 100,
+> `1..=MAX_MULTI_GET`), newest-first, **server-computed per-row `deadline`** (no
+> client window mirror), query extracted as `list_dsar_page` (the `page_decayed`
+> idiom) and wired into the openapi + route + authz guard tables. **M2** client:
+> the Subjects panel fetches the ledger + renders the 30-day countdown via
+> `time_budget::{remaining, tier, format_remaining}` (day-scale bands `<3d`
+> warn, `<1d` danger) on a ~30s on-load ticker (`dsar_clock` pure core); the
+> Data panel gains the `next_expiries` pure core (sort, cap 10, skip expired)
+> + tier-colored labels. **M1.3/M2.3** +2 server tests (main bin 523 → 525
+> passed / 5 ignored) and +3 client tests (105 → 108 passed); both trees clippy
+> `-D warnings` + fmt clean, wasm + all binaries release-clean. Honest ceilings:
+> the countdown is a **signal, not enforcement** (no background worker, repo
+> rule; the v1.20.17 ledger TTL is the only automatic bound); the window is
+> display math on `created_at` (a reminder channel is v2.x); `GET /dsar` is an
+> Admin-only operator registry, not subject-facing; `/decayed` only returns
+> already-expired rows, so the Data "next to expire" card is the client boundary
+> that would surface a near-expiry row if the server ever returned one. See
+> Agent 89 + `CHANGELOG.md` §[1.20.22].
+
+> **Version note:** **v1.20.21 "Subject360" shipped 2026-08-13** — a
+> **server + client** release (both `Cargo.toml`/lock 1.20.20 → 1.20.21)
+> turning the execute-blind DSAR into an execute-informed one. **M1** `POST
+> /dsar` gains `dry_run` (`observe.rs`) — the `dsar_requests`/`knowledge`
+> locate + bundle build run, then a read-only branch reports the `Footprint`
+> (`roots`/`derived`/`export_rows`/`tombstones`/`dsar_rows`) and drops the tx
+> untouched: no purge, no sweep, no ledger row, no certificate. The export
+> bundle builder is extracted once (`build_export_bundle`) and shared, so the
+> dry-run runs the *exact* same query as the live purge (no duplication);
+> `count_subject_tombstones` matches the purge's tombstone reasons. `M1.1` +2
+> server tests (main bin 523 passed / 5 ignored) proving the write-free
+> footprint + the builder is behavior-preserving. **M2** the client Data &
+> Rights panel gains a "Preview DSAR footprint" card (`subjects.rs` +
+> `api.rs::dsar_preview`/`parse_footprint`); `openapi.yaml` documents
+> `dry_run` + the `Footprint` schema. 2 client tests (+, main bin 105 passed);
+> both trees clippy `-D warnings` + fmt + wasm/release clean. Honest ceilings:
+> the footprint is a point-in-time preview (owner + `derived_from` walk, depth
+> 8, no cross-domain dependency analysis — federation is v2.x), and
+> ledger-history counts reflect the v1.20.17 retention window. See Agent 88 +
+> `CHANGELOG.md` §[1.20.21].
+
+> **Version note:** **v1.20.20 "Replay" shipped 2026-08-13** — a **client**
+> release (client Cargo.toml/lock 1.20.16 → 1.20.20; server 1.20.19 → 1.20.20,
+> version-alignment only — **zero server code**, `openapi.yaml` untouched)
+> turning the already-stored decision path (v1.15.0 "Observe" M2) into a
+> routed, ledger-linked, exportable evidence surface. **M1** `Route::RecallTrace`
+> (`trace_panel`/`TraceCard` in recall.rs) now reads the stored shape —
+> `query_hash` (not `query`, v1.20.17 M3) + the applied `scope` array — and runs
+> every displayed string through the v1.20.3 `strip_invisible` render boundary
+> (`replay_str`/`replay_list`), closing the bidi/zero-width smuggling class on
+> the replay view. **M2** the Audit panel links `kind == "recall"` rows to
+> `/recall/{id}` (the audit row id *is* the trace id) via pure `replay_href`.
+> **M3** the replay view exports the raw trace JSON via the existing
+> `document::eval` blob seam; `replay_*` i18n keys in `en` only (de/fr/es/nl
+> fall back). 3 tests (+, main client bin 100 → 103 passed), client clippy
+> `-D warnings` + fmt + wasm build clean, server suite untouched. Honest
+> ceiling: traces store the query **hash** (deliberate — a recall query can be
+> personal data), so the exact query is recovered via audit + hash, not shown
+> verbatim. See Agent 87 + `CHANGELOG.md` §[1.20.20].
+
+> **Version note:** **v1.20.18 "Bound" shipped 2026-08-13** — a
+> **server** release (server Cargo.toml 1.20.17 → 1.20.18; client stays at
+> 1.20.16) closing the **three unbounded read paths** and collapsing the **two
+> quadratic scans** the v1.20.2 Harden D-group left. **M1** `GET
+> /graph/entity/{name}` and `GET /graph/relations` now take a `?limit=`
+> (default `MAX_GRAPH_EDGES` = 500, clamped 1..=500) and run
+> `ORDER BY r.id LIMIT ?` — a stable, reproducible page (shared `GraphLimit`
+> + `clamp_graph_limit`; extracted `entity_relations`/`relations_for`).
+> **M2** `find_subject_conflicts` (`consolidate.rs`) is grouped by subject —
+> O(n²) over all current rows → O(sum of m² per subject), ~O(n) dominating on
+> mostly-unique subjects, output sorted for determinism. **M3**
+> `idx_tombstones_reason_purged` index serves `/tombstones?subject=&since=`
+> + the DSAR certificate reads (schema → 1.20.18, guarded by the schema-
+> contract test). **M4** `/decayed` (`list_decayed`, gate.rs) gains
+> `?limit=`/`?offset=` paging (default `MAX_DECAYED` = 500, applied after the
+> Rust-side `effective_expiry` filter; `page_decayed` extracted). 5 tests (+,
+> main bin 514 → 519 passed), all gates green: 519 passed / 5 ignored (main
+> bin), clippy `-D warnings` + fmt clean, openapi/route/schema guards green,
+> release build clean. Honest ceilings: the graph `ORDER BY r.id` page is a
+> bounded but arbitrary window (no semantic ranking), `/decayed` pages but
+> still scans once (the expiry is a Rust pure function, not a SQL predicate),
+> and the conflict scan is still quadratic within a single subject (inherent
+> to the mC2 rule). See Agent 85 + `CHANGELOG.md` §[1.20.18].
+
+> **Version note:** **v1.20.19 "Vault" shipped 2026-08-13** — a **server**
+> docs-correction release (server Cargo.toml 1.20.18 → 1.20.19; client stays at
+> 1.20.16). The **v1.14 `pii_map` write-time placeholder vault was never built** —
+> zero `INSERT INTO pii_map` sites in-tree, only `/export`'s read path. **M1**
+> deletes that dead read path (`ExportQuery.include_pii_map` + the `pii_map`
+> envelope key gone), **M1.3/M1.4** drop the table outright at migration
+> (`DROP TABLE IF EXISTS pii_map`; schema → 1.20.19, guarded by the schema-
+> contract test + `migration_drops_pii_map_and_empty_table`), and **M1.2/M2**
+> correct every doc claim — the shipped PII control is deterministic read-time
+> output redaction (`redact_content` + `screen_source_prompt`) + at-rest LUKS,
+> **not** a vault. A fetchable placeholder→raw map would *increase* the
+> personal-data surface; it is deliberately absent. 2 tests (+, main bin 519 →
+> 521 passed). See Agent 86 + `CHANGELOG.md` §[1.20.19].
+
+> Full per-release + per-agent history (v1.0.0→v1.20.20, Agent 87→1) moved to
+> **`docs/AGENTS_HISTORY.md`** — load it on demand. This file is the operational
+> contract only.
+
+---
+
+
 > **Version note:** **v1.20.18 "Bound" shipped 2026-08-13** — a
 > **server** release (server Cargo.toml 1.20.17 → 1.20.18; client stays at
 > 1.20.16) closing the **three unbounded read paths** and collapsing the **two
