@@ -4779,6 +4779,199 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Invite or run not found }
+  /ops/agents/cards:
+    post:
+      summary: Provision (or re-sign) an agent's card with the operator key (Admin on domain)
+      description: >
+        Mesh: the A2A-shaped identity manifest per agent principal — signed
+        with the UMP operator key at provisioning; no key refuses (409
+        `operator_key_missing`). Re-provisioning replaces the manifest and its
+        signature in one row.
+      operationId: postAgentCard
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, principal, name]
+              properties:
+                domain: { type: string }
+                principal: { type: string, maxLength: 256 }
+                name: { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 1000 }
+                capabilities: { type: object }
+      responses:
+        "200":
+          description: The signed card
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  principal: { type: string }
+                  domain: { type: string }
+                  name: { type: string }
+                  card: { type: object }
+                  signature: { type: string }
+                  signed_by: { type: string }
+        "400": { description: input_invalid | capabilities_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin required) }
+        "409": { description: operator_key_missing }
+    get:
+      summary: The domain's verified agent cards (Read on domain)
+      description: >
+        Every card is re-verified against the current operator key before it
+        leaves the server; a tampered card fails the whole list closed.
+      operationId: getAgentCards
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+      responses:
+        "200":
+          description: Verified cards
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  count: { type: integer }
+                  cards:
+                    type: array
+                    items: { type: object }
+        "400": { description: card_tampered | agent_unknown }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+  /workflow/runs/{id}/delegations:
+    post:
+      summary: Delegate a task to a named agent on this run (Write on domain)
+      description: >
+        Mesh delegation: the target's card is VERIFIED first (an unknown or
+        tampered card refuses with `agent_unknown` / `card_tampered` — fail
+        closed); then one `delegations` row + a `delegation/request` lineage
+        event + audit commit together. Task content is screened at write
+        (empty/≤4000/blocklist) and lives in the table — lineage payloads
+        carry ids + actors only.
+      operationId: postWorkflowRunDelegation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to_principal, task]
+              properties:
+                to_principal: { type: string, maxLength: 256 }
+                task: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: The delegation receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  delegation_id: { type: integer }
+                  event_id: { type: integer }
+                  to: { type: string }
+                  state: { type: string, enum: [requested] }
+        "400": { description: note_invalid | agent_unknown | card_tampered }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+        "409": { description: delegations_full (details.cap names the per-run bound) }
+    get:
+      summary: The run's delegation view (Read on domain)
+      operationId: getWorkflowRunDelegations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Chronological delegations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  count: { type: integer }
+                  delegations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        from: { type: string }
+                        to: { type: string }
+                        task: { type: string }
+                        state: { type: string, enum: [requested, completed] }
+                        result: { type: string, nullable: true }
+                        created_at: { type: integer }
+                        decided_at: { type: integer, nullable: true }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/delegations/{delegation_id}/result:
+    post:
+      summary: Submit a delegation's result — delegatee-only, exactly once (Write on domain)
+      description: >
+        Only the delegated agent may submit; CAS `requested → completed` in ONE
+        transaction with the `delegation/result` child lineage event + audit. A
+        replayed result refuses (409). Result content is screened like notes.
+      operationId: postWorkflowRunDelegationResult
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: delegation_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [result]
+              properties:
+                result: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: The completion receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  delegation_id: { type: integer }
+                  event_id: { type: integer }
+                  state: { type: string, enum: [completed] }
+        "400": { description: note_invalid | not_delegatee }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Delegation or run not found }
+        "409": { description: result_already_submitted }
   /workflow/runs/{id}/answer:
     post:
       summary: Answer a pending AskHuman question (Write + approve role gate)

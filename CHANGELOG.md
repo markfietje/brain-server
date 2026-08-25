@@ -19,6 +19,32 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.29] — 2026-08-25 — "Mesh": agents as named colleagues
+
+Within one deployment, "each agent has a brain db, collaborating" means agents get IDENTITY, capability discovery, and delegation — the A2A protocol's shape without its network layer (live federation stays v3.x territory). Mesh ships three governed primitives: **Agent Cards** (the A2A-standard JSON manifest per agent principal, Ed25519-signed with the UMP operator key at provisioning and RE-VERIFIED at every use point — a card whose signature no longer matches refuses loudly), **delegation** (agent→agent work orders as lineage events on a run: the request names the target's VERIFIED card first — an unknown or tampered card refuses with nothing written; results return delegatee-only, exactly once by CAS), and the **working-set arbiter** (a pure mapping from base domain + agent to the agent's own scratch-domain name; promotion into shared domains stays behind the existing HITL proposal gate).
+
+**M1 (storage + pure core):** two additive tables in every domain DB (schema → **1.28.29**, schema-contract test extended): `agent_cards` (UNIQUE(domain, principal); stores the exact signed manifest bytes + hex signature + signer `did:key`) and `delegations` (run FK, screened task/result content, `requested → completed` CAS state). The pure core (`src/workflow/mesh.rs`) holds card provisioning/verification (sign sha256(manifest) at write, strict verification at every read and at delegation acceptance — fail-closed on tampered bytes OR missing operator key), the per-run delegation ceiling (`409 delegations_full`, evidence refused never dropped), and the working-set domain derivation (charset-legal, collision-safe via content hash). Task/result CONTENT lives in the table; lineage payloads on `delegation/request` / `delegation/result` carry ids + actors only — the Channel law, so work-order text cannot ride the engine-facing event bus.
+
+**M2 (surfaces):** `POST /ops/agents/cards` provisions/re-signs (Admin on the domain; `409 operator_key_missing` without a key). `GET /ops/agents/cards?domain=` serves only verified cards — one tampered row fails the whole list closed. `POST /workflow/runs/{id}/delegations {to_principal, task}` verifies the target's card BEFORE any write (`400 agent_unknown` / `card_tampered`), screens the task through the SAME one-function screen as notes, and commits row + lineage event + audit in ONE WorkflowTx. `GET .../delegations` is the bounded run view; `POST .../{delegation_id}/result {result}` is delegatee-only (`400 not_delegatee`), exactly-once (`409 result_already_submitted` on replay). Crew presence rides mutating mesh txs best-effort.
+
+**M3 (wiring):** five routes registered with openapi.yaml (wire-exact bodies), docs/api.md, the route-coverage guard array, the route-authz guard table (+ the mesh handler source mapping).
+
+### Release notes
+
+- **Improvements:** agents become named colleagues — each agent principal carries a standards-shaped (A2A) identity card, signed by the operator key and re-verified whenever it is used.
+- **Improvements:** agent-to-agent delegation inside a governed run: request a named verified agent's work on the case's lineage, and its result returns through the same audited chain, exactly once, from the delegatee only.
+- **Security fixes:** delegation targets must verify against the operator key before anything is written; tampered or rotated-away cards refuse loudly everywhere they surface; task/result text is screened at write (bounds + prompt-injection blocklist + invisible-strip) and never enters lineage payloads; per-run delegation ceiling; every mutation audits beside its lineage event in one transaction; every emitted string rides the read seam.
+### Engineering record
+- Tests: server main bin **883** / 6 ignored (**+4** over v1.28.28: the plan-named pins `agent_card_signature_verified_on_principal_use`, `delegation_request_and_result_are_lineage_events`, `agent_working_set_isolated_until_promoted`, `cross_agent_recall_shows_origin_labels`), lib **194** / 1; clippy `-D warnings` + fmt clean. Schema 1.28.28 → **1.28.29** (additive `agent_cards` + `delegations`). Zero new dependencies (ed25519-dalek, sha2, hex already declared).
+
+### Honest ceilings
+- Delegation RESULTS ride the lineage like steering (screened, bounded, in-table) — promotion into evidence rows / shared knowledge stays the HITL proposal path; no auto-ingest of agent output ships here.
+- The working-set arbiter pins the NAMESPACE vocabulary; no surface yet filters reads by it end-to-end (per-agent scratch isolation is enforced today by domain scoping + owner columns, not by the derived name).
+- Card verification trusts the CURRENT operator key: a key rotation invalidates every existing card until re-provisioned (fail-closed by design, but operationally loud).
+- No client/plugin surface — Mesh is API-first; Cockpit agent-card badges are a later client release.
+- Cross-agent recall provenance remains the existing `origin='agent'` label through the read seam (pinned); agents still see each other's approved knowledge exactly as any same-domain reader does.
+
+---
 
 
 

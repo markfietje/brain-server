@@ -22,7 +22,7 @@ use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
 use crate::workflow::channel::{self, ChannelError};
 
-fn channel_err(e: ChannelError) -> HandlerError {
+pub(crate) fn channel_err(e: ChannelError) -> HandlerError {
     match e {
         ChannelError::InvalidContent(w) => HandlerError::bad_request(
             "note_invalid",

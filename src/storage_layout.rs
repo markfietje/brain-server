@@ -129,6 +129,11 @@ pub const SCHEMA_VERSION_V1_28_27: &str = "1.28.27";
 /// swarm invites). One-way; the down-migration is a documented no-op (keep
 /// table, drop code).
 pub const SCHEMA_VERSION_V1_28_28: &str = "1.28.28";
+
+/// v1.28.29 "Mesh": `agent_cards` + `delegations` tables (additive; signed
+/// agent identity + agent→agent work orders). One-way; the down-migration is
+/// a documented no-op.
+pub const SCHEMA_VERSION_V1_28_29: &str = "1.28.29";
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

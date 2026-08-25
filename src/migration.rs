@@ -1871,7 +1871,51 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.29 "Mesh": agents as named colleagues. ─────────────────────
+    // `agent_cards` is the A2A-shaped identity manifest per agent principal:
+    // signed with the UMP operator key at provisioning and re-verified at
+    // every use point (reads + delegation acceptance) — a card whose
+    // signature fails refuses loudly. `delegations` holds agent→agent work
+    // orders over a run; the lineage events on `delegation/request` /
+    // `delegation/result` carry ids + actors only, never task content.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS agent_cards(
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain            TEXT NOT NULL,
+            principal         TEXT NOT NULL,
+            name              TEXT NOT NULL,
+            description       TEXT NOT NULL DEFAULT '',
+            capabilities_json TEXT NOT NULL DEFAULT '{}',
+            card_json         TEXT NOT NULL,
+            signature         TEXT NOT NULL,
+            signed_by         TEXT NOT NULL,
+            created_at        INTEGER NOT NULL,
+            UNIQUE(domain, principal)
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS delegations(
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain         TEXT NOT NULL,
+            run_id         INTEGER NOT NULL REFERENCES workflow_runs(id),
+            from_principal TEXT NOT NULL,
+            to_principal   TEXT NOT NULL,
+            task           TEXT NOT NULL,
+            state          TEXT NOT NULL DEFAULT 'requested',
+            result         TEXT,
+            created_at     INTEGER NOT NULL,
+            decided_at     INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_delegations_run ON delegations(run_id, id);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.29 "Mesh": agent_cards + delegations tables → 1.28.29.
     // v1.28.28 "Channel": case_notes table → 1.28.28.
     // v1.28.27 "Relay": handover_offers table → 1.28.27.
     // v1.28.26 "Crew": presence + principal_skills + crew_config tables → 1.28.26.
@@ -1888,8 +1932,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.28')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.28';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.29')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.29';",
         [],
     )?;
 

@@ -6197,6 +6197,21 @@ async fn main_inner() -> Result<()> {
             "/workflow/runs/{id}/notes/{invite_id}/accept",
             post(handlers::channel::post_invite_accept),
         )
+        // Mesh: agents as named colleagues — signed cards + delegation.
+        .route("/ops/agents/cards", post(handlers::mesh::post_card))
+        .route("/ops/agents/cards", get(handlers::mesh::get_cards))
+        .route(
+            "/workflow/runs/{id}/delegations",
+            post(handlers::mesh::post_delegation),
+        )
+        .route(
+            "/workflow/runs/{id}/delegations",
+            get(handlers::mesh::get_delegations),
+        )
+        .route(
+            "/workflow/runs/{id}/delegations/{delegation_id}/result",
+            post(handlers::mesh::post_delegation_result),
+        )
         .route("/ops/handovers", get(handlers::relay::get_ops_handovers))
         .route(
             "/workflow/runs/{id}/context",
@@ -10275,6 +10290,9 @@ Final paragraph after the rule.";
             "handover_offers",
             // v1.28.28 "Channel": the case-scoped channel (notes + invites).
             "case_notes",
+            // v1.28.29 "Mesh": agent cards + delegations.
+            "agent_cards",
+            "delegations",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10481,9 +10499,10 @@ Final paragraph after the rule.";
         // Bridges for the crm_cases case↔run linkage table.
         // Evolve for the KCS columns + the case_articles linkage table.
         // Channel for the case_notes table (notes + swarm invites).
+        // Mesh for agent_cards + delegations.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_28),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_29),
             "schema_version must be recorded as 1.28.28 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
@@ -11940,6 +11959,10 @@ Final paragraph after the rule.";
             // v1.28.28 "Channel": the case gets a room.
             "/workflow/runs/{id}/notes",
             "/workflow/runs/{id}/notes/{invite_id}/accept",
+            // Mesh: agents as named colleagues — signed cards + delegation.
+            "/ops/agents/cards",
+            "/workflow/runs/{id}/delegations",
+            "/workflow/runs/{id}/delegations/{delegation_id}/result",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13204,6 +13227,18 @@ Final paragraph after the rule.";
             // Accepting an invite joins the room: a Write, ownership never
             // moves.
             ("/workflow/runs/{id}/notes/{invite_id}/accept", "Write"),
+            // Mesh: provisioning/re-signing a card is governance over the
+            // agent's identity → Admin; the verified card views are Reads.
+            ("/ops/agents/cards", "Read"),
+            // Delegation: requesting work from a named agent and returning its
+            // result are Writes on the run's domain; the delegation view is a
+            // Read (GET/POST share the path — Read is the checked gate, the
+            // POST side pinned by handler source below).
+            ("/workflow/runs/{id}/delegations", "Read"),
+            (
+                "/workflow/runs/{id}/delegations/{delegation_id}/result",
+                "Write",
+            ),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13273,6 +13308,7 @@ Final paragraph after the rule.";
                     "relay" => include_str!("handlers/relay.rs"),
                     "crew" => include_str!("handlers/crew.rs"),
                     "channel" => include_str!("handlers/channel.rs"),
+                    "mesh" => include_str!("handlers/mesh.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
