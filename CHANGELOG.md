@@ -19,6 +19,82 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.32] — 2026-08-26 — "Frontdesk": one intake for every post-sale worktype
+
+Universality is decided at the front door: the intake classifier grows from
+six intent classes to thirteen, each mapping to a **worktype** (= run `kind`)
+with its own deterministic policy rows — SLA envelope class, required
+evidence, and decision gates. The Frontdesk substrate lands for the whole
+Universal Care Line (Returns / Goodwill / Outreach follow on it).
+
+### Release notes
+
+**Improvements**
+- **Every post-sale intent has a class:** `Return`, `WarrantyClaim`,
+  `RepairField`, `CareInquiry`, `AccountChange`, `SafetyRecall`, and
+  `RetentionOutreach` join the routing table; safety-recall vocabulary
+  outranks the commercial classes it shares words with, and unknown
+  worktypes deny loudly (the table is closed).
+- **Worktype policy rows:** every worktype carries its SLA envelope class
+  (safety recall is P1-class always; complaints keep their own two-clock
+  ISO 10002 envelope), required evidence tags, and gate waterfall — shared
+  between server and engines via the SDK (`stamp_worktype_envelope`).
+- **Crew routing by class:** the colleague board per worktype is a
+  deterministic match of HITL-maintained skills tags (`worktype_skills`) —
+  warranty claims reach colleagues holding both returns AND warranty.
+- **Confirm-gate:** terminal close now has structural discipline available:
+  a case closes on a customer-confirmation lineage event or the documented
+  consent-absent exception (3 logged attempts) — silence never certifies.
+- **Customer-effort proxy:** a deterministic CES proxy computed from
+  lineage shape only (repeats ×2 + channel switches + handovers ×3) — no
+  surveys, no sentiment models.
+- **Entitlement arithmetic:** Directive 2019/771 coverage windows (730-day
+  conformity baseline + member-state limitation extension), the 14-day
+  withdrawal window with its exceptions table (made-to-order/sealed goods
+  remove the right; separate deliveries start the clock at last delivery),
+  and region rules that fail closed against the residency stamp.
+
+**Security fixes**
+- Entitlement region checks fail CLOSED: an unstamped entitlement row is
+  foreign to any stamped site; malformed registry payloads never grant
+  coverage.
+
+### Engineering record
+
+- `IntentClass` extended in `workflow/frontdoor.rs` with the closed
+  `WORKTYPE_TABLE` (9 policy rows) + `worktype_policy`/`worktype_skills`;
+  SDK `policy::Worktype` owns the SLA clock table (single owner across the
+  ABI). Tests added: bin **898** / 6 ignored (**+7** over v1.28.31: plan-named
+  pins `intent_table_routes_every_worktype_deterministically`,
+  `entitlement_window_computes_771_extension`,
+  `withdrawal_window_14_days_computes_with_exceptions_table`,
+  `close_requires_confirmation_or_three_attempt_exception`,
+  `effort_proxy_computes_from_lineage_only_no_surveys`,
+  `crew_board_routes_by_worktype_tags`, plus
+  `memory_kind_round_trips` extended to the entitlement kind), lib **194** /
+  1 unchanged.
+- New engine crates in the crates workspace: **brain-care-core**
+  (care/account dialogs as a thin binding over interview-core's ambiguity/
+  draft/repair machinery — zero new concepts, pinned by
+  `care_core_reuses_interview_machinery_zero_new_concepts`) and
+  **brain-aftersales-core** (fulfillment waterfall entitlement → window →
+  disposition reusing troubleshoot-core's gate shape; own evidence
+  vocabulary ProofOfPurchase/DiagnosticBundle/SerialBatch/Photos/
+  InspectionReport; dispositions are HITL proposals only). Crates suite
+  green: SDK **110** (+1 `worktype_sla_table_is_deterministic`), two new
+  crate suites (**+2**).
+- `memory_kind='entitlement'` joins the governed chunk vocabulary
+  (strict-validated at the write boundary; retention default 1825 days);
+  additive data change — schema stays at 1.28.30.
+- Honest ceilings: the confirm-gate and effort proxy ship as workflow
+  primitives not yet wired into run-close HTTP flows; the crew board is a
+  service-level function over `/ops/skills`, no dedicated route yet;
+  entitlement rows are proposal-created knowledge but no dedicated
+  read/query API yet; recall campaigns, disposition proposals, consent
+  registry, and outreach remain v1.28.33–.35 scope.
+
+---
+
 ## [1.28.31] — 2026-08-26 — "Charter": the conformance pack lands
 
 The contact-center conformance pack closes gaps G1–G10 in one release:

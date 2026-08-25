@@ -415,6 +415,30 @@ pub fn list_skills(conn: &Connection, domain: &str) -> Result<Vec<(String, Strin
     Ok(rows)
 }
 
+/// Crew routing: worktype × skills tags → the colleague board. A principal
+/// sits on the board for a worktype when their HITL-maintained tags cover
+/// EVERY required tag; a worktype with no required tags routes to everyone.
+/// Deterministic, order-preserving over the (already ordered) skills rows,
+/// deduped — pure data shaping over the WFM feed, no presence read.
+pub fn board_for_worktype(skills: &[(String, String)], required: &[&str]) -> Vec<String> {
+    let mut board: Vec<String> = Vec::new();
+    for principal in skills.iter().map(|(p, _)| p) {
+        if board.iter().any(|b| b == principal) {
+            continue;
+        }
+        let owned: Vec<&str> = skills
+            .iter()
+            .filter(|(p, _)| p == principal)
+            .map(|(_, s)| s.as_str())
+            .collect();
+        let covers = required.iter().all(|r| owned.contains(r));
+        if covers {
+            board.push(principal.clone());
+        }
+    }
+    board
+}
+
 /// The approval-side primitive: CAS a PENDING `crew_skills_update` proposal
 /// to `approved` and apply its change in the SAME transaction. Returns the
 /// applied row count. A proposal that lost a race (no longer pending) is a
@@ -455,8 +479,33 @@ pub fn apply_proposal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workflow::frontdoor::worktype_skills;
     use brain_server::migration::run_migration;
     use brain_server::register_sqlite_vec::register_sqlite_vec;
+
+    #[test]
+    fn crew_board_routes_by_worktype_tags() {
+        let skills = vec![
+            ("ana".to_string(), "returns".to_string()),
+            ("ana".to_string(), "warranty".to_string()),
+            ("bob".to_string(), "returns".to_string()),
+            ("cyd".to_string(), "safety".to_string()),
+            ("cyd".to_string(), "compliance".to_string()),
+        ];
+        // warranty_claim requires BOTH tags: only ana qualifies.
+        let req = worktype_skills("warranty_claim");
+        assert_eq!(board_for_worktype(&skills, req), vec!["ana".to_string()]);
+        // safety_recall requires safety + compliance: cyd.
+        let req = worktype_skills("safety_recall");
+        assert_eq!(board_for_worktype(&skills, req), vec!["cyd".to_string()]);
+        // No required tags (unknown worktype) → everyone, deterministic order.
+        assert_eq!(
+            board_for_worktype(&skills, worktype_skills("mystery")),
+            vec!["ana".to_string(), "bob".to_string(), "cyd".to_string()]
+        );
+        // Nobody holds the tags → an empty board, never a guess.
+        assert!(board_for_worktype(&skills, &["quantum"]).is_empty());
+    }
 
     fn seed() -> Connection {
         register_sqlite_vec();

@@ -161,7 +161,7 @@ pub(crate) async fn create_proposal(
     if !crate::procedural::MemoryKind::is_strict_valid(&req.kind) {
         return Err(HandlerError::bad_request(
             "invalid_kind",
-            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic",
+            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic, entitlement",
         ));
     }
 

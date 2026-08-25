@@ -105,6 +105,63 @@ pub fn stamp_envelope_for_jurisdiction(
     e
 }
 
+/// A post-sale worktype: the run `kind` an intent class routes to. One
+/// substrate, many worktypes — each carries its own SLA envelope class
+/// (the deterministic policy row), so intake and engines read the same
+/// clock table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Worktype {
+    Troubleshoot,
+    CareInquiry,
+    Account,
+    Return,
+    WarrantyClaim,
+    RepairField,
+    Complaint,
+    /// GPSR 2023/988 posture: safety work is P1-class, always.
+    SafetyRecall,
+    RetentionOutreach,
+}
+
+impl Worktype {
+    /// Stable string for run `kind` storage and crew routing.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Worktype::Troubleshoot => "troubleshoot",
+            Worktype::CareInquiry => "care_inquiry",
+            Worktype::Account => "account",
+            Worktype::Return => "return",
+            Worktype::WarrantyClaim => "warranty_claim",
+            Worktype::RepairField => "repair_field",
+            Worktype::Complaint => "complaint",
+            Worktype::SafetyRecall => "safety_recall",
+            Worktype::RetentionOutreach => "retention_outreach",
+        }
+    }
+
+    /// The deterministic routing table: worktype → SLA envelope class.
+    pub fn priority_class(&self) -> Priority {
+        match self {
+            Worktype::SafetyRecall => Priority::P1,
+            Worktype::Account | Worktype::RepairField | Worktype::Complaint => Priority::P2,
+            Worktype::Troubleshoot | Worktype::CareInquiry | Worktype::Return
+            | Worktype::WarrantyClaim => Priority::P3,
+            Worktype::RetentionOutreach => Priority::P4,
+        }
+    }
+}
+
+/// Stamp the envelope a worktype's policy row buys. The complaint class
+/// keeps its own two-clock ISO 10002 envelope ([`stamp_complaint_envelope`]);
+/// every other worktype keeps a single clock.
+pub fn stamp_worktype_envelope(created_at: i64, wt: &Worktype) -> Envelope {
+    if *wt == Worktype::Complaint {
+        return stamp_complaint_envelope(created_at);
+    }
+    stamp_envelope(created_at, wt.priority_class())
+}
+
 /// Default retention (days) per `memory_kind` for chunks with no explicit
 /// `expires_at`. Per-chunk `expires_at` always wins; this table governs whole
 /// classes. Server config layers env overrides on top — these numbers live
@@ -115,6 +172,7 @@ pub const DEFAULT_RETENTION_KIND_DAYS: &[(&str, i64)] = &[
     ("procedure", 730),
     ("step", 730),
     ("decision", 730),
+    ("entitlement", 1825),
 ];
 
 #[cfg(test)]
@@ -135,8 +193,8 @@ mod tests {
 
     #[test]
     fn retention_table_shape() {
-        // Every kind maps to a positive day count; the five governed kinds are present.
-        assert_eq!(DEFAULT_RETENTION_KIND_DAYS.len(), 5);
+        // Every kind maps to a positive day count; the six governed kinds are present.
+        assert_eq!(DEFAULT_RETENTION_KIND_DAYS.len(), 6);
         assert!(DEFAULT_RETENTION_KIND_DAYS.iter().all(|(_, d)| *d > 0));
         assert!(
             DEFAULT_RETENTION_KIND_DAYS
@@ -157,6 +215,34 @@ mod tests {
         // Non-complaint stamps keep a single clock (ack == response).
         let plain = stamp_envelope(1000, Priority::P2);
         assert_eq!(plain.ack_deadline, plain.sla_deadline);
+    }
+
+    #[test]
+    fn worktype_sla_table_is_deterministic() {
+        // Safety recall is P1-class, always — GPSR posture.
+        let recall = stamp_worktype_envelope(0, &Worktype::SafetyRecall);
+        assert_eq!(recall.p_class, Priority::P1);
+        assert_eq!(recall.sla_deadline, 4 * 3600);
+        // Complaint keeps its own tighter ack clock; other worktypes keep one.
+        assert_eq!(
+            stamp_worktype_envelope(1000, &Worktype::Complaint).sla_deadline,
+            1000 + COMPLAINT_RESPONSE_SECS
+        );
+        let care = stamp_worktype_envelope(1000, &Worktype::CareInquiry);
+        assert_eq!(care.ack_deadline, care.sla_deadline);
+        // Retention outreach is the loosest clock.
+        assert!(
+            stamp_worktype_envelope(0, &Worktype::RetentionOutreach).sla_deadline
+                > stamp_worktype_envelope(0, &Worktype::Return).sla_deadline
+        );
+        for (wt, kind) in [
+            (Worktype::CareInquiry, "care_inquiry"),
+            (Worktype::WarrantyClaim, "warranty_claim"),
+            (Worktype::SafetyRecall, "safety_recall"),
+            (Worktype::RetentionOutreach, "retention_outreach"),
+        ] {
+            assert_eq!(wt.as_str(), kind);
+        }
     }
 
     #[test]

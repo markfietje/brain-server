@@ -1,0 +1,19 @@
+[package]
+name = "brain-care-core"
+version = "1.28.32"
+edition.workspace = true
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+description = "The care engine core: inquiry/account dialogs over interview-core machinery, zero new concepts."
+publish = false
+
+[dependencies]
+brain-interview-core = { path = "../brain-interview-core" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

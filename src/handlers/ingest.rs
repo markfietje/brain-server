@@ -406,7 +406,7 @@ pub(crate) async fn ingest_one(
     {
         return Err(HandlerError::bad_request_with(
             "invalid_memory_kind",
-            "memory_kind must be one of: fact, procedure, step, decision, episodic",
+            "memory_kind must be one of: fact, procedure, step, decision, episodic, entitlement",
             serde_json::json!({
                 "allowed": ["fact", "procedure", "step", "decision", "episodic"]
             }),

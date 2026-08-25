@@ -18,6 +18,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-aftersales-core"
+version = "1.28.32"
+dependencies = [
+ "brain-troubleshoot-core",
+ "serde",
+]
+
+[[package]]
+name = "brain-care-core"
+version = "1.28.32"
+dependencies = [
+ "brain-interview-core",
+]
+
+[[package]]
 name = "brain-consensus-core"
 version = "1.27.29"
 dependencies = [

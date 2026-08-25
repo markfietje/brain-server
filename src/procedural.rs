@@ -34,6 +34,10 @@ pub enum MemoryKind {
     /// a dated event record where `observed_at` is
     /// first-class (an episodic memory). The natural TTL candidate.
     Episodic,
+    /// Governed warranty/contract state (the Frontdesk entitlement
+    /// registry): product/serial traceability + coverage windows. Created
+    /// ONLY via proposals, like every knowledge write.
+    Entitlement,
 }
 
 impl MemoryKind {
@@ -45,6 +49,7 @@ impl MemoryKind {
             MemoryKind::Step => "step",
             MemoryKind::Decision => "decision",
             MemoryKind::Episodic => "episodic",
+            MemoryKind::Entitlement => "entitlement",
         }
     }
     /// Parse from the stored string. Unknown values fall back to `Fact`
@@ -56,6 +61,7 @@ impl MemoryKind {
             "step" => MemoryKind::Step,
             "decision" => MemoryKind::Decision,
             "episodic" => MemoryKind::Episodic,
+            "entitlement" => MemoryKind::Entitlement,
             _ => MemoryKind::Fact,
         }
     }
@@ -401,9 +407,14 @@ mod tests {
             MemoryKind::Procedure,
             MemoryKind::Step,
             MemoryKind::Decision,
+            MemoryKind::Episodic,
+            MemoryKind::Entitlement,
         ] {
             assert_eq!(MemoryKind::from_str(k.as_str()), k);
+            assert!(MemoryKind::is_strict_valid(k.as_str()));
         }
+        assert!(!MemoryKind::is_strict_valid("Entitlement"));
+        assert!(!MemoryKind::is_strict_valid("entitlements"));
     }
 
     #[test]
