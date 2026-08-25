@@ -32,43 +32,13 @@ Self-assessed posture throughout — no certification is claimed.
 
 ### Release notes
 
-**Improvements**
-- **Complaints as a class, not an escalation flavor:** the intake classifier
-  gains `Complaint`; complaints carry their own envelope — acknowledgment
-  within the hour by policy, always tighter than the 72h response clock,
-  P2-minimum priority map; escalation-to-dispute is a documented handover
-  audited as `handover/dispute` — the complaints register IS the audit chain,
-  zero new tables.
-- **Metrics dictionary:** every scoreboard field now has a normative entry in
-  [docs/metrics.md](docs/metrics.md) (formula, source lineage, window
-  semantics, industry citation), pinned by a docs↔code parity meta-test. The
-  FCR repeat-attribution window is configurable (`BRAIN_FCR_WINDOW_DAYS`,
-  default 7) and consumed by the scoreboard derivation when a run records
-  its recurrence age.
-- **Accessibility as a gate:** WCAG 2.2 AA is release-blocking for the client
-  (checklist-driven gate); the Accessibility Conformance Report ships at
-  [docs/trust/acr-vpat.md](docs/trust/acr-vpat.md) for web + desktop
-  (EN 301 549 clause-11 mapping), honestly listing the known ceilings.
-- **Global locales:** `ar` (RTL, full parity) and the `en-XA` pseudolocale
-  join the shipped locale set under the existing key-parity wall; mirroring
-  is pinned by a render-smoke test.
-- **WFM seam completed:** `GET /ops/skills` joins the shifts feed as the
-  documented interop boundary — centers keep their workforce-management tool;
-  brain keeps governed truth. No forecasting engine was built.
-- **Docs truth:** COPC R8.0 + ISO 18295-1 clause map added to COMPLIANCE.md
-  §6.7 (with the measured-never-enforced workload ceiling); deployment tiers
-  T1–T4 documented in docs/deployment.md; PCI DSS recorded as explicit
-  non-scope in THREAT_MODEL §6; the ISO/AWI 18295-1 revision stays a
-  test-pinned watch item so it cannot land silently.
-
-**Security fixes**
-- None (no trust-boundary changes; the new read route carries the standard
-  per-domain Read gate and bounds).
-
-**Bug fixes**
-- openapi.yaml scoreboard response schema caught up to the wire shape (the
-  five KCS/Beacon fields added in earlier releases were missing from the
-  contract).
+- **Improvements:** Complaints are a first-class case class, not an escalation flavor — the intake classifier gains `Complaint`; complaints carry their own envelope: acknowledgment within the hour by policy, always tighter than the 72h response clock, P2-minimum priority map; escalation-to-dispute is a documented handover audited as `handover/dispute` — the complaints register IS the audit chain, zero new tables.
+- **Improvements:** every scoreboard field now has a normative entry in [docs/metrics.md](docs/metrics.md) (formula, source lineage, window semantics, industry citation), pinned by a docs↔code parity meta-test; the FCR repeat-attribution window is configurable via `BRAIN_FCR_WINDOW_DAYS` (default 7) and consumed by the scoreboard derivation.
+- **Improvements:** accessibility is a release-blocking gate — WCAG 2.2 AA checklist-enforced for the client, with an Accessibility Conformance Report at [docs/trust/acr-vpat.md](docs/trust/acr-vpat.md) for web + desktop (EN 301 549 clause-11 mapping), honestly listing the known ceilings.
+- **Improvements:** global-locale readiness — `ar` (right-to-left, full string parity) and the `en-XA` pseudolocale join the shipped locale set under the existing key-parity wall; the UI mirrors when an RTL locale is active.
+- **Improvements:** the WFM seam is complete — `GET /ops/skills` joins the shifts feed as the documented interop boundary; centers keep their workforce-management tool, brain keeps governed truth (no forecasting engine built).
+- **Improvements:** contact-center standards posture documented end to end — COPC R8.0 + ISO 18295-1 clause maps in COMPLIANCE.md §6.7, deployment tiers T1–T4 in docs/deployment.md, PCI DSS explicit non-scope in THREAT_MODEL §6, and test-pinned watch items so standards revisions cannot land silently.
+- **Bug fixes:** the OpenAPI scoreboard response schema caught up to the wire shape (five fields shipped in earlier releases were missing from the contract).
 
 ### Engineering record
 
