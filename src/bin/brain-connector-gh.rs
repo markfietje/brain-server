@@ -238,17 +238,16 @@ fn auth_token() -> Option<String> {
     fn first_token(raw: &str) -> Option<String> {
         raw.split_whitespace().next().map(str::to_string)
     }
-    if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
-        if let Ok(s) = std::fs::read_to_string(path.trim()) {
-            if let Some(t) = first_token(&s) {
-                return Some(t);
-            }
-        }
+    if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE")
+        && let Ok(s) = std::fs::read_to_string(path.trim())
+        && let Some(t) = first_token(&s)
+    {
+        return Some(t);
     }
-    if let Ok(t) = std::env::var("BRAIN_TOKEN") {
-        if let Some(t) = first_token(&t) {
-            return Some(t);
-        }
+    if let Ok(t) = std::env::var("BRAIN_TOKEN")
+        && let Some(t) = first_token(&t)
+    {
+        return Some(t);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let default_path = std::path::Path::new(&home).join(".config/brain-server/auth-token");

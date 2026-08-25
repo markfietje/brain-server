@@ -716,21 +716,21 @@ fn warn_if_wal_active(source: &Path, force: bool) -> Result<()> {
         p.push("-wal");
         PathBuf::from(p)
     };
-    if let Ok(meta) = fs::metadata(&wal) {
-        if meta.len() > WAL_ACTIVE_HEURISTIC_BYTES {
-            if !force {
-                bail!(
-                    "source WAL is {} bytes (> {} heuristic) — stop the server first, \
-                     or pass --force to proceed at your own risk",
-                    meta.len(),
-                    WAL_ACTIVE_HEURISTIC_BYTES
-                );
-            }
-            eprintln!(
-                "warning: source WAL is {} bytes (heuristic tripped); proceeding because --force",
-                meta.len()
+    if let Ok(meta) = fs::metadata(&wal)
+        && meta.len() > WAL_ACTIVE_HEURISTIC_BYTES
+    {
+        if !force {
+            bail!(
+                "source WAL is {} bytes (> {} heuristic) — stop the server first, \
+                 or pass --force to proceed at your own risk",
+                meta.len(),
+                WAL_ACTIVE_HEURISTIC_BYTES
             );
         }
+        eprintln!(
+            "warning: source WAL is {} bytes (heuristic tripped); proceeding because --force",
+            meta.len()
+        );
     }
     Ok(())
 }
