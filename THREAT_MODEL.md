@@ -239,6 +239,10 @@ Each major release must complete these exit gates (in addition to fmt/clippy/tes
   reserved for a future major release when libraries stabilize.
 - **Supply chain of the operating system.** Assumes the OS / kernel / libc
   are trusted. Hardened OS images (Flatcar, Talos) are an operator choice.
+- **Payment data (PCI DSS — explicit non-scope).** Payment-card data is never
+  ingested, stored, or transited by this system; no PCI scope is claimed or
+  achievable through this component. Content screening + PII masking exist
+  for privacy law, not as PCI controls.
 
 ---
 

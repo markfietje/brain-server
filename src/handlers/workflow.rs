@@ -696,7 +696,14 @@ fn artifacts_from_row(
         repeat_contact: v
             .get("repeat_contact")
             .and_then(|r| r.as_bool())
-            .unwrap_or(false),
+            .unwrap_or(false)
+            // FCR window (SQM-style, docs/metrics.md): a recurrence whose
+            // recorded age falls inside the window marks this run's
+            // predecessor as NOT first-contact-resolved.
+            || v.get("prev_contact_age_secs")
+                .and_then(|a| a.as_i64())
+                .map(|age| age >= 0 && age <= crate::config::fcr_window_days() * 86400)
+                .unwrap_or(false),
         handoff_complete: status == "completed",
         verified: v.get("verified").and_then(|b| b.as_bool()).unwrap_or(false),
         escalation_honored: v
@@ -789,6 +796,131 @@ mod scoreboard_tests {
             !audited.contains(&9),
             "non-workflow kinds must not satisfy workflow audit linkage"
         );
+    }
+
+    /// Env-var config is process-global: env-mutating tests take the shared
+    /// lock, tolerantly (poison never cascades).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// fcr_window_is_configurable_and_deterministic
+    #[test]
+    fn fcr_window_is_configurable_and_deterministic() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Default: 7 days, deterministic across reads.
+        // SAFETY: single-threaded under ENV_LOCK — the documented env-mutation posture.
+        unsafe { std::env::remove_var("BRAIN_FCR_WINDOW_DAYS") };
+        assert_eq!(crate::config::fcr_window_days(), 7);
+        assert_eq!(crate::config::fcr_window_days(), 7);
+        // Override applies; invalid values fall back to the default.
+        // SAFETY: single-threaded under ENV_LOCK.
+        unsafe { std::env::set_var("BRAIN_FCR_WINDOW_DAYS", "3") };
+        assert_eq!(crate::config::fcr_window_days(), 3);
+        // SAFETY: single-threaded under ENV_LOCK.
+        unsafe { std::env::set_var("BRAIN_FCR_WINDOW_DAYS", "-2") };
+        assert_eq!(crate::config::fcr_window_days(), 7);
+        unsafe { std::env::set_var("BRAIN_FCR_WINDOW_DAYS", "banana") };
+        assert_eq!(crate::config::fcr_window_days(), 7);
+
+        // The derivation honors the window: a recurrence inside the window
+        // counts the run as a repeat contact; outside it does not.
+        let row_within = (
+            11i64,
+            "completed".to_string(),
+            r#"{"prev_contact_age_secs":172800}"#.to_string(), // 2 days < 3
+        );
+        unsafe { std::env::set_var("BRAIN_FCR_WINDOW_DAYS", "3") };
+        assert!(
+            derive_artifacts(
+                std::slice::from_ref(&row_within),
+                &std::collections::HashSet::new()
+            )[0]
+            .repeat_contact
+        );
+        let row_outside = (
+            12i64,
+            "completed".to_string(),
+            r#"{"prev_contact_age_secs":259200}"#.to_string(), // exactly 3 days
+        );
+        // Boundary IS inside (age <= window): deterministic closed window.
+        assert!(
+            derive_artifacts(&[row_outside], &std::collections::HashSet::new())[0].repeat_contact
+        );
+        let row_far = (
+            13i64,
+            "completed".to_string(),
+            r#"{"prev_contact_age_secs":259201}"#.to_string(),
+        );
+        assert!(!derive_artifacts(&[row_far], &std::collections::HashSet::new())[0].repeat_contact);
+        unsafe { std::env::remove_var("BRAIN_FCR_WINDOW_DAYS") };
+        // With the 7-day default restored, the same 3-day-old recurrence
+        // still reads as a repeat — the window moves the boundary, never the
+        // arithmetic. (row_within reused deliberately.)
+        assert!(
+            derive_artifacts(&[row_within], &std::collections::HashSet::new())[0].repeat_contact
+        );
+    }
+
+    /// scoreboard_fields_have_dictionary_entries — docs↔code parity meta-test:
+    /// every field the scoreboard emits carries a metrics-dictionary entry,
+    /// and the dictionary lists nothing the scoreboard does not emit.
+    #[test]
+    fn scoreboard_fields_have_dictionary_entries() {
+        const SCOREBOARD_FIELDS: &[&str] = &[
+            "fcr_units",
+            "repeat_contact_rate_units",
+            "correctness_units",
+            "override_rate_units",
+            "gap_rate_units",
+            "abstention_rate_units",
+            "guidance_acceptance_units",
+            "handoff_completeness_units",
+            "audit_green",
+            "escalation_honored_units",
+            "runs_scored",
+            "calibration_report_emitted",
+            "kcs_linkage_rate_units",
+            "searched_found_rate_units",
+            "article_freshness_median_age_secs",
+            "self_service_deflection_units",
+            "kb_feedback_total",
+            "kb_hot_topics",
+        ];
+        let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
+        let doc = std::fs::read_to_string(&doc_path)
+            .unwrap_or_else(|e| panic!("docs/metrics.md must exist and be readable: {e}"));
+        for field in SCOREBOARD_FIELDS {
+            assert!(
+                doc.contains(&format!("`{field}`")),
+                "metrics dictionary is missing an entry for `{field}`"
+            );
+        }
+        // Reverse parity: every backticked *_units / known boolean field in
+        // the dictionary's tables must be an emitted field — the dictionary
+        // cannot invent scoreboard fields.
+        for line in doc.lines().filter(|l| l.starts_with("| `")) {
+            let name = line
+                .trim_start_matches("| `")
+                .split('`')
+                .next()
+                .unwrap_or_default();
+            if name.contains("_units")
+                || [
+                    "audit_green",
+                    "runs_scored",
+                    "calibration_report_emitted",
+                    "kb_feedback_total",
+                    "kb_hot_topics",
+                ]
+                .contains(&name)
+            {
+                assert!(
+                    SCOREBOARD_FIELDS.contains(&name),
+                    "metrics dictionary lists `{name}` which the scoreboard does not emit"
+                );
+            }
+        }
     }
 }
 

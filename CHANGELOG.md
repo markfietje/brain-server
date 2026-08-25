@@ -19,6 +19,105 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.31] — 2026-08-26 — "Charter": the conformance pack lands
+
+The contact-center conformance pack closes gaps G1–G10 in one release:
+complaints become a first-class case class (ISO 10002), metrics become a
+dictionary with data lineage (COPC/KPI canon), accessibility becomes a
+release-blocking gate with a shipped ACR/VPAT (WCAG 2.2 AA / EN 301 549),
+global-locale readiness ships (`ar` RTL + `en-XA` pseudolocale), the WFM
+interop boundary completes (`GET /ops/skills`), and the compliance/deployment
+docs gain the clause maps, workload ceiling, and T1–T4 tier guide.
+Self-assessed posture throughout — no certification is claimed.
+
+### Release notes
+
+**Improvements**
+- **Complaints as a class, not an escalation flavor:** the intake classifier
+  gains `Complaint`; complaints carry their own envelope — acknowledgment
+  within the hour by policy, always tighter than the 72h response clock,
+  P2-minimum priority map; escalation-to-dispute is a documented handover
+  audited as `handover/dispute` — the complaints register IS the audit chain,
+  zero new tables.
+- **Metrics dictionary:** every scoreboard field now has a normative entry in
+  [docs/metrics.md](docs/metrics.md) (formula, source lineage, window
+  semantics, industry citation), pinned by a docs↔code parity meta-test. The
+  FCR repeat-attribution window is configurable (`BRAIN_FCR_WINDOW_DAYS`,
+  default 7) and consumed by the scoreboard derivation when a run records
+  its recurrence age.
+- **Accessibility as a gate:** WCAG 2.2 AA is release-blocking for the client
+  (checklist-driven gate); the Accessibility Conformance Report ships at
+  [docs/trust/acr-vpat.md](docs/trust/acr-vpat.md) for web + desktop
+  (EN 301 549 clause-11 mapping), honestly listing the known ceilings.
+- **Global locales:** `ar` (RTL, full parity) and the `en-XA` pseudolocale
+  join the shipped locale set under the existing key-parity wall; mirroring
+  is pinned by a render-smoke test.
+- **WFM seam completed:** `GET /ops/skills` joins the shifts feed as the
+  documented interop boundary — centers keep their workforce-management tool;
+  brain keeps governed truth. No forecasting engine was built.
+- **Docs truth:** COPC R8.0 + ISO 18295-1 clause map added to COMPLIANCE.md
+  §6.7 (with the measured-never-enforced workload ceiling); deployment tiers
+  T1–T4 documented in docs/deployment.md; PCI DSS recorded as explicit
+  non-scope in THREAT_MODEL §6; the ISO/AWI 18295-1 revision stays a
+  test-pinned watch item so it cannot land silently.
+
+**Security fixes**
+- None (no trust-boundary changes; the new read route carries the standard
+  per-domain Read gate and bounds).
+
+**Bug fixes**
+- openapi.yaml scoreboard response schema caught up to the wire shape (the
+  five KCS/Beacon fields added in earlier releases were missing from the
+  contract).
+
+### Engineering record
+
+- G1: `IntentClass::Complaint` + `stamp_complaint_envelope`
+  (`COMPLAINT_ACK_SECS`/`COMPLAINT_RESPONSE_SECS`) in the SDK policy module;
+  `Envelope` gains additive `ack_deadline` (non-complaint stamps keep one
+  clock); `relay::record_dispute_escalation` reuses the offer machinery with
+  audit detail `handover/dispute`. Tests: bin **891** / 6 ignored (**+8**
+  over v1.28.30: plan-named pins `complaint_class_gets_acknowledgment_sla`,
+  `complaint_escalation_is_audited_as_dispute`, plus SDK
+  `complaint_envelope_ack_leads_response`), lib **194** / 1 unchanged.
+- G2: `config::fcr_window_days()`; derivation consumes the window via an
+  optional recorded recurrence age; tests `fcr_window_is_configurable_and_
+  deterministic` (shared-lock env posture) +
+  `scoreboard_fields_have_dictionary_entries` (two-way docs↔code parity).
+- G3: client `a11y` test module parses docs/trust/wcag22-aa-checklist.md
+  (PASS/CEILING verdicts only; CEILING must cite the ACR) +
+  `acr_lists_known_ceilings_honestly`.
+- G4: `SUPPORTED_LOCALES` 5 → 7; `dir_for_locale` extracted pure (the shell
+  effect consumes it); client suite **232 passed** (+3).
+- G5: `workflow::crew::list_skills` (bounded 1000-row ordered read) + handler
+  `get_ops_skills` (Read on domain, strip-seam on emitted principals);
+  route + openapi + docs/api.md + guard tables in the same change; test
+  `wfm_feed_round_trips_shifts_and_skills`.
+- G10: new `src/docs_truth.rs` meta-tests pin the ISO watch item, the
+  self-assessed posture wording, and the documented FCR default against code.
+- Schema: **unchanged at 1.28.30** — zero tables/columns touched this
+  release. fmt + clippy `-D warnings` clean; live smoke on a DB COPY green
+  (`brain doctor` clean, `/audit/verify` ok:true, new route serving).
+
+### Honest ceilings
+
+- The complaint acknowledgment/response clocks are POLICY STAMPS on the
+  envelope — no scheduler enforces them yet (the same posture as the DSAR
+  window: a commitment shown, not an automatic bound). Escalation-to-dispute
+  is invoked explicitly; complaints do not yet auto-route through it.
+- The FCR window only bites where upstream runs record their recurrence age;
+  runs without it fall back to the explicit `repeat_contact` flag exactly as
+  before.
+- The Arabic locale is a first cut (domain terms like DSAR/UMP kept Latin);
+  the pseudolocale wraps rather than accents. The axe accessibility gate
+  covers the web console only; desktop rests on manual walkthroughs
+  (both ceilings stated in the ACR).
+- Workload visibility remains measured-never-enforced by design; no
+  forecasting/scheduling engines (WFM = interop); certification of nothing is
+  claimed or planned.
+
+---
+
 ## [1.28.30] — 2026-08-25 — "Parcels": sites share knowledge, governed
 
 "Large domain brain per site, then site-to-site": Parcels ships the governed answer to islands of knowledge — signed, human-gated **knowledge parcels**, deliberately slower than live federation because every crossing of a site boundary is a reviewed act (federation itself stays v3.x). Export builds a bundle of a domain's *approved* knowledge only (promoted rows; quarantined `flagged` rows and other domains' data never leave) with provenance + residency stamps copied READ-ONLY, signed with the UMP operator key over the exact manifest bytes — no key refuses loudly. Import verifies BEFORE any write (tampered/unsigned refuses with nothing written; an optional out-of-band `expected_signer` check refuses publisher mismatch), then lands every surviving row as a **PENDING proposal** in the target domain — never a direct knowledge write — deduplicated by content fingerprint against knowledge AND still-pending proposals, injection-screened rows refused and counted. A **parcel ledger** (direction in/out, hash, signer did, reviewer) records every crossing chained into the audit trail in the same transaction.

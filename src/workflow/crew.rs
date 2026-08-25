@@ -393,6 +393,28 @@ fn parse_change(content: &str) -> Result<SkillsChange, CrewError> {
         .map_err(|e| CrewError::InvalidSkills(e.to_string()))
 }
 
+/// The WFM skills feed (interop boundary — COPC alignment, not
+/// reimplementation): the domain's skill registry as a stable, bounded,
+/// ordered read. Skills stay HITL-maintained; this only exposes them.
+pub const MAX_SKILLS_FEED_ROWS: i64 = 1000;
+
+pub fn list_skills(conn: &Connection, domain: &str) -> Result<Vec<(String, String)>, CrewError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT principal, skill FROM principal_skills WHERE domain = ?1
+             ORDER BY principal, skill LIMIT ?2",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map(params![domain, MAX_SKILLS_FEED_ROWS], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(rows)
+}
+
 /// The approval-side primitive: CAS a PENDING `crew_skills_update` proposal
 /// to `approved` and apply its change in the SAME transaction. Returns the
 /// applied row count. A proposal that lost a race (no longer pending) is a

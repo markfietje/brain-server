@@ -33,9 +33,32 @@ impl Priority {
 pub struct Envelope {
     pub p_class: Priority,
     pub sla_deadline: i64,
+    /// Acknowledgment clock. Non-complaint classes keep a single clock
+    /// (`ack_deadline == sla_deadline`); complaints carry the ISO 10002
+    /// posture where acknowledgment is its own, always-tighter deadline.
+    pub ack_deadline: i64,
     pub created_at: i64,
     /// Empty string = unknown jurisdiction / unstamped.
     pub law_version: &'static str,
+}
+
+/// Complaint acknowledgment budget (ISO 10002 posture): acknowledged within
+/// the hour, by policy.
+pub const COMPLAINT_ACK_SECS: i64 = 3600;
+
+/// Complaint response clock: a P2-class response window.
+pub const COMPLAINT_RESPONSE_SECS: i64 = 72 * 3600;
+
+/// Stamp a complaint envelope: distinct priority map (P2 minimum) and its
+/// own acknowledgment deadline, always tighter than the response deadline.
+pub fn stamp_complaint_envelope(created_at: i64) -> Envelope {
+    Envelope {
+        sla_deadline: created_at + COMPLAINT_RESPONSE_SECS,
+        ack_deadline: created_at + COMPLAINT_ACK_SECS,
+        p_class: Priority::P2,
+        created_at,
+        law_version: "",
+    }
 }
 
 /// The curated law-version table: one version label per jurisdiction code,
@@ -62,6 +85,7 @@ pub fn law_version_for(jurisdiction: &str) -> Option<&'static str> {
 pub fn stamp_envelope(created_at: i64, p_class: Priority) -> Envelope {
     Envelope {
         sla_deadline: created_at + p_class.ttl_secs(),
+        ack_deadline: created_at + p_class.ttl_secs(),
         p_class,
         created_at,
         law_version: "",
@@ -119,6 +143,20 @@ mod tests {
                 .iter()
                 .any(|(k, _)| *k == "episodic")
         );
+    }
+
+    #[test]
+    fn complaint_envelope_ack_leads_response() {
+        let e = stamp_complaint_envelope(1000);
+        assert_eq!(e.ack_deadline, 1000 + COMPLAINT_ACK_SECS);
+        assert_eq!(e.sla_deadline, 1000 + COMPLAINT_RESPONSE_SECS);
+        assert!(
+            e.ack_deadline < e.sla_deadline,
+            "acknowledgment is always the tighter clock"
+        );
+        // Non-complaint stamps keep a single clock (ack == response).
+        let plain = stamp_envelope(1000, Priority::P2);
+        assert_eq!(plain.ack_deadline, plain.sla_deadline);
     }
 
     #[test]

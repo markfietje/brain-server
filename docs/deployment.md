@@ -221,6 +221,25 @@ Custom CRMs: see [connector-crm-custom.md](./connector-crm-custom.md).
 
 ---
 
+## Deployment tiers (ISO 18295-1 applicability: any size)
+
+The standard applies to a centre of any size; so does this server. The same
+binary scales from one operator to a global BPO by configuration, not by
+forks. Pick the tier that matches the operation — every tier ships the full
+audit chain and fail-closed gates.
+
+| Tier | Who | Shape | Posture |
+|---|---|---|---|
+| **T1 solo** | One operator / micro-centre | loopback bind, single domain, single DB, no roles | write posture **open** (the operator IS the reviewer); proposals still audited |
+| **T2 team** | A small team (≤ ~25 agents) | roles enabled, HITL proposal review queue on | write posture **review** (recommended default); skills + presence visible via `/ops/crew` |
+| **T3 site** | A site or BPO campaign | multi-domain/multi-DB, monthly human-signed calibration, public KB feedback loop live, WFM feeds (`GET/POST /ops/shifts`, `GET /ops/skills`) feeding the centre's workforce-management tool | review posture; QA discipline per COPC R8.0 mapped in COMPLIANCE.md §6.7 |
+| **T4 global** | Multi-site / multi-region | T3 plus site-to-site **knowledge parcels** (`POST /parcels/export|import`) and regional residency stamps; follow-the-sun handover via the shift ring | every site-boundary crossing is signed + human-gated; federation stays v3.x |
+
+Tier promotion is additive: nothing configured at T1 blocks T4 features
+later. The deliberate ceilings (workload visibility is measured, never
+enforced; no forecasting/scheduling engines — WFM alignment is interop) hold
+at every tier.
+
 ## Next steps
 
 - [Architecture](./architecture.md) — how the pieces fit together.

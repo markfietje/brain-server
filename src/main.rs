@@ -66,6 +66,8 @@ mod clients;
 mod config;
 mod connector;
 mod consolidate;
+#[cfg(test)]
+mod docs_truth;
 mod domain_registry;
 mod domain_router;
 mod gate;
@@ -6269,6 +6271,7 @@ async fn main_inner() -> Result<()> {
         .route("/ops/shifts", get(handlers::shifts::get_ops_shifts))
         .route("/ops/shifts", post(handlers::shifts::post_ops_shift))
         .route("/ops/crew", get(handlers::crew::get_ops_crew))
+        .route("/ops/skills", get(handlers::crew::get_ops_skills))
         .route("/ops/skills", post(handlers::crew::post_ops_skills))
         .route(
             "/ops/crew/config",
@@ -13218,7 +13221,9 @@ Final paragraph after the rule.";
             // Crew: the roster is a Read over people-visibility (hidden when
             // the DPO switch is off); proposing a skills change is a Write —
             // only approval writes tags; toggling presence visibility is
-            // governance → Admin.
+            // governance → Admin. GET /ops/skills (the WFM feed) shares the
+            // skills path; the scan maps to the LAST registered handler
+            // (POST), so Write is the checked gate.
             ("/ops/crew", "Read"),
             ("/ops/skills", "Write"),
             ("/ops/crew/config", "Admin"),

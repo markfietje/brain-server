@@ -320,6 +320,22 @@ generative-AI systems already placed on the market before
 Article 50(2) machine-readable-marking duty; systems placed on the market
 from 2 August 2026 mark from day one.
 
+### 6.7 Contact-centre standards (COPC R8.0 / ISO 18295-1) — self-assessed posture
+
+Documented mapping, not a certification. The capability→standard matrix and
+the gap ledger live in
+[docs/CONTACT_CENTER_STANDARDS.md](docs/CONTACT_CENTER_STANDARDS.md); the
+clause rows below are the compliance-file anchor.
+
+| Clause area | brain-server evidence |
+|---|---|
+| **ISO 18295-1** process/performance clauses | governed diagnostic loop with per-step evidence (`workflow_runs`/`workflow_steps`), the Order-of-Care doctrine (docs/CONTACT_CENTER_STANDARDS.md), complaints as a first-class case class with their own acknowledgment/response clocks |
+| **ISO 18295-1** people clauses — competence, workload visibility | presence + skills registry (`/ops/crew`, `/ops/skills`); workload is **measured visibility, never enforcement** — the tool makes load observable, the centre manages its people. This ceiling is deliberate: no automated enforcement of workload rules ships in any planned release |
+| **ISO 10002:2018** complaint handling | complaint lifecycle rides existing machinery: distinct `Complaint` intake class, acknowledgment deadline ≤ response deadline by policy envelope, escalation-to-dispute as an audited `handover/dispute` handover; the complaints register IS the hash-chained audit chain — zero new tables |
+| **COPC R8.0** QA + calibration discipline | 100% justified scoring, gold calibration, κ gate, weekly machine report + monthly human sign-off (`/workflow/scoreboard`, calibration records on the audit chain) |
+| **COPC R8.0** service-level management | P1–P4 SLA envelopes at intake, SLA-ranked handover board, WFM interop boundary (`GET/POST /ops/shifts`, `GET /ops/skills`) — interop, not a forecasting engine |
+| **KCS v6** | double-loop measures on the scoreboard (linkage, SIR, freshness), capture-at-close drafts, public KB feedback loop |
+
 ## 7. Machine-Readable Origin Metadata (Art 50 transparency bridge)
 
 Every `knowledge` row carries an ingest path (`source`: manual | vault |

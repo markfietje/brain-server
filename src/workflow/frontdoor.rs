@@ -7,6 +7,8 @@ pub enum IntentClass {
     PolicyAnswer,
     Booking,
     BoundedDiagnostic,
+    /// ISO 10002: a complaint is its own class, not an escalation flavor.
+    Complaint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +26,13 @@ pub struct Handoff {
     pub is_not_seed: String,
     pub sla_deadline: i64,
     pub plan_so_far: String,
+    /// Empty = a plain handover. `dispute` marks an escalation-to-dispute
+    /// (ISO 10003 posture): the documented handover reason for complaints.
+    pub reason: String,
 }
+
+/// The handover reason recorded when a complaint escalates to dispute.
+pub const DISPUTE_REASON: &str = "dispute";
 
 fn is_escape(input: &str) -> bool {
     let l = input.to_ascii_lowercase();
@@ -37,6 +45,9 @@ fn is_escape(input: &str) -> bool {
 
 fn classify_rules(input: &str) -> Option<(IntentClass, String)> {
     let l = input.to_ascii_lowercase();
+    if l.contains("complain") {
+        return Some((IntentClass::Complaint, "complaint keyword matched".into()));
+    }
     if l.contains("2fa") || l.contains("pin reset") || l.contains("authenticate") {
         return Some((IntentClass::Auth, "auth keyword matched".into()));
     }
@@ -75,6 +86,7 @@ pub fn route(
                 is_not_seed: String::new(),
                 sla_deadline: envelope.sla_deadline,
                 plan_so_far: plan_so_far.to_string(),
+                reason: String::new(),
             },
         };
     }
@@ -83,6 +95,29 @@ pub fn route(
     }
     RouteDecision::Routed {
         reason: "outside closed vocabulary — routed to run".into(),
+    }
+}
+
+/// A complaint that demands a human escalates as a DISPUTE: the handover
+/// carries the complaint envelope (its own ack + response clocks) and the
+/// documented `dispute` reason — persisted downstream as an audit row
+/// reading `handover/dispute` (see `workflow::relay`).
+pub fn escalate_complaint_dispute(
+    input: &str,
+    envelope: &Envelope,
+    conversation: &str,
+    plan_so_far: &str,
+) -> RouteDecision {
+    RouteDecision::Escalated {
+        handoff: Handoff {
+            conversation: conversation.to_string(),
+            intent: input.to_string(),
+            is_seed: plan_so_far.to_string(),
+            is_not_seed: String::new(),
+            sla_deadline: envelope.sla_deadline,
+            plan_so_far: plan_so_far.to_string(),
+            reason: DISPUTE_REASON.into(),
+        },
     }
 }
 
@@ -125,7 +160,9 @@ pub fn gap_action(similarity_units: i32) -> Option<DraftKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_engine_sdk::policy::{Priority as SdkPriority, stamp_envelope};
+    use brain_engine_sdk::policy::{
+        Priority as SdkPriority, stamp_complaint_envelope, stamp_envelope,
+    };
 
     fn env() -> Envelope {
         stamp_envelope(1000, SdkPriority::P2)
@@ -182,6 +219,36 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn complaint_class_gets_acknowledgment_sla() {
+        let r = route(
+            "I want to file a formal complaint about this",
+            &env(),
+            "conv",
+            "plan",
+        );
+        assert!(matches!(
+            r,
+            RouteDecision::Resolved {
+                class: IntentClass::Complaint,
+                ..
+            }
+        ));
+        // Complaints carry their own envelope: acknowledgment is its own,
+        // always-tighter clock, and the priority map is the complaint's own.
+        let e = stamp_complaint_envelope(1000);
+        assert_eq!(e.ack_deadline, 1000 + 3600);
+        assert!(e.ack_deadline < e.sla_deadline);
+        // Escalation-to-dispute rides the documented reason.
+        match escalate_complaint_dispute("complaint", &e, "conv", "plan") {
+            RouteDecision::Escalated { handoff } => {
+                assert_eq!(handoff.reason, "dispute");
+                assert_eq!(handoff.sla_deadline, e.sla_deadline);
+            }
+            _ => panic!("complaint escalation must be a documented handover"),
+        }
+    }
+
     #[test]
     fn drafts_only_hitl_no_auto_write() {
         let drafts = post_call_drafts(&["step1 did X".into(), "step2 verified Y".into()]);

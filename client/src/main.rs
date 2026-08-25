@@ -37,6 +37,10 @@ mod role;
 // v1.16.8 M1–M5: i18n (t / LOCALE), RTL readiness, theme + density toggles,
 // and locale-aware number formatting. Zero-dep FTL parsing — see the module.
 mod i18n;
+// G3: accessibility as a release gate — the WCAG 2.2 AA checklist parser +
+// ACR honesty pins (tests only; no runtime surface).
+#[cfg(test)]
+mod a11y;
 mod panels;
 // v1.20.0 M3: the offline-tolerance action queue (queue + replay, not full
 // offline) — see the module for the idempotency + persistence rules.
@@ -621,7 +625,7 @@ fn app() -> Element {
     });
     use_effect(move || {
         let locale = i18n::locale()();
-        let dir = if i18n::is_rtl(locale) { "rtl" } else { "ltr" };
+        let dir = i18n::dir_for_locale(locale);
         document::eval(&format!("document.documentElement.dir = {dir:?}"));
     });
 

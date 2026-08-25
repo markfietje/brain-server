@@ -161,6 +161,21 @@ pub fn dsar_window_secs() -> i64 {
         .unwrap_or(DEFAULT_DSAR_WINDOW_DAYS * 86400)
 }
 
+/// the FCR repeat-contact attribution window (days), SQM-style: a contact
+/// that recurs within the window of its predecessor counts the predecessor
+/// as NOT first-contact-resolved. Documented in `docs/metrics.md`.
+pub const DEFAULT_FCR_WINDOW_DAYS: i64 = 7;
+
+/// `BRAIN_FCR_WINDOW_DAYS` overrides the default (same env-resolution
+/// pattern as `BRAIN_DSAR_WINDOW_DAYS`).
+pub fn fcr_window_days() -> i64 {
+    std::env::var("BRAIN_FCR_WINDOW_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(DEFAULT_FCR_WINDOW_DAYS)
+}
+
 /// integrity-watcher cadence (seconds). Reads
 /// `BRAIN_CHAIN_CHECK_SECS`, defaulting to [`DEFAULT_CHAIN_CHECK_SECS`].
 pub fn chain_check_secs() -> u64 {

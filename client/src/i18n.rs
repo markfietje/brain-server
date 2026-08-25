@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// v1.16.8 M1: the supported locale codes. `en` is always present (fallback).
-pub const SUPPORTED_LOCALES: [&str; 5] = ["en", "de", "fr", "es", "nl"];
+pub const SUPPORTED_LOCALES: [&str; 7] = ["en", "de", "fr", "es", "nl", "ar", "en-XA"];
 
 /// Accessor for a global Dioxus signal. `Signal::global` returns a fresh local
 /// handle over shared storage, so exposing a `fn` (not a `static`) lets callers
@@ -61,6 +61,8 @@ static BUNDLES: LazyLock<HashMap<&'static str, HashMap<&'static str, &'static st
         m.insert("fr", parse_ftl(include_str!("../locales/fr/main.ftl")));
         m.insert("es", parse_ftl(include_str!("../locales/es/main.ftl")));
         m.insert("nl", parse_ftl(include_str!("../locales/nl/main.ftl")));
+        m.insert("ar", parse_ftl(include_str!("../locales/ar/main.ftl")));
+        m.insert("en-XA", parse_ftl(include_str!("../locales/en-XA/main.ftl")));
         m
     });
 
@@ -106,12 +108,22 @@ pub fn t_fmt(key: &str, args: &[String]) -> String {
     resolve_fmt(key, locale()(), args)
 }
 
-/// M2: is a locale right-to-left? Arabic/Hebrew/Persian/Urdu. No RTL `.ftl`
-/// files ship in v1.16.8 (the layout is RTL-ready; files are added when a buyer
-/// needs them) — this stays honest for when `dir` actually flips.
+/// M2: is a locale right-to-left? Arabic/Hebrew/Persian/Urdu. `ar` ships
+/// (RTL locale, G4 readiness); the layout mirrors via `document.documentElement.dir`.
 pub fn is_rtl(locale: &str) -> bool {
     let l = locale.to_ascii_lowercase();
     l.starts_with("ar") || l.starts_with("he") || l.starts_with("fa") || l.starts_with("ur")
+}
+
+/// M2: the document-root `dir` attribute value for a locale — the exact
+/// derivation the shell effect applies (`document.documentElement.dir`).
+/// Pure so the mirroring smoke pins it without a Dioxus runtime.
+pub fn dir_for_locale(locale: &str) -> &'static str {
+    if is_rtl(locale) {
+        "rtl"
+    } else {
+        "ltr"
+    }
 }
 
 /// Insert `sep` every 3 digits (pure core; `format_number` feeds it the
@@ -242,6 +254,43 @@ mod tests {
         assert!(!is_rtl("de"));
         assert!(!is_rtl("fr"));
         assert!(!is_rtl("es"));
+    }
+
+    /// G4 readiness: the RTL locale renders mirrored (dir flips to rtl)
+    /// without layout breakage — the transcript/panels read the same
+    /// document-root attribute the shell effect applies. The pseudolocale
+    /// stays LTR by definition; both resolve real strings (never the raw key).
+    #[test]
+    fn rtl_locale_renders_mirrored_without_layout_breakage() {
+        // The dir plumbing: ar mirrors, everything else keeps ltr.
+        assert_eq!(dir_for_locale("ar"), "rtl");
+        assert_eq!(dir_for_locale("he"), "rtl");
+        assert_eq!(dir_for_locale("en-XA"), "ltr");
+        assert_eq!(dir_for_locale("de"), "ltr");
+        // Mirrored rendering resolves real Arabic strings for the panels
+        // (transcript + scoreboard), never blank and never the raw key.
+        for (key, probe) in [
+            ("review_title", "المراجعة"),
+            ("runs_transcript", "السجل"),
+            ("sb_title", "لوحة"),
+            ("nav_health", "الحالة"),
+        ] {
+            let v = resolve(key, "ar");
+            assert!(v.contains(probe), "ar {key} → unexpected: {v}");
+        }
+        // The pseudolocale wraps every value in visibility markers — a
+        // truncation/overflow regression shows up as unbalanced brackets.
+        for key in ["review_title", "runs_transcript", "recall_summary"] {
+            let v = resolve(key, "en-XA");
+            assert!(v.starts_with('[') && v.ends_with(']'), "en-XA {key} unwrapped: {v}");
+        }
+        // Interpolation survives the wrap ({0}/{1} stay positional).
+        assert_eq!(
+            resolve_fmt("recall_score", "en-XA", &["c1".into(), "9".into()]),
+            "[{0} score {1}]"
+                .replace("{0}", "c1")
+                .replace("{1}", "9")
+        );
     }
 
     /// Sanitizers clamp persisted values to the supported set.

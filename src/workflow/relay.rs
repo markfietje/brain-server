@@ -17,6 +17,7 @@ use crate::audit::AuditStatus;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::audit_write;
+use super::frontdoor::DISPUTE_REASON;
 use super::outbox;
 
 /// Closed vocabulary for an offer's lifecycle.
@@ -93,10 +94,33 @@ pub struct OfferDraft<'a> {
     pub now: i64,
 }
 
+/// The audit detail for an escalation-to-dispute (ISO 10003 handover of a
+/// complaint). The complaints register IS the audit chain — this row is it.
+pub const DISPUTE_AUDIT_DETAIL: &str = "handover/dispute";
+
 /// Insert an offer row + its lineage event + its audit row. The caller owns
 /// the surrounding transaction; nothing here commits. Idempotent by
 /// `(run_id, offered-state)` key so a retried POST cannot double-offer.
 pub fn insert_offer(conn: &Connection, draft: &OfferDraft<'_>) -> Result<(i64, bool), OfferError> {
+    insert_offer_event(conn, draft, "offer", "handover/offer")
+}
+
+/// Escalate a complaint to dispute: the SAME documented handover machinery
+/// (offer row + lineage event) audited with reason `handover/dispute` in the
+/// caller's transaction — the dispute register entry.
+pub fn record_dispute_escalation(
+    conn: &Connection,
+    draft: &OfferDraft<'_>,
+) -> Result<(i64, bool), OfferError> {
+    insert_offer_event(conn, draft, DISPUTE_REASON, DISPUTE_AUDIT_DETAIL)
+}
+
+fn insert_offer_event(
+    conn: &Connection,
+    draft: &OfferDraft<'_>,
+    action: &str,
+    audit_detail: &str,
+) -> Result<(i64, bool), OfferError> {
     let open: Option<i64> = conn
         .query_row(
             "SELECT id FROM handover_offers
@@ -127,9 +151,9 @@ pub fn insert_offer(conn: &Connection, draft: &OfferDraft<'_>) -> Result<(i64, b
     emit_event(
         conn,
         draft.run_id,
-        &format!("handover:{id}:offer"),
+        &format!("handover:{id}:{action}"),
         &serde_json::json!({
-            "action": "offer",
+            "action": action,
             "offer_id": id,
             "to": draft.to_principal,
         })
@@ -141,7 +165,7 @@ pub fn insert_offer(conn: &Connection, draft: &OfferDraft<'_>) -> Result<(i64, b
         draft.run_id,
         &format!("offer:{id}"),
         AuditStatus::Ok,
-        "handover/offer",
+        audit_detail,
     );
     Ok((id, true))
 }
@@ -356,6 +380,48 @@ mod tests {
                 escalation_honored: self.escalation_honored,
             }
         }
+    }
+
+    /// complaint_escalation_is_audited_as_dispute
+    #[test]
+    fn complaint_escalation_is_audited_as_dispute() {
+        let mut conn = db();
+        let draft = OfferDraft {
+            domain: "acme",
+            run_id: 1,
+            from_principal: "manila-op",
+            to_principal: "complaints-team",
+            overlap_minutes: 30,
+            sla_deadline: 2000,
+            now: 1100,
+        };
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        let (offer_id, created) = record_dispute_escalation(tx.tx(), &draft).unwrap();
+        assert!(created);
+        // Retried escalation cannot double-register the dispute.
+        let (again, created2) = record_dispute_escalation(tx.tx(), &draft).unwrap();
+        assert!(!created2 && again == offer_id);
+        tx.commit().unwrap();
+
+        // The dispute IS an audited handover: exactly one audit row with the
+        // documented `handover/dispute` reason, chained in the audit trail.
+        let details: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT detail_hash FROM audit_events
+                      WHERE kind='workflow' AND target_hash = ?1 ORDER BY id",
+                )
+                .unwrap();
+            let it = stmt
+                .query_map([crate::audit::hash("offer:1")], |r| r.get::<_, String>(0))
+                .unwrap();
+            it.filter_map(Result::ok).collect()
+        };
+        assert_eq!(details.len(), 1, "the dispute registers exactly once");
+        assert_eq!(details[0], crate::audit::hash(DISPUTE_AUDIT_DETAIL));
+
+        // And it is a lineage event like any other handover.
+        assert!(outbox::verify_outbox_lineage(&conn, 1).unwrap());
     }
 
     /// offer_accept_decline_are_lineage_events_audited_once

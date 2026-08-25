@@ -3634,6 +3634,30 @@ paths:
                     description: >-
                       True when this read triggered the weekly machine-generated
                       CalibrationReport on the workflow audit chain.
+                  kcs_linkage_rate_units:
+                    type: integer
+                    description: KCS Evolve-loop linkage rate (ten-thousandths).
+                  searched_found_rate_units:
+                    type: integer
+                    description: KCS search-and-solve rate (ten-thousandths).
+                  article_freshness_median_age_secs:
+                    type: integer
+                    description: Median governed-article age since last review.
+                  self_service_deflection_units:
+                    type: integer
+                    description: Indicative deflection from KB feedback (docs/kb-deflection.md).
+                  kb_feedback_total:
+                    type: integer
+                    description: Total on-page KB feedback events counted.
+                  kb_hot_topics:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        slug:
+                          type: string
+                        feedback_count:
+                          type: integer
         "401":
           description: Not authenticated
         "403":
@@ -3945,6 +3969,39 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
   /ops/skills:
+    get:
+      summary: The WFM skills feed (interop boundary)
+      description: >
+        The domain's HITL-maintained skill registry as a stable, bounded,
+        ordered read — the documented interop boundary for
+        workforce-management tools (COPC alignment is interop, not
+        reimplementation; no forecasting/scheduling engine exists here).
+        Read capped at the newest 1000 rows. Requires Read on the domain.
+      operationId: listSkillsFeed
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+      responses:
+        "200":
+          description: The skills feed, grouped by principal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  domain: { type: string }
+                  skills:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        principal: { type: string }
+                        skills:
+                          type: array
+                          items: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
     post:
       summary: Propose a skills change — the ONLY door to `principal_skills` (audited)
       description: >

@@ -105,6 +105,60 @@ pub async fn get_ops_crew(
     Ok(Json(out?))
 }
 
+/// `GET /ops/skills?domain=` — the WFM skills feed (Read on the domain):
+/// the documented interop boundary for workforce-management tools. A stable,
+/// bounded, ordered read of the HITL-maintained skill registry.
+pub async fn get_ops_skills(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = params
+        .get("domain")
+        .cloned()
+        .unwrap_or_else(|| "global".into());
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    let out = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+        let conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        let rows = crew::list_skills(&conn, &domain).map_err(crew_err)?;
+        // Group by principal; every emitted string rides the invisible-strip
+        // seam (same posture as the roster view).
+        let mut order: Vec<String> = Vec::new();
+        let mut by_principal: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (p, s) in rows {
+            let p = brain_server::strip_invisible::strip_invisible(&p);
+            if p.is_empty() {
+                continue;
+            }
+            if !by_principal.contains_key(&p) {
+                order.push(p.clone());
+            }
+            by_principal.entry(p).or_default().push(s);
+        }
+        let skills: Vec<serde_json::Value> = order
+            .into_iter()
+            .map(|p| {
+                serde_json::json!({
+                    "principal": p,
+                    "skills": by_principal.remove(&p).unwrap_or_default(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "domain": domain,
+            "skills": skills,
+        }))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    Ok(Json(out?))
+}
+
 /// `POST /ops/skills` — propose a skills change (Write). Creates ONE pending
 /// `crew_skills_update` proposal; validation happens here AND again at
 /// approval time inside the applying transaction.
