@@ -126,10 +126,10 @@ pub(crate) fn workflow_event_admissible(
 /// `?kinds=` filters to a subset of [`ALERT_KIND_*`].
 ///
 /// An HTTP `Last-Event-ID: <outbox event_id>` header resumes the
-/// WORKFLOW coordinate space — stored `workflow/*` rows with a larger id are
-/// replayed (bounded, per-domain Read-gated, sanitized like the live path)
-/// before the live broadcast attaches, so a reconnecting consumer backfills
-/// its gap instead of silently skipping it.
+/// WORKFLOW coordinate space — stored `workflow/*` + Channel `case/*` rows
+/// with a larger id are replayed (bounded, per-domain Read-gated, sanitized
+/// like the live path) before the live broadcast attaches, so a reconnecting
+/// consumer backfills its gap instead of silently skipping it.
 pub async fn events(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -260,7 +260,7 @@ async fn workflow_replay_since(
             let rows: Vec<(i64, i64, String, String, Option<i64>)> = conn
                 .prepare(
                     "SELECT id, run_id, topic, payload_json, parent_id FROM outbox
-                      WHERE id > ?1 AND topic LIKE 'workflow/%'
+                      WHERE id > ?1 AND (topic LIKE 'workflow/%' OR topic LIKE 'case/%')
                       ORDER BY id ASC LIMIT ?2",
                 )
                 .and_then(|mut stmt| {
@@ -326,14 +326,17 @@ pub(crate) fn publish(state: &Arc<AppState>, kind: &str, payload: Value) {
 const WORKFLOW_DRAIN_BATCH: i64 = 100;
 
 /// One drain pass over every registered domain's workflow
-/// outbox. Each drained `workflow/*`-topic row advances to `delivered` via
+/// outbox. Each drained row advances to `delivered` via
 /// [`crate::workflow::outbox::deliver`] (its audit row commits in the same tx)
 /// and publishes to the SSE bus with payload
 /// `{topic, run_id, payload_json, event_id, parent_event_id, domain}`.
 /// The payload passes `sanitize_stored` BEFORE broadcast — machine-written
-/// state, but the read seam is unconditional — never certifying silence. Non-workflow
-/// topics (steering, intake) are never touched: engines consume those through
-/// their own surfaces. Returns the number of events published.
+/// state, but the read seam is unconditional — never certifying silence.
+/// The drained families are the `workflow/%` engine lineage AND the Channel
+/// `case/%` topics (the invite ping is how the Crew sees it — its consumer
+/// IS this bus). Other non-workflow topics (steering, intake) are never
+/// touched: engines consume those through their own surfaces. Returns the
+/// number of events published.
 pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
     // Posture (documented ceiling): workflow payloads are machine-to-machine
     // state — they are sanitized ONCE at drain time with the
@@ -354,7 +357,7 @@ pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
         let rows: Vec<(i64, i64, String, String, Option<i64>)> = conn
             .prepare(
                 "SELECT id, run_id, topic, payload_json, parent_id FROM outbox
-                  WHERE status = 'pending' AND topic LIKE 'workflow/%'
+                  WHERE status = 'pending' AND (topic LIKE 'workflow/%' OR topic LIKE 'case/%')
                   ORDER BY id ASC LIMIT ?1",
             )
             .and_then(|mut stmt| {
@@ -815,6 +818,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    /// The Channel family drains too: a pending `case/note` row is delivered
+    /// (audit in its tx) and published with the workflow envelope — the
+    /// invite ping rides this bus. Steering stays untouched.
+    #[test]
+    fn channel_notes_drain_to_the_sse_bus() {
+        let (_dir, state, mut rx) = witness_state();
+        let conn = state.pool.get().expect("conn");
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('global', 'interview', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .expect("run");
+        let (_, id) = crate::workflow::outbox::enqueue_child(
+            &conn,
+            1,
+            None,
+            crate::workflow::channel::TOPIC,
+            r#"{"action":"invite","invite_id":7}"#,
+            "chan-1",
+            1,
+        )
+        .expect("enqueue");
+        drop(conn);
+        assert_eq!(
+            drain_workflow_events(&state),
+            1,
+            "the case/% topic drains alongside the workflow family"
+        );
+        let v = rx.try_recv().expect("the drained ping is on the bus");
+        assert_eq!(v["kind"], ALERT_KIND_WORKFLOW);
+        assert_eq!(v["payload"]["topic"], "case/note");
+        assert_eq!(v["payload"]["event_id"], id);
+        let status: String = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT status FROM outbox WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "delivered", "delivered exactly once, audit in-tx");
     }
 
     /// Admission law: default-off (no `?kinds=` never receives workflow),

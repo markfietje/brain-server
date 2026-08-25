@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub mod breaches;
+pub mod channel;
 pub mod clients;
 #[cfg(feature = "compliance-pack")]
 pub mod compliance;

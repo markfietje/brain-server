@@ -4639,6 +4639,141 @@ paths:
                     description: active runs skipped because their stored state_json was corrupt — counted loudly, never silently absorbed
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
+  /workflow/runs/{id}/notes:
+    post:
+      summary: Post a case note; mentions resolve into swarm invites (Write on domain)
+      description: >
+        Channel: a human speaks inside the case room. Content is screened at
+        write (empty/≤4000 chars/prompt-injection blocklist) and stored through
+        the invisible-strip + markdown-ref seam.         `@skill:<tag>` mentions resolve
+        against `principal_skills`, bare `@principal` mentions against the
+        domain's presence roster; each resolved principal receives an invite
+        row plus a `case/note` lineage event that drains to `/events` as the
+        Crew ping (visible to subscribers who opted in via `?kinds=workflow`
+        and hold Read on the run's domain — the workflow family's admission
+        law). Unresolvable mentions refuse with `details.unresolved`.
+        Not chat infrastructure — everything is case-scoped.
+      operationId: postWorkflowRunNotes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, maxLength: 4000 }
+      responses:
+        "200":
+          description: The stored note (+ invites, one per resolved mention)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  note_id: { type: integer }
+                  author: { type: string }
+                  content: { type: string }
+                  created_at: { type: integer }
+                  invites:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        invite_id: { type: integer }
+                        to: { type: string }
+        "400":
+          description: note_invalid (empty | too_long | blocklist) | mentions_unresolved (details.unresolved lists the dead tokens) | invite_limit (>16 resolved)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+    get:
+      summary: The channel view — chronological notes + invites for one run (Read on domain)
+      description: >
+        Policy-expired rows are hidden at read time before the page split
+        (`case-note` retention kind: a bound profile's block replaces the
+        server-wide map; kill-switch off = nothing decays). Every emitted
+        string rides the read seam. Bounded page (limit 1..=500, default 200).
+      operationId: getWorkflowRunNotes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: The channel
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  count: { type: integer }
+                  notes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        kind: { type: string, enum: [note, invite] }
+                        author: { type: string }
+                        content: { type: string }
+                        addressed_to: { type: string, nullable: true }
+                        parent_note_id: { type: integer, nullable: true }
+                        state: { type: string, enum: [visible, pending, accepted] }
+                        created_at: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/notes/{invite_id}/accept:
+    post:
+      summary: Accept an invite into the channel (Write on domain)
+      description: >
+        Relay's accept machinery, smaller: a CAS move pending → accepted on
+        the invite row in ONE transaction with its lineage event and audit;
+        replaying a decided invite returns `{moved:false}` without
+        re-applying. Ownership never changes here.
+      operationId: acceptWorkflowRunNoteInvite
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: invite_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The acceptance receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  invite_id: { type: integer }
+                  moved: { type: boolean }
+                  state: { type: string, enum: [pending, accepted] }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Invite or run not found }
   /workflow/runs/{id}/answer:
     post:
       summary: Answer a pending AskHuman question (Write + approve role gate)

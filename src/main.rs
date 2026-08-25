@@ -6185,6 +6185,18 @@ async fn main_inner() -> Result<()> {
             "/workflow/runs/{id}/handover/{offer_id}/decline",
             post(handlers::relay::post_handover_decline),
         )
+        .route(
+            "/workflow/runs/{id}/notes",
+            post(handlers::channel::post_notes),
+        )
+        .route(
+            "/workflow/runs/{id}/notes",
+            get(handlers::channel::get_notes),
+        )
+        .route(
+            "/workflow/runs/{id}/notes/{invite_id}/accept",
+            post(handlers::channel::post_invite_accept),
+        )
         .route("/ops/handovers", get(handlers::relay::get_ops_handovers))
         .route(
             "/workflow/runs/{id}/context",
@@ -10261,6 +10273,8 @@ Final paragraph after the rule.";
             "crew_config",
             // v1.28.27 "Relay": handover offers over the I-PASS packet.
             "handover_offers",
+            // v1.28.28 "Channel": the case-scoped channel (notes + invites).
+            "case_notes",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10466,10 +10480,11 @@ Final paragraph after the rule.";
         // The Lineage release for outbox.parent_id (additive event ancestry).
         // Bridges for the crm_cases case↔run linkage table.
         // Evolve for the KCS columns + the case_articles linkage table.
+        // Channel for the case_notes table (notes + swarm invites).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_27),
-            "schema_version must be recorded as 1.28.27 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_28),
+            "schema_version must be recorded as 1.28.28 after migration"
         );
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
@@ -11922,6 +11937,9 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}/handover/{offer_id}/accept",
             "/workflow/runs/{id}/handover/{offer_id}/decline",
             "/ops/handovers",
+            // v1.28.28 "Channel": the case gets a room.
+            "/workflow/runs/{id}/notes",
+            "/workflow/runs/{id}/notes/{invite_id}/accept",
         ];
         let missing: Vec<&str> = registered
             .iter()
@@ -13177,6 +13195,15 @@ Final paragraph after the rule.";
             ("/workflow/runs/{id}/handover/{offer_id}/accept", "Write"),
             ("/workflow/runs/{id}/handover/{offer_id}/decline", "Write"),
             ("/ops/handovers", "Read"),
+            // Channel: posting a note (and its mention-resolved invites) is a
+            // Write; the channel view is a Read over the same run. GET and
+            // POST share the path; the scan maps to the last registered
+            // handler (GET), so Read is the checked gate — the POST side is
+            // pinned by its handler source below.
+            ("/workflow/runs/{id}/notes", "Read"),
+            // Accepting an invite joins the room: a Write, ownership never
+            // moves.
+            ("/workflow/runs/{id}/notes/{invite_id}/accept", "Write"),
         ];
 
         let main_src = include_str!("main.rs");
@@ -13245,6 +13272,7 @@ Final paragraph after the rule.";
                     "shifts" => include_str!("handlers/shifts.rs"),
                     "relay" => include_str!("handlers/relay.rs"),
                     "crew" => include_str!("handlers/crew.rs"),
+                    "channel" => include_str!("handlers/channel.rs"),
                     "transfers" => include_str!("handlers/transfers.rs"),
                     "clients" => include_str!("handlers/clients.rs"),
                     "profiles" => include_str!("handlers/profiles.rs"),
