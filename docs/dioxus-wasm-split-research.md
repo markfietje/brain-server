@@ -1,79 +1,78 @@
-# Dioxus WASM Split — Research Findings (2026-08-09)
+# Dioxus WASM Split — Research Findings (2026-08-09, **updated 2026-08-25**)
 
-**Question:** Can the latest Dioxus (specifically the asked-about "0.8.1") do a
-**split bundle** (wasm-split / code-splitting the wasm binary into lazily-loaded
-chunks)?
+**Question:** Can Dioxus do a **split bundle** (wasm-split / code-splitting the
+wasm binary into lazily-loaded chunks)?
 
-**Short answer:** The premise is wrong — **there is no stable Dioxus 0.8.1.**
-The latest stable is **0.7.10** (which this project already pins). The `wasm-split`
-feature **does exist in 0.7.10** (both `dioxus` and `dioxus-router` ship a
-`wasm-split` cargo feature), but it is **experimental** and gated behind an
-experimental CLI flag. The 0.8 line exists only as `0.8.0-alpha.0` / `0.8.0-alpha.1`
-— not production-stable.
+**Short answer (then):** No stable path — 0.8 didn't exist, the feature was
+experimental, and there was no measured win. Recommendation was *do not adopt*.
 
-## Version reality (verified against crates.io, 2026-08-09)
+**Short answer (now):** The situation inverted. The bundle outgrew its budget
+posture, so we moved onto the `0.8.0-alpha.1` line deliberately and
+**`dx build --wasm-split` is enabled and green** (since v1.28.21). The
+remaining work is annotating real lazy boundaries — the splitter runs today but
+nothing earns a second chunk yet.
 
-| Crate | Max stable | 0.8 line |
-|---|---|---|
-| `dioxus` | **0.7.10** | only `0.8.0-alpha.0`, `0.8.0-alpha.1` |
-| `dioxus-router` | **0.7.10** | only `0.8.0-alpha.x` |
-| `dioxus-cli` (local `dx`) | 0.7.10 | — |
+## Version reality (re-verified against crates.io, 2026-08-25)
 
-So "Dioxus 0.8.1" does not exist as a stable release. There is nothing to
-upgrade to that resolves the bundle-size ceiling today.
+| Crate | Max stable | Alpha line | We pin |
+|---|---|---|---|
+| `dioxus` | **0.7.10** | `0.8.0-alpha.1` | **`=0.8.0-alpha.1`** |
+| `dioxus-router` | 0.7.x | 0.8.0-alpha.x | (via `dioxus/router`) |
 
-## wasm-split in the current stable line (0.7.10)
+The client deliberately rides the alpha: wasm-split tooling is where the 0.8
+line lives, and the alternative was an over-budget single blob. This is a
+conscious trade — pin exact (`=`), accept pre-1.0 churn, and let
+`Cargo.lock` + CI gate every bump.
 
-- **Both** `dioxus` and `dioxus-router` expose a `wasm-split` cargo feature
-  (verified on crates.io). Enabling it is done via:
-  ```toml
-  dioxus = { version = "0.7", features = ["router", "wasm-split"] }
-  dioxus-router = { version = "0.7", features = ["wasm-split"] }
-  ```
-- The installed `dx` (0.7.10) exposes an **experimental** flag:
-  `dx bundle --experimental-wasm-split` (a.k.a. `--wasm-split`), documented as
-  "Bundle split the wasm binary into multiple chunks based on `#[wasm_split]`".
-- The splitter is **route-variant-driven**: it slices the router's route
-  components into separate chunks loaded on navigation, using a
-  `#[wasm_split(...)]` macro (or `dioxus-router?/wasm-split` at bundle time).
+## What actually shipped (v1.28.20–.21)
 
-### Why we have NOT enabled it (the honest ceilings, re-verified)
+1. **Split-compatible build config** (`client/.cargo/config.toml`): the
+   splitter needs function names AND relocation records to partition the
+   binary. The old `strip=symbols` erased the name section and wasm-split died
+   with *"Failed to find `main` function"*. Now:
+   `-C strip=debuginfo` (drops only DWARF — the size bulk) +
+   `-C link-arg=--emit-relocs`.
+2. **`dx build --platform web --release --wasm-split` is the shipped path**,
+   verified green. Without annotated boundaries it emits main + one empty
+   chunk — zero behavioral change, zero risk, infrastructure proven.
+3. **Budget law rewritten for the split posture** (`client/bundle-budget.sh`,
+   enforced in CI): the raw cargo artifact now legitimately carries splitter
+   metadata (name/linking/reloc.* custom sections), so the gate measures the
+   **shipped posture** — those sections stripped by a pure section-frame walk,
+   mirroring dx's wasm-opt pass. Budget stays **5.5 MiB**; a breach fails CI.
+   Current numbers: raw ≈ 12.2 MiB → shipped-posture ≈ 4.0 MiB (under budget).
+4. **Tokio-creep guard**: the wasm dependency graph must stay runtime-free
+   (`tokio` sync-only on web) — a size AND concurrency-surface guard riding the
+   same script.
 
-1. **It is experimental.** The Dioxus docs/CLI consistently mark it
-   `--experimental-wasm-split`. The wasm-split tooling lives in a sub-workspace
-   (`packages/wasm-split`) and ships only pre-1.0 alpha versions
-   (`wasm-split-cli` 0.7.0-alpha.x on lib.rs). No stable/SemVer-guaranteed release.
-2. **It disconnects the call graph.** From the official docs: "Enabling splitting
-   disconnects the call graph, meaning if you try to run your app with a normal
-   `dx serve`, it won't work." It becomes a build-only mode that a plain `dx serve`
-   can't run. Our workflow relies on `dx bundle` + plain serving; adopting it
-   forks dev vs. build behavior.
-3. **It requires router-wide refactoring.** Route variants must be split with the
-   `#[wasm_split]` macro + a `SuspenseBoundary` above the `<Outlet>`. Our client
-   has 12 panels under one `AppShell` layout; slicing them out cleanly (and
-   keeping the shared `ApiClient`/`UiState` contexts, the command palette, and the
-   connect-first flow working across chunk boundaries) is real, error-prone work.
-4. **Suspense/async across split chunks** interacts with our `use_resource`-driven
-   panels and the keyring/localStorage seams — a regression surface we don't
-   currently have coverage for (73 tests, none exercise cross-chunk navigation).
-5. **No measured win on this codebase.** The current single wasm is **3.7 MB**
-   (`brain-client_bg-*.wasm`). Splitting routes could cut initial parse/compile,
-   but our heaviest dependency (the static embedding-independent client) is shared
-   shell code; the actual per-panel delta is small. Until we measure it, enabling
-   splitting is speculative optimization.
+## Why we originally said no — and what changed
 
-## Recommendation
+| Ceiling (2026-08-09) | Status now |
+|---|---|
+| Experimental, no stable release | Still true — accepted deliberately; pinned exact + locked |
+| Disconnects the call graph / build-only | Solved operationally: rustflags keep the splitter fed; `dx build --wasm-split` is the documented shipped path in `Dioxus.toml` |
+| Router-wide refactoring risk | **Deferred, not solved** — no `#[wasm_split]` boundaries are annotated yet, so no route slicing has happened |
+| No measured win | Still unproven per-chunk; what forced the flip was the raw artifact's growth, not a parse-time benchmark |
 
-- **Do NOT adopt wasm-split now.** The stable version (0.7.10) is what we already
-  run; "0.8.1" doesn't exist. The feature is experimental, build-only, and
-  router-refactor-heavy for no measured payoff.
-- **Track it** for when (a) Dioxus ships a stable 0.8.0+ with wasm-split
-  non-experimental, and (b) we measure that initial-load parse time is actually a
-  bottleneck (the bundle is served from `/app` on a local edge device).
-- **Keep the bundle single-file** for now; if initial-load latency becomes a
-  problem, revisit after Dioxus 0.8 stable.
+The honest driver: this was not premature optimization. The single wasm was
+pushing the ceiling, and the split toolchain was the escape hatch that lets the
+shell grow without paying full price up front.
+
+## Remaining follow-ups
+
+1. **Annotate lazy boundaries** with `#[wasm_split(...)]` on genuinely heavy
+   panels (candidates: Graph, Cockpit conversation view) + a
+   `SuspenseBoundary` above the `<Outlet>`. Rule of thumb from this exercise:
+   annotate only when a second module *earns its fetch*.
+2. **Measure** initial parse/compile before/after each annotation — the win is
+   a hypothesis until then (the app is served from `/app` on a local edge
+   device, so latency pressure is mild).
+3. **Track Dioxus stable**: when 0.8.0 goes stable with wasm-split
+   non-experimental, drop the alpha pin.
 
 ## Sources
-- crates.io API (max_stable_version for `dioxus`, `dioxus-router`; feature lists for 0.7.10).
-- Dioxus docs (learn site + `packages/router/README.md` + `packages/wasm-split/README.md` + DeepWiki WASM Code Splitting).
-- Local `dx --version` + `dx bundle --help`.
+- crates.io API (max_stable_version / newest for `dioxus`, re-checked 2026-08-25).
+- `client/Cargo.toml` (pin), `client/.cargo/config.toml` (split-compatible rustflags),
+  `client/Dioxus.toml` (shipped build command), `client/bundle-budget.sh`
+  (shipped-posture measurement + tokio guard).
+- Commit `4f9a303` "build(client): enable wasm-split — keep names+relocs, budget reads shipped posture".
