@@ -1,6 +1,6 @@
 # COMPLIANCE.md — Compliance Posture & Technical File
 
-**Version:** 1.16.7 "Integrated" · **Last updated:** 2026-08-08
+**Version:** 1.28.28 "Channel" · **Last updated:** 2026-08-25
 
 This is the buyer-facing technical file: what brain-server IS, what it logs,
 how it erases, and how it maps to the frameworks procurement asks about. It is
@@ -137,11 +137,22 @@ is a documentation of how to assemble the bundle, no new code.
 1. **Locate** — every `knowledge` row with `owner = subject`, plus all
    transitive `derived_from` descendants (bounded walk, depth 8).
 2. **Export** — portable JSON bundle of the located rows (no `pii_map`
-   values).
-3. **Purge** — hard delete in one transaction: `knowledge` + `vec_knowledge`
-   + `relationships` + `evidence_links` + `proposals` references; a tombstone
-   row is left with the reason (`owner:<subject>` / `derived`) and, for
-   derived chunks, the root `origin_id`.
+   values), plus the subject's **channel rows** (`case_notes` by author /
+   addressee / content match — the same arms the purge erases; since
+   1.28.28). A legal hold defers affected targets: listed on the
+   certificate (`held_ids` / held runs), never silently skipped.
+3. **Purge** — hard delete in one transaction:
+   `knowledge` + `vec_knowledge` + `relationships` + `evidence_links` +
+   `proposals` references + the governed-workflow family (matched
+   `workflow_runs` and every FK child: steps, outbox lineage events,
+   findings, contradictions, `handover_offers`; `crm_cases` links are
+   UNLINKED — the external CRM case outlives its erased run) +
+   **channel rows** (notes/invites authored by or addressed to the subject,
+   or carrying the subject in content — over-match, erasure-safe direction)
+   + people-metadata (presence rows, skills tags; shift rosters rewritten to
+   drop the subject); a tombstone row is left with the reason
+   (`owner:<subject>` / `derived`) and, for derived chunks, the root
+   `origin_id`.
 4. **Certificate** — `{subject, action, found_count, purged_ids,
    tombstone_root, certified_at, chain_head}`; the `chain_head` is the audit
    chain tip at certification time. Re-fetchable via
@@ -266,6 +277,48 @@ hash-chained audit of every memory change, and a tombstone path for the entries
 an attacker would plant. See `docs/MEMGHOST_MITIGATION.md` for the operative
 playbook.
 
+### 6.6 EU AI Act applicability after the Digital Omnibus (Regulation (EU) 2026/1744)
+
+**For procurement reviewers tracking the August 2026 headlines:** the EU AI
+Act was **not** delayed as a whole, and this component's posture does not
+depend on the deferral. The Digital Omnibus on AI — Regulation (EU)
+2026/1744, published in the Official Journal 24 July 2026 and in force
+27 July 2026 — moved only the high-risk regime: obligations for stand-alone
+high-risk systems (Annex III) now apply from **2 December 2027**, and for
+AI embedded in regulated products (Annex I) from **2 August 2028**. Both are
+fixed statutory dates, not conditional triggers. Everything else held its
+original schedule:
+
+| Obligation | Applies | Status |
+|---|---|---|
+| Art 5 prohibited practices | 2 Feb 2025 | in force |
+| Art 4 AI literacy | 2 Feb 2025 | in force (§6.4) |
+| GPAI model obligations (Art 51–56) | 2 Aug 2025 | in force |
+| General application + enforcement | 2 Aug 2026 | live |
+| **Art 50 transparency** | **2 Aug 2026** | **live — see §7** |
+| High-risk, stand-alone (Annex III) | ~~2 Aug 2026~~ → **2 Dec 2027** | deferred by 2026/1744 |
+| High-risk, product-embedded (Annex I) | ~~2 Aug 2027~~ → **2 Aug 2028** | deferred by 2026/1744 |
+
+**Where brain-server sits.** This component is a memory store inside a wider
+AI system — it generates no content, makes no autonomous decisions, and by
+itself is not an Annex III use case. If the DEPLOYER's overall system is
+classified high-risk, the deferral moves that conformity deadline to
+2 December 2027; it does not remove any obligation. The deployer-side
+groundwork the high-risk regime expects is already built and documented here:
+Art 12-style logging (§3), Art 13-style technical documentation (this file),
+Art 14-style human oversight (the v1.14 proposal gate + review queue), and
+the audit chain every claim above is pinned to. A reviewer reading the
+deferral as a reason to deprioritize should read §7 instead: the obligations
+that were NOT deferred are the ones this component serves directly.
+
+**Art 50 went live on schedule — and so did this server's disclosure.**
+Article 50 transparency obligations apply from **2 August 2026** (untouched
+by the Omnibus), and `GET /.well-known/ai-notice` has carried
+`art_50: true` with `effective_date: 2026-08-02` since that exact date.
+Machine-readable marking of content generated before go-live has a grace
+period ending 2 December 2026; new content marking obligations were live on
+2 August 2026.
+
 ## 7. Machine-Readable Origin Metadata (Art 50 transparency bridge)
 
 Every `knowledge` row carries an ingest path (`source`: manual | vault |
@@ -282,16 +335,21 @@ export can state *how a memory entered the system and who produced it*, the
 Art 50 model-vs-human transparency bridge. (Forward link: UMP wire-format
 conformance is a later release.)
 
-**Posture as of 2026-08-09.** The AI Act's GPAI chapter took effect with
-Regulation (EU) 2026/1744 (8 July 2026): GPAI model obligations apply from
-2 August 2026, and the watermarking/synthetic-content-detection obligations
-from 2 December 2026. brain-server does not train or host GPAI models — the
-GPAI obligations fall on the model providers whose outputs may be ingested —
-so the memory component's duty is provenance, not watermarking: every stored
-row keeps `source` / `origin` / `assertion_kind` / `confidence` (above) so a
-deployer can attribute AI-generated content and honor the transparency
-expectations of Regulation (EU) 2026/1744 for content that passes through its
-systems.
+**Posture as of 2026-08-25** (corrected; the previous note here misdated the
+GPAI timeline). The AI Act's phased application is set by Regulation (EU)
+2024/1689 itself: **GPAI model obligations (Art 51–56) have applied since
+2 August 2025**, and the Commission's enforcement powers over GPAI providers
+begin 2 August 2026 — neither date was changed by the Digital Omnibus
+(§6.6). Regulation (EU) 2026/1744 is the high-risk deferral instrument, not a
+GPAI one. The **2 December 2026** date is the end of the Article 50(2)
+grace period for machine-readable marking of synthetic content that already
+existed before go-live. brain-server does not train or host GPAI models —
+the GPAI obligations fall on the model providers whose outputs may be
+ingested — so the memory component's duty is provenance, not watermarking:
+every stored row keeps `source` / `origin` / `assertion_kind` / `confidence`
+(above) so a deployer can attribute AI-generated content and honor the
+transparency expectations of Regulation (EU) 2026/1744 for content that
+passes through its systems.
 
 **Enforcement (v1.18.2).** Art 50 transparency obligations are enforced by
 the national market surveillance authorities (not the central AI Office). The

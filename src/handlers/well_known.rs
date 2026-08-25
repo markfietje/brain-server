@@ -150,7 +150,7 @@ fn build_cop_notice() -> String {
         "disclosure": "brain-server follows the EU AI Act Code of Practice as a memory component: no autonomous content generation, human-in-the-loop write-back, inspectable decisions (recall trace + proposal gate), and a full audit chain. This is a self-assessment, not a certification badge.",
         "commitments": ["human_in_the_loop_write_back", "no_autonomous_generation", "inspectable_decisions", "full_audit_chain"],
         "self_assessment": "https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md",
-        "last_review": "2026-08-09",
+        "last_review": "2026-08-25",
         "jurisdiction": "EU AI Act Code of Practice (Article 95)"
     })
     .to_string()
