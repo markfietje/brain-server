@@ -81,24 +81,41 @@ fn median(values: &mut [i64]) -> i64 {
 /// an in-window repeat over all repair-field runs — the FCR repeat-window
 /// method applied to first-VISIT resolution.
 pub fn aftersales_kpis(runs: &[AftersalesRun]) -> AftersalesKpis {
-    let returns: Vec<_> = runs.iter().filter(|r| r.kind == AftersalesKind::Return).collect();
+    let returns: Vec<_> = runs
+        .iter()
+        .filter(|r| r.kind == AftersalesKind::Return)
+        .collect();
     let warranty: Vec<_> = runs
         .iter()
         .filter(|r| r.kind == AftersalesKind::WarrantyClaim)
         .collect();
-    let repairs: Vec<_> = runs.iter().filter(|r| r.kind == AftersalesKind::RepairField).collect();
+    let repairs: Vec<_> = runs
+        .iter()
+        .filter(|r| r.kind == AftersalesKind::RepairField)
+        .collect();
     let mut cycles: Vec<i64> = runs
         .iter()
-        .filter(|r| matches!(r.kind, AftersalesKind::Return | AftersalesKind::WarrantyClaim))
+        .filter(|r| {
+            matches!(
+                r.kind,
+                AftersalesKind::Return | AftersalesKind::WarrantyClaim
+            )
+        })
         .filter_map(|r| r.resolved_at.map(|t| t - r.created_at))
         .filter(|d| *d >= 0)
         .collect();
     AftersalesKpis {
         return_rate_units: rate(returns.len(), runs.len()),
         warranty_claim_rate_units: rate(warranty.len(), runs.len()),
-        ftfr_units: rate(repairs.iter().filter(|r| !r.repeat_within_window).count(), repairs.len()),
+        ftfr_units: rate(
+            repairs.iter().filter(|r| !r.repeat_within_window).count(),
+            repairs.len(),
+        ),
         refund_cycle_time_median_secs: median(&mut cycles),
-        returnless_share_units: rate(returns.iter().filter(|r| r.returnless).count(), returns.len()),
+        returnless_share_units: rate(
+            returns.iter().filter(|r| r.returnless).count(),
+            returns.len(),
+        ),
         aftersales_fraud_flag_rate_units: rate(
             returns.iter().filter(|r| r.fraud_flagged).count(),
             returns.len(),
@@ -110,7 +127,12 @@ pub fn aftersales_kpis(runs: &[AftersalesRun]) -> AftersalesKpis {
 mod tests {
     use super::*;
 
-    fn run(kind: AftersalesKind, created: i64, resolved: Option<i64>, repeat: bool) -> AftersalesRun {
+    fn run(
+        kind: AftersalesKind,
+        created: i64,
+        resolved: Option<i64>,
+        repeat: bool,
+    ) -> AftersalesRun {
         AftersalesRun {
             kind,
             created_at: created,
@@ -148,10 +170,7 @@ mod tests {
         let mut flagged = run(AftersalesKind::Return, 0, None, false);
         flagged.returnless = true;
         flagged.fraud_flagged = true;
-        let cohort = vec![
-            flagged,
-            run(AftersalesKind::Return, 0, None, false),
-        ];
+        let cohort = vec![flagged, run(AftersalesKind::Return, 0, None, false)];
         let k = aftersales_kpis(&cohort);
         assert_eq!(k.returnless_share_units, SCALE / 2);
         assert_eq!(k.aftersales_fraud_flag_rate_units, SCALE / 2);
