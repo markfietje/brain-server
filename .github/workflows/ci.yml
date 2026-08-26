@@ -3,7 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+    # Tag pushes re-run NOTHING here: release.sh pushes main first (this CI
+    # matrix gates that exact SHA), then the tag triggers release.yml only.
+    # Without this ignore, every tag re-ran the entire matrix redundantly.
+    tags-ignore: ['v*']
   pull_request:
+
+# Supersede stale runs: rapid successive pushes cancel the earlier matrix
+# instead of queueing N full runs behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 # Least privilege: the CI jobs build and test; they publish nothing.
 permissions:
@@ -23,26 +33,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The embedder fixture downloads minishlab/potion-retrieval-32M from
-      # the HuggingFace Hub at test time; anonymous Hub fetches rate-limit
-      # and transiently 5xx. Cache the model dir and prefetch with retries
-      # so a Hub blip cannot red the whole matrix.
-      - name: cache huggingface model
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ hashFiles('src/config.rs') }}
-      - name: prefetch model (retried)
-        run: |
-          pip install -q huggingface_hub
-          for i in 1 2 3 4 5; do
-            if python3 -c "from huggingface_hub import snapshot_download; snapshot_download('minishlab/potion-retrieval-32M')"; then
-              echo "model cached"; exit 0
-            fi
-            echo "attempt $i failed; backing off"; sleep $((i * 20))
-          done
-          echo "::warning::HuggingFace Hub unreachable — tests will rely on whatever is cached"
-          exit 0
+      # The embedder fixture downloads minishlab/potion-retrieval-32M at test
+      # time; shared composite action (cache + retry) — see .github/actions/.
+      - uses: ./.github/actions/huggingface-prefetch
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy (default, all targets)
@@ -125,23 +118,8 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Same Hub-blip defense as lint-test: the otel build runs the same
-      # embedder fixtures.
-      - name: cache huggingface model
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ hashFiles('src/config.rs') }}
-      - name: prefetch model (retried)
-        run: |
-          pip install -q huggingface_hub
-          for i in 1 2 3 4 5; do
-            if python3 -c "from huggingface_hub import snapshot_download; snapshot_download('minishlab/potion-retrieval-32M')"; then
-              echo "model cached"; exit 0
-            fi
-            echo "attempt $i failed; backing off"; sleep $((i * 20))
-          done
-          echo "::warning::HuggingFace Hub unreachable — tests will rely on whatever is cached"
-          exit 0
+      # embedder fixtures. Shared composite action.
+      - uses: ./.github/actions/huggingface-prefetch
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy (--features otel, all targets)
@@ -162,10 +140,14 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      # The client's non-wasm keyring feature (sync-secret-service) links
-      # libdbus on Linux; the runner image has no build headers by default.
-      - name: Install libdbus headers
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      # One apt transaction for BOTH native-dep groups (the client's non-wasm
+      # keyring feature links libdbus; the desktop feature needs the webkit
+      # stack) — two `apt-get update` rounds used to run sequentially here.
+      - name: Install libdbus + desktop webview headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
       - name: fmt
         run: cargo fmt --manifest-path client/Cargo.toml -- --check
       - name: clippy (all targets)
@@ -176,9 +158,7 @@ jobs:
         run: cargo build --manifest-path client/Cargo.toml --target wasm32-unknown-unknown
       # v1.28.20 Cockpit M1: desktop is a compile target, not a document.
       # No GUI run in CI — compile + clippy correctness only (the webkit2gtk
-      # dep chain needs its system headers on Linux).
-      - name: Install desktop webview headers
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev pkg-config
+      # dep chain needs its system headers on Linux, installed above).
       - name: desktop feature compiles
         run: cargo check --manifest-path client/Cargo.toml --features desktop --all-targets
       # v1.28.20 Cockpit M4: mobile is a smoke target for this release
@@ -191,59 +171,31 @@ jobs:
       - name: bundle budget
         run: bash client/bundle-budget.sh
 
-  release-build:
-    name: release build
+  integration:
+    # ONE release-profile build serves three gates that used to be three jobs
+    # (release-build, ump-conformance, recall-gate) compiling the same
+    # binaries separately on every push. The build doubles as the
+    # release-profile compile check; the two live gates then run against the
+    # SAME binaries sequentially on their own ports (UMP :18483, eval :18484).
+    name: release build + UMP conformance + recall gate
     runs-on: ubuntu-latest
+    env:
+      # Recall steps must talk to the scratch instance, not the CLI default
+      # (127.0.0.1:8765) — a misdirected seed silently ingests 0 docs.
+      BRAIN_URL: http://127.0.0.1:18484
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: cargo build --release
+      - name: cargo build --release (compile gate + binaries for both live gates)
         run: cargo build --release
 
-  docs:
-    # mdBook docs build: the docs/ source feeds the GitHub Pages site via
-    # docs.yml (deploy) and release.yml (tagged revision deploy). This job
-    # validates the build on every PR + main push so a broken mdBook source
-    # (bad link, missing file, new-style preprocessor) is caught in CI instead
-    # of failing the deploy.
-    name: mdBook docs build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - name: Install mdBook
-        run: cargo install mdbook --version 0.5.4 --locked
-      - name: Build
-        run: mdbook build
-
-  audit:
-    name: cargo audit
-    runs-on: ubuntu-latest
-    # audit-check creates a check run; the default GITHUB_TOKEN can't without
-    # this ("Resource not accessible by integration" — infra failure, not code).
-    permissions:
-      checks: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-  ump-conformance:
-    # External reference-suite gate behind the README "UMP 1.0 / L3 verified"
-    # badge: boot a scratch keyed instance and run the official
-    # @universalmemoryprotocol/core conformance runner. The runner exits 0 for
-    # any level >= L1, so the gate asserts the badge line itself.
-    name: UMP 1.0 conformance (reference suite)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: build server + CLI
-        run: cargo build --release --bin brain-server --bin brain
-      - name: start scratch keyed instance
+      # ── UMP 1.0 conformance ──
+      # External reference-suite gate behind the README "UMP 1.0 / L3
+      # verified" badge: boot a scratch keyed instance and run the official
+      # @universalmemoryprotocol/core conformance runner. The runner exits 0
+      # for any level >= L1, so the gate asserts the badge line itself.
+      - name: start UMP scratch keyed instance
         run: |
           SCRATCH="$(mktemp -d)"
           echo "$SCRATCH" > /tmp/ump-scratch
@@ -273,70 +225,18 @@ jobs:
             *"UMP 1.0 / L3"*) ;;
             *) echo "::error::UMP conformance below L3 (badge would be dishonest)" && exit 1 ;;
           esac
-      - name: stop scratch instance
+      - name: stop UMP scratch instance
         if: always()
         run: kill "$(cat /tmp/ump-pid)" 2>/dev/null || true
 
-  lipstyk:
-    # v1.27.27 "Seal" M5 — the de-slop watchdog: no NEW code may add a
-    # lipstyk diagnostic. Diff-scoped (changed lines only) against the PR
-    # base (or the previous commit on main pushes), so the documented legacy
-    # baseline (the v1.27.24 honest ceiling: heuristic false-positive classes
-    # on unchanged code) never blocks CI — only changed lines can fail. The
-    # two group-attributed cross-file rules are disabled in .lipstyk.toml
-    # (they cannot be scoped to changed lines and fire on untouched files).
-    # plugin/src is TypeScript — lipstyk scans both languages.
-    name: lipstyk (diff watchdog)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - name: Install lipstyk
-        run: cargo install lipstyk --version 0.3.0
-      - name: Determine diff base
-        id: base
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.base_ref }}
-          BEFORE: ${{ github.event.before }}
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            git fetch origin "$BASE_REF"
-            echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
-          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
-            # A multi-commit push diffs from the commit BEFORE the push, so
-            # every new commit's lines are in scope (HEAD~1 would only cover
-            # the last one).
-            echo "ref=$BEFORE" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Watchdog (changed lines must add no diagnostic)
-        run: |
-          lipstyk --diff "${{ steps.base.outputs.ref }}" --exclude-tests src client plugin
-
-  recall-gate:
-    # Evidence-gated recall ship gate (v1.17.1 M3): seed a scratch instance
-    # with the frozen 25-doc corpus, run `brain eval` over the 106
-    # judged queries (v1.28.6 expanded set), and enforce BENCH_RECALL_FLOOR.
-    # Regressions on the frozen set fail CI. CI set only — parity claims are
-    # gated by BENCHMARKS.md protocol (>=100 queries on target hardware),
-    # not here.
-    name: recall eval gate (frozen fixture)
-    runs-on: ubuntu-latest
-    env:
-      # Both steps must talk to the scratch instance, not the CLI default
-      # (127.0.0.1:8765) — a misdirected seed silently ingests 0 docs.
-      BRAIN_URL: http://127.0.0.1:18484
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: build server + CLI
-        run: cargo build --release --bin brain-server --bin brain
-      - name: seed + start scratch instance
+      # ── recall eval gate ──
+      # Evidence-gated recall ship gate (v1.17.1 M3): seed a scratch instance
+      # with the frozen 25-doc corpus, run `brain eval` over the 106 judged
+      # queries (v1.28.6 expanded set), and enforce BENCH_RECALL_FLOOR.
+      # Regressions on the frozen set fail CI. CI set only — parity claims are
+      # gated by BENCHMARKS.md protocol (>=100 queries on target hardware),
+      # not here.
+      - name: seed recall scratch instance
         run: |
           SCRATCH="$(mktemp -d)"
           python3 - "$SCRATCH" <<'EOF'
@@ -395,6 +295,88 @@ jobs:
           set -o pipefail
           "$GITHUB_WORKSPACE/target/release/brain" eval \
             --floor r5=0.85 --floor r10=0.85 --floor mrr=0.85 | tail -5
-      - name: stop scratch instance
+      - name: stop recall scratch instance
         if: always()
         run: kill "$(cat /tmp/eval-pid)" 2>/dev/null || true
+
+  docs:
+    # mdBook docs build: the docs/ source feeds the GitHub Pages site via
+    # docs.yml (deploy) and release.yml (tagged revision deploy). This job
+    # validates the build on every PR + main push so a broken mdBook source
+    # (bad link, missing file, new-style preprocessor) is caught in CI instead
+    # of failing the deploy.
+    name: mdBook docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: cache mdbook binary
+        # cargo install compiles mdbook (~50 crates) from source on EVERY run
+        # otherwise; a version-keyed ~/.cargo/bin cache turns that into a
+        # cache hit. Same pattern in docs.yml + release.yml.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: mdbook-0.5.4
+      - name: Install mdBook (skipped on cache hit)
+        run: command -v mdbook >/dev/null 2>&1 || cargo install mdbook --version 0.5.4 --locked
+      - name: Build
+        run: mdbook build
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    # audit-check creates a check run; the default GITHUB_TOKEN can't without
+    # this ("Resource not accessible by integration" — infra failure, not code).
+    permissions:
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  lipstyk:
+    # v1.27.27 "Seal" M5 — the de-slop watchdog: no NEW code may add a
+    # lipstyk diagnostic. Diff-scoped (changed lines only) against the PR
+    # base (or the previous commit on main pushes), so the documented legacy
+    # baseline (the v1.27.24 honest ceiling: heuristic false-positive classes
+    # on unchanged code) never blocks CI — only changed lines can fail. The
+    # two group-attributed cross-file rules are disabled in .lipstyk.toml
+    # (they cannot be scoped to changed lines and fire on untouched files).
+    # plugin/src is TypeScript — lipstyk scans both languages.
+    name: lipstyk (diff watchdog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: cache lipstyk binary
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/lipstyk
+          key: lipstyk-0.3.0
+      - name: Install lipstyk (skipped on cache hit)
+        run: command -v lipstyk >/dev/null 2>&1 || cargo install lipstyk --version 0.3.0
+      - name: Determine diff base
+        id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch origin "$BASE_REF"
+            echo "ref=origin/$BASE_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            # A multi-commit push diffs from the commit BEFORE the push, so
+            # every new commit's lines are in scope (HEAD~1 would only cover
+            # the last one).
+            echo "ref=$BEFORE" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=HEAD~1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Watchdog (changed lines must add no diagnostic)
+        run: |
+          lipstyk --diff "${{ steps.base.outputs.ref }}" --exclude-tests src client plugin
