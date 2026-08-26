@@ -16,8 +16,6 @@ presage-store-sqlite = { git = "https://github.com/whisperfish/presage", branch 
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"], default-features = false }
 
 axum = { version = "0.8.9", features = ["macros", "json"] }
-tower-http = { version = "0.7", features = ["cors"] }
-tokio-stream = "0.1.19"
 async-stream = "0.3.6"
 
 reqwest = { version = "0.13.4", features = ["json"], default-features = false }
