@@ -25,6 +25,13 @@ This installs:
 - `brain-migrate-rehearse` — migration rehearsal / recovery.
 - `brain-connector-stub` (and `brain-connector-gh` when the feature is enabled).
 
+> **Optional:** `brain-connector-crm` (feature `connector-crm`) is built
+> best-effort by `install-service.sh` — present only when the feature was
+> enabled for a prior build; the script compiles it on the first run that
+> needs it and skips cleanly otherwise, same posture as `brain-connector-gh`.
+> The cron recipes in [CRM case intake](#crm-case-intake-v12822-bridges)
+> below need it installed.
+
 > **macOS note:** newly copied executables can get a `com.apple.provenance` xattr
 > that Gatekeeper uses to SIGKILL on first exec (exit 137). The install script
 > strips it. A manual `cp` does not.

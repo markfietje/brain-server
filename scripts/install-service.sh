@@ -25,7 +25,7 @@ CLI_BINS=("brain" "mcp" "bench" "brain-connector-stub")
 FEATURE_BINS=("brain-migrate-rehearse:migrate")
 # Optional binaries that require extra features to build. Built best-effort:
 # if the feature flag is off, the binary is just absent from target/release.
-OPTIONAL_BINS=("brain-connector-gh:connector-github")
+OPTIONAL_BINS=("brain-connector-gh:connector-github" "brain-connector-crm:connector-crm")
 LABEL="com.brain.server"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 TOKEN_FILE="$HOME/.config/brain-server/auth-token"
