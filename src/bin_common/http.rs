@@ -153,6 +153,23 @@ pub fn delete(
     request("DELETE", &url, "", None, bearer)
 }
 
+/// Perform a single PUT with a `Content-Type` header and a body (the
+/// `brain valet consent` verb). The `mcp`/`bench` binaries include this file
+/// via `#[path]` but don't issue PUTs — same `allow(dead_code)` posture as
+/// `delete`.
+#[allow(dead_code)]
+pub fn put(
+    base: &str,
+    path: &str,
+    query: &[(String, String)],
+    content_type: &str,
+    body: &str,
+    bearer: Option<&str>,
+) -> Result<HttpResponse, String> {
+    let url = build_url(base, path, query)?;
+    request("PUT", &url, content_type, Some(body), bearer)
+}
+
 fn request(
     method: &str,
     url: &Url,

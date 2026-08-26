@@ -25,7 +25,7 @@ use crate::AppState;
 /// The four fixed alert kinds (mirrors `config::ALERT_KIND_*`).
 pub use crate::config::{
     ALERT_KIND_CHAIN, ALERT_KIND_EXPIRY, ALERT_KIND_PENDING, ALERT_KIND_PROPOSAL,
-    ALERT_KIND_SCREEN, ALERT_KIND_WORKFLOW,
+    ALERT_KIND_SCREEN, ALERT_KIND_VALET, ALERT_KIND_WORKFLOW,
 };
 
 /// The ops-clock SLA tier (mirrors the client clock). `Ok` → `Warn` →
@@ -381,9 +381,17 @@ pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
                 continue;
             }
             let payload_json = crate::gate::sanitize_stored(&payload_json, false, &None);
+            // Valet due-envelopes get their own curated kind so a Signal
+            // relay (or any subscriber) can opt into JUST the assistant's
+            // pings without the full engine lineage stream.
+            let kind = if topic.starts_with("workflow/valet") {
+                ALERT_KIND_VALET
+            } else {
+                ALERT_KIND_WORKFLOW
+            };
             publish(
                 state,
-                ALERT_KIND_WORKFLOW,
+                kind,
                 json!({
                     "topic": topic,
                     "run_id": run_id,
@@ -769,6 +777,35 @@ mod tests {
         )
         .expect("enqueue");
         id
+    }
+
+    /// Valet due-envelopes publish under their OWN curated kind
+    /// (`valet/due`), not the generic workflow kind — a Signal relay (or any
+    /// /events subscriber) can opt into just the assistant's pings. The
+    /// payload is the metadata-only alert envelope the fire crank enqueued.
+    #[test]
+    fn valet_due_envelopes_publish_as_valet_kind() {
+        let (_dir, state, mut rx) = witness_state();
+        let conn = state.pool.get().expect("conn");
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('personal', 'valet/reminder', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .expect("run");
+        crate::workflow::outbox::enqueue(
+            &conn,
+            1,
+            "workflow/valet-due",
+            r#"{"what":"draft pillar post #12","due_at":100,"channel":"signal"}"#,
+            "valet-1-100",
+            1,
+        )
+        .expect("enqueue");
+        assert_eq!(drain_workflow_events(&state), 1);
+        let ev = rx.try_recv().expect("published");
+        assert_eq!(ev["kind"], crate::config::ALERT_KIND_VALET);
+        assert_eq!(ev["payload"]["topic"], "workflow/valet-due");
     }
 
     /// The drained event is published on the SSE bus with the full witness

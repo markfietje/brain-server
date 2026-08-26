@@ -316,6 +316,23 @@ is empty — the paths return 404, they are not auth failures.
 
 ---
 
+## Valet — the personal assistant (v1.28.42)
+
+Cron-cranked (never a daemon), consent-gated, digest-bound across the Signal
+bridge:
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/workflow/valet/due` | The crank: fires due `valet/*` envelopes (idempotent per `valet-{run}-{due_at}`), re-arms repeats via CAS, enqueues metadata-only alert envelopes. Write + `workflow` role. |
+| GET | `/workflow/valet/brief` | Today's derived context: due/overdue, pending drafts with ADVISORY lint scores, evening notes. Read + `workflow` role. |
+| PUT | `/workflow/valet/consent` | The one-subject Outreach-lite registry (subject `owner`, channel `signal` only). Write + `workflow` role. |
+| POST | `/webhooks/{kind}` (kind `signal`) | Inbound Signal commands from the relay: `[case N] text` → screened steering; `[draft N] approve <digest>` → digest-bound approval (Gateweld crosses into Signal). HMAC + replay-capped. |
+
+CLI: `brain valet add|due|brief|consent`. Relay: `tools/valet-relay/` (holds
+no brain credentials — pinned by `relay_holds_no_brain_credentials`).
+
+---
+
 ## Versioning & deprecation
 
 - Every response carries `X-Api-Version`.

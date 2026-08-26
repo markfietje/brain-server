@@ -5031,6 +5031,103 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
+  /workflow/valet/due:
+    post:
+      summary: Fire every due valet envelope (Write + workflow role)
+      description: >
+        Valet (v1.28.42): the cron-cranked scheduler. Loads active runs of
+        kind valet/% whose state due_at has passed, fires each in its own
+        audited transaction (outbox idempotency key valet-{run}-{due_at} —
+        a double cron never double-fires), re-arms repeats via CAS, and
+        enqueues a metadata-only alert envelope for the Signal relay.
+        Without an in-force one-subject consent the envelope is suppressed
+        (audited, counted, never sent). Daemon-free by construction.
+      operationId: valetDueCrank
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                now: { type: integer, description: unix-seconds override (testing/replay) }
+      responses:
+        "200":
+          description: Crank outcome counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  fired: { type: integer }
+                  suppressed_no_consent: { type: integer }
+                  already_fired: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+  /workflow/valet/brief:
+    get:
+      summary: Today's derived context for the operator (Read + workflow role)
+      description: >
+        The morning brief: due/overdue valet runs, draft proposals pending
+        approval with their ADVISORY lint scores, and the trailing-window
+        evening-capture notes (the Engine Diary raw material). Read-only,
+        read-seam sanitized.
+      operationId: valetBrief
+      responses:
+        "200":
+          description: The composed brief
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  now: { type: integer }
+                  due:
+                    type: array
+                    items: { type: object }
+                  drafts_pending:
+                    type: array
+                    items: { type: object }
+                  evening_notes:
+                    type: array
+                    items: { type: object }
+                  signal_consent_in_force: { type: boolean }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+  /workflow/valet/consent:
+    put:
+      summary: The one-subject Outreach-lite consent registry write (Write + workflow role)
+      description: >
+        Valet (v1.28.42): grant or revoke the SOLE subject's consent for the
+        SOLE channel (signal). Anything else refuses loudly. Subjects are
+        hashed at rest. This is the dogfood-scoped pull-forward of the full
+        v1.28.35 Outreach registry.
+      operationId: valetConsentPut
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granted]
+              properties:
+                granted: { type: boolean }
+                subject: { type: string, default: owner }
+                channel: { type: string, enum: [signal] }
+      responses:
+        "200":
+          description: Registry write acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  granted: { type: boolean }
+        "400": { description: consent_refused (subject/channel out of scope) }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
   /workflow/runs/{id}/outreach/followup:
     post:
       summary: Schedule the post-close follow-up check (Write on domain + workflow role)

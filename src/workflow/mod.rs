@@ -47,6 +47,7 @@ pub(crate) mod shifts;
 pub(crate) mod state;
 pub(crate) mod tiers;
 pub(crate) mod tx;
+pub(crate) mod valet;
 pub(crate) mod wfm;
 pub(crate) mod workload;
 

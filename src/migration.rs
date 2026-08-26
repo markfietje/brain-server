@@ -2041,7 +2041,33 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.42 "Valet": the one-subject Outreach-lite consent registry ──
+    // (signal channel only, sole subject `owner` enforced in code) + the
+    // advisory lint report that rides draft proposals. Additive only.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS valet_consents(
+            subject_hash TEXT NOT NULL,
+            channel      TEXT NOT NULL,
+            granted_at   INTEGER NOT NULL,
+            revoked_at   INTEGER,
+            UNIQUE(subject_hash, channel)
+         );",
+        [],
+    )?;
+    let lint_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='lint_json'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !lint_present {
+        db.execute("ALTER TABLE proposals ADD COLUMN lint_json TEXT", [])?;
+    }
+
     // Bumped once per release that changes this function.
+    // v1.28.42 "Valet": valet_consents table + proposals.lint_json → 1.28.42.
     // v1.28.36 "Keystone": case_status_refs + kcs_translations tables → 1.28.36.
     // v1.28.35 "Outreach": consent_registry table → 1.28.35.
     // v1.28.30 "Parcels": parcel_ledger table → 1.28.30.
@@ -2062,8 +2088,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.36')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.36';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.42')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.42';",
         [],
     )?;
 

@@ -63,6 +63,10 @@ pub const ALERT_KIND_PROPOSAL: &str = "proposal";
 /// Drained `workflow/*` outbox events on the SSE bus. Additive and default-off — a `/events` subscriber receives these only when
 /// it explicitly asks `?kinds=workflow`, so existing consumers are unaffected.
 pub const ALERT_KIND_WORKFLOW: &str = "workflow";
+/// Valet due-envelopes (drained `workflow/valet-%` outbox topics) — the
+/// personal assistant's reminder/digest pings. Same additive,
+/// opt-in subscription posture as `workflow`.
+pub const ALERT_KIND_VALET: &str = "valet/due";
 
 /// `GET /events` SSE broadcast buffer. Bounded — a slow
 /// consumer drops missed events (broadcast lag semantics), never blocks the

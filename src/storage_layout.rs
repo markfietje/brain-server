@@ -150,6 +150,11 @@ pub const SCHEMA_VERSION_V1_28_35: &str = "1.28.35";
 /// translations). One-way; the down-migration is a documented no-op.
 pub const SCHEMA_VERSION_V1_28_36: &str = "1.28.36";
 
+/// Valet: the one-subject consent registry (`valet_consents`) + the advisory
+/// draft lint column (`proposals.lint_json`). Additive; one-way; the
+/// down-migration is a documented no-op.
+pub const SCHEMA_VERSION_V1_28_42: &str = "1.28.42";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

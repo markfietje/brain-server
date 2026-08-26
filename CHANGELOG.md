@@ -19,6 +19,108 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.42] — 2026-08-26 — "Valet": the personal AI assistant, dogfooded
+
+The author becomes the first user: brain-server + openclaw as a Signal-
+messaged, cron-scheduled, reminder-firing, draft-proposing personal
+assistant — on the governed kernel, so it is the only assistant in that wave
+whose memory you can audit, approve, and erase. The crank law survives: no
+daemon, no scheduler, no Signal client inside brain-server. Cron is the
+scheduler, `tools/valet-relay` is the Bridges edge, `brain valet due` is a
+request-scoped idempotent crank. Schema ADDITIVE at 1.28.42 (`valet_consents`
+table + `proposals.lint_json`); routes additive:
+`/workflow/valet/{due,brief,consent}` + inbound kind `signal` on
+`/webhooks/{kind}`.
+
+### Release notes
+
+**Improvements**
+- **M1 — scheduler-as-cases:** reminders are ordinary governed runs
+  (`valet/reminder` / `valet/digest`) whose state carries
+  `{what, due_at, repeat, channel}` and whose deadline rides the existing
+  `sla_deadline` convention. `brain valet due` fires due envelopes
+  (idempotency key `valet-{run}-{due_at}` — a double cron never double-fires),
+  `repeat` re-arms a NEW envelope via CAS, and overdue ranks reminders before
+  digests then earliest-deadline-first. `scripts/import-content-plan.ts`
+  creates one run per planned post from the marketing CSV.
+- **M2 — the Signal bridge as a governed edge:** `tools/valet-relay` (zero-dep
+  Node) holds ONLY its own 0600 secrets, listens as the server's alert sink,
+  and forwards exactly `valet/due` envelopes as Signal messages
+  (metadata-only by construction). Inbound Signal → `POST /webhooks/signal`
+  (Standard-Webhooks HMAC, replay-capped, flood-bounded): `[case N] text`
+  becomes screened steering; `[draft N] approve <digest>` performs the
+  digest-bound approval — Gateweld crosses into Signal. Every inbound byte is
+  injection-screened BEFORE any state change. The relay holds no brain
+  credentials (self-grep pinned).
+- **M3 — the content pipeline:** drafts are `kind='draft'` proposals whose
+  advisory lint report (`valet::style_check`, pure, zero-token: em-dash ban,
+  banned phrases from the style memory, filler openers, sentence length,
+  passive heuristic, status-label presence) rides the row; the human outranks
+  the linter — style-memory changes themselves flow through the proposal
+  gate (the style guide is an approved knowledge row, hashed for provenance).
+  `brain valet brief` composes due/overdue, pending drafts with lint scores,
+  and the trailing-window evening-capture notes (the Engine Diary raw
+  material).
+- **M4 — personal hygiene:** everything lives behind the same token ladder,
+  screens, erasure and provenance law as any tenant. Outreach-lite is a
+  deliberate dogfood-scoped pull-forward of v1.28.35: a one-subject
+  (`owner`) one-channel (`signal`) hashed-subject consent registry — no
+  consent, no send (envelopes fire locally but are suppressed, audited and
+  counted). The full v1.28.35 release still ships later.
+
+### Behavior-change ledger
+
+| Change | Nature | Compat |
+|---|---|---|
+| `valet/*` worktypes + `brain valet due/add/brief/consent` CLI | additive (FirstLight's run routes) | no schema change beyond runs |
+| `POST /workflow/valet/due`, `GET /workflow/valet/brief`, `PUT /workflow/valet/consent` | additive routes, openapi + guard tables in step | Write/Read + `workflow` role |
+| `POST /webhooks/signal` inbound kind | additive, always HMAC-gated | same machinery as kb-feedback kind |
+| `tools/valet-relay` + `signal-relay.json` config | new edge process, cron/launchd-kept | server unchanged; no brain tokens in relay |
+| `valet::style_check` pure module + `lint_json` on draft proposals | additive | advisory only, never a gate |
+| `kind='draft'` proposal vocabulary + `ALERT_KIND_VALET` bus kind | additive | promote lands drafts as `fact` (forward-compat default) |
+| Outreach-lite: one-subject consent registry (`valet_consents`) | scoped pull-forward of v1.28.35 | full release still ships later |
+
+### Engineering record
+
+- **New gate tests (+17):** `due_fires_once_per_envelope_idempotently`,
+  `repeat_rearms_new_envelope`, `overdue_ranks_by_priority_then_deadline`,
+  `cron_double_invocation_is_safe`, `no_consent_suppresses_delivery`,
+  `consent_registry_gates_signal_and_is_single_subject`,
+  `stamp_state_enforces_bounds` (M1) ·
+  `inbound_signal_becomes_screened_steering`,
+  `draft_approve_by_message_binds_digest`,
+  `signal_message_parser_is_total_and_strict`,
+  `relay_holds_no_brain_credentials`,
+  `valet_due_envelopes_publish_as_valet_kind` (M2) ·
+  `style_check_flags_em_dash_and_banned_phrases`,
+  `lint_report_rides_the_draft_proposal`,
+  `style_memory_changes_flow_through_the_proposal_gate`,
+  `brief_includes_due_overdue_pending_with_lint_scores`,
+  `brief_reports_signal_consent_state` (M3/M4).
+- Schema 1.28.36 → 1.28.42 (additive: `valet_consents`,
+  `proposals.lint_json`); migration guarded by pragma column checks.
+- `post_steering`'s inbox write extracted as `enqueue_steering_tx` (shared by
+  the route and the Signal webhook — no behavior change).
+
+### Honest ceilings
+
+- The relay is operator-run and single-user by design (your number in, your
+  commands out); no multi-tenant Signal, no outbound messaging engine —
+  `valet/due` envelope forwards are the ONLY thing it sends.
+- The alert envelope carries the reminder label that was screened at WRITE
+  time; nothing unscreened ever enters the outbox, but the label itself is
+  visible to the relay operator (it is your own reminder text).
+- `[draft N] edit ...` over Signal is NOT wired (approve-only); edit remains
+  a console/CLI act.
+- No auto-publish to Substack/LinkedIn anywhere — the assistant prepares,
+  you press the button. Platform APIs are a later, separately-gated
+  milestone.
+- The scoreboard `personal` view and the monthly calibration extension are
+  the thin end (brief + counts); the deterministic integer scoreboard rows
+  land with the full personal-hygiene pass.
+
+---
+
 ## [1.28.41] — 2026-08-26 — "Terrain": the tier guide, tested — and the series exit
 
 G8 of the Conformance Line closed plus the series-exit gate: deployment tiers

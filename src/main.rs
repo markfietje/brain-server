@@ -6245,6 +6245,12 @@ async fn main_inner() -> Result<()> {
             "/workflow/runs/{id}/suggestions",
             get(handlers::workflow::get_suggestions),
         )
+        // The personal assistant's cranks + views.
+        // due is the cron-cranked scheduler (no daemon); brief is today's
+        // derived context; consent is the one-subject Outreach-lite registry.
+        .route("/workflow/valet/due", post(handlers::valet::post_due))
+        .route("/workflow/valet/brief", get(handlers::valet::get_brief))
+        .route("/workflow/valet/consent", put(handlers::valet::put_consent))
         .route(
             "/workflow/runs/{id}/complaint/lifecycle",
             post(handlers::workflow::post_complaint_lifecycle),
@@ -10566,8 +10572,8 @@ Final paragraph after the rule.";
         // Keystone for the case_status_refs + kcs_translations tables.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_36),
-            "schema_version must be recorded as 1.28.36 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_42),
+            "schema_version must be recorded as 1.28.42 after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
         // channel × purpose — the UNIQUE spine the gate reads.
@@ -12041,6 +12047,10 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}/steering",
             "/workflow/runs/{id}/steps",
             "/workflow/runs/{id}/suggestions",
+            // The personal assistant's cranks + views.
+            "/workflow/valet/due",
+            "/workflow/valet/brief",
+            "/workflow/valet/consent",
             // The KCS article lifecycle (Evolve).
             "/kcs/articles",
             "/kcs/articles/{id}/approve",
@@ -13292,6 +13302,11 @@ Final paragraph after the rule.";
             ("/workflow/runs/{id}/steps", "Read"),
             ("/workflow/runs/{id}/steering", "Write"),
             ("/workflow/runs/{id}/suggestions", "Read"),
+            // v1.28.42 "Valet": the due crank + consent registry are
+            // workflow-role Writes on global; the brief is a Read.
+            ("/workflow/valet/due", "Write"),
+            ("/workflow/valet/brief", "Read"),
+            ("/workflow/valet/consent", "Write"),
             // Engine surfaces: open/state/events carry the `workflow` role
             // gate, answer the `approve` (HITL) gate; steering drain is a
             // Read on the run's domain.
@@ -13473,6 +13488,7 @@ Final paragraph after the rule.";
                     "profiles" => include_str!("handlers/profiles.rs"),
                     "roles" => include_str!("handlers/roles.rs"),
                     "ump_ops" => include_str!("handlers/ump_ops.rs"),
+                    "valet" => include_str!("handlers/valet.rs"),
                     "alert" => include_str!("alert.rs"),
                     m => panic!("no source mapping for handlers module {m}"),
                 }

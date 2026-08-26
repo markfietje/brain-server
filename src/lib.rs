@@ -98,3 +98,7 @@ pub mod profile;
 // enforce the gate.
 pub mod model_pin;
 pub mod role;
+
+/// Valet style gate: the deterministic, advisory-only linter for
+/// draft proposals. Pure + zero-token; see module docs.
+pub mod valet_style;

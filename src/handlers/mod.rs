@@ -48,6 +48,7 @@ pub mod suggest;
 pub mod transfers;
 pub mod ump;
 pub mod ump_ops;
+pub mod valet;
 pub mod verify;
 pub mod webhooks;
 pub mod well_known;

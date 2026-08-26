@@ -158,10 +158,15 @@ pub(crate) async fn create_proposal(
     // strict kind validation — the raw-string
     // round-trip, so unknown/mixed-case values (which `from_str` silently
     // resolves to Fact) are rejected, not stored as a different kind.
-    if !crate::procedural::MemoryKind::is_strict_valid(&req.kind) {
+    // `draft` is a PROPOSAL-only kind: a content draft whose
+    // body travels the normal HITL lifecycle; it never becomes its own
+    // knowledge node_kind (a promoted draft lands as `fact`, the
+    // forward-compat default).
+    let is_draft = req.kind == "draft";
+    if !is_draft && !crate::procedural::MemoryKind::is_strict_valid(&req.kind) {
         return Err(HandlerError::bad_request(
             "invalid_kind",
-            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic, entitlement",
+            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic, entitlement, draft",
         ));
     }
 
@@ -191,11 +196,23 @@ pub(crate) async fn create_proposal(
         let salience = crate::gate::salience(&content_for_task, entity_count);
         let now = chrono::Utc::now().timestamp();
 
+        // Advisory lint for drafts: computed at creation, rides the proposal,
+        // NEVER gates approval (the human outranks the linter).
+        let lint_json: Option<String> = if is_draft {
+            let (banned, hash) = brain_server::valet_style::style_memory(&conn);
+            let report = brain_server::valet_style::style_check(&content_for_task, &banned, &hash);
+            Some(serde_json::to_string(&report).map_err(|e| {
+                HandlerError::internal(format!("lint serialize failed: {e}"))
+            })?)
+        } else {
+            None
+        };
+
         let id: i64 = conn
             .query_row(
                 "INSERT INTO proposals(kind, content, source, authority, observed_at,
-                                   novelty, conflict_with, salience, created_at, source_prompt, owner)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                                   novelty, conflict_with, salience, created_at, source_prompt, owner, lint_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              RETURNING id",
                 rusqlite::params![
                     req.kind,
@@ -211,6 +228,7 @@ pub(crate) async fn create_proposal(
                         .as_deref()
                         .map(crate::gate::screen_source_prompt),
                     owner,
+                    lint_json,
                 ],
                 |r| r.get(0),
             )
@@ -3867,5 +3885,154 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, 0, "clean content is not tainted");
+    }
+}
+
+#[cfg(test)]
+mod valet_lint_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn test_state() -> (tempfile::TempDir, Arc<crate::AppState>) {
+        crate::register_sqlite_vec();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("brain.db");
+        let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
+        let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
+        brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0)
+            .expect("migration");
+        let state = Arc::new(crate::AppState {
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+            ),
+            registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+            pool,
+            db_path,
+            connection_tracker: Arc::new(crate::ConnectionTracker::new()),
+            rate_limiter: Arc::new(crate::RateLimiter::new()),
+            snapshot: crate::integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: crate::auth::AuthMode::Opaque,
+            key_store: crate::auth::jwks::KeyStore::default(),
+            revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: crate::handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(16).0,
+            alert_events: tokio::sync::broadcast::channel(16).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: crate::alert::ChainWatchState::default(),
+        });
+        (dir, state)
+    }
+
+    fn draft_req(content: &str) -> ProposalRequest {
+        ProposalRequest {
+            content: content.to_string(),
+            kind: "draft".to_string(),
+            source: None,
+            authority: None,
+            observed_at: None,
+            domain: None,
+            source_prompt: None,
+        }
+    }
+
+    /// The advisory lint report rides the draft proposal: computed at
+    /// creation, stored on the row, parseable — and NEVER a gate (a draft
+    /// full of findings still approves through the normal digest-bound path).
+    #[tokio::test]
+    async fn lint_report_rides_the_draft_proposal() {
+        let (_dir, state) = test_state();
+        let resp = create_proposal(
+            state.clone(),
+            None,
+            draft_req("Basically, this draft delves into synergy — at length, with much padding."),
+        )
+        .await
+        .expect("draft created");
+        let conn = state.pool.get().unwrap();
+        let lint: Option<String> = conn
+            .query_row(
+                "SELECT lint_json FROM proposals WHERE id=?1",
+                rusqlite::params![resp.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let lint = lint.expect("lint_json present on drafts");
+        let report: brain_server::valet_style::LintReport =
+            serde_json::from_str(&lint).expect("lint parses");
+        assert!(report.score < 100);
+        assert!(!report.findings.is_empty());
+        assert_eq!(report.style_memory_hash.len(), 64);
+
+        // Advisory, never blocking: the lint-heavy draft still approves with
+        // its digest (the human outranks the linter).
+        let content = "Basically, this draft delves into synergy — at length, with much padding.";
+        let digest = review_digest(content);
+        let res = approve_proposal(
+            axum::extract::State(state.clone()),
+            OptPrincipal(None),
+            axum::extract::Path(resp.id),
+            axum::extract::Query(ApproveQuery {
+                supersedes: None,
+                digest: Some(digest),
+            }),
+        )
+        .await
+        .expect("advisory lint never blocks approval");
+        assert_eq!(res.0["status"], "approved");
+    }
+
+    /// The style guide is MEMORY, not code: it lives in an approved
+    /// knowledge row (source='valet-style'), and the ONLY writer is the
+    /// normal proposal gate — propose, then approve with the digest, and the
+    /// memory the linter loads changes accordingly.
+    #[tokio::test]
+    async fn style_memory_changes_flow_through_the_proposal_gate() {
+        let (_dir, state) = test_state();
+        let conn = state.pool.get().unwrap();
+        let (before, hash_before) = brain_server::valet_style::style_memory(&conn);
+        assert!(before.is_empty());
+
+        // 1. The style amendment arrives as an ordinary pending proposal.
+        let req = ProposalRequest {
+            content: r#"{"banned_phrases":["synergy"]}"#.to_string(),
+            kind: "fact".to_string(),
+            source: Some(brain_server::valet_style::STYLE_MEMORY_SOURCE.to_string()),
+            authority: None,
+            observed_at: None,
+            domain: None,
+            source_prompt: None,
+        };
+        let resp = create_proposal(state.clone(), None, req)
+            .await
+            .expect("proposed");
+        let (after_pending, _) = brain_server::valet_style::style_memory(&conn);
+        assert!(
+            after_pending.is_empty(),
+            "a PENDING proposal must not change the style memory"
+        );
+
+        // 2. Approval (digest-bound) is the ONLY thing that lands the row.
+        let digest = review_digest(r#"{"banned_phrases":["synergy"]}"#);
+        let res = approve_proposal(
+            axum::extract::State(state.clone()),
+            OptPrincipal(None),
+            axum::extract::Path(resp.id),
+            axum::extract::Query(ApproveQuery {
+                supersedes: None,
+                digest: Some(digest),
+            }),
+        )
+        .await
+        .expect("approved");
+        assert_eq!(res.0["status"], "approved");
+        let (after, hash_after) = brain_server::valet_style::style_memory(&conn);
+        assert_eq!(after, vec!["synergy".to_string()]);
+        assert_ne!(
+            hash_after, hash_before,
+            "provenance hash moved with the memory"
+        );
     }
 }

@@ -359,6 +359,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain wfm-import <file.csv|file.json> [--domain D] [--dry-run]\n                 (shift rows POST to /ops/shifts; skill rows become\n                  crew_skills_update proposals — never direct writes)",
     },
     Subcommand {
+        name: "valet",
+        json: true,
+        run: cmd_valet,
+        usage: "brain valet add \"what\" --at <iso|HH:MM|unix> [--repeat none|daily|weekly] [--domain D]\n  brain valet due [--now <unix>]\n  brain valet brief\n  brain valet consent grant|revoke",
+    },
+    Subcommand {
         name: "ropa",
         json: true,
         run: cmd_ropa,
@@ -5282,4 +5288,235 @@ fn cmd_ropa_add(args: &[String]) -> Result<(), String> {
         return Err(format!("server returned status {}", resp.status));
     }
     Ok(())
+}
+
+fn cmd_valet(args: &[String]) -> Result<(), String> {
+    let usage = "usage: brain valet add \"what\" --at <iso|HH:MM|unix> [--repeat none|daily|weekly] [--domain D]\n  \
+brain valet due [--now <unix>]\n  \
+brain valet brief\n  \
+brain valet consent grant|revoke";
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let base = base_url();
+    let token = auth_token();
+    let rest = args.get(1..).unwrap_or(&[]);
+    let json_out = json_mode();
+    let bearer = token.as_deref();
+
+    let flag = |name: &str| -> Option<String> {
+        rest.iter()
+            .position(|a| a == name)
+            .and_then(|i| rest.get(i + 1).cloned())
+    };
+
+    match sub {
+        "add" => {
+            let what = rest
+                .first()
+                .cloned()
+                .filter(|w| !w.starts_with("--"))
+                .ok_or_else(|| usage.to_string())?;
+            let at = flag("--at").ok_or_else(|| format!("{usage}\n  --at is required"))?;
+            let due_at = parse_due_at(&at)?;
+            let repeat = flag("--repeat").unwrap_or_else(|| "none".into());
+            if !matches!(repeat.as_str(), "none" | "daily" | "weekly") {
+                return Err(format!("--repeat must be none|daily|weekly, got {repeat}"));
+            }
+            // The reminder label rides an alert envelope later — screen it
+            // NOW (client-side pre-flight; the server screens every surface
+            // it owns, this keeps the crank from ever carrying injection).
+            if http_contains_injection(&what) {
+                return Err("what matches a blocked prompt-injection pattern".into());
+            }
+            if what.len() > 500 {
+                return Err("what exceeds 500 chars".into());
+            }
+            let domain = flag("--domain").unwrap_or_else(|| "personal".into());
+            let state = serde_json::json!({
+                "what": what,
+                "due_at": due_at,
+                "repeat": repeat,
+                "channel": "signal",
+                "fire_count": 0,
+                "sla_deadline": due_at,
+            });
+            let resp = http::post(
+                &base,
+                "/workflow/runs",
+                &[],
+                "application/json",
+                &serde_json::json!({
+                    "domain": domain,
+                    "kind": "valet/reminder",
+                    "state_json": state.to_string(),
+                })
+                .to_string(),
+                bearer,
+            )?;
+            let v: serde_json::Value = serde_json::from_str(&resp.body)
+                .map_err(|e| format!("bad response: {e}: {}", resp.body))?;
+            if json_out {
+                return emit_json_ok("valet", v);
+            }
+            println!("reminder run {} created (due {due_at})", v["run_id"]);
+            Ok(())
+        }
+        "due" => {
+            let mut body = serde_json::json!({});
+            if let Some(now) = flag("--now") {
+                body["now"] = serde_json::Value::from(
+                    now.parse::<i64>()
+                        .map_err(|_| "--now must be unix seconds")?,
+                );
+            }
+            let resp = http::post(
+                &base,
+                "/workflow/valet/due",
+                &[],
+                "application/json",
+                &body.to_string(),
+                bearer,
+            )?;
+            let v: serde_json::Value = serde_json::from_str(&resp.body)
+                .map_err(|e| format!("bad response: {e}: {}", resp.body))?;
+            if json_out {
+                return emit_json_ok("valet", v);
+            }
+            println!(
+                "fired {} · suppressed-no-consent {} · already-fired {}",
+                v["fired"], v["suppressed_no_consent"], v["already_fired"]
+            );
+            Ok(())
+        }
+        "brief" => {
+            let resp = http::get(&base, "/workflow/valet/brief", &[], bearer)?;
+            let v: serde_json::Value = serde_json::from_str(&resp.body)
+                .map_err(|e| format!("bad response: {e}: {}", resp.body))?;
+            if json_out {
+                return emit_json_ok("valet", v);
+            }
+            println!("== valet brief ({}) ==", v["now"]);
+            if let Some(due) = v["due"].as_array() {
+                for d in due {
+                    println!(
+                        "  DUE   run {} · {} ({}s overdue)",
+                        d["run_id"], d["what"], d["overdue_secs"]
+                    );
+                }
+            }
+            if let Some(drafts) = v["drafts_pending"].as_array() {
+                for d in drafts {
+                    println!(
+                        "  DRAFT proposal {} · lint {}",
+                        d["proposal_id"], d["lint"]["score"]
+                    );
+                }
+            }
+            if let Some(notes) = v["evening_notes"].as_array() {
+                for n in notes {
+                    println!("  NOTE  run {} · {}", n["run_id"], n["content"]);
+                }
+            }
+            println!(
+                "  signal consent: {}",
+                if v["signal_consent_in_force"].as_bool().unwrap_or(false) {
+                    "in force"
+                } else {
+                    "NOT in force (envelopes suppressed)"
+                }
+            );
+            Ok(())
+        }
+        "consent" => {
+            let verb = rest.first().cloned().unwrap_or_default();
+            let granted = match verb.as_str() {
+                "grant" => true,
+                "revoke" => false,
+                _ => return Err(usage.to_string()),
+            };
+            let resp = http::put(
+                &base,
+                "/workflow/valet/consent",
+                &[],
+                "application/json",
+                &serde_json::json!({ "granted": granted }).to_string(),
+                bearer,
+            )?;
+            let v: serde_json::Value = serde_json::from_str(&resp.body)
+                .map_err(|e| format!("bad response: {e}: {}", resp.body))?;
+            if json_out {
+                return emit_json_ok("valet", v);
+            }
+            println!("signal consent granted={}", v["granted"]);
+            Ok(())
+        }
+        _ => Err(usage.to_string()),
+    }
+}
+
+/// Parse `--at` values: unix seconds, RFC3339, `YYYY-MM-DD HH:MM`, or a bare
+/// `HH:MM` (today, or tomorrow when already past). Local-time interpretation
+/// — this is a personal-scheduling verb.
+fn parse_due_at(at: &str) -> Result<i64, String> {
+    let at = at.trim();
+    if let Ok(secs) = at.parse::<i64>() {
+        return Ok(secs);
+    }
+    use chrono::{Datelike, Local, TimeZone};
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(at) {
+        return Ok(t.timestamp());
+    }
+    let now = Local::now();
+    let today = |h: u32, m: u32| -> Option<i64> {
+        now.timezone()
+            .with_ymd_and_hms(now.year(), now.month(), now.day(), h, m, 0)
+            .single()
+            .map(|t| t.timestamp())
+    };
+    let parts: Vec<&str> = at.split(['-', ' ', ':']).collect();
+    match parts.len() {
+        // YYYY-MM-DD HH:MM (or HH:MM:SS)
+        5 | 6 => {
+            let (y, mo, d) = (
+                parts[0].parse::<i32>().map_err(|_| "bad date")?,
+                parts[1].parse::<u32>().map_err(|_| "bad date")?,
+                parts[2].parse::<u32>().map_err(|_| "bad date")?,
+            );
+            let (h, mi) = (
+                parts[3].parse::<u32>().map_err(|_| "bad time")?,
+                parts[4].parse::<u32>().map_err(|_| "bad time")?,
+            );
+            now.timezone()
+                .with_ymd_and_hms(y, mo, d, h, mi, 0)
+                .single()
+                .map(|t| t.timestamp())
+                .ok_or_else(|| "date out of range".into())
+        }
+        // HH:MM
+        2 => {
+            let h = parts[0].parse::<u32>().map_err(|_| "bad time")?;
+            let m = parts[1].parse::<u32>().map_err(|_| "bad time")?;
+            let t = today(h, m).ok_or_else(|| "time out of range".to_string())?;
+            if t > now.timestamp() {
+                Ok(t)
+            } else {
+                Ok(t + 86_400)
+            }
+        }
+        _ => Err("--at must be unix secs, RFC3339, YYYY-MM-DD HH:MM, or HH:MM".into()),
+    }
+}
+
+/// Client-side pre-flight of the reminder label against the classic
+/// injection openers (the server screens every surface it owns; this keeps
+/// junk from ever reaching the crank).
+fn http_contains_injection(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "ignore previous instructions",
+        "ignore all previous",
+        "reveal your system prompt",
+        "disregard the above",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
 }

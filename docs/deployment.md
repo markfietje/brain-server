@@ -228,6 +228,34 @@ Custom CRMs: see [connector-crm-custom.md](./connector-crm-custom.md).
 
 ---
 
+## The personal assistant crank (v1.28.42 "Valet")
+
+The trinity holds: cron or socket, never a daemon in the kernel. A reminder
+is just a governed run whose SLA envelope came due; `brain valet due` is a
+request-scoped, idempotent crank (outbox key `valet-{run}-{due_at}` — a double
+cron never double-fires). The Signal bridge is a separate zero-dependency
+edge process (`tools/valet-relay/relay.js`) holding ONLY its own 0600 config:
+it receives the server's signed alert envelopes and forwards `valet/due`
+pings; your replies flow back through `/webhooks/signal` (HMAC-verified,
+replay-capped, injection-screened — every inbound byte is untrusted).
+
+```cron
+# The scheduler IS the cron recipe — every 15 minutes, weekdays.
+*/15 * * * 1-5 brain valet due >> ~/Library/Logs/brain-valet.log 2>&1
+
+# The morning brief, once a day at 07:30.
+30 7 * * * brain valet brief >> ~/Library/Logs/brain-valet.log 2>&1
+```
+
+Setup: `brain valet consent grant` (the one-subject Outreach-lite registry —
+without it, envelopes fire locally but nothing is sent), then run the relay
+under launchd/KeepAlive with `BRAIN_ALERT_WEBHOOK_URL` pointing at its
+`/alert` listener and `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE` mirroring the relay
+secret. Content-plan import: `scripts/import-content-plan.ts plan.csv
+[--dry-run]` creates one `valet/reminder` run per planned post.
+
+---
+
 ## Deployment tiers (ISO 18295-1 applicability: any size)
 
 The standard applies to a centre of any size; so does this server. The same
@@ -281,6 +309,7 @@ corpus before promoting a tier.
 | `brain backup` | weekly | nightly | nightly + pre-calibration | nightly per region |
 | KB build / publish (`kb build`) | ad hoc | weekly | daily + feedback-loop driven | daily per locale set |
 | Human-signed calibration | — | quarterly | monthly (the signed register extract rides it, v1.28.37) | monthly per site |
+| Valet crank (`brain valet due`) | — | — | weekdays every 15 min (the personal-assistant heartbeat, v1.28.42) | same, per operator |
 | Token rotation | ≤90d | ≤90d | ≤90d | ≤90d (staggered per principal) |
 
 ### Upgrade path

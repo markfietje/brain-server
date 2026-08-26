@@ -196,29 +196,47 @@ pub async fn post_steering(
         // The cap and the enqueue commit atomically: drop-oldest + insert in
         // one tx on one connection so the inbox bound can never race past 100.
         let tx = conn.transaction().map_err(|e| format!("{e}"))?;
-        let cnt: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .map_err(|e| format!("{e}"))?;
-        if cnt >= 100 {
-            tx.execute(
-                "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE run_id=?1 AND topic='steering' ORDER BY id ASC LIMIT ?2)",
-                rusqlite::params![id, cnt - 99],
-            )
-            .map_err(|e| format!("{e}"))?;
-        }
-        let now = chrono::Utc::now().timestamp();
-        let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
-        crate::workflow::outbox::enqueue(&tx, id, "steering", &payload, &key, now)
-            .map_err(|e| format!("{e}"))?;
-        crew_touch_cranking(&tx, &domain, &actor, Some(&format!("run:{id}")));
+        enqueue_steering_tx(&tx, id, &domain, &payload, &actor)?;
         tx.commit().map_err(|e| format!("{e}"))?;
         Ok(())
-    }).await.map_err(|e| HandlerError::internal(format!("{e}")))?.map_err(HandlerError::internal)?;
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
     Ok(Json(serde_json::json!({"ok": true})))
+}
+
+/// The steering inbox write, shared by `POST .../steering` and the inbound
+/// Signal webhook (`[case N] ...` messages). Drop-oldest cap + enqueue +
+/// presence touch in ONE tx on one connection so the inbox bound can never
+/// race past 100. `payload` is the ALREADY-sanitized JSON envelope.
+pub(crate) fn enqueue_steering_tx(
+    tx: &rusqlite::Transaction,
+    id: i64,
+    domain: &str,
+    payload: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let cnt: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("{e}"))?;
+    if cnt >= 100 {
+        tx.execute(
+            "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE run_id=?1 AND topic='steering' ORDER BY id ASC LIMIT ?2)",
+            rusqlite::params![id, cnt - 99],
+        )
+        .map_err(|e| format!("{e}"))?;
+    }
+    let now = chrono::Utc::now().timestamp();
+    let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
+    crate::workflow::outbox::enqueue(tx, id, "steering", payload, &key, now)
+        .map_err(|e| format!("{e}"))?;
+    crew_touch_cranking(tx, domain, actor, Some(&format!("run:{id}")));
+    Ok(())
 }
 
 pub async fn get_suggestions(
