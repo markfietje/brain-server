@@ -23,6 +23,13 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: cache cross + cargo-cyclonedx binaries
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/bin/cross
+            ~/.cargo/bin/cargo-cyclonedx
+          key: release-tools-cross-0.2.5-cyclonedx
 
       - name: Build (linux x86_64)
         # Full binary set: `bench`/`brain-migrate-rehearse` need `--features
@@ -36,8 +43,11 @@ jobs:
         continue-on-error: true
 
       - name: Build (linux aarch64 via cross)
+        # cross + cargo-cyclonedx are cached in ~/.cargo/bin (version-keyed):
+        # compiling either from source on the tag's critical path used to add
+        # minutes to EVERY release.
         run: |
-          cargo install cross --locked
+          command -v cross >/dev/null 2>&1 || cargo install cross --version 0.2.5 --locked
           cross build --release --features bench,migrate --target aarch64-unknown-linux-gnu
           cross build --release --features connector-github --bin brain-connector-gh --target aarch64-unknown-linux-gnu
           cross build --release --features connector-crm --bin brain-connector-crm --target aarch64-unknown-linux-gnu
@@ -48,7 +58,7 @@ jobs:
         # from Cargo.lock, shipped alongside the release binaries (EU CRA /
         # OWASP A03:2025). cargo-cyclonedx is a release-time tool.
         run: |
-          cargo install cargo-cyclonedx --locked
+          command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
           ./scripts/sbom.sh
         continue-on-error: true
 
@@ -150,8 +160,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
-      - name: Install mdBook
-        run: cargo install mdbook --version 0.5.4 --locked
+      - name: cache mdbook binary
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: mdbook-0.5.4
+      - name: Install mdBook (skipped on cache hit)
+        run: command -v mdbook >/dev/null 2>&1 || cargo install mdbook --version 0.5.4 --locked
       - name: Build
         run: mdbook build
       - name: Upload artifact
@@ -270,6 +285,10 @@ jobs:
           #    shape: a bullet leading with its own category
           #    (`- **Improvements:** …`) or grouped under a bold category
           #    sub-heading (`**Bug fixes**` followed by `- ` bullets).
+          #    A bullet's hard-wrapped CONTINUATION lines (indented) travel
+          #    WITH their bullet — v1.28.31–.33 published truncated because
+          #    this extractor once dropped them; that loss was silent, which
+          #    is forbidden here.
           #    Validation counts / milestone detail placed INSIDE the block
           #    violate the changelog contract — refuse naming the offending
           #    lines instead of stripping them silently.
@@ -279,11 +298,16 @@ jobs:
             /^### Release notes/ { notes=1; next }
             notes && /^### / { exit }
             notes && /^\*\*(Improvements|New|Changed|Bug fixes|Security fixes)\*\*/ {
-              print; cat = 1; next
+              # blank line BEFORE each grouped heading: without it the raw
+              # column-0 heading lazy-continues the previous bullet and
+              # GitHub renders it glued inside that bullet.
+              if (printed) print ""
+              print; cat = 1; printed = 1; next
             }
             notes && /^- \*\*(Improvements|New|Changed|Bug fixes|Security fixes):/ {
-              print; cat = 1; next
+              print; cat = 1; printed = 1; next
             }
+            notes && cat && /^[ \t]+[^ \t]/ { print; printed = 1; next }
             notes && NF && !/^- / && !/^ / { cat = 0 }
             notes && /^- / { if (cat) print; else print "UNCATEGORIZED " $0 }
           ' CHANGELOG.md > NOTES_BULLETS.raw
@@ -302,9 +326,41 @@ jobs:
           fi
 
           # 5. Assemble: summary → bullets → compare link (blank-trimmed).
+          #    Both prose and bullets are UNWRAPPED first: each paragraph /
+          #    bullet becomes ONE physical line. Hard-wrapped CHANGELOG
+          #    sources otherwise leak their 76-col breaks into the published
+          #    body (v1.28.31–.33 shipped that way; older releases didn't —
+          #    visibly inconsistent on the releases page and in API output).
           #    Previous release = the largest CHANGELOG version numerically
           #    below this one (heading order not strictly sorted;
           #    [Unreleased] skipped by the numeric filter).
+          #    unwrap: pass 1 joins indented continuation lines; pass 2 merges
+          #    column-0 hard-wrapped prose into one line per paragraph
+          #    (markdown renders both identically; one physical line per
+          #    paragraph/bullet keeps every release's body uniform).
+          unwrap() { awk '
+              function flush() { if (pending) { print buf; pending = 0 } }
+              /^[ \t]+[^ \t]/ {
+                s = $0; sub(/^[ \t]+/, "", s)
+                if (pending) buf = buf " " s
+                else { buf = s; pending = 1 }
+                next
+              }
+              $0 == "" { flush(); print ""; next }
+              {
+                flush()
+                buf = $0; pending = 1
+              }
+              END { flush() }
+            ' | awk '
+              function plain(s) {
+                return s !~ /^[ \t]*$/ && s !~ /^[ \t]/ && \
+                       s !~ /^([-*][ \t]|[0-9]+\.[ \t]|>|#{1,6} )/ && s !~ /^\*\*.*\*\*[ \t]*$/
+              }
+              plain($0) { blk = (blk == "") ? $0 : blk " " $0; next }
+              { if (blk != "") { print blk; blk = "" } print }
+              END { if (blk != "") print blk }
+            '; }
           prev=""
           while IFS= read -r v; do
             if [ "$v" = "$version" ]; then break; fi
@@ -312,9 +368,12 @@ jobs:
           done < <(sed -nE 's/^## \[([0-9][0-9.]*)\].*/\1/p' CHANGELOG.md | sort -V)
 
           {
-            cat RELEASE_INTRO.md
+            # strip the intro's trailing blanks so exactly ONE blank line
+            # separates prose from bullets (double-gap shipped on every
+            # release before this trim).
+            awk 'NF { last = NR } { line[NR] = $0 } END { for (i = 1; i <= last; i++) print line[i] }' RELEASE_INTRO.md | unwrap
             printf '\n'
-            sanitize < NOTES_BULLETS.raw
+            sanitize < NOTES_BULLETS.raw | unwrap
             printf '\n**Full Changelog**: https://github.com/%s/compare/v%s...v%s\n' \
               "$GITHUB_REPOSITORY" "$prev" "$version"
           } | awk '

@@ -411,9 +411,12 @@ Within one deployment, "each agent has a brain db, collaborating" means agents g
 
 ### Release notes
 
-- **Improvements:** agents become named colleagues — each agent principal carries a standards-shaped (A2A) identity card, signed by the operator key and re-verified whenever it is used.
-- **Improvements:** agent-to-agent delegation inside a governed run: request a named verified agent's work on the case's lineage, and its result returns through the same audited chain, exactly once, from the delegatee only.
-- **Security fixes:** delegation targets must verify against the operator key before anything is written; tampered or rotated-away cards refuse loudly everywhere they surface; task/result text is screened at write (bounds + prompt-injection blocklist + invisible-strip) and never enters lineage payloads; per-run delegation ceiling; every mutation audits beside its lineage event in one transaction; every emitted string rides the read seam.
+**Improvements**
+- agents become named colleagues — each agent principal carries a standards-shaped (A2A) identity card, signed by the operator key and re-verified whenever it is used.
+- agent-to-agent delegation inside a governed run: request a named verified agent's work on the case's lineage, and its result returns through the same audited chain, exactly once, from the delegatee only.
+
+**Security fixes**
+- delegation targets must verify against the operator key before anything is written; tampered or rotated-away cards refuse loudly everywhere they surface; task/result text is screened at write (bounds + prompt-injection blocklist + invisible-strip) and never enters lineage payloads; per-run delegation ceiling; every mutation audits beside its lineage event in one transaction; every emitted string rides the read seam.
 ### Engineering record
 - Tests: server main bin **883** / 6 ignored (**+4** over v1.28.28: the plan-named pins `agent_card_signature_verified_on_principal_use`, `delegation_request_and_result_are_lineage_events`, `agent_working_set_isolated_until_promoted`, `cross_agent_recall_shows_origin_labels`), lib **194** / 1; clippy `-D warnings` + fmt clean. Schema 1.28.28 → **1.28.29** (additive `agent_cards` + `delegations`). Zero new dependencies (ed25519-dalek, sha2, hex already declared).
 
@@ -441,9 +444,12 @@ Swarming means pulling the expert INTO the case, not transferring the case to th
 
 ### Release notes
 
-- **Improvements:** the case gets a room — humans post screened, bounded notes inside a governed run, and the machine turns `@skill:` / `@principal` mentions into swarm invites the invitee accepts into the channel (same accept discipline as Relay).
-- **Improvements:** invite pings flow over the existing `/events` SSE feed alongside workflow lineage — no new transport, no background worker beyond the existing drainer tick.
-- **Security fixes:** note content is screened at write exactly like steering (bounds + prompt-injection blocklist + invisible-strip + markdown-ref neutralization) and stored viewer-independent; dead mentions refuse loudly instead of silently inviting nobody; mention storms are capped; expired notes disappear from reads per domain policy; DSAR erasure reaches notes authored by OR addressed to the subject on any run; every mutation audits in its own transaction beside its lineage event; every emitted string rides the read seam.
+**Improvements**
+- the case gets a room — humans post screened, bounded notes inside a governed run, and the machine turns `@skill:` / `@principal` mentions into swarm invites the invitee accepts into the channel (same accept discipline as Relay).
+- invite pings flow over the existing `/events` SSE feed alongside workflow lineage — no new transport, no background worker beyond the existing drainer tick.
+
+**Security fixes**
+- note content is screened at write exactly like steering (bounds + prompt-injection blocklist + invisible-strip + markdown-ref neutralization) and stored viewer-independent; dead mentions refuse loudly instead of silently inviting nobody; mention storms are capped; expired notes disappear from reads per domain policy; DSAR erasure reaches notes authored by OR addressed to the subject on any run; every mutation audits in its own transaction beside its lineage event; every emitted string rides the read seam.
 ### Engineering record
 - Tests: server main bin **875** / 6 ignored (**+11** over v1.28.27: the four plan-named pins `notes_are_screened_and_case_scoped_only`, `mention_resolves_skill_to_principals`, `invite_accept_joins_channel_and_audits`, `notes_honour_retention_and_dsar_sweep`, plus `mention_storm_refuses_over_the_cap`, the erasure pin `dsar_sweep_erases_channel_rows_and_fk_children_of_the_run` (offers + notes + the CRM-link unlink against one run), the SSE-drain pin `channel_notes_drain_to_the_sse_bus`, and the four third-pass hardening pins `oversized_mention_tokens_report_dead_not_skipped`, `insert_note_validates_invitee_identity_before_any_write`, `channel_full_refuses_at_the_ceiling`, `note_content_never_rides_lineage_payloads`), lib **194** / 1; brain 19, mcp 37, eval 4, metrics 8 unchanged; clippy `-D warnings` + fmt clean; lipstyk diff-strict clean. Schema 1.28.27 → **1.28.28** (additive `case_notes`). Second-pass hardening: the POST receipt echoes the STORED row's clock (one read per request — previously a second `Utc::now()` could drift from the persisted `created_at`), retention resolution moved off the async reactor into the read's blocking task, the lineage-append tip-read deduped into one shared `outbox::append_lineage` (Relay + Channel call the same function), and the invite-limit wire message derives from the constant instead of a duplicated literal. Live smoke on a DB COPY of the live DB green end-to-end (`/audit/verify` ok; receipt timestamp byte-matches the stored row).
 
@@ -474,10 +480,13 @@ The follow-the-sun research is unanimous: structured packets, explicit acceptanc
 
 ### Release notes
 
-- **Improvements:** the one-click handover — offer/accept/decline over the I-PASS packet the Lineage release already builds, with the machine refusing incomplete packets and naming exactly what is missing.
-- **Improvements:** ownership transfer by CAS in one transaction with the acceptance receipt; the SLA clock survives the handover by construction.
-- **Improvements:** the handover-due board ranks active runs by SLA remaining and flags the overlap window at each ring boundary (Watchbill integration).
-- **Security fixes:** declines require a screened reason ≤ 4000 chars; every offer/decision is audited in its own transaction alongside the lineage event; retried offers are idempotent; self-handovers and unbounded principals refuse at the gate; addressee ids carrying control/invisible characters refuse (fail-closed identity); acceptance never resurrects a finished run; every emitted text field rides the read seam.
+**Improvements**
+- the one-click handover — offer/accept/decline over the I-PASS packet the Lineage release already builds, with the machine refusing incomplete packets and naming exactly what is missing.
+- ownership transfer by CAS in one transaction with the acceptance receipt; the SLA clock survives the handover by construction.
+- the handover-due board ranks active runs by SLA remaining and flags the overlap window at each ring boundary (Watchbill integration).
+
+**Security fixes**
+- declines require a screened reason ≤ 4000 chars; every offer/decision is audited in its own transaction alongside the lineage event; retried offers are idempotent; self-handovers and unbounded principals refuse at the gate; addressee ids carrying control/invisible characters refuse (fail-closed identity); acceptance never resurrects a finished run; every emitted text field rides the read seam.
 ### Engineering record
 - Tests: server main bin **864** / 6 ignored (**+8**: the plan-named pins `offer_refuses_incomplete_packet_with_missing_list`, `accept_transfers_owner_without_sla_reset`, `handover_board_ranks_by_sla_remaining_at_boundary`, `offer_accept_decline_are_lineage_events_audited_once`, plus the hardening pass pins `board_skips_corrupt_state_loudly_never_silently`, `validate_to_principal_refuses_invisible_and_control_ids`, `ensure_run_active_refuses_finished_runs_offer_and_accept`, `decline_reason_validation_bounds_hold`), lib **194** / 1; clippy `-D warnings` + fmt clean. Schema 1.28.26 → **1.28.27** (additive `handover_offers`). Live smoke on a DB COPY of the live DB: migration stamps 1.28.27, doctor clean, `/audit/verify` ok after the full flow — incomplete-packet refusal WITH missing list → packet completed → offer accepted → idempotent re-offer returns the same id → accept transfers owner (SLA byte-identical) + resume checkpoint → decline without reason refused → decline with reason stored + audited → board ranked soonest-first; second live smoke (hardening pass): zero-width addressee refused 400, accept on a completed run refused 409 with no resurrection, whitespace-only decline reason 400, corrupt-state board row skipped AND counted on the wire, chain verify ok.
 **Hardening pass:** the decline-with-empty-reason mis-map (`404` via the storage backstop) now refuses `400 reason_required` at the gate; acceptance reads the run's CURRENT status and refuses finished runs (`409 run_not_active`) instead of silently resurrecting them to active (the CAS now carries the true status); `to_principal` fails closed on control/invisible characters (a stripped id could collide with a different real principal at accept time); the board skips a corrupt-`state_json` run LOUDLY — warn log plus `corrupt_state_rows_skipped` on the wire, never a silent P3-fallback distortion of the ranking; every emitted text field (resume checkpoint, echoed addressee, board owner labels) rides the read seam.
@@ -510,9 +519,12 @@ Swarming and shared-queue models live or die on seeing the crew; until now the c
 
 ### Release notes
 
-- **Improvements:** the crew roster — who is active/away/offline, on which site's shift, working which kind of task, with which skills; deterministic read-time arithmetic over activity rows, no scheduler daemon.
-- **Improvements:** skills-based routing prerequisite — colleague skill tags maintained exclusively through human review (agents cannot self-tag).
-- **Security fixes:** people-visibility is DPO-switchable per domain and fails to HIDDEN; roster output is invisible-character-stripped; skills changes are proposal-gated with in-tx CAS + audit; DSAR erasure now reaches presence, skills, and shift rosters (closing the roster gap left by the previous release).
+**Improvements**
+- the crew roster — who is active/away/offline, on which site's shift, working which kind of task, with which skills; deterministic read-time arithmetic over activity rows, no scheduler daemon.
+- skills-based routing prerequisite — colleague skill tags maintained exclusively through human review (agents cannot self-tag).
+
+**Security fixes**
+- people-visibility is DPO-switchable per domain and fails to HIDDEN; roster output is invisible-character-stripped; skills changes are proposal-gated with in-tx CAS + audit; DSAR erasure now reaches presence, skills, and shift rosters (closing the roster gap left by the previous release).
 ### Engineering record
 - Tests: server main bin **856** / 6 ignored (**+7**: the four plan-named pins `presence_upserts_ride_existing_transactions_no_worker` / `presence_decays_by_ttl_at_read` / `roster_never_exposes_case_content` / `skills_changes_are_proposal_gated`, plus cross-domain application, Watchbill site/skills join, and the DSAR crew sweep), lib **194** / 1; clippy `-D warnings` + fmt clean. Schema 1.28.25 → **1.28.26** (additive `presence` / `principal_skills` / `crew_config`). Live smoke on a DB copy: propose → digest-bound approve → tags land under the proposed domain → reviewer presence recorded by the approval itself → DPO-off hides everyone → DSAR purge scrubs all three people-tables → proposal replay refused → `/audit/verify` ok on every domain.
 
@@ -541,9 +553,12 @@ Follow-the-sun is a *schedule* problem before it is a handover problem: the enve
 
 ### Release notes
 
-- **Improvements:** the shift ring — declare site on-call windows with declared overlap budgets and get, for any instant, which site owns the queue; the queue re-scopes to the incoming site during the overlap window while open cases keep their envelopes untouched.
-- **Improvements:** deterministic read-time arithmetic over stored rows — no scheduler daemon, no background worker.
-- **Security fixes:** none new; all surfaces are gated (Read / Admin), every mutation audited in-tx, reads bounded, inputs size-capped, and the double-booking validator refuses windows that don't respect the declared overlap budget.
+**Improvements**
+- the shift ring — declare site on-call windows with declared overlap budgets and get, for any instant, which site owns the queue; the queue re-scopes to the incoming site during the overlap window while open cases keep their envelopes untouched.
+- deterministic read-time arithmetic over stored rows — no scheduler daemon, no background worker.
+
+**Security fixes**
+- none new; all surfaces are gated (Read / Admin), every mutation audited in-tx, reads bounded, inputs size-capped, and the double-booking validator refuses windows that don't respect the declared overlap budget.
 ### Engineering record
 - Tests: server main bin **849** / 6 ignored (**+4**: the three plan-named pins `overlap_window_derives_from_shift_pair` / `shift_table_validates_no_double_booking` / `ring_boundary_rescopes_queue_not_cases` + storage round-trip), lib **194** / 1; clippy `-D warnings` + fmt clean; lipstyk diff-strict clean. Schema 1.28.23 → **1.28.25** (additive `shifts` table + index). Live smoke on a DB copy: mid-shift refusal 409, final-hour accept, queue re-scope across the boundary, bad-window 400 — all green; `brain doctor` integrity ok.
 
@@ -573,10 +588,13 @@ The demand-reduction half of KCS: approved articles become a **publicly publishe
 
 ### Release notes
 
-- **Improvements:** `brain kb build --domain <d> --out <dir>` turns solved-case knowledge into a hostable static KB — deterministic bytes, SHA-256 manifest, superseded-slug redirects.
-- **Improvements:** two-gate publishing (approve → publish) with preview: reviewers see exactly the sanitized page that will ship; retract-and-rebuild is the documented operational rollback.
-- **Improvements:** the scoreboard gains self-service-deflection and hot-topic signals from an anonymous, PII-free on-page feedback webhook; stale-published-article alerts fire on the existing expiry kind.
-- **Security fixes:** none new (all surfaces are role/HMAC-gated and fail closed); the strict public sanitize seam is stricter than the internal read gate by design.
+**Improvements**
+- `brain kb build --domain <d> --out <dir>` turns solved-case knowledge into a hostable static KB — deterministic bytes, SHA-256 manifest, superseded-slug redirects.
+- two-gate publishing (approve → publish) with preview: reviewers see exactly the sanitized page that will ship; retract-and-rebuild is the documented operational rollback.
+- the scoreboard gains self-service-deflection and hot-topic signals from an anonymous, PII-free on-page feedback webhook; stale-published-article alerts fire on the existing expiry kind.
+
+**Security fixes**
+- none new (all surfaces are role/HMAC-gated and fail closed); the strict public sanitize seam is stricter than the internal read gate by design.
 ### Engineering record
 - Tests: server main bin **845** / 6 ignored (**+7**: five plan-named pins + slug-vocabulary + artifact-write pins in `kb`/`pii_mask`), lib **201** / 1 (**+10**: 8 kb + 2 pii_mask), brain CLI, mcp, bench unchanged counts pending CI; clippy `-D warnings` + fmt clean. No schema change (schema stays 1.28.23 — publish rides the pre-scaffolded columns).
 
@@ -604,10 +622,13 @@ The KCS v6 double loop, wired to the substrate that already implements most of i
 
 ### Release notes
 
-- **Improvements:** solved support cases can now become searchable knowledge — the capture generator drafts a structured article proposal (Issue / Environment / Cause / Resolution / Evidence) from the case's own recorded evidence; a human approves it through the existing review queue.
-- **Improvements:** new content-health worklist (`GET /kcs/articles?stale=1`) surfaces articles needing review — stale freshness deadlines plus flags from runs whose evidence contradicted them.
-- **Improvements:** the scoreboard gains three KCS measures (linkage rate, reuse rate, freshness median age); the weekly report carries them.
-- **Security fixes:** none (no auth/gate changes; both new routes are role-gated and audited).
+**Improvements**
+- solved support cases can now become searchable knowledge — the capture generator drafts a structured article proposal (Issue / Environment / Cause / Resolution / Evidence) from the case's own recorded evidence; a human approves it through the existing review queue.
+- new content-health worklist (`GET /kcs/articles?stale=1`) surfaces articles needing review — stale freshness deadlines plus flags from runs whose evidence contradicted them.
+- the scoreboard gains three KCS measures (linkage rate, reuse rate, freshness median age); the weekly report carries them.
+
+**Security fixes**
+- none (no auth/gate changes; both new routes are role-gated and audited).
 ### Security fixes (deep hardening pass over v1.28.15–v1.28.22)
 - **HIGH — mediated exec no longer leaks the server's environment.** Engine-spawned
   processes now run with a minimal env (`env_clear` + PATH/HOME/TMPDIR); the
@@ -728,14 +749,17 @@ A case lives in ONE run from intake to close — no new sessions, ever — and e
 
 ### Release notes
 
-- **Improvements:** The derived context window: `GET /workflow/runs/{id}/context?at_event=&budget=` returns latest checkpoint at-or-before the anchor + delta events after it + per-finding digests + the open question. Field-budgeted (`budget`, default 2000, cap 100000) with truncation dropping OLDEST-delta-first and never dropping the checkpoint or question, flagged `truncated`. Prefix-stable by construction: appending events never changes an earlier window (pinned). One counted field ≈ one token — documented approximation, not guessed.
-- **Improvements:** Deterministic checkpoint cadence in the engine: `workflow/checkpoint` fires on every AskHuman pause, every phase transition (`Advance`), every N events (`BRAIN_CHECKPOINT_EVERY`, default 25, ceiling 100 — resolver clamps both degenerates), and once during finalize so a completed run ends ON a checkpoint. Replaces the old every-step emission; idempotency keys derive from persisted facts so replays stay exactly-once.
-- **Improvements:** The transcript scrolls forever: the run panel renders a bounded keyset slice of the assembler's ordered nodes (live tail + pulled-up earlier ranges, pure `Vec` slicing — no new dependency); "Load earlier" extends the window; a ten-thousand-node run never renders ten thousand nodes.
-- **Improvements:** Session-age badge on the composer (`N events · M checkpoints · oldest #id`) instead of any "new session" affordance — there is none anywhere in the GUI, and a source-scan test keeps it that way.
-- **Improvements:** Stream resume: SSE consumers send `Last-Event-ID` (the workflow outbox id) on reconnect; the server replays stored rows past it (bounded to one drain batch per pass, same envelope shape, same read seam, fail-closed per-domain Read gate) before going live; `GET /workflow/runs/{id}/events?since=` backfills older gaps; client dedup admits the gap and drops replays (pinned).
-- **Improvements:** Continuity contract documented for consumers ([docs/memory-lifecycle.md](docs/memory-lifecycle.md) §The continuity contract + plugin README): sessions are unbounded; LLM-side compaction is the CONSUMER's contract using the derivation API — brain-server never summarizes (zero-token rule); rewind replaces rotation.
-- **Improvements:** wasm-split enabled (operator-requested deviation from the plan's non-goals): `dx build --platform web --release --wasm-split` is green. `.cargo/config.toml` swaps `-C strip=symbols` → `strip=debuginfo` + `-C link-arg=--emit-relocs` (the splitter needs relocations + function names; DWARF-only stripping); `bundle-budget.sh` measures the SHIPPED posture (custom sections stripped via a pure section-frame walk) since the raw artifact legitimately carries splitter metadata. No `#[wasm_split]` boundaries annotated yet — see ceilings.
-- **Security fixes:** None (additive release; all gates reused — the context route is Read-gated on the run's domain with row-domain re-auth, and every emitted payload rides the existing `sanitize_read` seam).
+**Improvements**
+- The derived context window: `GET /workflow/runs/{id}/context?at_event=&budget=` returns latest checkpoint at-or-before the anchor + delta events after it + per-finding digests + the open question. Field-budgeted (`budget`, default 2000, cap 100000) with truncation dropping OLDEST-delta-first and never dropping the checkpoint or question, flagged `truncated`. Prefix-stable by construction: appending events never changes an earlier window (pinned). One counted field ≈ one token — documented approximation, not guessed.
+- Deterministic checkpoint cadence in the engine: `workflow/checkpoint` fires on every AskHuman pause, every phase transition (`Advance`), every N events (`BRAIN_CHECKPOINT_EVERY`, default 25, ceiling 100 — resolver clamps both degenerates), and once during finalize so a completed run ends ON a checkpoint. Replaces the old every-step emission; idempotency keys derive from persisted facts so replays stay exactly-once.
+- The transcript scrolls forever: the run panel renders a bounded keyset slice of the assembler's ordered nodes (live tail + pulled-up earlier ranges, pure `Vec` slicing — no new dependency); "Load earlier" extends the window; a ten-thousand-node run never renders ten thousand nodes.
+- Session-age badge on the composer (`N events · M checkpoints · oldest #id`) instead of any "new session" affordance — there is none anywhere in the GUI, and a source-scan test keeps it that way.
+- Stream resume: SSE consumers send `Last-Event-ID` (the workflow outbox id) on reconnect; the server replays stored rows past it (bounded to one drain batch per pass, same envelope shape, same read seam, fail-closed per-domain Read gate) before going live; `GET /workflow/runs/{id}/events?since=` backfills older gaps; client dedup admits the gap and drops replays (pinned).
+- Continuity contract documented for consumers ([docs/memory-lifecycle.md](docs/memory-lifecycle.md) §The continuity contract + plugin README): sessions are unbounded; LLM-side compaction is the CONSUMER's contract using the derivation API — brain-server never summarizes (zero-token rule); rewind replaces rotation.
+- wasm-split enabled (operator-requested deviation from the plan's non-goals): `dx build --platform web --release --wasm-split` is green. `.cargo/config.toml` swaps `-C strip=symbols` → `strip=debuginfo` + `-C link-arg=--emit-relocs` (the splitter needs relocations + function names; DWARF-only stripping); `bundle-budget.sh` measures the SHIPPED posture (custom sections stripped via a pure section-frame walk) since the raw artifact legitimately carries splitter metadata. No `#[wasm_split]` boundaries annotated yet — see ceilings.
+
+**Security fixes**
+- None (additive release; all gates reused — the context route is Read-gated on the run's domain with row-domain re-auth, and every emitted payload rides the existing `sanitize_read` seam).
 ### Engineering record
 
 - **M1 (cadence):** `resolve_checkpoint_every(Option<u32>)` (default 25, clamp 1..=100) beside `resolve_budget`; the crank tracks `events_since_ckpt` and fires through ONE checkpoint seam (bounded by the existing ≤256 KiB guard — oversized states still error loudly, never truncate). Keys: `run-{id}-ckpt-ask-{ordinal}` / `-adv-{rev}` / `-n-{ordinal}` / `-ckpt-end` — persisted facts only, so crash-replay dedups. Pinned by `checkpoints_fire_on_askhuman_phase_and_event_count` + `checkpoint_cadence_is_env_tunable_with_ceiling`; predecessor pins (`checkpoint_payload_round_trips_state_exactly`, rewind branch/replay-idempotence) pass UNCHANGED.
@@ -763,15 +787,18 @@ The client stops being web-only-in-truth: desktop and mobile become cargo featur
 
 ### Release notes
 
-- **Improvements:** Desktop is a build target: `cargo check/build --features desktop` compiles a native window shell from the same tree; `scripts/build-desktop.sh [macos|nsis|appimage|all]` wraps the documented `dx bundle --desktop` command set with fail-on-error discipline (the dx CLI stays an operator install — that line was already honest, it stays honest). The `mobile` feature is a compile-smoke target in CI, explicitly allow-fail this release — no store submission has shipped, STORE_READINESS untouched.
-- **Improvements:** Downloads work off the browser now: audit exports, UMP/DSAR exports, and recall-trace exports all go through ONE download seam — blob save on web, native file write to `BRAIN_DOWNLOAD_DIR` on desktop/mobile, behind one traversal-safe filename gate.
-- **Improvements:** The transcript renders all five node kinds: assistant turns stream progressively and settle, tool invocations render name/status cards, delivery packets render their collected items with a done badge. Unknown kinds still fall through to the generic card — nothing is silently dropped.
-- **Improvements:** Evidence as a view: a settled tool node whose output carries structured evidence renders findings with provenance origins, contradictions as LINKED PAIRS (both rows together or not at all — a one-sided half is refused), evidence digests, and verification questions with justification + score. Read-only over machine-written state; absent fields render absent, never invented.
-- **Improvements:** New `/runs/:id/timeline` route renders the full lineage (branch markers, checkpoint badges, AskHuman pauses) through the SAME TimelineView component the workflow-run node uses; linked from the transcript header.
-- **Improvements:** New `/scoreboard` panel (nav-gated with Audit): nine metric cards + runs-scored + audit-green badge + the weekly calibration-report badge, rendered only from fields the endpoint actually shipped.
-- **Improvements:** Composer `/commands`: `/crank [steps]`, `/handoff`, `/scoreboard`, `/help` — the CLI verbs, GUI-ified. `?` opens a keyboard/command cheat-sheet dialog (Esc closes). J/K/A/R conventions unchanged.
-- **Improvements:** The human crank control ships bounded (1–500 steps selector) and role-gated (Write+Approve) — but is honestly unwired: there is NO HTTP crank route (crank today spawns the local steward-harness binary, which a browser cannot do). Pressing it says so instead of pretending. The engine-pull worker milestone makes it real next.
-- **Security fixes:** The download filename gate refuses any `..` path component BEFORE separator flattening, plus separators/control characters — a download can never escape its target directory (the session-learning traversal rule, applied where new file-write code landed).
+**Improvements**
+- Desktop is a build target: `cargo check/build --features desktop` compiles a native window shell from the same tree; `scripts/build-desktop.sh [macos|nsis|appimage|all]` wraps the documented `dx bundle --desktop` command set with fail-on-error discipline (the dx CLI stays an operator install — that line was already honest, it stays honest). The `mobile` feature is a compile-smoke target in CI, explicitly allow-fail this release — no store submission has shipped, STORE_READINESS untouched.
+- Downloads work off the browser now: audit exports, UMP/DSAR exports, and recall-trace exports all go through ONE download seam — blob save on web, native file write to `BRAIN_DOWNLOAD_DIR` on desktop/mobile, behind one traversal-safe filename gate.
+- The transcript renders all five node kinds: assistant turns stream progressively and settle, tool invocations render name/status cards, delivery packets render their collected items with a done badge. Unknown kinds still fall through to the generic card — nothing is silently dropped.
+- Evidence as a view: a settled tool node whose output carries structured evidence renders findings with provenance origins, contradictions as LINKED PAIRS (both rows together or not at all — a one-sided half is refused), evidence digests, and verification questions with justification + score. Read-only over machine-written state; absent fields render absent, never invented.
+- New `/runs/:id/timeline` route renders the full lineage (branch markers, checkpoint badges, AskHuman pauses) through the SAME TimelineView component the workflow-run node uses; linked from the transcript header.
+- New `/scoreboard` panel (nav-gated with Audit): nine metric cards + runs-scored + audit-green badge + the weekly calibration-report badge, rendered only from fields the endpoint actually shipped.
+- Composer `/commands`: `/crank [steps]`, `/handoff`, `/scoreboard`, `/help` — the CLI verbs, GUI-ified. `?` opens a keyboard/command cheat-sheet dialog (Esc closes). J/K/A/R conventions unchanged.
+- The human crank control ships bounded (1–500 steps selector) and role-gated (Write+Approve) — but is honestly unwired: there is NO HTTP crank route (crank today spawns the local steward-harness binary, which a browser cannot do). Pressing it says so instead of pretending. The engine-pull worker milestone makes it real next.
+
+**Security fixes**
+- The download filename gate refuses any `..` path component BEFORE separator flattening, plus separators/control characters — a download can never escape its target directory (the session-learning traversal rule, applied where new file-write code landed).
 ### Engineering record
 
 - **M1 (platforms):** `client/Cargo.toml` gains the Dioxus feature triad (`web`/`desktop`/`mobile`, default `web`); `[desktop.window]` lands in Dioxus.toml; CI's client-gate adds `libwebkit2gtk` headers + `cargo check --features desktop --all-targets` (compile correctness, no GUI run) and an honestly-labeled allow-fail mobile smoke row. The three blob-download sites collapse onto the shared `src/download.rs` seam (native path writes to `BRAIN_DOWNLOAD_DIR`, XDG-Downloads fallback, no new dependency).
@@ -798,16 +825,21 @@ The client-side evidence loop closes: a workflow-outbox drain worker publishes d
 
 ### Release notes
 
-- **Improvements:** `/events` now also carries drained `workflow/*` outbox events under kind `workflow` with payload `{topic, run_id, payload_json, event_id, parent_event_id, domain}`. Additive and default-off: existing consumers see nothing unless they explicitly ask `?kinds=workflow`, and even then only events whose run domain they may Read (checked per subscriber at fan-out; denied events are dropped, never leaked).
-- **Improvements:** The GUI holds ONE persistent `/events` stream for the whole app (survives route changes): capped exponential backoff (1 s → 30 s), deduped per coordinate space (alert `seq`, outbox `(run_id, event_id)`), bounded 500-event ring. The old 10 s poll is demoted, not removed — it wakes only after two consecutive stream failures.
-- **Improvements:** New `/runs/:run_id` conversation panel (deep-linkable): the run's stream events fold through the conversation assembler into keyed chat nodes — `review-job` renders digest + SLA clock + role gate with inline approve/reject (the ApprovalDock's digest-bound decision action moved to where the evidence streams in; the dock itself remains on Overview), and `workflow-run` renders the lineage timeline (parent links + branch markers) and the live AskHuman card. Unknown node kinds fall back to a generic card — never silently dropped. Keyboard conventions reused from Review (A/R decide, J/K walk).
-- **Improvements:** Mount evidence flows at last: every GUI boot posts one `POST /workflow/plugins/mount` per mounted plugin, carrying the bundle SHA-256 read from the Anchor-signed `/app/boot.json` (`.wasm` entry preferred). Fire-and-forget with a console warning — evidence loss is visible, never fatal.
+**Improvements**
+- `/events` now also carries drained `workflow/*` outbox events under kind `workflow` with payload `{topic, run_id, payload_json, event_id, parent_event_id, domain}`. Additive and default-off: existing consumers see nothing unless they explicitly ask `?kinds=workflow`, and even then only events whose run domain they may Read (checked per subscriber at fan-out; denied events are dropped, never leaked).
+- The GUI holds ONE persistent `/events` stream for the whole app (survives route changes): capped exponential backoff (1 s → 30 s), deduped per coordinate space (alert `seq`, outbox `(run_id, event_id)`), bounded 500-event ring. The old 10 s poll is demoted, not removed — it wakes only after two consecutive stream failures.
+- New `/runs/:run_id` conversation panel (deep-linkable): the run's stream events fold through the conversation assembler into keyed chat nodes — `review-job` renders digest + SLA clock + role gate with inline approve/reject (the ApprovalDock's digest-bound decision action moved to where the evidence streams in; the dock itself remains on Overview), and `workflow-run` renders the lineage timeline (parent links + branch markers) and the live AskHuman card. Unknown node kinds fall back to a generic card — never silently dropped. Keyboard conventions reused from Review (A/R decide, J/K walk).
+- Mount evidence flows at last: every GUI boot posts one `POST /workflow/plugins/mount` per mounted plugin, carrying the bundle SHA-256 read from the Anchor-signed `/app/boot.json` (`.wasm` entry preferred). Fire-and-forget with a console warning — evidence loss is visible, never fatal.
 - **MCP over HTTP:** the `mcp` binary now serves its full JSON-RPC surface over Streamable HTTP (`POST /mcp`, SSE-framed when the client's `Accept` asks) in addition to stdio — opt-in via `MCP_TRANSPORT=http` / `MCP_HTTP_ADDR`. Example Claude Desktop and OpenClaw configurations are in docs/mcp.md.
-- **Improvements:** Steering composer on the run panel posts the existing screened `POST …/steering` (≤4000 chars, live remaining-char count).
-- **Bug fixes:** Fixed a pre-existing runtime panic in the client: the plugin host was provided to the context as a bare `PluginHost` while consumers read it as `Signal<PluginHost>`, so mounting the Overview approval dock panicked. The provider now wraps the host in a signal.
-- **Bug fixes:** Fixed an aborted-`git-stash` hazard during this release's development session (work recovered intact; no tree damage).
-- **Security fixes:** The workflow event bridge applies the unconditional sanitize seam to outbox payloads BEFORE broadcast (invisible chars + markdown-ref constructs never reach the wire raw, even though engine state is machine-written), and the per-subscriber run-domain Read gate fails closed at fan-out.
-- **Security fixes:** HTTP-mode MCP is fail-closed by construction: loopback bind by default, optional `MCP_HTTP_TOKEN` bearer checked BEFORE any request parsing (401 on missing/wrong credential), bodies capped at the 1 MiB stdio bound (413), non-JSON content types refused (415), GET/DELETE refused 405 (stateless server, no listen stream).
+- Steering composer on the run panel posts the existing screened `POST …/steering` (≤4000 chars, live remaining-char count).
+
+**Bug fixes**
+- Fixed a pre-existing runtime panic in the client: the plugin host was provided to the context as a bare `PluginHost` while consumers read it as `Signal<PluginHost>`, so mounting the Overview approval dock panicked. The provider now wraps the host in a signal.
+- Fixed an aborted-`git-stash` hazard during this release's development session (work recovered intact; no tree damage).
+
+**Security fixes**
+- The workflow event bridge applies the unconditional sanitize seam to outbox payloads BEFORE broadcast (invisible chars + markdown-ref constructs never reach the wire raw, even though engine state is machine-written), and the per-subscriber run-domain Read gate fails closed at fan-out.
+- HTTP-mode MCP is fail-closed by construction: loopback bind by default, optional `MCP_HTTP_TOKEN` bearer checked BEFORE any request parsing (401 on missing/wrong credential), bodies capped at the 1 MiB stdio bound (413), non-JSON content types refused (415), GET/DELETE refused 405 (stateless server, no listen stream).
 ### Engineering record
 
 - **Server M1 (outbox → SSE bridge):** new `spawn_workflow_event_worker` in `src/alert.rs` — every 2 s, per registered domain (webhook drainer's cadence + fail-soft discipline), pending `topic LIKE 'workflow/%'` rows advance via the existing `workflow::outbox::deliver` (audit row commits in the same tx; non-workflow topics like `steering` are never touched — engines consume those through their own surfaces) and publish `{kind:"workflow", payload:{…}}` on the bounded broadcast. Batch-bounded at 100 rows/domain/tick. Admission decision extracted as pure `workflow_event_admissible(kinds, authorized)`: opt-in required AND domain Read granted (default-off for old consumers). Pinned by `workflow_events_broadcast_with_domain_authz`, `sanitize_applies_to_workflow_payloads`, `kinds_filter_excludes_workflow_by_default`.
@@ -833,11 +865,14 @@ The outbox grows ancestry: `parent_id` links every event to the event it followe
 
 ### Release notes
 
-- **Improvements:** Runs now have a tree, not a list: every outbox event can carry a `parent_event_id`, the engine threads its lineage cursor automatically, and after a rewind the next event parents at the rewind target. `GET /workflow/runs/{id}/events?branch=` reads any branch's ancestor chain, root-first.
-- **Improvements:** Rewind-as-branch: `POST /workflow/runs/{id}/rewind` restores the state snapshot from a `workflow/checkpoint` event (or the run root) in one transaction, appending a `branches[]` marker to the engine-owned state. Nothing is ever deleted — the abandoned branch stays fully queryable. Write + approve role gate, reason screened like steering.
-- **Improvements:** Checkpoints are events: at every step boundary the engine emits `workflow/checkpoint` carrying the full state snapshot (≤256 KiB guard — oversized states error loudly, never truncate).
-- **Improvements:** The I-PASS handoff packet exists: `GET /workflow/runs/{id}/handoff` assembles Illness/Patient/Action/Situation/Safety from the run's own records (frontdoor seed, opening event, steps, latest checkpoint digest, SLA envelope, legal-hold + escalation status); `handoff_complete` derives exactly as the scoreboard derives it. CLI: `brain workflow handoff <run>` (with `--json`).
-- **Security fixes:** None new: the rewind write rides the existing gates (domain Write, `approve` role, blocklist screening of the free-text reason) and commits its audit row in the same transaction as the state restore.
+**Improvements**
+- Runs now have a tree, not a list: every outbox event can carry a `parent_event_id`, the engine threads its lineage cursor automatically, and after a rewind the next event parents at the rewind target. `GET /workflow/runs/{id}/events?branch=` reads any branch's ancestor chain, root-first.
+- Rewind-as-branch: `POST /workflow/runs/{id}/rewind` restores the state snapshot from a `workflow/checkpoint` event (or the run root) in one transaction, appending a `branches[]` marker to the engine-owned state. Nothing is ever deleted — the abandoned branch stays fully queryable. Write + approve role gate, reason screened like steering.
+- Checkpoints are events: at every step boundary the engine emits `workflow/checkpoint` carrying the full state snapshot (≤256 KiB guard — oversized states error loudly, never truncate).
+- The I-PASS handoff packet exists: `GET /workflow/runs/{id}/handoff` assembles Illness/Patient/Action/Situation/Safety from the run's own records (frontdoor seed, opening event, steps, latest checkpoint digest, SLA envelope, legal-hold + escalation status); `handoff_complete` derives exactly as the scoreboard derives it. CLI: `brain workflow handoff <run>` (with `--json`).
+
+**Security fixes**
+- None new: the rewind write rides the existing gates (domain Write, `approve` role, blocklist screening of the free-text reason) and commits its audit row in the same transaction as the state restore.
 ### Engineering record
 
 - Fixed a pre-existing compile break on `main` found while wiring this release: `exec_allowlist()` called a non-existent `parse_word_list` helper (a leftover from the previous lipstyk cleanup pass); it now uses the sibling `word_list` like its HTTP twin. The tree at v1.28.17 did not compile as-committed.
@@ -865,12 +900,17 @@ DeepSeek Harness's settlement guarantees become contract tests BEFORE the engine
 
 ### Release notes
 
-- **Improvements:** The engine can no longer ship without its settlement guarantees: CI now runs the SDK's feature-gated workflow invariants explicitly (`cargo test -p brain-engine-sdk --features harness-kernel`) and a dedicated `steward-harness-gate` job (fmt + clippy + test) for the engine's tokio conformance.
-- **Improvements:** Cooperative cancel is real: new `crank_cancellable` observes a shared `CancellationToken` at every step boundary and settles the run as `StoppedAt::Cancelled` exactly between steps — never mid-step, never splitting a CAS/event twin. Existing crank signatures are unchanged (additive).
-- **Improvements:** Budget enforcement is now reachable and fail-closed: an exhausted window or an unenforceable budget denies the hostcall dispatch (`BudgetExceeded`) before any handler runs; previously the guard was dead code and `BudgetExceeded` could never fire.
-- **Bug fixes:** Event idempotency keys used the PER-CRANK step counter (`run-{id}-evt-{steps_executed}`), so a cancelled-then-resumed run re-keyed its events from 1 and the exactly-once gate silently swallowed EVERY resumed step's event twin. Keys now derive from the PERSISTED step count — deterministic on replay, correct across resumes (pinned by `sigterm_settle_then_resume_exact` artifacts-equal-control plus the no-half-step twin audit).
-- **Bug fixes:** `CancellationToken::clone` snapshotted the flag value instead of sharing it, so a cloned token never observed later cancels — cancellation propagation was silently broken for every clone holder. Clones now share one signal cell.
-- **Security fixes:** None (the fail-closed budget denial above is hardening of an unreachable path, counted here as an improvement).
+**Improvements**
+- The engine can no longer ship without its settlement guarantees: CI now runs the SDK's feature-gated workflow invariants explicitly (`cargo test -p brain-engine-sdk --features harness-kernel`) and a dedicated `steward-harness-gate` job (fmt + clippy + test) for the engine's tokio conformance.
+- Cooperative cancel is real: new `crank_cancellable` observes a shared `CancellationToken` at every step boundary and settles the run as `StoppedAt::Cancelled` exactly between steps — never mid-step, never splitting a CAS/event twin. Existing crank signatures are unchanged (additive).
+- Budget enforcement is now reachable and fail-closed: an exhausted window or an unenforceable budget denies the hostcall dispatch (`BudgetExceeded`) before any handler runs; previously the guard was dead code and `BudgetExceeded` could never fire.
+
+**Bug fixes**
+- Event idempotency keys used the PER-CRANK step counter (`run-{id}-evt-{steps_executed}`), so a cancelled-then-resumed run re-keyed its events from 1 and the exactly-once gate silently swallowed EVERY resumed step's event twin. Keys now derive from the PERSISTED step count — deterministic on replay, correct across resumes (pinned by `sigterm_settle_then_resume_exact` artifacts-equal-control plus the no-half-step twin audit).
+- `CancellationToken::clone` snapshotted the flag value instead of sharing it, so a cloned token never observed later cancels — cancellation propagation was silently broken for every clone holder. Clones now share one signal cell.
+
+**Security fixes**
+- None (the fail-closed budget denial above is hardening of an unreachable path, counted here as an improvement).
 ### Engineering record
 
 - **M1 (SDK, pure algebra):** six settlement pins in `workflow.rs`, deterministic, no clocks/threads beyond the existing wall-clock mirrors: `result_never_rejects_any_terminal_path` (exhaustive over `completed|error|cancelled`; failure IS a value; once-semantics; cancel-after-terminal cannot override), `cancel_settles_within_bounded_grace_under_tick_model` (tick model: hanging scripts settle AT the grace bound via the abort path; cooperative engines settle before it), `dispose_waits_for_child_quiescence_within_bound` (a settling child keeps its own stop-reason, a never-settling child is force-completed at the bound, none left Running), `events_are_cloned_per_listener_and_throw_contained` (a mutating + throwing listener cannot tamper with or starve later listeners), `admission_enforces_max_total_agents_16_and_released_slots_readmit` (the 17th concurrent admit is refused regardless of arguments; released slots readmit). Where a pin met reality, reality moved minimally: the dispatch budget guard was rewritten to be live and deny-by-default on unenforceable windows, and `CancellationToken` gained shared-state clone semantics.
@@ -895,13 +935,18 @@ Every engine tool-effect goes through one mediated, countable, auditable door. T
 
 ### Release notes
 
-- **Improvements:** All four remaining hostcall kinds now have server handlers: `exec` (argv-only, no shell, operator allowlist, cwd-pinned, output capped + sanitized), `http` (deny-by-default egress on the shared hardened client), `events` (the outbox as the ONLY event door, `workflow/*` topics only), and `ui` (an explicit named refusal — `reserved: lands with Cockpit`, not an absence). The dispatch table is exhaustive over the closed 7-kind vocabulary.
-- **Improvements:** New mediated tool: `knowledge_suggest` — the domain-scoped, quarantine-clean (`flagged = 0`) suggestion read, sanitized before it crosses the boundary; cross-domain rows never answer.
-- **Improvements:** Engines are countable: every canonicalized dispatch tallies into a per-run counter map (denials count too), surfaced additively as `CrankReport.hostcalls` — the audit chain stays the durable count.
-- **Bug fixes:** `/workflow/scoreboard` no longer 500s: the audited-run linkage queried a plain-text `audit_events.target` column that the migrated DDL never had (same dead-code class as the removed executor INSERTs). The set now reconstructs via `hash("run:{id}")` membership over `target_hash` — the canonical target every run-bound substrate write emits — and stays fail-closed (unparseable/unlinkable = not green). Pinned by an in-memory DB regression test.
-- **Security fixes:** Engine exec is fail-closed by default: `BRAIN_ENGINE_EXEC_ALLOWLIST` empty/absent = deny ALL exec, and the global deny still outranks any per-engine grant for other capabilities. Destructive commands are refused by the SDK mediation table even when allowlisted.
-- **Security fixes:** Engine egress is deny-by-default: destination hosts must be in `BRAIN_ENGINE_HTTP_ALLOWLIST`; remote destinations are forced onto HTTPS (loopback may speak plain http); redirects are refused by the shared egress client.
-- **Security fixes:** Exec stdout/stderr are each capped at 64 KiB and the whole result passes `sanitize_read` — PII in process output cannot cross into engine hands raw.
+**Improvements**
+- All four remaining hostcall kinds now have server handlers: `exec` (argv-only, no shell, operator allowlist, cwd-pinned, output capped + sanitized), `http` (deny-by-default egress on the shared hardened client), `events` (the outbox as the ONLY event door, `workflow/*` topics only), and `ui` (an explicit named refusal — `reserved: lands with Cockpit`, not an absence). The dispatch table is exhaustive over the closed 7-kind vocabulary.
+- New mediated tool: `knowledge_suggest` — the domain-scoped, quarantine-clean (`flagged = 0`) suggestion read, sanitized before it crosses the boundary; cross-domain rows never answer.
+- Engines are countable: every canonicalized dispatch tallies into a per-run counter map (denials count too), surfaced additively as `CrankReport.hostcalls` — the audit chain stays the durable count.
+
+**Bug fixes**
+- `/workflow/scoreboard` no longer 500s: the audited-run linkage queried a plain-text `audit_events.target` column that the migrated DDL never had (same dead-code class as the removed executor INSERTs). The set now reconstructs via `hash("run:{id}")` membership over `target_hash` — the canonical target every run-bound substrate write emits — and stays fail-closed (unparseable/unlinkable = not green). Pinned by an in-memory DB regression test.
+
+**Security fixes**
+- Engine exec is fail-closed by default: `BRAIN_ENGINE_EXEC_ALLOWLIST` empty/absent = deny ALL exec, and the global deny still outranks any per-engine grant for other capabilities. Destructive commands are refused by the SDK mediation table even when allowlisted.
+- Engine egress is deny-by-default: destination hosts must be in `BRAIN_ENGINE_HTTP_ALLOWLIST`; remote destinations are forced onto HTTPS (loopback may speak plain http); redirects are refused by the shared egress client.
+- Exec stdout/stderr are each capped at 64 KiB and the whole result passes `sanitize_read` — PII in process output cannot cross into engine hands raw.
 ### Engineering record
 
 - Client binaries (`brain`, `mcp`, `bench`, `brain-connector-stub`, `brain-connector-gh`) sent the WHOLE multi-line rotation token file as one Authorization header value; the embedded newline corrupted the request into an empty-body 400 before auth ran. All five now send exactly one slot via the shared `first_token` helper in `bin_common/http.rs` (pinned), which also fixes MCP `brain_search`/`ump.*` calls against rotation-slot files.
@@ -932,13 +977,18 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** The loop runs: `brain workflow crank <run>` drives a real governed loop over the new substrate routes — load state → decide → one troubleshoot-core step per turn with gate waterfall, budget law (default 24, ceiling 1000), advisory steering drains, and an exactly-once event trail (`run-{id}-evt-{n}`).
-- **Improvements:** AskHuman closes: `POST /workflow/runs/{id}/answer` digest-binds the answer to the live `pending_question` (SHA-256), appends `answers[]`, clears the question, and CAS-writes in ONE transaction.
-- **Improvements:** New role-gated routes: `POST /workflow/runs` (open + audit row atomically), `GET|PUT /workflow/runs/{id}/state` (engine-exact CAS view, `409 {actual_revision}` on stale), `POST /workflow/runs/{id}/events` (exactly-once by key), `GET /workflow/runs/{id}/steering?since=` (advisory inbox drain). Engine paths carry the `workflow` role; answer carries `approve`.
-- **Improvements:** `brain workflow` is real: `open` / `status` / `answer` / `approve` / `crank` (spawns the harness binary beside the CLI or via `BRAIN_STEWARD_BIN`; usage string updated).
-- **Bug fixes:** Dead code removed: `src/workflow/executor.rs` + `consensus.rs` INSERTed into columns absent from the migrated DDL — they would have failed if ever called. Deleted (zero callers).
-- **Security fixes:** Answer text runs the prompt-injection blocklist BEFORE it can reach run state (`400 answer_rejected`); answers are bounded at 4000 chars like steering.
-- **Security fixes:** A refused answer (wrong digest / no pending question) leaves the run byte-identical — verified by pin.
+**Improvements**
+- The loop runs: `brain workflow crank <run>` drives a real governed loop over the new substrate routes — load state → decide → one troubleshoot-core step per turn with gate waterfall, budget law (default 24, ceiling 1000), advisory steering drains, and an exactly-once event trail (`run-{id}-evt-{n}`).
+- AskHuman closes: `POST /workflow/runs/{id}/answer` digest-binds the answer to the live `pending_question` (SHA-256), appends `answers[]`, clears the question, and CAS-writes in ONE transaction.
+- New role-gated routes: `POST /workflow/runs` (open + audit row atomically), `GET|PUT /workflow/runs/{id}/state` (engine-exact CAS view, `409 {actual_revision}` on stale), `POST /workflow/runs/{id}/events` (exactly-once by key), `GET /workflow/runs/{id}/steering?since=` (advisory inbox drain). Engine paths carry the `workflow` role; answer carries `approve`.
+- `brain workflow` is real: `open` / `status` / `answer` / `approve` / `crank` (spawns the harness binary beside the CLI or via `BRAIN_STEWARD_BIN`; usage string updated).
+
+**Bug fixes**
+- Dead code removed: `src/workflow/executor.rs` + `consensus.rs` INSERTed into columns absent from the migrated DDL — they would have failed if ever called. Deleted (zero callers).
+
+**Security fixes**
+- Answer text runs the prompt-injection blocklist BEFORE it can reach run state (`400 answer_rejected`); answers are bounded at 4000 chars like steering.
+- A refused answer (wrong digest / no pending question) leaves the run byte-identical — verified by pin.
 ### Engineering record
 
 - The workflow handler family (existing run/steps/steering/suggestions/scoreboard surfaces included) used the raw `axum::Extension<Option<Principal>>` extractor, which 500s whenever the auth middleware does not inject an extension of exactly that type (opaque-token mode injects nothing) — found by live smoke. All workflow handlers now use the repo-standard infallible `OptPrincipal` extractor (`None` = loopback superuser posture unchanged); pinned over real HTTP in the smoke path.
@@ -965,12 +1015,13 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Security fixes:** Approve without a `content_digest` is now `400 digest_required` — the display↔decision binding is mandatory (was an opt-in legacy branch). Plugin-mount evidence is server-verified against the live boot manifest BEFORE the Art.12 audit row is written (`409` on mismatch/unknown digest).
-- **Security fixes:** New `BRAIN_WRITE_POSTURE=open|review` (default `open`; installer sets `review`). Under review, `/add`, `/ingest`, `/ingest/memory`, `/ingest/markdown`, `/ump/remember`, `/ump/revise` route through the existing proposal pipeline and return `202 proposal_pending` — agents propose, operators dispose. Origin labels corrected (`/ingest/memory` derives; UMP = `agent`; `/procedure` = `operator`, idempotent backfill) + the installer provisions a second agent token.
-- **Security fixes:** The Rust MCP fence-welding forge is closed (`fence::wrap_fenced`: control chars strip BEFORE sentinels, no transform after); MCP tool results, `format_response`, and CLI recall/get output all share it. Recall hits serialize `origin`/`flagged`/`authority`; UMP recall records carry `untrusted: true`; `/export` gains a top-level `untrusted` marker with content verbatim.
-- **Security fixes:** Boot chain means something: symlink containment (canonical, fail-closed), Ed25519-signed manifest (`sig`+`kid`) with `GET /app/boot.pub`, embedded fetch-and-refuse loader, digest-stamped service worker, external SW registration, CSP drops `'unsafe-eval'`. Client decision UI: full-content scroll dock, overview queue link-only, actions above content, invisible-char badge.
-- **Security fixes:** Supply chain: all CI `uses:` SHA-pinned + least-privilege permissions; rerank model dir refuses CWD-relative paths; model-manifest generator + installer provisioning; UMP key dir fails closed on wide modes; security headers on 401/429 (outermost layer); webhook secret selection deterministic; context-drawer strip; screen evasion hardening (new invisible classes + matching-time fullwidth fold).
-- **Security fixes:** Plugin 0.4.7: every interpolation inside the fence sanitized; error seam stripped; `baseUrl` scheme gate (https or loopback); `origin` provenance tag; drift reconciled and synced to openclaw.
+**Security fixes**
+- Approve without a `content_digest` is now `400 digest_required` — the display↔decision binding is mandatory (was an opt-in legacy branch). Plugin-mount evidence is server-verified against the live boot manifest BEFORE the Art.12 audit row is written (`409` on mismatch/unknown digest).
+- New `BRAIN_WRITE_POSTURE=open|review` (default `open`; installer sets `review`). Under review, `/add`, `/ingest`, `/ingest/memory`, `/ingest/markdown`, `/ump/remember`, `/ump/revise` route through the existing proposal pipeline and return `202 proposal_pending` — agents propose, operators dispose. Origin labels corrected (`/ingest/memory` derives; UMP = `agent`; `/procedure` = `operator`, idempotent backfill) + the installer provisions a second agent token.
+- The Rust MCP fence-welding forge is closed (`fence::wrap_fenced`: control chars strip BEFORE sentinels, no transform after); MCP tool results, `format_response`, and CLI recall/get output all share it. Recall hits serialize `origin`/`flagged`/`authority`; UMP recall records carry `untrusted: true`; `/export` gains a top-level `untrusted` marker with content verbatim.
+- Boot chain means something: symlink containment (canonical, fail-closed), Ed25519-signed manifest (`sig`+`kid`) with `GET /app/boot.pub`, embedded fetch-and-refuse loader, digest-stamped service worker, external SW registration, CSP drops `'unsafe-eval'`. Client decision UI: full-content scroll dock, overview queue link-only, actions above content, invisible-char badge.
+- Supply chain: all CI `uses:` SHA-pinned + least-privilege permissions; rerank model dir refuses CWD-relative paths; model-manifest generator + installer provisioning; UMP key dir fails closed on wide modes; security headers on 401/429 (outermost layer); webhook secret selection deterministic; context-drawer strip; screen evasion hardening (new invisible classes + matching-time fullwidth fold).
+- Plugin 0.4.7: every interpolation inside the fence sanitized; error seam stripped; `baseUrl` scheme gate (https or loopback); `origin` provenance tag; drift reconciled and synced to openclaw.
 ### Engineering record
 **Behavior-change ledger:** approve-without-digest now 400s; review posture 202s six write surfaces (env-gated, default unchanged); recall/export JSON gained additive fields; MCP/CLI output fenced; `/app` serves embedded loader/sw assets; plugin refuses remote cleartext `baseUrl`. Full findings-closure table: `AUDIT.md` §Register.
 
@@ -981,11 +1032,14 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** The operator console is now composed from three built-in UI plugins — **ui-shell** (layout), **ui-chat** (conversation + input docks + keyed chat-node dispatch), **ui-control-panel** (approvals) — mounted by a plugin kernel over one shared slot registry. Third-party plugins insert between existing dock entries purely by registration (order is data); the approval dock sits at order 5, the queue at 20.
-- **Improvements:** Approval decisions now ride a producer/consumer event contract: the server emits `proposal/open` and `proposal/decided` conversation events carrying whole-value checkpoints (content digest, SLA deadline, role gate), so the client's review-job node can join or replay from any stream point without its start event. Payloads are metadata only — never proposal content or PII.
-- **Improvements:** The host publishes a boot manifest for the client bundle: `/app/boot.json` plus a `window.__BRAIN_BOOT__` script seat list every `pkg/` bundle with byte size and SHA-256, and the served shell entry auto-injects the script tag. A fail-closed loader validates the manifest (bounded paths under `pkg/`, known extensions, 64-hex digests) and refuses any bundle it cannot certify.
-- **Security fixes:** Plugin mount/unmount is now recorded as audited evidence (`POST /workflow/plugins/mount`, Write-gated): each mount writes one hash-chained workflow audit row with the plugin identity, slot-registry revision, and bundle digest — Art. 12 record-keeping for the composition itself. Invalid input (hostile plugin names, malformed digests) is refused before any write.
-- **Security fixes:** The digest-binding invariant is pinned at the new plugin boundary: an approve through the control-panel dock carries exactly the rendered `content_digest` (server 409s on drift); a reject carries none. The API CSP is unchanged — the boot seats ride the client policy.
+**Improvements**
+- The operator console is now composed from three built-in UI plugins — **ui-shell** (layout), **ui-chat** (conversation + input docks + keyed chat-node dispatch), **ui-control-panel** (approvals) — mounted by a plugin kernel over one shared slot registry. Third-party plugins insert between existing dock entries purely by registration (order is data); the approval dock sits at order 5, the queue at 20.
+- Approval decisions now ride a producer/consumer event contract: the server emits `proposal/open` and `proposal/decided` conversation events carrying whole-value checkpoints (content digest, SLA deadline, role gate), so the client's review-job node can join or replay from any stream point without its start event. Payloads are metadata only — never proposal content or PII.
+- The host publishes a boot manifest for the client bundle: `/app/boot.json` plus a `window.__BRAIN_BOOT__` script seat list every `pkg/` bundle with byte size and SHA-256, and the served shell entry auto-injects the script tag. A fail-closed loader validates the manifest (bounded paths under `pkg/`, known extensions, 64-hex digests) and refuses any bundle it cannot certify.
+
+**Security fixes**
+- Plugin mount/unmount is now recorded as audited evidence (`POST /workflow/plugins/mount`, Write-gated): each mount writes one hash-chained workflow audit row with the plugin identity, slot-registry revision, and bundle digest — Art. 12 record-keeping for the composition itself. Invalid input (hostile plugin names, malformed digests) is refused before any write.
+- The digest-binding invariant is pinned at the new plugin boundary: an approve through the control-panel dock carries exactly the rendered `content_digest` (server 409s on drift); a reject carries none. The API CSP is unchanged — the boot seats ride the client policy.
 ### Engineering record
 
 - **M1 (client):** new `client/src/plugins/` kernel — `PluginHost::boot()` mounts ui-shell → ui-chat → ui-control-panel into one shared `SlotRegistry`; declaration = authorization (registration into an undeclared family is a load error), double-declaring a family or slot key across owners fails loud with rollback of partial registrations, unmount reverses exactly the plugin's entries and bumps the registry revision (the `slots/changed` payload). The approval dock now consumes the shared host instead of building an ad-hoc registry.
@@ -1002,14 +1056,17 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** Workflow calibration is now closed-loop: the weekly scoreboard read emits a machine-generated calibration REPORT on the audit chain, and a new DPO/admin endpoint (`POST /workflow/calibration/sign`) records the monthly HUMAN-signed calibration — one per calendar month, with the reviewer's scorer-vs-human agreement (κ), the uplift vs our own baseline, and the reviewer id. Every record rides the existing hash-chained workflow audit family.
-- **Improvements:** Law versions are now first-class: every jurisdiction in the DSAR/transfer register carries an explicit law-version label (e.g. PH NPC advisory 2024-04, EU GDPR consolidated 2021), owned by one SDK table so the server register and the legal-rule seeds can never drift; intake envelopes can stamp the law version in force at case open.
-- **Improvements:** The quality scorer is now pinned against versioned frozen gold packs (a QC-report pack + five continuity case packs) behind an opt-in `gold-sets` feature — including a κ ≥ 0.70 agreement gate on the frozen human verdicts.
+**Improvements**
+- Workflow calibration is now closed-loop: the weekly scoreboard read emits a machine-generated calibration REPORT on the audit chain, and a new DPO/admin endpoint (`POST /workflow/calibration/sign`) records the monthly HUMAN-signed calibration — one per calendar month, with the reviewer's scorer-vs-human agreement (κ), the uplift vs our own baseline, and the reviewer id. Every record rides the existing hash-chained workflow audit family.
+- Law versions are now first-class: every jurisdiction in the DSAR/transfer register carries an explicit law-version label (e.g. PH NPC advisory 2024-04, EU GDPR consolidated 2021), owned by one SDK table so the server register and the legal-rule seeds can never drift; intake envelopes can stamp the law version in force at case open.
+- The quality scorer is now pinned against versioned frozen gold packs (a QC-report pack + five continuity case packs) behind an opt-in `gold-sets` feature — including a κ ≥ 0.70 agreement gate on the frozen human verdicts.
 - **Planted-chunk process abort closed (critical):** the recall snippet window mixed byte and char offsets — a stored chunk like `"中"×100 + " alpha"` underflowed the window arithmetic and, with `panic = "abort"` in release, killed the whole server on any reader's ordinary query (a persistent crash loop). The window is now computed in one domain (char space), with regression pins for multibyte content and expanding lowercase mappings (`İ`).
 - **Breach deadline overflow closed:** an unbounded `discovered_at` on `POST /breach` overflowed the notification-deadline arithmetic and the persisted row re-aborted every read. Timestamps are bounded at the boundary (positive, ≤ 1 day future skew) and deadline math saturates.
 - **MCP protocol-version echo hardened:** a hostile `_meta.protocolVersion` was hex-escaped in `error.message` but echoed RAW in `error.data.requested` — same injection carrier. Both are escaped now.
 - **CLI hardening:** `brain domains-recompute` no longer panics on an unexpected response shape; `client *` subcommands percent-encode `{name}` path segments; `brain restore` refuses to run while a brain-server listener answers on its port (split-brain guard) unless `--force`.
-- **Security fixes:** Pass-3 security-audit closure (14 findings): consensus join-gates require DISTINCT reviewer identities; the decision ledger verifies fail-closed when signatures exist but the signing key is absent, pins its head per append (tip truncation detected), and refuses records with NUL bytes in engine-controlled fields (preimage ambiguity); `/audit/export` tags every row with its owning domain in both JSONL and PDF; the UMP-markdown projection YAML-escapes all frontmatter values and neutralizes the record-separator sequence in bodies (identity forgery across export/import closed); the GitHub App PEM key enforces the repo-wide 0600 secret-mode posture; reject-path oversight evidence carries the review DIGEST of what was seen; oversight rows bind proposal id + domain; renderer-hostile URI schemes (`javascript:`/`data:`/`file:`/…) are denied at evidence-link and ingest boundaries; archived clients can no longer be silently re-registered; RoPA `retention_days` is bounded and RoPA/inventory/export reads are audited; interview persist propagates outbox failures and stamps caller-supplied time; corrupt workflow state is refused rather than treated as a completed run.
+
+**Security fixes**
+- Pass-3 security-audit closure (14 findings): consensus join-gates require DISTINCT reviewer identities; the decision ledger verifies fail-closed when signatures exist but the signing key is absent, pins its head per append (tip truncation detected), and refuses records with NUL bytes in engine-controlled fields (preimage ambiguity); `/audit/export` tags every row with its owning domain in both JSONL and PDF; the UMP-markdown projection YAML-escapes all frontmatter values and neutralizes the record-separator sequence in bodies (identity forgery across export/import closed); the GitHub App PEM key enforces the repo-wide 0600 secret-mode posture; reject-path oversight evidence carries the review DIGEST of what was seen; oversight rows bind proposal id + domain; renderer-hostile URI schemes (`javascript:`/`data:`/`file:`/…) are denied at evidence-link and ingest boundaries; archived clients can no longer be silently re-registered; RoPA `retention_days` is bounded and RoPA/inventory/export reads are audited; interview persist propagates outbox failures and stamps caller-supplied time; corrupt workflow state is refused rather than treated as a completed run.
 ### Engineering record
 
 - New `crates/gold-sets` crate (`publish = false`): seven embedded gold cases (`gold/qc_report.json`, five `gold/gdl_cases/*.json`), each freezing `system_version`, `scorer_version`, κ, an ambiguity register, evidence refs, the human verdict, and the run-shaped artifacts; fails closed on corrupt packs or a κ below 7000 ten-thousandths.
@@ -1033,10 +1090,14 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 - **Approval digest binding restored on all client surfaces:** offline approvals from Ops, Overview, replay, and auto-replay previously sent `digest: None`, letting a mutated proposal be promoted under a genuine click. The digest now rides the queued action end-to-end.
 - **Workflow steering hardened:** steering text is screened against the prompt-injection blocklist before it can reach the engine state machine; an approve-class role gate now applies on top of domain Write authorization; the bounded steering inbox commits drop-oldest + enqueue atomically.
 - **Capability tokens get replay defense:** owner-signed UMP capability tokens may carry a `jti`; a process-lifetime replay cache accepts each `(jti)` exactly once (fail-closed on poisoned state).
-- **Security fixes:** Workflow run state is no longer the one raw read seam — it goes through the shared sanitize boundary; rate limiting gains a per-principal second dimension in JWT mode; `sub` identifiers in local logs are masked to hash prefixes; duplicate JWT `kid`s refuse key-store load instead of silently collapsing; model artifacts support fail-closed SHA-256 pinning via `BRAIN_MODEL_MANIFEST`; the snapshot path uses the one shared `VACUUM INTO` escaper.
-- **Improvements:** DSAR residue sweeps accept `subject_exact: true` for exact matching alongside the erasure-safe substring default.
-- **Improvements:** `/ingest/memory` enforces an explicit entry-count cap (`too_many_entries`, 500).
-- **Improvements:** Release binaries are minisign-signable (`scripts/release-sign.sh`) and `install-service.sh` verifies signatures whenever the operator configures `BRAIN_RELEASE_PUBKEY`.
+
+**Security fixes**
+- Workflow run state is no longer the one raw read seam — it goes through the shared sanitize boundary; rate limiting gains a per-principal second dimension in JWT mode; `sub` identifiers in local logs are masked to hash prefixes; duplicate JWT `kid`s refuse key-store load instead of silently collapsing; model artifacts support fail-closed SHA-256 pinning via `BRAIN_MODEL_MANIFEST`; the snapshot path uses the one shared `VACUUM INTO` escaper.
+
+**Improvements**
+- DSAR residue sweeps accept `subject_exact: true` for exact matching alongside the erasure-safe substring default.
+- `/ingest/memory` enforces an explicit entry-count cap (`too_many_entries`, 500).
+- Release binaries are minisign-signable (`scripts/release-sign.sh`) and `install-service.sh` verifies signatures whenever the operator configures `BRAIN_RELEASE_PUBKEY`.
 ### Engineering record
 
 - Frozen eval set expanded 37 → **106 judged queries** over a 25-doc corpus with per-vertical gold sets (migration, legal, troubleshoot); floors hold: r@5 **0.976**, r@10 **0.991**, MRR **0.956**, nDCG@10 **0.962** (edge profile, fresh instance). Dataset SHA-256 recorded in `BENCHMARKS.md`.
@@ -1054,17 +1115,22 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** New opt-in compliance evidence pack (`--features compliance-pack`) for EU AI Act / GDPR audits: every workflow decision now appends a **decision record** (actor, role, policy version, prompt class, tool, model id, outcome) that is SHA-256 hash-chained AND anchored into the existing audit chain — extended, never a separate trust root. When `BRAIN_AUDIT_SIGNING_KEY` (or `_FILE`, 0600-enforced) is configured, each record also carries a detached Ed25519 signature that verifies outside the server.
-- **Improvements:** The decision ledger exports as a bundle: `GET /audit/export?since=&format=jsonl|pdf&rpcId=` — JSONL for machines (with an echoed correlation id for reconciliation), a paginated human-readable PDF for the Annex IV technical file.
-- **Improvements:** Human reviews leave oversight evidence: every proposal approval or rejection records who decided, on what snapshot hash (the review digest — never raw content), and with what outcome, linked to its own decision record — the Art.12↔14 link regulators ask for. Approval remains DPO/admin-gated; reject stays always-safe and is recorded as an override.
-- **Improvements:** Accuracy/validation declarations can be appended to the same ledger via `POST /compliance/evaluation-record` (dataset SHA-256 + methodology summary + system version), and `GET /compliance/inventory` checks which evidence classes exist across the deployment (decision log, oversight, DSAR ledger, incident log, transfers register, RoPA) and flags missing ones.
-- **Improvements:** GDPR Art.30 records of processing: a RoPA registry (`GET|POST /ropa`, `POST /ropa/{id}`, Admin + audited) with activity, controller/processor, categories, recipients, lawful basis, retention, security measures, and transfers.
-- **Improvements:** `/retention/report` now discloses the evidence-retention floor: decision records are retained 12 months by default (above the 6-month legal minimum) under the feature.
-- **Security fixes:** A wide-mode (group/world-readable) `BRAIN_AUDIT_SIGNING_KEY_FILE` is refused fail-closed: decisions continue hash-chained but are recorded unsigned with an error-level warning, never silently trusted.
-- **Security fixes:** Release profile now builds with `overflow-checks = true`: arithmetic near the i64 edge (paginated listings, DSAR/purge offsets) aborts fail-stop instead of wrapping silently. Measured on the synthetic 2000-doc bench (single runs, before → after): ingest 826 → 1037 docs/s, p50 11.88 → 11.51 ms — no regression, far inside the ~2 % ceiling that would have triggered a revert.
-- **Security fixes:** The compliance evidence modules deny `clippy::unwrap_used` (`clippy.toml` exempts tests), so request-data paths there are structurally panic-free; `unsafe_op_in_unsafe_fn` and `missing_safety_doc` are denied crate-wide (zero current sites — the first future `unsafe fn` inherits block-scoped safety).
-- **Bug fixes:** Fixed a boot-blocking router panic introduced in 1.28.4: `/app` was registered twice (the static SPA seat handlers AND a historical `nest_service("/app", ServeDir)`), and axum 0.8 panics at startup on the conflicting internal wildcards — any full server start failed ("Insertion failed due to conflict with previously registered route"). This is what failed the 1.28.4 CI `server-boot`/`recall eval gate` jobs. The duplicate registration is removed (the handler-based seat already implements MIME, traversal prevention, deep-link fallback, 405-on-non-GET); server boot verified end-to-end on a live release binary.
-- **Bug fixes:** `bench` no longer fails against servers ≥ 1.27.23: it reads `capacity.rss_mib` from the Read-gated `/health/db` (with the operator token) instead of the shrunken public `/health`, falling back to legacy shapes for older servers. `BENCH_SCALES` env override documented by use in the overflow-checks A/B.
+**Improvements**
+- New opt-in compliance evidence pack (`--features compliance-pack`) for EU AI Act / GDPR audits: every workflow decision now appends a **decision record** (actor, role, policy version, prompt class, tool, model id, outcome) that is SHA-256 hash-chained AND anchored into the existing audit chain — extended, never a separate trust root. When `BRAIN_AUDIT_SIGNING_KEY` (or `_FILE`, 0600-enforced) is configured, each record also carries a detached Ed25519 signature that verifies outside the server.
+- The decision ledger exports as a bundle: `GET /audit/export?since=&format=jsonl|pdf&rpcId=` — JSONL for machines (with an echoed correlation id for reconciliation), a paginated human-readable PDF for the Annex IV technical file.
+- Human reviews leave oversight evidence: every proposal approval or rejection records who decided, on what snapshot hash (the review digest — never raw content), and with what outcome, linked to its own decision record — the Art.12↔14 link regulators ask for. Approval remains DPO/admin-gated; reject stays always-safe and is recorded as an override.
+- Accuracy/validation declarations can be appended to the same ledger via `POST /compliance/evaluation-record` (dataset SHA-256 + methodology summary + system version), and `GET /compliance/inventory` checks which evidence classes exist across the deployment (decision log, oversight, DSAR ledger, incident log, transfers register, RoPA) and flags missing ones.
+- GDPR Art.30 records of processing: a RoPA registry (`GET|POST /ropa`, `POST /ropa/{id}`, Admin + audited) with activity, controller/processor, categories, recipients, lawful basis, retention, security measures, and transfers.
+- `/retention/report` now discloses the evidence-retention floor: decision records are retained 12 months by default (above the 6-month legal minimum) under the feature.
+
+**Security fixes**
+- A wide-mode (group/world-readable) `BRAIN_AUDIT_SIGNING_KEY_FILE` is refused fail-closed: decisions continue hash-chained but are recorded unsigned with an error-level warning, never silently trusted.
+- Release profile now builds with `overflow-checks = true`: arithmetic near the i64 edge (paginated listings, DSAR/purge offsets) aborts fail-stop instead of wrapping silently. Measured on the synthetic 2000-doc bench (single runs, before → after): ingest 826 → 1037 docs/s, p50 11.88 → 11.51 ms — no regression, far inside the ~2 % ceiling that would have triggered a revert.
+- The compliance evidence modules deny `clippy::unwrap_used` (`clippy.toml` exempts tests), so request-data paths there are structurally panic-free; `unsafe_op_in_unsafe_fn` and `missing_safety_doc` are denied crate-wide (zero current sites — the first future `unsafe fn` inherits block-scoped safety).
+
+**Bug fixes**
+- Fixed a boot-blocking router panic introduced in 1.28.4: `/app` was registered twice (the static SPA seat handlers AND a historical `nest_service("/app", ServeDir)`), and axum 0.8 panics at startup on the conflicting internal wildcards — any full server start failed ("Insertion failed due to conflict with previously registered route"). This is what failed the 1.28.4 CI `server-boot`/`recall eval gate` jobs. The duplicate registration is removed (the handler-based seat already implements MIME, traversal prevention, deep-link fallback, 405-on-non-GET); server boot verified end-to-end on a live release binary.
+- `bench` no longer fails against servers ≥ 1.27.23: it reads `capacity.rss_mib` from the Read-gated `/health/db` (with the operator token) instead of the shrunken public `/health`, falling back to legacy shapes for older servers. `BENCH_SCALES` env override documented by use in the overflow-checks A/B.
 ### Engineering record
 
 - M1 (Art.12): `src/audit/decision.rs` — `DecisionRecord` + `DecisionInput`, per-record chain link over all committed fields plus the previous hash (genesis binds to the empty string, so fabricated earlier histories break verification), detached Ed25519 signing via `BRAIN_AUDIT_SIGNING_KEY`/`_FILE` (0600 check; absent key ⇒ NULL signature, disclosed on export). Every record ALSO extends the existing `audit_events` chain (`AuditKind::Decision`). The recorder lives on the host write path (`WorkflowHost::audit`) — engines cannot write their own evidence; pinned by `host_records_decision_evidence_that_verifies_outside`. Export: `GET /audit/export` (Admin) jsonl/pdf, dependency-free PDF writer with escaping + pagination pinned by tests.
@@ -1086,13 +1152,16 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** The operator console gains the premium-shell polish: a warm paper/terracotta light theme (AA-audited accent), enhanced cards and buttons with hover lift and pointer-following glow, shimmer skeletons, spring toasts/modals, and pill badges — all progressive-enhancement CSS that collapses instantly under `prefers-reduced-motion` (durations are token-driven, so the override needs no specificity fights).
-- **Improvements:** The nav rail is now collapsible (`⌘B`/`Esc`, persisted preference): collapsed to an icon strip on wide screens, sliding over content as a drawer on narrow ones.
-- **Improvements:** Approvals come home: the HITL review queue renders as an approval dock on the Overview surface (no separate-page detour). Every approve binds the `content_digest` of what was shown, so a drifted proposal 409s instead of approving stale bytes; decisions stay role-gated in the UI with the server still enforcing, and each row shows its SLA countdown.
-- **Improvements:** Deep links boot properly: brain-server now serves the built client bundle under `/app` (SPA fallback for deep links, correct asset types, unknown extensions as octet-stream, non-GET/HEAD refused 405, path traversal refused). An API-only deployment without the bundle degrades to a clean 404.
-- **Improvements:** A stable extension substrate ships under the shell: a slot registry (ordered, keyed, fail-closed visibility) that third-party surfaces mount through instead of hardcoding imports; the api-proxy envelope contract (typed errors, two-layer validation — envelope then payload, unknown kinds denied by default); and a conversation-node assembly engine where chat rows are registered node definitions (assistant streaming→settled, tool running→settled, review jobs, deliveries, workflow runs) folded from events with out-of-order convergence and replay dedup.
-- **Improvements:** Web bundle budget tightened to 5.5 MiB and enforced in CI (measured release wasm: 5.49 MB).
-- **Bug fixes:** Inline SVG icons/rings no longer break line layout: the media preflight keeps SVG inline-block while images/video stay block.
+**Improvements**
+- The operator console gains the premium-shell polish: a warm paper/terracotta light theme (AA-audited accent), enhanced cards and buttons with hover lift and pointer-following glow, shimmer skeletons, spring toasts/modals, and pill badges — all progressive-enhancement CSS that collapses instantly under `prefers-reduced-motion` (durations are token-driven, so the override needs no specificity fights).
+- The nav rail is now collapsible (`⌘B`/`Esc`, persisted preference): collapsed to an icon strip on wide screens, sliding over content as a drawer on narrow ones.
+- Approvals come home: the HITL review queue renders as an approval dock on the Overview surface (no separate-page detour). Every approve binds the `content_digest` of what was shown, so a drifted proposal 409s instead of approving stale bytes; decisions stay role-gated in the UI with the server still enforcing, and each row shows its SLA countdown.
+- Deep links boot properly: brain-server now serves the built client bundle under `/app` (SPA fallback for deep links, correct asset types, unknown extensions as octet-stream, non-GET/HEAD refused 405, path traversal refused). An API-only deployment without the bundle degrades to a clean 404.
+- A stable extension substrate ships under the shell: a slot registry (ordered, keyed, fail-closed visibility) that third-party surfaces mount through instead of hardcoding imports; the api-proxy envelope contract (typed errors, two-layer validation — envelope then payload, unknown kinds denied by default); and a conversation-node assembly engine where chat rows are registered node definitions (assistant streaming→settled, tool running→settled, review jobs, deliveries, workflow runs) folded from events with out-of-order convergence and replay dedup.
+- Web bundle budget tightened to 5.5 MiB and enforced in CI (measured release wasm: 5.49 MB).
+
+**Bug fixes**
+- Inline SVG icons/rings no longer break line layout: the media preflight keeps SVG inline-block while images/video stay block.
 ### Engineering record
 
 - **Server**: new `handlers::frontend` — the static SPA seat as a pure `(root, method, path)` responder pinned by 7 tests (deep-link 200 + html type, exact asset types, unknown extension → octet-stream, traversal refused, 405 on non-GET/HEAD, missing dist → 404 never panic). Routes `/app/` + `/app/{*path}` are public by design (static bundle only; data flows through gated API routes; the existing auth middleware already exempts `/app`). `BRAIN_CLIENT_DIST` overrides the location at first use.
@@ -1109,14 +1178,17 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** Workflows gain a real engine seam: a context mounts ONE workflow engine (a second mount replaces the first via config, never parallel providers), metadata is validated as pure data before any script is evaluated, and a started run hands back handles whose result can never throw — failures arrive as an outcome (`completed` / `error` / `cancelled`), never as an exception.
-- **Improvements:** Cancel and dispose are bounded by construction: both settle within a grace window (5 s default) with child-run quiescence, even when the underlying script never settles; run concurrency is capped (refused, never queued unbounded).
-- **Improvements:** Workflow lifecycle events (`start` / `phase` / `log` / `agent-start` / `agent-end` / `end`) are observe-only data snapshots delivered through the panic-contained event emitter — a throwing subscriber cannot starve later listeners, and the end snapshot omits the result value.
-- **Improvements:** Evidence reduction and quality scoring are now first-class services on the engine context, backed by the same deterministic cores as before — no second implementation.
-- **Improvements:** The operator scoreboard endpoint (`GET /workflow/scoreboard`, DPO/admin) aggregates first-contact resolution, repeat contact, correctness, override/abstention/guidance rates, handoff completeness and escalation honor over the most recent runs — all rates in exact integer ten-thousandths.
-- **Improvements:** A workflow tool for model-facing surfaces: start → await → dispose in a guaranteed-cleanup shape; anything not `completed` surfaces as a tool error.
-- **Improvements:** Prompt caching discipline ships in the SDK: cache-stable system-prompt assembly (no timestamps or randomness) and compaction only under pressure that keeps a verbatim tail and appends one summary entry — history is never rewritten.
-- **Security fixes:** Scoreboard `audit_ok` is fail-closed per run: a run counts audit-green only when a workflow audit row actually references it — absence of evidence never counts green.
+**Improvements**
+- Workflows gain a real engine seam: a context mounts ONE workflow engine (a second mount replaces the first via config, never parallel providers), metadata is validated as pure data before any script is evaluated, and a started run hands back handles whose result can never throw — failures arrive as an outcome (`completed` / `error` / `cancelled`), never as an exception.
+- Cancel and dispose are bounded by construction: both settle within a grace window (5 s default) with child-run quiescence, even when the underlying script never settles; run concurrency is capped (refused, never queued unbounded).
+- Workflow lifecycle events (`start` / `phase` / `log` / `agent-start` / `agent-end` / `end`) are observe-only data snapshots delivered through the panic-contained event emitter — a throwing subscriber cannot starve later listeners, and the end snapshot omits the result value.
+- Evidence reduction and quality scoring are now first-class services on the engine context, backed by the same deterministic cores as before — no second implementation.
+- The operator scoreboard endpoint (`GET /workflow/scoreboard`, DPO/admin) aggregates first-contact resolution, repeat contact, correctness, override/abstention/guidance rates, handoff completeness and escalation honor over the most recent runs — all rates in exact integer ten-thousandths.
+- A workflow tool for model-facing surfaces: start → await → dispose in a guaranteed-cleanup shape; anything not `completed` surfaces as a tool error.
+- Prompt caching discipline ships in the SDK: cache-stable system-prompt assembly (no timestamps or randomness) and compaction only under pressure that keeps a verbatim tail and appends one summary entry — history is never rewritten.
+
+**Security fixes**
+- Scoreboard `audit_ok` is fail-closed per run: a run counts audit-green only when a workflow audit row actually references it — absence of evidence never counts green.
 ### Engineering record
 
 - **M1 WorkflowEngine seam**: data-validated meta (name ≤128, description ≤1024, ≤32 phases) refused pre-publish; once-future result; cooperative + blocking-bounded cancel; dispose = cancel + bounded settle + child quiescence; observe-only snapshots through contained emit; one-engine ctx slot; tool surface with 30 s await grace and drop-guard dispose.
@@ -1136,12 +1208,15 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** Governed-workflow data is now inside the erasure boundary: a DSAR sweep reaches every workflow table in each domain (runs, steps, findings, contradictions, outbox), and the dry-run footprint reports honestly how many workflow rows a live purge would reach.
-- **Improvements:** Legal holds now freeze workflow runs exactly as they freeze memory chunks: a held run is deferred — never silently deleted — and listed with its reasons on the DSAR certificate.
-- **Improvements:** A capability policy for engine extensions: three trust profiles (Safe/Standard/Permissive) with per-engine overrides, where deny always outranks allow and anything outside the vocabulary is refused.
-- **Improvements:** Hostcalls pass through one audited dispatch: payload canonicalization, a capability check that writes its decision to the audit chain either way, and only then the handler — a misconfigured handler fails loudly instead of degrading.
-- **Improvements:** Secrets are mediated: engine-facing key material resolves through a broker that refuses group/world-readable key files outright (no silent fallback to another source), and tools can learn only whether a secret is configured — never its value.
-- **Security fixes:** Session state reads by extensions return only the sanitized view (PII redact + invisible-strip + markdown-ref strip); there is no method on the seam that can return raw content.
+**Improvements**
+- Governed-workflow data is now inside the erasure boundary: a DSAR sweep reaches every workflow table in each domain (runs, steps, findings, contradictions, outbox), and the dry-run footprint reports honestly how many workflow rows a live purge would reach.
+- Legal holds now freeze workflow runs exactly as they freeze memory chunks: a held run is deferred — never silently deleted — and listed with its reasons on the DSAR certificate.
+- A capability policy for engine extensions: three trust profiles (Safe/Standard/Permissive) with per-engine overrides, where deny always outranks allow and anything outside the vocabulary is refused.
+- Hostcalls pass through one audited dispatch: payload canonicalization, a capability check that writes its decision to the audit chain either way, and only then the handler — a misconfigured handler fails loudly instead of degrading.
+- Secrets are mediated: engine-facing key material resolves through a broker that refuses group/world-readable key files outright (no silent fallback to another source), and tools can learn only whether a secret is configured — never its value.
+
+**Security fixes**
+- Session state reads by extensions return only the sanitized view (PII redact + invisible-strip + markdown-ref strip); there is no method on the seam that can return raw content.
 ### Engineering record
 
 - **Capability policy (SDK `trust`):** `ExtensionPolicy { mode, max_memory_mb, default_caps, deny_caps, per_engine }` with the Safe/Standard/Permissive profiles (exec/env denied by default in every profile), the documented precedence table (per-engine deny > global deny > per-engine allow > global allow > mode fallback; explicit denies honored even under Permissive), and the closed `HostCallKind`→capability map (`tool`→tools … `log`→log); unknown kinds parse as errors, never defaults.
@@ -1163,13 +1238,16 @@ The governed-workflow substrate (v1.27.30) gets its FIRST consumer: the steward-
 
 ### Release notes
 
-- **Improvements:** The engine SDK gains an opt-in plugin kernel: services mount with declared dependencies (ordering enforced, never assumed), and every registration taken through a reversible effect is undone on unmount — load/unload/reload is safe by construction.
-- **Improvements:** Declarative harness manifests: a validated YAML file lists plugins and their dependency order; malformed input fails loudly instead of degrading.
-- **Improvements:** A typed agent-harness lifecycle: turn snapshots are defensive copies (mid-turn config changes never touch a running turn), structural operations are phase-gated, and queued session writes flush in deterministic order at save-points and at run finish/abort.
-- **Improvements:** Typed hooks with four dispatch modes — broadcast observe, short-circuit policy (first denial wins and stands), ordered mutation, and deterministic fan-out — each with per-listener panic containment and registration provenance.
-- **Improvements:** A fail-closed execution environment for tools: no tool touches the filesystem or processes directly; the default seam refuses everything, path escapes are refused before the seam runs, and shell commands are allowlist-gated.
-- **Improvements:** Tool registry alignment: what a model sees presented, what can be looked up, and what executes are one set by construction; mid-session tool additions load additively with a full-list fallback counted as a cache miss.
-- **Security fixes:** Hostcall capability gate: every dispatch checks a trust posture against an operation class, unknown pairs deny, and both grants and denials emit audit rows on the same chain engines use — a denied hostcall can never bypass the record silently.
+**Improvements**
+- The engine SDK gains an opt-in plugin kernel: services mount with declared dependencies (ordering enforced, never assumed), and every registration taken through a reversible effect is undone on unmount — load/unload/reload is safe by construction.
+- Declarative harness manifests: a validated YAML file lists plugins and their dependency order; malformed input fails loudly instead of degrading.
+- A typed agent-harness lifecycle: turn snapshots are defensive copies (mid-turn config changes never touch a running turn), structural operations are phase-gated, and queued session writes flush in deterministic order at save-points and at run finish/abort.
+- Typed hooks with four dispatch modes — broadcast observe, short-circuit policy (first denial wins and stands), ordered mutation, and deterministic fan-out — each with per-listener panic containment and registration provenance.
+- A fail-closed execution environment for tools: no tool touches the filesystem or processes directly; the default seam refuses everything, path escapes are refused before the seam runs, and shell commands are allowlist-gated.
+- Tool registry alignment: what a model sees presented, what can be looked up, and what executes are one set by construction; mid-session tool additions load additively with a full-list fallback counted as a cache miss.
+
+**Security fixes**
+- Hostcall capability gate: every dispatch checks a trust posture against an operation class, unknown pairs deny, and both grants and denials emit audit rows on the same chain engines use — a denied hostcall can never bypass the record silently.
 ### Engineering record
 
 M1 plugin kernel (`sdk::plugin` + `sdk::loader`): `Service` trait with stable `key()` wire names and `inject()` dependency lists enforced at install; `Context` owns services by type plus an effect stack whose entries undo in strict reverse order via `EffectHandle` drop/dispose; `reload` unmounts then remounts the same instance (single-process HMR). Manifest loader validates plugin order + inject ordering and fails loud. M2 agent-harness lifecycle (`sdk::harness`): `Phase::{Idle,Running,Compact}` gates structural ops (`compact`, `set_leaf_id`, tree navigation) while steering/follow-up/config setters stay legal mid-turn; `TurnSnapshot` is an owned clone captured at `start_run`; pending session writes drain FIFO strictly after `message_end` persistence; finish and abort share one settlement path that drains residuals, returns to Idle, runs deferred-idle work in order, and audits `RunStart`/`RunEnd`; non-main lanes get read-only handles whose run ops reject. M3 typed hooks (`sdk::events`): one `Hooks` registry owning registration + provenance sidecar + four modes (`emit`, `waterfall`, `serial`, `parallel`); throwing subscribers are contained per listener (cloned payloads) and never starve later listeners. M4 execution environment (`sdk::env`): tools receive a cloned narrowed `ExecutionEnv`; built-in Read/Write/Edit/Bash factories route everything through the injected seam; registry enforces presentation/lookup/execution alignment plus additive mid-session loading. M5 security carry-over (`sdk::capability`): coarse posture ladder (Safe ⊂ Standard ⊂ Permissive) checked per hostcall class, fail-closed on unknown pairs, decisions audited in the same step; audited mount/unmount helpers put plugin lifecycle rows on the shared chain.
@@ -1186,9 +1264,10 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** New stable engine ABI: the `brain-engine-sdk` crate — pure decision cores, policy vocabulary, and a storage-agnostic write seam (`WorkflowHost`) that third-party engines compile against instead of the server.
-- **Improvements:** Storage-portable by construction: every seam signature is value-typed, so a future Postgres (or any transactional) backend can be added behind the same trait without engine code changes.
-- **Improvements:** The server's workflow writes now flow through one audited host object; SLA priority clocks and per-kind retention defaults have a single owner shared by server and engines.
+**Improvements**
+- New stable engine ABI: the `brain-engine-sdk` crate — pure decision cores, policy vocabulary, and a storage-agnostic write seam (`WorkflowHost`) that third-party engines compile against instead of the server.
+- Storage-portable by construction: every seam signature is value-typed, so a future Postgres (or any transactional) backend can be added behind the same trait without engine code changes.
+- The server's workflow writes now flow through one audited host object; SLA priority clocks and per-kind retention defaults have a single owner shared by server and engines.
 ### Engineering record
 
 - M-crate cut: `crates/brain-engine-sdk` joins the engine-crate workspace node — zero dependencies, `unsafe_code = "forbid"`, clippy `unwrap_used/expect_used/panic = deny` (tests excepted via scoped cfg). `sdk::pure::{evidence,qa_score}` moved verbatim from `src/workflow` as `pub` API; output types are `#[non_exhaustive]`; oracle tests travel with the code.
@@ -1209,7 +1288,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** Robustness close-out: bounded-queue and throughput ceilings documented, fuzz targets for pure reducers/scorers, and failure drills verified (CAS reconciliation, chain under load, bounded steering).
+**Improvements**
+- Robustness close-out: bounded-queue and throughput ceilings documented, fuzz targets for pure reducers/scorers, and failure drills verified (CAS reconciliation, chain under load, bounded steering).
 ### Engineering record
 
 - Fuzz targets `fuzz_evidence_reduce` + `fuzz_qa_score` for pure functions; existing `fuzz_chunker`/`fuzz_validator` retained. Corpus committed; `cargo +nightly fuzz run` entry points documented.
@@ -1226,7 +1306,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** Workflow front-door routing with human-escalation handoff and post-call draft workflow.
+**Improvements**
+- Workflow front-door routing with human-escalation handoff and post-call draft workflow.
 ### Engineering record
 
 - Additive module `src/workflow/frontdoor.rs` — closed intent vocabulary, escape handling, SLA envelope and HITL post-call drafts (no storage change).
@@ -1242,7 +1323,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** Quality intelligence: deterministic scorer over workflow artifacts with per-question justification.
+**Improvements**
+- Quality intelligence: deterministic scorer over workflow artifacts with per-question justification.
 ### Engineering record
 
 - Pure scorer module `src/workflow/qa_score.rs` (integer ten-thousandths), cause split, override-rate, gap-rule and repeater flywheel (HITL proposals only), scoreboard with audit/trust coverage.
@@ -1258,7 +1340,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** Workflow assist surface: read APIs for runs and steps, steering inbox, and grounded suggestions over the workflow's domain.
+**Improvements**
+- Workflow assist surface: read APIs for runs and steps, steering inbox, and grounded suggestions over the workflow's domain.
 ### Engineering record
 
 - Four workflow routes (`GET /workflow/runs/{id}`, `GET /workflow/runs/{id}/steps`, `POST /workflow/runs/{id}/steering`, `GET /workflow/runs/{id}/suggestions`), domain-scoped with audit, steering bounded at 100 (drop-oldest) and PII-screened, suggestions abstain with a findings row when no playbook matches.
@@ -1274,7 +1357,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** `brain-troubleshoot-core` engine (diagnostics pipeline) with kernel/gates/advisor/evidence/subagents.
+**Improvements**
+- `brain-troubleshoot-core` engine (diagnostics pipeline) with kernel/gates/advisor/evidence/subagents.
 ### Engineering record
 
 - Crates workspace + `src/workflow` wiring; clippy `-D warnings` + fmt clean.
@@ -1289,7 +1373,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** Rulebook engine scaffolding.
+**Improvements**
+- Rulebook engine scaffolding.
 ### Engineering record
 
 - Additive only; tests green.
@@ -1304,7 +1389,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** Toolchain hardens to Rust `1.98` / `edition 2024` across all manifests; `gen` → `generation` in recall debounce (`client/src/panels/recall.rs:64`) and `review.rs` temporary-borrow fix; `client`/`server` clippy harden (`collapsible_if`/`let_and_return`) via `cargo clippy --fix`.
+**Improvements**
+- Toolchain hardens to Rust `1.98` / `edition 2024` across all manifests; `gen` → `generation` in recall debounce (`client/src/panels/recall.rs:64`) and `review.rs` temporary-borrow fix; `client`/`server` clippy harden (`collapsible_if`/`let_and_return`) via `cargo clippy --fix`.
 ### Engineering record
 
 - `src/backup.rs:1` `#![allow(deprecated)]` for upstream `aes-gcm`→`generic-array` 0.14 deprecation; `src/config.rs`/`src/capacity.rs`/`src/storage_layout.rs`/`src/main.rs`/`src/connector/auth/store.rs` `std::env::set_var`/`remove_var` wrapped in `unsafe` (Rust 1.98). `cargo clippy --all-targets --features bench -- -D warnings` + `cargo clippy --manifest-path client/Cargo.toml -- -D warnings` + `cargo fmt` clean.
@@ -1329,7 +1415,8 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Improvements:** New `brain-consensus-core` crate: pure consensus planning engine with persistence adapter through the governed-workflow substrate (`src/workflow/consensus.rs:1`).
+**Improvements**
+- New `brain-consensus-core` crate: pure consensus planning engine with persistence adapter through the governed-workflow substrate (`src/workflow/consensus.rs:1`).
 ### Engineering record
 
 - `crates/brain-consensus-core:1` + `src/workflow/consensus.rs:1` wired via `src/workflow/mod.rs:25`.
@@ -1345,8 +1432,11 @@ Honest ceilings: the kernel is a minimal Cordis-shaped reimplementation — full
 
 ### Release notes
 
-- **Bug fixes:** Fixed client `clippy::let_and_return` failures blocking CI (`client/src/main.rs:2014`).
-- **Improvements:** New `brain-interview-core` crate: pure interview state machine with persistence adapter through the governed-workflow substrate (`src/workflow/interview.rs:1`).
+**Bug fixes**
+- Fixed client `clippy::let_and_return` failures blocking CI (`client/src/main.rs:2014`).
+
+**Improvements**
+- New `brain-interview-core` crate: pure interview state machine with persistence adapter through the governed-workflow substrate (`src/workflow/interview.rs:1`).
 ### Engineering record
 
 - `crates/brain-interview-core:1` (`src/ambiguity.rs:1`, `src/state.rs:1`, `src/payload.rs:1`, `src/draft.rs:1`, `src/inspect.rs:1`, `src/recorder.rs:1`, `src/repair.rs:1`) + `src/workflow/interview.rs:1` wired via `src/workflow/mod.rs:25`.
@@ -1624,7 +1714,9 @@ change, no telemetry.**
   each phrase is still matched inside single tokens, so removing-whitespace
   obfuscation ("ignorepreviousinstructions") gains nothing. Single-token
   entries (`override`, `jailbreak`) keep their stem-tolerant behavior.
-- **Improvements:** The fail-closed posture of every shared-state gate is now pinned by tests:
+
+**Improvements**
+- The fail-closed posture of every shared-state gate is now pinned by tests:
   a revocation **store error** denies (never `unwrap_or(false)`-skips), an
   unresolvable role narrows to no access (deny-by-default), a poisoned
   chain-watch/snapshot lock reads as NOT-ok, and the consolidated
@@ -1735,11 +1827,14 @@ seam). No wire change.
 
 ### Release notes
 
-- **Security fixes:** A failed audit-chain transaction start no longer falls through to an
+**Security fixes**
+- A failed audit-chain transaction start no longer falls through to an
   unserialized write: the audit row is skipped instead of risking a permanent
   chain fork, and the failure is surfaced on `/health` (`audit_commit_failures`)
   and in the error log.
-- **Improvements:** The cross-encoder rerank tier (armed on the `enterprise` / `desktop` /
+
+**Improvements**
+- The cross-encoder rerank tier (armed on the `enterprise` / `desktop` /
   `quality-local` retrieval profiles) now uses `mixedbread-ai/mxbai-rerank-large-v1`
   as its primary model, with `BAAI/bge-reranker-v2-m3` as the automatic in-enum
   fallback. The official int8 ONNX keeps CPU footprint low; no config change is
@@ -1795,7 +1890,8 @@ index + legacy double-open dedup). No telemetry.
 
 ### Release notes
 
-- **Security fixes:** **The graph-PPR third recall leg is now scoped like the vector and FTS
+**Security fixes**
+- **The graph-PPR third recall leg is now scoped like the vector and FTS
   legs.** It applies the domain label, `access_scope`, owner, memory-kind and
   retention predicates via the same shared SQL builder (`push_gate_filters`),
   and carries `k.pii` into the hit so the read seam redacts graph hits
@@ -1837,7 +1933,7 @@ index + legacy double-open dedup). No telemetry.
 - **`/suggest` applies the v1.14 scope filter + v1.23 role gate** like
   `/recall` — an owner-restricted role no longer sees other owners\' private
   rows as suggestions (S2-29).
-- **Security fixes:** Smaller hardening: `X-Forwarded-For` trusts the RIGHTMOST entry under
+- Smaller hardening: `X-Forwarded-For` trusts the RIGHTMOST entry under
   `BRAIN_TRUST_PROXY=1` (leftmost is client-spoofable; S2-39); the rate
   limiter fails CLOSED on a poisoned lock (S2-50); the dead
   `"developer mode"` blocklist entry now matches (whitespace is stripped
@@ -1893,7 +1989,9 @@ index + legacy double-open dedup). No telemetry.
   default-on change silently enabled the leg for every plugin user. The
   flag is now always sent explicitly; the plugin\'s documented default stays
   opt-in.
-- **Improvements:** `openapi.yaml` `/health` + `/health/db` schemas now match the shipped
+
+**Improvements**
+- `openapi.yaml` `/health` + `/health/db` schemas now match the shipped
   shapes (the public probe is `{status, version}`; the detailed body is
   Read-gated on `/health/db`) — the contract previously documented the full
   fingerprint body on the public route. `SECURITY.md` egress inventory is
@@ -1956,13 +2054,16 @@ sweep surfaced. No schema, no migration, no wire change, no telemetry.
 
 ### Release notes
 
-- **Security fixes:** **A corrupt breach `jurisdictions` cell now fails the row read instead of
+**Security fixes**
+- **A corrupt breach `jurisdictions` cell now fails the row read instead of
   silently becoming an empty list.** If the stored JSON on a breach was
   corrupted, the breach previously read back with zero affected jurisdictions —
   hiding from the DPO every affected-law notification deadline that the breach
   carries. That read now errors loudly (fail-closed, the repo's D-1 "never
   certify silence" invariant) rather than presenting an empty scope.
-- **Bug fixes:** **Removed the blanket `#![allow(dead_code)]` + `#![allow(unused_imports)]`
+
+**Bug fixes**
+- **Removed the blanket `#![allow(dead_code)]` + `#![allow(unused_imports)]`
   on the handlers module** and deleted the real dead code they were hiding
   (unused imports in `auth`, `recall`, `ump`, `govern`; the never-used
   `authorize_read_domain`; the never-read `ProposalRow.created_at`; the UMP
@@ -2316,12 +2417,14 @@ control-char parity).
   `brain token rotate` and `brain ump …` are now listed, and a
   `flags:`/`exit codes:` section documents the contract. `brain suggest`
   output also runs the same cleanup chain as recall/get.
-- **Bug fixes:** `brain ingest-dir --dry-run <path>` previously swallowed the path as the
+
+**Bug fixes**
+- `brain ingest-dir --dry-run <path>` previously swallowed the path as the
   flag's value and ingested nothing.
-- **Bug fixes:** `--k abc` silently coerced to `5`; unknown `--flag` values were swallowed
+- `--k abc` silently coerced to `5`; unknown `--flag` values were swallowed
   instead of refused.
-- **Bug fixes:** `brain status` printed `-1` for absent counters.
-- **Bug fixes:** `brain client add` rendered flush-left in help output.
+- `brain status` printed `-1` for absent counters.
+- `brain client add` rendered flush-left in help output.
 ### Engineering record
 
 Tests: server main bin **670** / 6 ignored (unchanged count — the CLI bin grew
@@ -2373,7 +2476,9 @@ telemetry.
   partial erasure that the purge then certified complete. Every residue
   delete now participates in the purge transaction: a failure rolls the whole
   purge back instead of certifying a lie.
-- **Security fixes:** **The prompt-injection blocklist screen runs once per hit, not per
+
+**Security fixes**
+- **The prompt-injection blocklist screen runs once per hit, not per
   consumer.** Recall constructed each `SearchResult` with raw bytes, then the
   PRF query-expansion extractors re-normalized each hit's content against the
   blocklist per query. The screen now runs once at construction and rides as
@@ -2474,7 +2579,9 @@ endpoints, no wire changes, no telemetry.
 - **`/domains/{name}/import` dial 1 GiB** (was capped by the global 1 MiB
   limit — the route's dedicated layer now sits before the global one; every
   other route keeps the 1 MiB cap).
-- **Bug fixes:** **`/ingest/memory` could store an oversized entry or silently report
+
+**Bug fixes**
+- **`/ingest/memory` could store an oversized entry or silently report
   "Empty content" for invalid UTF-8.** Both now hard-reject: per-entry content
   over `MAX_CONTENT` → `400 entry_too_large` (all-or-nothing, before any
   write), non-UTF-8 body → `400 invalid_utf8`. Every legacy wire shape is
@@ -2555,9 +2662,11 @@ never clobbers a live file. No new endpoints, no schema change, no telemetry.
   an existing target already preserved the pre-restore state as `<db>.bak`;
   a second restore silently failed on that file with a cryptic SQL error. It
   now fails-closed with a clear message before touching the disk.
-- **Improvements:** `brain backup` gains `--format v1|v2` (default v2); restore and
+
+**Improvements**
+- `brain backup` gains `--format v1|v2` (default v2); restore and
   `brain doctor --backup` auto-detect both formats.
-- **Improvements:** Backup refuses to run while a stale `brain.bak` exists (a swapped/truncated
+- Backup refuses to run while a stale `brain.bak` exists (a swapped/truncated
   source DB was previously enshrined as the "safety snapshot").
 ### Engineering record
 
@@ -2726,7 +2835,8 @@ queue so an irreversible action can never auto-fire on reconnect.
 
 ### Release notes
 
-- **Improvements:** The legal-hold fence (v1.22.0) now guards **every** erasure path, not just
+**Improvements**
+- The legal-hold fence (v1.22.0) now guards **every** erasure path, not just
   `/purge` and DSAR: `DELETE /memory/{id}`, `DELETE /sources/{id}`,
   `/sources/reconcile` sweeps, `DELETE /quarantine/{id}` and
   `DELETE /domains/{name}` all refuse with the same `409 legal_hold_active`
@@ -2734,33 +2844,33 @@ queue so an irreversible action can never auto-fire on reconnect.
   inside the same transaction as the delete. The known audit exploit (hold a
   chunk, then retire its source with `{"live": []}`) is closed at the
   preflight.
-- **Improvements:** The deletion registry now carries the same SHA-256 content digest on
+- The deletion registry now carries the same SHA-256 content digest on
   single-chunk memory deletes that `/purge` writes — every erase trail records
   identical deletion evidence.
-- **Improvements:** Deleting a domain no longer erases its audit chain: the domain's audit
+- Deleting a domain no longer erases its audit chain: the domain's audit
   segment is exported to `<data>/archives/<domain>-audit-<date>.ndjson`
   (0600) before the rows go, the in-file `audit_events` survive, and a
   `domain_deleted` event is appended to the surviving chain.
-- **Improvements:** Strict-posture domains erase with teeth: DSAR purges and memory deletes run
+- Strict-posture domains erase with teeth: DSAR purges and memory deletes run
   `PRAGMA secure_delete=ON` + a `wal_checkpoint(TRUNCATE)` after commit, and
   the deletion certificate discloses the honest remanence posture verbatim —
   `secure_delete+checkpoint (backup files excepted)` for a strict domain, the
   disclosed logical posture otherwise. Best-effort profile lookup: an
   unreadable/missing bind never fails closed into a lie.
-- **Improvements:** Hold release now carries the DPO/admin dual gate (the same seam a breach
+- Hold release now carries the DPO/admin dual gate (the same seam a breach
   close uses), and the Art-30 transfer-register row lands atomically with its
   audit row (SAVEPOINT inside the write tx).
-- **Improvements:** A fenced code block can no longer produce a single oversized chunk: the
+- A fenced code block can no longer produce a single oversized chunk: the
   chunker now hard-caps code blocks at 8× the regular cap and splits any
   over-limit block at newline boundaries, re-opening the fence with the same
   info string on every continuation piece.
-- **Improvements:** (Client) a queued Purge/DSAR action **never auto-replays** on reconnect:
+- (Client) a queued Purge/DSAR action **never auto-replays** on reconnect:
   destructive actions park in the offline queue and surface as an explicit
   review banner with their queue write time, per-row dismiss, and a
   "keep + clear" decision. The offline envelope stores an anonymous SHA-256
   `subject_hash` — the raw subject never persists — and replay re-prompts for
   it.
-- **Improvements:** (Client) destruction confirmation is now a shared two-step component behind
+- (Client) destruction confirmation is now a shared two-step component behind
   a preview gate: the DSAR wipe confirms only while a fresh footprint preview
   is on screen, and editing the subject input after arming re-freezes the
   confirm.
@@ -2814,27 +2924,32 @@ the quarantine taint can no longer be lost or silently written.
 
 ### Release notes
 
-- **Bug fixes:** The plugin's block sanitizer stripped the fence sentinels *before* normalizing
+**Bug fixes**
+- The plugin's block sanitizer stripped the fence sentinels *before* normalizing
   whitespace, so a near-marker that a transform then synthesized (e.g. a
   `CONTEXT`–`END` boundary with an NBSP/TAB/zero-width split) could forge the
   fence close after it was already removed. The sentinel strip now runs last —
   after every transform that can create or shorten a marker — and the invisible
   class is stripped before whitespace collapse so `U+FEFF` is removed rather
   than widened to a space.
-- **Bug fixes:** The recall `snippet` field was the one detail value handed to the host without
+- The recall `snippet` field was the one detail value handed to the host without
   passing through the block sanitizer; it now goes through the same boundary as
   title and content.
-- **Improvements:** Every stored-content read surface on the server (UMP reads, legacy `/search`,
+
+**Improvements**
+- Every stored-content read surface on the server (UMP reads, legacy `/search`,
   `/quarantine` review list, recall/suggest metadata) now routes through a
   single sanitize seam — the same bidi/zero-width/markdown-ref boundary the
   recall path already used. A wiring meta-test pins the seam to every
   response-forming site, so a future read path that emits stored text without
   it fails the suite.
-- **Improvements:** The MCP tool-result seam now wraps results in the same untrusted fence the
+- The MCP tool-result seam now wraps results in the same untrusted fence the
   plugin uses, and strips control characters — an MCP host gets the structural
   data/instruction boundary on the wire too. The `brain` CLI recall/get prints
   gain the same strip parity.
-- **Security fixes:** The quarantine flag write now **fails closed**: `flag_if_quarantined` returns
+
+**Security fixes**
+- The quarantine flag write now **fails closed**: `flag_if_quarantined` returns
   a `Result`, and every ingest path (structured, procedure, `/add`, `/ingest/
   memory`) rolls back or errors rather than store an injection chunk with a
   silently-missed flag. Separately, `/ingest/memory` now flags a `Reject`
@@ -2886,23 +3001,28 @@ every documented endpoint now states its response body.
 
 ### Release notes
 
-- **Bug fixes:** Client: detail-modal approvals now forward the server `content_digest`
+**Bug fixes**
+- Client: detail-modal approvals now forward the server `content_digest`
   like the queue and batch paths already did — previously a modal approval
   sent no digest, so a drifted (tampered or stale) proposal could still be
   approved from the detail view. The decision now binds to the bytes
   displayed in every client path.
-- **Bug fixes:** Plugin: the provenance tag labels (`src`/`mk`/`lb`/`reg`) rendered inside
+- Plugin: the provenance tag labels (`src`/`mk`/`lb`/`reg`) rendered inside
   the `UNTRUSTED_*` fence now run through `sanitizeForBlock` like hit
   bodies — a recalled chunk can no longer forge its own attribution line
   or break the fence markers through a label.
-- **Improvements:** The OpenAPI contract (`GET /openapi.yaml`) now documents the response
+
+**Improvements**
+- The OpenAPI contract (`GET /openapi.yaml`) now documents the response
   body of every `200`/`201` endpoint: 51 previously description-only
   responses carry wire-exact examples, and `/auth/logout` is corrected to
   its real contract (204 on success, 401 when no principal is presented).
-- **Improvements:** Docs: the endpoint inventory in `docs/api.md` and the README API tables
+- Docs: the endpoint inventory in `docs/api.md` and the README API tables
   now cover the full v1.21–v1.27 surface (profiles, roles, connectors,
   domains, clients register, cross-border transfers, breach, legal hold).
-- **Security fixes:** None beyond the two integrity bug fixes above (no new surface; the
+
+**Security fixes**
+- None beyond the two integrity bug fixes above (no new surface; the
   fixes close gaps in the v1.27.12 features).
 ### Engineering record
 
@@ -2947,17 +3067,20 @@ retired, and recalled context carries its provenance into the prompt.
 
 ### Release notes
 
-- **Security fixes:** Review approvals now bind to the displayed bytes: `/proposals` returns the
+**Security fixes**
+- Review approvals now bind to the displayed bytes: `/proposals` returns the
   read-canonical review form + a stable `content_digest`; approving with a
   stale digest is rejected (`409`). The reviewer's decision can no longer
   bless content that recall would render differently.
-- **Security fixes:** Recalled context now carries per-hit provenance tags (ingest kind, memory
+- Recalled context now carries per-hit provenance tags (ingest kind, memory
   kind, lawful basis, region) inside the untrusted-data fence, so the model
   can attribute — not just trust — what it recalls.
-- **Security fixes:** The operator CLI can now rotate the server bearer token (`brain token
+- The operator CLI can now rotate the server bearer token (`brain token
   rotate`), retiring a leaked copy; server startup warns when a webhook sink
   is unsigned or the UMP signing key is group/world-readable.
-- **Improvements:** No new storage, no new tables, no telemetry. All changes ride the existing
+
+**Improvements**
+- No new storage, no new tables, no telemetry. All changes ride the existing
   seams (read seam, recall wire, CLI).
 ### Engineering record
 
@@ -3005,7 +3128,8 @@ dashboard views.
 
 ### Release notes
 
-- **Improvements:** New **Clients** panel, role-gated: a `client-auditor` gets their own
+**Improvements**
+- New **Clients** panel, role-gated: a `client-auditor` gets their own
   single-client dashboard (read-only, domain-scoped), and `bpo-ops`/admin get
   the all-clients operations board (register + connector status + review-queue
   depth).
@@ -3049,7 +3173,8 @@ v1.27.9.
 
 ### Release notes
 
-- **Improvements:** Hardened the `client-auditor` grant: the operator `global` root domain is
+**Improvements**
+- Hardened the `client-auditor` grant: the operator `global` root domain is
   never a valid auditor target (the min-necessary wedge cannot widen to the
   operator pool), and the `/clients` list filter is now type-safe over the
   register rows.
@@ -3080,10 +3205,11 @@ Release 9 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.8 →
 
 ### Release notes
 
-- **Improvements:** Two new role presets: a **`client-auditor`** (a client's compliance login —
+**Improvements**
+- Two new role presets: a **`client-auditor`** (a client's compliance login —
   a read-only view of exactly one client domain, no write/approve/purge) and a
   **`bpo-ops`** (the all-clients operations read). Both seed as editable rows.
-- **Improvements:** Domain-scoped client views — a `client-auditor`'s `GET /clients` +
+- Domain-scoped client views — a `client-auditor`'s `GET /clients` +
   `GET /clients/{name}` are filtered to its granted client-domain(s); other
   clients never appear (and are denied with no existence leak).
 ### Engineering record
@@ -3125,10 +3251,11 @@ Release 8 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.7 →
 
 ### Release notes
 
-- **Improvements:** Supervisor QA queue — every agent interaction that wrote memory now surfaces
+**Improvements**
+- Supervisor QA queue — every agent interaction that wrote memory now surfaces
   in the supervisor's per-client review queue, tagged with its agent `owner`,
   its R7 QA `qa_score`, and audited as the action happened.
-- **Improvements:** Coaching — a supervisor can attach (or clear) a coaching `note` (+ advisory
+- Coaching — a supervisor can attach (or clear) a coaching `note` (+ advisory
   flag) on any review item, so QA feedback is recorded without blocking
   approval.
 ### Engineering record
@@ -3169,12 +3296,13 @@ Release 7 of 10 of the BPO Ops series. Server `Cargo.toml`/lock 1.27.6 →
 
 ### Release notes
 
-- **Improvements:** Scope-violation detection — a role-restricted agent (R1 roles narrowed its
+**Improvements**
+- Scope-violation detection — a role-restricted agent (R1 roles narrowed its
   retrieval) that recalls across a client/perimeter border is now logged as a
   security event on the existing Auth/Denied audit channel, so the attempt has
   an audit record even though the WHERE clause already prevented the data
   returning.
-- **Improvements:** Deterministic QA scorecard — a small pure 0..100 map (`scope` × `cite` ×
+- Deterministic QA scorecard — a small pure 0..100 map (`scope` × `cite` ×
   confidence) that is the building block for the automated review-queue signal.
 ### Engineering record
 
@@ -3678,8 +3806,12 @@ region primitives.
   termination, audit rights, breach-notification, onward-transfer restriction).
   Both are **evidence artifacts** a human (DPO/legal) reviews + signs — nothing
   renders legal judgment.
-- **Bug fixes:** None in this release (v1.25.0 features unchanged).
-- **Security fixes:** None in this release (no new auth or crypto paths).
+
+**Bug fixes**
+- None in this release (v1.25.0 features unchanged).
+
+**Security fixes**
+- None in this release (no new auth or crypto paths).
 ### Engineering record
 
 - **M1** `src/transfers.rs::register` + the `transfers` table in every domain
@@ -3762,7 +3894,9 @@ existing profile/role/region primitives. See
 - **DPO contact on `/health`** — `BRAIN_DPO_CONTACT` surfaces the named Data
   Protection Officer on the public health probe + privacy notice (null when
   unset, never invented).
-- **Security fixes:** Scraped data without a lawful-basis provenance is no longer silently stored.
+
+**Security fixes**
+- Scraped data without a lawful-basis provenance is no longer silently stored.
 ### Engineering record
 
 - **M1 — posture.** `src/ph.rs` ships the pure decision logic: the `DPA_CONTROLS`
@@ -3830,7 +3964,9 @@ Reconcile, never auto-sync; read into memory, never write-back. See
 - **CLI vocabulary-aware messages** — `brain connect` / `brain sync` and
   `brain connector-status` now recognise the full v1.24 kind set and point
   operators at the register route instead of stale "v0.9.7+" text.
-- **Security fixes:** Connector registration is now enforced server-side against the domain's
+
+**Security fixes**
+- Connector registration is now enforced server-side against the domain's
   profile before a connector can advertise for that domain.
 ### Engineering record
 
@@ -3896,7 +4032,9 @@ into the existing claims shape the client already parses. See
 - **Roles resolved once per token** — `server` always grants all panels
   (incumbent-equivalent), the JWT `roles` claim grants the delegated set, and
   an absent token is unrestricted loopback-incumbent (today's status quo).
-- **Security fixes:** A `qa` or `agent` token can no longer rubber-stamp an approval from the
+
+**Security fixes**
+- A `qa` or `agent` token can no longer rubber-stamp an approval from the
   Review queue — `role_allows` gates approve/reject/edit before any write.
 ### Engineering record
 
@@ -3955,7 +4093,9 @@ no new governance fields, no background worker. See
   never rewritten, so history is preserved across a region change.
 - **Compliance pack** — HIPAA, SOX, and FedRAMP/FISMA posture maps appended
   to `COMPLIANCE.md` (§10), mapping the shipped controls to each framework.
-- **Security fixes:** A legally held id is now **frozen against erasure**: `/purge` and DSAR
+
+**Security fixes**
+- A legally held id is now **frozen against erasure**: `/purge` and DSAR
   refuse it (`409 legal_hold_active` with the hold reasons) and it never
   appears in the decay review as "safe to purge".
 ### Engineering record
@@ -4042,11 +4182,13 @@ byte-identical to pre-v1.21 (the back-compat test pins this). See
 - **Profile API + visibility** — `GET /profiles`, profile upsert, and the
   domain bind/unbind endpoints (documented in the OpenAPI spec); the client
   Health panel shows the active profile and its effective knobs.
-- **Security fixes:** New `pii_mode: strict` profile posture: emails, phone numbers, and card
+
+**Security fixes**
+- New `pii_mode: strict` profile posture: emails, phone numbers, and card
   numbers are masked **before storage** (one-way placeholders — the raw
   values never reach the database). Previously masking happened only when
   content was read back.
-- **Security fixes:** A domain bound to an unreadable or tampered profile now **fails closed**
+- A domain bound to an unreadable or tampered profile now **fails closed**
   (the ingest is refused) instead of silently proceeding without the
   policy.
 ### Engineering record
@@ -4145,21 +4287,24 @@ store — every neural path is opt-in via feature flags + profile env. See
 
 ### Release notes
 
-- **Bug fixes:** First-query timeouts after enabling the rerank tier — the model is now
+**Bug fixes**
+- First-query timeouts after enabling the rerank tier — the model is now
   loaded and warmed at startup instead of lazily inside the first recall.
-- **Improvements:** Embedding models are now swappable behind a single interface, with
+
+**Improvements**
+- Embedding models are now swappable behind a single interface, with
   **opt-in quality tiers** (all off by default; the default build is
   byte-identical in behavior):
   - `enterprise` tier — BGE-M3 embeddings (1024-d).
   - `desktop` tier — gte-base-en-v1.5 (768-d).
   - an optional local cross-encoder rerank tier (bge-reranker-v2-m3) that
     reorders recall results after fusion.
-- **Improvements:** The vector store stamps its dimension and **refuses a mismatched
+- The vector store stamps its dimension and **refuses a mismatched
   dimension switch** instead of silently comparing vectors of different
   sizes.
-- **Improvements:** `brain-server --re-embed <tier>` re-embeds the whole store when moving
+- `brain-server --re-embed <tier>` re-embeds the whole store when moving
   between tiers (offline escape hatch).
-- **Improvements:** The desktop memory ceiling rises to 1024 MiB to fit the optional neural
+- The desktop memory ceiling rises to 1024 MiB to fit the optional neural
   tiers (edge/Jetson stays 512).
 ### Engineering record
 
@@ -4250,13 +4395,16 @@ No new endpoints, no new fields, no telemetry. See
 
 ### Release notes
 
-- **Improvements:** The openclaw plugin collapses same-query recalls within a turn into a
+**Improvements**
+- The openclaw plugin collapses same-query recalls within a turn into a
   single server call (previously one turn could fan out several), and caps
   recalls per session turn.
-- **Improvements:** Tool parameters are schema-checked instead of cast, per-hit content is
+- Tool parameters are schema-checked instead of cast, per-hit content is
   clamped to a sane length, and the context-token ceiling is enforced
   consistently — smaller prompts, no runaway context growth.
-- **Security fixes:** The server **refuses to start** when bound to a non-loopback interface
+
+**Security fixes**
+- The server **refuses to start** when bound to a non-loopback interface
   with no auth configured — previously that combination silently exposed
   an unauthenticated, fully-privileged API.
 ### Engineering record
@@ -4307,14 +4455,18 @@ information-flow changes, one theme. No new endpoints, no new fields. See
   the verdict. Approval now re-screens and preserves the flag as
   provenance (the human's decision stays final; the flag is a record, not
   a recall block).
-- **Improvements:** The audit log now records the screen verdict on every approval
+
+**Improvements**
+- The audit log now records the screen verdict on every approval
   (clean/quarantine/reject), so post-hoc review can see what the
   deterministic screen would have said.
-- **Security fixes:** The plugin's `untrusted` marker is now **enforced, behind an unforgeable
+
+**Security fixes**
+- The plugin's `untrusted` marker is now **enforced, behind an unforgeable
   fence**: untrusted recall content is wrapped in begin/end sentinels that
   recalled chunks cannot forge (literal sentinels are stripped from hit
   bodies), and only explicitly-untrusted hits are injected into the prompt.
-- **Security fixes:** Unicode tag-block characters (U+E0000–U+E007F) and markdown references
+- Unicode tag-block characters (U+E0000–U+E007F) and markdown references
   are additionally stripped from plugin-bound text.
 ### Engineering record
 
@@ -4403,22 +4555,27 @@ Server `Cargo.toml`/lock 1.20.25 → 1.20.26; plugin unchanged. One shared clien
 
 ### Release notes
 
-- **Bug fixes:** **Chunk purge and GDPR erasure left knowledge-graph relationships and
+**Bug fixes**
+- **Chunk purge and GDPR erasure left knowledge-graph relationships and
   PII-named entity nodes behind** — a broken DELETE referenced a column that
   doesn't exist and silently aborted, so every purge leaked graph residue.
   Purges now sweep orphaned entities (shared ones survive) and erase
   review-queue proposals for the subject.
-- **Bug fixes:** Read-path redaction/strip now covers **every emitted text field** (title,
+- Read-path redaction/strip now covers **every emitted text field** (title,
   snippet, evidence text + headings on recall, search, and chunk fetches),
   closing the gap where some fields rode raw past the PII mask.
-- **Improvements:** None beyond the fixes above.
-- **Security fixes:** The outbound webhook client **no longer follows redirects** — a
+
+**Improvements**
+- None beyond the fixes above.
+
+**Security fixes**
+- The outbound webhook client **no longer follows redirects** — a
   misconfigured webhook URL that 302s to a cloud-metadata or localhost
   address is no longer fetched (SSRF egress path closed).
-- **Security fixes:** Audit and recall-trace hashes upgraded to **SHA-256** — low-entropy
+- Audit and recall-trace hashes upgraded to **SHA-256** — low-entropy
   inputs (a name, an SSN, a short query) can no longer be recovered by
   brute-forcing the stored digest.
-- **Security fixes:** The webhook signing-secret file now **fails closed** on group/world-
+- The webhook signing-secret file now **fails closed** on group/world-
   readable permissions, matching the auth-token posture.
 ### Engineering record
 
@@ -4533,22 +4690,26 @@ new regression tests. See `IMPLEMENTATION_PLAN_v1.20.24_Sweep.md`.
 - **`/decayed` has returned an empty list since v1.14** regardless of actual
   expiry — a SQL type mismatch silently dropped every row. It now returns
   the decayed chunks it always should have.
-- **Improvements:** The decay-review endpoint scans a narrow index instead of the full table.
-- **Improvements:** The client bounds long raw-text blocks (source prompts, evidence) in a
+
+**Improvements**
+- The decay-review endpoint scans a narrow index instead of the full table.
+- The client bounds long raw-text blocks (source prompts, evidence) in a
   scroll box instead of wallpapering the approval view.
-- **Security fixes:** Invisible-Unicode smuggling (bidi overrides, zero-width characters) is
+
+**Security fixes**
+- Invisible-Unicode smuggling (bidi overrides, zero-width characters) is
   now stripped at every agent-facing output seam: MCP tool results, the CLI,
   the openclaw plugin, and the web client.
-- **Security fixes:** PII masking now applies uniformly on **all** read paths (single-chunk
+- PII masking now applies uniformly on **all** read paths (single-chunk
   fetch, multi-get, search, and the review queue), not only on recall —
   for non-admin principals.
-- **Security fixes:** The server **refuses to start** when the auth-token file or JWT key is
+- The server **refuses to start** when the auth-token file or JWT key is
   group/world-readable (a leaked-secret file can no longer silently
   authorize the API).
-- **Security fixes:** GDPR subject erasure now covers **every domain database** (multi-domain
+- GDPR subject erasure now covers **every domain database** (multi-domain
   deployments), not just the default one, and the deletion ledger carries
   an aggregate SHA-256 digest.
-- **Security fixes:** Deletion digests are now SHA-256 instead of a fast 64-bit fingerprint,
+- Deletion digests are now SHA-256 instead of a fast 64-bit fingerprint,
   so they can no longer be brute-forced offline for low-entropy content
   (names, SSNs, short notes).
 ### Engineering record
@@ -4643,11 +4804,12 @@ server logic**, pure arithmetic over existing rows. See
 
 ### Release notes
 
-- **Improvements:** The review queue now reports **when each proposal was decided** — the
+**Improvements**
+- The review queue now reports **when each proposal was decided** — the
   decision timestamp was recorded all along but never surfaced to clients.
-- **Improvements:** `GET /proposals` accepts a `?since=` window parameter (e.g. last-30-days
+- `GET /proposals` accepts a `?since=` window parameter (e.g. last-30-days
   views) without changing the default response.
-- **Improvements:** The client's Review panel shows a dismissable **reviewer calibration
+- The client's Review panel shows a dismissable **reviewer calibration
   strip**: approval rate, median decision latency, edit rate, and
   screen-override rate, with a rubber-stamp warning when approvals exceed
   90% over 20+ decisions. Pure arithmetic over existing rows — no new
@@ -4716,9 +4878,11 @@ to v2.x. See `IMPLEMENTATION_PLAN_v1.20_Hardening_Line_INDEX.md`.
 ### Release notes
 
 - **DSAR deadlines**: erasure responses now include the created date and a server-computed 30-day response deadline (configurable), matching the GDPR Article 17 window.
-- **Improvements:** New admin endpoint lists the data-subject request ledger — status, timestamps, and a server-computed deadline per row — newest first and paginated.
-- **Improvements:** The web client shows a live, color-coded 30-day countdown on each open erasure request in the Subjects panel.
-- **Improvements:** The Data panel now lists the next items approaching retention expiry, with time-remaining labels.
+
+**Improvements**
+- New admin endpoint lists the data-subject request ledger — status, timestamps, and a server-computed deadline per row — newest first and paginated.
+- The web client shows a live, color-coded 30-day countdown on each open erasure request in the Subjects panel.
+- The Data panel now lists the next items approaching retention expiry, with time-remaining labels.
 ### Engineering record
 
 
@@ -4775,7 +4939,9 @@ core (reused unchanged) into the erasure + retention clocks. See
 ### Release notes
 
 - **DSAR dry-run**: erasure requests accept a dry-run flag that reports exactly what would be deleted — root items, derived chunks, export rows, prior tombstones — and writes nothing.
-- **Improvements:** The web client adds a "Preview DSAR footprint" card with an explicit "nothing deleted" note; previewing and erasing deliberately remain separate actions.
+
+**Improvements**
+- The web client adds a "Preview DSAR footprint" card with an explicit "nothing deleted" note; previewing and erasing deliberately remain separate actions.
 ### Engineering record
 
 
@@ -4831,10 +4997,13 @@ path writes — no new schema.
 ## [1.20.20] — 2026-08-13
 ### Release notes
 
-- **Improvements:** The web client's decision-replay view now shows the full stored decision path — decision, actor, domains searched, and the access scope applied.
-- **Improvements:** Recall rows in the audit ledger deep-link to their decision replay.
-- **Improvements:** The replay view can export the raw trace JSON as an evidence artifact.
-- **Security fixes:** Replay rendering strips invisible Unicode (including bidi directional overrides) from every displayed string, closing a display-smuggling gap on the new surface.
+**Improvements**
+- The web client's decision-replay view now shows the full stored decision path — decision, actor, domains searched, and the access scope applied.
+- Recall rows in the audit ledger deep-link to their decision replay.
+- The replay view can export the raw trace JSON as an evidence artifact.
+
+**Security fixes**
+- Replay rendering strips invisible Unicode (including bidi directional overrides) from every displayed string, closing a display-smuggling gap on the new surface.
 ### Engineering record
 
 
@@ -4882,9 +5051,12 @@ exists. No screenshot/PDF export — the JSON is the honest evidence artifact.
 ## [1.20.19] — 2026-08-13
 ### Release notes
 
-- **Improvements:** Export responses no longer include a PII-map key, and docs now describe the real privacy control: deterministic read-time redaction plus at-rest encryption.
-- **Improvements:** A documented environment variable that had no runtime effect was removed from the documentation.
-- **Security fixes:** The unused placeholder-to-raw-PII table is dropped during migration, erasing any legacy rows — no fetchable map from redacted placeholders back to raw personal data exists, by design.
+**Improvements**
+- Export responses no longer include a PII-map key, and docs now describe the real privacy control: deterministic read-time redaction plus at-rest encryption.
+- A documented environment variable that had no runtime effect was removed from the documentation.
+
+**Security fixes**
+- The unused placeholder-to-raw-PII table is dropped during migration, erasing any legacy rows — no fetchable map from redacted placeholders back to raw personal data exists, by design.
 ### Engineering record
 
 
@@ -4930,11 +5102,14 @@ was never shipped, so there is no behavior an operator relied on. See
 ## [1.20.18] — 2026-08-13
 ### Release notes
 
-- **Improvements:** Graph entity and relations endpoints now return a bounded page (default and max 500 edges) instead of every incident edge on hub entities.
-- **Improvements:** The subject-conflict scan no longer cross-pairs the whole corpus — proposal writes are dramatically faster on large stores, with deterministic results.
-- **Improvements:** The retention-expired listing endpoint is now paginated instead of returning every expired item at once.
-- **Improvements:** A new index speeds up tombstone registry queries and erasure-certificate reads.
-- **Security fixes:** Unbounded reads that could be forced to return corpus-sized responses (graph edges, expired items) are now capped, closing a denial-of-service surface.
+**Improvements**
+- Graph entity and relations endpoints now return a bounded page (default and max 500 edges) instead of every incident edge on hub entities.
+- The subject-conflict scan no longer cross-pairs the whole corpus — proposal writes are dramatically faster on large stores, with deterministic results.
+- The retention-expired listing endpoint is now paginated instead of returning every expired item at once.
+- A new index speeds up tombstone registry queries and erasure-certificate reads.
+
+**Security fixes**
+- Unbounded reads that could be forced to return corpus-sized responses (graph edges, expired items) are now capped, closing a denial-of-service surface.
 ### Engineering record
 
 
@@ -4989,11 +5164,14 @@ mC2 rule). See `docs/AGENTS_HISTORY.md` Agent 85.
 ## [1.20.17] — 2026-08-12
 ### Release notes
 
-- **Improvements:** The erasure transaction is now fully atomic: the ledger entry and certificate commit together with the erase itself.
+**Improvements**
+- The erasure transaction is now fully atomic: the ledger entry and certificate commit together with the erase itself.
 - **The erasure ledger no longer retains erased data** — it previously kept a full copy of the exported bundle; now only a hash is stored, and completed entries age out after a configurable window.
-- **Security fixes:** Exports support owner redaction: exporting one subject's data no longer carries another subject's content out of the system.
-- **Security fixes:** Stored recall traces keep a fingerprint of the query, not the raw text, so replay works without retaining queried prose at rest.
-- **Security fixes:** Memory writes with a mismatched owner scope are now recorded as denied audit events instead of being silently dropped.
+
+**Security fixes**
+- Exports support owner redaction: exporting one subject's data no longer carries another subject's content out of the system.
+- Stored recall traces keep a fingerprint of the query, not the raw text, so replay works without retaining queried prose at rest.
+- Memory writes with a mismatched owner scope are now recorded as denied audit events instead of being silently dropped.
 ### Engineering record
 
 
@@ -5063,7 +5241,9 @@ change, no new route** — every fix lands on existing code paths. See
 ### Release notes
 
 - **Injection screening now strips Unicode bidi-control characters** (directional overrides and isolates), closing the "Trojan Source" obfuscation class at the scoring boundary.
-- **Security fixes:** The web client renders the de-obfuscated form, stripping bidi and other invisible characters from displayed text.
+
+**Security fixes**
+- The web client renders the de-obfuscated form, stripping bidi and other invisible characters from displayed text.
 ### Engineering record
 
 
@@ -5118,8 +5298,10 @@ applied" change, out of scope for this hardening recommendation.
 ### Release notes
 
 - **Live deadline clocks in the review queue**: every pending proposal shows a tier-colored countdown to expiry; expired rows are flagged and their action buttons disabled.
-- **Improvements:** Deadlines come from the server (absolute expiry plus thresholds), so client badges and server alerts always agree — even with a custom TTL configured.
-- **Improvements:** New "expiry first" sort toggle surfaces the nearest deadlines at the top of the queue.
+
+**Improvements**
+- Deadlines come from the server (absolute expiry plus thresholds), so client badges and server alerts always agree — even with a custom TTL configured.
+- New "expiry first" sort toggle surfaces the nearest deadlines at the top of the queue.
 ### Engineering record
 
 
@@ -5179,8 +5361,10 @@ approve stays authoritative.
 ### Release notes
 
 - **Edit-then-approve**: reviewers can rewrite a pending proposal and approve the corrected version, instead of rejecting and re-ingesting.
-- **Improvements:** Edited proposals are re-scored and re-screened for injection on save, and carry an "edited" badge so reviewers see the content is not the original.
-- **Improvements:** Edits are audited (hashes of before/after only, never raw text) and never reset the expiry clock; edits also work offline via the client's queue.
+
+**Improvements**
+- Edited proposals are re-scored and re-screened for injection on save, and carry an "edited" badge so reviewers see the content is not the original.
+- Edits are audited (hashes of before/after only, never raw text) and never reset the expiry clock; edits also work offline via the client's queue.
 ### Engineering record
 
 
@@ -5238,8 +5422,9 @@ an edit never dodges expiry (consequentiality preserved). See
 ## [1.20.13] — 2026-08-12
 ### Release notes
 
-- **Improvements:** Eight technical blog posts (compliance, human-in-the-loop review, tamper-evident audit, retrieval, no lock-in) plus a media kit are now in the public docs.
-- **Improvements:** Docs navigation, README, and the product-site pages cross-link the new content.
+**Improvements**
+- Eight technical blog posts (compliance, human-in-the-loop review, tamper-evident audit, retrieval, no lock-in) plus a media kit are now in the public docs.
+- Docs navigation, README, and the product-site pages cross-link the new content.
 ### Engineering record
 
 
@@ -5285,9 +5470,10 @@ the public in-tree `docs/`, matching the v1.20.12 reuse precedent.
 ## [1.20.12] — 2026-08-12
 ### Release notes
 
-- **Improvements:** New public documentation: product-site pages (overview, install, quickstart, editions) consumable by any static site generator.
-- **Improvements:** A research section explains each retrieval mechanism — problem, reference, deterministic implementation, and known ceiling.
-- **Improvements:** A trust proof map ties every security/compliance claim to the release that shipped it and the command that verifies it, with a scripted reproduce walkthrough.
+**Improvements**
+- New public documentation: product-site pages (overview, install, quickstart, editions) consumable by any static site generator.
+- A research section explains each retrieval mechanism — problem, reference, deterministic implementation, and known ceiling.
+- A trust proof map ties every security/compliance claim to the release that shipped it and the command that verifies it, with a scripted reproduce walkthrough.
 ### Engineering record
 
 
@@ -5338,9 +5524,12 @@ serving can consume them.
 ## [1.20.11] — 2026-08-12
 ### Release notes
 
-- **Bug fixes:** README badges and roadmap status corrected — the hand-typed test count had drifted from the measured suite, and two shipped releases were still listed as planned.
-- **Improvements:** New script generates README badges (versions, test count, conformance level, SBOM presence) from the actual build — it never fabricates a number.
-- **Improvements:** New release checklist documents the wrap steps and the quality gates that must stay green.
+**Bug fixes**
+- README badges and roadmap status corrected — the hand-typed test count had drifted from the measured suite, and two shipped releases were still listed as planned.
+
+**Improvements**
+- New script generates README badges (versions, test count, conformance level, SBOM presence) from the actual build — it never fabricates a number.
+- New release checklist documents the wrap steps and the quality gates that must stay green.
 ### Engineering record
 
 
@@ -5395,9 +5584,11 @@ hand-typed claims.
 ### Release notes
 
 - **Audit-chain integrity watcher**: the tamper-evident chain is re-verified on a cadence (default 60s); breaks and recoveries raise alerts, and the health endpoint shows the posture.
-- **Improvements:** A script assembles a CRA-ready evidence bundle (SBOM, security/support/deployment/compliance docs) with a SHA-256 manifest.
-- **Improvements:** A second script builds per-decision transparency records answering "why did this become memory, by what path, from what source".
-- **Improvements:** New SUPPORT.md states supported versions and update guidance.
+
+**Improvements**
+- A script assembles a CRA-ready evidence bundle (SBOM, security/support/deployment/compliance docs) with a SHA-256 manifest.
+- A second script builds per-decision transparency records answering "why did this become memory, by what path, from what source".
+- New SUPPORT.md states supported versions and update guidance.
 ### Engineering record
 
 
@@ -5445,8 +5636,10 @@ no schema change, no new deps.**
 ### Release notes
 
 - **Agent Memory Register panel**: stored knowledge grouped by origin (human / model / imported) with live counts, plus filters by owner, source, and kind.
-- **Improvements:** A shared evidence viewer shows the verbatim source span, source URI, revision, and line range from any register row.
-- **Improvements:** Read-only by construction — the register cannot be fed a mutation's response.
+
+**Improvements**
+- A shared evidence viewer shows the verbatim source span, source URI, revision, and line range from any register row.
+- Read-only by construction — the register cannot be fed a mutation's response.
 ### Engineering record
 
 
@@ -5497,9 +5690,13 @@ visible in the console as an operator-facing provenance ledger.
 ### Release notes
 
 - **Live operator alert stream**: server-sent events for proposals entering review, deadline crossings, injection quarantines, and audit-chain checks — filterable by kind.
-- **Improvements:** Optional outbound webhook delivers each alert with an HMAC-SHA256 signature and retries; an unreachable endpoint drops alerts fail-soft.
-- **Improvements:** The web client subscribes live: alerts refresh the right panels and are announced to screen readers; the periodic poll remains the fallback.
-- **Security fixes:** Alert payloads carry ids and sequence numbers only — content and personal data never leave the server through the feed.
+
+**Improvements**
+- Optional outbound webhook delivers each alert with an HMAC-SHA256 signature and retries; an unreachable endpoint drops alerts fail-soft.
+- The web client subscribes live: alerts refresh the right panels and are announced to screen readers; the periodic poll remains the fallback.
+
+**Security fixes**
+- Alert payloads carry ids and sequence numbers only — content and personal data never leave the server through the feed.
 ### Engineering record
 
 
@@ -5556,8 +5753,9 @@ no longer silent. **No schema change, no new deps** (reuses the existing
 ## [1.20.7] — 2026-08-12
 ### Release notes
 
-- **Improvements:** Optional OpenTelemetry tracing (behind a build feature; the default build is unchanged) covers the three decision seams: injection screen, review gate, and recall.
-- **Improvements:** Spans carry stable labels and a bounded query fingerprint — query content is never sent to the collector.
+**Improvements**
+- Optional OpenTelemetry tracing (behind a build feature; the default build is unchanged) covers the three decision seams: injection screen, review gate, and recall.
+- Spans carry stable labels and a bounded query fingerprint — query content is never sent to the collector.
 ### Engineering record
 
 
@@ -5619,8 +5817,10 @@ feature rides into the next tagged release.
 ### Release notes
 
 - **Memory Operations dashboard**: a live pending queue with full content, source prompt, and SLA countdown, plus keyboard approve/reject.
-- **Improvements:** Flagged and quarantined items are visible in one place, with screen-caught recall hits badged and stripped of invisible characters at display.
-- **Improvements:** A gate-health strip summarizes approved/rejected/expired counts with a severity hint.
+
+**Improvements**
+- Flagged and quarantined items are visible in one place, with screen-caught recall hits badged and stripped of invisible characters at display.
+- A gate-health strip summarizes approved/rejected/expired counts with a severity hint.
 ### Engineering record
 
 
@@ -5694,9 +5894,11 @@ tiers into the in-tree `docs/`**; the blog posts + media kit stayed private in
 ### Release notes
 
 - **OWASP compliance matrix**: the stack mapped control-by-control to the OWASP GenAI LLM Top 10 (2026) and Top 10 for Agentic Applications (2026).
-- **Improvements:** Zero-trust AI posture documented: workload identity, least agency, and a single egress boundary.
-- **Improvements:** An audit-ready-replay playbook for assembling decision-path evidence from existing exports.
-- **Improvements:** An enterprise ops runbook: token rotation, memory-poisoning incident response, and classifier operations.
+
+**Improvements**
+- Zero-trust AI posture documented: workload identity, least agency, and a single egress boundary.
+- An audit-ready-replay playbook for assembling decision-path evidence from existing exports.
+- An enterprise ops runbook: token rotation, memory-poisoning incident response, and classifier operations.
 ### Engineering record
 
 
@@ -5757,10 +5959,13 @@ needs.
 ## [1.20.4] — 2026-08-11
 ### Release notes
 
-- **Improvements:** The health endpoint now surfaces the webhook posture at a glance: replay window, scheme, and whether timestamps are required.
-- **Improvements:** Documented how GitHub's webhook replay protection works (delivery-id idempotency) and how first-party senders can opt into signed timestamps.
+**Improvements**
+- The health endpoint now surfaces the webhook posture at a glance: replay window, scheme, and whether timestamps are required.
+- Documented how GitHub's webhook replay protection works (delivery-id idempotency) and how first-party senders can opt into signed timestamps.
 - **Optional Standard Webhooks verification**: when enabled, deliveries must carry signed id/timestamp/signature headers, verified in constant time.
-- **Security fixes:** The signed timestamp rides inside the HMAC, so a replayed delivery cannot be re-stamped; delivery-id idempotency still applies.
+
+**Security fixes**
+- The signed timestamp rides inside the HMAC, so a replayed delivery cannot be re-stamped; delivery-id idempotency still applies.
 ### Engineering record
 
 
@@ -5824,11 +6029,15 @@ Standard Webhooks handshake rides the existing `/webhooks/{kind}` surface.
 ### Release notes
 
 - **Fixed a crash in PII masking**: chunks containing multi-byte characters (em-dash, CJK) after a digit run crashed reads; masking now handles them and leaves non-ASCII text untouched.
-- **Improvements:** Review proposals show a screen verdict badge (clean/quarantined), recomputed deterministically at read time.
-- **Improvements:** The health endpoint reports whether the optional injection classifier is actually loaded.
+
+**Improvements**
+- Review proposals show a screen verdict badge (clean/quarantined), recomputed deterministically at read time.
+- The health endpoint reports whether the optional injection classifier is actually loaded.
 - **Optional second-layer injection classifier** (local model, off by default) catches novel or obfuscated injections the blocklist misses; high scores reject, borderline content is stored flagged.
-- **Security fixes:** Injection screening now covers every ingest write path, including procedures.
-- **Security fixes:** Invisible-character coverage widened (tag blocks, variation selectors); the web client shows recall hits and proposals de-obfuscated while stored bytes stay untouched.
+
+**Security fixes**
+- Injection screening now covers every ingest write path, including procedures.
+- Invisible-character coverage widened (tag blocks, variation selectors); the web client shows recall hits and proposals de-obfuscated while stored bytes stay untouched.
 ### Engineering record
 
 
@@ -5919,15 +6128,21 @@ stays at 1.20.1/1.20.2 and `test_migration_schema_contract` is untouched.
 ### Release notes
 
 - **Audit-chain fork fixed**: concurrent writers could append with the same predecessor hash; chain writes now serialize and the tamper-evident chain stays linear.
-- **Bug fixes:** Concurrently approving the same proposal no longer yields a generic server error — the second attempt gets a clean "already decided" conflict.
-- **Bug fixes:** Proposal-expiration events are now recorded durably instead of silently rolling back when a later step fails.
+
+**Bug fixes**
+- Concurrently approving the same proposal no longer yields a generic server error — the second attempt gets a clean "already decided" conflict.
+- Proposal-expiration events are now recorded durably instead of silently rolling back when a later step fails.
 - **MCP protocol update (2026-07-28)**: stateless discovery, per-request metadata validation, caching hints, and spec-exact error codes; legacy clients keep working.
-- **Improvements:** Resource bounds: export no longer buffers the entire database, embedding batches are capped, and adversarial content can no longer trigger quadratic entity extraction.
-- **Improvements:** Source prompts are length-capped and PII-screened before storage; multi-item fetches collapsed from per-id queries to a single lookup.
-- **Security fixes:** The procedure write path bypassed injection screening — it now screens the root and every step like all other ingest routes.
+
+**Improvements**
+- Resource bounds: export no longer buffers the entire database, embedding batches are capped, and adversarial content can no longer trigger quadratic entity extraction.
+- Source prompts are length-capped and PII-screened before storage; multi-item fetches collapsed from per-id queries to a single lookup.
+
+**Security fixes**
+- The procedure write path bypassed injection screening — it now screens the root and every step like all other ingest routes.
 - **Card numbers slipped through PII redaction**: 16–19 digit Luhn-valid cards were flagged but leaked verbatim on redacted reads; they are now masked.
-- **Security fixes:** Rate limiting was evadable by spoofing X-Forwarded-For (the header is now trusted only when configured) and used unbounded memory; tracking is now capped.
-- **Security fixes:** Tombstone and erasure-certificate listings no longer expose other tenants' records to team-scoped admins; the detailed DB-health endpoint is no longer public.
+- Rate limiting was evadable by spoofing X-Forwarded-For (the header is now trusted only when configured) and used unbounded memory; tracking is now capped.
+- Tombstone and erasure-certificate listings no longer expose other tenants' records to team-scoped admins; the detailed DB-health endpoint is no longer public.
 ### Engineering record
 
 
@@ -6072,11 +6287,14 @@ stays 1.20.0. See `IMPLEMENTATION_PLAN_v1.20.2_Harden.md`.
 ## [1.20.1] — 2026-08-11
 ### Release notes
 
-- **Improvements:** Proposals now expire: pending captures aging past a configurable TTL (default 7 days) are auto-rejected and audited; deciding a stale proposal returns an error.
-- **Improvements:** The capture-triggering prompt is shown in the review panel so reviewers see the context that produced a proposed memory.
+**Improvements**
+- Proposals now expire: pending captures aging past a configurable TTL (default 7 days) are auto-rejected and audited; deciding a stale proposal returns an error.
+- The capture-triggering prompt is shown in the review panel so reviewers see the context that produced a proposed memory.
 - **The /ingest write path bypassed injection screening** — it now rejects or quarantines suspicious content exactly like every other write path.
 - **Auto-capture no longer bypasses human review**: the openclaw plugin's autoCapture defaults to the approval queue; direct mode remains available (still screened).
-- **Security fixes:** The capture-triggering turn is stored only in PII-screened form — redacted placeholders, never the raw prompt.
+
+**Security fixes**
+- The capture-triggering turn is stored only in PII-screened form — redacted placeholders, never the raw prompt.
 ### Engineering record
 
 
@@ -6142,9 +6360,10 @@ approval (G2). See `IMPLEMENTATION_PLAN_v1.20.1_Shield.md`.
 ## [1.20.0] — 2026-08-11
 ### Release notes
 
-- **Improvements:** Theme toggle now cycles dark → light → system, following the OS preference.
+**Improvements**
+- Theme toggle now cycles dark → light → system, following the OS preference.
 - **Offline tolerance**: decisions, purges, and erasure actions taken while disconnected are queued locally and replayed on recovery, each applied exactly once; a badge shows the queue count.
-- **Improvements:** A client bundle-size budget gate lands in CI to catch growth regressions.
+- A client bundle-size budget gate lands in CI to catch growth regressions.
 ### Engineering record
 
 
@@ -6200,7 +6419,8 @@ budgets documented in `BENCHMARKS.md`.
 ## [1.19.0] — 2026-08-10
 ### Release notes
 
-- **Improvements:** Audit-panel filters are now URL-addressable — a link like /audit?principal=alice opens the view pre-filtered, shareable with other reviewers.
+**Improvements**
+- Audit-panel filters are now URL-addressable — a link like /audit?principal=alice opens the view pre-filtered, shareable with other reviewers.
 ### Engineering record
 
 
@@ -6245,8 +6465,10 @@ ceilings (below).
 ### Release notes
 
 - **Origin markers**: every stored item is tagged human, model, or imported (backfilled by source kind); bulk imports never claim human authorship.
-- **Improvements:** Exports carry a provenance block: per-row source and origin plus a summary by origin and source; existing field names are unchanged for downstream importers.
-- **Improvements:** The public AI notice now advertises origin metadata alongside source and confidence.
+
+**Improvements**
+- Exports carry a provenance block: per-row source and origin plus a summary by origin and source; existing field names are unchanged for downstream importers.
+- The public AI notice now advertises origin metadata alongside source and confidence.
 ### Engineering record
 
 
@@ -6391,11 +6613,14 @@ gaps and formalizes the CI gate.
 ## [1.17.6] — 2026-08-09
 ### Release notes
 
-- **Bug fixes:** The connect screen now lives at its own address, avoiding a redirect loop with the app shell's connect-first behavior.
+**Bug fixes**
+- The connect screen now lives at its own address, avoiding a redirect loop with the app shell's connect-first behavior.
 - **Command palette v2** — one keyboard surface (Cmd/Ctrl+K) for navigation, lookups, and actions, with grouped results, recent commands, and full keyboard control.
-- **Improvements:** Destructive actions like reindex now require an explicit press-Enter-to-confirm step before running.
+
+**Improvements**
+- Destructive actions like reindex now require an explicit press-Enter-to-confirm step before running.
 - **New Overview home page** — status cards for health, snapshot integrity, retention, and protocol conformance, plus a severity-sorted alert list and the top pending items with one-click approve/reject.
-- **Improvements:** The new surfaces are translated in all five UI languages (English, German, French, Spanish, Dutch).
+- The new surfaces are translated in all five UI languages (English, German, French, Spanish, Dutch).
 ### Engineering record
 
 
@@ -6492,7 +6717,9 @@ stay at 1.17.5 (zero server changes, zero schema change). Dioxus 0.7.10.
 - **Data & Rights panel** — purge by record ids or owner, portable export (JSON, UMP, or Markdown), a per-kind retention editor, the decayed-content review list, and the deletion registry, all in one place.
 - **UMP panel** — protocol capabilities with an integrity badge, remember/recall with filters, and loading plus verifying the audit chain.
 - **System panel** — domains, snapshot integrity, the Article 30 register, reindexing, connectors, and source reconciliation.
-- **Improvements:** A **try-it console** for issuing raw API requests from the client, with token-bearing bodies stripped from the saved history.
+
+**Improvements**
+- A **try-it console** for issuing raw API requests from the client, with token-bearing bodies stripped from the saved history.
 ### Engineering record
 
 
@@ -6567,12 +6794,15 @@ No server restart needed (client-only static bundle).
 ## [1.17.7] — 2026-08-09
 ### Release notes
 
-- **Bug fixes:** Graph path display rendered a doubled separator between hops; chains now read correctly (A --relation--> B --relation--> C).
-- **Bug fixes:** The Create workspace pages no longer render duplicate top-level headings, fixing an accessibility regression.
+**Bug fixes**
+- Graph path display rendered a doubled separator between hops; chains now read correctly (A --relation--> B --relation--> C).
+- The Create workspace pages no longer render duplicate top-level headings, fixing an accessibility regression.
 - **Graph panel** — look up entities and their relations, and run traversals rendered as readable hop chains, with kind filtering.
 - **Create workspace** — a single hub for writing: structured/Markdown/memory ingest with up-front JSON validation, a procedure step builder with classification and decision evaluation, and consolidation proposals with one-click apply/undo.
-- **Improvements:** New Graph and Create destinations in the sidebar, mobile tab bar, and command palette.
-- **Improvements:** All new surfaces translated in the five UI languages.
+
+**Improvements**
+- New Graph and Create destinations in the sidebar, mobile tab bar, and command palette.
+- All new surfaces translated in the five UI languages.
 ### Engineering record
 
 
@@ -6672,12 +6902,16 @@ static bundle).
 ### Release notes
 
 - **`brain eval` never worked** — every run failed with a 405 because it called the recall endpoint with the wrong HTTP method; the command now runs and produces scores.
-- **Bug fixes:** Eval scores were computed against the wrong matched indices (arbitrary set ordering); indices now match the fixture's documented positions.
-- **Bug fixes:** The eval parser now reads both the search and recall response shapes, instead of only the search shape.
-- **Improvements:** Release builds must pass automated recall-quality floors before shipping.
-- **Improvements:** An automated check asserts the server's declared UMP conformance level.
-- **Improvements:** Every tagged release now ships a CycloneDX software bill of materials (SBOM).
-- **Improvements:** First published benchmark results for the default configuration (recall@5/10 0.919, MRR 0.905).
+
+**Bug fixes**
+- Eval scores were computed against the wrong matched indices (arbitrary set ordering); indices now match the fixture's documented positions.
+- The eval parser now reads both the search and recall response shapes, instead of only the search shape.
+
+**Improvements**
+- Release builds must pass automated recall-quality floors before shipping.
+- An automated check asserts the server's declared UMP conformance level.
+- Every tagged release now ships a CycloneDX software bill of materials (SBOM).
+- First published benchmark results for the default configuration (recall@5/10 0.919, MRR 0.905).
 ### Engineering record
 
 
@@ -6719,12 +6953,16 @@ static bundle).
 ### Release notes
 
 - **Record identities were mis-derived** — the did:key encoding was rejected by reference UMP implementations; it is now spec-correct, and records signed by the previous release still verify.
-- **Bug fixes:** Looking up records by their content-addressed id on the UMP endpoints returned 404; urn-form ids now resolve everywhere.
-- **Bug fixes:** UMP imports rejected requests that omitted a protocol version field; a missing version now defaults to 1.0.
-- **Bug fixes:** Provenance and consent metadata was silently dropped on import; it is now stored and re-emitted with every record.
-- **Improvements:** The record integrity block now uses the reference format (content hash, signature, signer), so third-party UMP tools byte-match brain-server records.
-- **Improvements:** Revising a record now marks the prior one with its end-of-validity time and a link to its successor.
-- **Improvements:** Forget now clearly reports whether content was erased or tombstoned, and feedback returns the response conforming tools expect.
+
+**Bug fixes**
+- Looking up records by their content-addressed id on the UMP endpoints returned 404; urn-form ids now resolve everywhere.
+- UMP imports rejected requests that omitted a protocol version field; a missing version now defaults to 1.0.
+- Provenance and consent metadata was silently dropped on import; it is now stored and re-emitted with every record.
+
+**Improvements**
+- The record integrity block now uses the reference format (content hash, signature, signer), so third-party UMP tools byte-match brain-server records.
+- Revising a record now marks the prior one with its end-of-validity time and a link to its successor.
+- Forget now clearly reports whether content was erased or tombstoned, and feedback returns the response conforming tools expect.
 ### Engineering record
 
 
@@ -6811,9 +7049,12 @@ prior `time.valid_to` + `superseded_by` pointing at the new urn, forget →
 ## [1.17.3] — 2026-08-09
 ### Release notes
 
-- **Bug fixes:** Exporting from a store with no records failed with a fatal error; empty stores now export cleanly.
+**Bug fixes**
+- Exporting from a store with no records failed with a fatal error; empty stores now export cleanly.
 - **Full UMP 1.0 memory API** — capabilities handshake, remember, integrity-verified get, recall with relevance signals, revise, forget, feedback, audit, and a subscription change feed.
-- **Improvements:** The same surface is exposed as MCP tools (`ump.*`) for agent integrations, with token pass-through.
+
+**Improvements**
+- The same surface is exposed as MCP tools (`ump.*`) for agent integrations, with token pass-through.
 - **Portable record files** — export and import memories as UMP Markdown or JSON via the CLI, round-trip lossless.
 - **Operator signing keys and capability tokens** — generate an Ed25519 identity key, and grant scoped, expiring read/write/export tokens enforced per endpoint.
 ### Engineering record
@@ -6922,9 +7163,12 @@ discovery doc) report `conformance: "L3"` when an operator key is configured,
 ## [1.17.2] — 2026-08-09
 ### Release notes
 
-- **Bug fixes:** The UMP export/import adapter shipped with a guessed wire format that real UMP 1.0 software would not understand; records now conform to the published spec — correct version tag, kind vocabulary, content-addressed ids, RFC 3339 timestamps, and relation shapes.
-- **Improvements:** Imports now reject records declaring an unknown protocol major version instead of silently reinterpreting them.
-- **Improvements:** The server declares UMP 1.0 / L0 (portable-record file binding) conformance.
+**Bug fixes**
+- The UMP export/import adapter shipped with a guessed wire format that real UMP 1.0 software would not understand; records now conform to the published spec — correct version tag, kind vocabulary, content-addressed ids, RFC 3339 timestamps, and relation shapes.
+
+**Improvements**
+- Imports now reject records declaring an unknown protocol major version instead of silently reinterpreting them.
+- The server declares UMP 1.0 / L0 (portable-record file binding) conformance.
 ### Engineering record
 
 
@@ -6950,9 +7194,12 @@ discovery doc) report `conformance: "L3"` when an operator key is configured,
 ## [1.17.1] — 2026-08-09
 ### Release notes
 
-- **Bug fixes:** Ingest now consistently records the acting user as the record owner, so authenticated writes carry the correct subject instead of an inconsistent one.
+**Bug fixes**
+- Ingest now consistently records the acting user as the record owner, so authenticated writes carry the correct subject instead of an inconsistent one.
 - **Per-kind retention** — each memory kind expires on its own schedule (defaults overridable), enforced at query time; the decayed list explains why each item expired.
-- **Improvements:** `brain eval` runs a fixed query set against recall and enforces quality floors, usable as a pre-ship gate.
+
+**Improvements**
+- `brain eval` runs a fixed query set against recall and enforces quality floors, usable as a pre-ship gate.
 - **Governance records** — an Article 30 processing register, a public EU AI Act Code-of-Practice conformity marker, an AI-literacy disclosure endpoint, and a deployer playbook plus RFP response kit.
 - **Snapshot self-check** — verify each backup exists, has correct permissions, and passes integrity and audit-chain checks, from the CLI.
 ### Engineering record
@@ -7026,10 +7273,11 @@ discovery doc) report `conformance: "L3"` when an operator key is configured,
 ## [1.17.0] — 2026-08-08
 ### Release notes
 
-- **Improvements:** Refresh controls on the Review, Audit, and Health panels work on every platform, including mobile.
-- **Improvements:** `brain://` deep links are registered on iOS and Android, so custom-scheme links open the app.
-- **Improvements:** The connect screen remembers the last successful server URL and pre-fills it on return; the token stays in the OS keyring.
-- **Improvements:** Store-readiness package: App Store / Play privacy labels ("no data collected" — self-hosted backend, no analytics or tracking) and a submission checklist.
+**Improvements**
+- Refresh controls on the Review, Audit, and Health panels work on every platform, including mobile.
+- `brain://` deep links are registered on iOS and Android, so custom-scheme links open the app.
+- The connect screen remembers the last successful server URL and pre-fills it on return; the token stays in the OS keyring.
+- Store-readiness package: App Store / Play privacy labels ("no data collected" — self-hosted backend, no analytics or tracking) and a submission checklist.
 ### Engineering record
 
 
@@ -7088,11 +7336,14 @@ store-readiness milestones. Server + API contract unchanged (still 1.16.7).
 ## [1.16.8] — 2026-08-08
 ### Release notes
 
-- **Bug fixes:** Web deployments could ship stale CSS — style edits silently never reached the bundle; the build now recompiles styles every deploy.
+**Bug fixes**
+- Web deployments could ship stale CSS — style edits silently never reached the bundle; the build now recompiles styles every deploy.
 - **Five UI languages** (English, German, French, Spanish, Dutch) with automatic English fallback for missing strings.
 - **Light theme** toggle (dark remains the default) and a **compact density** mode (~12.5% tighter spacing) for high-volume reviewers.
-- **Improvements:** Locale-aware number grouping throughout the shell.
-- **Improvements:** A privacy panel on the connect screen states exactly what the client sends, stores, and never does (no telemetry, analytics, or third-party requests); theme, density, and locale preferences persist — never the token.
+
+**Improvements**
+- Locale-aware number grouping throughout the shell.
+- A privacy panel on the connect screen states exactly what the client sends, stores, and never does (no telemetry, analytics, or third-party requests); theme, density, and locale preferences persist — never the token.
 ### Engineering record
 
 
@@ -7176,14 +7427,19 @@ connect screen. **Server + API contract unchanged** (server stays at 1.16.7).
 ## [1.16.7] — 2026-08-08
 ### Release notes
 
-- **Bug fixes:** The `limit` parameter on the deletion registry was silently ignored, always returning all rows; it is now honored.
-- **Bug fixes:** Export now includes the record source column it was documented to emit.
+**Bug fixes**
+- The `limit` parameter on the deletion registry was silently ignored, always returning all rows; it is now honored.
+- Export now includes the record source column it was documented to emit.
 - **Web client** — installable as a PWA with an offline app shell, and review-proposal / DSAR-certificate pages are now shareable URLs.
 - **Web client** — command palette (Cmd/Ctrl+K), paginated audit log with load-more, and a debounced recall input.
-- **Improvements:** Accessibility: dialogs trap focus, batch and certificate outcomes are announced to screen readers, and RTL-scripted memory content flows correctly.
-- **Improvements:** New public AI-transparency notice endpoint (EU AI Act Article 50) disclosing that AI-generated content is stored and may be returned.
-- **Security fixes:** SQLite snapshot backups were written world-readable — each is a plaintext copy of the whole store; they are now restricted to owner-only access.
-- **Security fixes:** The unauthenticated health endpoint is pinned to never expose store contents or personal data.
+
+**Improvements**
+- Accessibility: dialogs trap focus, batch and certificate outcomes are announced to screen readers, and RTL-scripted memory content flows correctly.
+- New public AI-transparency notice endpoint (EU AI Act Article 50) disclosing that AI-generated content is stored and may be returned.
+
+**Security fixes**
+- SQLite snapshot backups were written world-readable — each is a plaintext copy of the whole store; they are now restricted to owner-only access.
+- The unauthenticated health endpoint is pinned to never expose store contents or personal data.
 ### Engineering record
 
 
@@ -7304,11 +7560,14 @@ client or API-contract break.
 ## [1.16.5] — 2026-08-08
 ### Release notes
 
-- **Bug fixes:** Fixed a concurrency flaw in the client's request path: an internal lock was held across a network call.
+**Bug fixes**
+- Fixed a concurrency flaw in the client's request path: an internal lock was held across a network call.
 - **Session lifecycle** — expired access tokens are silently refreshed once on a 401 and proactively within 60 seconds of expiry; no infinite retry loops.
-- **Improvements:** The top bar shows the acting identity from the token ("acting as <subject>" vs "loopback") instead of a hardcoded placeholder.
-- **Improvements:** The connect screen accepts an access + refresh token pair, pasteable from the CLI or an identity provider.
-- **Improvements:** Clearer auth errors: a reused refresh token reports "session revoked" with a reconnect path instead of a generic failure.
+
+**Improvements**
+- The top bar shows the acting identity from the token ("acting as <subject>" vs "loopback") instead of a hardcoded placeholder.
+- The connect screen accepts an access + refresh token pair, pasteable from the CLI or an identity provider.
+- Clearer auth errors: a reused refresh token reports "session revoked" with a reconnect path instead of a generic failure.
 ### Engineering record
 
 
@@ -7372,7 +7631,9 @@ awareness, and the honest revocation path. See
 - **Secure token storage** — on native installs the auth token persists to the OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service); the web client keeps it in memory only.
 - **Auto-reconnect** — a saved token is quietly validated on launch, dropping you straight into the app when valid and back to the sign-in form when stale.
 - **Responsive layout** — a mobile bottom tab bar, at least 44px touch targets, notch/home-indicator safe areas, and a bottom-sheet drawer on small screens.
-- **Improvements:** Server and client version numbers are kept in lockstep, so the CLI and GUI report the same version.
+
+**Improvements**
+- Server and client version numbers are kept in lockstep, so the CLI and GUI report the same version.
 ### Engineering record
 
 
@@ -7428,10 +7689,13 @@ no Android SDK / cargo-ndk / `dx` is available in this environment.
 ## [1.16.4] — 2026-08-08
 ### Release notes
 
-- **Bug fixes:** Deployments could ship a stale stylesheet while the page referenced the new one; the deploy script now always picks the freshest CSS build.
+**Bug fixes**
+- Deployments could ship a stale stylesheet while the page referenced the new one; the deploy script now always picks the freshest CSS build.
 - **Redesigned app shell** — a fixed left sidebar with live count badges and a slim sticky top bar showing connection, pending count, and security/audit-chain status.
-- **Improvements:** A shadcn-style design system: semantic color tokens, a radius scale, and consistent buttons, inputs, badges, and tables.
-- **Improvements:** Every panel (Review, Recall, Subjects, Security, Audit, Health, Connect) restyled to the new system with no loss of accessibility or semantics.
+
+**Improvements**
+- A shadcn-style design system: semantic color tokens, a radius scale, and consistent buttons, inputs, badges, and tables.
+- Every panel (Review, Recall, Subjects, Security, Audit, Health, Connect) restyled to the new system with no loss of accessibility or semantics.
 ### Engineering record
 
 
@@ -7472,10 +7736,14 @@ no Android SDK / cargo-ndk / `dx` is available in this environment.
 ### Release notes
 
 - **The compiled web client was unreachable** — asset URLs were mis-based and rejected; it is now correctly served under `/app`.
-- **Bug fixes:** The web client never rendered under the security policy because the WASM runtime was blocked; the app path now permits what it needs.
-- **Bug fixes:** Connecting defaulted to a hardcoded remote URL even when the page was served by brain-server itself; same-origin pages now default correctly.
-- **Bug fixes:** Deployments could race stale hashed assets; the deploy script now derives exact filenames from the fresh build.
-- **Improvements:** One-command web deploy: build the bundle, inject the stylesheet reference, and ship it to the directory the server serves.
+
+**Bug fixes**
+- The web client never rendered under the security policy because the WASM runtime was blocked; the app path now permits what it needs.
+- Connecting defaulted to a hardcoded remote URL even when the page was served by brain-server itself; same-origin pages now default correctly.
+- Deployments could race stale hashed assets; the deploy script now derives exact filenames from the fresh build.
+
+**Improvements**
+- One-command web deploy: build the bundle, inject the stylesheet reference, and ship it to the directory the server serves.
 ### Engineering record
 
 
@@ -7536,15 +7804,20 @@ can't retrofit code into an already-tagged history.
 ## [1.16.2] — 2026-08-08
 ### Release notes
 
-- **Bug fixes:** A crash in any panel no longer leaves a blank screen — an operator-facing fallback with a dismiss button renders instead.
-- **Bug fixes:** Low-contrast text was raised to meet WCAG AA (3.8:1 → 4.6:1 contrast).
+**Bug fixes**
+- A crash in any panel no longer leaves a blank screen — an operator-facing fallback with a dismiss button renders instead.
+- Low-contrast text was raised to meet WCAG AA (3.8:1 → 4.6:1 contrast).
 - **The server now serves the web client itself** at `/app`, with deep-link fallback and brotli-compressed assets.
-- **Improvements:** Screen-reader support on navigation: each page heading receives focus on route change, per-route document titles are set, and focused elements no longer hide under the sticky nav.
-- **Improvements:** Actionable error messages (expired session, not found, rate limited, unavailable) in the Review, Recall, and Health panels.
-- **Improvements:** Batch review collapses to an honest one-line summary that surfaces partial failures instead of hiding them.
-- **Security fixes:** The auth token is barred from browser localStorage (readable by script attacks) — enforced by an automated source guard.
-- **Security fixes:** The raw-HTML rendering escape hatch, the client's only XSS vector, is banned across the codebase by an automated guard.
-- **Security fixes:** Content security policy is now path-aware: API routes keep the strictest policy (`default-src 'none'`); only the web-app path allows what the WASM runtime requires.
+
+**Improvements**
+- Screen-reader support on navigation: each page heading receives focus on route change, per-route document titles are set, and focused elements no longer hide under the sticky nav.
+- Actionable error messages (expired session, not found, rate limited, unavailable) in the Review, Recall, and Health panels.
+- Batch review collapses to an honest one-line summary that surfaces partial failures instead of hiding them.
+
+**Security fixes**
+- The auth token is barred from browser localStorage (readable by script attacks) — enforced by an automated source guard.
+- The raw-HTML rendering escape hatch, the client's only XSS vector, is banned across the codebase by an automated guard.
+- Content security policy is now path-aware: API routes keep the strictest policy (`default-src 'none'`); only the web-app path allows what the WASM runtime requires.
 ### Engineering record
 
 
@@ -7583,8 +7856,12 @@ can't retrofit code into an already-tagged history.
 ### Release notes
 
 - **The deletion registry was under-reporting** — older tombstone rows without a purge timestamp were silently dropped (on the live database, 6,008 of 6,009 rows were invisible); all rows now appear, with a one-time backfill.
-- **Bug fixes:** Retention pruning now removes recall traces whose audit entries were pruned, instead of leaving them orphaned forever.
-- **Improvements:** The memory-usage warning band was raised from 320 to 512 MiB to match desktop reality — fewer false warnings during large reads and backups (it remains a soft signal that never blocks writes).
+
+**Bug fixes**
+- Retention pruning now removes recall traces whose audit entries were pruned, instead of leaving them orphaned forever.
+
+**Improvements**
+- The memory-usage warning band was raised from 320 to 512 MiB to match desktop reality — fewer false warnings during large reads and backups (it remains a soft signal that never blocks writes).
 - **Deletion completeness** — purging records and running erasure requests now also delete the recall traces that reference them, including traces whose stored query text mentions the subject; these previously survived every deletion path.
 ### Engineering record
 
@@ -7630,7 +7907,8 @@ can't retrofit code into an already-tagged history.
 ## [1.16.0] — 2026-08-08
 ### Release notes
 
-- **Bug fixes:** The recall trace toggle was disabled during reconnects even though it is a read-only control; reads now stay interactive while reconnecting.
+**Bug fixes**
+- The recall trace toggle was disabled during reconnects even though it is a read-only control; reads now stay interactive while reconnecting.
 - **First shippable client** for web, desktop, and mobile-ready targets, covering the review queue, recall, data-subject requests, security, audit, and health panels.
 - **Offline-safe by design** — panels keep showing last-known data when the connection drops, writes are frozen, and they resume only after the audit chain re-verifies.
 - **Keyboard-first review** (A/S/R/J/K) with reject-with-reason, edit-and-repropose, and batch results that surface every failure — nothing silently dropped.
@@ -8023,7 +8301,9 @@ No schema change, no new runtime dependency, no `unsafe`. Gates: fmt, clippy
 ### Release notes
 
 - **Recall source filter:** a query-string `?source=` on recall was silently ignored — callers got 200 OK unfiltered while believing they had filtered. It is now honored and validated, matching search.
-- **Improvements:** Unknown `source` values are now rejected with 422 before any search work; a body value still wins when both are supplied.
+
+**Improvements**
+- Unknown `source` values are now rejected with 422 before any search work; a body value still wins when both are supplied.
 ### Engineering record
 
 
@@ -8046,8 +8326,12 @@ No schema change, no new runtime dependency, no `unsafe`. Gates: fmt, clippy
 
 - **Source filter repaired:** every documented `source` value returned 0 hits. Ingest kinds now filter in SQL, retrieval legs filter post-fusion, and invalid values return 422.
 - **Honest ingest responses:** memory ingest reported an entry count as the chunk id; it now returns real chunk ids, entries added, and duplicates skipped.
-- **Bug fixes:** `domains_searched` is now always present on recall responses, no longer missing when there are no hits.
-- **Improvements:** API docs, MCP schema, and CLI help now match the repaired source-filter contract.
+
+**Bug fixes**
+- `domains_searched` is now always present on recall responses, no longer missing when there are no hits.
+
+**Improvements**
+- API docs, MCP schema, and CLI help now match the repaired source-filter contract.
 ### Engineering record
 
 
@@ -8086,8 +8370,10 @@ documented-but-broken `source` contract (422 for invalid values).
 
 - **Recall routing regression:** memories moved out of the default domain had become unreachable to standard recall after a domain move; recall now auto-routes to the matching domain with a global fallback.
 - **Write contention:** concurrent writers could fail immediately with SQLITE_BUSY under load; writes now queue up to 5 seconds.
-- **Improvements:** Un-routed queries never spill into bulk domains, so one huge domain can no longer swamp working-memory lookups; a kill switch restores legacy global-only recall.
-- **Improvements:** `/recall` accepts `explain` as an alias for `provenance`; graph traverse accepts `name`/`entity` aliases for `start` — no more per-endpoint spelling quirks.
+
+**Improvements**
+- Un-routed queries never spill into bulk domains, so one huge domain can no longer swamp working-memory lookups; a kill switch restores legacy global-only recall.
+- `/recall` accepts `explain` as an alias for `provenance`; graph traverse accepts `name`/`entity` aliases for `start` — no more per-endpoint spelling quirks.
 ### Engineering record
 
 
@@ -8158,7 +8444,9 @@ No version bump — lands under [Unreleased] until the v1.19.0 release ceremony.
 ### Release notes
 
 - **Auto-routing actually works:** ingest never auto-routed (an omitted domain always fell to the default) and domain centroids were computed from a stale legacy table, leaving them effectively empty — nearly everything piled into one domain.
-- **Improvements:** Ingest now auto-routes each memory against live domain centroids; an explicit domain still wins, with no extra embedding work.
+
+**Improvements**
+- Ingest now auto-routes each memory against live domain centroids; an explicit domain still wins, with no extra embedding work.
 - **Bulk domain moves:** relabel chunks into a target domain in one transaction, with guards against accidental default-domain drains; CLI included.
 - **Centroid rebuild:** a one-shot recompute of every domain centroid from correct data, cleaning up emptied domains; CLI included.
 ### Engineering record
@@ -8258,7 +8546,9 @@ dependency stack, and one permanently-red CI job. All three closed.
 ### Release notes
 
 - **Authorization completed:** ~20 routes (search, stats, get, multi-get, graph, metrics, audit, connectors, and more) relied on "any valid token passes"; every route now enforces its intended read/write/admin action.
-- **Security fixes:** Reindex and memory deletion were writer-level actions; both are now admin-only.
+
+**Security fixes**
+- Reindex and memory deletion were writer-level actions; both are now admin-only.
 - **Audit tenant isolation:** principals can only read their own tenant's audit rows — cross-tenant requests are rejected.
 ### Engineering record
 
@@ -8328,7 +8618,9 @@ non-public route now enforces its §3.3 matrix action at handler entry.
 - **Graph ranking corrected:** tag/alias edges no longer outrank true semantic relations around mixed hubs.
 - **Noise-aware graph search:** taxonomy edges (tags, aliases) now weigh far less than semantic relations, and mega-hub influence is damped.
 - **Graph rescue:** on hard queries that would otherwise come back empty, one bounded graph pass runs automatically before abstaining; a kill switch restores the old abstain-only behavior.
-- **Improvements:** Telemetry now shows when a graph rescue fired, so quality is observable.
+
+**Improvements**
+- Telemetry now shows when a graph rescue fired, so quality is observable.
 ### Engineering record
 
 
@@ -8397,8 +8689,10 @@ per the plan.
 ### Release notes
 
 - **Graph retrieval leg (opt-in):** personalized PageRank over the entity knowledge graph joins lexical + vector search, answering multi-hop association questions those two legs can't bridge.
-- **Improvements:** Runs concurrently on its own connection with zero added latency when off; per-hit provenance shows the graph rank.
-- **Improvements:** Enabled per request on search and recall, plus a CLI flag. No LLM, no schema change, no re-ingest.
+
+**Improvements**
+- Runs concurrently on its own connection with zero added latency when off; per-hit provenance shows the graph rank.
+- Enabled per request on search and recall, plus a CLI flag. No LLM, no schema change, no re-ingest.
 ### Engineering record
 
 
@@ -8518,7 +8812,9 @@ rules** (the finalized v1.10.0 cut on top of the v1.9.1 hotfix base).
 
 - **Near-duplicate scan fixed:** it read a frozen legacy table and silently covered 2 of ~8,500 live chunks; it now scans the real vector index end to end.
 - **Feedback deduplication:** client retries or replays double-counted suggestion feedback, poisoning false-positive metrics; feedback is now last-wins per suggestion per session, with existing duplicates cleaned up.
-- **Bug fixes:** Removed a misleading explanation-path code path that collected ids it never used; its docs now match actual behavior.
+
+**Bug fixes**
+- Removed a misleading explanation-path code path that collected ids it never used; its docs now match actual behavior.
 ### Engineering record
 
 
@@ -8564,7 +8860,9 @@ of v1.7.0–v1.9.0). Three fixes, no new features.
 - **Anticipation (opt-in pull):** send what you're working on and get relevant memories you haven't cited yet; superseded and quarantined items are never suggested. No push, no background tracking.
 - **Feedback + metrics:** record accept/dismiss per surfaced suggestion and query the false-positive rate by session and time window — the feature's keep-or-remove evidence, made measurable.
 - **Kill switch:** all suggestion routes can be disabled without a rebuild.
-- **Improvements:** New CLI commands for suggestions, feedback, and metrics.
+
+**Improvements**
+- New CLI commands for suggestions, feedback, and metrics.
 ### Engineering record
 
 
@@ -8670,7 +8968,9 @@ a session.
 - **Undo:** reverse a supersession resolution atomically and idempotently (batch-safe, audited) — the expired fact becomes current again with no retrieval regression.
 - **Stale-source detection:** vault files that no longer exist on disk are flagged for operator review; nothing is auto-archived or deleted.
 - **Near-duplicate detection:** semantically near-identical chunk pairs (cosine > 0.95) are surfaced in consistency proposals, capped at 50 pairs per run.
-- **Improvements:** Both new checks surface in the consistency proposals and the CLI report; maintenance stays operator-triggered by design.
+
+**Improvements**
+- Both new checks surface in the consistency proposals and the CLI report; maintenance stays operator-triggered by design.
 ### Engineering record
 
 
@@ -8867,7 +9167,9 @@ intervention-ready causal model + domain expert validation:
 
 - **Atomic supersession:** recording a "supersedes" link now expires the old fact in the same transaction — current recall drops it, historical queries still return it; idempotent and audited (hash only, no PII).
 - **Contradiction triage:** a consistency check now lists contradiction links with no resolution, so unresolved conflicts stop hiding in the graph.
-- **Improvements:** CLI shortcuts: record a resolution in one command, or run a full consistency check on demand.
+
+**Improvements**
+- CLI shortcuts: record a resolution in one command, or run a full consistency check on demand.
 ### Engineering record
 
 
@@ -9062,14 +9364,17 @@ held-out benefit is demonstrated on a judged-query corpus:
 ## [1.4.2] — 2026-07-30
 ### Release notes
 
-- **Bug fixes:** Re-ingesting with `--replace` now sweeps orphaned and stale relationships, so zombie graph edges no longer survive across re-ingests.
-- **Bug fixes:** Markdown table cells and bold definition-list labels no longer generate spurious entities and relationship types.
-- **Bug fixes:** Numbered section headings now match their body mentions: number prefixes like "5.1 Ceph Components" are stripped before entity extraction.
-- **Bug fixes:** Code blocks, tables, bold-label text, and entity names no longer leak into verb-pattern and relationship discovery.
-- **Improvements:** New `brain ingest-dir --replace` flag re-ingests cleanly: existing chunks are deleted and the knowledge graph is regenerated from scratch.
-- **Improvements:** Heading hierarchy becomes graph structure: adjacent sections that are both known entities get `part_of` edges (e.g. CRUSH Map → Ceph).
-- **Improvements:** Stricter relationship-type filtering: nouns like "maps", "data", or "example" and the false verb "date" can no longer become relationship types.
-- **Improvements:** On a real-world vault, graph noise dropped 51% (390 → 193 relationships) with the entity count unchanged.
+**Bug fixes**
+- Re-ingesting with `--replace` now sweeps orphaned and stale relationships, so zombie graph edges no longer survive across re-ingests.
+- Markdown table cells and bold definition-list labels no longer generate spurious entities and relationship types.
+- Numbered section headings now match their body mentions: number prefixes like "5.1 Ceph Components" are stripped before entity extraction.
+- Code blocks, tables, bold-label text, and entity names no longer leak into verb-pattern and relationship discovery.
+
+**Improvements**
+- New `brain ingest-dir --replace` flag re-ingests cleanly: existing chunks are deleted and the knowledge graph is regenerated from scratch.
+- Heading hierarchy becomes graph structure: adjacent sections that are both known entities get `part_of` edges (e.g. CRUSH Map → Ceph).
+- Stricter relationship-type filtering: nouns like "maps", "data", or "example" and the false verb "date" can no longer become relationship types.
+- On a real-world vault, graph noise dropped 51% (390 → 193 relationships) with the entity count unchanged.
 ### Engineering record
 
 
@@ -9919,10 +10224,13 @@ launchd service upgrades in place via `scripts/install-service.sh`.
 
 ### Release notes
 
-- **Bug fixes:** Entity names no longer leak into verb-pattern discovery, so a known entity can't become a spurious relationship type.
-- **Improvements:** Heading hierarchy becomes graph structure: adjacent markdown sections that are both known entities get `part_of` edges.
-- **Improvements:** Verb-suffix filtering rejects nouns like "maps", "data", or "example" from becoming relationship types.
-- **Improvements:** First version of `brain ingest-dir --replace` (the clean-reingest flag; completed in 1.4.2).
+**Bug fixes**
+- Entity names no longer leak into verb-pattern discovery, so a known entity can't become a spurious relationship type.
+
+**Improvements**
+- Heading hierarchy becomes graph structure: adjacent markdown sections that are both known entities get `part_of` edges.
+- Verb-suffix filtering rejects nouns like "maps", "data", or "example" from becoming relationship types.
+- First version of `brain ingest-dir --replace` (the clean-reingest flag; completed in 1.4.2).
 ### Engineering record
 Note: this release's changes are also included cumulatively in 1.4.2.
 
@@ -9931,37 +10239,44 @@ Note: this release's changes are also included cumulatively in 1.4.2.
 
 ### Release notes
 
-- **Improvements:** Time-aware graph: relationships gain validity intervals extracted from text ("since 2020", "until 2019"); old facts expire instead of being deleted.
-- **Improvements:** Point-in-time queries: `/recall` and `/graph/traverse` accept an `at` timestamp and return only facts valid at that moment.
-- **Improvements:** Budgeted context packing on `/recall` maximizes relevance, coverage, and diversity under a token budget — more signal per token of context.
-- **Improvements:** Typed graph edges (`supersedes:`, `contradicts:`, `causes:`, `update:`) with bounded traversal; a new `bench eval` mode reports MRR/NDCG to catch regressions.
+**Improvements**
+- Time-aware graph: relationships gain validity intervals extracted from text ("since 2020", "until 2019"); old facts expire instead of being deleted.
+- Point-in-time queries: `/recall` and `/graph/traverse` accept an `at` timestamp and return only facts valid at that moment.
+- Budgeted context packing on `/recall` maximizes relevance, coverage, and diversity under a token budget — more signal per token of context.
+- Typed graph edges (`supersedes:`, `contradicts:`, `causes:`, `update:`) with bounded traversal; a new `bench eval` mode reports MRR/NDCG to catch regressions.
 
 ## [1.3.0] — 2026-07-29
 
 ### Release notes
 
-- **Bug fixes:** MCP requests without an id (notifications) crashed the JSON-RPC handler; they are now handled.
-- **Bug fixes:** Two additional panic paths eliminated (a first-line unwrap on empty vault input; a poisoned-lock crash on connector mutex contention).
-- **Improvements:** Property-based test suites added for the chunker, domain normalization, and capacity classification (hundreds of generated cases each).
-- **Improvements:** Fuzzing infrastructure added for the chunker, query compiler, and validators.
-- **Improvements:** `/health` reports the memory-safety posture (unsafe-block count, panics caught).
-- **Improvements:** Configurable worker-thread count for low-power targets.
+**Bug fixes**
+- MCP requests without an id (notifications) crashed the JSON-RPC handler; they are now handled.
+- Two additional panic paths eliminated (a first-line unwrap on empty vault input; a poisoned-lock crash on connector mutex contention).
+
+**Improvements**
+- Property-based test suites added for the chunker, domain normalization, and capacity classification (hundreds of generated cases each).
+- Fuzzing infrastructure added for the chunker, query compiler, and validators.
+- `/health` reports the memory-safety posture (unsafe-block count, panics caught).
+- Configurable worker-thread count for low-power targets.
 - **Unsafe-code audit:** ten duplicated unsafe SQLite-vec registration blocks consolidated into one documented wrapper; every remaining unsafe block carries a safety comment.
 
 ## [1.2.1] — 2026-07-29
 
 ### Release notes
 
-- **Improvements:** Authorization now uses the principal's tenant as the team context directly.
-- **Improvements:** Unused auth abstractions and dead code removed, shrinking the auth surface.
+**Improvements**
+- Authorization now uses the principal's tenant as the team context directly.
+- Unused auth abstractions and dead code removed, shrinking the auth surface.
 
 ## [1.2.0] — 2026-07-29
 
 ### Release notes
 
 - **Opt-in JWT authentication** with full backward compatibility: existing opaque-token installs keep working unchanged.
-- **Improvements:** OIDC discovery and JWKS endpoints published for third-party token verification; the issuer is pinned in config, never inferred from the Host header.
-- **Improvements:** Key management CLI: generate, list, and prune signing keys with owner-only permissions; two keys live during rotation.
+
+**Improvements**
+- OIDC discovery and JWKS endpoints published for third-party token verification; the issuer is pinned in config, never inferred from the Host header.
+- Key management CLI: generate, list, and prune signing keys with owner-only permissions; two keys live during rotation.
 - **JWT verification with an algorithm whitelist** (RS/ES/Ed families only — `none` and HMAC rejected unconditionally) and full claim validation (issuer, audience, expiry, not-before, subject, id).
 - **Token revocation and refresh-chain reuse detection:** replaying a stale refresh token burns the whole token family.
 - **Scope-based authorization** (read/write/admin per team and domain), deny-by-default, returning 403 rather than 404 so existence is never leaked.
@@ -9977,8 +10292,10 @@ Note: this release's changes are also included cumulatively in 1.4.2.
 ### Release notes
 
 - **Audit verification false-negative on migrated databases:** after upgrading, the tamper-evidence check reported tampering on a clean database (every pre-upgrade row tripped the chain walk). Verification now handles migrated rows correctly.
-- **Bug fixes:** Audit writes inside an existing transaction no longer risk partial state (savepoint wrapping).
-- **Bug fixes:** The metrics endpoint no longer triggers a full audit-chain scan on every scrape (result cached briefly).
+
+**Bug fixes**
+- Audit writes inside an existing transaction no longer risk partial state (savepoint wrapping).
+- The metrics endpoint no longer triggers a full audit-chain scan on every scrape (result cached briefly).
 
 ## [1.1.0] — 2026-07-28
 
@@ -9997,7 +10314,9 @@ Note: this release's changes are also included cumulatively in 1.4.2.
 ### Release notes
 
 - **Structured ingest now auto-creates entities referenced by relations** but missing from the input entity list — the canonical "vitamin d3 helps inflammation" example works as documented.
-- **Bug fixes:** Ingest responses report the real database delta for entities/relations added instead of the input array length.
+
+**Bug fixes**
+- Ingest responses report the real database delta for entities/relations added instead of the input array length.
 
 ## [1.0.0] — 2026-07-26
 
@@ -10007,7 +10326,9 @@ Note: this release's changes are also included cumulatively in 1.4.2.
 - **Multi-domain support:** every endpoint accepts a domain via header or request field; domains are created, deleted, vacuumed, exported, and imported as first-class API operations (with a confirm guard against accidental deletion).
 - **Structured ingest** (`POST /ingest`) with inline entity/relation upsert becomes the primary write path; the domain centroid recomputes after each ingest.
 - **Cross-domain federated search** with rank-based merging (raw scores aren't comparable across domains) and labeled domains-searched responses; graph traversal can walk across domains.
-- **Improvements:** Single-database behavior is preserved byte-for-byte by default; per-domain database files are opt-in.
+
+**Improvements**
+- Single-database behavior is preserved byte-for-byte by default; per-domain database files are opt-in.
 
 ## [0.9.9] — 2026-07-25
 
@@ -10016,7 +10337,9 @@ Note: this release's changes are also included cumulatively in 1.4.2.
 - **Migration rehearsal tool:** copy the live database, run the upgrade against the copy, and verify row counts, search indexes, and vector embeddings match — a dry-run for upgrades, with rollback.
 - **Capacity envelopes:** published per-target limits (documents, database size, memory) surfaced on `/health`; ingest is refused with a clear over-capacity error when the envelope is exceeded, while reads always keep answering.
 - **Benchmark ship gate:** the bench tool can assert memory and latency ceilings and fail the run on breach.
-- **Improvements:** Every on-disk path derived from one configurable data root (relocation without touching the database path).
+
+**Improvements**
+- Every on-disk path derived from one configurable data root (relocation without touching the database path).
 
 ## [0.9.7] — "Guard" — 2026-07-20 (released)
 
