@@ -20,3 +20,9 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+# The SDK dep is this crate's DECLARED ABI contract (Survey-plan scaffold):
+# intentionally ahead of the code. Told to cargo-machete so the unused-dep
+# gate stays honest without erasing the contract.
+[package.metadata.cargo-machete]
+ignored = ["brain-engine-sdk"]

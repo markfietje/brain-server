@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "brain-server"
-version = "1.28.36"
+version = "1.28.37"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -405,7 +405,6 @@ dependencies = [
  "fastembed",
  "hex",
  "hmac 0.13.0",
- "hyper",
  "jsonwebtoken",
  "model2vec-rs",
  "opentelemetry",

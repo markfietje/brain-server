@@ -39,7 +39,6 @@ dependencies = [
  "brain-engine-sdk",
  "hex",
  "serde",
- "serde_json",
  "sha2",
 ]
 

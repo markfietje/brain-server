@@ -1064,7 +1064,6 @@ dependencies = [
  "brain-troubleshoot-core",
  "gold-sets",
  "reqwest",
- "serde",
  "serde_json",
  "tokio",
 ]

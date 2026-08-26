@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.28.36"
+version = "1.28.37"
 edition = "2024"
 rust-version = "1.98"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
@@ -99,7 +99,6 @@ r2d2_sqlite = "0.35.0"
 # Async Stack - Axum 0.8.x Standard
 # `sse` feature: v1.17.3 "UMP" M2 `GET /ump/subscribe` (§3.8 change feed).
 axum = "0.8.9"
-hyper = "1.10.1"
 tower-http = { version = "0.7", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header", "fs" ] }
 tokio = { version = "1.53.0", features = ["full"] }
 

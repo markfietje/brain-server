@@ -656,12 +656,16 @@ pub async fn post_calibration_sign(
                 serde_json::json!([]),
             ));
         }
+        let complaints = crate::workflow::complaint::monthly_report(&tx, now - 31 * 86400, now)
+            .map(|r| r.to_string())
+            .unwrap_or_default();
         crate::workflow::calibration::record_signed(
             &tx,
             kappa,
             score_units_now(&tx),
             &reviewer,
             now,
+            &complaints,
         )
         .map_err(|e| HandlerError::internal(format!("{e}")))?;
         tx.commit()
@@ -2209,4 +2213,64 @@ pub async fn get_complaint_adr_packet(
             serde_json::json!(crate::gate::sanitize_read(&body, false, &principal));
     }
     Ok(Json(packet))
+}
+
+/// `POST /workflow/runs/{id}/complaint/ack` — acknowledge the complaint:
+/// the legal lifecycle step with its dedicated audit marker, so the
+/// register can measure ack-SLA attainment.
+pub async fn post_complaint_ack(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    let actor = super::recall::principal_label(&principal);
+    type CErr = crate::workflow::complaint::ComplaintError;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, CErr> {
+        let mut conn = pool.get().map_err(|e| CErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(CErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        let (from, to) = crate::workflow::complaint::acknowledge(tx.tx(), id, &actor, now)?;
+        tx.commit().map_err(CErr::from)?;
+        Ok((from.as_str().to_string(), to.as_str().to_string()))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(complaint_err)?;
+    let (from, to) = result;
+    Ok(Json(
+        serde_json::json!({"run_id": id, "from": from, "to": to}),
+    ))
+}
+
+/// `POST /workflow/complaints/ack-sweep` — one overdue-acknowledgment sweep
+/// across every active complaint: exactly one alert per overdue run on the
+/// alert bus, audited, idempotent. Global scope (no run binds it).
+pub async fn post_complaint_ack_sweep(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Write, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    type CErr = crate::workflow::complaint::ComplaintError;
+    let alerted = tokio::task::spawn_blocking(move || -> Result<Vec<i64>, CErr> {
+        let mut conn = pool.get().map_err(|e| CErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(CErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        let alerted = crate::workflow::complaint::ack_sweep(tx.tx(), now)?;
+        tx.commit().map_err(CErr::from)?;
+        Ok(alerted)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(complaint_err)?;
+    Ok(Json(
+        serde_json::json!({"alerted": alerted.len(), "run_ids": alerted}),
+    ))
 }

@@ -10,7 +10,6 @@ publish = false
 [dependencies]
 brain-engine-sdk = { path = "../../crates/brain-engine-sdk", features = ["harness-kernel"] }
 brain-troubleshoot-core = { path = "../../crates/brain-troubleshoot-core" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }

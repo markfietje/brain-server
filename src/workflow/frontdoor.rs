@@ -190,14 +190,39 @@ fn is_escape(input: &str) -> bool {
         || l == "human"
 }
 
+/// The closed safety-vocabulary screen (GPSR 2023/988 posture): hazard
+/// phrases that make ANY message safety-relevant regardless of its
+/// commercial framing. Substring match on the lowercased input; the
+/// vocabulary is data, pinned by tests.
+fn safety_vocabulary(l: &str) -> bool {
+    [
+        "caught fire",
+        "injur",
+        "unsafe",
+        "started smoking",
+        "hazard",
+    ]
+    .iter()
+    .any(|k| l.contains(k))
+}
+
 fn classify_rules(input: &str) -> Option<(IntentClass, String)> {
     let l = input.to_ascii_lowercase();
+    // Safety screen FIRST: a safety-relevant complaint escalates to the
+    // GPSR path (safety_recall) before the complaint keyword can claim it —
+    // hazard vocabulary outranks every commercial class it shares.
+    if l.contains("complain") && safety_vocabulary(&l) {
+        return Some((
+            IntentClass::SafetyRecall,
+            "safety complaint escalated to gpsr path".into(),
+        ));
+    }
     if l.contains("complain") {
         return Some((IntentClass::Complaint, "complaint keyword matched".into()));
     }
     // Safety intake outranks the commercial classes it shares vocabulary
     // with — a recall mention is a recall, never a policy answer.
-    if l.contains("recall") || l.contains("safety notice") {
+    if l.contains("recall") || l.contains("safety notice") || safety_vocabulary(&l) {
         return Some((IntentClass::SafetyRecall, "recall keyword matched".into()));
     }
     if (l.contains("return") || l.contains("send it back") || l.contains("rma"))
@@ -401,6 +426,45 @@ mod tests {
             }
         }
     }
+    /// safety_complaint_routes_to_gpsr_path: a complaint whose
+    /// content is safety-relevant escalates to the GPSR path (safety_recall)
+    /// BEFORE the complaint keyword can claim it — the safety screen
+    /// outranks the commercial classes it shares vocabulary with.
+    #[test]
+    fn safety_complaint_routes_to_gpsr_path() {
+        for phrase in [
+            "I want to file a complaint, this device caught fire",
+            "formal complaint: my child was injured by this product",
+            "complaint — the charger is unsafe and started smoking",
+        ] {
+            let r = route(phrase, &env(), "conv", "plan");
+            match r {
+                RouteDecision::Resolved {
+                    class: IntentClass::SafetyRecall,
+                    reason,
+                } => assert!(
+                    reason.contains("safety"),
+                    "the documented escalation reason rides the decision"
+                ),
+                other => panic!("safety complaint must hit the GPSR path, got {other:?}"),
+            }
+        }
+        // Plain complaints without hazard vocabulary stay complaints.
+        let r = route(
+            "I want to file a complaint about late delivery",
+            &env(),
+            "",
+            "",
+        );
+        assert!(matches!(
+            r,
+            RouteDecision::Resolved {
+                class: IntentClass::Complaint,
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn complaint_class_gets_acknowledgment_sla() {
         let r = route(

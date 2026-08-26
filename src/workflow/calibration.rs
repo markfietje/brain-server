@@ -92,23 +92,28 @@ pub(crate) fn record_report(
 
 /// Record a human-signed monthly calibration (the drift gate). Caller has
 /// already enforced Admin/DPO authorization; `reviewer_id` is bounded there.
+/// `complaints_summary` is the complaints register extract that
+/// rides the SAME audited signature row — joined, never parallel machinery.
 pub(crate) fn record_signed(
     conn: &Connection,
     kappa_units: i32,
     score_units: i32,
     reviewer_id: &str,
     now: i64,
+    complaints_summary: &str,
 ) -> Result<(), rusqlite::Error> {
-    let uplift = match last_baseline_units(conn) {
-        Some(b) => score_units - b,
-        None => 0,
-    };
+    let uplift = last_baseline_units(conn).map_or(0, |b| score_units - b);
     let record = CalibrationRecord::new(kappa_units, uplift, reviewer_id);
+    let detail = if complaints_summary.is_empty() {
+        record.detail()
+    } else {
+        format!("{} complaints:{complaints_summary}", record.detail())
+    };
     super::audit_write_global(
         conn,
         "calibration/sign",
         crate::audit::AuditStatus::Ok,
-        &record.detail(),
+        &detail,
     );
     meta_set(conn, KEY_LAST_SIGNED_MONTH, &month_index(now).to_string())?;
     meta_set(conn, KEY_LAST_KAPPA_UNITS, &kappa_units.to_string())?;
@@ -146,7 +151,7 @@ mod tests {
         let conn = db();
         record_report(&conn, 8000, 1000, "").unwrap();
         assert!(!signature_blocked(&conn, 2000));
-        record_signed(&conn, 8500, 8200, "dpo-1", 2000).unwrap();
+        record_signed(&conn, 8500, 8200, "dpo-1", 2000, "").unwrap();
         assert!(signature_blocked(&conn, 3000));
         assert_eq!(last_kappa_units(&conn), 8500);
         // Signature re-anchored the baseline to the signed score.
@@ -160,7 +165,7 @@ mod tests {
     fn records_land_on_the_audit_chain_with_their_detail() {
         let conn = db();
         record_report(&conn, 9000, 100, "").unwrap();
-        record_signed(&conn, 8000, 9100, "dpo-9", 200).unwrap();
+        record_signed(&conn, 8000, 9100, "dpo-9", 200, "").unwrap();
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM audit_events WHERE kind='workflow'",
@@ -179,5 +184,34 @@ mod tests {
             .unwrap();
         assert!(hashes.0 && hashes.1, "two rows, both with detail hashes");
         assert!(verify_chain(&conn));
+    }
+
+    /// complaint_register_report_joins_monthly_calibration (service leg):
+    /// the complaints extract rides the SAME audited signature row.
+    #[test]
+    fn signed_row_carries_the_complaints_extract() {
+        let conn = db();
+        record_signed(&conn, 8000, 8100, "dpo-1", 100, "").unwrap();
+        record_report(&conn, 8200, 100 + 40 * 86400, "").unwrap();
+        crate::workflow::calibration::record_signed(
+            &conn,
+            8300,
+            8250,
+            "dpo-2",
+            200 + 40 * 86400,
+            "{\"total\":7}",
+        )
+        .unwrap();
+        // Both signatures exist; details are hashed at rest — verify the
+        // chain stays green with the extract riding row three.
+        assert!(crate::audit::verify_chain(&conn));
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='workflow' AND target_hash = ?1",
+                [crate::audit::hash("calibration/sign")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "two signature rows on the chain");
     }
 }

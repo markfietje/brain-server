@@ -11,6 +11,11 @@ publish = false
 # The stable engine ABI: pure cores, policy vocabulary, WorkflowHost seam.
 brain-engine-sdk = { path = "../brain-engine-sdk" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 sha2 = "0.11"
 hex = "0.4"
+
+# The SDK dep is this crate's DECLARED ABI contract (Survey-plan scaffold):
+# intentionally ahead of the code. Told to cargo-machete so the unused-dep
+# gate stays honest without erasing the contract.
+[package.metadata.cargo-machete]
+ignored = ["brain-engine-sdk"]

@@ -135,6 +135,16 @@ fn sections(body: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Render the published complaints policy into the public how-to-complain
+/// page: sanitized (write-time screening already ran; this is the public
+/// read gate, stricter than the internal one) and wrapped in the standard
+/// page shell. The single renderer behind `kb build --with-case-status`.
+pub fn render_policy_page(content: &str) -> String {
+    let clean =
+        crate::fence::strip_markdown_refs(&crate::strip_invisible::strip_invisible(content));
+    page("How to complain", None, &body_html(&clean))
+}
+
 fn body_html(body: &str) -> String {
     let mut html = String::new();
     for (h, text) in sections(body) {
@@ -373,6 +383,11 @@ pub struct BuildOptions {
     pub translations: Vec<KbTranslation>,
     /// Live case-status entries (collected by the caller).
     pub status_entries: Vec<CaseStatusEntry>,
+    /// The published complaints policy rendered as sanitized HTML: when
+    /// present, ships as the public `how-to-complain.html` page — the page
+    /// every status-page footer links to. Absent → no page is fabricated;
+    /// the footer link still names the channel.
+    pub complaint_policy_html: Option<String>,
 }
 
 /// An approved human translation shaped for the public site (already
@@ -638,6 +653,21 @@ pub fn status_json(e: &CaseStatusEntry) -> String {
 
 /// The static status page: renders the SAME content as the JSON inline plus
 /// a same-origin fetch of `status/{ref}.json` for freshness on reload.
+/// The public complaints channel: the path every status page footer links
+/// to and the file the published policy renders into.
+pub const HOW_TO_COMPLAIN_PATH: &str = "how-to-complain.html";
+
+/// The `knowledge.source` value that marks the published complaints policy
+/// (the ISO 10002 commitments stage: the promise the process must fulfill).
+/// Single owner — the complaint lifecycle core reads this same constant.
+pub const COMPLAINT_POLICY_SOURCE: &str = "complaint_policy";
+
+const STATUS_PAGE_FOOTER: &str = "<hr>\n<footer><p>Unhappy with our service? \
+<a href=\"/how-to-complain.html\">How to complain</a></p></footer>\n";
+
+/// The static status page: renders the SAME content as the JSON inline plus
+/// a same-origin fetch of `status/{ref}.json` for freshness on reload, and
+/// the always-visible complaint-channel footer link (ISO 10002 visibility).
 fn status_html(e: &CaseStatusEntry) -> String {
     crate::kb::page_with_head(
         "Case status",
@@ -645,7 +675,7 @@ fn status_html(e: &CaseStatusEntry) -> String {
         "<meta name=\"robots\" content=\"noindex\">\n",
         &format!(
             "<h1>Case status</h1>\n<p>Status: <strong>{}</strong></p>\n<p>{}</p>\n\
-             <p class=\"meta\">Expected within {}.</p>\n<p class=\"meta\">Updated at build time ({}).</p>",
+             <p class=\"meta\">Expected within {}.</p>\n<p class=\"meta\">Updated at build time ({}).</p>\n{STATUS_PAGE_FOOTER}",
             esc(e.status),
             esc(status_sentence(e.status)),
             esc(e.promise_bucket),
@@ -737,6 +767,12 @@ pub fn build_files_ext(
     if opts.with_case_status {
         add_case_status_files(&mut files, &opts.status_entries);
     }
+    // ── The published complaints policy as the public how-to-complain
+    // page. Only a published policy produces the page — nothing is
+    // fabricated; the status-page footer links the channel regardless.
+    if let Some(html) = &opts.complaint_policy_html {
+        files.insert(HOW_TO_COMPLAIN_PATH.to_string(), html.clone());
+    }
     files
 }
 
@@ -782,6 +818,56 @@ pub fn write_artifact(out_dir: &Path, files: &BTreeMap<String, String>) -> std::
 mod tests {
     use super::*;
     use crate::migration::run_migration;
+
+    /// complaint_policy_is_published_and_linked_from_status_pages: the
+    /// published complaints policy renders as the public
+    /// "how to complain" page, and EVERY status page footer links to it.
+    #[test]
+    fn complaint_policy_is_published_and_linked_from_status_pages() {
+        let policy_body = "<h1>How to complain</h1>\n<p>We answer within 72 hours.</p>";
+        let entries = vec![CaseStatusEntry {
+            run_id: 1,
+            r: "REFREFREFREFREFREFREFRE".to_string(),
+            status: "in_progress",
+            promise_bucket: "3 days",
+            updated_at: 1_756_000_000,
+        }];
+        // Without a published policy: no how-to-complain page is fabricated…
+        let files = build_files_ext(
+            &[],
+            &[],
+            None,
+            &BuildOptions {
+                with_case_status: true,
+                status_entries: entries.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(!files.contains_key("how-to-complain.html"));
+        // …but the channel stays visible: every status page links the page
+        // path regardless (it appears once the operator publishes).
+        assert!(files["status/REFREFREFREFREFREFREFRE.html"].contains("how-to-complain.html"));
+        // With the published complaints policy: the page ships and carries
+        // the sanitized content; the robots exclusion still holds.
+        let files = build_files_ext(
+            &[],
+            &[],
+            None,
+            &BuildOptions {
+                with_case_status: true,
+                status_entries: entries,
+                complaint_policy_html: Some(policy_body.to_string()),
+                ..Default::default()
+            },
+        );
+        let page = &files["how-to-complain.html"];
+        assert!(page.contains("We answer within 72 hours."));
+        assert!(
+            files["status/REFREFREFREFREFREFREFRE.html"].contains("how-to-complain.html"),
+            "the always-visible complaint channel"
+        );
+        assert_eq!(files["robots.txt"], ROBOTS_TXT_STATUS);
+    }
 
     fn db() -> Connection {
         crate::register_sqlite_vec::register_sqlite_vec();
@@ -1078,6 +1164,7 @@ mod tests {
                     body_md: "## S\nInhalt".into(),
                 }],
                 status_entries: Vec::new(),
+                complaint_policy_html: None,
             },
         );
         let de = &files2["de/art.html"];

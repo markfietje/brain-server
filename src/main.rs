@@ -70,6 +70,8 @@ mod consolidate;
 mod docs_truth;
 mod domain_registry;
 mod domain_router;
+#[cfg(test)]
+mod dup_guard;
 mod gate;
 mod graph_supersede;
 mod handlers;
@@ -6256,6 +6258,14 @@ async fn main_inner() -> Result<()> {
             get(handlers::workflow::get_complaint_adr_packet),
         )
         .route(
+            "/workflow/runs/{id}/complaint/ack",
+            post(handlers::workflow::post_complaint_ack),
+        )
+        .route(
+            "/workflow/complaints/ack-sweep",
+            post(handlers::workflow::post_complaint_ack_sweep),
+        )
+        .route(
             "/workflow/outreach/campaign",
             post(handlers::workflow::post_outreach_campaign),
         )
@@ -12056,6 +12066,8 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}/complaint/lifecycle",
             "/workflow/runs/{id}/complaint/remedy",
             "/workflow/runs/{id}/complaint/adr-packet",
+            "/workflow/runs/{id}/complaint/ack",
+            "/workflow/complaints/ack-sweep",
             // v1.28.35 "Outreach": consent-first outbound contact.
             "/workflow/outreach/campaign",
             "/workflow/outreach/campaign/{id}",
@@ -13291,6 +13303,8 @@ Final paragraph after the rule.";
             ("/workflow/runs/{id}/complaint/lifecycle", "Write"),
             ("/workflow/runs/{id}/complaint/remedy", "Write"),
             ("/workflow/runs/{id}/complaint/adr-packet", "Read"),
+            ("/workflow/runs/{id}/complaint/ack", "Write"),
+            ("/workflow/complaints/ack-sweep", "Write"),
             // v1.28.35 "Outreach": campaign propose/export + the consent
             // read are global-scope (no run binds them); follow-up rides
             // the run's domain.

@@ -19,6 +19,71 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.37] — 2026-08-26 — "Advocate": complaints, the whole ISO 10002 lifecycle
+
+G1 of the Conformance Line closed on the shipped machinery — the Charter
+complaint class, Goodwill's remedy matrix, and Keystone's confirm-gate
+doctrine were already in place; Advocate completes every stage against the
+standard's sequence and wires the missing gates. The register IS the audit
+chain — no parallel complaint database exists.
+
+### Release notes
+
+**Improvements**
+- **The complaint channel is always visible:** every public case-status page
+  now carries a footer link to `how-to-complain.html` (ISO 10002 visibility &
+  accessibility of the channel). The page itself is the published complaints
+  policy (`knowledge.source='complaint_policy'`) rendered through the KB's
+  sanitizer; `brain kb build --with-case-status` refuses loudly when no
+  policy is published rather than hosting links that lead nowhere.
+- **Acknowledgment is its own audited step:** `POST
+  /workflow/runs/{id}/complaint/ack` lands the legal `received →
+  acknowledged` transition with a dedicated audit marker (ISO 10002 posture:
+  within the hour). `POST /workflow/complaints/ack-sweep` sweeps every active
+  complaint past its ack deadline — exactly one `workflow/complaint/
+  ack_overdue` alert per run on the existing alert bus, audited inside the
+  caller's transaction, idempotent per run, bounded at 500 per sweep.
+- **Closure requires confirmation:** the confirm-gate is now wired into the
+  complaint lifecycle itself — `closed` refuses loudly unless the lineage
+  carries a customer confirmation or the documented three-attempt exception.
+  Silence never certifies.
+- **Safety-relevant complaints escalate to the GPSR path:** the front-door
+  screen checks hazard vocabulary ("caught fire", "injur…", "unsafe",
+  "started smoking", "hazard") BEFORE the complaint keyword, so a safety
+  complaint routes to `safety_recall`, never the commercial track.
+- **The monthly complaints report joins the monthly calibration signature:**
+  counts by terminal disposition, acknowledgment-SLA attainment, and ADR
+  referrals ride the SAME audited `calibration/sign` row over a trailing
+  31-day window — continual improvement with zero new machinery.
+
+**Bug fixes**
+
+None.
+
+**Security fixes**
+
+None.
+
+### Engineering record
+
+- Tests: +7 binary behavior pins — `safety_complaint_routes_to_gpsr_path`,
+  `ack_deadline_alerts_and_audits`, `complaint_closure_requires_confirm_gate`,
+  `complaint_register_report_joins_monthly_calibration` (+ service leg
+  `signed_row_carries_the_complaints_extract`),
+  `complaint_policy_is_published_and_linked_from_status_pages`; full gate
+  green (fmt, clippy `-D warnings` bench + default features, lipstyk diff-
+  strict exit 0). Schema unchanged — additive code only, no migration, no
+  schema-contract change.
+- Routes added WITH contract in the same commit: `/workflow/runs/{id}/
+  complaint/ack` (Write on domain + workflow role) and
+  `/workflow/complaints/ack-sweep` (Write global + workflow role) — openapi,
+  route-coverage table, route-authz table, docs/api.md all updated.
+- Honest ceilings left in place: no telephony complaint ingestion beyond
+  Bridges; the ack sweep runs on demand or by operator cron (no internal
+  scheduler); the register extract covers the trailing window at sign time
+  (no historical backfill reports); no ISO certification claim — self-
+  assessed posture only.
+
 ## [1.28.36] — 2026-08-26 — "Keystone": the last three Order-of-Care gaps
 
 The layer-map pass left exactly three Order-of-Care steps unassigned; this

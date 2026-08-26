@@ -4900,6 +4900,29 @@ fn cmd_kb(args: &[String]) -> Result<(), String> {
             .map_err(|e| format!("collect case-status refs: {e}"))?;
         status_count = entries.len();
         opts.status_entries = entries;
+        // The complaint channel (ISO 10002 visibility): every status page
+        // links how-to-complain.html, so the published complaints policy
+        // MUST exist — a missing policy refuses the build loudly rather
+        // than hosting links that lead nowhere.
+        use rusqlite::OptionalExtension;
+        let policy: Option<String> = conn
+            .query_row(
+                "SELECT content FROM knowledge WHERE source = ?1
+                 ORDER BY id DESC LIMIT 1",
+                [brain_server::kb::COMPLAINT_POLICY_SOURCE],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("read complaints policy: {e}"))?;
+        let Some(policy_md) = policy else {
+            return Err(
+                "no published complaints policy (knowledge.source = 'complaint_policy'): \
+                 publish one before building status pages — their footer links \
+                 the how-to-complain page"
+                    .into(),
+            );
+        };
+        opts.complaint_policy_html = Some(brain_server::kb::render_policy_page(&policy_md));
     }
     let files =
         brain_server::kb::build_files_ext(&articles, &redirects, base_url.as_deref(), &opts);

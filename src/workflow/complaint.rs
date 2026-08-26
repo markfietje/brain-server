@@ -126,6 +126,19 @@ pub(crate) fn transition(
             to.as_str()
         )));
     }
+    // The confirm-gate (the doctrine amendment, wired into the lifecycle):
+    // terminal closure requires a customer confirmation on the lineage or
+    // the documented three-attempt exception. Silence never certifies.
+    if to == ComplaintState::Closed {
+        let decision = super::frontdesk::evaluate_close(&close_gate_events(conn, run_id)?);
+        if decision == super::frontdesk::CloseDecision::RemainOpen {
+            return Err(ComplaintError::Invalid(
+                "closure requires customer confirmation or the documented \
+                 three-attempt exception — complaint stays open"
+                    .into(),
+            ));
+        }
+    }
     let actor = actor.trim();
     if actor.is_empty() || actor.len() > super::relay::MAX_PRINCIPAL_LEN {
         return Err(ComplaintError::Invalid("actor unbounded".into()));
@@ -526,6 +539,239 @@ pub(crate) fn adr_packet(
     }))
 }
 
+/// The published complaints policy's `knowledge.source` value — owned by
+/// the KB module (`crate::kb::COMPLAINT_POLICY_SOURCE`), re-exported here
+/// for the lifecycle core's readers.
+///
+/// The alert-bus topic for a missed acknowledgment deadline. Rides the
+/// `workflow/*` coordinate space, so the existing event worker drains it.
+pub(crate) const TOPIC_ACK_OVERDUE: &str = "workflow/complaint/ack_overdue";
+
+/// Read bound for one ack sweep (the bounds law).
+pub(crate) const ACK_SWEEP_LIMIT: i64 = 500;
+
+/// The acknowledgment deadline for a complaint born at `created_at` —
+/// the SDK's ISO 10002 clock (one hour), the single owner of the number.
+pub(crate) fn ack_deadline(created_at: i64) -> i64 {
+    created_at + brain_engine_sdk::policy::COMPLAINT_ACK_SECS
+}
+
+/// Acknowledge the complaint: the legal lifecycle step with its dedicated
+/// audit marker (`complaint/ack`) so the register can measure attainment.
+pub(crate) fn acknowledge(
+    conn: &Connection,
+    run_id: i64,
+    actor: &str,
+    now: i64,
+) -> Result<(ComplaintState, ComplaintState), ComplaintError> {
+    let actor = actor.trim();
+    if actor.is_empty() || actor.len() > super::relay::MAX_PRINCIPAL_LEN {
+        return Err(ComplaintError::Invalid("actor unbounded".into()));
+    }
+    let res = transition(conn, run_id, ComplaintState::Acknowledged, actor, now)?;
+    super::audit_write(
+        conn,
+        run_id,
+        &format!("run:{run_id}"),
+        AuditStatus::Ok,
+        &format!("complaint/ack at:{now}"),
+    );
+    Ok(res)
+}
+
+/// One overdue-ack sweep over ACTIVE complaint runs past their deadline
+/// whose lineage shows no acknowledgment yet: exactly one alert event per
+/// run per lifetime (idempotency key), each audited INSIDE the caller's
+/// transaction, bounded by [`ACK_SWEEP_LIMIT`]. Returns the alerted ids.
+pub(crate) fn ack_sweep(conn: &Connection, now: i64) -> Result<Vec<i64>, ComplaintError> {
+    // Overdue iff the ack clock has run out: created_at + ACK_SECS <= now.
+    let cutoff = now - brain_engine_sdk::policy::COMPLAINT_ACK_SECS;
+    let mut stmt = conn.prepare(
+        "SELECT r.id FROM workflow_runs r
+          WHERE r.kind = 'complaint' AND r.status = 'active' AND r.created_at <= ?1
+          ORDER BY r.id LIMIT ?2",
+    )?;
+    let ids = stmt
+        .query_map(params![cutoff, ACK_SWEEP_LIMIT], |r| r.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut alerted = Vec::new();
+    for id in ids {
+        if current_state(conn, id)? != ComplaintState::Received {
+            continue;
+        }
+        let payload = serde_json::json!({
+            "run_id": id,
+            "deadline": ack_deadline(now),
+            "signal": "ack_overdue",
+        })
+        .to_string();
+        let parent: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(id) FROM outbox WHERE run_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let (inserted, _) = super::outbox::enqueue_child(
+            conn,
+            id,
+            parent,
+            TOPIC_ACK_OVERDUE,
+            &payload,
+            &format!("ack_overdue:{id}"),
+            now,
+        )?;
+        if inserted {
+            // enqueue_child already wrote the audit row inside the caller's
+            // tx (a replayed enqueue is deliberately not audited).
+            alerted.push(id);
+        }
+    }
+    Ok(alerted)
+}
+
+/// The confirm-gate inputs read straight off the run's lineage: the topics
+/// frontdesk::evaluate_close arbitrates on.
+fn close_gate_events(
+    conn: &Connection,
+    run_id: i64,
+) -> Result<Vec<super::frontdesk::LineageEvent>, ComplaintError> {
+    use super::frontdesk::LineageEvent;
+    let mut stmt = conn.prepare(
+        "SELECT topic FROM outbox
+          WHERE run_id = ?1 AND topic IN (?2, ?3)
+          ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![
+                run_id,
+                super::frontdesk::TOPIC_CUSTOMER_CONFIRMATION,
+                super::frontdesk::TOPIC_CLOSE_ATTEMPT
+            ],
+            |r| r.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|t| LineageEvent::new(&t, ""))
+        .collect())
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MonthlyReport {
+    pub(crate) total: i64,
+    /// Count per terminal lifecycle state (the disposition mix).
+    pub(crate) by_state: Vec<(String, i64)>,
+    pub(crate) ack_in_sla: i64,
+    pub(crate) ack_total: i64,
+    pub(crate) adr_referrals: i64,
+}
+
+impl MonthlyReport {
+    /// The register extract as the JSON payload the signed calibration row
+    /// carries (deterministic field order for a stable audit detail).
+    pub(crate) fn to_json_value(&self) -> serde_json::Value {
+        let by_state: serde_json::Map<String, serde_json::Value> = self
+            .by_state
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect();
+        serde_json::json!({
+            "total": self.total,
+            "by_state": by_state,
+            "ack_in_sla": self.ack_in_sla,
+            "ack_total": self.ack_total,
+            "adr_referrals": self.adr_referrals,
+        })
+    }
+}
+
+/// The monthly complaints register extract (ISO 10002 continual-improvement
+/// stage): counts by terminal disposition, acknowledgment-SLA attainment,
+/// and ADR referrals — computed deterministically from the audit-chain
+/// lineage over [from, to]. This is what the signed monthly calibration
+/// row carries; there is no parallel complaint database.
+pub(crate) fn monthly_report(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+) -> Result<serde_json::Value, ComplaintError> {
+    if to < from {
+        return Err(ComplaintError::Invalid("window inverted".into()));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at FROM workflow_runs
+          WHERE kind = 'complaint' AND created_at BETWEEN ?1 AND ?2
+          ORDER BY id LIMIT ?3",
+    )?;
+    let runs = stmt
+        .query_map(params![from, to, LEDGER_SCAN_LIMIT], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut report = MonthlyReport {
+        total: 0,
+        by_state: Vec::new(),
+        ack_in_sla: 0,
+        ack_total: 0,
+        adr_referrals: 0,
+    };
+    for (run_id, created_at) in runs {
+        report.total += 1;
+        // Terminal disposition = the furthest state reached on the lineage.
+        let mut reached: Option<ComplaintState> = None;
+        {
+            let mut stmt = conn.prepare(
+                "SELECT payload_json FROM outbox
+                  WHERE run_id = ?1 AND topic = ?2 ORDER BY id",
+            )?;
+            let payloads = stmt
+                .query_map(params![run_id, TOPIC_COMPLAINT], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for p in payloads {
+                if let Some(to) = serde_json::from_str::<serde_json::Value>(&p)
+                    .ok()
+                    .and_then(|v| v.get("to").and_then(|t| t.as_str()).map(String::from))
+                    && let Some(s) = ComplaintState::parse(&to)
+                {
+                    reached = Some(s);
+                }
+            }
+        }
+        if let Some(s) = reached {
+            let name = s.as_str().to_string();
+            if let Some((_, count)) = report.by_state.iter_mut().find(|(k, _)| *k == name) {
+                *count += 1;
+            } else {
+                report.by_state.push((name, 1));
+            }
+            if s == ComplaintState::AdrReferred {
+                report.adr_referrals += 1;
+            }
+        }
+        // Ack-SLA attainment from the same lineage events.
+        let acked_at: Option<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT created_at FROM outbox
+                  WHERE run_id = ?1 AND topic = ?2 AND payload_json LIKE '%\"to\":\"acknowledged\"%'
+                  ORDER BY id LIMIT 1",
+            )?;
+            stmt.query_row(params![run_id, TOPIC_COMPLAINT], |r| r.get(0))
+                .optional()?
+        };
+        if let Some(at) = acked_at {
+            report.ack_total += 1;
+            if at <= ack_deadline(created_at) {
+                report.ack_in_sla += 1;
+            }
+        }
+    }
+    Ok(report.to_json_value())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GoodwillEntry {
     pub(crate) proposal_id: i64,
@@ -614,6 +860,222 @@ mod tests {
     use brain_server::migration::run_migration;
     use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
+
+    // ── Ack SLA, confirm-gate closure, and the monthly register.
+
+    /// ack_deadline_alerts_and_audits
+    #[test]
+    fn ack_deadline_alerts_and_audits() {
+        let conn = db();
+        // Born at t=1; the ack clock is one hour.
+        assert_eq!(
+            ack_deadline(1),
+            1 + brain_engine_sdk::policy::COMPLAINT_ACK_SECS
+        );
+        // Before the deadline: no alerts.
+        assert!(ack_sweep(&conn, 100).unwrap().is_empty());
+        // Past the deadline with NO ack event on the lineage: exactly one
+        // alert per overdue run, audited, riding the alert bus topic space.
+        let alerted = ack_sweep(&conn, 4_000).unwrap();
+        assert_eq!(alerted, vec![1]);
+        let (topic, payload): (String, String) = conn
+            .query_row(
+                "SELECT topic, payload_json FROM outbox WHERE idempotency_key = 'ack_overdue:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            topic.starts_with("workflow/"),
+            "the alert bus drains workflow/*"
+        );
+        assert!(topic.contains("ack_overdue"));
+        assert!(!payload.is_empty());
+        // The alert is audited in the same tx posture (one audit row).
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='workflow'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1);
+        // Idempotent: a second sweep does not re-alert.
+        assert!(ack_sweep(&conn, 5_000).unwrap().is_empty());
+        // An acknowledged complaint never alerts again.
+        acknowledge(&conn, 1, "agent-9", 6_000).unwrap();
+        assert_eq!(
+            current_state(&conn, 1).unwrap(),
+            ComplaintState::Acknowledged
+        );
+        // A non-complaint run past any clock is ignored by the sweep.
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('acme', 'interview', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .unwrap();
+        assert!(ack_sweep(&conn, 99_000).unwrap().is_empty());
+        assert!(crate::audit::verify_chain(&conn));
+        assert!(crate::workflow::outbox::verify_outbox_lineage(&conn, 1).unwrap());
+    }
+
+    /// complaint_closure_requires_confirm_gate
+    #[test]
+    fn complaint_closure_requires_confirm_gate() {
+        use crate::workflow::frontdesk::TOPIC_CLOSE_ATTEMPT;
+        let conn = db();
+        walk_to_remedy_approved(&conn, 1);
+        // Silence never certifies: closure without confirmation refuses.
+        let err = transition(&conn, 1, ComplaintState::Closed, "agent", 900).unwrap_err();
+        assert!(matches!(err, ComplaintError::Invalid(m) if m.contains("confirmation")));
+        // Two attempts are not the exception either.
+        for t in [910i64, 920] {
+            crate::workflow::outbox::append_lineage(
+                &conn,
+                1,
+                TOPIC_CLOSE_ATTEMPT,
+                "{\"channel\":\"email\"}",
+                &format!("attempt:{t}"),
+                t,
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            transition(&conn, 1, ComplaintState::Closed, "agent", 930),
+            Err(ComplaintError::Invalid(_))
+        ));
+        // Three documented attempts satisfy the consent-absent exception.
+        crate::workflow::outbox::append_lineage(
+            &conn,
+            1,
+            TOPIC_CLOSE_ATTEMPT,
+            "{\"channel\":\"call\"}",
+            "attempt:940",
+            940,
+        )
+        .unwrap();
+        transition(&conn, 1, ComplaintState::Closed, "agent", 950).unwrap();
+        assert_eq!(current_state(&conn, 1).unwrap(), ComplaintState::Closed);
+        // And a fresh run closes on a customer confirmation alone.
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('acme', 'complaint', '{}', 0, 'active', 2, 2)",
+            [],
+        )
+        .unwrap();
+        walk_to_remedy_approved(&conn, 2);
+        crate::workflow::outbox::append_lineage(
+            &conn,
+            2,
+            crate::workflow::frontdesk::TOPIC_CUSTOMER_CONFIRMATION,
+            "{}",
+            "confirm:2",
+            1_500,
+        )
+        .unwrap();
+        transition(&conn, 2, ComplaintState::Closed, "agent", 1_600).unwrap();
+        assert!(crate::audit::verify_chain(&conn));
+    }
+
+    /// Walk run `run_id` received → remedy_approved through legal steps.
+    fn walk_to_remedy_approved(conn: &Connection, run_id: i64) {
+        transition(conn, run_id, ComplaintState::Acknowledged, "agent", 10).unwrap();
+        transition(conn, run_id, ComplaintState::Investigated, "agent", 20).unwrap();
+        transition(conn, run_id, ComplaintState::RemedyProposed, "agent", 30).unwrap();
+        transition(conn, run_id, ComplaintState::RemedyApproved, "agent", 40).unwrap();
+    }
+
+    /// complaint_register_report_joins_monthly_calibration
+    #[test]
+    fn complaint_register_report_joins_monthly_calibration() {
+        let conn = db();
+        // Run 1: acknowledged within the hour, confirmed by the customer,
+        // closed.
+        walk_to_remedy_approved(&conn, 1);
+        crate::workflow::outbox::append_lineage(
+            &conn,
+            1,
+            crate::workflow::frontdesk::TOPIC_CUSTOMER_CONFIRMATION,
+            "{}",
+            "confirm:1",
+            45,
+        )
+        .unwrap();
+        transition(&conn, 1, ComplaintState::Closed, "agent", 50).unwrap();
+        // Run 2: acknowledged LATE (past the ack deadline), ADR-referred.
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('acme', 'complaint', '{}', 0, 'active', 100, 100)",
+            [],
+        )
+        .unwrap();
+        transition(&conn, 2, ComplaintState::Acknowledged, "agent", 100 + 7_200).unwrap();
+        transition(&conn, 2, ComplaintState::Investigated, "agent", 100 + 8_000).unwrap();
+        transition(
+            &conn,
+            2,
+            ComplaintState::RemedyProposed,
+            "agent",
+            100 + 9_000,
+        )
+        .unwrap();
+        transition(
+            &conn,
+            2,
+            ComplaintState::RemedyApproved,
+            "agent",
+            100 + 9_500,
+        )
+        .unwrap();
+        crate::workflow::outbox::append_lineage(
+            &conn,
+            2,
+            crate::workflow::frontdesk::TOPIC_CUSTOMER_CONFIRMATION,
+            "{}",
+            "confirm:2",
+            100 + 9_550,
+        )
+        .unwrap();
+        transition(&conn, 2, ComplaintState::Closed, "agent", 100 + 9_600).unwrap();
+        transition(&conn, 2, ComplaintState::AdrReferred, "agent", 100 + 9_700).unwrap();
+
+        let report = monthly_report(&conn, 0, 200_000).unwrap();
+        assert_eq!(report["total"], 2);
+        // Dispositions from the register's terminal states.
+        assert_eq!(report["by_state"]["closed"], 1);
+        assert_eq!(report["by_state"]["adr_referred"], 1);
+        // Ack-SLA attainment: run 1 in time, run 2 late → 1/2.
+        assert_eq!(report["ack_in_sla"], 1);
+        assert_eq!(report["ack_total"], 2);
+        assert_eq!(report["adr_referrals"], 1);
+
+        // The signed monthly calibration carries the register extract in its
+        // SAME audited row (joined, not parallel machinery).
+        crate::workflow::calibration::record_signed(
+            &conn,
+            8_000,
+            8_100,
+            "dpo-1",
+            300_000,
+            &serde_json::to_string(&report).unwrap(),
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='workflow' AND target_hash = ?1",
+                [crate::audit::hash("calibration/sign")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "one signature row carries both payloads");
+        // Inverted windows deny loudly.
+        assert!(matches!(
+            monthly_report(&conn, 100, 0),
+            Err(ComplaintError::Invalid(_))
+        ));
+        assert!(crate::audit::verify_chain(&conn));
+    }
 
     fn db() -> Connection {
         register_sqlite_vec();

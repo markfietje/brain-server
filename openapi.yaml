@@ -4733,6 +4733,59 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run or national ADR body not found }
+  /workflow/runs/{id}/complaint/ack:
+    post:
+      summary: Acknowledge the complaint (Write on domain + workflow role)
+      description: >
+        Advocate: the legal lifecycle step `received → acknowledged` with its
+        dedicated audit marker, so the monthly register can measure ack-SLA
+        attainment (ISO 10002 posture: acknowledged within the hour).
+      operationId: complaintAck
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The acknowledgment landed (lineage event + audit in ONE tx)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  from: { type: string }
+                  to: { type: string }
+        "400":
+          description: complaint_invalid (non-complaint run | transition not legal | actor unbounded)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/complaints/ack-sweep:
+    post:
+      summary: One overdue-acknowledgment sweep over every active complaint (Write global + workflow role)
+      description: >
+        Advocate: exactly one `workflow/complaint/ack_overdue` alert event per
+        overdue complaint on the alert bus, audited inside the caller's
+        transaction, idempotent per run (a replayed sweep alerts nothing),
+        bounded. Global scope — no run binds it.
+      operationId: complaintAckSweep
+      responses:
+        "200":
+          description: The sweep ran; the alerted runs are named
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerted: { type: integer }
+                  run_ids: { type: array, items: { type: integer } }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
   /workflow/outreach/campaign:
     post:
       summary: Propose a governed outreach campaign as a HITL proposal (Write + workflow role)
