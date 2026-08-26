@@ -45,6 +45,7 @@ pub(crate) mod relay;
 pub(crate) mod session;
 pub(crate) mod shifts;
 pub(crate) mod state;
+pub(crate) mod tiers;
 pub(crate) mod tx;
 pub(crate) mod wfm;
 pub(crate) mod workload;

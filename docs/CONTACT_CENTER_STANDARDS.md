@@ -23,21 +23,24 @@
 
 | Capability (release) | Standard anchor | Status |
 |---|---|---|
-| *Every gap below (G1–G8) is planned to close in the v1.28.x conformance releases.* | | |
-| Governed diagnostic loop, evidence per step, audit chain | ISO 18295-1 process/performance clauses; AI Act Art.12 traceability | 🟡 planned (v1.28.x) |
+| Governed diagnostic loop, evidence per step, audit chain | ISO 18295-1 process/performance clauses; AI Act Art.12 traceability | ✅ shipped — the GDL with per-step evidence + hash-chained audit (v1.27.x); complaints ride it as a first-class class (v1.28.37) |
 | HITL on every memory/publication decision; erasure; DSAR | GDPR Art.15/17/19/22; ISO 18295-1 data protection | ✅ shipped (v1.27.x) |
 | QA: 100% justified scoring, gold calibration, κ gate, monthly human sign-off | COPC R8.0 QA + calibration discipline | ✅ shipped — COMPLIANCE.md §6.7 carries the explicit COPC mapping rows (QA+calibration, service-level management, performance assessment → the metric dictionary); gap G6 closed in v1.28.38 "Lexicon" |
-| KCS double loop + public KB + deflection | KCS v6; demand reduction | 🟡 planned (v1.28.x) |
-| SLA envelopes P1–P4 + follow-the-sun handover | COPC service-level management; handover research | 🟡 planned (v1.28.x candidate) |
-| **Complaints as a first-class case class** | ISO 10002 | ✅ shipped — distinct intake class with its own acknowledgment/response SLA (`complaint_class_gets_acknowledgment_sla`, `src/workflow/frontdoor.rs`); full ISO 10002 lifecycle as lineage events (v1.28.34) |
-| **Normative metric dictionary with formulas + data lineage** | COPC/KPI consensus; SQM FCR method | ✅ shipped — `docs/metrics.md` normative dictionary; `BRAIN_FCR_WINDOW_DAYS` default 7 (`src/config.rs`) |
-| **WCAG 2.2 AA as a hard gate; VPAT/ACR artifact; desktop EN 301 549 software clauses** | EN 301 549 V4.1.1 / Section 508 / EAA | ✅ shipped — `docs/trust/acr-vpat.md` + `docs/trust/wcag22-aa-checklist.md`; release-blocking client gate (`wcag_22_aa_gate_blocks_release`) |
-| **RTL + pseudolocale readiness** (global locales) | global usability | ⚠️ **gap G4** — recon: no RTL locales, FTL subset |
-| **WFM seam (shift/skills feed in/out)** | COPC forecasting/scheduling/capacity | 🟡 partially shipped — `GET/POST /ops/shifts` + `GET /ops/skills` routed (`src/main.rs`); documented interop-boundary contract still open |
-| People clauses: competence, workload visibility | ISO 18295-1 people/performance | 🟡 partially (presence + skills shipped; workload visibility planned v1.28.x); **workload = measured visibility, never enforcement — documented ceiling** (G7) |
-| Deployment tiers small → global | ISO 18295-1 applicability (any size) | ✅ shipped — `docs/deployment.md` "Deployment tiers" section defines T1–T4 |
-| Payment data handling | PCI DSS | ✅ **explicit non-scope**: payment data never ingested; THREAT_MODEL §6 gains the boundary row (G9, one line) |
-| ISO/AWI 18295-1 revision | — | watch item: re-map clause refs on publication (G10) |
+| KCS double loop + public KB + deflection | KCS v6; demand reduction | ✅ shipped — capture-at-close + public KB feedback loop with solved-proof; governed multilingual self-service via HITL `kcs_translate` (v1.28.36 "Keystone") |
+| SLA envelopes P1–P4 + follow-the-sun handover | COPC service-level management; handover research | ✅ shipped — envelope ack/response deadlines on the alert bus (ack sweep v1.28.37); shift ring + `/ops/shifts` handover views (v1.28.40 "Handshake") |
+| **Complaints as a first-class case class** | ISO 10002 | ✅ shipped — full ISO 10002 lifecycle (v1.28.34 class; v1.28.37 "Advocate" closes receipt→closure + monthly register extract riding the signed calibration) |
+| **Normative metric dictionary with formulas + data lineage** | COPC/KPI consensus; SQM FCR method | ✅ shipped (v1.28.38 "Lexicon") — normative `docs/metrics.md` + machine-readable twin + parity meta-tests |
+| **WCAG 2.2 AA as a hard gate; VPAT/ACR artifact; desktop EN 301 549 software clauses** | EN 301 549 V4.1.1 / Section 508 / EAA | ✅ shipped (v1.28.39 "Access") — six new AA criteria as release-blocking gates; ACR ×3 editions |
+| **RTL + pseudolocale readiness** (global locales) | global usability | ✅ shipped (v1.28.39 "Access") — `ar` locale mirrors fully under RTL; `en-XA` elongation generated at test time via fluent-pseudo (dev-dep); ceiling noted there: exact-match locale negotiation, manual SR matrix rows unchecked |
+| **WFM seam (shift/skills feed in/out)** | COPC forecasting/scheduling/capacity | ✅ shipped (v1.28.40 "Handshake") — versioned additive-only `wfm/1` schema + generic CSV/JSON import adapters; ceiling: vendor-specific Verint/NICE connectors stay later work by design |
+| People clauses: competence, workload visibility | ISO 18295-1 people/performance | ✅ shipped (v1.28.40 "Handshake") — `/ops/workload` lineage-only burden + fatigue signal that alerts and never reassigns; **documented ceiling: workload = measured visibility, never enforcement** |
+| Deployment tiers small → global | ISO 18295-1 applicability (any size) | ✅ shipped — T1–T4 guide + checked-in profiles (`deploy/tiers/*.env`) + tier-smoke CI matrix + drift meta-test (v1.28.41 "Terrain") |
+| Payment data handling | PCI DSS | ✅ **explicit non-scope**: payment data never ingested; THREAT_MODEL §6 boundary row (G9, closed) |
+| ISO/AWI 18295-1 revision | — | watch item (ceiling-marked): re-map clause refs on publication (G10); registered so the revision can't land silently |
+
+**Series exit (v1.28.41 "Terrain"):** every G1–G8 row above is green or
+explicitly ceiling/watch-marked — pinned by
+`series_exit_gate_checklist_green_or_ceiling_marked`.
 
 ## The planned conformance pack (v1.28.x "Charter")
 

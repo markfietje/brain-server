@@ -235,17 +235,64 @@ binary scales from one operator to a global BPO by configuration, not by
 forks. Pick the tier that matches the operation — every tier ships the full
 audit chain and fail-closed gates.
 
-| Tier | Who | Shape | Posture |
+**Tiers are config, not forks:** each tier is a checked-in env profile —
+`deploy/tiers/t1.env`, `deploy/tiers/t2.env`, `deploy/tiers/t3.env`,
+`deploy/tiers/t4.env` — that CI boots as part of the tier-smoke matrix, and a
+meta-test (`guide_and_profiles_never_drift`) fails if a profile sets a key
+this guide does not document (or vice versa). Copy the profile into your
+service environment and add only site-specific values (`BRAIN_DB_PATH`,
+`BIND_PORT`, auth material).
+
+| Tier | Who | Shape | Profile |
 |---|---|---|---|
-| **T1 solo** | One operator / micro-centre | loopback bind, single domain, single DB, no roles | write posture **open** (the operator IS the reviewer); proposals still audited |
-| **T2 team** | A small team (≤ ~25 agents) | roles enabled, HITL proposal review queue on | write posture **review** (recommended default); skills + presence visible via `/ops/crew` |
-| **T3 site** | A site or BPO campaign | multi-domain/multi-DB, monthly human-signed calibration, public KB feedback loop live, WFM feeds (`GET/POST /ops/shifts`, `GET /ops/skills`) feeding the centre's workforce-management tool | review posture; QA discipline per COPC R8.0 mapped in COMPLIANCE.md §6.7 |
-| **T4 global** | Multi-site / multi-region | T3 plus site-to-site **knowledge parcels** (`POST /parcels/export|import`) and regional residency stamps; follow-the-sun handover via the shift ring | every site-boundary crossing is signed + human-gated; federation stays v3.x |
+| **T1 solo** | One operator / micro-centre | loopback bind, single domain, single DB, no roles | [`deploy/tiers/t1.env`](../deploy/tiers/t1.env) |
+| **T2 team** | A small team (≤ ~25 agents) | roles enabled, HITL proposal review queue on, crew presence visible | [`deploy/tiers/t2.env`](../deploy/tiers/t2.env) |
+| **T3 site** | A site or BPO campaign | multi-domain/multi-DB, calibration + public KB feedback live, WFM feeds feeding the centre's tool | [`deploy/tiers/t3.env`](../deploy/tiers/t3.env) |
+| **T4 global** | Multi-site / multi-region | T3 plus knowledge parcels, residency stamps, follow-the-sun handover via the shift ring | [`deploy/tiers/t4.env`](../deploy/tiers/t4.env) |
+
+### Per-tier config matrix
+
+| Variable | T1 solo | T2 team | T3 site | T4 global | Why |
+|---|---|---|---|---|---|
+| `BRAIN_WRITE_POSTURE` | `open` (the operator IS the reviewer; proposals still audited) | `review` | `review` | `review` | agent writes become HITL proposals from T2 up |
+| `BIND_PUBLIC` | `0` | `0` | `0` | `0` | never expose without auth; the server refuses any non-loopback bind with none regardless of tier |
+| `BRAIN_AUDIT_READ_EVENTS` | off (loopback default) | `on` | `on` | `on` | shared surfaces get read-audited once more than one person uses them |
+| `BRAIN_MULTI_DB` | unset | unset | `1` | `1` | domain-per-campaign databases at site scale |
+| `BRAIN_MAX_DOMAIN_DBS` | unset | unset | `16` | `64` | explicit cap under the bounds law; size to your domain count |
+| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | `0` | `0` | `1` | `1` | replay-hard webhook intake for first-party senders at site scale |
+| `BRAIN_OTEL_ENABLED` | unset | unset | optional | `1` | instrumented decision cores for multi-region ops visibility |
+| `BRAIN_TRUST_PROXY` | unset | unset | optional | `1` | set only when TLS terminates on a trusted proxy chain |
+
+### Sizing guidance
+
+SQLite WAL headroom is the sizing lever, not heroics: keep the WAL under a
+few hundred MB by running `brain backup` (which checkpoints) on the cadence
+below, and promote to `BRAIN_MULTI_DB` when a single DB's write contention
+or backup window stops fitting the maintenance slot. On edge ARM hardware
+set `BRAIN_WORKER_THREADS=2` and keep `CAPACITY_MAX_RSS_MIB` at its 512
+default. No sizing promise beyond what you measure — `bench` against YOUR
+corpus before promoting a tier.
+
+### Cadences (cron recipes)
+
+| Cadence | T1 | T2 | T3 | T4 |
+|---|---|---|---|---|
+| CRM connector sync | — | daily | every 5–10 min (see [CRM case intake](#crm-case-intake-v12822-bridges)) | every 5–10 min per site |
+| `brain backup` | weekly | nightly | nightly + pre-calibration | nightly per region |
+| KB build / publish (`kb build`) | ad hoc | weekly | daily + feedback-loop driven | daily per locale set |
+| Human-signed calibration | — | quarterly | monthly (the signed register extract rides it, v1.28.37) | monthly per site |
+| Token rotation | ≤90d | ≤90d | ≤90d | ≤90d (staggered per principal) |
+
+### Upgrade path
 
 Tier promotion is additive: nothing configured at T1 blocks T4 features
-later. The deliberate ceilings (workload visibility is measured, never
-enforced; no forecasting/scheduling engines — WFM alignment is interop) hold
-at every tier.
+later. Move up by merging the next profile's keys into your environment,
+restarting, and re-running the smoke suite (`brain doctor`,
+`brain check-consistency`, `GET /audit/verify`). There is no downgrade
+migration either — drop back by removing keys, never by editing data. The
+deliberate ceilings (workload visibility is measured, never enforced; no
+forecasting/scheduling engines — WFM alignment is interop) hold at every
+tier.
 
 ## Next steps
 

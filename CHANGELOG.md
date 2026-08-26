@@ -19,6 +19,55 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.41] — 2026-08-26 — "Terrain": the tier guide, tested — and the series exit
+
+G8 of the Conformance Line closed plus the series-exit gate: deployment tiers
+become tested config (checked-in profiles, a CI tier-smoke matrix, a
+guide↔profile drift meta-test), and the conformance matrix is re-audited to
+every row green or explicitly ceiling-marked. Schema UNCHANGED at 1.28.41;
+no route changes; the CI matrix can be disabled independently of code.
+
+### Release notes
+
+**Improvements**
+- **The tier guide, tested (G8):** `docs/deployment.md` now documents T1 solo →
+  T2 team → T3 site → T4 global with a per-tier env matrix, sizing guidance
+  (SQLite WAL headroom, when multi-DB), cron cadences (connector sync,
+  backup, KB build, calibration), and the additive upgrade path. Each tier is
+  a checked-in profile — `deploy/tiers/t1.env` … `t4.env` — that a new CI
+  **tier-smoke matrix job** boots end-to-end (health, `brain doctor`, audit
+  chain verify). A meta-test (`guide_and_profiles_never_drift`) fails if a
+  profile sets a key the guide never documents, or the guide stops naming a
+  profile.
+- **Series exit:** the CONTACT_CENTER_STANDARDS conformance matrix is
+  re-audited — every G1–G8 row is shipped or ceiling/watch-marked; stale
+  planned-statuses left over from .36–.40 are corrected.
+  `series_exit_gate_checklist_green_or_ceiling_marked` pins it, and the
+  AUDIT.md register carries the close-out entry. v1.29.x Console inherits
+  with zero doctrine debt.
+
+### Engineering record
+
+- **New gate tests** (+3): `tier_profiles_boot_and_pass_smoke` (every profile
+  parses against the server's real key set, validates fail-closed, and boots
+  a fresh file-backed DB through migration green),
+  `guide_and_profiles_never_drift` (two-way docs↔profiles pin),
+  `series_exit_gate_checklist_green_or_ceiling_marked` (no 🟡/❌ row may
+  survive in the conformance matrix at series exit).
+- **PCI boundary row (G9):** verified present in THREAT_MODEL §6 (landed by
+  an earlier release); no change this pass.
+- Test delta: server +3 gate tests (+2 supporting parse/validation tests).
+
+### Honest ceilings
+
+- No installer wizard — config files + docs remain the posture.
+- Tier-smoke boots prove config validity on Linux CI, not sizing promises;
+  capacity guidance stays measured-by-the-operator (`bench`).
+- The exit gate reports honestly: it can fail. ISO/AWI 18295-1 revision
+  remains a registered watch item (G10).
+
+---
+
 ## [1.28.40] — 2026-08-26 — "Handshake": the ops interop seam, people made visible
 
 G5+G7 of the Conformance Line closed. The WFM boundary becomes a first-party,

@@ -203,3 +203,34 @@ the shipped tree.
 - SMSR's result ("no provenance-free retrieval-time filter certifies against
   adaptive injection") is why notes are fenced OUT of retrieval entirely
   rather than filtered INTO it.
+
+---
+
+## 2026-08-26 — v1.28.41 "Terrain" — the Conformance Line series close-out
+
+Source: the series-exit gate (G8) of the v1.28.37→.41 Conformance Line — the
+full dogfood cycle re-audit of `docs/CONTACT_CENTER_STANDARDS.md` before the
+v1.29.x Console inherits.
+
+### Disposition of the line
+
+| Gate | Release | Disposition |
+|---|---|---|
+| G1 ISO 10002 complaint lifecycle | v1.28.37 Advocate | Closed — register = audit chain, ack sweep + monthly extract ride signed calibration |
+| G2 normative metric dictionary | v1.28.38 Lexicon | Closed — docs↔JSON↔schema parity meta-tests |
+| G3+G4 WCAG 2.2 AA gate + RTL/pseudolocale | v1.28.39 Access | Closed — six new AA criteria release-blocking; ceilings honest in the ACR |
+| G5+G7 WFM seam + workload visibility | v1.28.40 Handshake | Closed — `wfm/1` versioned additive seam; fatigue alerts never reassign |
+| G6 COPC R8.0 performance mapping | v1.28.38 Lexicon | Closed — COMPLIANCE.md §6.7 rows → metric dictionary |
+| G8 tier guide tested + series exit | v1.28.41 Terrain | Closed this pass — profiles + tier-smoke CI + drift meta-test; matrix every row green or ceiling/watch-marked (`series_exit_gate_checklist_green_or_ceiling_marked`) |
+| G9 PCI boundary row | closed pre-Terrain | THREAT_MODEL §6 explicit non-scope row verified present this pass |
+
+### Findings from the exit audit itself
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| X1 | Matrix rows for KCS loop, SLA envelopes, RTL (G4), WFM seam (G5), workload (G7) still carried stale 🟡/⚠️ statuses despite shipping in .36–.40 | Doc-drift | **Closed this pass** — matrix re-audited to green-or-ceiling-marked; the new meta-test forbids regression |
+| X2 | Tier guide existed as prose only; no checked-in profile could prove a tier boots | Medium | **Closed this pass** — `deploy/tiers/t{1..4}.env` + CI tier-smoke matrix + two meta-tests |
+| X3 | ISO/AWI 18295-1 revision pending upstream | Watch item | Ceiling-marked in the matrix (G10); cannot land silently |
+
+**Inheritance test:** nothing in v1.29.x may backfill an Order-of-Care row —
+if it must, this line failed and this register says so.
