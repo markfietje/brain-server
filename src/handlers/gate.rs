@@ -927,6 +927,98 @@ pub async fn approve_proposal(
             }
         }
 
+        // ── Outreach: the outreach_consent branch. The consent registry's
+        // ONLY write path is this approved-proposal one — grant/revoke lands
+        // in the same tx as the proposal CAS, audited per domain.
+        if kind == crate::workflow::outreach::KIND_CONSENT {
+            let payload: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                HandlerError::bad_request("consent_packet_invalid", e.to_string())
+            })?;
+            let now_ts = chrono::Utc::now().timestamp();
+            crate::workflow::outreach::apply_consent_proposal(&tx, id, &payload, now_ts)
+                .map_err(|e| match e {
+                    crate::workflow::outreach::OutreachError::Invalid(m) => {
+                        HandlerError::bad_request("consent_apply_denied", m)
+                    }
+                    crate::workflow::outreach::OutreachError::NotFound(m) => {
+                        HandlerError::not_found(m)
+                    }
+                    crate::workflow::outreach::OutreachError::Database(m) => {
+                        HandlerError::internal(m)
+                    }
+                })?;
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                "gate/outreach_consent applied",
+                "global",
+            );
+            let n = tx
+                .execute(
+                    "UPDATE proposals SET status = 'approved', decided_at = ?1
+                     WHERE id = ?2 AND status = 'pending'",
+                    rusqlite::params![now_ts, id],
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if n == 0 {
+                tx.rollback()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Err(HandlerError::conflict(format!(
+                    "proposal {id} was already decided by a concurrent action"
+                )));
+            }
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "status": "approved",
+                "applied": "consent",
+            }));
+        }
+
+        // ── Outreach: campaign + follow-up approvals CAS the proposal
+        // approved and STOP — they must NOT fall through to the generic
+        // promote path below, which would turn a recipient list into a
+        // knowledge chunk. Approval is a decision record; execution happens
+        // CRM-side via the export packet.
+        if kind == crate::workflow::outreach::KIND_CAMPAIGN
+            || kind == crate::workflow::outreach::KIND_FOLLOWUP
+        {
+            let now_ts = chrono::Utc::now().timestamp();
+            let n = tx
+                .execute(
+                    "UPDATE proposals SET status = 'approved', decided_at = ?1
+                     WHERE id = ?2 AND status = 'pending'",
+                    rusqlite::params![now_ts, id],
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if n == 0 {
+                tx.rollback()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Err(HandlerError::conflict(format!(
+                    "proposal {id} was already decided by a concurrent action"
+                )));
+            }
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("gate/{kind} approved"),
+                "global",
+            );
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "status": "approved",
+            }));
+        }
+
         // ── Crew: the crew_skills_update branch. Skills tags are HITL-
         // maintained: the ONLY write to `principal_skills` is this approval
         // path — CAS on the pending proposal + the tags land in the SAME tx.

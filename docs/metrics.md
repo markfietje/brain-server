@@ -35,6 +35,9 @@ telephony/CRM numbers) — see "Deliberately absent" at the end.
 | `goodwill_total_cents_30d` | sum of amount_cents over APPROVED remedy proposals in the trailing 30 days whose approval audit row verifies (fail-closed — an unaudited remedy never aggregates). | `proposals kind='complaint_remedy' status='approved'` × `audit_events` target/detail hash linkage | trailing 30 days | ISO 10002 remedy discipline; goodwill-ledger-visible posture |
 | `goodwill_entries_30d` | count of audited approved remedies in the window. | same as `goodwill_total_cents_30d` | trailing 30 days | — |
 | `goodwill_unaudited_excluded_30d` | approved remedies EXCLUDED for missing audit linkage — surfaced, never folded away. | same scan | trailing 30 days | fail-closed evidence law |
+| `voc_contacts_total` | count of workflow runs — the contact volume the VoC ratio denominates. | `workflow_runs` | rolling (all runs) | ISO 10004 satisfaction monitoring as data |
+| `voc_complaints_total` | count of runs with `kind = 'complaint'`. | `workflow_runs.kind` | rolling (all runs) | ISO 10002 register posture |
+| `voc_complaints_per_thousand_contacts_units` | `complaints * 100_000 / max(contacts, 1)` — complaints per thousand contacts in hundredths (per-mille × 100). Zero contacts score 0. The CSAT/DSAT instruments stay CRM-side; this is the lineage-derived complaint-density twin. | `workflow_runs.kind` counts | rolling (all runs) | ISO 10004 §complaint-per-thousand-contacts KPI canon |
 
 ## Report-cadence fields (same read, weekly report ride)
 

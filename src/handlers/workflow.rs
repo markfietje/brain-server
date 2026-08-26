@@ -489,6 +489,17 @@ pub async fn get_scoreboard(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
+    // ISO 10004 VoC as data: contact volume + complaints-per-thousand from
+    // lineage counts alone (the instruments stay CRM-side; see
+    // docs/metrics.md for the formulas).
+    let pool_voc = super::resolve_domain_pool(&state.registry, None)?;
+    let voc = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let conn = pool_voc.get().map_err(|e| format!("{e}"))?;
+        crate::workflow::outreach::voc_measures(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
     let hot_topics: Vec<serde_json::Value> = hot
         .into_iter()
         .map(|(slug, n)| serde_json::json!({ "slug": slug, "feedback_count": n }))
@@ -529,6 +540,11 @@ pub async fn get_scoreboard(
         "goodwill_total_cents_30d": ledger.total_cents,
         "goodwill_entries_30d": ledger.entries.len(),
         "goodwill_unaudited_excluded_30d": ledger.unaudited_excluded,
+        // ISO 10004 VoC (Outreach): lineage-derived satisfaction context —
+        // the CSAT/DSAT instruments stay CRM-side by design.
+        "voc_contacts_total": voc.contacts_total,
+        "voc_complaints_total": voc.complaints_total,
+        "voc_complaints_per_thousand_contacts_units": voc.complaints_per_thousand_units,
     })))
 }
 
@@ -979,6 +995,10 @@ mod scoreboard_tests {
             "goodwill_total_cents_30d",
             "goodwill_entries_30d",
             "goodwill_unaudited_excluded_30d",
+            // v1.28.35 Outreach: ISO 10004 VoC as data.
+            "voc_contacts_total",
+            "voc_complaints_total",
+            "voc_complaints_per_thousand_contacts_units",
         ];
         let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
         let doc = std::fs::read_to_string(&doc_path)
@@ -1685,6 +1705,236 @@ fn sanitize_steering_payload(payload: &str) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_default()
+}
+
+// ── The consent-first outreach surface.
+// Protocol adapters only — every invariant lives in workflow::outreach.
+
+fn outreach_err(e: crate::workflow::outreach::OutreachError) -> HandlerError {
+    use crate::workflow::outreach::OutreachError;
+    match e {
+        OutreachError::NotFound(m) => HandlerError::not_found(m),
+        OutreachError::Invalid(m) => HandlerError::bad_request("outreach_invalid", m),
+        OutreachError::Database(m) => HandlerError::internal(m),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct OutreachCampaignRequest {
+    pub domain: String,
+    pub channel: String,
+    pub purpose: String,
+    pub template_id: String,
+    pub audience: Vec<String>,
+}
+
+/// `POST /workflow/outreach/campaign` — propose a campaign as a pending
+/// HITL proposal. Raw audience identifiers are hashed at the door; the
+/// deterministic consent gate excludes every recipient without an in-force
+/// grant BEFORE anything is filed. Nothing sends here, ever.
+pub async fn post_outreach_campaign(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Json(body): Json<OutreachCampaignRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Write, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    if body.audience.len() > crate::workflow::outreach::MAX_RECIPIENTS {
+        return Err(HandlerError::bad_request(
+            "audience_unbounded",
+            "audience exceeds the input bound",
+        ));
+    }
+    if body.template_id.len() > crate::workflow::outreach::MAX_TEMPLATE_ID_LEN
+        || body.domain.len() > 128
+        || body
+            .audience
+            .iter()
+            .any(|s| s.len() > crate::workflow::outreach::MAX_RAW_SUBJECT_LEN)
+    {
+        return Err(HandlerError::bad_request(
+            "field_unbounded",
+            "a campaign field exceeds its input bound",
+        ));
+    }
+    let channel =
+        brain_engine_sdk::pure::consent::Channel::parse(&body.channel).ok_or_else(|| {
+            HandlerError::bad_request("channel_invalid", "channel must be email|sms|call")
+        })?;
+    let purpose =
+        brain_engine_sdk::pure::consent::Purpose::parse(&body.purpose).ok_or_else(|| {
+            HandlerError::bad_request(
+                "purpose_invalid",
+                "purpose must be care_followup|retention|recall_notice",
+            )
+        })?;
+    let proposed_by = super::recall::principal_label(&principal);
+    type OErr = crate::workflow::outreach::OutreachError;
+    let result = tokio::task::spawn_blocking(move || -> Result<_, OErr> {
+        let mut conn = pool.get().map_err(|e| OErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(OErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        let draft = crate::workflow::outreach::CampaignDraft {
+            domain: &body.domain,
+            channel,
+            purpose,
+            template_id: &body.template_id,
+            audience: &body.audience,
+            proposed_by: &proposed_by,
+        };
+        let out = crate::workflow::outreach::propose_campaign(tx.tx(), &draft, now)?;
+        tx.commit().map_err(OErr::from)?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(outreach_err)?;
+    Ok(Json(serde_json::json!({
+        "proposal_id": result.proposal_id,
+        "status": "pending",
+        "recipients": result.included,
+        "excluded": result.excluded.iter().map(|(h, r)| serde_json::json!({
+            "subject_hash": h, "reason": r,
+        })).collect::<Vec<_>>(),
+    })))
+}
+
+/// `GET /workflow/outreach/campaign/{id}` — the export packet for an
+/// APPROVED campaign: recipients WITH their consent proof, for the CRM
+/// connector feed or operator export. Pending campaigns export nothing.
+pub async fn get_outreach_campaign(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    type OErr = crate::workflow::outreach::OutreachError;
+    let mut packet = tokio::task::spawn_blocking(move || -> Result<_, OErr> {
+        let conn = pool.get().map_err(|e| OErr::Database(e.to_string()))?;
+        crate::workflow::outreach::campaign_packet(&conn, id)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(outreach_err)?;
+    // The read seam covers every operator-supplied text field.
+    for key in ["template_id", "execution"] {
+        if let Some(v) = packet
+            .get_mut(key)
+            .and_then(|v| v.as_str().map(String::from))
+        {
+            packet[key] = serde_json::json!(crate::gate::sanitize_read(&v, false, &principal));
+        }
+    }
+    Ok(Json(packet))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ConsentQuery {
+    pub subject: String,
+    pub channel: String,
+    pub purpose: String,
+    pub domain: Option<String>,
+}
+
+/// `GET /workflow/outreach/consent` — the deterministic verdict for one
+/// (hashed subject, channel, purpose) triple plus its proof row. The raw
+/// subject never leaves this handler: only its hash is echoed.
+pub async fn get_outreach_consent(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Query(q): Query<ConsentQuery>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    let channel = brain_engine_sdk::pure::consent::Channel::parse(&q.channel).ok_or_else(|| {
+        HandlerError::bad_request("channel_invalid", "channel must be email|sms|call")
+    })?;
+    let purpose = brain_engine_sdk::pure::consent::Purpose::parse(&q.purpose).ok_or_else(|| {
+        HandlerError::bad_request(
+            "purpose_invalid",
+            "purpose must be care_followup|retention|recall_notice",
+        )
+    })?;
+    if q.subject.is_empty() || q.subject.len() > crate::workflow::outreach::MAX_RAW_SUBJECT_LEN {
+        return Err(HandlerError::bad_request(
+            "subject_unbounded",
+            "subject exceeds the input bound",
+        ));
+    }
+    let domain = q.domain.unwrap_or_else(|| "global".to_string());
+    if domain.is_empty() || domain.len() > 128 {
+        return Err(HandlerError::bad_request(
+            "domain_unbounded",
+            "domain exceeds the input bound",
+        ));
+    }
+    type OErr = crate::workflow::outreach::OutreachError;
+    let proof = tokio::task::spawn_blocking(move || -> Result<_, OErr> {
+        let conn = pool.get().map_err(|e| OErr::Database(e.to_string()))?;
+        let hash = crate::workflow::outreach::hash_subject(&q.subject);
+        let now = chrono::Utc::now().timestamp();
+        Ok((
+            hash.clone(),
+            crate::workflow::outreach::consent_proof(&conn, &domain, &hash, channel, purpose, now)?,
+        ))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(outreach_err)?;
+    let (hash, proof) = proof;
+    let decision = proof.as_ref().map_or("absent", |p| match p.decision {
+        brain_engine_sdk::pure::consent::ConsentDecision::Granted => "granted",
+        brain_engine_sdk::pure::consent::ConsentDecision::Absent => "absent",
+        brain_engine_sdk::pure::consent::ConsentDecision::Revoked => "revoked",
+        brain_engine_sdk::pure::consent::ConsentDecision::Expired => "expired",
+    });
+    Ok(Json(serde_json::json!({
+        "subject_hash": hash,
+        "channel": channel.as_str(),
+        "purpose": purpose.as_str(),
+        "decision": decision,
+        "proof": proof.map(|p| serde_json::json!({
+            "granted_at": p.granted_at,
+            "expires_at": p.expires_at,
+            "provenance": crate::gate::sanitize_read(&p.provenance, false, &principal),
+        })),
+    })))
+}
+
+/// `POST /workflow/runs/{id}/outreach/followup` — schedule the post-close
+/// proactive check as a HITL proposal at the policy interval, gated on an
+/// in-force care_followup consent. No consent → loud refusal, nothing filed.
+pub async fn post_outreach_followup(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    let actor = super::recall::principal_label(&principal);
+    type OErr = crate::workflow::outreach::OutreachError;
+    let out = tokio::task::spawn_blocking(move || -> Result<_, OErr> {
+        let mut conn = pool.get().map_err(|e| OErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(OErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        let out = crate::workflow::outreach::schedule_followup(tx.tx(), id, &actor, now)?;
+        tx.commit().map_err(OErr::from)?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(outreach_err)?;
+    Ok(Json(out))
 }
 
 // ── The ISO 10002/10003 complaint lifecycle surface.

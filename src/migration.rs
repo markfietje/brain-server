@@ -1937,7 +1937,39 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.35 "Outreach": consent-first outbound contact. ────────────
+    // One row per (domain, subject_hash, channel, purpose): the consent
+    // registry every outreach gate reads deterministically. Subjects are
+    // stored HASHED (audit::hash) — raw identifiers never touch this table.
+    // Rows are created/updated ONLY through approved HITL proposals and die
+    // with their subject on a DSAR sweep (workflow::erasure). No send engine
+    // exists anywhere in this server — campaigns export for CRM-side
+    // execution.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS consent_registry(
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain       TEXT NOT NULL,
+            subject_hash TEXT NOT NULL,
+            channel      TEXT NOT NULL,
+            purpose      TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'granted',
+            provenance   TEXT NOT NULL DEFAULT '',
+            granted_at   INTEGER NOT NULL,
+            expires_at   INTEGER,
+            revoked_at   INTEGER,
+            updated_at   INTEGER NOT NULL,
+            UNIQUE(domain, subject_hash, channel, purpose)
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consent_subject
+          ON consent_registry(domain, subject_hash);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.35 "Outreach": consent_registry table → 1.28.35.
     // v1.28.30 "Parcels": parcel_ledger table → 1.28.30.
     // v1.28.29 "Mesh": agent_cards + delegations tables → 1.28.29.
     // v1.28.28 "Channel": case_notes table → 1.28.28.
@@ -1956,8 +1988,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.30')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.30';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.35')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.35';",
         [],
     )?;
 

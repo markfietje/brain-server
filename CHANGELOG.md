@@ -19,6 +19,102 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.35] — 2026-08-26 — "Outreach": proactive care, consent-first
+
+ISO 23592's service-excellence model and the retention economics both demand
+proactive contact; ePrivacy/TCPA-class consent regimes demand it be governed.
+This release ships the governed outreach loop: a hashed-subject consent
+registry written ONLY through approved HITL proposals and DSAR-erasable by
+construction, campaigns as proposals whose recipients carry per-recipient
+consent proof (no consent, no inclusion — the gate runs before anything is
+filed), approved campaigns exporting for CRM-side execution (a send engine is
+never built here), the Order-of-Care post-close follow-up scheduled by policy
+interval and consent-gated, and ISO 10004 VoC as lineage-derived data on the
+scoreboard.
+
+### Release notes
+
+**Improvements**
+- **The consent registry:** one row per (domain, hashed subject × channel ×
+  purpose). Subjects live HASHED — raw identifiers never touch the table.
+  Rows are created/updated exclusively through approved `outreach_consent`
+  proposals; revocation always wins; expiry is inclusive; a future-dated
+  grant is not yet consent. The DSAR sweep erases registry rows by re-hashing
+  the sweep subject.
+- **Campaigns are proposals:** `{domain, channel, purpose, template_id,
+  audience[]≤1000}` files ONE pending HITL proposal. The deterministic
+  consent gate excludes every recipient without an in-force grant BEFORE
+  filing — each included recipient carries its proof (granted_at/expires_at/
+  provenance), everyone else appears excluded with the reason visible
+  (absent/revoked/expired). An audience producing zero eligible recipients
+  refuses loudly. Raw audience identifiers are hashed at the door.
+- **Export, never send:** `GET /workflow/outreach/campaign/{id}` serves the
+  export packet (recipients + proofs + template reference) ONLY for APPROVED
+  campaigns; pending or rejected campaigns export nothing. brain decides and
+  records; the CRM/telco system sends.
+- **The follow-up event (Order-of-Care):** `POST
+  /workflow/runs/{id}/outreach/followup` schedules the post-close proactive
+  check for a CLOSED complaint run at the policy interval (default 7 days),
+  gated on an in-force care_followup consent — no consent is a loud 400 with
+  nothing filed. Proposal + lineage event (`workflow/outreach`) + audit land
+  in one transaction.
+- **VoC per ISO 10004, as data:** the scoreboard gains
+  `voc_contacts_total`, `voc_complaints_total`, and
+  `voc_complaints_per_thousand_contacts_units` — derived from lineage counts
+  alone. CSAT/DSAT instruments stay CRM-side (ingested via Bridges when they
+  exist); docs/metrics.md pins the formulas.
+- **Retention cohorts:** the deterministic cohort view (contract-expiry
+  window × complaint history × recorded repeat contact) surfaces each
+  member's signals AND retention-consent state. Retention stays a human
+  strategy; the tool makes the cohort visible.
+
+### Engineering record
+
+- SDK `pure/consent.rs` owns the deterministic policy once: the closed
+  channel/purpose vocabularies, the fail-closed consent decision
+  (revocation > expiry > absence; future grants deny), and the follow-up
+  interval arithmetic. Pins: `no_consent_no_send_is_a_gate_not_warning`,
+  `channel_purpose_vocabularies_are_closed`,
+  `followup_scheduled_by_policy_and_consent_gated_interval_arithmetic`.
+- `workflow/outreach.rs` is the service core: registry writes ride the
+  caller's transaction with their audit row (`record_tenant`,
+  domain-scoped); campaign gating and export legality are SQL-free
+  invariants over the SDK verdicts. Pins: `consent_registry_is_dsar_erasable`,
+  `no_consent_no_send_is_a_gate_not_warning_campaign`,
+  `campaign_recipients_carry_consent_proof`,
+  `followup_scheduled_by_policy_and_consent_gated` (service leg),
+  `retention_cohort_is_deterministic_query`,
+  `voc_complaint_ratio_derives_from_lineage_counts`. Bounds pinned:
+  audience ≤ 1000 entries ≤ 512 chars, template_id ≤ 256 chars, cohort ≤ 200.
+- Gate: the `outreach_consent` branch applies the grant/revoke in the
+  approval transaction (the registry has NO other writer); campaign and
+  follow-up approvals CAS the proposal approved and STOP — they must never
+  reach the generic promote path that would turn a recipient list into a
+  knowledge chunk.
+- Erasure: `sweep_subject` gains the exact-hash arm
+  (`consent_rows` on the report) so DSAR sweeps take registry rows without
+  ever seeing a raw identifier pattern.
+- Routes: `POST /workflow/outreach/campaign`,
+  `GET /workflow/outreach/campaign/{id}`,
+  `GET /workflow/outreach/consent`,
+  `POST /workflow/runs/{id}/outreach/followup` — openapi.yaml,
+  route-coverage guard, authz-guard table, docs/api.md in the same commit;
+  emitted text passes `sanitize_read`; OptPrincipal everywhere.
+- Scoreboard: three additive VoC fields + parity-test extension;
+  docs/metrics.md normative.
+- Schema additive at **1.28.35**: the `consent_registry` table (UNIQUE
+  domain × subject_hash × channel × purpose); schema-contract test extended
+  (table + column set + version pin).
+- Honest ceilings: campaigns accept an explicit audience list — the
+  entitlement-registry-driven audience queries (contract-expiry from the
+  Frontdesk registry, recall-affected serial sets) are read-side helpers that
+  arrive with the operators who maintain those registries; no CRM connector
+  feed ships yet (export is operator-facing JSON); retention consent state is
+  displayed per member but the cohort endpoint does NOT auto-file proposals;
+  VoC response-rate/DSAT-share await actual Bridges ingestion; confirm-gate
+  and effort-proxy remain unwired into run-close flows (predecessor ceiling,
+  unchanged).
+
 ## [1.28.34] — 2026-08-26 — "Goodwill": complaints, the full ISO 10002/10003 lifecycle
 
 Charter seeded the complaint class; this release gives it the full lifecycle —

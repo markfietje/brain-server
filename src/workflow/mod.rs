@@ -37,6 +37,7 @@ pub(crate) mod interview;
 pub(crate) mod kcs;
 pub(crate) mod mesh;
 pub(crate) mod outbox;
+pub(crate) mod outreach;
 pub(crate) mod parcels;
 pub(crate) mod recall;
 pub(crate) mod relay;
@@ -51,7 +52,7 @@ use rusqlite::{Connection, params};
 /// The audit actor for substrate writes. The engine crates drive the writes;
 /// this layer stamps them with its own identity so an audit reader can
 /// distinguish substrate-emitted rows from future handler-emitted ones.
-const ACTOR: &str = "workflow";
+pub(crate) const ACTOR: &str = "workflow";
 
 /// Emit the `AuditKind::Workflow` row for a substrate write against `run_id`.
 ///

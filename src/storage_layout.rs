@@ -139,6 +139,12 @@ pub const SCHEMA_VERSION_V1_28_29: &str = "1.28.29";
 /// knowledge crossings, import-as-proposals). One-way; the down-migration is
 /// a documented no-op.
 pub const SCHEMA_VERSION_V1_28_30: &str = "1.28.30";
+
+/// v1.28.35 "Outreach": the `consent_registry` table (additive; hashed
+/// subject × channel × purpose consent state, proposal-created,
+/// DSAR-erasable). One-way; the down-migration is a documented no-op.
+pub const SCHEMA_VERSION_V1_28_35: &str = "1.28.35";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

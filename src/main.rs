@@ -6256,6 +6256,22 @@ async fn main_inner() -> Result<()> {
             get(handlers::workflow::get_complaint_adr_packet),
         )
         .route(
+            "/workflow/outreach/campaign",
+            post(handlers::workflow::post_outreach_campaign),
+        )
+        .route(
+            "/workflow/outreach/campaign/{id}",
+            get(handlers::workflow::get_outreach_campaign),
+        )
+        .route(
+            "/workflow/outreach/consent",
+            get(handlers::workflow::get_outreach_consent),
+        )
+        .route(
+            "/workflow/runs/{id}/outreach/followup",
+            post(handlers::workflow::post_outreach_followup),
+        )
+        .route(
             "/workflow/scoreboard",
             get(handlers::workflow::get_scoreboard),
         )
@@ -10314,6 +10330,8 @@ Final paragraph after the rule.";
             "delegations",
             // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
             "parcel_ledger",
+            // v1.28.35 "Outreach": consent-first outbound contact.
+            "consent_registry",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10522,11 +10540,26 @@ Final paragraph after the rule.";
         // Channel for the case_notes table (notes + swarm invites).
         // Mesh for agent_cards + delegations.
         // Parcels for the parcel_ledger table.
+        // Outreach for the consent_registry table (hashed subject × channel
+        // × purpose consent state).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_30),
-            "schema_version must be recorded as 1.28.30 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_35),
+            "schema_version must be recorded as 1.28.35 after migration"
         );
+        // Outreach: every consent row is keyed domain × hashed subject ×
+        // channel × purpose — the UNIQUE spine the gate reads.
+        let consent_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('consent_registry')
+                  WHERE name IN ('domain','subject_hash','channel','purpose',
+                                 'status','provenance','granted_at','expires_at',
+                                 'revoked_at','updated_at')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(consent_cols, 10, "consent_registry columns must exist");
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
             .query_row(
@@ -11989,6 +12022,11 @@ Final paragraph after the rule.";
             "/workflow/runs/{id}/complaint/lifecycle",
             "/workflow/runs/{id}/complaint/remedy",
             "/workflow/runs/{id}/complaint/adr-packet",
+            // v1.28.35 "Outreach": consent-first outbound contact.
+            "/workflow/outreach/campaign",
+            "/workflow/outreach/campaign/{id}",
+            "/workflow/outreach/consent",
+            "/workflow/runs/{id}/outreach/followup",
             // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
             "/parcels",
             "/parcels/export",
@@ -13217,6 +13255,13 @@ Final paragraph after the rule.";
             ("/workflow/runs/{id}/complaint/lifecycle", "Write"),
             ("/workflow/runs/{id}/complaint/remedy", "Write"),
             ("/workflow/runs/{id}/complaint/adr-packet", "Read"),
+            // v1.28.35 "Outreach": campaign propose/export + the consent
+            // read are global-scope (no run binds them); follow-up rides
+            // the run's domain.
+            ("/workflow/outreach/campaign", "Write"),
+            ("/workflow/outreach/campaign/{id}", "Read"),
+            ("/workflow/outreach/consent", "Read"),
+            ("/workflow/runs/{id}/outreach/followup", "Write"),
             ("/workflow/runs/{id}/handoff", "Read"),
             // The derived context window — a Read on the run's
             // domain (pure derivation over the lineage the events read serves).

@@ -42,6 +42,10 @@ pub(crate) struct SweepReport {
     /// Channel rows erased with the subject: notes and invites authored by
     /// or addressed to them (exact-principal match, crew posture).
     pub channel_rows: usize,
+    /// Consent-registry rows erased with the subject (Outreach:
+    /// matched by re-hashing the sweep subject — raw identifiers never
+    /// lived in the registry).
+    pub consent_rows: usize,
 }
 
 /// Sweep every workflow table in this pool for rows carrying `subject`,
@@ -138,6 +142,16 @@ pub(crate) fn sweep_subject(
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
     }
+
+    // ── Consent registry (Outreach): rows are keyed by the hashed subject,
+    // so the sweep re-hashes `subject` exactly as the writer did and takes
+    // every channel/purpose row in one exact match.
+    report.consent_rows += tx
+        .execute(
+            "DELETE FROM consent_registry WHERE subject_hash = ?1",
+            rusqlite::params![crate::workflow::outreach::hash_subject(subject)],
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
 
     // ── Crew sweep: a principal id is
     // personal data wherever it sits. Presence + skills rows go by exact

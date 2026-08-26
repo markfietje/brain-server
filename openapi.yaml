@@ -4691,6 +4691,172 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run or national ADR body not found }
+  /workflow/outreach/campaign:
+    post:
+      summary: Propose a governed outreach campaign as a HITL proposal (Write + workflow role)
+      description: >
+        Outreach: the deterministic consent gate runs per recipient at
+        proposal time. Only recipients holding an in-force grant for the
+        channel+purpose ride the proposal, each with its consent proof
+        attached; everyone else is excluded with the reason visible. An
+        audience producing zero eligible recipients refuses loudly. Raw
+        audience identifiers are hashed at the door — the registry and the
+        proposals table never see them. NOTHING sends here: an approved
+        campaign exports via GET below for CRM-side execution.
+      operationId: outreachCampaignPropose
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, channel, purpose, template_id, audience]
+              properties:
+                domain: { type: string, maxLength: 128 }
+                channel: { type: string, enum: [email, sms, call] }
+                purpose: { type: string, enum: [care_followup, retention, recall_notice] }
+                template_id: { type: string, maxLength: 256 }
+                audience:
+                  type: array
+                  maxItems: 1000
+                  items: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: The pending campaign proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id: { type: integer }
+                  status: { type: string, enum: [pending] }
+                  recipients: { type: integer }
+                  excluded:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        subject_hash: { type: string }
+                        reason: { type: string, enum: [absent, revoked, expired] }
+        "400":
+          description: channel_invalid | purpose_invalid | audience_unbounded | field_unbounded | outreach_invalid (zero eligible recipients)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+  /workflow/outreach/campaign/{id}:
+    get:
+      summary: Export packet for an APPROVED campaign (Read + workflow role)
+      description: >
+        Outreach: recipients WITH their consent proof plus the message
+        template reference — the artifact a CRM connector feed or operator
+        export executes OUTSIDE this server. A pending or rejected campaign
+        exports nothing (404).
+      operationId: outreachCampaignExport
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The export packet
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id: { type: integer }
+                  channel: { type: string }
+                  purpose: { type: string }
+                  template_id: { type: string }
+                  recipients: { type: array, items: { type: object } }
+                  excluded: { type: array, items: { type: object } }
+                  execution: { type: string }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Campaign not found or not approved }
+  /workflow/outreach/consent:
+    get:
+      summary: The deterministic consent verdict for one hashed subject/channel/purpose (Read + workflow role)
+      description: >
+        Outreach: absent/revoked/expired all DENY — only an in-force grant
+        reads `granted`. The proof row (granted_at, expires_at, provenance)
+        rides every verdict. The raw subject never leaves the handler; only
+        its hash is echoed.
+      operationId: outreachConsentCheck
+      parameters:
+        - name: subject
+          in: query
+          required: true
+          schema: { type: string, maxLength: 512 }
+        - name: channel
+          in: query
+          required: true
+          schema: { type: string, enum: [email, sms, call] }
+        - name: purpose
+          in: query
+          required: true
+          schema: { type: string, enum: [care_followup, retention, recall_notice] }
+        - name: domain
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128, default: global }
+      responses:
+        "200":
+          description: The verdict plus its proof
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subject_hash: { type: string }
+                  channel: { type: string }
+                  purpose: { type: string }
+                  decision: { type: string, enum: [granted, absent, revoked, expired] }
+                  proof: { type: object, nullable: true }
+        "400":
+          description: channel_invalid | purpose_invalid | subject_unbounded | domain_unbounded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+  /workflow/runs/{id}/outreach/followup:
+    post:
+      summary: Schedule the post-close follow-up check (Write on domain + workflow role)
+      description: >
+        Outreach / Order-of-Care: for a CLOSED complaint run whose state
+        carries `subject`, files ONE pending HITL follow-up proposal due at
+        the policy interval (default 7 days) after close — gated on an
+        IN-FORCE care_followup consent for the email channel. No consent →
+        loud 400 refusal and nothing is filed (a gate, not a warning).
+      operationId: outreachFollowupSchedule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The pending follow-up proposal
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id: { type: integer }
+                  due_at: { type: integer }
+                  status: { type: string, enum: [pending] }
+        "400":
+          description: outreach_invalid (no consent | not closed | no subject | non-complaint run)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
   /workflow/runs/{id}/handover/offer:
     post:
       summary: Offer a one-click handover (Write on domain + workflow role)
