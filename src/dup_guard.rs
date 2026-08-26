@@ -20,7 +20,123 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// (name, reason) pairs permitted to repeat across files.
+/// Debt burn-down ledger (the BMAD-workshop "slop apocalypse" lesson: slop
+/// wins between refactors, because nobody goes back). Each row records the
+/// highest server minor line on which the TODO(unify) count was observed,
+/// oldest first. Rules, all machine-checked below:
+///   - one row per release line; rows never go backwards in line;
+///   - a NEW release line must open with a STRICTLY SMALLER count than the
+///     previous line's row (burn at least one exemption per line while any
+///     debt remains);
+///   - the last row must match today's reality (current line + live count);
+///   - when the count hits zero, retire the whole ledger and this comment
+///     with it.
+const DEBT_LEDGER: &[(&str, usize)] = &[("1.28", 16)];
+
+fn parse_minor(version: &str) -> (u32, u32) {
+    let mut it = version.split('.');
+    (
+        it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+        it.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+    )
+}
+
+/// Pure decision core so the rules are testable without recompiling the
+/// world: given today's line + live TODO(unify) count and the ledger rows,
+/// either accept or name the exact repair.
+fn ledger_verdict(
+    cur_line: (u32, u32),
+    cur_count: usize,
+    rows: &[(&str, usize)],
+) -> Result<(), String> {
+    let parsed: Vec<(u32, u32)> = rows.iter().map(|(l, _)| parse_minor(l)).collect();
+    for i in 1..parsed.len() {
+        if parsed[i] < parsed[i - 1] {
+            return Err("ledger rows went backwards in release line".into());
+        }
+        if parsed[i] == parsed[i - 1] {
+            return Err("one row per release line — merge the duplicates".into());
+        }
+        // Different line: the burn-down rule itself.
+        if rows[i].1 >= rows[i - 1].1 {
+            return Err(format!(
+                "release line {} opened without burning debt: {} exemptions \
+                 must be STRICTLY fewer than the previous line's {}",
+                rows[i].0,
+                rows[i].1,
+                rows[i - 1].1
+            ));
+        }
+    }
+    let Some((last_line, last_count)) = rows.last() else {
+        return Err(
+            "debt still exists but the burn-down ledger is empty — restore it \
+             or finish the unification"
+                .into(),
+        );
+    };
+    let last = parse_minor(last_line);
+    if last != cur_line {
+        return Err(format!(
+            "ledger's last row records line {}.{} but this build is {}.{} — \
+             re-record the count for your line",
+            last.0, last.1, cur_line.0, cur_line.1
+        ));
+    }
+    if *last_count != cur_count {
+        return Err(format!(
+            "ledger says {} TODO(unify) exemptions on line {}.{} but the tree \
+             has {} — the ledger must mirror reality",
+            last_count, last.0, last.1, cur_count
+        ));
+    }
+    Ok(())
+}
+
+fn todo_unify_count() -> usize {
+    ALLOWED_DUPES
+        .iter()
+        .filter(|(_, reason)| reason.starts_with("TODO(unify)"))
+        .count()
+}
+
+#[test]
+fn debt_ledger_reflects_reality_and_burns_down_per_line() {
+    let cur_line = parse_minor(env!("CARGO_PKG_VERSION"));
+    let count = todo_unify_count();
+    if count == 0 {
+        assert!(
+            DEBT_LEDGER.is_empty(),
+            "TODO(unify) debt is fully burned — retire DEBT_LEDGER and its \
+             doc comment in the same commit"
+        );
+        return;
+    }
+    if let Err(msg) = ledger_verdict(cur_line, count, DEBT_LEDGER) {
+        panic!("dup-debt burn-down violated: {msg}");
+    }
+}
+
+#[test]
+fn debt_ledger_rules_hold_on_synthetic_cases() {
+    // Baseline row is fine.
+    assert!(ledger_verdict((1, 28), 5, &[("1.28", 5)]).is_ok());
+    // Growth within a line fails.
+    assert!(ledger_verdict((1, 28), 6, &[("1.28", 5)]).is_err());
+    // Same-line re-record without burn is fine (counts may fall mid-line).
+    assert!(ledger_verdict((1, 28), 3, &[("1.28", 5), ("1.28", 3)]).is_err()); // duplicate line row
+    // New line without burning fails.
+    assert!(ledger_verdict((1, 29), 5, &[("1.28", 5), ("1.29", 5)]).is_err());
+    // New line WITH burn passes.
+    assert!(ledger_verdict((1, 29), 4, &[("1.28", 5), ("1.29", 4)]).is_ok());
+    // Stale ledger (not re-recorded on current line) fails.
+    assert!(ledger_verdict((1, 30), 4, &[("1.28", 5), ("1.29", 4)]).is_err());
+    // Reality drift fails.
+    assert!(ledger_verdict((1, 29), 3, &[("1.28", 5), ("1.29", 4)]).is_err());
+    // Backwards rows fail.
+    assert!(ledger_verdict((1, 28), 5, &[("1.29", 4)]).is_err());
+}
+
 /// Every entry MUST carry the files it covers + why unification is wrong or
 /// pending. Stale entries are themselves a test failure (see below).
 ///
