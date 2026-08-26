@@ -62,9 +62,11 @@ only.
   docs/CONTACT_CENTER_STANDARDS.md marks G2 shipped and G6 closed.
 - Validation: full gate green (`cargo fmt --check`; `cargo clippy
   --all-targets --features bench -- -D warnings`; `cargo test --features
-  bench` — 943 passed, 1 ignored, +9 vs v1.28.37's 934). No schema change;
-  schema-contract test untouched by design (additive code only). No route
-  changes → no openapi.yaml movement.
+  bench` — server main bin **937** passed / 6 ignored (**+3**: two new
+  meta-tests + the renamed/extended parity pin), lib **206** / 1, brain 19,
+  mcp 37, bench 6, eval 4, metrics 8). No schema change; schema-contract
+  test untouched by design (additive code only). No route changes → no
+  openapi.yaml movement.
 - **Honest ceilings:** `customer_effort_events` remains a defined-but-unwired
   proxy (scorer integration next release); `gap_rate_units` still pins to 0
   until the flywheel release; the dictionary covers metrics at sign/read

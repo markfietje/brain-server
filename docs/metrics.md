@@ -1,11 +1,26 @@
 # Metrics dictionary — the normative definitions
 
 Every scoreboard field the API serves (`GET /workflow/scoreboard`) is defined
-here exactly once: formula, source (data lineage), window semantics, and the
-industry citation it follows. This file is pinned by the meta-test
+here exactly once: formula, source (data lineage), window semantics,
+inclusion/exclusion rules, unit, tier availability, and the industry citation
+it follows. This file is pinned by the meta-test
 `scoreboard_fields_have_dictionary_entries` — a scoreboard field cannot ship
 without its dictionary entry. All rates are **integer ten-thousandths**
-(10000 = 100%).
+(10000 = 100%); per-thousand densities are hundredths; times are seconds;
+money is cents.
+
+**Machine-readable twin:** [`metrics/metrics.json`](../metrics/metrics.json)
+(schema-versioned, `scorer_version`-stamped) mirrors every entry below with
+the full attribute set structured — name · formula · unit · source
+table.column · window · inclusion/exclusion · citation · tier availability.
+Two meta-tests pin the twins together:
+`every_scoreboard_field_has_a_dictionary_entry` (docs ↔ code ↔ JSON names)
+and `every_entry_source_table_exists_in_schema` (every lineage table exists in
+`src/migration.rs`). Benchmarks are quoted as reference points, never claims.
+
+**Tier availability:** every metric here is available on every deployment tier
+(T1 solo → T4 global) — tiers are config, not forks; no metric is gated behind
+a tier.
 
 Posture: *documented measurement*, not certification. Fields whose data
 source does not exist in this system are **not emitted** (no invented
@@ -62,6 +77,17 @@ instrument exists here (VoC surveys stay CRM-side per ISO 10004); this is the
 lineage-derived twin. It lands as a scored dimension in the next scorer
 version with gold-set families extended; until then it is defined here so the
 formula is fixed before any code emits it.
+
+## Metric versioning (the scorer_version discipline)
+
+The dictionary is versioned with the scorer: `SCORER_VERSION` (in
+`crates/brain-engine-sdk/src/pure/calibration.rs`, re-exported as
+`CALIBRATION_SCORER_VERSION`) stamps every `CalibrationRecord` on the audit
+chain, every gold-pack case (`crates/gold-sets` — `GoldCase::validate`
+fail-closed rejects a mismatched pack), and `metrics/metrics.json`. **A
+formula change bumps the version, this file, the JSON twin, and the gold-pack
+expectations together, in one PR** — pinned by the meta-test
+`formula_change_bumps_scorer_version`.
 
 ## Deliberately absent (scope guards)
 

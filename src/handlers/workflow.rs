@@ -967,57 +967,95 @@ mod scoreboard_tests {
         );
     }
 
-    /// scoreboard_fields_have_dictionary_entries — docs↔code parity meta-test:
-    /// every field the scoreboard emits carries a metrics-dictionary entry,
-    /// and the dictionary lists nothing the scoreboard does not emit.
-    #[test]
-    fn scoreboard_fields_have_dictionary_entries() {
-        const SCOREBOARD_FIELDS: &[&str] = &[
-            "fcr_units",
-            "repeat_contact_rate_units",
-            "correctness_units",
-            "override_rate_units",
-            "gap_rate_units",
-            "abstention_rate_units",
-            "guidance_acceptance_units",
-            "handoff_completeness_units",
-            "audit_green",
-            "escalation_honored_units",
-            "runs_scored",
-            "calibration_report_emitted",
-            "kcs_linkage_rate_units",
-            "searched_found_rate_units",
-            "article_freshness_median_age_secs",
-            "self_service_deflection_units",
-            "kb_feedback_total",
-            "kb_hot_topics",
-            "return_rate_units",
-            "warranty_claim_rate_units",
-            "ftfr_units",
-            "returnless_share_units",
-            "aftersales_fraud_flag_rate_units",
-            "goodwill_total_cents_30d",
-            "goodwill_entries_30d",
-            "goodwill_unaudited_excluded_30d",
-            // v1.28.35 Outreach: ISO 10004 VoC as data.
-            "voc_contacts_total",
-            "voc_complaints_total",
-            "voc_complaints_per_thousand_contacts_units",
-            // v1.28.36 Keystone: the re-ask is now counted.
-            "reask_rate",
-        ];
+    /// Lexicon: the canonical emitted-field list — shared by the docs↔code↔JSON
+    /// parity meta-tests below.
+    const SCOREBOARD_FIELDS: &[&str] = &[
+        "fcr_units",
+        "repeat_contact_rate_units",
+        "correctness_units",
+        "override_rate_units",
+        "gap_rate_units",
+        "abstention_rate_units",
+        "guidance_acceptance_units",
+        "handoff_completeness_units",
+        "audit_green",
+        "escalation_honored_units",
+        "runs_scored",
+        "calibration_report_emitted",
+        "kcs_linkage_rate_units",
+        "searched_found_rate_units",
+        "article_freshness_median_age_secs",
+        "self_service_deflection_units",
+        "kb_feedback_total",
+        "kb_hot_topics",
+        "return_rate_units",
+        "warranty_claim_rate_units",
+        "ftfr_units",
+        "refund_cycle_time_median_secs",
+        "returnless_share_units",
+        "aftersales_fraud_flag_rate_units",
+        "goodwill_total_cents_30d",
+        "goodwill_entries_30d",
+        "goodwill_unaudited_excluded_30d",
+        // v1.28.35 Outreach: ISO 10004 VoC as data.
+        "voc_contacts_total",
+        "voc_complaints_total",
+        "voc_complaints_per_thousand_contacts_units",
+        // v1.28.36 Keystone: the re-ask is now counted.
+        "reask_rate",
+    ];
+
+    /// Dictionary fields defined but deliberately not yet emitted by code
+    /// (formula fixed before any emitter ships — the Lexicon posture).
+    const PLANNED_DICTIONARY_FIELDS: &[&str] = &["customer_effort_events"];
+
+    fn metrics_doc() -> String {
         let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
-        let doc = std::fs::read_to_string(&doc_path)
-            .unwrap_or_else(|e| panic!("docs/metrics.md must exist and be readable: {e}"));
+        std::fs::read_to_string(&doc_path)
+            .unwrap_or_else(|e| panic!("docs/metrics.md must exist and be readable: {e}"))
+    }
+
+    fn metrics_json() -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("metrics/metrics.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("metrics/metrics.json must exist and be readable: {e}"));
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("metrics/metrics.json must parse: {e}"))
+    }
+
+    /// every_scoreboard_field_has_a_dictionary_entry — three-way docs↔code↔JSON
+    /// parity: every field the scoreboard emits carries a dictionary entry in
+    /// BOTH twins, and neither twin lists a field the scoreboard does not
+    /// emit (beyond the explicitly planned set).
+    #[test]
+    fn every_scoreboard_field_has_a_dictionary_entry() {
+        let doc = metrics_doc();
+        let json = metrics_json();
+        let entries = json["metrics"]
+            .as_array()
+            .unwrap_or_else(|| panic!("metrics.json must carry a metrics array"));
         for field in SCOREBOARD_FIELDS {
             assert!(
                 doc.contains(&format!("`{field}`")),
                 "metrics dictionary is missing an entry for `{field}`"
             );
+            assert!(
+                entries.iter().any(|m| m["name"] == *field),
+                "metrics.json twin is missing an entry for `{field}`"
+            );
         }
-        // Reverse parity: every backticked *_units / known boolean field in
-        // the dictionary's tables must be an emitted field — the dictionary
-        // cannot invent scoreboard fields.
+        // Reverse parity over both twins: nothing invented beyond the
+        // planned allowlist.
+        for entry in entries {
+            let name = entry["name"].as_str().unwrap_or_default();
+            if !SCOREBOARD_FIELDS.contains(&name) {
+                assert!(
+                    PLANNED_DICTIONARY_FIELDS.contains(&name),
+                    "metrics.json lists `{name}` which the scoreboard does not emit \
+                     and the plan does not reserve"
+                );
+            }
+        }
         for line in doc.lines().filter(|l| l.starts_with("| `")) {
             let name = line
                 .trim_start_matches("| `")
@@ -1040,6 +1078,138 @@ mod scoreboard_tests {
                 );
             }
         }
+        // The twin is schema-versioned and every entry is fully attributed.
+        assert!(
+            json["schema_version"].is_u64(),
+            "metrics.json must pin a schema_version"
+        );
+        for entry in entries {
+            let name = entry["name"].as_str().unwrap_or_default();
+            for attr in [
+                "unit",
+                "formula",
+                "sources",
+                "window",
+                "inclusion",
+                "exclusion",
+                "citation",
+                "tier_availability",
+                "status",
+            ] {
+                assert!(
+                    entry[attr].is_string() || entry[attr].is_array(),
+                    "metrics.json entry `{name}` is missing attribute `{attr}`"
+                );
+            }
+        }
+    }
+
+    /// every_entry_source_table_exists_in_schema — every lineage table AND
+    /// column named in the machine twin must exist in the real migrated
+    /// schema (in-memory run of src/migration.rs). A renamed/dropped table
+    /// or column that leaves a stale source reference behind fails here,
+    /// not in production reads. Reserved (planned) entries pin tables only.
+    #[test]
+    fn every_entry_source_table_exists_in_schema() {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        brain_server::migration::run_migration(&mut conn, 0)
+            .unwrap_or_else(|e| panic!("in-memory migration must succeed: {e}"));
+        let json = metrics_json();
+        for entry in json["metrics"]
+            .as_array()
+            .unwrap_or_else(|| panic!("metrics.json must carry a metrics array"))
+        {
+            let name = entry["name"].as_str().unwrap_or_default();
+            let planned = entry["status"] == "planned";
+            for source in entry["sources"].as_array().unwrap_or(&Vec::new()) {
+                let table = source["table"].as_str().unwrap_or_default();
+                let n: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                        rusqlite::params![table],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(
+                    n == 1,
+                    "metrics.json entry `{name}` cites table `{table}` which the schema does not define"
+                );
+                if planned {
+                    continue;
+                }
+                let column = source["column"].as_str().unwrap_or_default();
+                if column.is_empty() || column == "-" {
+                    continue;
+                }
+                let cols: Vec<String> = {
+                    let mut stmt = conn
+                        .prepare(&format!("PRAGMA table_info({table})"))
+                        .unwrap();
+                    let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+                    rows.filter_map(|r| r.ok()).collect()
+                };
+                assert!(
+                    cols.iter().any(|c| c == column),
+                    "metrics.json entry `{name}` cites `{table}.{column}` which the schema does not define"
+                );
+            }
+        }
+    }
+
+    /// formula_change_bumps_scorer_version — the versioning discipline: the
+    /// SCORER_VERSION constant stamps the gold packs fail-closed, the JSON
+    /// twin pins the same value, and the documented law says a formula change
+    /// moves all of them in one PR. Drift between any two anchors fails here.
+    #[test]
+    fn formula_change_bumps_scorer_version() {
+        let json = metrics_json();
+        assert_eq!(
+            json["scorer_version"].as_str().unwrap_or_default(),
+            brain_engine_sdk::calibration::CALIBRATION_SCORER_VERSION,
+            "metrics.json scorer_version drifted from SCORER_VERSION"
+        );
+        let gold_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/gold-sets/gold");
+        let mut checked = 0usize;
+        let pack = std::fs::read_to_string(gold_dir.join("qc_report.json"))
+            .unwrap_or_else(|e| panic!("gold pack qc_report.json must be readable: {e}"));
+        for line in pack.lines() {
+            if let Some(rest) = line.trim().strip_prefix("\"scorer_version\"") {
+                let stated = rest
+                    .trim_start_matches([':', ' ', '"'])
+                    .trim_end_matches([',', '"']);
+                assert_eq!(
+                    stated,
+                    brain_engine_sdk::calibration::CALIBRATION_SCORER_VERSION,
+                    "gold pack qc_report.json pins a stale scorer_version"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "gold pack must pin a scorer_version");
+        for entry in std::fs::read_dir(gold_dir.join("gdl_cases"))
+            .unwrap_or_else(|e| panic!("gdl_cases dir must be readable: {e}"))
+        {
+            let path = entry
+                .unwrap_or_else(|e| panic!("gdl_cases entry readable: {e}"))
+                .path();
+            let raw = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{} readable: {e}", path.display()));
+            assert!(
+                raw.contains(&format!(
+                    "\"scorer_version\": \"{}\"",
+                    brain_engine_sdk::calibration::CALIBRATION_SCORER_VERSION
+                )),
+                "{} pins a stale scorer_version",
+                path.display()
+            );
+        }
+        let doc = metrics_doc();
+        assert!(
+            doc.contains("formula change bumps the version"),
+            "docs/metrics.md must state the one-PR version-bump law"
+        );
     }
 
     /// Keystone M3: metrics_dictionary_has_reask_rate_entry

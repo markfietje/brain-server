@@ -1,0 +1,595 @@
+{
+  "schema_version": 1,
+  "scorer_version": "1",
+  "notes": "Machine-readable twin of docs/metrics.md (the normative dictionary). Pinned by the parity meta-tests in src/handlers/workflow.rs (scoreboard_tests) and src/docs_truth.rs. A formula change bumps scorer_version, this file, docs/metrics.md, and the gold-pack expectations in ONE PR. Units: rates are integer ten-thousandths (10000 = 100%); per-thousand densities are hundredths; times are seconds; money is cents. Benchmarks are reference points, never claims.",
+  "metrics": [
+    {
+      "name": "fcr_units",
+      "unit": "ten-thousandths",
+      "formula": "runs_without_repeat / runs_scored over the scored cohort; a recurrence recorded inside the FCR window marks its predecessor not-first-contact-resolved",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        },
+        {
+          "table": "audit_events",
+          "column": "target_hash"
+        }
+      ],
+      "window": "BRAIN_FCR_WINDOW_DAYS repeat-attribution window, default 7 days, closed boundary (age <= window counts)",
+      "inclusion": "scored runs in the last-1000 cohort with a resolvable repeat-contact record or none",
+      "exclusion": "recurrences older than the window never attribute back; unscored runs never enter",
+      "citation": "SQM-class FCR repeat-window methodology; COPC R8.0 FCR discipline",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "repeat_contact_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "runs_with_repeat / runs_scored — complement of FCR",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        }
+      ],
+      "window": "BRAIN_FCR_WINDOW_DAYS, default 7 days",
+      "inclusion": "same scored cohort as fcr_units",
+      "exclusion": "deflection is never traded against this metric",
+      "citation": "COPC R8.0; docs/kb-deflection.md",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "correctness_units",
+      "unit": "ten-thousandths",
+      "formula": "share of runs whose recorded findings contain no contradiction/incorrect marker",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        }
+      ],
+      "window": "last 1000 runs (scored cohort)",
+      "inclusion": "runs with recorded findings",
+      "exclusion": "contradiction-marked findings fail the run",
+      "citation": "ISO 18295-1 process-clause posture; AI Act Art.12 traceability",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "override_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "share of workflow steps where human guidance overrode the engine's step output",
+      "sources": [
+        {
+          "table": "workflow_steps",
+          "column": "state_json"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "all derived StepRows of the cohort",
+      "exclusion": "steps without a recorded expected/actual pair",
+      "citation": "HITL law (COMPLIANCE.md); NIST AI RMF",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "gap_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "reserved: knowledge-gap rate from proposals, not runs alone; pinned to 0 in the run-derived scorer until the flywheel release emits it non-zero",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "kind"
+        }
+      ],
+      "window": "—",
+      "inclusion": "future: gap-class proposals over closed runs",
+      "exclusion": "never inferred from run outcomes alone",
+      "citation": "KCS v6 Solve-loop gap capture",
+      "tier_availability": "all tiers",
+      "status": "planned"
+    },
+    {
+      "name": "abstention_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "share of steps where the engine abstained rather than guessed",
+      "sources": [
+        {
+          "table": "workflow_steps",
+          "column": "state_json"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "all derived steps",
+      "exclusion": "none — higher abstention is honesty, never penalized",
+      "citation": "AI Act Art.14 human-oversight posture",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "guidance_acceptance_units",
+      "unit": "ten-thousandths",
+      "formula": "accepted / (accepted + rejected); SCALE (10000) when none offered",
+      "sources": [
+        {
+          "table": "workflow_steps",
+          "column": "state_json"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "steps with offered guidance only",
+      "exclusion": "steps without offered guidance do not dilute the denominator",
+      "citation": "COPC R8.0 QA calibration discipline",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "handoff_completeness_units",
+      "unit": "ten-thousandths",
+      "formula": "share of runs reaching completed status with an I-PASS-complete handover record",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "status"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "completed runs",
+      "exclusion": "non-completed statuses; packets failing src/workflow/relay.rs::packet_missing",
+      "citation": "I-PASS handover research; COPC service-level management",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "audit_green",
+      "unit": "boolean",
+      "formula": "every scored run references at least one workflow audit row (fail-closed conjunction)",
+      "sources": [
+        {
+          "table": "audit_events",
+          "column": "target_hash"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "hash linkage hash(\"run:{id}\") of kind 'workflow'",
+      "exclusion": "absence never counts green; non-workflow audit kinds never satisfy",
+      "citation": "AI Act Art.12 logging; SOC 2 readiness",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "escalation_honored_units",
+      "unit": "ten-thousandths",
+      "formula": "share of runs where recorded escalation requests were honored; defaults true only when nothing was requested",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "runs with an escalation_honored record or no escalation requested",
+      "exclusion": "none",
+      "citation": "ISO 18295-1 customer-handling clauses",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "runs_scored",
+      "unit": "count",
+      "formula": "count of runs in the scored cohort",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "id"
+        }
+      ],
+      "window": "most recent 1000 by id",
+      "inclusion": "all runs in the window regardless of kind",
+      "exclusion": "older runs beyond the cap",
+      "citation": "—",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "return_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "return_runs / runs_scored",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "kind = 'return'",
+      "exclusion": "—",
+      "citation": "returns/warranty KPI set (ClaimLane canon)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "warranty_claim_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "warranty_runs / runs_scored",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "kind = 'warranty_claim'",
+      "exclusion": "—",
+      "citation": "returns/warranty KPI set",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "ftfr_units",
+      "unit": "ten-thousandths",
+      "formula": "repair-field runs with no repeat inside the FCR window / all repair-field runs; empty cohort scores 0",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        },
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        }
+      ],
+      "window": "BRAIN_FCR_WINDOW_DAYS, default 7 days",
+      "inclusion": "kind = 'repair_field'",
+      "exclusion": "absence of repair-field work is scored 0, never dressed up as perfection",
+      "citation": "SQM-class repeat-window methodology; FSM FTFR benchmarks",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "refund_cycle_time_median_secs",
+      "unit": "seconds (median)",
+      "formula": "median(created_at → updated_at) over resolved return/warranty runs; 0 when none resolved",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "created_at"
+        },
+        {
+          "table": "workflow_runs",
+          "column": "updated_at"
+        },
+        {
+          "table": "workflow_runs",
+          "column": "status"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "terminal-resolved return/warranty runs",
+      "exclusion": "unresolved runs",
+      "citation": "refund cycle-time KPI set",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "returnless_share_units",
+      "unit": "ten-thousandths",
+      "formula": "returnless-disposed RETURN runs / all return runs; 0 when cohort empty",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        },
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "kind = 'return' with state_json.returnless",
+      "exclusion": "returnless refunds always pair with fraud review (disposition ranking gates it)",
+      "citation": "returnless-refund/fraud-detection pairing (2026 practice)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "aftersales_fraud_flag_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "fraud-flagged RETURN runs / all return runs; 0 when cohort empty",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        },
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        }
+      ],
+      "window": "last 1000 runs",
+      "inclusion": "kind = 'return' with state_json.fraud_flagged",
+      "exclusion": "signals inform HITL only — they never auto-deny",
+      "citation": "fraud-signals-feed-HITL posture",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "goodwill_total_cents_30d",
+      "unit": "cents (sum)",
+      "formula": "sum(amount_cents) over APPROVED remedy proposals in the trailing 30 days whose approval audit row verifies",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "content"
+        },
+        {
+          "table": "audit_events",
+          "column": "target_hash"
+        },
+        {
+          "table": "audit_events",
+          "column": "detail_hash"
+        }
+      ],
+      "window": "trailing 30 days",
+      "inclusion": "kind='complaint_remedy' status='approved' with verifiable audit linkage",
+      "exclusion": "an unaudited remedy never aggregates (fail-closed)",
+      "citation": "ISO 10002 remedy discipline",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "goodwill_entries_30d",
+      "unit": "count",
+      "formula": "count of audited approved remedies in the window",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "id"
+        }
+      ],
+      "window": "trailing 30 days",
+      "inclusion": "same scan as goodwill_total_cents_30d",
+      "exclusion": "same exclusions",
+      "citation": "—",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "goodwill_unaudited_excluded_30d",
+      "unit": "count",
+      "formula": "approved remedies EXCLUDED for missing audit linkage",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "status"
+        }
+      ],
+      "window": "trailing 30 days",
+      "inclusion": "approved remedies without verifiable audit rows — surfaced, never folded away",
+      "exclusion": "—",
+      "citation": "fail-closed evidence law",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "voc_contacts_total",
+      "unit": "count",
+      "formula": "count of workflow runs — the contact volume the VoC ratio denominates",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "id"
+        }
+      ],
+      "window": "rolling (all runs)",
+      "inclusion": "all runs",
+      "exclusion": "CSAT/DSAT survey instruments stay CRM-side (ISO 10004)",
+      "citation": "ISO 10004 satisfaction monitoring as data",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "voc_complaints_total",
+      "unit": "count",
+      "formula": "count of runs with kind = 'complaint'",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        }
+      ],
+      "window": "rolling (all runs)",
+      "inclusion": "complaint-kind runs (the ISO 10002 register posture)",
+      "exclusion": "—",
+      "citation": "ISO 10002 register posture",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "voc_complaints_per_thousand_contacts_units",
+      "unit": "hundredths (per-thousand × 100)",
+      "formula": "complaints * 100000 / max(contacts, 1); zero contacts score 0",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "kind"
+        }
+      ],
+      "window": "rolling (all runs)",
+      "inclusion": "all complaint runs over all contacts",
+      "exclusion": "survey-derived DSAT stays CRM-side",
+      "citation": "ISO 10004 complaints-per-thousand-contacts KPI canon",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "calibration_report_emitted",
+      "unit": "boolean",
+      "formula": "true when THIS read crossed the weekly boundary and landed a machine-generated CalibrationRecord on the audit chain",
+      "sources": [
+        {
+          "table": "audit_events",
+          "column": "detail_hash"
+        }
+      ],
+      "window": "weekly cadence",
+      "inclusion": "the current week's calibration write",
+      "exclusion": "monthly human sign-off is a separate audited step",
+      "citation": "monthly signed-recalibration posture (COMPLIANCE.md)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "kcs_linkage_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "share of published knowledge linked from closed-run evidence",
+      "sources": [
+        {
+          "table": "knowledge",
+          "column": "kcs_state"
+        },
+        {
+          "table": "case_articles",
+          "column": "case_ref"
+        }
+      ],
+      "window": "rolling (all governed articles)",
+      "inclusion": "published/governed articles linked from closed cases",
+      "exclusion": "ungoverned drafts",
+      "citation": "KCS v6 Evolve loop",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "searched_found_rate_units",
+      "unit": "ten-thousandths",
+      "formula": "searched_found / (searched_found + searched_not_found) over case-article SIR events",
+      "sources": [
+        {
+          "table": "case_articles",
+          "column": "sir"
+        }
+      ],
+      "window": "rolling",
+      "inclusion": "recorded search events ending found or not-found",
+      "exclusion": "searches without a recorded SIR outcome",
+      "citation": "KCS v6 Solve loop (search-and-solve)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "article_freshness_median_age_secs",
+      "unit": "seconds (median)",
+      "formula": "median age since last review across governed articles",
+      "sources": [
+        {
+          "table": "knowledge",
+          "column": "created_at"
+        }
+      ],
+      "window": "rolling",
+      "inclusion": "articles with kcs_state != 'none'",
+      "exclusion": "retired/unmanaged rows",
+      "citation": "KCS v6 article-health",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "self_service_deflection_units",
+      "unit": "ten-thousandths",
+      "formula": "solved-proof feedback / total on-page KB feedback — INDICATIVE only",
+      "sources": [
+        {
+          "table": "findings",
+          "column": "claim"
+        }
+      ],
+      "window": "rolling",
+      "inclusion": "findings with claim = 'kb_feedback'",
+      "exclusion": "never traded against repeat_contact_rate_units; governed by docs/kb-deflection.md",
+      "citation": "docs/kb-deflection.md; KCS v6 self-service",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "kb_feedback_total",
+      "unit": "count",
+      "formula": "total on-page feedback events counted",
+      "sources": [
+        {
+          "table": "findings",
+          "column": "claim"
+        }
+      ],
+      "window": "rolling",
+      "inclusion": "claim = 'kb_feedback'",
+      "exclusion": "—",
+      "citation": "—",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "kb_hot_topics",
+      "unit": "list (slug, count)",
+      "formula": "top slugs by feedback count above KB_HOT_TOPIC_THRESHOLD",
+      "sources": [
+        {
+          "table": "findings",
+          "column": "claim"
+        }
+      ],
+      "window": "rolling",
+      "inclusion": "slugs strictly above the threshold",
+      "exclusion": "below-threshold slugs stay out of the report",
+      "citation": "KCS v6 Evolve (content-defect queue)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "reask_rate",
+      "unit": "hundredths",
+      "formula": "re-ask events (case/reask) / closed cases",
+      "sources": [
+        {
+          "table": "outbox",
+          "column": "topic"
+        },
+        {
+          "table": "crm_cases",
+          "column": "status"
+        }
+      ],
+      "window": "rolling; re-ask attribution within BRAIN_REASK_WINDOW_DAYS (default 3 days)",
+      "inclusion": "three deterministic sources only: crm_merge (connector merge/reopen events), marked (operator reask note), derived (exact hashed-subject duplicate heuristic, HITL-gated as case_merge_suggested)",
+      "exclusion": "no fuzzy matching; no surveys",
+      "citation": "CXC customer-effort canon (effort-proxy dimension); Keystone v1.28.36",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "customer_effort_events",
+      "unit": "points per case",
+      "formula": "repeats×2 + switches×1 + handovers×3 + re_asks×2 (frontdesk::effort_proxy) — deterministic CES proxy from lineage",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        },
+        {
+          "table": "outbox",
+          "column": "topic"
+        }
+      ],
+      "window": "per case lifetime",
+      "inclusion": "lineage-recorded repeats, channel switches, handovers, re-asks",
+      "exclusion": "no survey instrument exists here (VoC surveys stay CRM-side per ISO 10004); lands as a scored dimension in the next scorer version with gold-set families extended — defined here so the formula is fixed before any code emits it",
+      "citation": "CES lineage-derived twin; CXC customer-effort canon",
+      "tier_availability": "all tiers",
+      "status": "planned"
+    }
+  ]
+}
