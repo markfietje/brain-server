@@ -6,8 +6,7 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
 **Plugin version:** the in-tree package is at **0.5.0**. It is published as
-`@markfietje/brain-server-openclaw` (npm) and mirrored at
-`~/Sites/openclaw/extensions/brain-server/` (the openclaw monorepo ships it under
+`@markfietje/brain-server-openclaw` (npm) (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
 `../CHANGELOG.md` (see the **plugin 0.4.x/0.5.x** rows: 0.4.3 provenance, 0.4.4 fence-forgery
