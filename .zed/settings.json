@@ -21,6 +21,7 @@
       "language_servers": [
         "tailwindcss-intellisense-css",
         "!vscode-css-language-server",
+        "!tailwindcss-language-server",
         "..."
       ]
     }

@@ -157,7 +157,7 @@
     min-height: 44px; /* iOS HIG / Material touch target floor (M3.2) */
   }
   .tab-link-active { @apply text-accent font-medium; }
-  .tab-badge { @apply absolute -top-0.5 end-1 rounded-full bg-accent/15 px-1.5 text-[10px] leading-tight text-accent; font-variant-numeric: tabular-nums; }
+  .tab-badge { @apply absolute -top-0.5 inset-e-1 rounded-full bg-accent/15 px-1.5 text-[10px] leading-tight text-accent; font-variant-numeric: tabular-nums; }
   .tab-badge-alert { @apply bg-warn/20 text-warn; }
 
   /* v1.16.6 M3 — context drawer → bottom sheet on phones.
@@ -165,7 +165,7 @@
    * border-inline-start): the drawer mirrors under [dir="rtl"] with no
    * duplicate rule set. */
   .drawer {
-    @apply fixed end-0 top-0 h-screen w-80 border-s border-border bg-card p-4
+    @apply fixed inset-e-0 top-0 h-screen w-80 border-s border-border bg-card p-4
       overflow-auto shadow-sm;
   }
   @media (max-width: 639px) {

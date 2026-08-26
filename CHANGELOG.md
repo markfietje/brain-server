@@ -77,6 +77,10 @@ two additive read-only routes.
   instructions in `docs/compliance.md`. The Art 30 register's remaining gap
   is pure content — controller identity and lawful bases are facts only an
   operator can certify; the machinery refuses to fake them.
+- Client stylesheet hygiene: `end-0`/`end-1` renamed to the v4-canonical
+  `inset-e-0`/`inset-e-1` (byte-equivalent compiled output); project-local
+  Zed settings pin the Tailwind-aware CSS language server so editors stop
+  flagging valid `@theme`/`@apply` at-rules.
 - Validation: full gate green (server main bin **942** passed / 6 ignored,
   **+5**); clippy `-D warnings` clean; fmt clean.
 
