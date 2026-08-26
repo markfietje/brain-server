@@ -4,8 +4,20 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.28.17 "Settle" (2026-08-23) — workflow settlement guarantees become contract law: budget enforcement reachable and fail-closed (`BudgetExceeded` denies dispatch before any handler runs), cooperative cancel settles exactly between steps, event idempotency keys derive from the persisted step count (resumed runs no longer swallow event twins), and `CancellationToken::clone` shares one signal cell. The v1.28 line (FirstLight → Anvil → Settle) shipped the real governed workflow loop: role-gated run/state/events/answer/steering routes, AskHuman answers digest-bound to the live question, all four mediated hostcall kinds (`exec`/`http`/`events`/`ui`), and the repaired fail-closed `/workflow/scoreboard`.
-- **Latest client version:** 1.28.14 — ships alongside the server.
+- **Latest server version:** 1.28.35 "Outreach" (2026-08-26) — proactive care, consent-first: a hashed-subject consent registry (revocation-wins, fail-closed verdicts), campaigns as HITL proposals gated per recipient BEFORE filing with consent proof riding every included recipient, approved campaigns export for CRM-side execution only (no send engine exists anywhere), the consent-gated Order-of-Care post-close follow-up, DSAR sweep erasing consent rows by re-hashing the subject, and ISO 10004 VoC fields on the scoreboard. Its predecessor 1.28.34 "Goodwill" shipped the full ISO
+  10002/10003 complaint lifecycle: the closed state chain as lineage events on
+  the audit chain, the remedy matrix as HITL proposals citing legal basis +
+  published conduct clause with role-tier approval caps that escalate exactly
+  one level over cap, a goodwill ledger aggregated only from audited remedies,
+  and the national-body ADR packet per Reg. 2024/3228 (the EU ODR platform is
+  discontinued). Financial execution never happens here — every remedy is a
+  decision record. Earlier in the line, v1.28 FirstLight → Settle
+  (1.28.15–17) shipped the real governed workflow loop itself: role-gated
+  run/state/events/answer/steering routes, AskHuman answers digest-bound to
+  the live question, all four mediated hostcall kinds
+  (`exec`/`http`/`events`/`ui`), and the repaired fail-closed
+  `/workflow/scoreboard`.
+- **Latest client version:** 1.28.23 — ships alongside the server.
 - **Latest plugin version:** 0.4.7 (2026-08-23) — drift reconciliation + hardening; rides brain-server `v1.28.14` and later.
 - **Next milestone:** v1.29 "Acuity", then v2.0.0 "Cortex".
 - **v2.0.0 "Cortex"** (multi-team tenancy) remains the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
@@ -60,6 +72,32 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | v1.25.0 | PH-Compliant | Breach-notification workflow + PIA + scraping provenance |
 | v1.26.x | Cross-Border | Transfer register + jurisdiction rules + TIA/DPA templates |
 | v1.27.x | Harden/Console/Review | Fail-closed erasure + fence forgeability, backup v3, console `--json`, i18n truth, client reviewer calibration, silent-failure sweep, recall-cost + PRF weights, client console dashboard, edge supersession + history (1.27.22 "Cascade") |
+
+## The 1.28 harness → conformance lines (v1.28.15 → v1.28.34)
+
+| Release | Name | What shipped |
+|---|---|---|
+| 1.28.15 | FirstLight | The governed loop runs for real — the steward-harness stub becomes the engine; the AskHuman gate closes |
+| 1.28.16 | Anvil | Every engine tool-effect crosses one mediated, countable, auditable hostcall door (`exec`/`http`/`events`/`ui`) |
+| 1.28.17 | Settle | Settlement guarantees as contract tests: budget fails closed before any handler runs, cancel settles between steps, resumed runs keep exactly-once event keys |
+| 1.28.18 | Lineage | Events remember where they came from: `parent_id` ancestry, checkpoints become events, rewind branches instead of deleting, the I-PASS handoff packet endpoint |
+| 1.28.19 | Witness | Client attestation: per-plugin mount evidence with the Anchor-signed boot manifest; persistent reconnecting SSE; MCP Streamable HTTP/SSE transport |
+| 1.28.20 | Cockpit | Desktop + mobile become cargo features of one client codebase; transcript renderers, evidence view, lineage timeline, scoreboard panel |
+| 1.28.21 | Fathom | Virtual unlimited context: one run per case end-to-end, deterministic context-window derivation, keyset transcript windowing, resumable event stream |
+| 1.28.22 | Bridges | CRM intake: Zendesk/Salesforce/Genesys Cloud case bodies flow through the HITL gate and open governed `support-case` runs (`crm_cases` linkage) |
+| 1.28.23 | Evolve | The KCS loop closes: article lifecycle states on knowledge rows, case↔article linkage, capture fires when a case closes solved |
+| 1.28.24 | Beacon | Approved articles publish as a generated static public KB (`brain kb build`) behind the strict public seam; KB deflection feedback |
+| 1.28.25 | Watchbill | Follow-the-sun shifts: pure time-table ring arithmetic — which site owns the queue, derived handover overlap windows |
+| 1.28.26 | Crew | Presence roster without a background worker: TTL decay at read time, shift/role/skills badges, proposal-gated skills tags |
+| 1.28.27 | Relay | The one-click handover: offer/accept/decline over the I-PASS packet; incomplete packets refuse loudly naming what's missing |
+| 1.28.28 | Channel | The case gets a room: screened, case-scoped human notes on the same lineage; `@skill:`/`@principal` mentions become swarm invites |
+| 1.28.29 | Mesh | Agents as named colleagues: signed Agent Cards re-verified at use, agent→agent delegation as lineage events, working-set arbiter |
+| 1.28.30 | Parcels | Signed site-to-site knowledge parcels: export approved-only rows, verify-before-write import landing as proposals, ledger chained into audit |
+| 1.28.31 | Charter | The conformance pack (G1–G10): complaint ack/response clocks as policy stamps, normative metrics dictionary, WCAG 2.2 AA CI gate |
+| 1.28.32 | Frontdesk | One intake for every post-sale worktype: 13 intent classes, worktype policy rows, entitlement vocabulary |
+| 1.28.33 | Returns | Aftersales dispositions: deterministic return/RMA ranker citing its basis, GPSR recall mode, returnless/fraud KPIs |
+| 1.28.34 | Goodwill | The full ISO 10002/10003 complaint lifecycle: lineage-event state machine, HITL remedy matrix with escalating approval caps, national-body ADR packet, goodwill ledger |
+| 1.28.35 | Outreach | Consent-first proactive care: hashed-subject consent registry, per-recipient-gated campaign proposals (export-only), Order-of-Care follow-up, ISO 10004 VoC scoreboard fields |
 
 ## Milestone themes
 

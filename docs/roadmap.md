@@ -10,20 +10,20 @@ the full per-version record is
 
 ## Current status
 
-**v1.27.x — the current server line (1.27.22 "Cascade").** Brain Server ships a
+**v1.28.x — the current server line (1.28.34 "Goodwill").** Brain Server ships a
 Dioxus GUI (web + desktop + iOS + Android from one Rust codebase) on top of a
-mature server. The v1.27 line is the hardening + operator-surface line: fail-
+mature server. The v1.27 line was the hardening + operator-surface line: fail-
 closed erasure + fence-forgeability closes (1.27.19–1.27.21), the backup v3
 envelope (1.27.17), per-IP rate limiting + fail-closed identity (1.27.16),
 review-armour approvals that bind to the displayed bytes (1.27.12), role-gated
 console views + a `--json` CLI envelope (1.27.20), and the i18n truth pass
-(1.27.20). The v1.28 line makes the governed workflow real: 1.28.15
-"FirstLight" runs the loop for real over new role-gated routes, 1.28.16
-"Anvil" mediates every engine tool-effect through one auditable hostcall door,
-and the latest release, 1.28.17 "Settle", turns the engine's settlement
-guarantees into contract tests — budget enforcement fails closed before any
-handler runs, cooperative cancel settles exactly between steps, and resumed
-runs keep exactly-once event keys.
+(1.27.20). The v1.28 line shipped the governed loop from FirstLight through
+complaints/aftersales/frontdesk: 1.28.15 "FirstLight" runs the loop for real
+over new role-gated routes, 1.28.16 "Anvil" mediates every engine tool-effect
+through one auditable hostcall door, 1.28.17 "Settle" turns the engine's
+settlement guarantees into contract tests, **1.28.34 "Goodwill"** closes the
+ISO 10002/10003 complaint lifecycle on workflow lineage events, and
+**1.28.35 "Outreach"** adds consent-first proactive care.
 
 The server core (retrieval, graph, governance) is stable and heavily tested
 (800+ tests across the workspace).

@@ -1,8 +1,9 @@
 # Brain Server Benchmarks — "Better than QMD" measurement plan
 
-> Status: **scaffold / pre-results.** No benchmark has been executed yet. All result
-> rows are `PENDING`. This document defines the *reproducible* protocol; numbers land in
-> the tables only after a run on the target hardware (including the 4 GB ARM edge).
+> Status: **measured, incrementally.** The protocol below is the reproducible
+> contract; dated result sections (capacity envelopes v0.9.9+, recall-quality
+> tables v1.17.4+, tier smokes v1.28+) live under [Results](#results--measured-incrementally).
+> Rows not yet re-run on newer hardware remain marked as such in place.
 >
 > Companion files: `tests/metrics.rs` (pure metric functions + unit tests) and
 > `tests/fixtures/eval_queries.md` (frozen judged query set).
@@ -201,9 +202,11 @@ kill $SERVER_PID
 > raw captured ranks, the `Relevant:` judgments, machine spec, model versions, and the
 > computed tables alongside this file.
 
-## Results — PENDING
+## Results — measured incrementally
 
-All rows below are **PENDING — run on target hardware (incl. 4 GB ARM); not yet executed.**
+Each dated subsection below is a real captured run; the protocol above makes it
+repeatable. Where a row predates the current release it is labeled with its
+run date and commit — re-run before comparing across releases.
 
 > - **Latency & RSS**: `cargo run --release --features bench --bin bench` against a running server (`brain`). Run on target hardware and paste the output here.
 > - **Recall quality**: `cargo test --release -- --ignored --nocapture eval_recall_harness` (loads the model2vec weights; directional signal on the 10-doc smoke set). Expand to ≥100 judged queries before drawing release-blocking conclusions.

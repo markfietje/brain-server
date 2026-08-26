@@ -8,7 +8,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.28.32-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.28.35-blue.svg)](#)
   [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
   [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
   [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
@@ -21,7 +21,7 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 <p align="center">
 
   [![UMP Conformance](https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg)](docs/universal-memory-protocol.md)
-  [![Tests](https://img.shields.io/badge/tests-1176%20passed-brightgreen.svg)](#)
+  [![Tests](https://img.shields.io/badge/tests-1189%20passed-brightgreen.svg)](#)
   [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
   [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
   [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)
@@ -50,11 +50,12 @@ That is the whole pitch: zero per-query cost, zero data egress, zero recall late
 ## Features
 
 - **Hybrid retrieval.** Vector KNN plus lexical FTS5, merged with Reciprocal Rank Fusion and deterministic PRF expansion. Every result carries provenance.
-- **Knowledge graph.** Entities and relationships extracted from `[[relation::entity]]` in markdown, with faithful multi-hop explanations.
+- **Knowledge graph.** Entities and relationships extracted by the deterministic linker (headings, bold terms, code spans, typed verb patterns) plus wikilinks and legacy `[[relation::entity::...]]` annotations in markdown, with faithful multi-hop explanations and bi-temporal version lineage.
 - **Temporal evidence.** Every ingest records `observed_at`, `valid_from`, and `valid_to`. Ask for any point in time and get the fact as it was then.
 - **Honest when it is unsure.** Recall abstains with `{decision: "low_confidence"}` instead of returning a confident wrong answer. `/verify` checks that a claim really appears in a chunk's text.
 - **Human-gated writes.** A proposal is scored, but it becomes memory only after a person approves it. Approvals bind to the exact bytes the reviewer saw (`content_digest`, mismatch = rejection), so a decision can never bless content that would render differently (v1.27.12).
-- **Governance and compliance.** An append-only SHA-256 audit chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
+- **Governance and compliance.** A keyed HMAC-SHA256 audit hash chain, a DSAR workflow that exports, purges, and issues a deletion certificate, and recall traces. Maps to ISO 42001, NIST AI RMF, and SOC 2.
+- **The governed case loop.** Since v1.28 the workflow engine runs on lineage events with branch-never-delete rewind: case rooms, I-PASS handovers, agent delegations, KCS article capture/publish, signed knowledge parcels between sites, the full ISO 10002/10003 complaint lifecycle (v1.28.34) — HITL remedy matrix with role-tier approval caps, national-body ADR packets, goodwill ledger over audited remedies only — and consent-first outreach (v1.28.35): campaigns are proposals gated per recipient, export-only, with no send engine anywhere.
 - **Universal Memory Protocol (UMP 1.0).** A full implementation of the open [Universal Memory Protocol](https://github.com/edihasaj/universal-memory-protocol) standard for portable agent memory: signed records, capability tokens, HTTP + MCP + file bindings, conformance level L3. Memory written here can be read by any other UMP agent.
 - **One daemon, fully embedded.** The `brain-server` daemon bundles SQLite + sqlite-vec (no external services) and runs anywhere Rust compiles; a `brain` CLI, `mcp`, `bench`, and connector binaries ride the same codebase.
 - **Easy to wire up.** OpenAI-compatible embeddings, an MCP server, a `brain` CLI, a Dioxus GUI, and a native OpenClaw memory plugin.
@@ -107,7 +108,7 @@ scripts/install-service.sh
 | | |
 |---|---|
 | **Docs site** | [brain-server Docs](https://markfietje.github.io/brain-server/) — the mdBook documentation site (Overview, Human in the loop, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap). |
-| **Docs** | [`docs/`](./docs/): Overview, Human in the loop, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Roadmap. |
+| **Docs** | [`docs/`](./docs/): Overview, Human in the loop, Quickstart, Architecture, Deployment, Security, Compliance, API, Reference, Metrics dictionary, Roadmap. |
 | **API contract** | [`API_CONTRACT.md`](./API_CONTRACT.md) plus `GET /openapi.yaml` at runtime. |
 | **Compliance** | [`COMPLIANCE.md`](./COMPLIANCE.md): ISO 42001, NIST AI RMF, SOC 2, GDPR · [`docs/AI_LITERACY.md`](./docs/AI_LITERACY.md): Art 4 literacy playbook · [`docs/RFP_RESPONSE_KIT.md`](./docs/RFP_RESPONSE_KIT.md): enterprise RFP mapping. |
 | **Security** | [`SECURITY.md`](./SECURITY.md) and [`THREAT_MODEL.md`](./THREAT_MODEL.md). |
@@ -230,6 +231,7 @@ The complete contract is served at `GET /openapi.yaml` and documented in [`API_C
 | POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + feedback and recency metrics. |
 | POST/GET | `/workflow/runs` · GET/PUT `/workflow/runs/{id}/state` · POST `/workflow/runs/{id}/events` · `/workflow/runs/{id}/answer` · GET+POST `/workflow/runs/{id}/steering` | Governed engine loop (v1.28): role-gated (`workflow`/`approve`), CAS state transitions with exactly-once event keys, AskHuman answers digest-bound to the live question, mediated hostcalls (v1.28.16–17). |
 | GET | `/workflow/scoreboard` · POST `/workflow/calibration/sign` · `/workflow/plugins/mount` | Outcome scoreboard over runs (DPO/admin), monthly human-signed calibration, plugin mount evidence. |
+| POST | `/workflow/runs/{id}/complaint/lifecycle` · `/complaint/remedy` · GET `/complaint/adr-packet` | Complaint lifecycle (v1.28.34): ISO 10002 state machine over lineage events, HITL remedy proposals citing legal basis + conduct clause, national ADR packet per Reg. 2024/3228. |
 | GET | `/export` · POST `/purge` · DELETE `/memory/{id}` | GDPR export and hard, audited deletion. |
 | GET | `/decayed` · `/retention` · `/art30` · `/retention/report` · `/snapshot/status` | Expiry review, per-kind retention, Art 30 register, snapshot self-check. |
 
