@@ -94,10 +94,11 @@ impl TierProfile {
 }
 
 fn strip_inline_comment(val: &str) -> String {
-    match val.split_once(" #") {
-        Some((v, _)) => v.trim().to_string(),
-        None => val.trim().to_string(),
+    // A bare `#` inside a value stays (only " #" separates a comment).
+    if let Some((v, _)) = val.split_once(" #") {
+        return v.trim().to_string();
     }
+    val.trim().to_string()
 }
 
 #[cfg(test)]
