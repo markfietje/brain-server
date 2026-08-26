@@ -19,6 +19,86 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.38] — 2026-08-26 — "Lexicon": the normative metric dictionary
+
+G2 of the Conformance Line closed: `docs/metrics.md` is now a fully
+attributed normative dictionary backed by a schema-versioned machine twin,
+and the metric-versioning discipline is enforced by test rather than
+convention. No routes changed, no schema changed — additive code and docs
+only.
+
+### Release notes
+
+**Improvements**
+- **The metric dictionary is complete and pinned:** every emitted metric
+  (scoreboard, KCS, VoC, aftersales, goodwill, complaint set, `reask_rate`,
+  plus the planned `customer_effort_events` CES proxy) carries formula ·
+  unit · source table.column lineage · window semantics · inclusion/exclusion
+  rules · standard citation · tier availability (all tiers — tiers are
+  config, not forks). FCR follows the SQM repeat-window method
+  (`BRAIN_FCR_WINDOW_DAYS`, default 7). Benchmarks are reference points,
+  never claims.
+- **Machine-readable twin:** `metrics/metrics.json` (schema_version 1,
+  `scorer_version`-stamped) mirrors every dictionary entry in structured
+  form — the same data machines can consume without scraping markdown.
+
+### Engineering record
+
+- **New meta-tests** (`src/handlers/workflow.rs`, `mod scoreboard_tests`):
+  `every_scoreboard_field_has_a_dictionary_entry` (renamed/extended from
+  `scoreboard_fields_have_dictionary_entries` — now three-way docs ↔ code ↔
+  JSON parity with full attribute coverage), 
+  `every_entry_source_table_exists_in_schema` (every lineage table.column in
+  the twin is verified against an in-memory run of the real migration — a
+  renamed table or column fails at test time, not in production reads),
+  `formula_change_bumps_scorer_version` (SCORER_VERSION stamps the gold
+  packs fail-closed, the JSON twin, and the documented one-PR law).
+- Predecessor seams reused unchanged: `fcr_window_is_configurable_and_
+  deterministic` already shipped green in v1.28.37 and was verified, not
+  rewritten; gold-set fail-closed validation (`GoldCase::validate`) is the
+  version anchor.
+- COMPLIANCE.md §6.7 gains the **COPC R8.0 performance-assessment** mapping
+  row pointing at the dictionary (closes standards gap G6);
+  docs/CONTACT_CENTER_STANDARDS.md marks G2 shipped and G6 closed.
+- Validation: full gate green (`cargo fmt --check`; `cargo clippy
+  --all-targets --features bench -- -D warnings`; `cargo test --features
+  bench` — 943 passed, 1 ignored, +9 vs v1.28.37's 934). No schema change;
+  schema-contract test untouched by design (additive code only). No route
+  changes → no openapi.yaml movement.
+- **Honest ceilings:** `customer_effort_events` remains a defined-but-unwired
+  proxy (scorer integration next release); `gap_rate_units` still pins to 0
+  until the flywheel release; the dictionary covers metrics at sign/read
+  time only — it does not retroactively re-state historical scoreboard
+  responses; benchmarks quoted are citations, never measured claims.
+
+## [1.28.37.1] — 2026-08-26 — the debt burn-down ledger
+
+### Release notes
+
+**Improvements**
+- **Debt burn-down ledger:** `src/dup_guard.rs` now pins one row per release
+  line with the live `TODO(unify)` exemption count (baseline: 1.28 = 16).
+  Opening a new line with a count that is not strictly smaller fails CI —
+  at least one documented debt must be extracted per line while any remains.
+  The ledger must mirror tree reality; rows never go backwards; when the
+  count hits zero the ledger retires in the same commit.
+
+**Bug fixes**
+
+None.
+
+**Security fixes**
+
+None.
+
+### Engineering record
+
+- No binary change: test-module gate law only (4 dup_guard tests; decision
+  core pure over 8 synthetic scenarios). Binaries in this release build from
+  the same source as v1.28.37 plus this gate; Cargo.toml stays at 1.28.37 —
+  the .1 tag ships the repo-law commit without colliding with the in-flight
+  1.28.38 line work.
+
 ## [1.28.37] — 2026-08-26 — "Advocate": complaints, the whole ISO 10002 lifecycle
 
 G1 of the Conformance Line closed on the shipped machinery — the Charter
