@@ -13,6 +13,18 @@ TARGET="${1:-$HOME/Sites/openclaw}/extensions/brain-server"
 
 [[ -d "$TARGET" ]] || { echo "target missing: $TARGET" >&2; exit 2; }
 
+# Format the canonical surface with the SAME formatter the openclaw workspace
+# applies on commit (oxfmt) — otherwise its pre-commit hook re-wraps the synced
+# files and byte-identity drifts again (the 0.5.0 lesson). No-op when oxfmt or
+# a config is absent; never fails the sync on a missing tool.
+OC_DIR="$(dirname "$TARGET")"
+OXFMT="$OC_DIR/node_modules/.bin/oxfmt"
+if [[ -x "$OXFMT" ]]; then
+	echo ">> formatting canonical plugin/ with the openclaw workspace's oxfmt…"
+	(cd "$REPO" && find plugin -type f \( -name '*.ts' -o -name '*.md' -o -name '*.json' \) \
+		-not -path 'plugin/node_modules/*' -print0 | xargs -0 "$OXFMT" --write) || true
+fi
+
 cd "$(dirname "$TARGET")"
 if [[ -n "$(git status --porcelain -- "$(basename "$TARGET")")" ]]; then
 	echo "refusing: $TARGET has uncommitted changes — commit or stash first" >&2
@@ -29,4 +41,5 @@ rsync -rci --delete \
 done
 
 echo "synced $SRC -> $TARGET"
-echo "next: cd $(dirname "$TARGET") && pnpm test $(realpath --relative-to="$(dirname "$TARGET")" "$TARGET") && pnpm exec tsc --noEmit, then commit the synced tree."
+echo "next: cd $OC_DIR && node_modules/.bin/vitest run extensions/brain-server/test && \\"
+echo "      node_modules/.bin/tsc --noEmit -p extensions/brain-server/tsconfig.json, then commit the synced tree."
