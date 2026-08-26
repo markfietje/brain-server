@@ -242,7 +242,9 @@ export default definePluginEntry({
             client.recall({
               query,
               // Let the server auto-route via centroids; only force a domain if caller set one.
-              ...(c.defaultDomain && c.defaultDomain !== "global" ? { domain: c.defaultDomain } : {}),
+              ...(c.defaultDomain && c.defaultDomain !== "global"
+                ? { domain: c.defaultDomain }
+                : {}),
               ...(c.strictDomain ? { strictDomain: true } : {}),
               limit: c.autoRecallTopK,
               // v0.3.0: optional graph-PPR third leg + token-budgeted
@@ -275,7 +277,9 @@ export default definePluginEntry({
           // so a single huge chunk can't dominate the injected context.
           // format.ts is untouched (Release C owns it); the cap is applied here.
           const hits = result.hits.map((h) =>
-            h.content.length > MAX_HIT_CHARS ? { ...h, content: h.content.slice(0, MAX_HIT_CHARS) } : h,
+            h.content.length > MAX_HIT_CHARS
+              ? { ...h, content: h.content.slice(0, MAX_HIT_CHARS) }
+              : h,
           );
           const block = formatRecallContext(hits);
           if (!block) {
@@ -290,7 +294,9 @@ export default definePluginEntry({
           return { prependContext: block };
         } catch (err) {
           // FAIL-OPEN: never stall the agent on a memory error.
-          api.logger.warn?.(`${PLUGIN_ID}: recall failed (${sanitizeForBlock(String(err))}); skipping injection`);
+          api.logger.warn?.(
+            `${PLUGIN_ID}: recall failed (${sanitizeForBlock(String(err))}); skipping injection`,
+          );
           return undefined;
         }
       },
@@ -376,7 +382,6 @@ export default definePluginEntry({
 
     // v0.4.0 procedural memory (runbooks / decision trees) — src/procedural.ts.
     registerProceduralTools(api, client, liveCfg);
-
 
     // ------------------------------------------------------------------------
     // Service lifecycle

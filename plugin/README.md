@@ -178,12 +178,12 @@ with every meaningful step carrying a receipt in the audit chain.
 
 ### What appears where
 
-| Console surface | What the bridge puts there |
-|---|---|
-| Mesh cards (`GET /ops/agents/cards`) | One signed card per agent (name + `source: "openclaw"`), provisioned once, 409-tolerant |
-| Crew roster (`GET /ops/crew`) | Presence rides the server's own `crew_touch` on every mirrored mutation |
+| Console surface                          | What the bridge puts there                                                                                  |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Mesh cards (`GET /ops/agents/cards`)     | One signed card per agent (name + `source: "openclaw"`), provisioned once, 409-tolerant                     |
+| Crew roster (`GET /ops/crew`)            | Presence rides the server's own `crew_touch` on every mirrored mutation                                     |
 | Run timeline (`GET /workflow/runs/{id}`) | A governed run per session: start / beat / done (or failed) lineage events, exactly-once by idempotency key |
-| Scoreboard | Closed runs aggregate like any governed workflow |
+| Scoreboard                               | Closed runs aggregate like any governed workflow                                                            |
 
 ### Enable it
 
@@ -191,10 +191,10 @@ with every meaningful step carrying a receipt in the audit chain.
 // openclaw config → plugins → brain-server
 {
   "enabled": true,
-  "agents": ["Main"],          // per-agent allowlist (required; least privilege)
-  "teamBridge": true,          // the switch
-  "teamDomain": "support",     // optional; defaults to your defaultDomain
-  "teamHeartbeatMs": 60000     // optional beat throttle (15s..10min)
+  "agents": ["Main"], // per-agent allowlist (required; least privilege)
+  "teamBridge": true, // the switch
+  "teamDomain": "support", // optional; defaults to your defaultDomain
+  "teamHeartbeatMs": 60000, // optional beat throttle (15s..10min)
 }
 ```
 
@@ -213,7 +213,6 @@ Prerequisites:
 - **Off by default**, gated by the same per-agent allowlist as recall.
 - **Privacy:** only a whitespace-collapsed intent label (first 200 chars)
   enters run state. Full prompts and messages never leave the host process.
-
 
 ## Why not a skill or a recall sub-agent?
 
@@ -236,7 +235,8 @@ See [`CHANGELOG.md`](./CHANGELOG.md). Released from the openclaw repo at
 A workflow run is ONE unbounded session — the GUI has no "new session" action
 by design. When the live context grows, consumers derive a window from
 `GET /workflow/runs/{id}/context?at_event=&budget=` (checkpoint anchor + delta
-+ finding digests + open question, field-budgeted) and compact on their side
-(LLM summarization is the consumer's contract, never brain-server's). The
-event stream resumes with `Last-Event-ID`; missed nodes backfill via
-`GET /workflow/runs/{id}/events?since=` before going live.
+
+- finding digests + open question, field-budgeted) and compact on their side
+  (LLM summarization is the consumer's contract, never brain-server's). The
+  event stream resumes with `Last-Event-ID`; missed nodes backfill via
+  `GET /workflow/runs/{id}/events?since=` before going live.

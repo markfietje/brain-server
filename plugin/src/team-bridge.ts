@@ -50,7 +50,10 @@ export function principalFor(agentId: string): string {
 
 /** Collapse whitespace/control chars and truncate — dashboard-safe intent. */
 export function intentLabel(prompt: string, max = 200): string {
-  const flat = prompt.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const flat = prompt
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   // Truncate by CODE POINTS — naive .slice() can split an emoji surrogate
   // pair and produce a lone surrogate that survives into JSON.
   const cps = Array.from(flat);
@@ -104,9 +107,7 @@ export function teamGateEnabled(
   cfg: { enabled: boolean; teamBridge: boolean; agents: string[] },
   agentId: string | undefined,
 ): boolean {
-  return (
-    cfg.enabled && cfg.teamBridge && agentId !== undefined && cfg.agents.includes(agentId)
-  );
+  return cfg.enabled && cfg.teamBridge && agentId !== undefined && cfg.agents.includes(agentId);
 }
 
 // --------------------------------------------------------------------------
@@ -206,7 +207,9 @@ export class TeamBridge {
       if (oldest === undefined) break;
       this.runs.delete(oldest);
       this.lastBeat.delete(oldest);
-      this.log.warn?.(`team-bridge: open-run cap hit — dropped oldest mirror (${oldest.replace("\u0000", "/")})`);
+      this.log.warn?.(
+        `team-bridge: open-run cap hit — dropped oldest mirror (${oldest.replace("\u0000", "/")})`,
+      );
     }
 
     const principal = principalFor(ctx.agentId);
@@ -379,9 +382,7 @@ export function attachTeamBridge(
     log,
   );
 
-  const gated = (
-    ctx: { agentId?: string } | undefined,
-  ): boolean => {
+  const gated = (ctx: { agentId?: string } | undefined): boolean => {
     const c = liveCfg();
     return teamGateEnabled(c, ctx?.agentId);
   };

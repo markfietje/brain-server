@@ -1,3 +1,4 @@
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 /**
  * Team Bridge tests (v0.5.0).
  *
@@ -22,7 +23,6 @@ import {
   principalFor,
   teamGateEnabled,
 } from "../src/team-bridge.js";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 
 type HookHandler = (...args: unknown[]) => unknown;
 
@@ -76,8 +76,7 @@ function stubFetch(respond: (method: string, path: string) => { status: number; 
   vi.stubGlobal("fetch", async (url: string | URL, init?: RequestInit) => {
     const u = new URL(String(url));
     const method = init?.method ?? "GET";
-    const body =
-      typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
+    const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
     calls.push({ method, path: u.pathname, body });
     const r = respond(method, u.pathname);
     return mockResponse(r.body, { status: r.status });
@@ -294,9 +293,14 @@ describe("heartbeat", () => {
       }
       return { status: 200, body: { first: true, event_id: 2 } };
     });
-    await getHook(hooks, "before_agent_run")({ prompt: "x" }, { agentId: "Main", sessionKey: "s1" });
+    await getHook(hooks, "before_agent_run")(
+      { prompt: "x" },
+      { agentId: "Main", sessionKey: "s1" },
+    );
     const beatsBefore = calls.filter(
-      (c) => c.path === "/workflow/runs/7/events" && (c.body as { topic?: string }).topic?.includes("beat"),
+      (c) =>
+        c.path === "/workflow/runs/7/events" &&
+        (c.body as { topic?: string }).topic?.includes("beat"),
     ).length;
     await getHook(hooks, "before_prompt_build")(
       { prompt: "next turn", messages: [] },
@@ -304,7 +308,9 @@ describe("heartbeat", () => {
     );
     await new Promise((r) => setTimeout(r, 5)); // beat rides a void chain
     const beatsAfter = calls.filter(
-      (c) => c.path === "/workflow/runs/7/events" && (c.body as { topic?: string }).topic?.includes("beat"),
+      (c) =>
+        c.path === "/workflow/runs/7/events" &&
+        (c.body as { topic?: string }).topic?.includes("beat"),
     ).length;
     expect(beatsBefore).toBe(0);
     expect(beatsAfter).toBe(1);
@@ -318,7 +324,10 @@ describe("heartbeat", () => {
       }
       return { status: 200, body: { first: true, event_id: 3 } };
     });
-    await getHook(hooks, "before_agent_run")({ prompt: "x" }, { agentId: "Main", sessionKey: "s1" });
+    await getHook(hooks, "before_agent_run")(
+      { prompt: "x" },
+      { agentId: "Main", sessionKey: "s1" },
+    );
     await getHook(hooks, "before_prompt_build")(
       { prompt: "turn two", messages: [] },
       { agentId: "Main", sessionKey: "s1" },
@@ -402,6 +411,8 @@ describe("pure helpers", () => {
     expect(teamGateEnabled({ enabled: true, teamBridge: true, agents: [] }, "a")).toBe(false);
     expect(teamGateEnabled({ enabled: true, teamBridge: false, agents: ["a"] }, "a")).toBe(false);
     expect(teamGateEnabled({ enabled: false, teamBridge: true, agents: ["a"] }, "a")).toBe(false);
-    expect(teamGateEnabled({ enabled: true, teamBridge: true, agents: ["a"] }, undefined)).toBe(false);
+    expect(teamGateEnabled({ enabled: true, teamBridge: true, agents: ["a"] }, undefined)).toBe(
+      false,
+    );
   });
 });

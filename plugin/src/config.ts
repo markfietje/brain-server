@@ -68,9 +68,7 @@ export const brainConfigSchema = Type.Object({
   teamDomain: Type.Optional(Type.String()),
   // Minimum gap between progress heartbeats for one session (server events
   // are exactly-once by idempotency key; this bounds chatter on quiet turns).
-  teamHeartbeatMs: Type.Optional(
-    Type.Integer({ minimum: 15_000, maximum: 600_000 }),
-  ),
+  teamHeartbeatMs: Type.Optional(Type.Integer({ minimum: 15_000, maximum: 600_000 })),
 });
 
 export type BrainConfig = Static<typeof brainConfigSchema>;

@@ -182,9 +182,7 @@ describe("before_prompt_build — deterministic recall over POST /recall", () =>
     // The server default flipped to graph-on; omitting the flag on `false`
     // silently re-enabled the third leg for every plugin user. The param must
     // now always be present, with the configured value.
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse({ hits: [] }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
 
     const off = registerPlugin({ agents: ["main"], autoRecallGraph: false });
     await getHook(off.hooks, "before_prompt_build")(
@@ -919,14 +917,21 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
       () =>
         new Promise<Response>((resolve) => {
           setTimeout(() => {
-            resolve(mockResponse({ hits: [{ id: 1, content: "prefers Helix", score: 0.9, untrusted: true }] }));
+            resolve(
+              mockResponse({
+                hits: [{ id: 1, content: "prefers Helix", score: 0.9, untrusted: true }],
+              }),
+            );
           }, 10);
         }),
     );
     const { hooks } = registerPlugin({ agents: ["main"] });
     const fire = () =>
       getHook(hooks, "before_prompt_build")(
-        { prompt: "what editor?", messages: [{ role: "user", content: "what editor should i use?" }] },
+        {
+          prompt: "what editor?",
+          messages: [{ role: "user", content: "what editor should i use?" }],
+        },
         { agentId: "main" },
       );
     // Two CONCURRENT same-query recalls in one turn.
@@ -938,9 +943,9 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
   });
 
   test("per-session cap returns empty (no-op) after the ceiling", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ hits: [{ id: 1, content: "a fact", score: 0.5 }] }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "a fact", score: 0.5 }] }));
     const { hooks } = registerPlugin({ agents: ["main"] });
     const fire = (i: number) =>
       getHook(hooks, "before_prompt_build")(
@@ -951,14 +956,16 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
     for (let i = 0; i < 10; i++) {
       await fire(i);
     }
-    const callsBeforeCap = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/recall"))
-      .length;
+    const callsBeforeCap = fetchMock.mock.calls.filter((c) =>
+      (c[0] as string).endsWith("/recall"),
+    ).length;
     expect(callsBeforeCap).toBe(10);
     // 11th distinct query => cap exceeded => no-op (undefined, no POST).
     const over = await fire(100);
     expect(over).toBeUndefined();
-    const callsAfterCap = fetchMock.mock.calls.filter((c) => (c[0] as string).endsWith("/recall"))
-      .length;
+    const callsAfterCap = fetchMock.mock.calls.filter((c) =>
+      (c[0] as string).endsWith("/recall"),
+    ).length;
     expect(callsAfterCap).toBe(10); // the 11th never reached the server
   });
 
@@ -966,9 +973,11 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
     // (a) Per-hit body cap: a hit whose content far exceeds MAX_HIT_CHARS is
     // truncated to MAX_HIT_CHARS on the caller side before formatting.
     const longContent = "A".repeat(MAX_HIT_CHARS * 4);
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({ hits: [{ id: 1, content: longContent, score: 0.9, untrusted: true }] }),
-    );
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        mockResponse({ hits: [{ id: 1, content: longContent, score: 0.9, untrusted: true }] }),
+      );
     const { hooks } = registerPlugin({ agents: ["main"] });
     const out = (await getHook(hooks, "before_prompt_build")(
       { prompt: "a real query", messages: [{ role: "user", content: "a real query" }] },
