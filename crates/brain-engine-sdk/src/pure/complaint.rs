@@ -112,10 +112,10 @@ pub const MAX_TIER: u8 = 4;
 /// stalls forever.
 pub const CAP_TABLE: [[i64; 4]; 4] = [
     //          T1       T2       T3        T4
-    [2_500, 5_000, 7_500, 10_000], // agent
-    [10_000, 20_000, 30_000, 50_000], // supervisor
+    [2_500, 5_000, 7_500, 10_000],       // agent
+    [10_000, 20_000, 30_000, 50_000],    // supervisor
     [50_000, 100_000, 150_000, 250_000], // manager
-    [i64::MAX; 4],                   // executive
+    [i64::MAX; 4],                       // executive
 ];
 
 fn cap_for(level: ApprovalLevel, tier: u8) -> i64 {
@@ -127,7 +127,9 @@ fn cap_for(level: ApprovalLevel, tier: u8) -> i64 {
 pub enum ApprovalDecision {
     WithinCap,
     /// Over cap: escalate exactly one level, packet attached.
-    Escalated { to: ApprovalLevel },
+    Escalated {
+        to: ApprovalLevel,
+    },
 }
 
 /// The deterministic approval gate. A remedy whose amount sits within the
@@ -202,19 +204,14 @@ impl ComplaintState {
 pub fn transition_allowed(from: ComplaintState, to: ComplaintState) -> bool {
     matches!(
         (from, to),
-        (
-            ComplaintState::Received,
-            ComplaintState::Acknowledged
-        ) | (
-            ComplaintState::Acknowledged,
-            ComplaintState::Investigated
-        ) | (
-            ComplaintState::Investigated,
-            ComplaintState::RemedyProposed
-        ) | (
-            ComplaintState::RemedyProposed,
-            ComplaintState::RemedyApproved
-        ) | (ComplaintState::RemedyApproved, ComplaintState::Closed)
+        (ComplaintState::Received, ComplaintState::Acknowledged)
+            | (ComplaintState::Acknowledged, ComplaintState::Investigated)
+            | (ComplaintState::Investigated, ComplaintState::RemedyProposed)
+            | (
+                ComplaintState::RemedyProposed,
+                ComplaintState::RemedyApproved
+            )
+            | (ComplaintState::RemedyApproved, ComplaintState::Closed)
             | (ComplaintState::Closed, ComplaintState::AdrReferred)
     )
 }
@@ -264,12 +261,7 @@ mod tests {
     #[test]
     fn approval_caps_escalate_deterministically() {
         // Within cap passes; one cent over escalates EXACTLY one rung.
-        let d = approval_decision(
-            ApprovalLevel::Agent,
-            1,
-            RemedyKind::Refund,
-            CAP_TABLE[0][0],
-        );
+        let d = approval_decision(ApprovalLevel::Agent, 1, RemedyKind::Refund, CAP_TABLE[0][0]);
         assert_eq!(d, ApprovalDecision::WithinCap);
         let d = approval_decision(
             ApprovalLevel::Agent,
@@ -277,11 +269,21 @@ mod tests {
             RemedyKind::Refund,
             CAP_TABLE[0][0] + 1,
         );
-        assert_eq!(d, ApprovalDecision::Escalated { to: ApprovalLevel::Supervisor });
+        assert_eq!(
+            d,
+            ApprovalDecision::Escalated {
+                to: ApprovalLevel::Supervisor
+            }
+        );
         // The escalation target's cap covers what the lower rung could not.
         let escalated_amount = CAP_TABLE[0][1] + 1;
         assert_eq!(
-            approval_decision(ApprovalLevel::Supervisor, 2, RemedyKind::GoodwillPayment, escalated_amount),
+            approval_decision(
+                ApprovalLevel::Supervisor,
+                2,
+                RemedyKind::GoodwillPayment,
+                escalated_amount
+            ),
             ApprovalDecision::WithinCap
         );
         // Tier widens the same role's reach, deterministically.
@@ -291,13 +293,20 @@ mod tests {
         );
         // Explanation-only carries no money — always within any cap.
         assert_eq!(
-            approval_decision(ApprovalLevel::Agent, 1, RemedyKind::ExplanationOnly, i64::MAX),
+            approval_decision(
+                ApprovalLevel::Agent,
+                1,
+                RemedyKind::ExplanationOnly,
+                i64::MAX
+            ),
             ApprovalDecision::WithinCap
         );
         // Negative amounts are nonsense → loud top-level review.
         assert_eq!(
             approval_decision(ApprovalLevel::Manager, 3, RemedyKind::Refund, -1),
-            ApprovalDecision::Escalated { to: ApprovalLevel::Executive }
+            ApprovalDecision::Escalated {
+                to: ApprovalLevel::Executive
+            }
         );
         // Same input → same output, always.
         for tier in MIN_TIER..=MAX_TIER {
@@ -318,7 +327,10 @@ mod tests {
         // Unknown role names deny: no cap is ever guessed.
         assert_eq!(approval_level_for_role("intern"), None);
         assert_eq!(approval_level_for_role(""), None);
-        assert_eq!(approval_level_for_role("Admin"), Some(ApprovalLevel::Executive));
+        assert_eq!(
+            approval_level_for_role("Admin"),
+            Some(ApprovalLevel::Executive)
+        );
     }
 
     #[test]
@@ -342,7 +354,15 @@ mod tests {
         assert!(!transition_allowed(Investigated, Investigated));
         assert!(!transition_allowed(Acknowledged, RemedyApproved));
         // Every named state round-trips its string.
-        for s in [Received, Acknowledged, Investigated, RemedyProposed, RemedyApproved, Closed, AdrReferred] {
+        for s in [
+            Received,
+            Acknowledged,
+            Investigated,
+            RemedyProposed,
+            RemedyApproved,
+            Closed,
+            AdrReferred,
+        ] {
             assert_eq!(ComplaintState::parse(s.as_str()), Some(s));
         }
         assert_eq!(ComplaintState::parse("closed_solved"), None);
@@ -378,9 +398,6 @@ mod tests {
         ] {
             assert!(!k.legal_basis().is_empty());
         }
-        assert_eq!(
-            RemedyKind::GoodwillPayment.legal_basis(),
-            "goodwill-policy"
-        );
+        assert_eq!(RemedyKind::GoodwillPayment.legal_basis(), "goodwill-policy");
     }
 }

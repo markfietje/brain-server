@@ -384,7 +384,9 @@ mod tests {
         let proposals = flywheel_proposals(3000, 3);
         for p in proposals {
             match p {
-                FlywheelProposal::Gap(_) | FlywheelProposal::Rca | FlywheelProposal::ComplaintRca => {}
+                FlywheelProposal::Gap(_)
+                | FlywheelProposal::Rca
+                | FlywheelProposal::ComplaintRca => {}
             }
         }
         // no FlywheelProposal variant writes knowledge directly — enforced by type system
@@ -482,7 +484,9 @@ mod tests {
                 let steps = a.steps.clone();
                 for p in flywheel_proposals(3000, 3) {
                     match p {
-                        FlywheelProposal::Gap(_) | FlywheelProposal::Rca | FlywheelProposal::ComplaintRca => {}
+                        FlywheelProposal::Gap(_)
+                        | FlywheelProposal::Rca
+                        | FlywheelProposal::ComplaintRca => {}
                     }
                 }
                 let _ = (steps, override_rate(&a.steps));

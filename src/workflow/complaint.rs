@@ -24,26 +24,26 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 /// The exact audit-detail string marking an APPROVED remedy — the ledger's
 /// audited-presence contract (writer and reader share this one format).
-pub const REMEDY_APPROVED_AUDIT_DETAIL_PREFIX: &str = "complaint/remedy/approved";
+pub(crate) const REMEDY_APPROVED_AUDIT_DETAIL_PREFIX: &str = "complaint/remedy/approved";
 
 /// Proposal kinds owned by this module.
-pub const KIND_REMEDY: &str = "complaint_remedy";
-pub const KIND_RCA: &str = "complaint_rca";
+pub(crate) const KIND_REMEDY: &str = "complaint_remedy";
+pub(crate) const KIND_RCA: &str = "complaint_rca";
 
 /// The lineage topic every complaint lifecycle event rides.
-pub const TOPIC_COMPLAINT: &str = "workflow/complaint";
+pub(crate) const TOPIC_COMPLAINT: &str = "workflow/complaint";
 
 /// The knowledge `source` values this module reads (DPO/team-maintained
 /// through the ordinary governed knowledge write path — screened at write,
 /// sanitized at read).
-pub const SOURCE_CONDUCT_CLAUSE: &str = "code_of_conduct";
-pub const SOURCE_ADR_BODY: &str = "adr_body";
+pub(crate) const SOURCE_CONDUCT_CLAUSE: &str = "code_of_conduct";
+pub(crate) const SOURCE_ADR_BODY: &str = "adr_body";
 
 /// Read bound for the ledger scan (the bounds law; pinned by test below).
-pub const LEDGER_SCAN_LIMIT: i64 = 1_000;
+pub(crate) const LEDGER_SCAN_LIMIT: i64 = 1_000;
 
 #[derive(Debug)]
-pub enum ComplaintError {
+pub(crate) enum ComplaintError {
     NotFound(String),
     Invalid(String),
     Database(String),
@@ -80,7 +80,10 @@ fn run_kind(conn: &Connection, run_id: i64) -> Result<String, ComplaintError> {
 /// The complaint's current lifecycle state: the `to` of the newest lineage
 /// event on [`TOPIC_COMPLAINT`], or `received` when none exists yet (a run
 /// classified as a complaint is born received).
-pub fn current_state(conn: &Connection, run_id: i64) -> Result<ComplaintState, ComplaintError> {
+pub(crate) fn current_state(
+    conn: &Connection,
+    run_id: i64,
+) -> Result<ComplaintState, ComplaintError> {
     let payload: Option<String> = conn
         .query_row(
             "SELECT payload_json FROM outbox
@@ -93,17 +96,16 @@ pub fn current_state(conn: &Connection, run_id: i64) -> Result<ComplaintState, C
         .as_deref()
         .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
         .and_then(|v| v.get("to").and_then(|t| t.as_str()).map(String::from));
-    match to {
-        Some(t) => ComplaintState::parse(&t)
-            .ok_or_else(|| ComplaintError::Invalid(format!("corrupt lifecycle state '{t}'"))),
-        None => Ok(ComplaintState::Received),
-    }
+    to.map_or(Ok(ComplaintState::Received), |t| {
+        ComplaintState::parse(&t)
+            .ok_or_else(|| ComplaintError::Invalid(format!("corrupt lifecycle state '{t}'")))
+    })
 }
 
 /// Advance the lifecycle one legal step. Fails closed on any transition the
 /// closed SDK table does not name, or on a non-complaint run. Lineage event
 /// + audit row land in the caller's transaction; nothing here commits.
-pub fn transition(
+pub(crate) fn transition(
     conn: &Connection,
     run_id: i64,
     to: ComplaintState,
@@ -155,11 +157,11 @@ pub fn transition(
 /// machine preamble inside the clause body carries the enforceable bits
 /// (the `kcs:` preamble precedent): `coc: excludes=<kind,…>` and
 /// `coc: max_goodwill_cents=<n>`.
-pub struct ConductClause {
-    pub clause_id: String,
-    pub excerpt: String,
-    pub excludes: Vec<RemedyKind>,
-    pub max_goodwill_cents: Option<i64>,
+pub(crate) struct ConductClause {
+    pub(crate) clause_id: String,
+    pub(crate) excerpt: String,
+    pub(crate) excludes: Vec<RemedyKind>,
+    pub(crate) max_goodwill_cents: Option<i64>,
 }
 
 fn parse_clause(clause_id: &str, body: &str) -> ConductClause {
@@ -191,7 +193,7 @@ fn parse_clause(clause_id: &str, body: &str) -> ConductClause {
 /// Load a published conduct clause by its id (the KB row's `title`) under
 /// `source = 'code_of_conduct'`. Missing clauses deny loudly — a remedy
 /// cannot ship against a promise nobody published.
-pub fn conduct_clause(
+pub(crate) fn conduct_clause(
     conn: &Connection,
     clause_id: &str,
 ) -> Result<Option<ConductClause>, ComplaintError> {
@@ -208,36 +210,36 @@ pub fn conduct_clause(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodeConflict {
+pub(crate) enum CodeConflict {
     /// The published clause names this remedy kind as excluded.
     ExcludedByClause,
     /// A goodwill payment above the clause's published ceiling.
     OverGoodwillCeiling,
 }
 
-pub struct RemedyDraft<'a> {
-    pub run_id: i64,
-    pub kind: RemedyKind,
-    pub amount_cents: i64,
+pub(crate) struct RemedyDraft<'a> {
+    pub(crate) run_id: i64,
+    pub(crate) kind: RemedyKind,
+    pub(crate) amount_cents: i64,
     /// The cited ISO 10001 clause id (KB title under `code_of_conduct`).
-    pub code_clause_id: &'a str,
+    pub(crate) code_clause_id: &'a str,
     /// Support tier 1..=4 — the approval matrix column.
-    pub tier: u8,
-    pub proposed_by: &'a str,
+    pub(crate) tier: u8,
+    pub(crate) proposed_by: &'a str,
 }
 
 #[derive(Debug)]
-pub struct RemedyProposal {
-    pub proposal_id: i64,
-    pub legal_basis: &'static str,
-    pub conflicts: Vec<CodeConflict>,
+pub(crate) struct RemedyProposal {
+    pub(crate) proposal_id: i64,
+    pub(crate) legal_basis: &'static str,
+    pub(crate) conflicts: Vec<CodeConflict>,
 }
 
 /// Propose a remedy: validate citations, compute the deterministic conflict
 /// flags, insert ONE pending HITL proposal audited in the caller's tx.
 /// Financial remedies REQUIRE their code-clause citation; explanation-only
 /// may ride without one (nothing is promised beyond the response itself).
-pub fn propose_remedy(
+pub(crate) fn propose_remedy(
     conn: &Connection,
     draft: &RemedyDraft<'_>,
     now: i64,
@@ -326,7 +328,7 @@ pub fn propose_remedy(
 
 /// The outcome of presenting a remedy proposal to an approver role.
 #[derive(Debug, PartialEq, Eq)]
-pub enum RemedyApproval {
+pub(crate) enum RemedyApproval {
     /// Bound within the approver's cap: proposal approved, lifecycle event
     /// appended, audit written — all in the caller's tx.
     Approved,
@@ -343,7 +345,7 @@ pub enum RemedyApproval {
 /// from the gate's approve branch INSIDE its immediate transaction).
 /// `approver_roles` are the principal's deployment role names; every name
 /// must resolve on the closed ladder — an unknown role denies loudly.
-pub fn apply_remedy_approval(
+pub(crate) fn apply_remedy_approval(
     conn: &Connection,
     proposal_id: i64,
     content: &serde_json::Value,
@@ -452,7 +454,7 @@ pub fn apply_remedy_approval(
 /// (`knowledge.source='adr_body'`, title = member state). Missing registry
 /// row denies loudly — the packet never guesses where a consumer files.
 /// The Reg. 2024/3228 discontinuation note rides every packet.
-pub fn adr_packet(
+pub(crate) fn adr_packet(
     conn: &Connection,
     run_id: i64,
     member_state: &str,
@@ -525,28 +527,28 @@ pub fn adr_packet(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GoodwillEntry {
-    pub proposal_id: i64,
-    pub run_id: i64,
-    pub kind: String,
-    pub amount_cents: i64,
-    pub created_at: i64,
+pub(crate) struct GoodwillEntry {
+    pub(crate) proposal_id: i64,
+    pub(crate) run_id: i64,
+    pub(crate) kind: String,
+    pub(crate) amount_cents: i64,
+    pub(crate) created_at: i64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct GoodwillLedger {
-    pub entries: Vec<GoodwillEntry>,
-    pub total_cents: i64,
+pub(crate) struct GoodwillLedger {
+    pub(crate) entries: Vec<GoodwillEntry>,
+    pub(crate) total_cents: i64,
     /// Entries whose audit row could NOT be found were excluded BEFORE the
     /// aggregate — the count is the honest gap signal, never folded away.
-    pub unaudited_excluded: usize,
+    pub(crate) unaudited_excluded: usize,
 }
 
 /// The goodwill ledger: aggregate over APPROVED remedy proposals in the
 /// window whose workflow audit row actually references them. An approved
 /// remedy without its audit row is excluded and counted — absence is
 /// surfaced, never silently aggregated. Bounded by [`LEDGER_SCAN_LIMIT`].
-pub fn goodwill_ledger(
+pub(crate) fn goodwill_ledger(
     conn: &Connection,
     from: i64,
     to: i64,
@@ -635,7 +637,7 @@ mod tests {
         .unwrap();
     }
 
-    fn draft<'a>(run_id: i64, kind: RemedyKind, amount: i64, clause: &'a str) -> RemedyDraft<'a> {
+    fn draft(run_id: i64, kind: RemedyKind, amount: i64, clause: &str) -> RemedyDraft<'_> {
         RemedyDraft {
             run_id,
             kind,
