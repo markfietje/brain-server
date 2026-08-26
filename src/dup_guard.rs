@@ -207,13 +207,10 @@ fn top_level_def_names(text: &str) -> Vec<(String, usize)> {
         }
         let rest = line.strip_prefix("pub ").unwrap_or(line);
         // Strip a visibility qualifier like `(crate)`, `(super)`, `(in crate::x)`.
-        let rest = match rest.strip_prefix('(') {
-            Some(after_paren) => match after_paren.find(')') {
-                Some(close) => after_paren[close + 1..].trim_start(),
-                None => rest,
-            },
-            None => rest,
-        };
+        let rest = rest
+            .strip_prefix('(')
+            .and_then(|after_paren| after_paren.find(')').map(|close| &after_paren[close + 1..]))
+            .map_or(rest, str::trim_start);
         let rest = rest
             .strip_prefix("const ")
             .or_else(|| rest.strip_prefix("fn "));
