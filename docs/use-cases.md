@@ -60,7 +60,7 @@ curl -X POST http://localhost:8765/recall \
 
 **The problem.** You want memory on a Jetson Nano or Raspberry Pi, not in the cloud.
 
-**The fix.** One Rust binary, embedded SQLite + sqlite-vec, int8-quantized vectors, bounded RSS (default 512 MiB, `CAPACITY_MAX_RSS_MIB`) on 4 GB ARM. No GPU, no embedding API, no Docker stack. Set `BRAIN_WORKER_THREADS=2` to trim RSS further.
+**The fix.** One Rust binary, embedded SQLite + sqlite-vec, int8-quantized vectors, bounded RSS (default 512 MiB on Jetson via `CAPACITY_MAX_RSS_MIB`; since v1.28 Caliber the **desktop** capacity target defaults to 1024 MiB — jetson stays 512) on 4 GB ARM. No GPU, no embedding API, no Docker stack. Set `BRAIN_WORKER_THREADS=2` to trim RSS further.
 
 ## Next steps
 

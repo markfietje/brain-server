@@ -33,7 +33,8 @@ open HTTP, MCP) so it never locks you in.
 ## Who it's for
 
 The same engine serves several audiences; see **[Who it's for — target
-audiences](./audiences.md)** for the full map (each marked shipped vs. planned).
+audiences](./audiences.md)** for the full map (each marked shipped vs.
+roadmap).
 
 - **AI-agent builders & OpenClaw users** — deterministic memory, zero token
   cost, in the memory slot.
@@ -41,7 +42,7 @@ audiences](./audiences.md)** for the full map (each marked shipped vs. planned).
   is explicitly call-center intelligence (multi-team tenancy, ticket-pattern
   resolution). The *controls* they need are shipped today (per-domain
   isolation, per-tenant audit, DSAR, PII containment, human-gated writes);
-  multi-client tenancy on one shared backend is the planned v2.0 piece.
+  multi-client tenancy on one shared backend is the documented v2.0 piece.
 - **In-house contact & support centers** — agent-assist memory that recalls
   past resolutions and policy, supervised and audited, without fabricating
   answers (calibrated abstention + span verification).
@@ -76,8 +77,7 @@ audiences](./audiences.md)** for the full map (each marked shipped vs. planned).
 | Zero LLM in loop | **Yes** | no | no | no |
 
 *Honest ceilings we don't claim (each owned + versioned):* multi-team tenancy
-(v2.0), per-tenant limits (v2.1), OTel/SSE ops line (v1.20.7/8), SOC 2 kit
-(v1.20.10), pricing/licensing (v2.2 "Meridian"), use-case Profiles (v1.21.0).
+(v2.0), per-tenant limits (v2.1), pricing/licensing (v2.2 "Meridian").
 Retrieval is deterministic, not SOTA-generative; multi-hop graph quality is
 corpus-bound; abstention is heuristic, not learned.
 
