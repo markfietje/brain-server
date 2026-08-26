@@ -402,9 +402,11 @@ export function attachTeamBridge(
         log.warn?.(`run start mirror failed (${String(err)})`);
       }
       // ALWAYS pass — the bridge is observation-only and must never gate.
+      // Fail fast too: a hung brain-server must not hold the agent's turn
+      // for a full request budget; visibility is worth ~2s at most.
       return undefined;
     },
-    { timeoutMs: 8_000 },
+    { timeoutMs: 2_000 },
   );
 
   // NOTE: agent_end / session_end / before_prompt_build are NOT registered

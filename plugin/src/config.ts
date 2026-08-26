@@ -85,7 +85,7 @@ export const DEFAULTS = {
   defaultDomain: "global",
   allowedChatTypes: ["direct", "explicit"] as const,
   autoRecallTopK: 3,
-  autoRecallTimeoutMs: 5_000,
+  autoRecallTimeoutMs: 2_000,
   requestTimeoutMs: 8_000,
   minQueryLength: 5,
   recallMaxChars: 1_000,
