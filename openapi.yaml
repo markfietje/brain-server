@@ -3737,6 +3737,48 @@ paths:
                           type: boolean
         "400":
           $ref: "#/components/responses/BadRequest"
+  /kcs/translate:
+    post:
+      summary: File a human translation proposal (Write + workflow role)
+      description: >
+        Keystone: files a pending `kcs_translate` HITL proposal for a
+        per-locale translation of a published article. Translation is a
+        HUMAN act — the tool files and governs, it never machine-translates.
+        Approval (role `approve`) is the ONLY writer of an approved
+        `kcs_translations` row, pinned to `based_revision` so the source
+        advancing later lands it on the content-health worklist. Audited in
+        the same transaction.
+      operationId: fileKcsTranslation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [knowledge_id, locale, title, body_md]
+              properties:
+                knowledge_id: { type: integer }
+                locale: { type: string, maxLength: 12 }
+                title: { type: string }
+                body_md: { type: string }
+      responses:
+        "200":
+          description: The pending proposal reference
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  proposal_id: { type: integer }
+                  status: { type: string, enum: [pending] }
+                  kind: { type: string, enum: [kcs_translate] }
+        "400":
+          description: translation_invalid (bounds | locale | missing article)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
   /kcs/articles/{id}/approve:
     post:
       summary: Approve a draft KCS article (HITL gate)
@@ -4857,6 +4899,51 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
+  /workflow/runs/{id}/status-ref:
+    post:
+      summary: Mint|rotate|revoke the public case-status ref (Write on domain + approve role)
+      description: >
+        Keystone: manages the run's unguessable public case-status ref
+        (base32(HMAC-SHA256(salt, run:version))[..26]) naming the static
+        `status/{ref}.json` artifact that `brain kb build --with-case-status`
+        emits. `mint` is idempotent-per-run; `rotate` bumps the rotation
+        counter so the old token dies; `revoke` removes the page from the
+        next build and the run refuses fresh mints. brain NEVER sends the
+        ref anywhere — it ships by human/CRM channel. Audited inside ONE tx.
+      operationId: statusRefAction
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [mint, rotate, revoke] }
+      responses:
+        "200":
+          description: The action result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  action: { type: string }
+                  ref: { type: string, description: "the live ref (mint/rotate only)" }
+        "400":
+          description: action_invalid | status_ref_revoked (mint after revoke)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run or existing ref not found }
   /workflow/runs/{id}/handover/offer:
     post:
       summary: Offer a one-click handover (Write on domain + workflow role)

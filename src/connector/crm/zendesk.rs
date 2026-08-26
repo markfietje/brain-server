@@ -96,6 +96,8 @@ pub fn map_ticket(org_id: &str, v: &serde_json::Value) -> Result<CrmCase> {
             .and_then(|t| t.as_str())
             .unwrap_or_default()
             .to_string(),
+        merged_into: None,
+        reopened: false,
     })
 }
 

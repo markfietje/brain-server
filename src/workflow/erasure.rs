@@ -46,6 +46,10 @@ pub(crate) struct SweepReport {
     /// matched by re-hashing the sweep subject — raw identifiers never
     /// lived in the registry).
     pub consent_rows: usize,
+    /// Case-status refs removed with the subject's runs (Keystone): PURGED
+    /// for erased runs, REVOKED (page goes dark, evidence stays) for runs a
+    /// legal hold defers.
+    pub status_refs: usize,
 }
 
 /// Sweep every workflow table in this pool for rows carrying `subject`,
@@ -75,6 +79,20 @@ pub(crate) fn sweep_subject(
     let frozen = frozen_runs(tx)?;
     let held =
         crate::legal_hold::active_reasons(tx, &targets.iter().map(|r| -r).collect::<Vec<_>>())?;
+    // ── Case-status refs (Keystone): subject-linked artifacts die with the
+    // subject. Deferred (held) runs get their page REVOKED — the public
+    // surface goes dark while the evidence stays for the hold.
+    let deferred_ids: Vec<i64> = targets
+        .iter()
+        .filter(|r| frozen.contains(r))
+        .copied()
+        .collect();
+    report.status_refs += crate::workflow::case_status::revoke_for_runs(
+        tx,
+        &deferred_ids,
+        chrono::Utc::now().timestamp(),
+    )
+    .map_err(|e| HandlerError::internal(e.to_string()))?;
     for run_id in targets {
         if frozen.contains(&run_id) {
             report
@@ -116,6 +134,10 @@ pub(crate) fn sweep_subject(
                 "DELETE FROM case_notes WHERE run_id = ?1",
                 rusqlite::params![run_id],
             )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        // The status ref dies WITH its run (Keystone: a purged subject must
+        // not leave an unguessable-but-live public page behind).
+        report.status_refs += crate::workflow::case_status::purge_for_runs(tx, &[run_id])
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         report.dependent_rows += tx
             .execute(
@@ -321,6 +343,56 @@ mod tests {
         tx.commit().unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_runs"), 1);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM legal_holds"), 1);
+    }
+
+    #[test]
+    fn dsar_sweep_and_legal_hold_revoke_refs() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // Two runs carrying the subject: one free (swept → ref PURGED),
+        // one under legal hold (deferred → ref REVOKED, evidence stays).
+        let swept = seed_run(&conn, "acme", r#"{"who":"jane"}"#);
+        let held = seed_run(&conn, "acme", r#"{"who":"jane","hold":true}"#);
+        for (run, r) in [(swept, "SWPT"), (held, "HELD")] {
+            conn.execute(
+                "INSERT INTO case_status_refs(run_id, ref, salt_version, minted_at)
+                 VALUES (?1, ?2, 1, 1000)",
+                rusqlite::params![run, format!("{r}{run:021}")],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO legal_holds(knowledge_id, reason, held_by, held_at)
+             VALUES (-?1, 'litigation', 'dpo', 1)",
+            rusqlite::params![held],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane").unwrap();
+        assert_eq!(rep.status_refs, 2, "one purged + one revoked");
+        tx.commit().unwrap();
+        // The swept run's ref row is GONE.
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM case_status_refs WHERE run_id={swept}")
+            ),
+            0
+        );
+        // The held run's ref is REVOKED, not purged.
+        let revoked: Option<i64> = conn
+            .query_row(
+                "SELECT revoked_at FROM case_status_refs WHERE run_id=?1",
+                rusqlite::params![held],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(revoked.is_some(), "a held run's public page goes dark");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM workflow_runs"),
+            1,
+            "the held run stays"
+        );
     }
 
     #[test]

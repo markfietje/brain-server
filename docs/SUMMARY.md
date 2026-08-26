@@ -36,6 +36,7 @@
 - [CLI reference](cli-reference.md)
 - [Metrics dictionary](metrics.md)
 - [KB deflection loop](kb-deflection.md)
+- [Keystone worked example](keystone-worked-example.md)
 - [Engine SDK](engine-sdk.md)
 - [OpenClaw integration](openclaw-integration.md)
 - [MCP server](mcp.md)

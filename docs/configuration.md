@@ -21,6 +21,8 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_MODEL_MANIFEST` | — | Path to a SHA-256 model manifest; when set, boot **fails closed** unless every pinned artifact matches |
 | `BRAIN_REGION` | — | Data-residency stamp (e.g. `eu-west-1`, `ph-manila`) written onto stored rows + certificates; unset = no stamp |
 | `BRAIN_FCR_WINDOW_DAYS` | `7` | First-contact-resolution repeat-contact attribution window on the workflow scoreboard (a recurring contact within the window counts the predecessor as not resolved) |
+| `BRAIN_REASK_WINDOW_DAYS` | `3` | Re-ask duplicate-detection window: two OPEN CRM cases with the same hashed subject within this window file a pending `case_merge_suggested` HITL proposal (exact hash match only — no fuzzy matching, nothing merges automatically) |
+| `BRAIN_CASE_STATUS_KEY_FILE` | — | 0600-mode salt file for the public case-status ref HMAC (`BRAIN_CASE_STATUS_KEY` inline as last resort). Unreadable/wide-mode file fails closed; without any salt configured, ref minting refuses |
 
 ## Authentication
 

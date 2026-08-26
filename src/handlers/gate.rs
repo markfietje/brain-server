@@ -1045,6 +1045,45 @@ pub async fn approve_proposal(
             }));
         }
 
+        // ── The human translation promotion. ────────────────
+        // The ONLY writer of an approved `kcs_translations` row: the
+        // proposal's payload is upserted per-locale, pinned to the source
+        // revision AT approval time (`based_revision`). Nothing
+        // auto-translates; nothing auto-publishes.
+        if kind == crate::workflow::kcs::KIND_TRANSLATE {
+            let now_ts = chrono::Utc::now().timestamp();
+            let tr_id = crate::workflow::kcs::apply_translation_approval(
+                &tx,
+                &content,
+                now_ts,
+            )
+            .map_err(|e| HandlerError::bad_request("kcs_translate_invalid", e.to_string()))?;
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("proposal/{id}"),
+                crate::audit::AuditStatus::Ok,
+                "workflow/kcs/translate",
+                "global",
+            );
+            let n = tx
+                .execute(
+                    "UPDATE proposals SET status = 'approved', decided_at = datetime('now')
+                     WHERE id = ?1 AND status = 'pending'",
+                    rusqlite::params![id],
+                )
+                .map_err(|e| HandlerError::internal(format!("update failed: {e}")))?;
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "status": "approved",
+                "translation_id": tr_id,
+                "applied_rows": n,
+            }));
+        }
+
         // ── Evolve: the KCS capture-kind branch. ───────────────────────────
         // `kcs_new_article` / `kcs_update_article` promote to a knowledge
         // row born in `kcs_state='draft'`; `kcs_link_only` writes ONLY the

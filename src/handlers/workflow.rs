@@ -999,6 +999,8 @@ mod scoreboard_tests {
             "voc_contacts_total",
             "voc_complaints_total",
             "voc_complaints_per_thousand_contacts_units",
+            // v1.28.36 Keystone: the re-ask is now counted.
+            "reask_rate",
         ];
         let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
         let doc = std::fs::read_to_string(&doc_path)
@@ -1034,6 +1036,53 @@ mod scoreboard_tests {
                 );
             }
         }
+    }
+
+    /// Keystone M3: metrics_dictionary_has_reask_rate_entry
+    #[test]
+    fn metrics_dictionary_has_reask_rate_entry() {
+        let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");
+        let doc = std::fs::read_to_string(&doc_path)
+            .unwrap_or_else(|e| panic!("docs/metrics.md must exist and be readable: {e}"));
+        assert!(
+            doc.contains("`reask_rate`"),
+            "the dictionary carries a reask_rate entry"
+        );
+        // The entry pins all three deterministic sources and the window var.
+        let row = doc
+            .lines()
+            .find(|l| l.contains("`reask_rate`"))
+            .expect("reask_rate table row");
+        for term in ["crm_merge", "marked", "derived", "BRAIN_REASK_WINDOW_DAYS"] {
+            assert!(
+                row.contains(term),
+                "reask_rate entry missing '{term}': {row}"
+            );
+        }
+    }
+
+    /// Keystone M3: reask_window_is_env_tunable (mirrors the FCR pattern)
+    #[test]
+    fn reask_window_is_env_tunable() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: single-threaded under ENV_LOCK — the documented env-mutation posture.
+        unsafe { std::env::remove_var("BRAIN_REASK_WINDOW_DAYS") };
+        assert_eq!(
+            brain_server::connector::crm::reask_window_days(),
+            brain_server::connector::crm::DEFAULT_REASK_WINDOW_DAYS
+        );
+        assert_eq!(brain_server::connector::crm::DEFAULT_REASK_WINDOW_DAYS, 3);
+        unsafe { std::env::set_var("BRAIN_REASK_WINDOW_DAYS", "5") };
+        assert_eq!(brain_server::connector::crm::reask_window_days(), 5);
+        // Garbage and non-positive values fall back, deterministically.
+        unsafe { std::env::set_var("BRAIN_REASK_WINDOW_DAYS", "-1") };
+        assert_eq!(brain_server::connector::crm::reask_window_days(), 3);
+        unsafe { std::env::set_var("BRAIN_REASK_WINDOW_DAYS", "zero") };
+        assert_eq!(brain_server::connector::crm::reask_window_days(), 3);
+        unsafe { std::env::remove_var("BRAIN_REASK_WINDOW_DAYS") };
+        assert_eq!(brain_server::connector::crm::reask_window_days(), 3);
     }
 }
 
@@ -1934,6 +1983,67 @@ pub async fn post_outreach_followup(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(outreach_err)?;
+    Ok(Json(out))
+}
+
+// ── The public case-status refs.
+// Protocol adapters only — every invariant lives in workflow::case_status.
+
+fn case_status_err(e: crate::workflow::case_status::CaseStatusError) -> HandlerError {
+    use crate::workflow::case_status::CaseStatusError;
+    match e {
+        CaseStatusError::NotFound(m) => HandlerError::not_found(m),
+        CaseStatusError::Revoked(m) => HandlerError::bad_request("status_ref_revoked", m),
+        CaseStatusError::Salt(m) => HandlerError::internal(format!("status-ref salt: {m}")),
+        CaseStatusError::Database(m) => HandlerError::internal(m),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct StatusRefRequest {
+    pub action: String,
+}
+
+/// `POST /workflow/runs/{id}/status-ref` — mint|rotate|revoke the run's
+/// public case-status ref. Role `approve`; audited inside the tx.
+pub async fn post_status_ref(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<StatusRefRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "approve")?;
+    let action: String = body.action;
+    if !matches!(action.as_str(), "mint" | "rotate" | "revoke") {
+        return Err(HandlerError::bad_request(
+            "action_invalid",
+            "action must be mint|rotate|revoke",
+        ));
+    }
+    type CSErr = crate::workflow::case_status::CaseStatusError;
+    let out = tokio::task::spawn_blocking(move || -> Result<_, CSErr> {
+        let mut conn = pool.get().map_err(|e| CSErr::Database(e.to_string()))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(CSErr::from)?;
+        let now = chrono::Utc::now().timestamp();
+        use crate::workflow::case_status as cs;
+        let out = match action.as_str() {
+            "mint" => serde_json::json!({"run_id": id, "action": "mint", "ref": cs::mint(tx.tx(), id, now)?}),
+            "rotate" => serde_json::json!({"run_id": id, "action": "rotate", "ref": cs::rotate(tx.tx(), id, now)?}),
+            _ => {
+                cs::revoke(tx.tx(), id, now)?;
+                serde_json::json!({"run_id": id, "action": "revoke"})
+            }
+        };
+        tx.commit().map_err(CSErr::from)?;
+        Ok(out)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(case_status_err)?;
     Ok(Json(out))
 }
 

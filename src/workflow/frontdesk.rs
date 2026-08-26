@@ -6,6 +6,8 @@
 //! handovers × re-asks). Deterministic, bounded inputs, fail-closed on
 //! ambiguity.
 
+use rusqlite::Connection;
+
 /// One lineage event as the gate reads it: the outbox topic plus the
 /// channel it rode (empty for channel-less events).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,10 +28,41 @@ impl LineageEvent {
 /// The topics the close gate recognizes.
 pub(crate) const TOPIC_CUSTOMER_CONFIRMATION: &str = "customer/confirmation";
 pub(crate) const TOPIC_CLOSE_ATTEMPT: &str = "outreach/close_attempt";
+/// The re-ask event: the customer's issue arrived AGAIN
+/// because the first answer didn't land. One topic, three sources:
+/// `crm_merge` | `marked` | `derived` — pinned by tests.
+pub(crate) const TOPIC_REASK: &str = "case/reask";
 /// The documented consent-absent exception: this many logged attempts and
 /// no objection lets a case close without confirmation (the peak-end rule's
 /// escape hatch, fully audited).
 pub(crate) const CLOSE_ATTEMPT_EXCEPTION_MIN: usize = 3;
+
+/// The legal re-ask sources — a closed vocabulary, validated at the door.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReaskSource {
+    CrmMerge,
+    Marked,
+    Derived,
+}
+
+impl ReaskSource {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        match s {
+            "crm_merge" => Some(ReaskSource::CrmMerge),
+            "marked" => Some(ReaskSource::Marked),
+            "derived" => Some(ReaskSource::Derived),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            ReaskSource::CrmMerge => "crm_merge",
+            ReaskSource::Marked => "marked",
+            ReaskSource::Derived => "derived",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CloseDecision {
@@ -68,9 +101,11 @@ pub(crate) fn evaluate_close(events: &[LineageEvent]) -> CloseDecision {
 ///   (`ask/<subject>` topics)
 /// - `channel_switches`: adjacent lineage events on different channels
 /// - `handovers`: recorded handover events
+/// - `re_asks` (Keystone): `case/reask` events — the customer's issue
+///   arrived again because the first answer didn't land. Weighted like a
+///   repeat (×2).
 ///
-/// Score = repeats×2 + switches×1 + handovers×3 — a repeat costs more than
-/// a switch, an unowned handover costs most.
+/// Score = repeats×2 + switches×1 + handovers×3 + re_asks×2.
 pub(crate) fn effort_proxy(events: &[LineageEvent]) -> i64 {
     use std::collections::BTreeSet;
     let mut subjects_asked = BTreeSet::new();
@@ -92,12 +127,45 @@ pub(crate) fn effort_proxy(events: &[LineageEvent]) -> i64 {
         }
     }
     let handovers = events.iter().filter(|e| e.topic == "handover").count() as i64;
-    repeats * 2 + switches + handovers * 3
+    let re_asks = re_asks(events);
+    repeats * 2 + switches + handovers * 3 + re_asks * 2
+}
+
+/// Count `case/reask` events on the lineage (the effort proxy's missing
+/// input, now emitted from three deterministic sources).
+pub(crate) fn re_asks(events: &[LineageEvent]) -> i64 {
+    events.iter().filter(|e| e.topic == TOPIC_REASK).count() as i64
+}
+
+/// Write one re-ask lineage event on the run: exactly-once by idempotency
+/// key (`reask:{source}:{detail_digest}`), payload carries ids/digests only
+/// (never content), audited inside the caller's tx via append_lineage.
+pub(crate) fn record_reask(
+    conn: &Connection,
+    run_id: i64,
+    source: ReaskSource,
+    detail_digest: &str,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    crate::workflow::outbox::append_lineage(
+        conn,
+        run_id,
+        TOPIC_REASK,
+        &serde_json::json!({
+            "source": source.as_str(),
+            "detail_digest": detail_digest,
+            "ts": now,
+        })
+        .to_string(),
+        &format!("reask:{}:{detail_digest}", source.as_str()),
+        now,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     #[test]
     fn close_requires_confirmation_or_three_attempt_exception() {
@@ -152,5 +220,61 @@ mod tests {
         assert_eq!(effort_proxy(&handed), 3);
         // Channel-less events never fabricate switches.
         assert_eq!(effort_proxy(&[LineageEvent::new("handover", "")]), 3);
+    }
+
+    // ── Keystone M3: the re-ask event.
+
+    fn lineage_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open");
+        conn.execute_batch(
+            "CREATE TABLE outbox(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL, topic TEXT NOT NULL, payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending', idempotency_key TEXT UNIQUE,
+                created_at INTEGER NOT NULL, parent_id INTEGER, delivered_at INTEGER);",
+        )
+        .expect("outbox");
+        conn
+    }
+
+    #[test]
+    fn marked_reask_writes_lineage_event_and_counts() {
+        let conn = lineage_db();
+        let id = record_reask(&conn, 9, ReaskSource::Marked, "note:77", 5_000).expect("record");
+        assert!(id > 0);
+        let (topic, payload): (String, String) = conn
+            .query_row(
+                "SELECT topic, payload_json FROM outbox WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("event");
+        assert_eq!(topic, TOPIC_REASK);
+        assert!(payload.contains("\"source\":\"marked\""));
+        assert!(payload.contains("note:77"), "the digest names its evidence");
+        assert!(
+            !payload.contains("content"),
+            "no content rides a re-ask payload"
+        );
+        // Exactly-once: the same digest+source replay is a no-op.
+        record_reask(&conn, 9, ReaskSource::Marked, "note:77", 6_000).expect("replay");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox WHERE run_id = 9", [], |r| {
+                r.get(0)
+            })
+            .expect("count");
+        assert_eq!(n, 1, "first write wins");
+        // The proxy counts it — twice, like a repeat.
+        let events = vec![
+            LineageEvent::new(TOPIC_REASK, ""),
+            LineageEvent::new(TOPIC_REASK, ""),
+        ];
+        assert_eq!(re_asks(&events), 2);
+        assert_eq!(effort_proxy(&events), 4, "each re-ask weighs ×2");
+        // Unknown sources refuse at the door — the closed vocabulary.
+        assert!(ReaskSource::parse("vibes").is_none());
+        for legal in ["crm_merge", "marked", "derived"] {
+            assert!(ReaskSource::parse(legal).is_some());
+        }
     }
 }

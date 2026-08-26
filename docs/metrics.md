@@ -50,16 +50,18 @@ telephony/CRM numbers) — see "Deliberately absent" at the end.
 | `self_service_deflection_units` | INDICATIVE deflection from on-page KB feedback (solved-proofs over total feedback). Never traded against `repeat_contact_rate_units`. | `kcs::kb_feedback_measures` | rolling | docs/kb-deflection.md governs; KCS v6 self-service |
 | `kb_feedback_total` | total on-page feedback events counted. | `kcs::kb_feedback_measures` | rolling | — |
 | `kb_hot_topics` | top slugs by feedback count above `KB_HOT_TOPIC_THRESHOLD`. | `kcs::kb_hot_topics` | rolling | KCS v6 Evolve (content-defect queue) |
+| `reask_rate` | re-ask events (`case/reask`) ÷ closed cases, in hundredths. Three deterministic sources emit the event: `crm_merge` (Zendesk/Salesforce merges, Genesys reopens via the Bridges sync), `marked` (operator `reask` note / `brain workflow note --reask`), `derived` (duplicate-open heuristic — exact hashed-subject match within `BRAIN_REASK_WINDOW_DAYS`, default 3 days, HITL-gated as `case_merge_suggested`; the approved merge emits). No fuzzy matching; no surveys. | `outbox topic='case/reask'`, `workflow_runs.status` | rolling; window semantics per `BRAIN_REASK_WINDOW_DAYS` | CXC customer-effort canon (effort-proxy dimension); Keystone v1.28.36 |
 
 ## Derived proxy (planned scorer integration)
 
 **`customer_effort_events`** — a deterministic CES *proxy* per case computed
 from the lineage: repeat contacts × channel switches × handovers ×
-re-asked-context events. No survey instrument exists here (VoC surveys stay
-CRM-side per ISO 10004); this is the lineage-derived twin. It lands as a
-scored dimension in the next scorer version with gold-set families extended;
-until then it is defined here so the formula is fixed before any code emits
-it.
+re-asks (`case/reask`, weighted like a repeat — see `frontdesk::effort_proxy`:
+score = repeats×2 + switches×1 + handovers×3 + re_asks×2). No survey
+instrument exists here (VoC surveys stay CRM-side per ISO 10004); this is the
+lineage-derived twin. It lands as a scored dimension in the next scorer
+version with gold-set families extended; until then it is defined here so the
+formula is fixed before any code emits it.
 
 ## Deliberately absent (scope guards)
 

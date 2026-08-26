@@ -19,6 +19,101 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.36] — 2026-08-26 — "Keystone": the last three Order-of-Care gaps
+
+The layer-map pass left exactly three Order-of-Care steps unassigned; this
+release closes all three, deterministic and HITL-gated: the public
+case-status page (G-A — a customer who can *see* the case doesn't call about
+it), the multilingual public KB (G-B — translation is a human act, the tool
+governs), and the re-ask event (G-C — the effort proxy's missing input).
+The public surface stays a static artifact; brain-server remains loopback —
+no public routes exist and none were added.
+
+### Release notes
+
+**Improvements**
+- **Public case-status page:** `POST /workflow/runs/{id}/status-ref`
+  (`{"action":"mint|rotate|revoke"}`, Write on the run's domain + `approve`
+  role) manages an unguessable ref — base32(HMAC-SHA256(salt,
+  run:rotation))[..26], salt via the standard 0600 secret-file ladder
+  (`BRAIN_CASE_STATUS_KEY_FILE`). Mint is idempotent per run; rotation kills
+  the old token; revocation removes the page from the next build AND refuses
+  fresh mints (a revoked page does not resurrect). `brain kb build
+  --with-case-status` emits `status/<ref>.json` + `.html`: one of seven
+  fixed public words (`received → in-progress → awaiting-your-reply →
+  awaiting-confirmation → resolved → closed`), a promise bucket derived from
+  the SLA class ("expected within 72 hours") — never raw deadlines, never
+  operator names, zero PII (fixture-pinned). `/status/` is excluded from
+  robots.txt, marked noindex, and status refs NEVER appear in the sitemap;
+  every status file lands in `kb_manifest.json`. The DSAR sweep purges refs
+  of erased runs and revokes (page goes dark, evidence stays) for runs a
+  legal hold defers.
+- **Multilingual KB:** humans translate (`POST /kcs/translate` files a
+  pending `kcs_translate` proposal); approval is the ONLY writer of an
+  approved `kcs_translations` row, pinned to `based_revision`. When the
+  source article's revision advances past it, the translation lands on the
+  SAME content-health worklist (`GET /kcs/articles?stale=1`) — one freshness
+  discipline, no second mechanism. `brain kb build --locales en,de,fr,es,nl`
+  emits `{locale}/{slug}.html` pages with hreflang alternates +
+  `x-default`, per-locale search indexes, sitemap alternates — and a
+  missing translation serves the default content behind a visible
+  "not yet available in this language" note, never a silent fallback.
+- **The re-ask event:** outbox topic `case/reask`, payload
+  `{source: crm_merge|marked|derived, detail_digest, ts}` — ids/digests
+  only, exactly-once by key. CRM merges map to it in the Bridges sync
+  (`merged_away` rows post the event on the TARGET case's run; unmappable
+  merges refuse loudly); Genesys-class reopens ride the same shape. The
+  operator marks one directly: a `reask` note kind on the case channel or
+  `brain workflow note <run> <text> --reask`. The derived heuristic files a
+  `case_merge_suggested` proposal for OPEN cases sharing an exact hashed
+  subject within `BRAIN_REASK_WINDOW_DAYS` (default 3 days) — propose,
+  never write; approval is the human CRM merge. The metrics dictionary
+  gains `reask_rate`; the effort proxy weighs each re-ask ×2.
+
+### Engineering record
+
+- Schema **1.28.35 → 1.28.36**, additive only: `case_status_refs`
+  (UNIQUE run_id, UNIQUE ref) + `kcs_translations`
+  (UNIQUE knowledge_id × locale) + `crm_cases.subject_ref` column.
+  Schema-contract test extended; boots green on a COPY of the live DB
+  (integrity_check ok, doctor clean).
+- Routes: `/workflow/runs/{id}/status-ref`, `/kcs/translate` with openapi.yaml,
+  route-coverage guard table, route-authz guard table, docs/api.md in step.
+- SDK: `workflow_state::public_status` (pure fn over the four-key ABI) +
+  `PublicStatus` vocabulary enum, fixture-pinned; engine-sdk tests 118 (+1).
+- Tests: server main bin **926** / 6 ignored (+21 over v1.28.35: the plan-named
+  pins `status_ref_is_unguessable_and_rotation_kills_old_ref`,
+  `public_status_maps_every_decision_state_deterministically`,
+  `status_json_contains_no_pii_no_deadlines_no_names`,
+  `revoke_removes_page_from_next_build_and_stays_dead`,
+  `promise_bucket_comes_from_envelope_class_not_internal_clock`,
+  `status_pages_are_noindex_and_absent_from_sitemap`,
+  `dsar_sweep_and_legal_hold_revoke_refs`,
+  `hreflang_alternates_and_x_default_are_complete`,
+  `missing_translation_shows_explicit_note_not_silent_fallback`,
+  `translation_goes_stale_when_source_revision_advances`,
+  `translate_proposal_never_autopopulates`, `search_index_is_per_locale`,
+  `sitemap_alternates_cover_locales_and_never_status_refs`,
+  `zendesk_and_salesforce_merges_map_to_reask_events`,
+  `derived_merge_suggests_never_writes`, `marked_reask_writes_lineage_event_and_counts`,
+  `reask_note_writes_the_case_reask_event`, `reask_window_is_env_tunable`,
+  `metrics_dictionary_has_reask_rate_entry`), lib **205** / 1 ignored (+11:
+  kb status-artifact pins incl. `revoked_refs_and_missing_runs_never_reach_the_build`).
+  fmt + clippy `-D warnings` clean (default, bench, otel, crates trees);
+  lipstyk diff gate exit 0; default-feature test pass green.
+- Zero new dependencies (hmac/sha2 declared; base32 is a pinned 20-line
+  RFC-4648 encoder).
+- Honest ceilings: static = build-cadence fresh (the page stamps its build
+  time; no relay-side refresh exists); brain never sends anything (refs,
+  translations, follow-ups ride humans/CRMs); no machine translation anywhere;
+  duplicate detection is exact-hash only (no fuzzy matching); vendor syncs do
+  not yet parse merge events from Zendesk/Salesforce APIs — the mapping ships
+  pure and tested, the vendor field wiring lands with connector hardening;
+  the effort proxy is defined and emitted but still unwired into scorer
+  gold-set families (as documented since Frontdesk).
+
+---
+
 ## [1.28.35] — 2026-08-26 — "Outreach": proactive care, consent-first
 
 ISO 23592's service-excellence model and the retention economics both demand

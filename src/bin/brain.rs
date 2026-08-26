@@ -341,7 +341,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "kb",
         json: false,
         run: cmd_kb,
-        usage: "brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>]\n                 (the public KB is a static build artifact; sign the tarball with\n                  scripts/release-sign.sh before hosting)",
+        usage: "brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>]\n                 [--with-case-status] [--locales en,de,fr,es,nl]\n                 (the public KB is a static build artifact; sign the tarball with\n                  scripts/release-sign.sh before hosting)",
     },
     Subcommand {
         name: "parcel",
@@ -527,13 +527,26 @@ fn parse_flags(args: &[String]) -> Result<(Vec<String>, FlagMap), String> {
 
 /// The boolean flag vocabulary — never take a value, never eat the next token.
 const BOOL_FLAGS: &[&str] = &[
-    "dry-run", "yes", "json", "force", "explain", "flag", "graph", "purge", "r", "replace",
-    "return", "help", "version",
+    "dry-run",
+    "yes",
+    "json",
+    "force",
+    "explain",
+    "flag",
+    "graph",
+    "purge",
+    "r",
+    "replace",
+    "with-case-status",
+    "return",
+    "help",
+    "version",
 ];
 
 /// The value flag vocabulary — the next non-dash token (or `=v`) is the value.
 const VALUE_FLAGS: &[&str] = &[
     "action",
+    "locales",
     "alg",
     "app-id",
     "audit",
@@ -4573,7 +4586,8 @@ brain workflow status <run>\n  \
 brain workflow answer <run> <text>\n  \
 brain workflow approve <run> <step>\n  \
 brain workflow crank <run> [steps]\n  \
-brain workflow handoff <run>";
+brain workflow handoff <run>\n  \
+brain workflow note <run> <text> [--reask]";
     let sub = args.first().map(String::as_str).unwrap_or("");
     let base = base_url();
     let token = auth_token();
@@ -4727,6 +4741,39 @@ brain workflow handoff <run>";
             );
             Ok(())
         }
+        "note" => {
+            let reask = rest.iter().any(|a| a == "--reask");
+            let plain: Vec<&String> = rest.iter().filter(|a| !a.starts_with('-')).collect();
+            let Some(run) = plain.first() else {
+                return Err(usage.into());
+            };
+            let text: String = plain
+                .get(1..)
+                .unwrap_or(&[])
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<&str>>()
+                .join(" ");
+            if text.is_empty() || text.len() > 4000 {
+                return Err("note text must be 1..=4000 chars".into());
+            }
+            let mut body = serde_json::json!({ "content": text });
+            if reask {
+                body["kind"] = serde_json::json!("reask");
+            }
+            post_json(&format!("/workflow/runs/{run}/notes"), body)?;
+            if json_out {
+                return emit_json_ok(
+                    "workflow",
+                    serde_json::json!({ "run_id": run, "kind": if reask { "reask" } else { "note" } }),
+                );
+            }
+            println!(
+                "note filed on run {run}{}",
+                if reask { " (reask event recorded)" } else { "" }
+            );
+            Ok(())
+        }
         "handoff" => {
             let Some(run) = rest.first() else {
                 return Err(usage.into());
@@ -4787,6 +4834,22 @@ fn cmd_kb(args: &[String]) -> Result<(), String> {
         .and_then(|o| o.clone())
         .ok_or("kb build requires --out <dir>")?;
     let base_url = flags.get("base-url").and_then(|o| o.clone());
+    let with_case_status = flags.contains_key("with-case-status");
+    let locales: Vec<String> = flags
+        .get("locales")
+        .and_then(|o| o.clone())
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 12
+                        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                })
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
 
     let db_path = if let Some(p) = flags.get("db").and_then(|o| o.clone()) {
         PathBuf::from(p)
@@ -4807,11 +4870,39 @@ fn cmd_kb(args: &[String]) -> Result<(), String> {
 
     let (articles, redirects) = brain_server::kb::collect_articles(&conn)
         .map_err(|e| format!("collect published articles: {e}"))?;
-    if articles.is_empty() {
+    if articles.is_empty() && !with_case_status {
         println!("no published articles in domain '{domain}' — nothing to build");
         return Ok(());
     }
-    let files = brain_server::kb::build_files(&articles, &redirects, base_url.as_deref());
+    let mut status_count = 0usize;
+    let mut opts = brain_server::kb::BuildOptions {
+        with_case_status,
+        locales: locales.clone(),
+        ..Default::default()
+    };
+    if !locales.is_empty() {
+        let translations = brain_server::kb::collect_translations(&conn)
+            .map_err(|e| format!("collect translations: {e}"))?;
+        println!(
+            "translations: {} approved across {} locales",
+            translations.len(),
+            locales.len()
+        );
+        opts.translations = translations;
+    }
+    if with_case_status {
+        // The build-time stamp is the honest static-freshness ceiling.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("clock: {e}"))?
+            .as_secs() as i64;
+        let entries = brain_server::kb::collect_status_entries(&conn, now)
+            .map_err(|e| format!("collect case-status refs: {e}"))?;
+        status_count = entries.len();
+        opts.status_entries = entries;
+    }
+    let files =
+        brain_server::kb::build_files_ext(&articles, &redirects, base_url.as_deref(), &opts);
     let n = brain_server::kb::write_artifact(std::path::Path::new(&out), &files)
         .map_err(|e| format!("write artifact: {e}"))?;
     println!(
@@ -4819,6 +4910,11 @@ fn cmd_kb(args: &[String]) -> Result<(), String> {
         articles.len(),
         redirects.len()
     );
+    if with_case_status {
+        println!(
+            "case-status pages: {status_count} (status/<ref>.json + .html; /status/ excluded from robots.txt and never in the sitemap)"
+        );
+    }
     println!(
         "verify what you host: sha256 each file against {out}/{}",
         brain_server::kb::MANIFEST_NAME

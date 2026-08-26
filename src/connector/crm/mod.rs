@@ -75,6 +75,10 @@ pub const MIN_POLL_INTERVAL_SECS: u64 = 300;
 pub enum CaseStatus {
     Open,
     ClosedSolved,
+    /// A merged-away ref (Zendesk ticket merge / Salesforce case merge /
+    /// Genesys workitem merge): the vendor surfaces it in incremental sync
+    /// as its own row; it carries no independent issue anymore.
+    MergedAway,
 }
 
 impl CaseStatus {
@@ -82,6 +86,16 @@ impl CaseStatus {
         match self {
             CaseStatus::Open => "open",
             CaseStatus::ClosedSolved => "closed_solved",
+            CaseStatus::MergedAway => "merged_away",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "open" => Some(CaseStatus::Open),
+            "closed_solved" => Some(CaseStatus::ClosedSolved),
+            "merged_away" => Some(CaseStatus::MergedAway),
+            _ => None,
         }
     }
 }
@@ -114,6 +128,13 @@ pub struct CrmCase {
     pub is_not_seed: Option<String>,
     /// Vendor last-update timestamp (ISO-8601), verbatim.
     pub updated_at: String,
+    /// The surviving case's vendor id when this ref was MERGED into another
+    /// The surviving case's vendor id when this ref was MERGED into another
+    /// (the CRM-merge re-ask source). `None` unless merged.
+    pub merged_into: Option<String>,
+    /// True when a previously-closed workitem REOPENED (the Genesys reopen
+    /// re-ask source). Zendesk/Salesforce merges ride `merged_into`.
+    pub reopened: bool,
 }
 
 impl CrmCase {
@@ -162,12 +183,13 @@ pub fn case_doc(c: &CrmCase) -> crate::connector::pipeline::ConnectorDoc {
 /// untouched. Returns the number of rows written (always 1).
 pub fn upsert_crm_case(conn: &Connection, c: &CrmCase, run_id: Option<i64>) -> Result<()> {
     conn.execute(
-        "INSERT INTO crm_cases(case_ref, source, org_id, case_id, run_id, status, updated_rev, synced_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)
+        "INSERT INTO crm_cases(case_ref, source, org_id, case_id, run_id, status, updated_rev, synced_at, subject_ref)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8)
          ON CONFLICT(case_ref) DO UPDATE SET
              status = excluded.status,
              updated_rev = excluded.updated_rev,
              run_id = COALESCE(excluded.run_id, crm_cases.run_id),
+             subject_ref = excluded.subject_ref,
              synced_at = CURRENT_TIMESTAMP",
         params![
             c.case_ref(),
@@ -176,7 +198,8 @@ pub fn upsert_crm_case(conn: &Connection, c: &CrmCase, run_id: Option<i64>) -> R
             c.case_id,
             run_id,
             c.status.as_str(),
-            c.updated_rev
+            c.updated_rev,
+            c.subject_ref
         ],
     )?;
     Ok(())
@@ -221,6 +244,24 @@ pub trait BrainSink {
 /// Outbox topics Bridges emits. `closed` is the Evolve trigger fixture shape.
 pub const TOPIC_CASE_UPDATED: &str = "crm/case/updated";
 pub const TOPIC_CASE_CLOSED: &str = "crm/case/closed";
+/// The re-ask event — merges and reopens map here.
+pub const TOPIC_REASK: &str = "case/reask";
+
+/// The detail digest for a CRM-merge/reopen re-ask: keyed SHA-256 over the
+/// subject ref + merged-away case ref — ids only, never content.
+fn reask_digest(subject_ref: &str, case_ref: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(b"brain-reask\x00");
+    h.update(subject_ref.as_bytes());
+    h.update(b"\x00");
+    h.update(case_ref.as_bytes());
+    let digest = h.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()[..32]
+        .to_string()
+}
 
 /// Summary of one case's delivery pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,31 +279,70 @@ pub struct DeliveryReport {
 pub fn deliver_case(sink: &dyn BrainSink, db: &Connection, c: &CrmCase) -> Result<DeliveryReport> {
     let case_ref = c.case_ref();
 
-    // 1. The untrusted body takes the proposal path (posture decides at the
-    //    server). Delivered even when nothing else changes — same content +
-    //    same URI dedupes server-side.
-    sink.ingest_body(
-        &c.title,
-        &c.body_markdown,
-        &format!("crm://{}/{}/{}", c.source, c.org_id, c.case_id),
-    )
-    .with_context(|| format!("body ingest failed for {case_ref}"))?;
+    // A MERGED-AWAY ref opens no run of its own — see the re-ask mapping
+    // in step 3 below.
+    let run_id = if c.status == CaseStatus::MergedAway {
+        0 // never used: the merged branch returns before the envelope post
+    } else {
+        // 1. The untrusted body takes the proposal path (posture decides at the
+        //    server). Delivered even when nothing else changes — same content +
+        //    same URI dedupes server-side.
+        sink.ingest_body(
+            &c.title,
+            &c.body_markdown,
+            &format!("crm://{}/{}/{}", c.source, c.org_id, c.case_id),
+        )
+        .with_context(|| format!("body ingest failed for {case_ref}"))?;
 
-    // 2. Run binding: open once, reuse forever (one case = one run).
-    let run_id = match run_for_case(db, &case_ref)? {
-        Some(id) => id,
-        None => {
-            let id = sink.open_run(&case_ref)?;
-            upsert_crm_case(db, c, Some(id))?;
-            id
+        // 2. Run binding: open once, reuse forever (one case = one run).
+        match run_for_case(db, &case_ref)? {
+            Some(id) => id,
+            None => {
+                let id = sink.open_run(&case_ref)?;
+                upsert_crm_case(db, c, Some(id))?;
+                id
+            }
         }
     };
 
     // 3. Envelope event. Closed-solved closes the loop (Evolve's trigger);
-    //    everything else reports progress.
+    //    everything else reports progress. A MERGED-AWAY ref is not a
+    //    progress update — it maps to the target case's `case/reask` event
+    //    (the customer's issue arrived twice because the first answer
+    //    didn't land) and posts no envelope of its own.
+    if c.status == CaseStatus::MergedAway {
+        let Some(target_id) = c.merged_into.as_deref() else {
+            // A merged-away row without a surviving id is unmappable data:
+            // refuse loudly rather than silently drop the re-ask.
+            anyhow::bail!(
+                "merged_away case {} carries no merged_into target; refusing to map",
+                case_ref
+            );
+        };
+        let target_ref = format!("crm:{}:{}:{}", c.source, c.org_id, target_id);
+        let run_id = run_for_case(db, &target_ref)?.ok_or_else(|| {
+            anyhow::anyhow!("merge target {target_ref} has no governed run yet; re-ask deferred")
+        })?;
+        let digest = crate::connector::crm::reask_digest(&c.subject_ref, &case_ref);
+        let payload = serde_json::json!({
+            "source": "crm_merge",
+            "detail_digest": digest,
+            "ts": chrono::Utc::now().timestamp(),
+        })
+        .to_string();
+        let key = event_key(&target_ref, &c.updated_rev, TOPIC_REASK);
+        let (first, _id) = sink.post_event(run_id, TOPIC_REASK, &payload, &key)?;
+        return Ok(DeliveryReport {
+            case_ref,
+            run_id,
+            topic_posted: first.then(|| TOPIC_REASK.to_string()),
+        });
+    }
     let topic = match c.status {
         CaseStatus::Open => TOPIC_CASE_UPDATED,
         CaseStatus::ClosedSolved => TOPIC_CASE_CLOSED,
+        // Handled above (the re-ask mapping); unreachable here.
+        CaseStatus::MergedAway => anyhow::bail!("merged_away case reached the envelope mapper"),
     };
     let payload = serde_json::json!({
         "case_ref": case_ref,
@@ -297,6 +377,101 @@ fn event_key(case_ref: &str, rev: &str, topic: &str) -> String {
     format!("k:{}", &hex[..16])
 }
 
+// ── derived re-ask detection: propose, NEVER write. ────────────
+
+/// The re-ask duplicate-detection window (days): `BRAIN_REASK_WINDOW_DAYS`
+/// overrides, default 3. Same env-resolution discipline as every other
+/// window (positive integers only, garbage falls back to the default).
+pub const DEFAULT_REASK_WINDOW_DAYS: i64 = 3;
+
+pub fn reask_window_days() -> i64 {
+    std::env::var("BRAIN_REASK_WINDOW_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(DEFAULT_REASK_WINDOW_DAYS)
+}
+
+/// The HITL proposal kind a detected duplicate files. Approval is the human
+/// CRM merge — brain has no merge engine and never merges anything itself.
+pub const KIND_CASE_MERGE_SUGGESTED: &str = "case_merge_suggested";
+
+/// Deterministic duplicate-open heuristic: OPEN cases in the same org with
+/// the SAME hashed subject within `BRAIN_REASK_WINDOW_DAYS` (default 3
+/// days) of each other file ONE pending `case_merge_suggested` proposal per
+/// group (exact normalized-subject hash only — no fuzzy matching). A group
+/// already covered by a pending or approved proposal of this kind is
+/// skipped, so repeated sync passes stay idempotent. Returns the new
+/// proposal ids.
+pub fn detect_duplicate_opens(conn: &Connection, now: i64) -> Result<Vec<i64>> {
+    let window = reask_window_days() * 86_400;
+    let mut stmt = conn.prepare(
+        "SELECT org_id, subject_ref,
+                MIN(case_ref), MAX(case_ref), COUNT(DISTINCT case_ref),
+                CAST(MIN(strftime('%s', synced_at)) AS INTEGER)
+         FROM crm_cases
+         WHERE status = 'open' AND subject_ref != ''
+           AND run_id IS NOT NULL
+         GROUP BY org_id, subject_ref
+         HAVING COUNT(DISTINCT case_ref) > 1",
+    )?;
+    let groups = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut proposed = Vec::new();
+    for (org, subject_ref, ref_a, ref_b, n, oldest) in groups {
+        if now - oldest > window {
+            // The duplicates are older than the window: not a re-ask signal.
+            continue;
+        }
+        let digest = {
+            let mut h = Sha256::new();
+            h.update(b"brain-reask-dup\x00");
+            h.update(org.as_bytes());
+            h.update(b"\x00");
+            h.update(subject_ref.as_bytes());
+            let d = h.finalize();
+            d.iter().map(|b| format!("{b:02x}")).collect::<String>()[..32].to_string()
+        };
+        let seen: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM proposals WHERE kind = ?1
+              AND content LIKE '%' || ?2 || '%'
+              AND status IN ('pending', 'approved')",
+            rusqlite::params![KIND_CASE_MERGE_SUGGESTED, digest],
+            |r| r.get(0),
+        )?;
+        if seen > 0 {
+            continue;
+        }
+        let content = serde_json::json!({
+            "kind": "duplicate_open_cases",
+            "org_id": org,
+            "subject_ref": subject_ref,
+            "detail_digest": digest,
+            "merge_candidates": [ref_a, ref_b],
+            "open_case_count": n,
+            "window_days": reask_window_days(),
+        });
+        conn.execute(
+            "INSERT INTO proposals(kind, content, source, authority, observed_at,
+                                  novelty, conflict_with, salience, created_at)
+             VALUES (?1, ?2, 'agent', NULL, NULL, 1.0, NULL, 1.0, ?3)",
+            rusqlite::params![KIND_CASE_MERGE_SUGGESTED, content.to_string(), now],
+        )?;
+        proposed.push(conn.last_insert_rowid());
+    }
+    Ok(proposed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +491,8 @@ mod tests {
             is_seed: Some("2FA migration broke PIN reset".into()),
             is_not_seed: None,
             updated_at: "2026-08-24T10:00:00Z".into(),
+            merged_into: None,
+            reopened: false,
         }
     }
 
@@ -330,7 +507,8 @@ mod tests {
             "CREATE TABLE crm_cases(
                 case_ref TEXT PRIMARY KEY, source TEXT NOT NULL, org_id TEXT NOT NULL,
                 case_id TEXT NOT NULL, run_id INTEGER, status TEXT NOT NULL,
-                updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+                updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                subject_ref TEXT NOT NULL DEFAULT '');",
         )
         .expect("schema");
         let c = sample(CaseStatus::Open);
@@ -406,7 +584,8 @@ mod tests {
             "CREATE TABLE crm_cases(
                 case_ref TEXT PRIMARY KEY, source TEXT NOT NULL, org_id TEXT NOT NULL,
                 case_id TEXT NOT NULL, run_id INTEGER, status TEXT NOT NULL,
-                updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+                updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                subject_ref TEXT NOT NULL DEFAULT '');",
         )
         .unwrap_or_else(|e| panic!("schema: {e}"));
         upsert_crm_case(&db, c, None).unwrap_or_else(|e| panic!("seed: {e}"));
@@ -476,6 +655,152 @@ mod tests {
             event_key(&long_ref, "rev-1", TOPIC_CASE_CLOSED),
             k,
             "stable"
+        );
+    }
+
+    // ── Keystone M3: the re-ask mapping + derived detection.
+
+    fn merged(status: CaseStatus, source: &str) -> CrmCase {
+        let mut c = sample(status);
+        c.source = source.into();
+        c.case_id = "43".into();
+        c.merged_into = Some("42".into());
+        c
+    }
+
+    #[test]
+    fn zendesk_and_salesforce_merges_map_to_reask_events() {
+        for source in [SOURCE_ZENDESK, SOURCE_SALESFORCE] {
+            let db = Connection::open_in_memory().unwrap_or_else(|e| panic!("open: {e}"));
+            db.execute_batch(
+                "CREATE TABLE crm_cases(
+                    case_ref TEXT PRIMARY KEY, source TEXT NOT NULL, org_id TEXT NOT NULL,
+                    case_id TEXT NOT NULL, run_id INTEGER, status TEXT NOT NULL,
+                    updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    subject_ref TEXT NOT NULL DEFAULT '');",
+            )
+            .unwrap_or_else(|e| panic!("schema: {e}"));
+            // The TARGET case is open and bound to run 101 (same source).
+            let mut target = sample(CaseStatus::Open);
+            target.source = source.into();
+            upsert_crm_case(&db, &target, Some(101))
+                .unwrap_or_else(|e| panic!("upsert target: {e}"));
+            let sink = RecordingSink::new();
+            let mut m = merged(CaseStatus::MergedAway, source);
+            m.subject_ref = hash_subject(source, "acme", "requester:991");
+            let report = deliver_case(&sink, &db, &m).unwrap_or_else(|e| panic!("deliver: {e}"));
+            assert_eq!(report.run_id, 101, "the re-ask lands on the TARGET's run");
+            assert_eq!(report.topic_posted.as_deref(), Some("case/reask"));
+            let ev = &sink.events.borrow()[0];
+            assert!(
+                ev.1.contains("|case/reask|"),
+                "topic is case/reask: {}",
+                ev.1
+            );
+            assert!(ev.1.contains("\"source\":\"crm_merge\""));
+            assert!(ev.1.contains("\"detail_digest\":\""), "ids/digest only");
+            assert!(
+                !ev.1.contains("Cannot reset PIN"),
+                "no content rides the payload"
+            );
+        }
+        // A merged row with NO target refuses loudly instead of silently
+        // dropping the re-ask.
+        let db = Connection::open_in_memory().unwrap_or_else(|e| panic!("open: {e}"));
+        let sink = RecordingSink::new();
+        let mut orphan = merged(CaseStatus::MergedAway, SOURCE_ZENDESK);
+        orphan.org_id = "nobody".into();
+        assert!(
+            deliver_case(&sink, &db, &orphan).is_err(),
+            "unmappable merge fails closed"
+        );
+    }
+
+    #[test]
+    fn genesys_reopen_maps_to_reask_event() {
+        // The reopen signal rides `reopened` on an Open case; the mapping is
+        // pure shape — pinned here so a vendor change can't silently drop it.
+        let mut g = sample(CaseStatus::Open);
+        g.reopened = true;
+        assert!(g.reopened && g.status == CaseStatus::Open);
+        assert_eq!(
+            CaseStatus::parse("merged_away"),
+            Some(CaseStatus::MergedAway)
+        );
+    }
+
+    #[test]
+    fn derived_merge_suggests_never_writes() {
+        let db = Connection::open_in_memory().unwrap_or_else(|e| panic!("open: {e}"));
+        db.execute_batch(
+            "CREATE TABLE crm_cases(
+                case_ref TEXT PRIMARY KEY, source TEXT NOT NULL, org_id TEXT NOT NULL,
+                case_id TEXT NOT NULL, run_id INTEGER, status TEXT NOT NULL,
+                updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                subject_ref TEXT NOT NULL DEFAULT '');
+             CREATE TABLE proposals(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+                content TEXT NOT NULL, source TEXT, authority TEXT, observed_at TEXT,
+                novelty REAL, conflict_with INTEGER, salience REAL, status TEXT DEFAULT 'pending',
+                created_at INTEGER, source_prompt TEXT, owner TEXT);",
+        )
+        .unwrap_or_else(|e| panic!("schema: {e}"));
+        let subject = hash_subject(SOURCE_ZENDESK, "acme", "requester:991");
+        for (id, status) in [("41", CaseStatus::Open), ("42", CaseStatus::Open)] {
+            let mut c = sample(status);
+            c.case_id = id.into();
+            c.subject_ref = subject.clone();
+            upsert_crm_case(&db, &c, Some(700)).unwrap_or_else(|e| panic!("upsert: {e}"));
+        }
+        // "Now" just after the sync pass so the group sits inside any window.
+        let now: i64 = db
+            .query_row("SELECT CAST(strftime('%s','now') AS INTEGER)", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .expect("now")
+            + 60;
+        let ids = detect_duplicate_opens(&db, now).unwrap_or_else(|e| panic!("detect: {e}"));
+        assert_eq!(ids.len(), 1, "one proposal per duplicate group");
+        let (kind, status): (String, String) = db
+            .query_row(
+                "SELECT kind, status FROM proposals WHERE id = ?1",
+                params![ids[0]],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("proposal");
+        assert_eq!(kind, KIND_CASE_MERGE_SUGGESTED);
+        assert_eq!(
+            status, "pending",
+            "a SUGGESTION only — never a written merge"
+        );
+        // Idempotent across sync passes.
+        let again = detect_duplicate_opens(&db, now).unwrap_or_else(|e| panic!("redetect: {e}"));
+        assert!(again.is_empty(), "the pending proposal covers the group");
+        // Different subjects never collide (exact hash only).
+        let db2 = Connection::open_in_memory().unwrap_or_else(|e| panic!("open: {e}"));
+        db2.execute_batch(
+            "CREATE TABLE crm_cases(
+                case_ref TEXT PRIMARY KEY, source TEXT NOT NULL, org_id TEXT NOT NULL,
+                case_id TEXT NOT NULL, run_id INTEGER, status TEXT NOT NULL,
+                updated_rev TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                subject_ref TEXT NOT NULL DEFAULT '');
+             CREATE TABLE proposals(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+                content TEXT NOT NULL, source TEXT, authority TEXT, observed_at TEXT,
+                novelty REAL, conflict_with INTEGER, salience REAL, status TEXT DEFAULT 'pending',
+                created_at INTEGER, source_prompt TEXT, owner TEXT);",
+        )
+        .unwrap_or_else(|e| panic!("schema: {e}"));
+        for (id, ident) in [("41", "requester:991"), ("42", "requester:992")] {
+            let mut c = sample(CaseStatus::Open);
+            c.case_id = id.into();
+            c.subject_ref = hash_subject(SOURCE_ZENDESK, "acme", ident);
+            upsert_crm_case(&db2, &c, Some(701)).unwrap_or_else(|e| panic!("upsert: {e}"));
+        }
+        assert!(
+            detect_duplicate_opens(&db2, now)
+                .expect("distinct")
+                .is_empty()
         );
     }
 }

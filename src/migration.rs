@@ -1968,7 +1968,81 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // The CRM-merge/reopen re-ask mapping needs the hashed
+    // subject on the crm_cases row (additive column; existing rows degrade
+    // to '' which the detector skips).
+    let has_subject_ref: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('crm_cases') WHERE name='subject_ref'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_subject_ref {
+        db.execute(
+            "ALTER TABLE crm_cases ADD COLUMN subject_ref TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+
+    // ── Public case-status refs + KB translations (schema history lives in
+    // the version stamp below).
+    // One live status ref per run (UNIQUE on both sides): an unguessable
+    // HMAC-derived token naming the static `status/{ref}.json` artifact.
+    // Refs are minted/rotated/revoked ONLY through audited operator actions
+    // (workflow/case_status); rotation kills the old ref, revocation removes
+    // the page from the next build; a DSAR sweep or legal-hold freeze
+    // revokes+purges them (subject-linked artifacts).
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS case_status_refs(
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id       INTEGER NOT NULL UNIQUE,
+            ref          TEXT NOT NULL UNIQUE,
+            salt_version INTEGER NOT NULL DEFAULT 1,
+            minted_at    INTEGER NOT NULL,
+            rotated_at   INTEGER,
+            revoked_at   INTEGER
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_case_status_refs_live
+          ON case_status_refs(ref) WHERE revoked_at IS NULL;",
+        [],
+    )?;
+    // Per-locale human translations of published knowledge articles.
+    // Translation is a HUMAN act — rows are created ONLY through approved
+    // `kcs_translate` HITL proposals; `based_revision` pins the source
+    // revision they translated so staleness is first-class (the source
+    // advancing past it lands the translation on the content-health
+    // worklist). UNIQUE(knowledge_id, locale): one live translation per
+    // locale.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS kcs_translations(
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            knowledge_id   INTEGER NOT NULL REFERENCES knowledge(id),
+            locale         TEXT NOT NULL,
+            title          TEXT NOT NULL,
+            body_md        TEXT NOT NULL,
+            based_revision TEXT NOT NULL DEFAULT '',
+            state          TEXT NOT NULL DEFAULT 'draft',
+            translator     TEXT NOT NULL DEFAULT '',
+            approved_at    INTEGER,
+            created_at     INTEGER NOT NULL,
+            updated_at     INTEGER NOT NULL,
+            UNIQUE(knowledge_id, locale)
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kcs_translations_locale
+          ON kcs_translations(locale, state);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.36 "Keystone": case_status_refs + kcs_translations tables → 1.28.36.
     // v1.28.35 "Outreach": consent_registry table → 1.28.35.
     // v1.28.30 "Parcels": parcel_ledger table → 1.28.30.
     // v1.28.29 "Mesh": agent_cards + delegations tables → 1.28.29.
@@ -1988,8 +2062,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.35')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.35';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.36')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.36';",
         [],
     )?;
 

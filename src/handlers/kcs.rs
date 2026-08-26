@@ -21,6 +21,69 @@ use crate::handlers::auth::OptPrincipal;
 /// Freshness review horizon set at approval/publish — the shared constant.
 const KCS_FRESHNESS_SECS: i64 = crate::workflow::kcs::KCS_FRESHNESS_SECS;
 
+#[derive(serde::Deserialize)]
+pub(crate) struct TranslateRequest {
+    pub knowledge_id: i64,
+    pub locale: String,
+    pub title: String,
+    pub body_md: String,
+}
+
+/// `POST /kcs/translate` — file a pending `kcs_translate` HITL proposal
+/// (role `workflow`). Translation is a HUMAN act: the tool files, only an
+/// approval promotes. Audited inside the tx.
+pub async fn post_kcs_translate(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Json(body): Json<TranslateRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Write, "", "global")?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    let translator = super::recall::principal_label(&principal);
+    let proposal_id = tokio::task::spawn_blocking(move || -> Result<i64, rusqlite::Error> {
+        let draft = crate::workflow::kcs::TranslationDraft {
+            knowledge_id: body.knowledge_id,
+            locale: &body.locale,
+            title: &body.title,
+            body_md: &body.body_md,
+            translator: &translator,
+        };
+        let mut conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("pool: {e}")))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("tx: {e}")))?;
+        let now = chrono::Utc::now().timestamp();
+        let id = crate::workflow::kcs::propose_translation(tx.tx(), &draft, now)?;
+        crate::audit::record_tenant(
+            tx.tx(),
+            crate::audit::AuditKind::Workflow,
+            &translator,
+            &format!("proposal/{id}"),
+            crate::audit::AuditStatus::Ok,
+            format!(
+                "workflow/kcs/translate article:{} locale:{}",
+                body.knowledge_id, body.locale
+            )
+            .as_str(),
+            "global",
+        );
+        tx.commit()
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("commit: {e}")))?;
+        Ok(id)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(|e| HandlerError::bad_request("translation_invalid", e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "proposal_id": proposal_id,
+        "status": "pending",
+        "kind": crate::workflow::kcs::KIND_TRANSLATE,
+    })))
+}
+
 pub async fn post_kcs_article_approve(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -159,6 +222,13 @@ pub async fn get_kcs_articles(
                 "open_flags": flags,
                 "stale": stale,
             }));
+        }
+        // Approved translations whose source revision advanced
+        // past their pinned `based_revision` land on the SAME worklist — one
+        // freshness discipline, no second mechanism. Only when the caller is
+        // asking for stale rows (the content-health view).
+        if want_stale && let Ok(trs) = crate::workflow::kcs::stale_translations(&conn) {
+            out.extend(trs);
         }
         out
     })

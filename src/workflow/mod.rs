@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod calibration;
+pub(crate) mod case_status;
 pub(crate) mod channel;
 pub(crate) mod complaint;
 pub(crate) mod crew;

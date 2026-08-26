@@ -112,6 +112,8 @@ pub fn map_workitem(
             .and_then(|d| d.as_str())
             .unwrap_or_default()
             .to_string(),
+        merged_into: None,
+        reopened: false,
     })
 }
 

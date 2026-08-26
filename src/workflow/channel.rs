@@ -28,6 +28,10 @@ pub const TOPIC: &str = "case/note";
 /// Closed vocabulary for note kinds and invite states.
 pub const KIND_NOTE: &str = "note";
 pub const KIND_INVITE: &str = "invite";
+/// The operator re-ask marker: a note-kind that ALSO emits the
+/// `case/reask` lineage event — "the customer asked again, my answer didn't
+/// land". One kind, one event, one flag.
+pub const KIND_REASK: &str = "reask";
 pub const STATE_VISIBLE: &str = "visible";
 pub const INVITE_PENDING: &str = "pending";
 pub const INVITE_ACCEPTED: &str = "accepted";
@@ -241,6 +245,9 @@ pub struct NoteDraft<'a> {
     pub run_id: i64,
     pub author: &'a str,
     pub screened_content: &'a str,
+    /// Note kind — `note` (default) or `reask` (the operator re-ask
+    /// marker, which additionally emits the `case/reask` event).
+    pub kind: &'a str,
     /// Idempotency-key suffix for the lineage events (the handler derives it
     /// from run + timestamp + jitter exactly like the steering enqueue).
     pub key_suffix: &'a str,
@@ -307,7 +314,7 @@ pub fn insert_note(
             draft.domain,
             draft.run_id,
             draft.author,
-            KIND_NOTE,
+            draft.kind,
             draft.screened_content,
             STATE_VISIBLE,
             draft.now
@@ -315,12 +322,24 @@ pub fn insert_note(
     )
     .map_err(db_err)?;
     let note_id = conn.last_insert_rowid();
+    // A reask note rides the SAME channel event plus its own `case/reask`
+    // lineage event — the effort proxy's marked source, exactly-once.
+    if draft.kind == KIND_REASK {
+        crate::workflow::frontdesk::record_reask(
+            conn,
+            draft.run_id,
+            crate::workflow::frontdesk::ReaskSource::Marked,
+            &format!("note:{note_id}"),
+            draft.now,
+        )
+        .map_err(|e| ChannelError::Database(e.to_string()))?;
+    }
     emit_event(
         conn,
         draft.run_id,
-        &format!("case/note:n:{}:{note_id}", draft.key_suffix),
+        &format!("case/note:{}:{}:{}", draft.kind, note_id, draft.key_suffix),
         &serde_json::json!({
-            "action": "note",
+            "action": draft.kind,
             "note_id": note_id,
             "author": draft.author,
         })
@@ -332,7 +351,11 @@ pub fn insert_note(
         draft.run_id,
         &format!("note:{note_id}"),
         AuditStatus::Ok,
-        "channel/note",
+        if draft.kind == KIND_REASK {
+            "channel/reask"
+        } else {
+            "channel/note"
+        },
     );
     let mut invites = Vec::with_capacity(invitees.len());
     for invitee in invitees {
@@ -545,6 +568,7 @@ mod tests {
                 run_id: 1,
                 author,
                 screened_content: &screened,
+                kind: crate::workflow::channel::KIND_NOTE,
                 key_suffix: "k",
                 now,
             },
@@ -864,6 +888,7 @@ mod tests {
                     run_id: 1,
                     author: "alice",
                     screened_content: "hi",
+                    kind: KIND_NOTE,
                     key_suffix: "k",
                     now: 1,
                 },
@@ -907,6 +932,7 @@ mod tests {
                 run_id: 1,
                 author: "alice",
                 screened_content: &screened,
+                kind: KIND_NOTE,
                 key_suffix: "k",
                 now: 2000,
             },
@@ -959,6 +985,59 @@ mod tests {
                 .iter()
                 .all(|p| !p.contains("SECRET-POISON-MARKER") && !p.contains(secret)),
             "no lineage payload carries note content"
+        );
+        assert!(outbox::verify_outbox_lineage(&conn, 1).unwrap());
+    }
+
+    #[test]
+    fn reask_note_writes_the_case_reask_event() {
+        let mut conn = db();
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        let screened = screen_content("customer asked again — answer didn't land").unwrap();
+        let out = insert_note(
+            tx.tx(),
+            &NoteDraft {
+                domain: "acme",
+                run_id: 1,
+                author: "alice",
+                screened_content: &screened,
+                kind: KIND_REASK,
+                key_suffix: "rk",
+                now: 3000,
+            },
+            &[],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        // The note row carries the reask kind.
+        let (kind,): (String,) = {
+            let k: String = conn
+                .query_row(
+                    "SELECT kind FROM case_notes WHERE id = ?1",
+                    rusqlite::params![out.note_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (k,)
+        };
+        assert_eq!(kind, KIND_REASK);
+        // The lineage carries BOTH the note event and the case/reask event.
+        let topics: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT topic FROM outbox WHERE run_id = 1 ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .filter_map(Result::ok)
+                .collect()
+        };
+        assert!(
+            topics.iter().any(|t| t == "case/note"),
+            "the note event rides as usual"
+        );
+        assert!(
+            topics.iter().any(|t| t == "case/reask"),
+            "the marked source emits the re-ask event"
         );
         assert!(outbox::verify_outbox_lineage(&conn, 1).unwrap());
     }

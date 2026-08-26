@@ -85,6 +85,10 @@ fn crew_touch(conn: &rusqlite::Connection, domain: &str, actor: &str, run_id: i6
 #[serde(deny_unknown_fields)]
 pub struct NoteRequest {
     pub content: String,
+    /// `"reask"` marks the note as an operator re-ask marker —
+    /// the note rides as usual PLUS one `case/reask` lineage event.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// `POST /workflow/runs/{id}/notes`
@@ -101,6 +105,16 @@ pub async fn post_notes(
     // Screen BEFORE any write: bounds + blocklist + strip. The stored form is
     // viewer-independent; reads re-apply the read seam regardless. One clock
     // read per request — the row, its events, and the receipt share it.
+    if body
+        .kind
+        .as_deref()
+        .is_some_and(|k| k != channel::KIND_REASK)
+    {
+        return Err(HandlerError::bad_request(
+            "kind_invalid",
+            "kind must be omitted or \"reask\"",
+        ));
+    }
     let screened = channel::screen_content(&body.content).map_err(channel_err)?;
     let actor = super::recall::principal_label(&principal);
     let mentions = channel::parse_mentions(&screened);
@@ -127,6 +141,7 @@ pub async fn post_notes(
                 run_id: id,
                 author: &actor_in_tx,
                 screened_content: &screened_in_tx,
+                kind: body.kind.as_deref().unwrap_or(channel::KIND_NOTE),
                 key_suffix: &key_suffix,
                 now,
             },

@@ -61,6 +61,69 @@ pub fn decide(state: &Value) -> Decision {
     Decision::Done
 }
 
+/// The fixed public case-status vocabulary (v1.28.36 Keystone): seven words
+/// a customer may ever see on a status page. The set is CLOSED — a new
+/// internal state must map onto one of these or the page lies.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum PublicStatus {
+    /// Fresh run, nothing has happened yet.
+    Received,
+    /// Work is executing (`next_step` named or advancing).
+    InProgress,
+    /// `pending_question` set — the customer owes us an answer.
+    AwaitingYourReply,
+    /// An explicit confirmation pause (`status: awaiting-confirmation`).
+    AwaitingConfirmation,
+    /// Terminal success (`done`/`complete`).
+    Resolved,
+    /// Terminal close (`closed`/`cancelled`).
+    Closed,
+}
+
+impl PublicStatus {
+    /// The exact wire/build string. Frozen once shipped — pages are static
+    /// artifacts that outlive deploys.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PublicStatus::Received => "received",
+            PublicStatus::InProgress => "in-progress",
+            PublicStatus::AwaitingYourReply => "awaiting-your-reply",
+            PublicStatus::AwaitingConfirmation => "awaiting-confirmation",
+            PublicStatus::Resolved => "resolved",
+            PublicStatus::Closed => "closed",
+        }
+    }
+}
+
+/// Map a run's four-key state JSON onto the public vocabulary. Pure;
+/// deterministic; total; carries NO field of the state outward — callers get
+/// a word, never content. Precedence mirrors [`decide`] minus internals:
+/// terminal/close > confirmation pause > resolution > pending question >
+/// step/advance > fresh.
+pub fn public_status(state: &Value) -> PublicStatus {
+    let status = state.get("status").and_then(|v| v.as_str());
+    match status {
+        Some("closed") | Some("cancelled") => return PublicStatus::Closed,
+        Some("awaiting-confirmation") | Some("awaiting_confirmation") => {
+            return PublicStatus::AwaitingConfirmation
+        }
+        _ => {}
+    }
+    match status {
+        Some("done") | Some("complete") => return PublicStatus::Resolved,
+        _ => {}
+    }
+    if state.get("pending_question").is_some_and(|v| !v.is_null()) {
+        return PublicStatus::AwaitingYourReply;
+    }    let stepping = state.get("next_step").is_some_and(|v| !v.is_null())
+        || state.get("next_state").is_some_and(|v| !v.is_null());
+    if stepping {
+        PublicStatus::InProgress
+    } else {
+        PublicStatus::Received
+    }
+}
+
 // The context-window derivation (write→select).
 //
 // The session is unbounded; consumers derive the smallest high-signal window
@@ -196,6 +259,61 @@ pub fn derive_context_at(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn public_status_maps_every_decision_state_deterministically() {
+        // The fixture table is the contract: every internal shape lands on
+        // exactly one public word, and the word set is closed.
+        let fixtures: Vec<(Value, PublicStatus)> = vec![
+            (json!({}), PublicStatus::Received),
+            (json!({"status": "active"}), PublicStatus::Received),
+            (
+                json!({"status": "active", "next_step": "inventory"}),
+                PublicStatus::InProgress,
+            ),
+            (
+                json!({"status": "active", "next_state": "{\"x\":1}"}),
+                PublicStatus::InProgress,
+            ),
+            (
+                json!({"status": "active", "pending_question": "PII stays in"}),
+                PublicStatus::AwaitingYourReply,
+            ),
+            (
+                json!({"status": "awaiting-confirmation"}),
+                PublicStatus::AwaitingConfirmation,
+            ),
+            (
+                json!({"status": "awaiting_confirmation"}),
+                PublicStatus::AwaitingConfirmation,
+            ),
+            (json!({"status": "done"}), PublicStatus::Resolved),
+            (json!({"status": "complete"}), PublicStatus::Resolved),
+            (json!({"status": "closed"}), PublicStatus::Closed),
+            (json!({"status": "cancelled"}), PublicStatus::Closed),
+            // Precedence pins: terminal/close beat everything; the
+            // confirmation pause beats a pending question; a pending question
+            // beats resolution.
+            (
+                json!({"status": "closed", "pending_question": "x"}),
+                PublicStatus::Closed,
+            ),
+            (
+                json!({"status": "awaiting-confirmation", "pending_question": "x"}),
+                PublicStatus::AwaitingConfirmation,
+            ),
+            (
+                json!({"status": "done", "pending_question": "x"}),
+                PublicStatus::Resolved,
+            ),
+        ];
+        for (state, want) in fixtures {
+            let round =
+                serde_json::from_str::<Value>(&serde_json::to_string(&state).expect("fixture"))
+                    .expect("fixture");
+            assert_eq!(public_status(&round), want, "drift for {round}");
+        }
+    }
 
     #[test]
     fn decision_keys_are_frozen_abi() {

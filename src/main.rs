@@ -6272,6 +6272,10 @@ async fn main_inner() -> Result<()> {
             post(handlers::workflow::post_outreach_followup),
         )
         .route(
+            "/workflow/runs/{id}/status-ref",
+            post(handlers::workflow::post_status_ref),
+        )
+        .route(
             "/workflow/scoreboard",
             get(handlers::workflow::get_scoreboard),
         )
@@ -6288,6 +6292,7 @@ async fn main_inner() -> Result<()> {
             post(handlers::kcs::post_kcs_article_approve),
         )
         .route("/kcs/articles", get(handlers::kcs::get_kcs_articles))
+        .route("/kcs/translate", post(handlers::kcs::post_kcs_translate))
         .route(
             "/kcs/articles/{id}/publish",
             post(handlers::kcs::post_kcs_article_publish),
@@ -10542,10 +10547,13 @@ Final paragraph after the rule.";
         // Parcels for the parcel_ledger table.
         // Outreach for the consent_registry table (hashed subject × channel
         // × purpose consent state).
+        // Outreach for the consent_registry table (hashed subject × channel
+        // × purpose consent state).
+        // Keystone for the case_status_refs + kcs_translations tables.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_35),
-            "schema_version must be recorded as 1.28.35 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_36),
+            "schema_version must be recorded as 1.28.36 after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
         // channel × purpose — the UNIQUE spine the gate reads.
@@ -10560,6 +10568,30 @@ Final paragraph after the rule.";
             )
             .expect("pragma probe");
         assert_eq!(consent_cols, 10, "consent_registry columns must exist");
+        // Keystone: one live status ref per run — UNIQUE on both sides, with
+        // rotation/revocation timestamps; and per-locale translations pinned
+        // to a source revision.
+        let ref_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('case_status_refs')
+                  WHERE name IN ('run_id','ref','salt_version','minted_at',
+                                 'rotated_at','revoked_at')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(ref_cols, 6, "case_status_refs columns must exist");
+        let tr_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('kcs_translations')
+                  WHERE name IN ('knowledge_id','locale','title','body_md',
+                                 'based_revision','state','translator',
+                                 'approved_at')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(tr_cols, 8, "kcs_translations columns must exist");
         // Lineage: every outbox row carries the nullable parent link.
         let parent_col: i64 = db
             .query_row(
@@ -12000,6 +12032,8 @@ Final paragraph after the rule.";
             "/kcs/articles/{id}/approve",
             "/kcs/articles/{id}/publish",
             "/kcs/articles/{id}/preview",
+            // v1.28.36 "Keystone": governed human translation filing.
+            "/kcs/translate",
             // v1.28.25 "Watchbill": the shift ring (follow-the-sun data).
             "/ops/shifts",
             // v1.28.26 "Crew": the roster, the skills proposal, and the DPO switch.
@@ -12027,6 +12061,8 @@ Final paragraph after the rule.";
             "/workflow/outreach/campaign/{id}",
             "/workflow/outreach/consent",
             "/workflow/runs/{id}/outreach/followup",
+            // v1.28.36 "Keystone": public case-status refs.
+            "/workflow/runs/{id}/status-ref",
             // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
             "/parcels",
             "/parcels/export",
@@ -13262,6 +13298,9 @@ Final paragraph after the rule.";
             ("/workflow/outreach/campaign/{id}", "Read"),
             ("/workflow/outreach/consent", "Read"),
             ("/workflow/runs/{id}/outreach/followup", "Write"),
+            // Keystone: status-ref actions are approve-role writes on the
+            // run's domain.
+            ("/workflow/runs/{id}/status-ref", "Write"),
             ("/workflow/runs/{id}/handoff", "Read"),
             // The derived context window — a Read on the run's
             // domain (pure derivation over the lineage the events read serves).
@@ -13274,6 +13313,8 @@ Final paragraph after the rule.";
             // the HITL Write + `approve` role gate.
             ("/kcs/articles", "Read"),
             ("/kcs/articles/{id}/approve", "Write"),
+            // Keystone: filing a translation proposal is a workflow write.
+            ("/kcs/translate", "Write"),
             // Beacon: publish PROPOSAL creation is a Write (the capability
             // gate lives at approval time); the preview is a Read over the
             // sanitized public render path.

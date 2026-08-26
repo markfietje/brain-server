@@ -145,6 +145,11 @@ pub const SCHEMA_VERSION_V1_28_30: &str = "1.28.30";
 /// DSAR-erasable). One-way; the down-migration is a documented no-op.
 pub const SCHEMA_VERSION_V1_28_35: &str = "1.28.35";
 
+/// v1.28.36 "Keystone": the `case_status_refs` + `kcs_translations` tables
+/// (additive; unguessable public status refs and per-locale human KB
+/// translations). One-way; the down-migration is a documented no-op.
+pub const SCHEMA_VERSION_V1_28_36: &str = "1.28.36";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

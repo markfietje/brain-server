@@ -60,9 +60,9 @@ The sequence below is what the standards families converge on independently (ISO
 
 | # | Step | Why this position (research) | Enforced by (product) |
 |---|---|---|---|
-| 1 | **Prevent** | proactive intervention saves 20–40% of at-risk customers; a contact that never happens has effort = 0, the best possible CES | proactive outreach cohorts; IoT/CRM signals via connectors (planned v1.28.x) |
-| 2 | **Self-serve, verified** | deflection only counts when it *solves* — failed self-service adds effort | public KB feedback loop with solved-proof; suggestion self-instruction rate (planned v1.28.x) |
-| 3 | **Acknowledge fast, once** | the perception clock: acknowledgment speed shapes satisfaction more than resolution speed; repetition of context is the #1 effort driver | complaint acknowledgment SLA (planned); context continuity — customer never repeats (planned v1.28.x) |
+| 1 | **Prevent** | proactive intervention saves 20–40% of at-risk customers; a contact that never happens has effort = 0, the best possible CES | proactive outreach cohorts; IoT/CRM signals via connectors (planned v1.28.x). **Keystone closes the last gap: the public case-status page** — a customer who can *see* the case doesn't call about it (static artifact, unguessable ref, fixed seven-word vocabulary, zero PII) |
+| 2 | **Self-serve, verified** | deflection only counts when it *solves* — failed self-service adds effort | public KB feedback loop with solved-proof; suggestion self-instruction rate (planned v1.28.x); **Keystone: verified multilingual self-service** — governed human translations (`kcs_translate` HITL), staleness first-class on the content-health worklist, hreflang alternates, never a silent fallback |
+| 3 | **Acknowledge fast, once** | the perception clock: acknowledgment speed shapes satisfaction more than resolution speed; repetition of context is the #1 effort driver | complaint acknowledgment SLA (planned); context continuity — customer never repeats (planned v1.28.x). **Keystone: the re-ask is now COUNTED, not just avoided** — `case/reask` events from three deterministic sources (CRM merge, operator mark, derived duplicate proposal) feed `reask_rate` and the effort proxy |
 | 4 | **Understand with evidence** | guessing adds contacts; evidence-first is the diagnostic loop's core | IS/IS-NOT intake gate; the evidence law |
 | 5 | **Resolve first-contact, first-time-right** | FCR = the strongest single driver: +12–15% retention; speed-over-resolution *harms* retention | verify-gated close (2nd verification); FTFR for field work (planned) |
 | 6 | **Remedy with fairness** | the service-recovery paradox: a well-recovered failure beats no failure — *iff* minor, fast, genuine, never repeated; severe/repeated failures forfeit it | role-capped remedies + code-clause citation (planned v1.28.x); repeater detection |
@@ -73,7 +73,7 @@ The sequence below is what the standards families converge on independently (ISO
 
 **Queue priority when steps collide:** Safety/legal > at-risk retention > SLA-clock > FIFO-with-context. Never AHT over resolution (the research is unambiguous that this trades retention for a metric).
 
-**NEW derived metric (amendment):** `customer_effort_events` — a deterministic CES proxy computed per case from the lineage: repeat contacts × channel switches × handovers × re-asked-context events. No survey instrument (VoC surveys stay CRM-side per ISO 10004); this is the lineage-derived twin, documented in the metrics dictionary as a *proxy* with its formula. Scorer: the confirm-gate and effort-proxy land as scored dimensions in the next scorer version (gold-set families extend accordingly).
+**NEW derived metric (amendment):** `customer_effort_events` — a deterministic CES proxy computed per case from the lineage: repeat contacts × channel switches × handovers × re-asks (`case/reask`, emitted since v1.28.36 from three deterministic sources; score = repeats×2 + switches×1 + handovers×3 + re_asks×2). No survey instrument (VoC surveys stay CRM-side per ISO 10004); this is the lineage-derived twin, documented in the metrics dictionary as a *proxy* with its formula. Scorer: the confirm-gate and effort-proxy land as scored dimensions in the next scorer version (gold-set families extend accordingly).
 
 
 

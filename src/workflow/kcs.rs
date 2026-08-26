@@ -32,6 +32,16 @@ pub const KIND_LINK_ONLY: &str = "kcs_link_only";
 /// verb: approval requires the `approve` capability AND a distinct `publish`.
 pub const KIND_PUBLISH: &str = "kcs_publish";
 
+/// The human translation proposal (`{knowledge_id, locale, title, body_md}`
+/// JSON in `content`). Translation is a HUMAN act — the tool governs, it
+/// never machine-translates. Approval promotes the `kcs_translations` row to
+/// `approved`, pinned to `based_revision` (the source revision it
+/// translated) so staleness is first-class.
+pub const KIND_TRANSLATE: &str = "kcs_translate";
+
+pub(crate) const MAX_TRANSLATION_LEN: usize = 64_000;
+pub(crate) const MAX_LOCALE_LEN: usize = 12;
+
 /// The freshness-review horizon stamped at approve/publish. Single definition
 /// shared by the lifecycle routes and the publish gate.
 pub const KCS_FRESHNESS_SECS: i64 = 90 * 24 * 3600;
@@ -601,6 +611,179 @@ trait Pipe: Sized {
 }
 impl<T> Pipe for T {}
 
+// ── The governed human translation surface.
+
+/// A human-authored translation, proposed as a `kcs_translate` HITL
+/// proposal. Nothing here writes `kcs_translations` directly: only an
+/// APPROVED proposal does (the gate branch is the sole writer).
+pub(crate) struct TranslationDraft<'a> {
+    pub knowledge_id: i64,
+    pub locale: &'a str,
+    pub title: &'a str,
+    pub body_md: &'a str,
+    pub translator: &'a str,
+}
+
+fn valid_locale(l: &str) -> bool {
+    !l.is_empty()
+        && l.len() <= MAX_LOCALE_LEN
+        && l.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// File a pending translation proposal. Bounds-checked; the source article
+/// must exist. Returns the proposal id.
+pub(crate) fn propose_translation(
+    conn: &Connection,
+    draft: &TranslationDraft<'_>,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    if !valid_locale(draft.locale) {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "locale_invalid '{}'",
+            draft.locale
+        )));
+    }
+    if draft.title.is_empty() || draft.body_md.is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "translation_empty".into(),
+        ));
+    }
+    if draft.title.len() + draft.body_md.len() > MAX_TRANSLATION_LEN {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "translation_unbounded".into(),
+        ));
+    }
+    let exists: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM knowledge WHERE id = ?1",
+            params![draft.knowledge_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "article_not_found".into(),
+        ));
+    }
+    let content = serde_json::json!({
+        "knowledge_id": draft.knowledge_id,
+        "locale": draft.locale,
+        "title": draft.title,
+        "body_md": draft.body_md,
+        "translator": draft.translator,
+    });
+    conn.execute(
+        "INSERT INTO proposals(kind, content, source, authority, observed_at,
+                              novelty, conflict_with, salience, created_at, source_prompt, owner)
+         VALUES (?1, ?2, 'human', NULL, NULL, 1.0, NULL, 1.0, ?3, NULL, ?4)",
+        params![KIND_TRANSLATE, content.to_string(), now, draft.translator],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// The gate's sole promotion path for `kcs_translate`: parse the approved
+/// proposal's payload and upsert the per-locale row as `approved`, pinned to
+/// the source revision AT approval time (`based_revision`). Returns the
+/// translation row id.
+pub(crate) fn apply_translation_approval(
+    tx: &Connection,
+    content_json: &str,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    let v: serde_json::Value = serde_json::from_str(content_json)
+        .map_err(|_| rusqlite::Error::InvalidParameterName("kcs_translate_content".into()))?;
+    let knowledge_id = v
+        .get("knowledge_id")
+        .and_then(|x| x.as_i64())
+        .ok_or_else(|| rusqlite::Error::InvalidParameterName("knowledge_id_missing".into()))?;
+    let locale = v
+        .get("locale")
+        .and_then(|x| x.as_str())
+        .filter(|l| valid_locale(l))
+        .ok_or_else(|| rusqlite::Error::InvalidParameterName("locale_missing".into()))?;
+    let title = v.get("title").and_then(|x| x.as_str()).unwrap_or_default();
+    let body_md = v
+        .get("body_md")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default();
+    if title.is_empty() || body_md.is_empty() {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "translation_empty".into(),
+        ));
+    }
+    let translator = v.get("translator").and_then(|x| x.as_str()).unwrap_or("");
+    // Pin the revision the translation is based on — the CURRENT source hash
+    // at approval time. If the source advances past this later, the
+    // worklist flags the translation stale.
+    let based_revision: String = tx.query_row(
+        "SELECT COALESCE(content_hash, '') FROM knowledge WHERE id = ?1",
+        params![knowledge_id],
+        |r| r.get(0),
+    )?;
+    tx.execute(
+        "INSERT INTO kcs_translations(knowledge_id, locale, title, body_md,
+                                      based_revision, state, translator, approved_at,
+                                      created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'approved', ?6, ?7, ?7, ?7)
+         ON CONFLICT(knowledge_id, locale) DO UPDATE SET
+             title = excluded.title,
+             body_md = excluded.body_md,
+             based_revision = excluded.based_revision,
+             state = 'approved',
+             translator = excluded.translator,
+             approved_at = excluded.approved_at,
+             updated_at = excluded.updated_at",
+        params![
+            knowledge_id,
+            locale,
+            title,
+            body_md,
+            based_revision,
+            translator,
+            now
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// Approved translations that went STALE: the source article's current
+/// revision advanced past the pinned `based_revision`. These land on Evolve's
+/// content-health worklist (the same freshness discipline, no second
+/// mechanism). Deterministic order (by translation id).
+pub(crate) fn stale_translations(conn: &Connection) -> rusqlite::Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.knowledge_id, t.locale, t.title, k.domain
+         FROM kcs_translations t JOIN knowledge k ON k.id = t.knowledge_id
+         WHERE t.state = 'approved' AND t.based_revision != COALESCE(k.content_hash, '')
+         ORDER BY t.id LIMIT 200",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, knowledge_id, locale, title, domain)| {
+            serde_json::json!({
+                "translation_id": id,
+                "article_id": knowledge_id,
+                "locale": locale,
+                "title": crate::gate::sanitize_read(&title, false, &None),
+                "domain": domain,
+                "kind": "translation_stale",
+            })
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -984,5 +1167,133 @@ mod tests {
             "one found of one found+one not-found"
         );
         assert_eq!(m.article_freshness_median_age_secs, 1000);
+    }
+
+    // ── Keystone M2: the governed translation lifecycle.
+
+    fn insert_article(conn: &Connection, content: &str, hash: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO knowledge(content, source, content_hash, kcs_state) VALUES (?1, 'manual', ?2, 'published')",
+            rusqlite::params![content, hash],
+        ).expect("insert article");
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn translate_proposal_never_autopopulates() {
+        let conn = db();
+        let id = insert_article(&conn, "art", "h1");
+        // Filing a proposal creates a PENDING proposal and NO approved row.
+        let pid = propose_translation(
+            &conn,
+            &TranslationDraft {
+                knowledge_id: id,
+                locale: "de",
+                title: "Titel",
+                body_md: "Inhalt",
+                translator: "maria",
+            },
+            1000,
+        )
+        .expect("file");
+        let (kind, status): (String, String) = conn
+            .query_row(
+                "SELECT kind, status FROM proposals WHERE id = ?1",
+                params![pid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("proposal");
+        assert_eq!(kind, KIND_TRANSLATE);
+        assert_eq!(status, "pending");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM kcs_translations", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 0, "nothing auto-populates the translations table");
+        // Only approval writes — through the single gate path.
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM proposals WHERE id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .expect("content");
+        let tr = apply_translation_approval(&conn, &content, 2000).expect("apply");
+        assert!(tr > 0);
+        let (state, based): (String, String) = conn
+            .query_row("SELECT state, based_revision FROM kcs_translations WHERE knowledge_id = ?1 AND locale = 'de'", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("translation");
+        assert_eq!(state, "approved");
+        assert_eq!(based, "h1", "pinned to the source revision at approval");
+        // Bounds + validation refuse loudly.
+        assert!(
+            propose_translation(
+                &conn,
+                &TranslationDraft {
+                    knowledge_id: id,
+                    locale: "../evil",
+                    title: "t",
+                    body_md: "b",
+                    translator: "x"
+                },
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            propose_translation(
+                &conn,
+                &TranslationDraft {
+                    knowledge_id: 999_999,
+                    locale: "de",
+                    title: "t",
+                    body_md: "b",
+                    translator: "x"
+                },
+                1
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn translation_goes_stale_when_source_revision_advances() {
+        let conn = db();
+        let id = insert_article(&conn, "art v1", "hash-v1");
+        propose_translation(
+            &conn,
+            &TranslationDraft {
+                knowledge_id: id,
+                locale: "fr",
+                title: "T",
+                body_md: "B",
+                translator: "x",
+            },
+            1000,
+        )
+        .expect("file");
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM proposals WHERE kind = ?1",
+                params![KIND_TRANSLATE],
+                |r| r.get(0),
+            )
+            .expect("content");
+        apply_translation_approval(&conn, &content, 2000).expect("apply");
+        // Fresh: based_revision matches.
+        assert!(stale_translations(&conn).expect("fresh check").is_empty());
+        // The source advances (an edit → new content_hash).
+        conn.execute(
+            "UPDATE knowledge SET content = 'art v2', content_hash = 'hash-v2' WHERE id = ?1",
+            params![id],
+        )
+        .expect("advance");
+        let stale = stale_translations(&conn).expect("stale check");
+        assert_eq!(
+            stale.len(),
+            1,
+            "the advanced source lands the translation on the worklist"
+        );
+        assert_eq!(stale[0]["locale"], "fr");
+        assert_eq!(stale[0]["kind"], "translation_stale");
     }
 }
