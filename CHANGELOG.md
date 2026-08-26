@@ -56,6 +56,16 @@ chain — no parallel complaint database exists.
   referrals ride the SAME audited `calibration/sign` row over a trailing
   31-day window — continual improvement with zero new machinery.
 
+- **Repo hygiene gates (folded from the parallel gate pass):** `src/dup_guard.rs`
+  flags any top-level helper defined in more than one file of `src/`, with a
+  categorized allowlist whose entries must carry files + a reason and die
+  when the duplication disappears; `scripts/repo-brief.sh` is the one-shot
+  agent briefing (<1s: versions, HEAD, dirty paths, guard inventory,
+  stale-marker probe); `cargo-machete` (pinned 0.9.2) joined the CI
+  lint-test job and its first run removed three unused dependencies (hyper,
+  steward-harness serde, consensus-core serde_json). Blog:
+  docs/blog/14-four-copies-of-sha256-hex.md tells that story.
+
 **Bug fixes**
 
 None.
