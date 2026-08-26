@@ -14,11 +14,35 @@ name: CodeQL
 on:
   push:
     branches: [main]
+    # Markdown/docs-only pushes can't change the Rust database CodeQL
+    # extracts; skipping them saves a full traced build of every workspace
+    # on changelog/README bumps. The weekly schedule ignores paths and
+    # always runs, so advisory coverage is unchanged.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'theme/**'
+      - 'book.toml'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'theme/**'
+      - 'book.toml'
+      - 'LICENSE'
+      - '.gitignore'
   schedule:
     # Weekly Monday 06:23 UTC — off-peak, catches new advisory-backed queries.
     - cron: '23 6 * * 1'
+
+# Supersede stale analyses the same way CI supersedes stale matrices: a new
+# push/PR for the same ref cancels the previous in-flight analysis.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
@@ -72,9 +96,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - name: Trace client workspace
         run: cargo build --manifest-path client/Cargo.toml --all-targets
-
-      - name: Build engine-crates workspace under the tracer
-        run: cargo build --manifest-path crates/Cargo.toml --all-targets
 
       - uses: github/codeql-action/analyze@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
         with:

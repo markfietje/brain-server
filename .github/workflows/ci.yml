@@ -5,7 +5,10 @@ on:
     branches: [main]
     # Tag pushes re-run NOTHING here: release.sh pushes main first (this CI
     # matrix gates that exact SHA), then the tag triggers release.yml only.
-    # Without this ignore, every tag re-ran the entire matrix redundantly.
+    # Honest semantics: a branches-only push filter ALREADY excludes tag
+    # pushes (GitHub: defining only branches means the workflow won't run
+    # for the undefined ref) — the tags-ignore pins that intent explicitly,
+    # so a future `tags:` addition can never silently double-run releases.
     tags-ignore: ['v*']
   pull_request:
 

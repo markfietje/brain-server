@@ -21,7 +21,7 @@ Brain Server speaks all three bindings, so it can act as any agent's portable me
 
 Conformance is verified against the reference suite (`@universalmemoryprotocol/core`
 1.0.0): **13/13 checks, UMP 1.0 / L3** on a fresh keyed instance, re-run by CI on
-every push (the `ump-conformance` job asserts the badge line). The level
+every push (the `integration` job asserts the badge line). The level
 definitions map to brain-server as follows:
 
 | Level | What it means | Brain Server status |

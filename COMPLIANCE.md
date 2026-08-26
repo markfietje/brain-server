@@ -415,14 +415,15 @@ the artifact itself:
   `scripts/sbom.sh` (`cargo-cyclonedx`) and stages it into `dist/` alongside
   the binaries; the same script is the local operator path. `SECURITY.md`
   §SBOM explains scanning use.
-- **Retrieval-quality gate runs in CI.** A `recall-gate` job seeds the frozen
-  10-doc smoke corpus into a scratch instance and runs `brain eval` with
-  `--floor r5=0.85,r10=0.85,mrr=0.85` — a regression on the frozen judged set
-  fails the build. Baseline recorded in `BENCHMARKS.md` (37 queries: r@5
-  0.919, r@10 0.919, nDCG@10 0.911, MRR 0.905). This is a wiring/regression
-  gate, **not** evidence of parity: per the BENCHMARKS.md protocol, parity
-  rows stay `PENDING` until ≥100 judged queries on a representative corpus on
-  target hardware (incl. the 4 GB ARM edge).
+- **Retrieval-quality gate runs in CI.** The `integration` job (release
+  build + UMP conformance + recall gate) seeds the frozen 25-doc corpus into
+  a scratch instance and runs `brain eval` over the 106 judged queries
+  (v1.28.6 expanded set) with `--floor r5=0.85 --floor r10=0.85 --floor
+  mrr=0.85` — a regression on the frozen judged set fails the build. Frozen
+  set + baselines recorded in `BENCHMARKS.md` (§v1.28.6). This is a
+  wiring/regression gate, **not** evidence of parity: per the BENCHMARKS.md
+  protocol, parity rows stay `PENDING` until ≥100 judged queries on a
+  representative corpus on target hardware (incl. the 4 GB ARM edge).
 - **`brain eval` itself is now live.** The v1.17.5 CLI fix restored the
   endpoint that the v1.17.1 M3 ship gate was built on (`brain eval` had been
   sending GET to the POST-only `/recall`, so every run returned 405 and the

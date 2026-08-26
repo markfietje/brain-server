@@ -107,6 +107,30 @@ with an approval trail.
   the normative dictionary.
 - Schema unchanged at 1.28.30 — the lifecycle rides lineage events, remedies
   ride proposals, clauses and ADR bodies ride governed knowledge rows.
+- **CI/release pipeline:** tag pushes re-run nothing (the branches-only push
+  filter already excluded tags; `tags-ignore: ['v*']` now pins that intent
+  explicitly); release-build + ump-conformance + recall-gate merged into ONE
+  `integration` job — a single `cargo build --release` serves the
+  release-profile compile check AND both live gates (UMP :18483, recall
+  eval :18484); mdbook/lipstyk/cross/cargo-cyclonedx install from
+  version-keyed ~/.cargo/bin caches instead of recompiling from source every
+  run; the HF model prefetch deduped into `.github/actions/huggingface-prefetch`;
+  client-gate folds its two apt rounds into one transaction; docs.yml builds
+  + deploys in a single job; stale matrices supersede via concurrency
+  cancel-in-progress. Release path: `release.sh` now BLOCKS on green CI for
+  the tagged SHA (fail-closed — the tag re-runs no tests, so the main-push
+  run is the only automated bridge between pushed and shipped); release
+  builds are 4 parallel per-target jobs (was 2 sequential-pair jobs —
+  wall-clock is the MAX now, not the sum) with the verify-required-assets
+  gate unchanged; CodeQL skips markdown/docs-only pushes (weekly schedule
+  unaffected), drops a duplicated engine-crates trace, and supersedes stale
+  analyses via concurrency.
+- **Release notes extractor:** bullet continuation lines now travel with
+  their bullet (v1.28.31–.33 published truncated), grouped category headings
+  are separated from the previous bullet, prose/bullets unwrap to one
+  physical line per paragraph, and the intro's trailing blanks are trimmed;
+  CHANGELOG canonicalized to a single shape and 135 already-published
+  releases repaired in place via `gh release edit`.
 
 **Test delta:** server bin +7 (4 service pins/wiring, 1 KCS wiring pin, 3 SDK
 pure pins counted under the crates workspace), engine-sdk crate 111 → 114.

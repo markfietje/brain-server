@@ -26,6 +26,12 @@ cargo fmt --check
 scripts/badges.sh --selfcheck            # version + checklist completeness guards
 ```
 
+After the push, `scripts/release.sh` BLOCKS until the CI run for the exact
+tagged commit is green (fail-closed — the tag itself re-runs no tests, so
+that wait is the only automated bridge between "pushed main" and
+"shipped binaries"). These local gates are the pre-push redundancy, not a
+substitute for the wait.
+
 ## Badges are facts, not hand-typed claims
 
 `scripts/badges.sh` derives the version from `Cargo.toml` and the test count

@@ -47,7 +47,7 @@ fi
 
 CLIENT="$(client_version)"
 TESTS="$(test_count)"
-UMP="L3"        # self-attested level, v1.17.4; asserted every push by the ump-conformance CI job
+UMP="L3"        # self-attested level, v1.17.4; asserted every push by the integration CI job
 SBOM="$REPO/sbom/brain-server-${VERSION}.cdx.json"
 SBOM_FLAG=no; [[ -f "$SBOM" ]] && SBOM_FLAG=yes
 
