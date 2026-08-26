@@ -247,10 +247,7 @@ fn longest_chain(shift_starts: &mut [(i64, i64)]) -> usize {
     let mut run = 0usize;
     let mut prev_end: Option<i64> = None;
     for (start, end) in shift_starts.iter() {
-        let consecutive = match prev_end {
-            Some(pe) => *start < pe + MIN_REST_SECS,
-            None => false,
-        };
+        let consecutive = prev_end.is_some_and(|pe| *start < pe + MIN_REST_SECS);
         run = if consecutive { run + 1 } else { 1 };
         best = best.max(run);
         prev_end = Some((*end).max(prev_end.unwrap_or(*end)));
