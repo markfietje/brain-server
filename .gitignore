@@ -97,3 +97,6 @@ docs/DOC_ACCURACY_AUDIT_PROMPT.md
 /models/
 EXECUTION_PROMPT_*.md
 audit-chain.key
+
+# dep-research scratch (crate extraction) — never commit
+.depcheck/

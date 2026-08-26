@@ -2066,7 +2066,38 @@ pub fn run_migration_with_store_dim(
         db.execute("ALTER TABLE proposals ADD COLUMN lint_json TEXT", [])?;
     }
 
+    // ── v1.28.43 "Switchboard": the channel thread map + bridge seams ──
+    // One row per (channel, tenant-prefixed conversation_ref): the case
+    // threading table inbound channel messages resolve through. DOMAIN is
+    // part of every predicate (tenant scoping by construction — a bridge can
+    // only touch cases under its own configured domain). subject_hash is the
+    // HASHED conversation identity (audit::hash) so raw subscriber addresses
+    // never rest here; last_inbound_at powers the deterministic reply-window
+    // gate outbound sends ride. Additive; rows die with their DSAR sweep of
+    // the owning run like any run-scoped evidence.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS channel_threads(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel         TEXT NOT NULL,
+            tenant          TEXT NOT NULL,
+            conversation_ref TEXT NOT NULL,
+            domain          TEXT NOT NULL,
+            case_run_id     INTEGER NOT NULL REFERENCES workflow_runs(id),
+            subject_hash    TEXT NOT NULL DEFAULT '',
+            last_inbound_at INTEGER,
+            created_at      INTEGER NOT NULL,
+            UNIQUE(channel, tenant, conversation_ref)
+         );",
+        [],
+    )?;
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_channel_threads_run
+          ON channel_threads(case_run_id);",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.43 "Switchboard": channel_threads table → 1.28.43.
     // v1.28.42 "Valet": valet_consents table + proposals.lint_json → 1.28.42.
     // v1.28.36 "Keystone": case_status_refs + kcs_translations tables → 1.28.36.
     // v1.28.35 "Outreach": consent_registry table → 1.28.35.
@@ -2088,8 +2119,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.42')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.42';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.43')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.43';",
         [],
     )?;
 

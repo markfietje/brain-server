@@ -1153,4 +1153,50 @@ mod valet_tests {
             "relay must hold no brain credentials: {hits:?}"
         );
     }
+
+    /// Switchboard pin (the SAME law, the new bridge home): the Rust
+    /// signal-gateway source may never reference a brain token or the brain
+    /// DB — it holds ONLY its own 0600 channel config + Signal store.
+    #[test]
+    fn bridge_holds_no_brain_credentials() {
+        let gateway_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/signal-gateway");
+        let mut sources = 0usize;
+        let mut hits = vec![];
+        fn scan(dir: &std::path::Path, hits: &mut Vec<String>, seen: &mut usize) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    // Skip build artifacts and vendored forks.
+                    if p.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy();
+                        n == "target" || n == "node_modules" || n.starts_with("presage-")
+                    }) {
+                        continue;
+                    }
+                    scan(&p, hits, seen);
+                    continue;
+                }
+                if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                *seen += 1;
+                let src = std::fs::read_to_string(&p).unwrap_or_default();
+                for needle in ["BRAIN_TOKEN", "BRAIN_TOKEN_FILE", "auth-token", "brain.db"] {
+                    if src.contains(needle) {
+                        hits.push(format!("{}: {}", p.display(), needle));
+                    }
+                }
+            }
+        }
+        scan(&gateway_dir, &mut hits, &mut sources);
+        assert!(sources > 0, "signal-gateway sources present");
+        assert!(
+            hits.is_empty(),
+            "channel edge must hold no brain credentials: {hits:?}"
+        );
+    }
 }

@@ -25,6 +25,7 @@
 pub(crate) mod calibration;
 pub(crate) mod case_status;
 pub(crate) mod channel;
+pub(crate) mod channels;
 pub(crate) mod complaint;
 pub(crate) mod crew;
 pub(crate) mod driver;

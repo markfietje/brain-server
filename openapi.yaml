@@ -760,6 +760,90 @@ paths:
                 description: '"enqueued" when the payload was queued for the connector worker; "duplicate" when a byte-identical payload for the same connector is already queued (idempotent replay)'
         "401":
           description: Signature verification failed
+  /webhooks/channel/{kind}:
+    post:
+      summary: Channel bridge inbound receiver (v1.28.43 Switchboard)
+      operationId: receiveChannelWebhook
+      description: >-
+        GOVERNED EDGE inbound for channel bridges (Signal first; the edge holds
+        only its own 0600 `channel-{kind}-{tenant}.json` credentials, never a
+        brain token). Verifies the Standard Webhooks signature against the
+        bridge's config secret, replay-caps on (bridge, external_id), then in
+        ONE transaction: sanitizes + injection-screens the text BEFORE any
+        state, resolves the conversation thread via `channel_threads` (unknown
+        conversations auto-open a `care/case` run under the bridge's domain;
+        `[case N]` addressing overrides the map, cross-domain refused), and
+        lands the message as a SCREENED case note with its audit row.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Channel kind (filename segment of the bridge config), e.g. 'signal'.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [envelope]
+              properties:
+                envelope:
+                  type: object
+                  required: [conversation_ref, text, external_id]
+                  properties:
+                    conversation_ref:
+                      type: string
+                      maxLength: 200
+                    text:
+                      type: string
+                    external_id:
+                      type: string
+                      maxLength: 200
+                      description: Platform message id — the replay-cap key half.
+      responses:
+        "200":
+          description: Message landed (or duplicate replay)
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"status": "note_recorded", "case_run_id": 41, "note_id": 7, "opened_case": true}
+        "400":
+          description: Envelope invalid / screening refusal (blocklist or bounds)
+        "401":
+          description: Bridge signature verification failed / timestamp outside window
+        "409":
+          description: '[case N] addressing refused — run not in this bridge''s domain'
+        "503":
+          description: Flood bound hit (back off; retry later)
+  /webhooks/channel/{kind}/drain:
+    post:
+      summary: Channel outbound drain for bridge cranks (v1.28.43 Switchboard)
+      operationId: drainChannelOutbox
+      description: >-
+        Pull-model delivery of approved outbound envelopes from the `channel/out`
+        topic to the SAME HMAC-authenticated bridge. Rows are ONLY approved acts
+        (digest-bound proposals) or consented alert forwards — the alert bus stays
+        metadata-only and this topic never rides the SSE broadcast. The batch is
+        marked delivered atomically; senders dedupe on event_id.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Drain batch (possibly empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"status": "ok", "count": 1, "envelopes": [{"event_id": 12, "text": "…", "source_payload": {"source": "approved_act", "proposal_id": 3}}]}
+        "401":
+          description: Bridge signature verification failed
   /consolidate/propose:
     post:
       summary: Propose consolidation candidates (v0.9.8 Evidence; v1.6.0 unresolved-contradictions)

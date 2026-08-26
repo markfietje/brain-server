@@ -33,6 +33,8 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | GET | `/metrics` | Prometheus metrics (auth-gated) |
 | GET | `/events` | SSE broadcast of memory events; `?kinds=` filters. Since 1.28.19 the bus also carries drained `workflow/*` outbox events under kind `workflow` — additive + default-off (only explicit `?kinds=workflow` subscribers receive them), per-subscriber run-domain Read-gated at fan-out, payloads sanitized before broadcast |
 | POST | `/webhooks/{kind}` · `/webhooks/gh` | Webhook delivery receiver (HMAC-verified) |
+| POST | `/webhooks/channel/{kind}` | Channel bridge inbound (v1.28.43 Switchboard): Standard-Webhooks HMAC against the bridge's own 0600 `channel-{kind}-{tenant}.json` secret → replay-cap on (bridge, external_id) → sanitize + injection-screen BEFORE threading → thread map / auto-opened `care/case` under the bridge domain (`[case N]` overrides) → screened case note + audit row |
+| POST | `/webhooks/channel/{kind}/drain` | Bridge crank pulls approved outbound envelopes from the `channel/out` topic (approved acts or consented alert forwards ONLY; never the metadata-only alert bus, never SSE); batch marked delivered atomically |
 
 ---
 

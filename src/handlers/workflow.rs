@@ -1331,11 +1331,87 @@ pub(crate) fn mount_digest_matches(
 /// the audit chain. Mount evidence is Art. 12 record-keeping: WHO ran WHICH
 /// plugin composition, WHEN, against which bundle digest. Metadata only; the
 /// write is audited in the same tx it lands.
+///
+/// The route gains a SECOND authentication for channel
+/// bridges: a tokenless edge presents a Standard-Webhooks signature over its
+/// own 0600 config secret; the server verifies against its OWN copy of the
+/// config file and recomputes the config digest ITSELF before writing the
+/// evidence row (the digest-verification law adapted to edges:
+/// both sides can hash the bytes; neither side self-certifies). Bearer-based
+/// mount evidence for UI plugins is UNCHANGED.
 pub async fn post_plugin_mount(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
-    Json(body): Json<PluginMountRequest>,
-) -> Result<Json<serde_json::Value>, HandlerError> {
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, HandlerError> {
+    use axum::response::IntoResponse;
+    // Tokenless bridge registration: verify the HMAC identity first; on a
+    // verified bridge identity, the evidence row carries the SERVER-recomputed
+    // config digest (the caller's claimed digest must MATCH it — a bridge
+    // cannot certify config it does not hold).
+    let v: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|_| HandlerError::bad_request("body_invalid", "mount body must be JSON"))?;
+    if principal.0.is_none()
+        && v.get("plugin")
+            .and_then(|x| x.as_str())
+            .is_some_and(|p| p.starts_with("channel:"))
+    {
+        return match super::channel_webhook::verify_bridge_mount(&state, &headers, &body) {
+            Some(identity) => {
+                let (kind, claimed_sha, domain) =
+                    super::channel_webhook::validate_bridge_mount_body(&v)
+                        .map_err(|e| HandlerError::bad_request("mount_invalid", e))?;
+                if kind != identity.kind || domain != identity.domain {
+                    return Err(HandlerError::conflict(
+                        "mount_identity_mismatch: signed bridge identity does not match the body",
+                    ));
+                }
+                if claimed_sha != identity.config_sha256 {
+                    deny_channel_denied(
+                        &state,
+                        &format!("channel-mount:{}", identity.bridge_label()),
+                        "config digest mismatch",
+                    );
+                    return Err(HandlerError::conflict(
+                        "bundle_unverified: bundle_sha256 does not match the served config",
+                    ));
+                }
+                let pool = state.pool.clone();
+                let actor = format!("channel:{}/{}", identity.kind, identity.tenant);
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    let conn = pool.get().map_err(|e| format!("{e}"))?;
+                    crate::audit::record(
+                        &conn,
+                        crate::audit::AuditKind::Workflow,
+                        &actor,
+                        &format!("plugin:channel:{kind}"),
+                        crate::audit::AuditStatus::Ok,
+                        &format!("mount domain:{domain} config-sha256:{claimed_sha}"),
+                    );
+                    Ok(())
+                })
+                .await
+                .map_err(|e| HandlerError::internal(format!("{e}")))?
+                .map_err(HandlerError::internal)?;
+                Ok((
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!({"ok": true})),
+                )
+                    .into_response())
+            }
+            None => Err(HandlerError::unauthorized(
+                "bridge signature verification failed",
+            )),
+        };
+    }
+    let body: super::workflow::PluginMountRequest =
+        serde_json::from_slice(&body).map_err(|_| {
+            HandlerError::bad_request(
+                "body_invalid",
+                "mount body must be valid PluginMountRequest",
+            )
+        })?;
     let principal = principal.0;
     if !valid_plugin_name(&body.plugin) {
         return Err(HandlerError::bad_request(
@@ -1398,7 +1474,26 @@ pub async fn post_plugin_mount(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok((
+        axum::http::StatusCode::OK,
+        axum::Json(serde_json::json!({"ok": true})),
+    )
+        .into_response())
+}
+
+/// Audit a DENIED bridge mount attempt on the shared chain (the refusal is
+/// evidence too; a bridge guessing at digests must be visible).
+fn deny_channel_denied(state: &Arc<AppState>, actor: &str, detail: &str) {
+    if let Ok(conn) = state.pool.get() {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Workflow,
+            actor,
+            "plugin-mount",
+            crate::audit::AuditStatus::Denied,
+            detail,
+        );
+    }
 }
 
 // ── engine-facing substrate projections ───────────────────────────────────
@@ -1409,12 +1504,9 @@ pub(crate) const MAX_STATE_BYTES: usize = 256 * 1024;
 /// The AskHuman answer bound (same as steering).
 pub(crate) const MAX_ANSWER_BYTES: usize = 4000;
 
-fn valid_domain_label(d: &str) -> bool {
-    !d.is_empty()
-        && d.len() <= 63
-        && d.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
+// valid_domain_label lives in workflow::channels (the Switchboard seam) and
+// is reused here — one definition, dup-guard enforced.
+use crate::workflow::channels::valid_domain_label;
 
 fn valid_kind(k: &str) -> bool {
     !k.is_empty() && k.len() <= 64 && k.bytes().all(|b| b.is_ascii_graphic() && b != b'<')

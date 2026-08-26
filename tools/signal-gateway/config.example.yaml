@@ -1,0 +1,32 @@
+server:
+  # Loopback-only unless SIGNAL_GATEWAY_ALLOW_REMOTE=1 is exported at boot.
+  address: "127.0.0.1:8080"
+  # When set, EVERY API call requires `Authorization: Bearer <token>`
+  # (constant-time compare). Strongly recommended.
+  # auth_token: "<openssl rand -hex 32>"
+
+signal:
+  data_dir: "/var/lib/signal-gateway"
+  attachments_dir: "/var/lib/signal-gateway/attachments"
+  # Public presentation of this account (recommended: the Signal username you
+  # created on the primary app with number-discovery OFF). When unset, every
+  # API/log/payload surface emits a masked form (+63…67) instead of the number.
+  display_name: "ghost.42"
+  command_channel_capacity: 64
+  message_broadcast_capacity: 256
+  command_timeout_ms: 30000
+  max_sends_per_second: 5
+
+# brain-server Switchboard seam (v1.28.43+). Omit this whole section (or run
+# without it) to keep the edge channel-dark. The bridge_config_path points at
+# the SHARED credential file the server also reads from its
+# BRAIN_CONNECTOR_CONFIG_DIR — one credential copy, 0600, never a brain token:
+#
+#   {
+#     "domain": "personal",
+#     "webhook_secret": "<long random string>"
+#   }
+brain:
+  url: "http://127.0.0.1:8765"
+  bridge_config_path: "~/.config/brain-server/connectors/channel-signal-owner.json"
+  drain_interval_secs: 30

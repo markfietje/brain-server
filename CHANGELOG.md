@@ -19,6 +19,107 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.43] — 2026-08-27 — "Switchboard": the channel bridge framework, Signal first-class
+
+A channel is a GOVERNED EDGE, never a server feature. Switchboard generalizes
+Valet's relay into the server seams every future channel shares: inbound bytes
+are untrusted (sanitize + injection screen BEFORE threading/state), outbound is
+exactly approved acts or consented alert forwards, thread rows are tenant-
+scoped by construction, and the audit chain carries hashes never bodies.
+`tools/signal-gateway` (Rust, presage-native, libsignal v0.99.0 line,
+edition 2024, `#![forbid(unsafe_code)]`) ships as the first-class Signal edge;
+the degenerate `tools/valet-relay` stays working unchanged — migration is a
+config file, not code.
+
+### Release notes
+
+**Improvements**
+- **Inbound seam:** `POST /webhooks/channel/{kind}` verifies per-bridge
+  Standard-Webhooks HMACs against `channel-{kind}-{tenant}.json` configs
+  (0600 fail-closed), replay-caps on `(bridge, external_id)`, flood-bounds,
+  then in ONE transaction: `channel::screen_content` sanitize + blocklist +
+  invisible-strip BEFORE any state → thread resolution via `channel_threads`
+  → unknown conversations AUTO-OPEN a `care/case` run under the bridge's
+  domain → `[case N]` addressing overrides the map with cross-domain refusals
+  → screened case note + audit rows commit atomically.
+- **Outbound seam:** topic `channel/out` carries content PRECISELY BECAUSE it
+  is gated — `enqueue_out` type-enforces Approved (digest-bound proposal,
+  re-verified in-tx) or Alert sources; outside the deterministic reply window
+  (`reply_window_allows`, inclusive-bound, poison-input fail-closed) requires
+  standing consent from the SHARED `consent_registry` under purpose
+  `switchboard_channel`. The SSE/alert drainers exclude the topic by family;
+  delivery is pull-model via `POST /webhooks/channel/{kind}/drain`, batch
+  marked delivered atomically, senders dedupe on `event_id`.
+- **Registration:** `POST /workflow/plugins/mount` gains a tokenless bridge
+  authentication — same Standard-Webhooks signature, and the mount digest is
+  RECOMPUTED SERVER-SIDE from its own copy of the config file (both sides can
+  hash the bytes; neither self-certifies). Bearer path unchanged.
+- **Consent granularity + windows:** the Outreach registry is exercised
+  per-channel (fail-closed read helper); the generic reply-window gate lands
+  channel-blind so WhatsApp's 24-hour rule binds to it unchanged in Caravel.
+- **The edge:** `tools/signal-gateway` upgraded to presage main + libsignal
+  v0.99 line internals, edition 2024, latest tokio/axum/reqwest/base64/hmac/
+  sha2 majors, all OpenClaw-facing surface removed (pure Switchboard edge:
+  link/serve, send/receive/reactions/typing, RPC + SSE). Mount evidence at
+  boot, inbound forwarder, drain crank wired behind an optional `brain:`
+  config block — absent config = channel dark.
+
+**Bug fixes**: None.
+
+**Security fixes**
+- Bridge configs are rejected unless owner-only (0600); invalid-domain
+  configs refuse loudly at load instead of silently going dark.
+- `[case N]` cross-domain addressing refuses loudly and audits Denied.
+
+### Behavior-change ledger
+
+| Change | Nature | Compat |
+|---|---|---|
+| `POST /webhooks/channel/{kind}` + `/drain` | additive routes, openapi + coverage + guard tables in step | HMAC self-authenticating like `/webhooks/*` |
+| `channel_threads` table (UNIQUE on channel+tenant+conversation_ref) | additive schema bump to 1.28.43 | pragma-checked by contract test |
+| `channel/out` outbox topic | additive topic, EXCLUDED from workflow/% + case/% drains | content reaches only the authenticated drain |
+| Tokenless bridge mount mode on `/workflow/plugins/mount` | additive authn on existing route | bearer path byte-compatible |
+| Consent reads under purpose `switchboard_channel` | additive registry rows | Outreach purposes untouched |
+| `tools/signal-gateway` (presage native, edition 2024) | new edge binary alongside valet-relay | valet-relay configs migrate 1:1 |
+
+### Engineering record
+
+- **Plan-named pins (+10):** `inbound_envelope_sanitize_and_screens_before_threading`,
+  `unknown_conversation_opens_case_under_bridge_domain`,
+  `case_addressing_overrides_thread_map`,
+  `outbound_requires_approved_act_or_alert_envelope`,
+  `bridge_registration_records_config_hash_digest`,
+  `reply_window_gate_is_deterministic`,
+  `bridge_holds_no_brain_credentials` (self-grep over tools/) · plus
+  `envelope_parse_is_total_and_bounded`,
+  `bridge_configs_are_discovered_deterministically_and_fail_closed`,
+  `thread_rows_are_tenant_scoped_by_predicate`.
+- Schema 1.28.42 → 1.28.43 (additive: `channel_threads`); contract-test table
+  list + pragma column probe extended in the same commit as the route wiring
+  (openapi.yaml, docs/api.md, route-coverage, guard tables).
+- Full gate: fmt clean; clippy `-D warnings --all-targets --features bench`
+  clean; 974 bin + 207 client-wasm-adjacent? (final tally preserved by CI)
+  tests green locally across all targets.
+
+### Honest ceilings
+
+- **libsignal stays on the v0.99.0 pin:** whisperfish's own manifests still
+  tag-pin v0.99.0, and cargo cannot patch newer tags of the SAME git URL
+  onto those deps (same-source rule). Tracking presage branch=main inherits
+  the upstream bump automatically when it happens.
+- The signal edge forwards DIRECT conversations only — group threading waits
+  for Caravel/Herald where mapping law per platform is defined.
+- Outbound alert-forwards are GATED but no producer enqueues them yet; the
+  only current writers are approved acts through tests/CLI. Wiring alert kinds
+  to channels is deliberately left to operator cron recipes for now.
+- Drain is at-least-once with server-side atomic marking; crash between send
+  failure and next poll surfaces LOUD logs but no automatic redelivery of a
+  marked row.
+- No read receipts / group listing in the gateway (signal stubs); no
+  attachment upload/download yet.
+
+---
+
 ## [1.28.42] — 2026-08-26 — "Valet": the personal AI assistant, dogfooded
 
 The author becomes the first user: brain-server + openclaw as a Signal-

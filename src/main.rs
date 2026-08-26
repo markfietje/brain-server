@@ -6120,6 +6120,14 @@ async fn main_inner() -> Result<()> {
         // verified webhook ingestion. The handler only verifies
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
+        .route(
+            "/webhooks/channel/{kind}",
+            post(handlers::channel_webhook::receive_channel),
+        )
+        .route(
+            "/webhooks/channel/{kind}/drain",
+            post(handlers::channel_webhook::drain_channel),
+        )
         // OIDC discovery + JWKS + auth endpoints. These are
         // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
         // and `/auth/logout` (the
@@ -10357,6 +10365,9 @@ Final paragraph after the rule.";
             "parcel_ledger",
             // v1.28.35 "Outreach": consent-first outbound contact.
             "consent_registry",
+            // v1.28.43 "Switchboard": the channel thread map (case threading
+            // for governed channel edges; tenant-scoped by predicate).
+            "channel_threads",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10572,8 +10583,8 @@ Final paragraph after the rule.";
         // Keystone for the case_status_refs + kcs_translations tables.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_42),
-            "schema_version must be recorded as 1.28.42 after migration"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_43),
+            "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
         // channel × purpose — the UNIQUE spine the gate reads.
@@ -10621,6 +10632,20 @@ Final paragraph after the rule.";
             )
             .expect("pragma probe");
         assert_eq!(parent_col, 1, "outbox.parent_id must exist");
+
+        // Switchboard: the thread map carries the tenant-scoping columns and
+        // the reply-window bookkeeping the outbound gate reads.
+        let thread_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('channel_threads')
+                  WHERE name IN ('channel','tenant','conversation_ref','domain',
+                                 'case_run_id','subject_hash','last_inbound_at',
+                                 'created_at')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(thread_cols, 8, "channel_threads columns must exist");
 
         // v1.27.31 "AuditRepair": the migration stamps the initial head pin
         // ONLY for a chain with rows (a fresh DB pins on its first audit
@@ -11985,6 +12010,9 @@ Final paragraph after the rule.";
             "/decision/{id}/evaluate",
             // v0.9.7 Guard
             "/webhooks/{kind}",
+            // v1.28.43 Switchboard (HMAC self-authenticating like /webhooks/*)
+            "/webhooks/channel/{kind}",
+            "/webhooks/channel/{kind}/drain",
             "/audit",
             "/audit/verify",
             "/metrics",
@@ -15177,17 +15205,24 @@ Final paragraph after the rule.";
             .map(|b| format!("{b:02x}"))
             .collect::<String>();
 
-        // Invalid plugin name refused (fail-closed, no row).
+        // Invalid plugin name refused (fail-closed, no row). (Since the
+        // Switchboard mount seam the handler takes raw bytes + headers so a
+        // tokenless bridge can present its HMAC; bearer tests build the JSON
+        // body directly.)
+        let req_body = |json: serde_json::Value| -> axum::body::Bytes {
+            serde_json::to_vec(&json).unwrap().into()
+        };
         let err = crate::handlers::workflow::post_plugin_mount(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
-            axum::Json(crate::handlers::workflow::PluginMountRequest {
-                plugin: "Bad_Plugin!".to_string(),
-                action: None,
-                revision: Some(1),
-                bundle_sha256: None,
-                bundle_path: None,
-            }),
+            axum::http::HeaderMap::new(),
+            req_body(serde_json::json!({
+                "plugin": "Bad_Plugin!",
+                "action": null,
+                "revision": 1,
+                "bundle_sha256": null,
+                "bundle_path": null
+            })),
         )
         .await
         .expect_err("hostile plugin name must be refused");
@@ -15197,13 +15232,14 @@ Final paragraph after the rule.";
         let err = crate::handlers::workflow::post_plugin_mount(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
-            axum::Json(crate::handlers::workflow::PluginMountRequest {
-                plugin: "ui-chat".to_string(),
-                action: None,
-                revision: None,
-                bundle_sha256: Some("nothex".to_string()),
-                bundle_path: None,
-            }),
+            axum::http::HeaderMap::new(),
+            req_body(serde_json::json!({
+                "plugin": "ui-chat",
+                "action": null,
+                "revision": null,
+                "bundle_sha256": "nothex",
+                "bundle_path": null
+            })),
         )
         .await
         .expect_err("malformed digest must be refused");
@@ -15215,13 +15251,14 @@ Final paragraph after the rule.";
         let err = crate::handlers::workflow::post_plugin_mount(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
-            axum::Json(crate::handlers::workflow::PluginMountRequest {
-                plugin: "ui-chat".to_string(),
-                action: None,
-                revision: Some(1),
-                bundle_sha256: Some(ghost),
-                bundle_path: Some("pkg/ghost.js".to_string()),
-            }),
+            axum::http::HeaderMap::new(),
+            req_body(serde_json::json!({
+                "plugin": "ui-chat",
+                "action": null,
+                "revision": 1,
+                "bundle_sha256": ghost,
+                "bundle_path": "pkg/ghost.js"
+            })),
         )
         .await
         .expect_err("unserved digest must be refused");
@@ -15243,17 +15280,18 @@ Final paragraph after the rule.";
         let ok = crate::handlers::workflow::post_plugin_mount(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
-            axum::Json(crate::handlers::workflow::PluginMountRequest {
-                plugin: "ui-control-panel".to_string(),
-                action: Some("mount".to_string()),
-                revision: Some(7),
-                bundle_sha256: Some(real.clone()),
-                bundle_path: Some("pkg/ui-panel.js".to_string()),
-            }),
+            axum::http::HeaderMap::new(),
+            req_body(serde_json::json!({
+                "plugin": "ui-control-panel",
+                "action": "mount",
+                "revision": 7,
+                "bundle_sha256": real,
+                "bundle_path": "pkg/ui-panel.js"
+            })),
         )
         .await
         .expect("verified mount must succeed");
-        assert_eq!(ok.0["ok"], serde_json::json!(true));
+        assert_eq!(ok.status(), axum::http::StatusCode::OK);
         {
             // Audit rows are hash-only at rest (target_hash/detail_hash), so
             // the assertion is over the evidence FAMILY: exactly one new
@@ -15275,17 +15313,18 @@ Final paragraph after the rule.";
         let ok = crate::handlers::workflow::post_plugin_mount(
             State(state.clone()),
             crate::handlers::auth::OptPrincipal(None),
-            axum::Json(crate::handlers::workflow::PluginMountRequest {
-                plugin: "ui-control-panel".to_string(),
-                action: Some("unmount".to_string()),
-                revision: None,
-                bundle_sha256: None,
-                bundle_path: None,
-            }),
+            axum::http::HeaderMap::new(),
+            req_body(serde_json::json!({
+                "plugin": "ui-control-panel",
+                "action": "unmount",
+                "revision": null,
+                "bundle_sha256": null,
+                "bundle_path": null
+            })),
         )
         .await
         .expect("valid unmount must succeed");
-        assert_eq!(ok.0["ok"], serde_json::json!(true));
+        assert_eq!(ok.status(), axum::http::StatusCode::OK);
     }
 
     /// Suggestions read-seam (reaudit N1): flagged/quarantined rows are never

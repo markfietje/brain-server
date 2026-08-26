@@ -155,6 +155,12 @@ pub const SCHEMA_VERSION_V1_28_36: &str = "1.28.36";
 /// down-migration is a documented no-op.
 pub const SCHEMA_VERSION_V1_28_42: &str = "1.28.42";
 
+/// Switchboard: the `channel_threads` thread map (channel, tenant,
+/// conversation_ref → case_run_id, tenant-scoped by predicate, with the
+/// reply-window bookkeeping the outbound gate reads). Additive; one-way; the
+/// down-migration is a documented no-op.
+pub const SCHEMA_VERSION_V1_28_43: &str = "1.28.43";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";
