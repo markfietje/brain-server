@@ -105,7 +105,7 @@ pub fn public_status(state: &Value) -> PublicStatus {
     match status {
         Some("closed") | Some("cancelled") => return PublicStatus::Closed,
         Some("awaiting-confirmation") | Some("awaiting_confirmation") => {
-            return PublicStatus::AwaitingConfirmation
+            return PublicStatus::AwaitingConfirmation;
         }
         _ => {}
     }
@@ -115,7 +115,8 @@ pub fn public_status(state: &Value) -> PublicStatus {
     }
     if state.get("pending_question").is_some_and(|v| !v.is_null()) {
         return PublicStatus::AwaitingYourReply;
-    }    let stepping = state.get("next_step").is_some_and(|v| !v.is_null())
+    }
+    let stepping = state.get("next_step").is_some_and(|v| !v.is_null())
         || state.get("next_state").is_some_and(|v| !v.is_null());
     if stepping {
         PublicStatus::InProgress
