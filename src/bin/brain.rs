@@ -358,6 +358,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         run: cmd_wfm_import,
         usage: "brain wfm-import <file.csv|file.json> [--domain D] [--dry-run]\n                 (shift rows POST to /ops/shifts; skill rows become\n                  crew_skills_update proposals — never direct writes)",
     },
+    Subcommand {
+        name: "ropa",
+        json: true,
+        run: cmd_ropa,
+        usage: "brain ropa list\n  brain ropa add --activity A --controller C --processor P --lawful-basis B\n               [--categories S] [--recipients S] [--retention-days N]\n               [--security-measures S] [--transfers S]",
+    },
 ];
 
 fn main() {
@@ -5184,4 +5190,96 @@ fn import_post(
         eprintln!("refused {}: {}", path, truncate(&resp.body, 200));
         Ok(false)
     }
+}
+
+/// `brain ropa list | add ...` — the Art 30 register of processing
+/// activities. The register lives server-side (`/ropa`, Admin-gated, audited
+/// upsert); this subcommand is its operator door.
+fn cmd_ropa(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()) {
+        Some("list") => cmd_ropa_list(),
+        Some("add") => cmd_ropa_add(&args[1..]),
+        _ => Err(
+            "usage: brain ropa list\n       brain ropa add --activity A --controller C --processor P\n                      --lawful-basis B [--categories S] [--recipients S]\n                      [--retention-days N] [--security-measures S] [--transfers S]"
+                .into(),
+        ),
+    }
+}
+
+fn cmd_ropa_list() -> Result<(), String> {
+    let resp = get(&base_url(), "/ropa", &[], auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!(
+            "server returned status {}: {}",
+            resp.status,
+            truncate(&resp.body, 200)
+        ));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&resp.body).map_err(|e| format!("non-JSON response: {e}"))?;
+    println!(
+        "id   activity                   controller               lawful_basis         retention_days"
+    );
+    for row in v["activities"].as_array().unwrap_or(&Vec::new()) {
+        println!(
+            "{:<4} {:<28} {:<24} {:<20} {}",
+            row["id"],
+            truncate(row["activity"].as_str().unwrap_or(""), 26),
+            truncate(row["controller"].as_str().unwrap_or(""), 22),
+            truncate(row["lawful_basis"].as_str().unwrap_or(""), 18),
+            row["retention_days"]
+                .as_i64()
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "-".into()),
+        );
+    }
+    Ok(())
+}
+
+fn cmd_ropa_add(args: &[String]) -> Result<(), String> {
+    let (_positionals, flags) = parse_flags(args)?;
+    let required = [
+        ("activity", "activity"),
+        ("controller", "controller"),
+        ("processor", "processor"),
+        ("lawful-basis", "lawful_basis"),
+    ];
+    let mut body = serde_json::Map::new();
+    for (flag, field) in required {
+        let value = flags
+            .get(flag)
+            .and_then(|o| o.clone())
+            .ok_or_else(|| format!("missing required flag: --{flag}"))?;
+        body.insert(field.to_string(), serde_json::json!(value));
+    }
+    for (flag, field) in [
+        ("categories", "categories"),
+        ("recipients", "recipients"),
+        ("security-measures", "security_measures"),
+        ("transfers", "transfers"),
+    ] {
+        if let Some(value) = flags.get(flag).and_then(|o| o.clone()) {
+            body.insert(field.to_string(), serde_json::json!(value));
+        }
+    }
+    if let Some(days) = flags.get("retention-days").and_then(|o| o.clone()) {
+        let parsed: i64 = days
+            .parse()
+            .map_err(|_| "--retention-days must be an integer (0..=36500)".to_string())?;
+        body.insert("retention_days".into(), serde_json::json!(parsed));
+    }
+    let payload = serde_json::Value::Object(body);
+    let resp = post(
+        &base_url(),
+        "/ropa",
+        &[],
+        "application/json",
+        &payload.to_string(),
+        auth_token().as_deref(),
+    )?;
+    println!("{}", resp.body);
+    if !(200..300).contains(&resp.status) {
+        return Err(format!("server returned status {}", resp.status));
+    }
+    Ok(())
 }

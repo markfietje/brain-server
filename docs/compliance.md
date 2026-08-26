@@ -87,7 +87,21 @@ Art 30 records of processing (`/art30`), the RoPA register (`/ropa`), a breach
 ledger (`/breach*`), cross-border transfer assessments (`/transfers/{id}/tia`
 and `/transfers/{id}/dpa`), re-fetchable DSAR deletion certificates
 (`/dsar/{id}/certificate`), and the ISO 10002 complaint lifecycle
-(`/workflow/runs/{id}/complaint/*`). The row-by-row depth for each lives in
+(`/workflow/runs/{id}/complaint/*`).
+
+Populating the RoPA register is operator work (only you know your controller
+identity and lawful bases): edit
+[`docs/examples/ropa-seed.json`](examples/ropa-seed.json) — replace the
+placeholder entities, review each basis — then load each row with:
+
+    brain ropa list
+    brain ropa add --activity "Knowledge recall indexing" \
+        --controller "Your Legal Entity" --processor "Your Host" \
+        --lawful-basis "Legitimate interest" [--categories S] [--recipients S] \
+        [--retention-days N] [--security-measures S] [--transfers S]
+
+The compliance pack's `gdpr_ropa` gate reads green only when the register has
+real rows behind it. The row-by-row depth for each lives in
 [COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
 
 ---

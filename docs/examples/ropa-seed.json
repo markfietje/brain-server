@@ -1,0 +1,73 @@
+{
+  "_readme": [
+    "Seed rows for the GDPR Art 30 register of processing activities.",
+    "Replace every CONTROLLER_LEGAL_NAME / HOSTING_PROCESSOR placeholder",
+    "with your real legal entities, review each lawful_basis, then load:",
+    "  brain ropa add --activity \"...\" --controller \"...\" --processor \"...\" --lawful-basis \"...\" ...",
+    "(or loop over this file). Rows are audited server-side; POST /ropa/{id}",
+    "upserts an existing row when a detail changes."
+  ],
+  "activities": [
+    {
+      "activity": "Knowledge recall indexing",
+      "purpose": "Stores operator-supplied knowledge chunks and serves semantic recall for AI-assisted work.",
+      "controller": "CONTROLLER_LEGAL_NAME",
+      "processor": "HOSTING_PROCESSOR",
+      "categories": "Operator-authored knowledge content (may incidentally contain personal data); query text",
+      "recipients": "Authenticated principals of this deployment only",
+      "lawful_basis": "Legitimate interest (service delivery) — REVIEW",
+      "retention_days": 365,
+      "security_measures": "Loopback-only service, bearer-token auth, read sanitization, PII masking, per-domain tenancy"
+    },
+    {
+      "activity": "Audit evidence chain",
+      "purpose": "Hash-chained audit log of every mutation for accountability and breach investigation.",
+      "controller": "CONTROLLER_LEGAL_NAME",
+      "processor": "HOSTING_PROCESSOR",
+      "categories": "Principal labels, action metadata, tenant/domain labels (no case content)",
+      "recipients": "Admin-role operators; supervisory authorities on request",
+      "lawful_basis": "Legal obligation (GDPR Art 5(2), Art 30, Art 33)",
+      "security_measures": "SHA-256 hash chain, tamper verification endpoint, append-only posture"
+    },
+    {
+      "activity": "Governed case workflow",
+      "purpose": "Runs interview/case workflows including complaints, DSARs, handovers, and approvals.",
+      "controller": "CONTROLLER_LEGAL_NAME",
+      "processor": "HOSTING_PROCESSOR",
+      "categories": "Case subjects' contact data and case content as entered by operators",
+      "recipients": "Assigned crew principals; CRM systems via configured connectors",
+      "lawful_basis": "Contract (customer-service delivery) — REVIEW",
+      "retention_days": 730,
+      "security_measures": "HITL approval gates, quarantine screening, legal holds, domain-scoped authz"
+    },
+    {
+      "activity": "CRM connector sync",
+      "purpose": "Mirrors cases between external CRM systems and the workflow engine.",
+      "controller": "CONTROLLER_LEGAL_NAME",
+      "processor": "HOSTING_PROCESSOR",
+      "categories": "CRM case records: subject references, status, case content",
+      "recipients": "The configured CRM vendor (see transfers register)",
+      "lawful_basis": "Contract (processor instruction) — REVIEW",
+      "security_measures": "Scoped connector credentials, idempotent sync keys, transfer register cross-reference"
+    },
+    {
+      "activity": "Public knowledge base publication",
+      "purpose": "Publishes approved support articles as static pages for customers.",
+      "controller": "CONTROLLER_LEGAL_NAME",
+      "processor": "STATIC_HOST_PROCESSOR",
+      "categories": "Published article content (no PII by construction: redaction at build)",
+      "recipients": "Public internet",
+      "lawful_basis": "Legitimate interest (published support content)",
+      "security_measures": "Approval-gated publishing, unconditional PII redaction, noindex for non-public artifacts"
+    },
+    {
+      "activity": "Privacy compliance registers",
+      "purpose": "Maintains RoPA, breach, DSAR, legal-hold, and transfer registers required by GDPR.",
+      "controller": "CONTROLLER_LEGAL_NAME",
+      "processor": "HOSTING_PROCESSOR",
+      "categories": "Register metadata: subjects, jurisdictions, deadlines, dispositions",
+      "recipients": "Admin-role operators; supervisory authorities on request",
+      "lawful_basis": "Legal obligation (GDPR Arts 30, 33, 34; Ch V transfers)"
+    }
+  ]
+}

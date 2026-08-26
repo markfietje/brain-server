@@ -71,6 +71,12 @@ two additive read-only routes.
 - Shared parser lives in `bin_common/wfm_import.rs` (the `http.rs` include
   pattern): server seam tests and the CLI use ONE grammar implementation —
   no duplicate parser can drift.
+- **RoPA register operator door:** new `brain ropa list` / `brain ropa add`
+  subcommands over `/ropa` (Admin-gated, audited upsert server-side), plus a
+  reviewed seed draft at `docs/examples/ropa-seed.json` and populate
+  instructions in `docs/compliance.md`. The Art 30 register's remaining gap
+  is pure content — controller identity and lawful bases are facts only an
+  operator can certify; the machinery refuses to fake them.
 - Validation: full gate green (server main bin **942** passed / 6 ignored,
   **+5**); clippy `-D warnings` clean; fmt clean.
 
