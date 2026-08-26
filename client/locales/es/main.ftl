@@ -641,3 +641,6 @@ sb_audit_ok = Cadena de auditoría verde
 sb_audit_notok = Auditoría sin verificar
 sb_runs = {0} runs puntuados
 sb_calibrated = Informe de calibración emitido
+
+nav_help = Ayuda y atajos
+help_close = Cerrar la ayuda

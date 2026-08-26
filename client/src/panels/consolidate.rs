@@ -147,11 +147,11 @@ pub fn panel() -> Element {
                             li { class: "rounded border border-border p-2 text-sm",
                                 match it {
                                     Item::Contradiction { from, to } => rsx! {
-                                        span { class: "badge badge-warn mr-2", "{conflict_lbl}" }
+                                        span { class: "badge badge-warn me-2", "{conflict_lbl}" }
                                         span { class: "font-mono text-xs", "{from} ⟶ {to}" }
                                     },
                                     Item::NearDup { a, b } => rsx! {
-                                        span { class: "badge badge-info mr-2", "{near_dup_lbl}" }
+                                        span { class: "badge badge-info me-2", "{near_dup_lbl}" }
                                         span { class: "font-mono text-xs", "{a} ≈ {b}" }
                                     },
                                 }

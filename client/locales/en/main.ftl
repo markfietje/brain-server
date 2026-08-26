@@ -684,3 +684,6 @@ sb_audit_ok = Audit chain green
 sb_audit_notok = Audit unverified
 sb_runs = {0} runs scored
 sb_calibrated = Calibration report emitted
+
+nav_help = Help & shortcuts
+help_close = Close help

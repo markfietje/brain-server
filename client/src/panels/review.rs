@@ -610,7 +610,7 @@ pub fn panel() -> Element {
                     {if sort_expiry() { crate::i18n::t("expiry_first") } else { crate::i18n::t("creation_order") }}
                 }
                 // M3.2: WCAG 2.1.4 — single-char shortcuts must be turn-offable.
-                label { class: "flex items-center gap-1.5 text-xs text-muted-foreground ml-2",
+                label { class: "flex items-center gap-1.5 text-xs text-muted-foreground ms-2",
                     input {
                         "type": "checkbox",
                         class: "accent-accent",
@@ -629,7 +629,7 @@ pub fn panel() -> Element {
                     "?"
                 }
                 // v1.17.0 M2.4: portable refresh trigger (pull-to-refresh ceil).
-                div { class: "ml-auto", RefreshButton { refresh } }
+                div { class: "ms-auto", RefreshButton { refresh } }
             }
             // M1.4: the help table — the `?`/button toggled in-app keyboard map.
             if show_help() {
@@ -770,7 +770,7 @@ fn card(
                 div { class: "flex-1",
                     div { class: "flex justify-between items-center gap-2",
                         Link {
-                            class: "font-mono text-sm text-accent hover:underline text-left",
+                            class: "font-mono text-sm text-accent hover:underline text-start",
                             to: Route::ReviewDetail { proposal_id: id },
                             // i18n-exempt: the queue-row link is wire data — the proposal id
                             // + kind verbatim (the operator's cross-check

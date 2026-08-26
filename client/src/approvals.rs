@@ -220,4 +220,26 @@ mod tests {
         // Reject is always safe and carries no digest.
         assert_eq!(decision_digest(false, "sha256-abc"), None);
     }
+
+    /// v1.28.39 "Access" — WCAG 2.2 AA 3.3.7 Redundant Entry: the approval
+    /// flow never asks the operator to re-enter what is already decided or
+    /// displayed. The dock renders the full content, and decide/reject are
+    /// single clicks carrying the bound digest — no input field exists in
+    /// either the dock or the shared confirm (the destructive-confirm
+    /// surface) that would make anyone retype a proposal's content.
+    #[test]
+    fn no_redundant_entry_in_approval_flow() {
+        for (name, src) in [
+            ("approvals.rs", include_str!("approvals.rs")),
+            ("confirm.rs", include_str!("confirm.rs")),
+        ] {
+            let render = src.split("#[cfg(test)]").next().unwrap_or(src);
+            for tag in ["<input", "textarea", "select {"] {
+                assert!(
+                    !render.contains(tag),
+                    "{name}: approval flow re-enters data (`{tag}` found) — 3.3.7 forbids it"
+                );
+            }
+        }
+    }
 }

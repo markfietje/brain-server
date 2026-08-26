@@ -1174,17 +1174,17 @@ fn Connect() -> Element {
                 details { class: "card card-body text-xs text-muted-foreground",
                     summary { class: "cursor-pointer text-sm text-muted-foreground", {t("privacy_title")} }
                     p { class: "mt-2 text-muted-foreground", {t("privacy_sends")} }
-                    ul { class: "list-disc pl-4 mt-1",
+                    ul { class: "list-disc ps-4 mt-1",
                         li { {t("privacy_sends_1")} }
                         li { {t("privacy_sends_2")} }
                     }
                     p { class: "mt-2 text-muted-foreground", {t("privacy_stores")} }
-                    ul { class: "list-disc pl-4 mt-1",
+                    ul { class: "list-disc ps-4 mt-1",
                         li { {t("privacy_stores_1")} }
                         li { {t("privacy_stores_2")} }
                     }
                     p { class: "mt-2 text-muted-foreground", {t("privacy_not")} }
-                    ul { class: "list-disc pl-4 mt-1",
+                    ul { class: "list-disc ps-4 mt-1",
                         li { {t("privacy_not_1")} }
                         li { {t("privacy_not_2")} }
                         li { {t("privacy_not_3")} }
@@ -1260,6 +1260,8 @@ fn AppShell() -> Element {
     let theme_label = t("theme_label");
     let density_label = t("density_label");
     let locale_label = t("locale_label");
+    let help_label = t("nav_help");
+    let close_label = t("help_close");
     let nav_overview = t("nav_overview");
     let nav_review = t("nav_review");
     let nav_recall = t("nav_recall");
@@ -1309,6 +1311,10 @@ fn AppShell() -> Element {
     // Session-first shell — ⌘B collapses the nav rail to an icon
     // strip (persisted pref); Esc closes it.
     let mut sidebar_collapsed = use_signal(|| false);
+    // v1.28.39 "Access" — WCAG 2.2 3.2.6 Consistent Help: ONE help entry,
+    // rendered by the shell (so it appears identically on every panel, same
+    // order in the prefs cluster), opening the shared shortcut sheet.
+    let mut help_open = use_signal(|| false);
     use_future(move || async move {
         if i18n::pref_load("sidebar_collapsed").await.as_deref() == Some("1") {
             sidebar_collapsed.set(true);
@@ -1477,7 +1483,17 @@ fn AppShell() -> Element {
                     // v1.16.8 M3/M4/M1: theme + density toggles + locale switch.
                     // Non-sensitive UI prefs, persisted to localStorage; changing
                     // them re-runs the root effects (tokens/dir swap, no reload).
-                    div { class: "ml-auto flex items-center gap-1.5",
+                    div { class: "ms-auto flex items-center gap-1.5",
+                        // v1.28.39 "Access" — the consistent help entry
+                        // (3.2.6): same position, same label, every panel.
+                        button {
+                            class: "btn btn-ghost btn-sm",
+                            "aria-label": "{help_label}",
+                            title: "{help_label}",
+                            "aria-expanded": "{help_open()}",
+                            onclick: move |_| help_open.toggle(),
+                            "?"
+                        }
                         button {
                             class: "btn btn-ghost btn-sm",
                             "aria-label": "{theme_label}",
@@ -1547,6 +1563,27 @@ fn AppShell() -> Element {
         }
         // M1.2: read-only degrade banner. Rendered once at AppShell top when
         // amber: panels keep showing last-known state; writes are disabled.
+        // v1.28.39 "Access" — the shared help sheet (3.2.6 Consistent Help):
+        // one entry point (the shell "?" button), same content, every panel.
+        if help_open() {
+            div {
+                class: "border-b border-border bg-popover px-4 py-3",
+                role: "dialog",
+                "aria-label": "{help_label}",
+                div { class: "flex items-center justify-between gap-3",
+                    h2 { class: "card-title text-base", {t("runs_help_title")} }
+                    button {
+                        class: "btn btn-outline btn-sm",
+                        "aria-label": "{close_label}",
+                        onclick: move |_| help_open.set(false),
+                        {t("confirm_cancel")}
+                    }
+                }
+                p { class: "mt-1 text-sm text-muted-foreground", {t("runs_help_keys")} }
+                p { class: "text-sm text-muted-foreground", {t("runs_help_commands")} }
+                p { class: "text-sm text-muted-foreground", {t("review_help")} }
+            }
+        }
         if conn == Conn::Reconnecting {
             div {
                 class: "border-b border-warn/40 bg-warn/10 px-4 py-1 text-sm text-warn",

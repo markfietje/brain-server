@@ -1,6 +1,6 @@
 # Accessibility Conformance Report
 
-Based on VPAT® Version 2.5 · **Report date:** 2026-08-25 · **Product:** brain-server web console + desktop client
+Based on VPAT® Version 2.5 · **Report date:** 2026-08-26 · **Product:** brain-server web console + desktop client
 **Evaluation method:** automated axe-core scans on the served console build + keyboard-only manual walkthroughs of every panel. Posture per house rule: *documented conformance claim backed by evidence*, not a certification.
 
 ## Standards applied
@@ -25,8 +25,8 @@ The machine-checkable list lives in
 its documented ceiling. Highlights:
 
 - **Perceivable:** text alternatives on icon-only buttons (`aria-label` from the locale bundle — the same `t()` surface, so translations carry accessibility labels too); contrast verified against both shipped themes (dark/light) at AA ratios; no information conveyed by color alone in verdict/status chips (text label always present).
-- **Operable:** full keyboard operation (the review flow is keyboard-first: A/S/R/E/J/K shortcuts with visible focus); **2.4.7 focus-visible** styling ships in both themes; **2.5.8 target size** ≥ 24×24 CSS px on all interactive controls; **2.5.7 dragging alternatives** — every drag affordance has a button equivalent; reflow to 320 px / 400% zoom.
-- **Understandable:** page language follows the active locale (`ar` sets `dir="rtl"`, mirrored layout smoke-pinned); error messages are text, tied to their input.
+- **Operable:** full keyboard operation (the review flow is keyboard-first: A/S/R/E/J/K shortcuts with visible focus); **2.4.7 focus-visible** styling ships in both themes; **2.4.11 focus never obscured** — every focused node carries a scroll margin clearing the sticky header and bottom bar (`focus_never_obscured_by_docks`); **2.5.8 target size** ≥ 24×24 CSS px enforced at the component-class level (`target_size_floor_24px_enforced_by_classes`); **2.5.7 dragging** — no drag interaction ships; a marked click alternative is required for any future one (`drag_alternatives_exist_for_every_drag`); reflow to 320 px / 400% zoom.
+- **Understandable:** page language follows the active locale (`ar` sets `dir="rtl"`, mirrored layout pinned by `rtl_mirroring_smoke_all_panels`; pseudolocale elongation budgeted by `pseudolocale_elongation_renders_without_truncation`); ONE consistent help entry on every panel (3.2.6, `help_entry_consistent_across_panels`); no redundant entry in decision flows (3.3.7, `no_redundant_entry_in_approval_flow`); auth is token paste/keyring with no cognitive test (3.3.8); error messages are text, tied to their input.
 - **Robust:** semantic HTML controls (native button/input), labels bound via `for`/`aria-label`; status changes announced through live regions on the review queue.
 
 ## EN 301 549 clause 11 (desktop client, non-web software)
@@ -40,6 +40,11 @@ its documented ceiling. Highlights:
 
 ## Known ceilings (honest)
 
+- **Locale negotiation is exact-match only.** The switcher sanitizes to the
+  supported set without region/script subtag matching (`fr-CA` falls to
+  default `en`, not `fr`); the requested→available→default scheme is
+  documented in `client/src/i18n.rs` and full BCP-47 matching remains
+  future work with the fluent-langneg upgrade.
 - **axe browser gate covers the web console only.** The axe scan runs against
   the served console build; the desktop shell is covered by the manual
   keyboard walkthrough + clause-11 self-assessment above, not by axe.

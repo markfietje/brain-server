@@ -19,6 +19,67 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.39] — 2026-08-26 — "Access": accessibility as a hard gate, globally
+
+G3+G4 of the Conformance Line closed: the six WCAG 2.2 AA criteria that are
+new in 2.2 land as release-blocking automated gates over the console, the
+ACR/VPAT artifact is pinned to the checklist it claims from, and the global
+half ships — `ar` as a first-class RTL locale with full-panel mirroring
+pinned in CI, and `en-XA` pseudolocalization budgeted at test time via
+`fluent-pseudo` (dev-dependency only; no runtime dep). No routes changed, no
+schema changed — client code, styles, docs, and one test-only dependency.
+
+### Release notes
+
+**Improvements**
+- **Consistent help everywhere (3.2.6):** the shell renders ONE help entry —
+  the "?" button in the top bar — opening the shared shortcut sheet with the
+  same content on every panel.
+- **Arabic is a real locale (G4):** the full UI mirrors under `dir="rtl"`
+  using logical CSS properties (`ms-*`/`me-*`/`ps-*`/`pe-*`, drawer docking
+  inline-end), so no duplicate RTL rule set exists and none can drift. The
+  locale switcher documents its negotiation (requested → available →
+  default) honestly: exact-match today, BCP-47 subtag matching is a listed
+  ceiling.
+- **Pseudolocale safety net:** every shipped string is proven to survive
+  ~30% elongation without leaving the layout budget — a real localization
+  that fits the budget cannot truncate the UI.
+
+**Bug fixes**
+- The a11y checklist claimed a `*:focus-visible { scroll-margin-top }`
+  guard that was not actually in the stylesheet — the rule now exists AND
+  is pinned by test (`focus_never_obscured_by_docks`).
+- The stale "No RTL locale" ceiling line in `client/a11y-checklist.md` is
+  retired (superseded by this release).
+
+### Engineering record
+
+- **New gate tests** (client suite, +8): `focus_never_obscured_by_docks`
+  (2.4.11 — stylesheet-audited scroll margins must clear the pinned dock
+  heights), `drag_alternatives_exist_for_every_drag` (2.5.7 — zero drag
+  interactions ship; any future one must carry a marked click alternative),
+  `target_size_floor_24px_enforced_by_classes` (2.5.8 — component-class
+  height floors parsed from input.css), `help_entry_consistent_across_
+  panels` (3.2.6), `no_redundant_entry_in_approval_flow` (3.3.7 — the
+  approval dock and shared confirm contain no re-entry inputs),
+  `rtl_mirroring_smoke_all_panels` (every key resolves as real translated
+  text under `ar`; untranslated leftovers bounded to technical vocabulary),
+  `pseudolocale_elongation_renders_without_truncation` (`fluent-pseudo`
+  transform of every `en` string stays within 1–2× growth, placeholders
+  intact, shipped en-XA inside the same envelope),
+  `acr_remarks_cover_every_non_support` (per-paragraph ACR honesty check).
+- The release-blocking `wcag22-aa-checklist.md` gains the new-criterion
+  rows (3.2.6, 3.3.8; 4.1.1 recorded as removed in WCAG 2.2); existing rows
+  now cite their pinning test. `docs/trust/acr-vpat.md` refreshed to
+  2026-08-26 with the negotiation ceiling added.
+- One dev-dependency added with written justification: `fluent-pseudo 0.3`
+  (test-only, pure, wasm-safe — the plan-designated pseudolocale engine;
+  zero runtime surface).
+- Validation: full gate green — server main bin **937** passed / 6 ignored
+  (unchanged), client **239** passed (**+8**), clippy `-D warnings` clean
+  both trees, lipstyk diff-gate exit 0, wasm budget 4172 KB / 5734 KB,
+  desktop feature compiles.
+
 ## [1.28.38] — 2026-08-26 — "Lexicon": the normative metric dictionary
 
 G2 of the Conformance Line closed: `docs/metrics.md` is now a fully

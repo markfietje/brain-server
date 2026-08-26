@@ -9,6 +9,16 @@
 //! ponytail: this is a *simple* FTL subset (`key = value`, `#` comments) — for
 //! human-authored short strings that's a fraction of a Fluent dependency, and
 //! the fallback chain keeps an incomplete locale readable instead of broken.
+//!
+//! v1.28.39 "Access" G4 — locale negotiation (documented; the
+//! `fluent-langneg` requested→available→default scheme, reduced to our
+//! surface): (1) REQUESTED — the persisted/selected code is sanitized by
+//! `pick_locale`, an EXACT match against `SUPPORTED_LOCALES` (no region/
+//! script subtag matching yet — a ceiling, documented in the ACR);
+//! (2) AVAILABLE — resolution walks current locale → `en` (`resolve`);
+//! (3) DEFAULT — the raw key itself, visible, never blank. `en-XA` is
+//! generated at TEST time by `fluent-pseudo` (dev-dep only); the shipped
+//! bundle is its hand-authored twin pinned to the same layout budget.
 
 use dioxus::prelude::*;
 use std::collections::HashMap;
@@ -291,6 +301,87 @@ mod tests {
             resolve_fmt("recall_score", "en-XA", &["c1".into(), "9".into()]),
             "[{0} score {1}]".replace("{0}", "c1").replace("{1}", "9")
         );
+    }
+
+    /// v1.28.39 "Access" G4 — the FULL mirroring smoke: every panel's every
+    /// string resolves under `ar` (the shipped RTL locale) as real translated
+    /// text — never blank, never the raw key, never silently English for
+    /// content words — and `dir` flips only for RTL scripts while the whole
+    /// rest of the locale set stays LTR.
+    #[test]
+    fn rtl_mirroring_smoke_all_panels() {
+        assert_eq!(dir_for_locale("ar"), "rtl");
+        assert_eq!(dir_for_locale("he"), "rtl");
+        for l in ["en", "de", "fr", "es", "nl", "en-XA"] {
+            assert_eq!(dir_for_locale(l), "ltr");
+        }
+        let en = BUNDLES.get("en").expect("en bundle");
+        let ar = BUNDLES.get("ar").expect("ar bundle");
+        // The parity wall already pins the exact key set; here we pin that
+        // every value is REAL text: non-empty and never the fallback key.
+        let mut english = 0usize;
+        for (k, ev) in en.iter() {
+            let av = ar.get(k).copied().unwrap_or("");
+            assert!(!av.is_empty(), "ar {k} resolved blank");
+            assert_ne!(av, *k, "ar {k} fell through to the raw key");
+            // Untranslated leftovers must be protocol vocabulary ("HTTP GET",
+            // "UMP", "JSON", "1, 2, 3" — correct in any script), never prose.
+            // Prose here means a lowercase word inside a multi-word string.
+            let prose_word = ev
+                .split_whitespace()
+                .filter(|w| w.len() > 1)
+                .any(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase()));
+            if av == *ev && ev.split_whitespace().count() > 1 && prose_word {
+                panic!("ar {k} is untranslated prose: {av:?}");
+            }
+            if av == *ev {
+                english += 1;
+            }
+        }
+        // A bounded allowance for technical vocabulary; a translation regression
+        // mass-dropping Arabic shows up as this blowing past the bound.
+        assert!(
+            english <= 20,
+            "{english} ar strings silently equal en — backfill the same PR"
+        );
+    }
+
+    /// v1.28.39 "Access" G4 — the pseudolocale gate, generated at TEST time
+    /// via fluent-pseudo (dev-dependency only; no runtime dep): elongation on
+    /// every `en` string stays within the layout-break budget (~30% expected,
+    /// hard ceiling 100%) and `{n}` placeholders survive the transform, so no
+    /// panel can truncate a real localization that fits the budget. The
+    /// shipped hand-authored en-XA bundle must stay inside the same envelope.
+    #[test]
+    fn pseudolocale_elongation_renders_without_truncation() {
+        let en = BUNDLES.get("en").expect("en bundle");
+        let xa = BUNDLES.get("en-XA").expect("en-XA bundle");
+        for (k, v) in en.iter() {
+            let pseudo = fluent_pseudo::transform(v, false, true);
+            let growth = pseudo.chars().count() as f64 / v.chars().count().max(1) as f64;
+            assert!(
+                (1.0..=2.0).contains(&growth),
+                "pseudo transform of {k} out of layout budget ({growth:.2}x): {pseudo:?}"
+            );
+            for n in 0..=9u8 {
+                let ph = format!("{{{n}}}");
+                if v.contains(&ph) {
+                    assert!(
+                        pseudo.contains(&ph),
+                        "placeholder {ph} lost in pseudo transform of {k}"
+                    );
+                }
+            }
+            // The shipped en-XA value tracks its en source within the same
+            // envelope — a runaway hand edit would break layouts like a bad
+            // translation would.
+            let xv = xa.get(k).copied().unwrap_or("");
+            let xg = xv.chars().count() as f64 / v.chars().count().max(1) as f64;
+            assert!(
+                (1.0..=2.5).contains(&xg),
+                "en-XA {k} length {xg:.2}x of en — outside the layout budget"
+            );
+        }
     }
 
     /// Sanitizers clamp persisted values to the supported set.

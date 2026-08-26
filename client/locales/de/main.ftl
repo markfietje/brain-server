@@ -641,3 +641,6 @@ sb_audit_ok = Audit-Kette grün
 sb_audit_notok = Audit unverifiziert
 sb_runs = {0} Runs bewertet
 sb_calibrated = Kalibrierbericht erstellt
+
+nav_help = Hilfe & Tastenkürzel
+help_close = Hilfe schließen

@@ -66,7 +66,7 @@ pub fn ConfirmDestructive(
         if armed() {
             div { class: "flex flex-wrap items-center gap-2 rounded border border-danger/40 p-2",
                 span { class: "text-sm text-danger", "{arm_hint}" }
-                span { class: "ml-auto flex gap-2",
+                span { class: "ms-auto flex gap-2",
                     button {
                         class: "btn btn-outline btn-sm",
                         onclick: cancel,

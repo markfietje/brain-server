@@ -177,18 +177,18 @@ pub fn panel() -> Element {
             div { class: "card mt-2 overflow-x-auto",
                 table { class: "table",
                     thead { tr {
-                        th { class: "text-left pr-2", "ts" }
-                        th { class: "text-left pr-2", "actor" }
-                        th { class: "text-left pr-2", "target" }
-                        th { class: "text-left", "status" }
+                        th { class: "text-start pe-2", "ts" }
+                        th { class: "text-start pe-2", "actor" }
+                        th { class: "text-start pe-2", "target" }
+                        th { class: "text-start", "status" }
                     } }
                     tbody {
                         for r in &failures {
                             tr {
-                                td { class: "pr-2 whitespace-nowrap text-xs", "{r.ts}" }
-                                td { class: "pr-2 font-mono text-xs", "{r.actor}" }
-                                td { class: "pr-2 font-mono text-xs", "{r.target_hash}" }
-                                td { class: "pr-2 text-danger", "{r.status}" }
+                                td { class: "pe-2 whitespace-nowrap text-xs", "{r.ts}" }
+                                td { class: "pe-2 font-mono text-xs", "{r.actor}" }
+                                td { class: "pe-2 font-mono text-xs", "{r.target_hash}" }
+                                td { class: "pe-2 text-danger", "{r.status}" }
                             }
                         }
                     }

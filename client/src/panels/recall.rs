@@ -205,7 +205,7 @@ fn HitRow(hit: Hit) -> Element {
         li { class: "py-3",
             div { class: "flex justify-between items-center gap-2",
                 button {
-                    class: "font-mono text-sm text-accent hover:underline text-left",
+                    class: "font-mono text-sm text-accent hover:underline text-start",
                     onclick: move |_| ui.drawer.set(Some(DrawerContent::Hit(hit.clone()))),
                     {crate::i18n::t_fmt("recall_chunk_id", &[hit.id.to_string()])}
                 }
@@ -301,12 +301,12 @@ fn trace_hit_row(h: &serde_json::Value) -> Element {
     let decayed = trace_decayed_marker(h);
     rsx! {
         tr {
-            td { class: "pr-2 font-mono", "{id}" }
-            td { class: "pr-2 font-mono", "{score}" }
-            td { class: "pr-2", "{source}" }
-            td { class: "pr-2", "{relevance}" }
-            td { class: "pr-2 text-info", "{assertion}" }
-            td { class: "pr-2", "{decayed}" }
+            td { class: "pe-2 font-mono", "{id}" }
+            td { class: "pe-2 font-mono", "{score}" }
+            td { class: "pe-2", "{source}" }
+            td { class: "pe-2", "{relevance}" }
+            td { class: "pe-2 text-info", "{assertion}" }
+            td { class: "pe-2", "{decayed}" }
         }
     }
 }
@@ -399,12 +399,12 @@ fn TraceCard(trace: serde_json::Value) -> Element {
             if let Some(hits) = hits {
                 table { class: "table mt-2",
                     thead { tr {
-                        th { class: "text-left pr-2", "id" }
-                        th { class: "text-left pr-2", "score" }
-                        th { class: "text-left pr-2", "source" }
-                        th { class: "text-left pr-2", "relevance" }
-                        th { class: "text-left pr-2", "kind" }
-                        th { class: "text-left pr-2", "decayed" }
+                        th { class: "text-start pe-2", "id" }
+                        th { class: "text-start pe-2", "score" }
+                        th { class: "text-start pe-2", "source" }
+                        th { class: "text-start pe-2", "relevance" }
+                        th { class: "text-start pe-2", "kind" }
+                        th { class: "text-start pe-2", "decayed" }
                     } }
                     tbody {
                         for h in hits {

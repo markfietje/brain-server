@@ -76,6 +76,12 @@
   .tabular { font-variant-numeric: tabular-nums; }
   code, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   ::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+
+  /* WCAG 2.2 AA 2.4.11 Focus Not Obscured (Min): the sticky top bar is h-14
+   * (3.5rem); every focused node keeps a 4rem scroll margin, so scrolling
+   * never parks the focus ring fully under a dock or the header.
+   * Pinned by `focus_never_obscured_by_docks`. */
+  *:focus-visible { scroll-margin-top: 4rem; scroll-margin-bottom: 5rem; }
 }
 
 /* --- Component layer (shadcn-flavored). Tests pin the state tokens below --- */
@@ -130,7 +136,9 @@
       focus-visible:ring-2 focus-visible:ring-ring;
   }
   .nav-link-active { @apply bg-muted font-medium text-foreground; }
-  .nav-badge { @apply ml-auto rounded-full bg-accent/15 px-1.5 py-0.5 text-xs text-accent; font-variant-numeric: tabular-nums; }
+  /* Logical property (margin-inline-start:auto): mirrors under dir=rtl
+   * without an override rule (v1.28.39 Access). */
+  .nav-badge { @apply rounded-full bg-accent/15 px-1.5 py-0.5 text-xs text-accent; margin-inline-start: auto; font-variant-numeric: tabular-nums; }
   .nav-badge-alert { @apply bg-warn/20 text-warn; }
 
   /* v1.16.6 M3 — mobile bottom tab bar. Hidden ≥sm (the rail wins there);
@@ -149,18 +157,21 @@
     min-height: 44px; /* iOS HIG / Material touch target floor (M3.2) */
   }
   .tab-link-active { @apply text-accent font-medium; }
-  .tab-badge { @apply absolute -top-0.5 -right-1 rounded-full bg-accent/15 px-1.5 text-[10px] leading-tight text-accent; font-variant-numeric: tabular-nums; }
+  .tab-badge { @apply absolute -top-0.5 end-1 rounded-full bg-accent/15 px-1.5 text-[10px] leading-tight text-accent; font-variant-numeric: tabular-nums; }
   .tab-badge-alert { @apply bg-warn/20 text-warn; }
 
-  /* v1.16.6 M3 — context drawer → bottom sheet on phones. */
+  /* v1.16.6 M3 — context drawer → bottom sheet on phones.
+   * v1.28.39 "Access" — logical properties only (inset-inline-end /
+   * border-inline-start): the drawer mirrors under [dir="rtl"] with no
+   * duplicate rule set. */
   .drawer {
-    @apply fixed right-0 top-0 h-screen w-80 border-l border-border bg-card p-4
+    @apply fixed end-0 top-0 h-screen w-80 border-s border-border bg-card p-4
       overflow-auto shadow-sm;
   }
   @media (max-width: 639px) {
     .drawer {
-      @apply left-0 right-0 top-auto bottom-0 h-[85vh] w-full rounded-t-2xl
-        border-l-0 border-t border-border;
+      @apply inset-x-0 top-auto bottom-0 h-[85vh] w-full rounded-t-2xl
+        border-s-0 border-t border-border;
       padding-bottom: env(safe-area-inset-bottom);
     }
   }

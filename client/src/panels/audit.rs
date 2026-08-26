@@ -193,7 +193,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                     // we serialize the already-fetched rows client-side + trigger a
                     // download via eval (web) / no-op where eval is unavailable.
                         button {
-                            class: "btn btn-outline btn-md ml-auto",
+                            class: "btn btn-outline btn-md ms-auto",
                             disabled: !writes || rows.is_empty(),
                             onclick: move |_| {
                                 let payload = serde_json::json!({ "events": &rows });
@@ -205,7 +205,7 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                             {t("audit_export")}
                         }
                         // v1.17.0 M2.4: portable refresh (resets pagination to page 0).
-                        div { class: "ml-1", RefreshButton { refresh } }
+                        div { class: "ms-1", RefreshButton { refresh } }
                     // M7.5: announce the export to screen readers.
                     if !rows.is_empty() {
                         span { class: "sr-only", role: "status", "aria-live": "polite",
@@ -226,27 +226,27 @@ pub fn panel(since: Option<String>, principal: Option<String>) -> Element {
                             // audit row fields as documented in openapi.yaml —
                             // translating them would break ops cross-checks
                             // against the API).
-                            th { class: "text-left pr-2", "id" }
-                            th { class: "text-left pr-2", "ts" }
-                            th { class: "text-left pr-2", "kind" }
-                            th { class: "text-left pr-2", "actor" }
-                            th { class: "text-left pr-2", "status" }
-                            th { class: "text-left", "target_hash" }
-                            th { class: "text-left pr-2", "replay" }
+                            th { class: "text-start pe-2", "id" }
+                            th { class: "text-start pe-2", "ts" }
+                            th { class: "text-start pe-2", "kind" }
+                            th { class: "text-start pe-2", "actor" }
+                            th { class: "text-start pe-2", "status" }
+                            th { class: "text-start", "target_hash" }
+                            th { class: "text-start pe-2", "replay" }
                         }
                     }
                     tbody {
                         for row in &rows {
                             tr {
-                                td { class: "pr-2 font-mono", "{row.id}" }
-                                td { class: "pr-2 whitespace-nowrap", "{row.ts}" }
-                                td { class: "pr-2", "{row.kind}" }
-                                td { class: "pr-2 font-mono text-xs", "{row.actor}" }
-                                td { class: "pr-2",
+                                td { class: "pe-2 font-mono", "{row.id}" }
+                                td { class: "pe-2 whitespace-nowrap", "{row.ts}" }
+                                td { class: "pe-2", "{row.kind}" }
+                                td { class: "pe-2 font-mono text-xs", "{row.actor}" }
+                                td { class: "pe-2",
                                     span { class: status_class(&row.status), "{row.status}" }
                                 }
                                 td { class: "font-mono text-xs", "{row.target_hash}" }
-                                td { class: "pr-2",
+                                td { class: "pe-2",
                                     if let Some(href) = replay_href(&row.kind, row.id) {
                                         Link { to: href, "{replay_link} ↗" }
                                     }

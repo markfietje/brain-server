@@ -44,9 +44,16 @@ These run in `cargo test` and are the automated subset of this checklist:
   escaped by default).
 - `PageTitle` (every panel) — the `<h1>` gets `tabindex="-1"` + focus-on-mount.
 - `use_document_title` (every panel) — reactive document title per route.
-- `input.css` — `*:focus-visible { scroll-margin-top: 4rem }` (WCAG 2.4.11/2.4.12
-  Focus Not Obscured); `--color-ink-faint` raised to `#7c8492` (AA 4.6:1,
-  WCAG 1.4.3).
+- v1.28.39 "Access" WCAG 2.2 AA gate suite (`src/a11y.rs` + `src/i18n.rs`):
+  `focus_never_obscured_by_docks` (2.4.11), `drag_alternatives_exist_for_
+  every_drag` (2.5.7), `target_size_floor_24px_enforced_by_classes` (2.5.8),
+  `help_entry_consistent_across_panels` (3.2.6),
+  `no_redundant_entry_in_approval_flow` (3.3.7), `rtl_mirroring_smoke_all_
+  panels` + `pseudolocale_elongation_renders_without_truncation` (G4),
+  `acr_remarks_cover_every_non_support`, and the release-blocking
+  `wcag_22_aa_gate_blocks_release`. Logical CSS properties (`ms-*`/`me-*`/
+  `ps-*`/`pe-*`/`text-start`) replace physical direction utilities so the
+  layout mirrors under `[dir="rtl"]` without duplicate rules.
 
 ## Known ceilings
 
@@ -64,4 +71,8 @@ These run in `cargo test` and are the automated subset of this checklist:
 - The Cockpit cheat-sheet drawer (`?` on a run) ships `role="dialog"` +
   `aria-modal` + Esc/`?`-close; the full Tab-cycle trap + focus restoration
   remain the same deferred ceiling as the context drawer above.
-- No RTL locale (v1.16.6).
+- ~~No RTL locale~~ — SUPERSEDED (v1.28.39 "Access"): `ar` ships as the RTL
+  locale, `en-XA` is pinned at test time via fluent-pseudo
+  (`pseudolocale_elongation_renders_without_truncation`), and the full-panel
+  mirroring smoke runs in CI (`rtl_mirroring_smoke_all_panels`). Deep
+  bidirectional-text audit remains an open ceiling (see acr-vpat.md).

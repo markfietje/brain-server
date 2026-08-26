@@ -641,3 +641,6 @@ sb_audit_ok = Chaîne d'audit verte
 sb_audit_notok = Audit non vérifié
 sb_runs = {0} runs notés
 sb_calibrated = Rapport de calibration émis
+
+nav_help = Aide et raccourcis
+help_close = Fermer l'aide

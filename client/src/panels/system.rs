@@ -214,29 +214,29 @@ pub fn panel() -> Element {
                     if !s.snapshots.is_empty() {
                         table { class: "table mt-2",
                             thead { tr {
-                                th { class: "text-left pr-2", "{sys_col_file}" }
-                                th { class: "text-left pr-2", "{sys_col_size}" }
-                                th { class: "text-left pr-2", "{sys_col_perms}" }
-                                th { class: "text-left pr-2", "{sys_col_integrity}" }
-                                th { class: "text-left pr-2", "{sys_col_chain}" }
+                                th { class: "text-start pe-2", "{sys_col_file}" }
+                                th { class: "text-start pe-2", "{sys_col_size}" }
+                                th { class: "text-start pe-2", "{sys_col_perms}" }
+                                th { class: "text-start pe-2", "{sys_col_integrity}" }
+                                th { class: "text-start pe-2", "{sys_col_chain}" }
                             } }
                             tbody {
                                 for r in s.snapshots.iter() {
                                     tr {
-                                        td { class: "pr-2 font-mono text-xs", "{r.file}" }
-                                        td { class: "pr-2 tabular text-xs", "{r.size_bytes}" }
-                                        td { class: "pr-2",
+                                        td { class: "pe-2 font-mono text-xs", "{r.file}" }
+                                        td { class: "pe-2 tabular text-xs", "{r.size_bytes}" }
+                                        td { class: "pe-2",
                                             span { class: if r.mode_0600 { "badge badge-ok" } else { "badge badge-danger" },  // i18n-exempt: css class expression
                                                 {crate::i18n::t(if r.mode_0600 {"sys_perms_0600"} else {"sys_world_readable"})}
                                             }
                                         }
-                                        td { class: "pr-2",
+                                        td { class: "pe-2",
                                             span {
                                                 class: if r.integrity_check { "text-ok" } else { "text-danger" },  // i18n-exempt: css class expression
                                                 {crate::i18n::t(sys_bool(r.integrity_check))}
                                             }
                                         }
-                                        td { class: "pr-2",
+                                        td { class: "pe-2",
                                             span {
                                                 class: if r.audit_chain_ok { "text-ok" } else { "text-danger" },  // i18n-exempt: css class expression
                                                 {crate::i18n::t(sys_bool(r.audit_chain_ok))}

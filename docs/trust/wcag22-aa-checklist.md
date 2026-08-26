@@ -29,21 +29,27 @@ to catch.
 - 2.4.1 Bypass Blocks — PASS: landmark regions + skip target on the shell
 - 2.4.3 Focus Order — PASS: walkthrough per panel
 - 2.4.7 Focus Visible — PASS: focus-visible ring styled in both themes
-- 2.4.11 Focus Not Obscured (Minimum) — PASS: sticky headers leave focused row visible; walkthrough
+- 2.4.11 Focus Not Obscured (Minimum) — PASS: `*:focus-visible` scroll margins clear every dock; pinned by `focus_never_obscured_by_docks`
 - 2.5.1 Pointer Gestures — PASS: no multipoint/path gestures exist
 - 2.5.2 Pointer Cancellation — PASS: native buttons; up-event activation
 - 2.5.3 Label in Name — PASS: accessible names contain visible label text
-- 2.5.7 Dragging Movements — PASS: every drag affordance has a button equivalent
-- 2.5.8 Target Size (Minimum) — PASS: ≥24×24 CSS px interactive targets, verified in stylesheet audit
+- 2.5.7 Dragging Movements — PASS: no drag interaction ships; any future one must carry a marked click alternative (`drag_alternatives_exist_for_every_drag`)
+- 2.5.8 Target Size (Minimum) — PASS: ≥24×24 CSS px interactive targets enforced at class level (`target_size_floor_24px_enforced_by_classes`)
 
 ## Understandable
 
 - 3.1.1 Language of Page — PASS: document lang follows active locale
+- 3.2.6 Consistent Help — PASS: ONE help entry rendered by the shell, same position and content on every panel (`help_entry_consistent_across_panels`)
 - 3.2.1 On Focus / 3.2.2 On Input — PASS: no context change on focus/input
 - 3.3.1 Error Identification / 3.3.3 Error Suggestion — PASS: text errors tied to inputs
-- 3.3.7 Redundant Entry — PASS: offline replay prompts re-enter only what is required (subject), stated inline
+- 3.3.7 Redundant Entry — PASS: decisions never re-enter displayed data (approval flow pinned by `no_redundant_entry_in_approval_flow`); replay prompts re-enter only what is required (subject), stated inline
+- 3.3.8 Accessible Authentication (Minimum) — PASS: auth is token paste / OS keyring; no memorization, transcription, or cognitive-function test anywhere
 
 ## Robust
+
+<!-- WCAG 2.2 removed 4.1.1 Parsing (covered by 4.1.2 + valid markup); no
+     criterion line is carried for it — the retirement is recorded here so
+     the gate's coverage count stays intentional. -->
 
 - 4.1.2 Name, Role, Value — PASS: axe scan; semantic controls throughout
 - 4.1.3 Status Messages — PASS: live region announces queue changes

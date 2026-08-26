@@ -944,7 +944,7 @@ fn DeliveryCard(data: Value) -> Element {
                     span { class: "badge badge-ok", {t("runs_delivery_done")} }
                 }
             }
-            ul { class: "list-disc pl-5 text-xs space-y-0.5",
+            ul { class: "list-disc ps-5 text-xs space-y-0.5",
                 for item in &items {
                     li { class: "font-mono break-all",
                         {crate::strip_invisible(item.as_str().unwrap_or(&item.to_string()))}
@@ -998,7 +998,7 @@ fn EvidenceView(output: Value) -> Element {
     let evidence = output["evidence"].as_array().cloned().unwrap_or_default();
     let questions = output["questions"].as_array().cloned().unwrap_or_default();
     rsx! {
-        div { class: "mt-1 space-y-2 border-l-2 border-border pl-3",
+        div { class: "mt-1 space-y-2 border-l-2 border-border ps-3",
             if !findings.is_empty() {
                 div { class: "space-y-1",
                     p { class: "text-xs font-medium", {t("ev_findings")} }
@@ -1009,7 +1009,7 @@ fn EvidenceView(output: Value) -> Element {
                                 span { class: "badge", "[{origin}]" }
                             }
                             if let Some(c) = f["confidence"].as_f64() {
-                                span { class: "tabular text-ink-faint ml-1", "{c:.2}" }
+                                span { class: "tabular text-ink-faint ms-1", "{c:.2}" }
                             }
                         }
                     }

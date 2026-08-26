@@ -641,3 +641,6 @@ sb_audit_ok = Auditketen groen
 sb_audit_notok = Audit ongeverifieerd
 sb_runs = {0} runs beoordeeld
 sb_calibrated = Kalibratierapport uitgegeven
+
+nav_help = Hulp & sneltoetsen
+help_close = Hulp sluiten

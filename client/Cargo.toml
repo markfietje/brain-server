@@ -49,6 +49,7 @@ keyring = { version = "4", default-features = false, features = [
 # async runtime; the shipped `sync`-only tokio dep gets rt+macros here. Dev-only
 # → zero wasm impact (dev-deps never compile into the bundle).
 [dev-dependencies]
+fluent-pseudo = "0.3.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # v1.28.20 Cockpit M1: platform targets are cargo features — one codebase,

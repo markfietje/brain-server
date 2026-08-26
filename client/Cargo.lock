@@ -524,6 +524,7 @@ name = "brain-client"
 version = "1.28.23"
 dependencies = [
  "dioxus",
+ "fluent-pseudo",
  "futures-util",
  "keyring",
  "reqwest 0.13.4",
@@ -1958,6 +1959,16 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "fluent-pseudo"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f1b5259b7f28e4f6a03e826c8305e15309cd90fc3a786447407c001786bf2e"
+dependencies = [
+ "once_cell",
+ "regex",
 ]
 
 [[package]]
