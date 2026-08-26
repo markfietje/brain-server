@@ -28,7 +28,7 @@ Ingest markdown with `POST /ingest/markdown`, structured data with `POST /ingest
 Call `POST /recall` with a `QueryDoc`, or use `brain query "..."`. See **[Retrieval & Recall](./retrieval-and-recall.md)**.
 
 **Is there a GUI?**
-Yes — a Dioxus web + desktop + mobile app served at `/app`. See the **[Client GUI](./client-gui.md)**.
+Yes — a Dioxus web + desktop app served at `/app` (the `mobile` feature is a compile-smoke target only; no store submission has shipped). See the **[Client GUI](./client-gui.md)**.
 
 **Does it work with OpenClaw?**
 Yes — Brain Server is the memory backend for OpenClaw via a `kind: "memory"` plugin. See the **[OpenClaw Integration](./openclaw-integration.md)** page.
@@ -45,7 +45,7 @@ Yes. **Calibrated abstention**: when retrieval quality is too low, `/recall` ret
 Yes, deliberately and auditably. `POST /purge` deletes by id/owner with a tombstone + audit row; the **DSAR workflow** locates, exports, purges, and issues a chain-verifiable deletion certificate. Nothing is deleted autonomously.
 
 **Can I see why a result was returned?**
-Yes. Every result carries provenance, and `/recall?trace=true` records a replayable decision path. See **[Retrieval & Recall](./retrieval-and-recall.md)**.
+Yes. Every result carries provenance, and passing `"trace": true` in the `POST /recall` **body** (the only query param on `/recall` is `source`) records a replayable decision path. See **[Retrieval & Recall](./retrieval-and-recall.md)**.
 
 ## Security & compliance
 
@@ -70,4 +70,4 @@ By design. Set `BIND_PUBLIC=1` to bind publicly. See **[Configuration](./configu
 
 - **[Quickstart](./quickstart.md)** — get running.
 - **[Glossary](./glossary.md)** — terminology.
-- **[Contributing](./contributing.md)** — how to help.
+- **[Contributing](./CONTRIBUTING.md)** — how to help.

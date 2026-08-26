@@ -177,6 +177,18 @@ not a separate service:
                     └───────────────────────────────────────────────┘
 ```
 
+### The layering law
+
+Handlers are protocol adapters ONLY: parse → principal → authorize → one
+`spawn_blocking` → domain call → read-seam shaping → response. ALL SQL, caps,
+FK ordering, and invariants live in domain modules (`src/workflow/*`) that
+take `&Connection` / `WorkflowTx` — never pool or HTTP types. Every mutation
+emits its hash-chained audit row INSIDE the caller's transaction: a transition
+and its evidence commit or roll back together.
+Error paths deny loudly (fail-closed); silence is never certified. New code is
+always a service core; see `docs/engine-sdk.md` for the stable engine ABI the
+workflow cores compile against.
+
 ---
 
 ## Retrieval engine
@@ -252,9 +264,17 @@ Graph edges are superseded two ways, both retire-never-delete:
 
 ## Governance layer
 
-- **Append-only audit log** — a SHA-256 hash chain. Each row records the hash of
-  the previous row; `/audit/verify` proves the chain is intact. Read events
-  (recall/search/get) are opt-in.
+- **Append-only audit log** — a keyed HMAC-SHA256 hash chain. Each row records
+  a keyed MAC of the previous row over the full record, with a per-DB epoch and
+  a pinned chain head (`/audit/verify`); pre-v1.27.31 legacy epochs verify as
+  legacy (v1.27.31). Read events (recall/search/get) are opt-in.
+- **Workflow governance** — governed runs on lineage events (branch-never-delete
+  rewind), role-gated with audited transitions; the outcome scoreboard,
+  monthly calibration signing, and since v1.28.34 the ISO 10002/10003
+  complaint lifecycle: lineage-event state machine, HITL remedy matrix citing
+  legal basis + published conduct clause, deterministic role-tier approval
+  caps (over cap escalates exactly one level), national-body ADR packet per
+  Reg. 2024/3228, goodwill ledger aggregating only audited remedies.
 - **Prompt-injection quarantine** — suspicious input is stored but excluded from
   retrieval until reviewed.
 - **DSAR / GDPR** — locate → export → purge → chain-verifiable deletion

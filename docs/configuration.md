@@ -17,7 +17,10 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_MULTI_DB` | — | Enables per-domain SQLite files (multi-DB mode) |
 | `BRAIN_CONTROLLER_NAME` | — | Operator/controller identity label |
 | `MODEL_PROFILE` | `edge-default` | Retrieval profile selector → embedding model + rerank arming. See [Retrieval profiles & embedding models](#retrieval-profiles--embedding-models). |
-| `DOMAIN_MIN_COUNT` | — | Minimum chunk count for a domain to be listed/used |
+| `DOMAIN_MIN_COUNT` | `1` | Minimum chunk count for a domain's routing centroid (below it, the centroid is deleted so routing skips the near-empty bucket) |
+| `BRAIN_MODEL_MANIFEST` | — | Path to a SHA-256 model manifest; when set, boot **fails closed** unless every pinned artifact matches |
+| `BRAIN_REGION` | — | Data-residency stamp (e.g. `eu-west-1`, `ph-manila`) written onto stored rows + certificates; unset = no stamp |
+| `BRAIN_FCR_WINDOW_DAYS` | `7` | First-contact-resolution repeat-contact attribution window on the workflow scoreboard (a recurring contact within the window counts the predecessor as not resolved) |
 
 ## Authentication
 
@@ -90,13 +93,14 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_INGEST_SKIP_PATTERNS` | — (off) | Newline- or comma-separated prefixes; text beginning with any is skipped at ingest (e.g. `!redacted,```). Opt-in; default behavior unchanged. |
 | `BRAIN_INJECTION_CLASSIFIER` | — | Injection classifier selector |
 | `BRAIN_INJECTION_TOKENIZER` | — | Tokenizer used by the injection classifier |
-| `BRAIN_INJECTION_THRESHOLD_HIGH` | — | Classifier banding: score ≥ this → reject |
-| `BRAIN_INJECTION_THRESHOLD_LOW` | — | Classifier banding: score ≥ this (below high) → quarantine |
+| `BRAIN_INJECTION_THRESHOLD_HIGH` | `0.9` | Classifier banding: score ≥ this → reject |
+| `BRAIN_INJECTION_THRESHOLD_LOW` | `0.7` | Classifier banding: score ≥ this (below high) → quarantine |
 | `BRAIN_PROPOSAL_TTL_SECS` | `604800` (7 d) | How long a proposal can sit pending before auto-expire (audited). |
 | `BRAIN_DSAR_WINDOW_DAYS` | `30` | GDPR Art 17 response window shown on DSARs |
 | `BRAIN_DSAR_LEDGER_DAYS` | `30` | Retention window for the DSAR ledger |
-| `BRAIN_RETENTION_ENABLED` | — | Enable per-kind query-time retention expiry |
-| `BRAIN_RETENTION_KIND_DAYS` | — | Per-kind retention overrides (`kind=days,kind=days`) |
+| `BRAIN_RETENTION_ENABLED` | enabled (`true`) | Per-kind query-time retention expiry; `false\|0\|no\|off` restores exact legacy behavior (only per-chunk `expires_at` governs decay) |
+| `BRAIN_RETENTION_KIND_DAYS` | JSON map over SDK defaults | Per-kind overrides as a **JSON map** (`{"fact":365,"episodic":30}`), merged over the built-in table — fact 365, episodic 30, procedure/step/decision 730, entitlement 1825 (single owner: `crates/brain-engine-sdk/src/policy.rs`). Unknown keys are accepted; invalid JSON or non-integer values degrade to the default per key |
+| `BRAIN_WRITE_POSTURE` | `open` | Agent-write posture (Seatbelt): `open` writes insert directly; `review` routes the six agent-facing write surfaces through the proposal queue instead (agents propose, operators dispose). An unknown value **refuses boot** |
 | `BRAIN_ALERT_WEBHOOK_URL` / `BRAIN_ALERT_WEBHOOK_SECRET` | — | Outbound alert webhook sink (uses the hardened egress client) |
 
 ## Observability & audit (v1.15)
@@ -107,7 +111,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | Read-event sampling (0.0..=1.0); `1.0` = every read event. |
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window; when set, expired rows are pruned and the chain re-anchored. Deployers subject to AI Act Art 26(6) guidance: set ≥180. |
 | `BRAIN_DSAR_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_SECRET` | — | Opt-in Art 19 onward-notification: on a completed DSAR purge, POSTs `{subject, certified_at, certificate_id}` HMAC-SHA256-signed. Fail-soft. |
-| `BRAIN_OTEL_ENABLED` / `BRAIN_OTEL_ENDPOINT` | off | Optional OpenTelemetry export (endpoint + on/off) |
+| `BRAIN_OTEL_ENABLED` / `BRAIN_OTEL_ENDPOINT` | enabled on `--features otel` builds / `http://127.0.0.1:4318/v1/traces` | OpenTelemetry OTLP export. Kill-switch only: `0\|false\|no\|off` disables the compiled-in exporter (a default build compiles no exporter at all) |
 | `CORS_METHODS` | `GET,POST,PUT,DELETE,OPTIONS` | Allowed CORS methods |
 | `CORS_HEADERS` | `content-type,authorization` | Allowed CORS request headers |
 

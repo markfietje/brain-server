@@ -10,7 +10,7 @@ knowledge-graph server for AI agents**. This page maps the product's **shipped**
 capabilities to the **concrete people and teams** who use them, so you can tell
 at a glance whether it fits your job — and exactly what you'd get.
 
-Every claim below is **reverse-checked against the current source** (v1.27.22): a
+Every claim below is **reverse-checked against the current source** (v1.28.34): a
 "Shipped" row names a real route, role preset, or test that exists in this
 repository today. "Planned" means a documented roadmap ceiling. Nothing here is a
 promise dressed as a feature — the honest ceiling is stated plainly at the end,
@@ -54,7 +54,7 @@ roadmap the product is building toward, not its current single-node form.
 In plain terms:
 
 - **What it is:** your own private memory server for an AI agent — no cloud, no
-  embedding API fees, no telemetry. One Rust binary (v1.27.22) + one SQLite file.
+  embedding API fees, no telemetry. One Rust binary (v1.28.34) + one SQLite file.
 - **What it costs to run:** local static embeddings (model2vec), so recall costs
   **zero embedding tokens and zero decision tokens**; fits a Jetson/Raspberry Pi.
 - **What it gives an agent:** deterministic hybrid recall (vector + full-text +
@@ -99,7 +99,7 @@ DSAR, PII, human-gated writes); the *shared-tenant packaging* is the planned par
 
 | Who you are | What you need | What Brain Server gives you | Status |
 |---|---|---|---|
-| **BPO (Business Process Outsourcer)** | Serve multiple client accounts with hard isolation; per-client agent-assist memory; per-client audit + DSAR; PII containment | Per-domain isolation, per-tenant audit chain, DSAR + deletion certificates, PII redaction, human write-gate | Controls **shipped**; **multi-client tenancy = v2.0 Cortex** (planned) |
+| **BPO (Business Process Outsourcer)** | Serve multiple client accounts with hard isolation; per-client agent-assist memory; per-client audit + DSAR; PII containment | Per-domain isolation, per-tenant audit chain, DSAR + deletion certificates, PII redaction, human write-gate | Per-client domains, DSAR, holds, termination, QA queue and the complaint lifecycle ship today (v1.27–1.28.34); shared-backend multi-team tenancy remains v2.0 Cortex |
 | **In-house contact / call center** | One org, many teams; agent memory that recalls past resolutions, policies, customer context; supervision + audit | Deterministic recall, knowledge graphs, temporal evidence, HITL write gate, audit chain, reviewer-calibration strip | **Shipped** (single-org form); multi-team packaging in v2.0 |
 | **Customer-support team / helpdesk** | Faster, grounded answers; "how did we resolve this before?"; no fabricated answers | Calibrated abstention, span verification (`/verify`), recall traces, resolution knowledge graph | **Shipped** |
 | **Managed-service / shared-services support** | Standardized knowledge across internal teams with per-team scope | Domains + centroid routing, per-agent opt-in, chat-type gating | **Shipped** |
@@ -209,9 +209,12 @@ Being direct saves everyone a wasted proof-of-concept:
 - **You need semantic quality on a huge corpus today.** The shipped recall
   figures are validated on a **small smoke set** — a production-sized judged
   corpus is a roadmap item, not a current guarantee.
-- **You want the model to judge relevance or summarize.** Brain Server is
-  deliberately deterministic — no LLM in the retrieval or redaction path. If you
-  want learned re-ranking, that's a different design.
+- **You want the model to judge relevance or summarize.** The default profile is
+  deliberately deterministic — no model inference in the retrieval or redaction
+  path. Learned cross-encoder rerank and BGE-M3 neural embeddings ship opt-in
+  behind the `rerank-tier`/`neural-embed` features, and an ONNX injection
+  classifier behind `injection-classifier` — all off by default to hold the
+  edge envelope.
 - **You require an SOC 2 / ISO 42001 attestation certificate.** The repo ships a
   documented engineering posture, not an org-level certification.
 
@@ -261,7 +264,9 @@ Not yet. Per-domain isolation is shipped; **multi-team tenancy is the v2.0
 - **PII at rest is not encrypted** — full-disk encryption is the operator's
   layer (LUKS/FileVault).
 - **Deterministic, not learned** — recall and redaction are heuristic /
-  deterministic, not model-inference.
+  deterministic, not model-inference. That is true of every default profile;
+  the opt-in tiers above (`rerank-tier`, `neural-embed`, `injection-classifier`)
+  are model inference, off unless you build them in.
 
 ---
 

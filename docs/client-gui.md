@@ -4,7 +4,7 @@ Brain Server ships with a **Dioxus control surface** (`client/`) — a single Ru
 
 ## What the GUI provides
 
-The client has **15 wired panels**, plus a connect-first onboarding flow, grouped under a sidebar rail (desktop) / bottom tab bar (mobile):
+The client has **16 wired panels**, plus a connect-first onboarding flow, grouped under a sidebar rail (desktop) / bottom tab bar (mobile):
 
 | Panel | Route | What it shows |
 |---|---|---|
@@ -23,6 +23,11 @@ The client has **15 wired panels**, plus a connect-first onboarding flow, groupe
 | **Ops** | `/ops` | The live alert feed (SSE) + Memory Operations panel with per-proposal SLA clocks and the gate-health strip |
 | **Register** | `/register` | The Agent Memory Register: provenance ledger by `origin` (`human` / `model` / `imported`) with owner/source/kind filters and drill-down evidence |
 | **Clients** | `/clients` | BPO client register (role-gated): the console renders only the client(s) your token is granted (client-auditor) or the all-clients operations board (bpo-ops/admin) |
+| **Scoreboard** | `/scoreboard` | Outcome/efficiency KPIs from `GET /workflow/scoreboard` over closed runs — FCR, resolution mix, goodwill ledger (server-side Admin+DPO gated; the panel is presentation only) |
+
+### Detail routes
+
+Beyond the panel grid, deep-linkable detail routes exist: `/review/:proposal_id` (share a single review card), `/runs/:run_id` and `/runs/:run_id/timeline` (a workflow run's transcript fed by the persistent stream), `/subjects/certificate/:dsar_id` (a chain-verifiable deletion certificate), and `/recall/:trace_id` (the decision-path artifact below). Unauthenticated visitors land on `/connect`.
 
 ### Command palette
 

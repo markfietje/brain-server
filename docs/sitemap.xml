@@ -82,6 +82,18 @@
     <loc>https://markfietje.github.io/brain-server/blog/09-contact-center-vertex.html</loc>
   </url>
   <url>
+    <loc>https://markfietje.github.io/brain-server/blog/10-dsh-deepseek-harness.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/blog/11-the-loop-runs.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/blog/12-the-500-that-proved-the-chain.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/blog/13-dual-era-mcp.html</loc>
+  </url>
+  <url>
     <loc>https://markfietje.github.io/brain-server/blog/index.html</loc>
   </url>
   <url>
@@ -94,6 +106,9 @@
     <loc>https://markfietje.github.io/brain-server/client-gui.html</loc>
   </url>
   <url>
+    <loc>https://markfietje.github.io/brain-server/CONTACT_CENTER_STANDARDS.html</loc>
+  </url>
+  <url>
     <loc>https://markfietje.github.io/brain-server/compliance.html</loc>
   </url>
   <url>
@@ -101,6 +116,9 @@
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/connectors.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/connector-crm-custom.html</loc>
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/cra.html</loc>
@@ -113,6 +131,9 @@
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/docker.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/engine-sdk.html</loc>
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/faq.html</loc>
@@ -130,6 +151,9 @@
     <loc>https://markfietje.github.io/brain-server/knowledge-graph.html</loc>
   </url>
   <url>
+    <loc>https://markfietje.github.io/brain-server/kb-deflection.html</loc>
+  </url>
+  <url>
     <loc>https://markfietje.github.io/brain-server/mcp.html</loc>
   </url>
   <url>
@@ -137,6 +161,9 @@
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/memory-lifecycle.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/metrics.html</loc>
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/observability.html</loc>
@@ -200,6 +227,12 @@
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/research/10-chunking.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/research/11-domain-routing.html</loc>
+  </url>
+  <url>
+    <loc>https://markfietje.github.io/brain-server/research/12-consolidation.html</loc>
   </url>
   <url>
     <loc>https://markfietje.github.io/brain-server/research/index.html</loc>

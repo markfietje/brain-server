@@ -10,7 +10,7 @@
 | **COPC CX Standard, Release 8.0** (Feb 2026) | current | The performance-management framework global centers buy against: forecasting, scheduling, capacity, service level, QA calibration |
 | **KCS v6** (Consortium for Service Innovation) | current | The knowledge-centered-service backbone of the planned v1.28.x knowledge loop |
 | **WCAG 2.2 AA / EN 301 549 (→ V4.1.1 incorporates WCAG 2.2 AA) / Section 508 + VPAT ACR** | EAA enforcement live since June 2025 | Procurement gate for the console in EU and US-federal contexts; EN 301 549 adds **non-web software clauses** that cover the desktop client |
-| **ISO 10002:2018** (complaints handling) | current | Complaints are a distinct class from incidents — the diagnostic loop does not model them today |
+| **ISO 10002:2018** (complaints handling) | current | Complaints are a distinct class from incidents — the diagnostic loop models them as a first-class case class with its own ack/response clocks and the full lifecycle (v1.28.34) |
 | Industry KPI definitions (SQM-class FCR methodology; consensus AHT/abandonment/service-level) | — | Small and global centers must report the same words meaning the same things |
 | **EU AI Act Art. 12/14/15, NIST AI RMF, ISO/IEC 42001** | mapped | DecisionRecords, human-in-the-loop, monthly signed calibration already land here (COMPLIANCE.md) |
 | **GDPR / PH RA 10173, ISO 27001-mapped controls, SOC 2 readiness** | mapped | SECURITY.md / COMPLIANCE.md lineage |
@@ -29,13 +29,13 @@
 | QA: 100% justified scoring, gold calibration, κ gate, monthly human sign-off | COPC R8.0 QA + calibration discipline | 🟡 planned (v1.28.x); **explicit COPC mapping rows to be added to COMPLIANCE.md** (gap G6) |
 | KCS double loop + public KB + deflection | KCS v6; demand reduction | 🟡 planned (v1.28.x) |
 | SLA envelopes P1–P4 + follow-the-sun handover | COPC service-level management; handover research | 🟡 planned (v1.28.x candidate) |
-| **Complaints as a first-class case class** | ISO 10002 | ❌ **gap G1** |
-| **Normative metric dictionary with formulas + data lineage** | COPC/KPI consensus; SQM FCR method | ❌ **gap G2** |
-| **WCAG 2.2 AA as a hard gate; VPAT/ACR artifact; desktop EN 301 549 software clauses** | EN 301 549 V4.1.1 / Section 508 / EAA | ⚠️ **gap G3** — a11y was treated as residue in an earlier milestone; it is a procurement gate |
+| **Complaints as a first-class case class** | ISO 10002 | ✅ shipped — distinct intake class with its own acknowledgment/response SLA (`complaint_class_gets_acknowledgment_sla`, `src/workflow/frontdoor.rs`); full ISO 10002 lifecycle as lineage events (v1.28.34) |
+| **Normative metric dictionary with formulas + data lineage** | COPC/KPI consensus; SQM FCR method | ✅ shipped — `docs/metrics.md` normative dictionary; `BRAIN_FCR_WINDOW_DAYS` default 7 (`src/config.rs`) |
+| **WCAG 2.2 AA as a hard gate; VPAT/ACR artifact; desktop EN 301 549 software clauses** | EN 301 549 V4.1.1 / Section 508 / EAA | ✅ shipped — `docs/trust/acr-vpat.md` + `docs/trust/wcag22-aa-checklist.md`; release-blocking client gate (`wcag_22_aa_gate_blocks_release`) |
 | **RTL + pseudolocale readiness** (global locales) | global usability | ⚠️ **gap G4** — recon: no RTL locales, FTL subset |
-| **WFM seam (shift/skills feed in/out)** | COPC forecasting/scheduling/capacity | ⚠️ **gap G5** — shifts are stored internally but there is no interop boundary |
+| **WFM seam (shift/skills feed in/out)** | COPC forecasting/scheduling/capacity | 🟡 partially shipped — `GET/POST /ops/shifts` + `GET /ops/skills` routed (`src/main.rs`); documented interop-boundary contract still open |
 | People clauses: competence, workload visibility | ISO 18295-1 people/performance | 🟡 partially (presence + skills shipped; workload visibility planned v1.28.x); **workload = measured visibility, never enforcement — documented ceiling** (G7) |
-| Deployment tiers small → global | ISO 18295-1 applicability (any size) | ⚠️ **gap G8** — tier guide not written |
+| Deployment tiers small → global | ISO 18295-1 applicability (any size) | ✅ shipped — `docs/deployment.md` "Deployment tiers" section defines T1–T4 |
 | Payment data handling | PCI DSS | ✅ **explicit non-scope**: payment data never ingested; THREAT_MODEL §6 gains the boundary row (G9, one line) |
 | ISO/AWI 18295-1 revision | — | watch item: re-map clause refs on publication (G10) |
 

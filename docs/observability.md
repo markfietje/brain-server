@@ -2,9 +2,11 @@
 
 Brain Server ships a small but honest observability surface: a Prometheus-format
 `/metrics` endpoint, an append-only SHA-256 audit chain, optional recall decision
-traces, an optional OpenTelemetry trace export, and health/stats/version
-endpoints. Everything is **local-first**: metrics and audit are on-device, and
-OpenTelemetry is opt-in (off by default, no data egress unless configured).
+traces, an OpenTelemetry trace export, and health/stats/version
+endpoints. Everything is **local-first**: metrics and audit are on-device.
+OpenTelemetry is feature-gated — a build without `--features otel` compiles no
+exporter at all; on otel builds export is **enabled by default** and
+`BRAIN_OTEL_ENABLED` (`0`/`false`/`no`/`off`) is the kill switch.
 
 This page is verified against `src/main.rs` (`metrics`, `list_audit`,
 `verify_audit_chain`, `health`, `stats`, `version`), `src/audit.rs`, and
@@ -36,7 +38,7 @@ in the chain — only hashes (SHA-256 since v1.20.25).
   filters are URL-addressable).
 - **`GET /audit/verify`** — fresh, authoritative full-chain integrity check
   (Admin). Returns `{ ok: bool }`.
-- **`GET /ump/audit`** / **`GET /ump/audit/verify`** — the UMP reference audit
+- **`POST /ump/audit`** / **`GET /ump/audit/verify`** — the UMP reference audit
   facility over the same chain.
 
 Read-event auditing is controlled by `BRAIN_AUDIT_READ_EVENTS` (default `on` in
@@ -52,16 +54,18 @@ the decision path (per-retriever ranks, fused score, applied scope). Trace
 records store the **query hash**, never the raw query (a recall query can be
 personal data). See **[Retrieval & Recall](./retrieval-and-recall.md)**.
 
-## OpenTelemetry (opt-in, feature-gated)
+## OpenTelemetry (feature-gated; on by default under `--features otel`)
 
 A `src/otel.rs` module is compiled **only** under `--features otel` (a default
 build compiles nothing here — zero tracing overhead, zero new dependencies). The
 ingest / recall / gate cores are instrumented with `#[cfg_attr(feature = "otel",
-tracing::instrument(...))]`.
+tracing::instrument(...))]`; additional decision spans (`gate.edit`,
+`compliance.export`) exist alongside the core spans.
 
-- Enable with `BRAIN_OTEL_ENABLED` + `BRAIN_OTEL_ENDPOINT` (see
-  **[Configuration](./configuration.md)**); the exporter is an OTLP/HTTP
-  span exporter (`opentelemetry-otlp`).
+- On otel builds export runs unless disabled: set `BRAIN_OTEL_ENABLED=0|false|no|off`
+  to kill it; `BRAIN_OTEL_ENDPOINT` selects the collector (default
+  `http://127.0.0.1:4318/v1/traces`). The exporter is OTLP/HTTP
+  (`opentelemetry-otlp`).
 - Every recorded span field is a **label or a short hash — never the content
   body** (the PII rule). Recall queries are recorded as `query_hash` (SHA-256
   fingerprint via the codebase-wide audit hash), screen verdicts as
@@ -90,8 +94,9 @@ and an opt-in outbound **system-alert webhook** (`BRAIN_ALERT_WEBHOOK_URL` /
 
 - `/metrics` is a compact, purpose-built set of gauges — it is not a full
   runtime-profiling endpoint (no pprof, no per-request histograms).
-- OpenTelemetry is **opt-in and feature-gated**; the default build has no trace
-  export, by design.
+- OpenTelemetry is **feature-gated**; a build without `--features otel` has no
+  trace export, by design. On otel builds it is on unless the kill switch
+  (`BRAIN_OTEL_ENABLED=0|false|no|off`) is thrown.
 - The audit gauge is cached for scrape safety; `/audit/verify` is authoritative.
 
 ## Next steps

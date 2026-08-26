@@ -2,7 +2,7 @@
 
 Brain Server's client control surface grew from a review/recall dashboard into a **full operator console** over three releases (v1.17.6, v1.17.7, v1.17.8 — the "Complete" line). It now has **12 panels** covering the entire lifecycle: write-back review, retrieval, the knowledge graph, the write workspace, governance, portability, and system operations.
 
-> **Note (current console):** the console has grown since this line — the shipped GUI now has **15 panels**. Added after v1.17.8: **Ops** (live SSE alert feed + SLA clocks), **Register** (Agent Memory Register provenance ledger), and **Clients** (role-gated BPO register). See [**Client GUI**](./client-gui.md) for the full current map.
+> **Note (current console):** the console has grown since this line — the shipped GUI now has **16 panels**. Added after v1.17.8: **Ops** (live SSE alert feed + SLA clocks), **Register** (Agent Memory Register provenance ledger), **Clients** (role-gated BPO register), and **Scoreboard** (workflow outcome KPIs, v1.28.16). See [**Client GUI**](./client-gui.md) for the full current map.
 
 This page is the map of that console. Everything below is client-side; the server + API contract stayed at **1.17.5** across the three releases (zero server changes, zero schema change).
 

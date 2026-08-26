@@ -171,7 +171,7 @@ fail-open on a server error.
 > (v1.20.25)**: an agent must not be able to autonomously hard-delete long-term memory with no
 > human gate. Recall/get/verify/graph (read) + the review-queued `memory_store` are the agent's
 > only surface. Erasure is a **human** action via the operator console or the HTTP API (the
-> `brain` CLI has no erasure command).
+> CLI's only delete surface is `brain source-delete <id>`, which sweeps a whole source).
 
 ---
 

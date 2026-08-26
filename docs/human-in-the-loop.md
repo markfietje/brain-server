@@ -135,8 +135,9 @@ In practice this means:
   hard-delete memory autonomously. (The server `DELETE /memory/{id}` route is untouched; only
   the *agent-facing tool* was taken away.)
 - **Erasure is performed by a human** through the operator console and the HTTP API, both of
-  which call the audited `DELETE /memory/{id}` / `POST /purge` / DSAR paths. (The `brain` CLI
-  has no erasure command — delete is a console/API action.)
+  which call the audited `DELETE /memory/{id}` / `POST /purge` / DSAR paths. (The `brain` CLI's
+  only delete surface is `brain source-delete <id>`, which sweeps a whole source and tombstones
+  it; chunk-level erasure stays console/API.)
 
 So the full authority model, stated plainly:
 
@@ -298,10 +299,11 @@ a queue-clearer.
 |---|---|---|
 | `BRAIN_PROPOSAL_TTL_SECS` | 7 days | How long a proposal can sit pending. Expiry auto-rejects with an audit row. |
 | Plugin `captureMode` | `proposal` | Whether auto-capture routes through the review queue (`proposal`) or writes directly (`direct`, still screen-gated). |
-| `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` | — | Classifier banding thresholds: ≥ high → reject, ≥ low → quarantine. Flippable without restart. |
+| `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` | `0.9` / `0.7` | Classifier banding thresholds: ≥ high → reject, ≥ low → quarantine. Flippable without restart. |
 | `INJECTION_POLICY` | `quarantine` | `reject` vs `quarantine` for screen hits. |
 | PII control | read-time | Deterministic output redaction for principals without `pii:read`; no write-time placeholder vault. |
-| Per-kind retention | — | Query-time kind-default expiry; `GET /retention` sets overrides. |
+| `BRAIN_WRITE_POSTURE` | `open` | When set to `review`, six agent-facing write surfaces convert into proposals — agents propose, operators dispose. Unknown values refuse boot. |
+| Per-kind retention | — | Query-time kind-default expiry; `POST /retention` sets overrides, `GET /retention` reads them. |
 
 Changing the proposal TTL changes the *reviewability* budget. A tighter TTL forces faster
 review; a looser one gives the reviewer more time but lets stale context accumulate.

@@ -18,6 +18,7 @@
 - [The memory lifecycle](memory-lifecycle.md)
 - [Architecture](architecture.md)
 - [Connectors](connectors.md)
+- [Custom CRM connectors](connector-crm-custom.md)
 
 # API & developer
 
@@ -33,6 +34,9 @@
 - [Retrieval & recall](retrieval-and-recall.md)
 - [Knowledge graph](knowledge-graph.md)
 - [CLI reference](cli-reference.md)
+- [Metrics dictionary](metrics.md)
+- [KB deflection loop](kb-deflection.md)
+- [Engine SDK](engine-sdk.md)
 - [OpenClaw integration](openclaw-integration.md)
 - [MCP server](mcp.md)
 - [Client GUI](client-gui.md)

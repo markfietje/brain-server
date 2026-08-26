@@ -26,6 +26,12 @@ cargo fmt --check
 scripts/badges.sh --selfcheck            # version + checklist completeness guards
 ```
 
+The local gate above is not the whole CI matrix (the v1.28.29 and v1.28.31
+lessons). Before every main push, also run the CI dry-run from `AGENTS.md`:
+default-feature clippy/test, the crates + steward-harness + otel jobs, the
+`lipstyk --diff "$(git rev-parse origin/main)" --exclude-tests src client plugin`
+changed-line gate, and `cargo fmt --manifest-path client/Cargo.toml -- --check`.
+
 After the push, `scripts/release.sh` BLOCKS until the CI run for the exact
 tagged commit is green (fail-closed — the tag itself re-runs no tests, so
 that wait is the only automated bridge between "pushed main" and
@@ -39,3 +45,18 @@ from an actual `cargo test` run, so the README badge can never drift from the
 build (the 665-vs-659 drift this release fixed). Paste its output into the
 README badge block; `--selfcheck` guards the derivations + this checklist's
 own completeness.
+
+## Scripts appendix
+
+| Script | Purpose | Documented |
+|---|---|---|
+| `install-service.sh` | Build + install binaries, launchd plist, strips macOS provenance xattr. | deployment.md / AGENTS.md |
+| `release.sh` | Tag + publish; blocks on green CI for the tagged SHA. | this page / AGENTS.md |
+| `release-sign.sh` | Sign release artifacts (also signs `brain kb build` tarballs). | cli-reference.md (kb) |
+| `badges.sh` | Regenerate README badges from the real build; `--selfcheck` drift guard. | this page |
+| `sbom.sh` | SBOM generation for CRA/security docs. | cra.md |
+| `cra-kit.sh` | CRA evidentiary kit generator. | cra.md |
+| `admt-kit.sh` | ADMT transparency kit generator. | admt.md |
+| `gen-model-manifest.sh` | Emit a `BRAIN_MODEL_MANIFEST` file for local model artifacts (fail-closed boot pin). | configuration.md |
+| `sync-plugin.sh` | Rsync `plugin/` into the openclaw workspace's deployed extension (parity discipline). | plugin/README.md |
+| `publish-wiki.sh` | Publish the `wiki/` directory to the GitHub wiki. | here only |

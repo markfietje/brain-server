@@ -238,7 +238,9 @@ See [Features](./features.md) and the API reference.
 
 Erasure is **human-only and Admin-scoped**. Every delete path (DSAR subject
 purge, Data-panel purge, quarantine delete) writes a tombstone + a SHA-256 audit
-row; there is no agent-callable delete and the `brain` CLI has no erase command.
+row, and there is no agent-callable delete. Chunk-level erasure is a console /
+HTTP-API action; the CLI's only delete surface is `brain source-delete <id>`,
+which sweeps a whole source and tombstones it — it is not a per-memory eraser.
 Follow the documented procedure in [Human in the loop §7](./human-in-the-loop.md#7-the-erasure-procedure).
 
 ---
@@ -279,10 +281,11 @@ context fills". Consumers derive context on demand instead:
   question. Field-budgeted (delta drops oldest-first; anchor and question
   never drop) with a `truncated` marker. One counted field ≈ one token — an
   approximation, documented, not guessed.
-- **Checkpoint cadence** — the engine emits checkpoints at fixed, replayable
-  boundaries: every AskHuman pause, every phase transition (`Advance`), every
-  N events (`BRAIN_CHECKPOINT_EVERY`, default 25, ceiling 100), and once at
-  completion.
+- **Lineage events are the record** — continuity reconstructs from the run's
+  lineage events themselves: rewind and the derivation API replay them to
+  rebuild any point in the run. A `workflow/checkpoint` event topic exists and
+  is what derivation anchors on when present, but automatic N-event checkpoint
+  emission is **not implemented yet**.
 - **LLM-side compaction is the consumer's contract** — brain-server never
   summarizes (zero-token rule). The consumer calls the derivation API and
   compresses the returned window on its side.

@@ -10,7 +10,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 ## B
 
 - **Bearer token** — a secret string sent in the `Authorization` header to authenticate a request. Brain Server supports opaque bearer tokens (default) and JWT/JWS.
-- **Bi-temporal** — recording both *when a fact is valid in the world* (`valid_at`/`invalid_at`) and *when it was recorded* (`observed_at`). Enables point-in-time recall.
+- **Bi-temporal** — recording both *when a fact is valid in the world* (`valid_at`/`invalid_at`) and *when the system knew it* (`observed_at`/`superseded_at`). Graph edges carry all four timestamps; `superseded_at IS NULL` marks the current belief. Enables point-in-time recall.
 - **BM25** — the classic lexical scoring function (term-frequency × inverse-document-frequency) used by SQLite's FTS5 full-text index.
 
 ## C
@@ -18,7 +18,9 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 - **Capacity envelope** — a configurable bound on docs / DB size / RSS. Writes that exceed it return HTTP 507; reads are never blocked.
 - **Chunk** — a unit of memory stored in a `knowledge` row. Text is split into chunks by a CommonMark-aware splitter (heading-boundary splits, code-fence-safe).
 - **CommonMark** — a standard, unambiguous specification of Markdown. Brain Server's chunker uses a CommonMark parser so all constructs are handled correctly.
+- **Complaint remedy matrix** — the deterministic remedy suggestions proposed on a complaint run (each citing its legal basis and the published code-of-conduct clause); applying one is always a human decision.
 - **Connector** — a supervised ingester (e.g. GitHub issues) that backfills external sources through the source/revision pipeline.
+- **Content-digest binding** — an approval must echo the SHA-256 `content_digest` of exactly the review form the operator saw (`409` on any drift), so a decision binds to the shown bytes.
 - **CSP (Content Security Policy)** — an HTTP header controlling what resources a page may load. Brain Server serves a strict CSP for the API and a relaxed one for the WASM client.
 
 ## D
@@ -31,6 +33,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 - **Embedding** — a numeric vector representing text, such that semantically similar texts are close in vector space. Brain Server's *default* profile uses *static* embeddings (`model2vec`, no transformer forward pass); the opt-in `enterprise` / `desktop` profiles use local transformer embeddings (`BGE-M3` / `gte-base-en-v1.5`).
 - **Egress** — data leaving your device/network. Brain Server has no data egress by default.
+- **Entitlement** — a memory kind for what someone is owed (warranty, plan, SLA rights); carries the longest default retention (1,825 days).
 - **Evidence** — the verbatim snippet, line span, source link, and highlight ranges attached to a retrieved chunk — what a result is *actually* based on.
 
 ## F
@@ -58,21 +61,25 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## K
 
+- **KCS article** — a Knowledge-Centered Service capture: a solved case distilled into reusable knowledge; complaint clusters rank above incident repeaters.
 - **Knowledge graph** — entities and the relationships between them, extracted from markdown links. Traversable and queryable.
 - **KNN** — k-nearest-neighbors, the vector search that finds the closest embeddings to a query.
 
 ## L
 
+- **Legal hold** — an operator-set hold that suspends retention expiry and purge for affected content until explicitly released; hold paths fail closed.
 - **LexSpec** — the structured lexical query: terms, quoted phrases, exclusions (`-"..."`), and exact code paths.
 - **Loopback** — `127.0.0.1`, the local machine. Brain Server is loopback-safe by default (refuses `0.0.0.0` unless `BIND_PUBLIC=1`).
 
 ## M
 
 - **MCP** — Model Context Protocol, a standard for exposing tools to agents. Brain Server ships an `mcp` binary.
+- **Mesh** — the multi-site federation shape: regional deployments exchanging signed knowledge parcels; site-to-site routing is v3.x.
 - **Multi-domain** — running several scoped domain databases that auto-route and cross-reference on a miss.
 
 ## P
 
+- **Parcel** — a signed export/import bundle of knowledge crossing a site boundary (`POST /parcels/export|import`); every crossing is signed and human-gated.
 - **PII** — personally identifiable information. Brain Server applies deterministic read-time output redaction to PII; there is no write-time placeholder vault (v1.20.19).
 - **PRF** — pseudo-relevance feedback: deterministic query expansion that fires only when the top result appears in *both* retrieval legs within a bounded rank.
 - **Proposal** — a write-back candidate scored by the server but held in a queue until a human approves it. Nothing enters memory autonomously.
@@ -80,16 +87,18 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## Q
 
+- **Quarantine** — the injection screen's holding state: suspicious content is stored but excluded from recall and the knowledge graph until an operator releases or deletes it. Recall never reads quarantined rows.
 - **QueryDoc** — the structured query document accepted by `/recall` (query, filters, provenance flag, graph flag).
 
 ## R
 
 - **Recall** — retrieval. `POST /recall` is the primary endpoint.
 - **Reciprocal Rank Fusion (RRF)** — a deterministic, weight-free merge: `score = Σ 1/(k + rank)`, with `k = 60`.
-- **Retention** — how long data is kept. Content is kept until purged; audit rows honor `BRAIN_AUDIT_RETENTION_DAYS` if set.
+- **Retention** — how long content stays in default recall: a per-kind TTL decay policy set via `POST /retention` and `BRAIN_RETENTION_KIND_DAYS`, with defaults owned by the SDK policy table. Decayed rows leave default recall (historical `?at=` recall still finds them); audit rows honor `BRAIN_AUDIT_RETENTION_DAYS` if set.
 
 ## S
 
+- **Scoreboard** — the outcome/efficiency dashboard behind `GET /workflow/scoreboard`: FCR, resolution mix, and the goodwill ledger over closed runs.
 - **Span verification** — `POST /verify` checks whether a claim is literally supported by a chunk's text (deterministic lexical match, no LLM).
 - **Static embedding model** — a model with no transformer forward pass, just token lookup (`model2vec` / `potion-retrieval-32M`). Cheap on CPU. This is the default embedder; the opt-in neural tiers (`BGE-M3`, `gte-base-en-v1.5`) are transformer models.
 - **Supersede** — marking a new fact as replacing an old one. Atomically expires the old fact from current recall; historical recall still returns it.
@@ -103,6 +112,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## U
 
+- **UMP** — Universal Memory Protocol: the wire contract for portable memory operations, implemented by the `/ump/*` routes and the `ump.*` MCP tools.
 - **Untrusted-evidence boundary** — the OWASP LLM01:2025 pattern where every retrieved result serializes `untrusted: true`, signaling the consuming agent to treat it as untrusted evidence.
 
 ## V
@@ -113,4 +123,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 ## W
 
 - **WAL** — Write-Ahead Logging, SQLite's concurrency mode used by Brain Server (with a busy timeout so concurrent writers queue rather than fail).
+- **Workflow run** — an unbounded durable session for one governed case, recorded as queryable lineage events; rewind branches a run instead of rotating sessions.
+- **Worktype** — the post-sale work class a run routes to (troubleshoot, return, complaint, safety_recall…); each maps deterministically to an SLA priority class.
+- **Write posture** — `BRAIN_WRITE_POSTURE`: `open` writes directly; `review` converts agent-facing writes into proposals. Unknown values refuse boot.
 - **Write-back gate** — the human-in-the-loop mechanism that scores a candidate but requires approval before it becomes memory.

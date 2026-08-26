@@ -210,6 +210,15 @@ not ride the envelope.
 | GET | `/workflow/runs/{id}/steering?since=` | Drain the advisory steering outbox (Read on the run's domain) |
 | POST | `/workflow/plugins/mount` | UI-plugin mount/unmount evidence (Art 12 record-keeping): server verifies the claimed bundle SHA-256 against the boot manifest before writing the audited row (`409` on uncertified bytes) |
 
+### Frontdesk worktype intake (Frontdesk)
+
+Post-sale intake is typed: 13 intent classes route every case to a worktype,
+with policy rows (SLA envelope from the SDK `stamp_envelope` vocabulary) and an
+entitlement vocabulary (coverage windows, withdrawal rights, region checks)
+parsed from the run's state. Honest ceiling: the close-decision arbiter
+(`evaluate_close` / effort proxy) ships as pure SDK logic but is **not yet
+wired into the run-close flow** — closing remains operator-driven.
+
 ### KCS article lifecycle (Evolve)
 
 Every solved case can become knowledge; the capture generator emits HITL

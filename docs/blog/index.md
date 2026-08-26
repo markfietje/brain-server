@@ -12,7 +12,7 @@ proof map.
 - [What Mem0's own docs say about lock-in](./05-no-lock-in.md)
 - [OWASP 2026: our control matrix is the sales doc](./06-owasp-matrix.md)
 - [The honest ceiling](./07-honest-ceiling.md)
-- [From twelve products to one (a preview of Profiles)](./08-profiles-preview.md) — *forward-looking, v1.21.0*
+- [From twelve products to one (a preview of Profiles)](./08-profiles-preview.md) — *Shipped in v1.21.0 — see docs/configuration.md for the real knobs; preview kept for the record.*
 - [Agent memory for a contact center: what has to be true before you trust it](./09-contact-center-vertex.md) — *BPO / support-center buyer*
 - [DeepSeek Harness (dsh) meets Brain Server: agent memory as an MCP server](./10-dsh-deepseek-harness.md) — *dsh / agent-harness interoperability*
 - [The loop runs: what it means for an engine to ask permission](./11-the-loop-runs.md) — *v1.28 FirstLight / Anvil / Settle*

@@ -640,11 +640,12 @@ pub fn brain_recall_routing_enabled() -> bool {
 
 // ── OpenTelemetry export ─────────────────────────
 
-/// Whether OTLP trace export is live. Defaults to `false` (the exporter is
-/// feature-gated behind `--features otel`; this flag only decides whether the
-/// compiled-in exporter is *installed*). Same kill-switch pattern as
-/// [`brain_suggest_enabled`]: an operator can disable export at runtime without
-/// a rebuild via `BRAIN_OTEL_ENABLED=false`. Read at startup only.
+/// Whether OTLP trace export is live. Kill-switch semantics: on a build
+/// compiled with `--features otel`, unset means ENABLED (the exporter is
+/// installed and exports to [`otel_endpoint`]); values `0|false|no|off`
+/// disable it at runtime without a rebuild. On builds without the feature
+/// nothing is compiled in, so no export happens regardless.
+/// Read at startup only. Same kill-switch pattern as [`brain_suggest_enabled`].
 pub fn otel_enabled() -> bool {
     !matches!(
         std::env::var("BRAIN_OTEL_ENABLED")

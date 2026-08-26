@@ -1,6 +1,6 @@
 # Features
 
-Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.27.22); if a capability is described here, it exists in the current source.
+Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.28.34); if a capability is described here, it exists in the current source.
 
 ## Retrieval
 
@@ -37,7 +37,23 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Provenance ledger** (v1.20.9) — the Agent Memory Register partitions the store by `origin` (`human` / `model` / `imported`) with owner/source/kind filters and drill-down evidence, so how much of the store is model-originated is auditable at a glance.
 - **Consequential and recorded** — every approve / reject / supersede / expire is appended to the SHA-256 audit chain, making each operator decision reconstructable. (A free-text reject rationale is a client-side affordance; the server records the decision itself, not the reason.)
 - **Human-only erasure** — agents can read and propose, but *only a human can delete* memory. The `memory_forget` agent tool was removed (v1.20.25); erasure runs through the audited console / HTTP API paths (`DELETE /memory/{id}`, `POST /purge`, DSAR). The `ump.forget` tool is fence-gated by the legal-hold guard (`409 legal_hold_active` when the id is held).
-- **The governed workflow loop** (v1.28) — a real engine (`tools/steward-harness`) drives role-gated run routes through CAS state transitions, exactly-once event keys, and an AskHuman gate whose answers are digest-bound to the live pending question and prompt-injection-screened. Every engine tool-effect crosses one mediated, auditable hostcall door (v1.28.16): `exec` is argv-only behind an operator allowlist, `http` egress is deny-by-default, `events` ride the outbox only — and since v1.28.17 "Settle" the budget door fails closed before any handler runs and cooperative cancel settles exactly between steps. See the [API reference](./api.md).
+- **The governed workflow loop** (v1.28) — a real engine (`tools/steward-harness`) drives role-gated run routes through CAS state transitions, exactly-once event keys, and an AskHuman gate whose answers are digest-bound to the live pending question and prompt-injection-screened. Every engine tool-effect crosses one mediated, auditable hostcall door (v1.28.16): `exec` is argv-only behind an operator allowlist, `http` egress is deny-by-default, `events` ride the outbox only — and since v1.28.17 "Settle" the budget door fails closed before any handler runs and cooperative cancel settles exactly between steps. Everything added since "Settle" — lineage, witness, the case-room/swarm surfaces, parcels, and the Charter → Goodwill conformance arc — has its own bullets in [the section below](#the-governed-loop-since-settle-v12818). See the [API reference](./api.md).
+
+## The governed loop since "Settle" (v1.28.18+)
+
+- **Workflow outcome scoreboard + monthly calibration signing + plugin mount evidence** (v1.28.16–17) — `GET /workflow/scoreboard`, `POST /workflow/calibration/sign`, per-plugin mount evidence on the run record.
+- **Lineage events + rewind/context** (1.28.18) — outbox ancestry (`parent_id`), checkpoints become events, rewind branches instead of deleting, the I-PASS handoff packet as a real endpoint.
+- **Witness client attestation** (1.28.19) — the client posts per-plugin mount evidence with its Anchor-signed boot-manifest digest; persistent reconnecting SSE; MCP Streamable HTTP/SSE transport.
+- **Channel case rooms + Relay I-PASS handover + Mesh colleagues/delegations + Crew skills + Watchbill shifts + Beacon KB deflection feedback** (1.28.24–29) — humans speak inside a governed run; offer/accept/decline handovers; signed agent cards + agent→agent delegation; presence roster + proposal-gated skills; follow-the-sun shift rings; deflection feedback on published KB articles.
+- **Fathom deterministic context windowing** (1.28.21) — one run per case end-to-end; every consumer derives the smallest high-signal window on demand; keyset transcript windowing + resumable event stream.
+- **CRM case intake bridge** (1.28.22 "Bridges") — Zendesk / Salesforce / Genesys Cloud case bodies enter through the UMP gate as proposals and open governed `support-case` runs bound by `crm_cases`.
+- **KCS article lifecycle approve/publish/preview + `brain kb build` static public KB** (1.28.23–24) — `kcs_state` on knowledge rows, case↔article linkage, capture on close; published articles emit as a deterministic static site behind the strict public seam.
+- **Signed knowledge parcels export/import** (1.28.30) — export approved-only rows signed with the UMP operator key; import verifies before any write and lands PENDING proposals; the parcel ledger chains into the audit.
+- **Charter conformance pack** (1.28.31) — complaint ack/response clocks as policy stamps, the normative metrics dictionary, WCAG 2.2 AA CI gate.
+- **Frontdesk worktype intake substrate** (1.28.32) — 13 intent classes + worktype policy rows + entitlement vocabulary. Honest note: the close-decision arbiter (`evaluate_close`/effort_proxy) lives in the engine SDK and is NOT yet wired into run-close flows.
+- **Outreach, consent-first** (1.28.35) — hashed-subject consent registry with revocation-wins fail-closed verdicts; campaigns as HITL proposals gated per recipient before filing (consent proof rides every included recipient; zero eligible refuses loudly); approved campaigns export for CRM-side execution only — no send engine exists anywhere. Consent-gated Order-of-Care post-close follow-up; DSAR sweep erases consent rows by re-hashing the subject; ISO 10004 VoC fields on the scoreboard.
+- **Aftersales dispositions + GPSR recall mode + returnless/fraud KPIs** (1.28.33 "Returns") — deterministic disposition ranking whose candidates cite their basis, a product-safety recall mode, and scoreboard KPI counters.
+- **Complaint lifecycle ISO 10002/10003** (1.28.34 "Goodwill") — lineage-event state machine; HITL remedy matrix citing legal basis + published conduct clause; role-tier approval caps escalating exactly one level; national-body ADR packet per Reg. 2024/3228; goodwill ledger over audited remedies only.
 
 ## Anticipation & suggestions
 
@@ -46,7 +62,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 ## Source lifecycle & connectors
 
 - **Source lifecycle** — every chunk carries provenance (`source` + immutable `revision`). Connectors backfill external sources through a supervised pipeline; `POST /sources/reconcile` sweeps orphans from deleted sources; `DELETE /sources/{id}` retires a source.
-- **Connectors** (v1.24) — a profile-gated registry (`POST /connectors/register`) over a fixed vocabulary (CRM / Slack / Jira-Linear / read-only HRIS-EHR / GitHub) with a shared supervised translate+ingest pipeline. The `github` connector is the only runnable network backfill binary; the others ship in registry + translate-template form. Reconcile is never auto-sync; translated records flow through the injection screen (poisoned records quarantine, not memory).
+- **Connectors** (v1.24) — a profile-gated registry (`POST /connectors/register`) over a fixed vocabulary (CRM / Slack / Jira-Linear / read-only HRIS-EHR / GitHub) with a shared supervised translate+ingest pipeline. Two runnable network-backfill binaries ship behind features: `brain-connector-gh` (`--features connector-github`) and, since v1.28.22 "Bridges", `brain-connector-crm` (`--features connector-crm`; Zendesk / Salesforce / Genesys Cloud from one binary, `--source`-selected). The other kinds remain registry + translate-template form. Reconcile is never auto-sync; translated records flow through the injection screen (poisoned records quarantine, not memory).
 
 ## Governance, privacy & compliance
 
@@ -86,8 +102,8 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 ## Integration surface
 
 - **OpenAI-compatible embeddings** — `POST /v1/embeddings`.
-- **MCP server** — `mcp` binary exposes search/recall/ingest plus the UMP family (`ump.remember/revise/forget/feedback/recall/get/audit/capabilities`) as MCP tools.
-- **`brain` CLI** — the operator surface: status, doctor, query, explain, get, ingest-dir, reconcile, resolve, undo-resolve, check-consistency, classify, procedure, evaluate, suggest (+feedback/metrics), retention, domains (move/recompute), clients, ump, backup, restore, token, key, setup, sync, connector-status, snapshot-status, eval, bench, and more. `--json` envelope mode on data commands.
+- **MCP server** — `mcp` binary exposes search/recall/ingest plus the UMP family (`ump.remember/revise/forget/feedback/recall/get/audit/capabilities`, plus `ump.audit.verify` for live chain verification) as MCP tools.
+- **`brain` CLI** — the operator surface: status, doctor, query, explain, get, ingest-dir, reconcile, resolve, undo-resolve, check-consistency, classify, procedure, evaluate, suggest (+feedback/metrics), retention, domains (move/recompute), clients, ump, connect, workflow, kb, parcel, backup, restore, token, key, setup, sync, connector-status, snapshot-status, eval, bench, and more. `--json` envelope mode on data commands.
 - **UMP 1.0** — a full implementation of the open Universal Memory Protocol at conformance **L3** (L2 without an operator key): signed records, capability tokens, HTTP + MCP + file bindings, `GET /ump/capabilities`, `/ump/remember` / `revise` / `forget` / `feedback` / `recall` / `memory/{id}` / `subscribe` / `audit`.
 - **Client control surface** (v1.16+) — a Dioxus app (web + desktop + iOS + Android) with connection state machine, honest-batch review (A/S/R/J/K), recall decision-path viewer, DSAR certificate card, auth-failure feed, audit filters + export, live SLA clocks, role-gated console views, and an i18n-clean WCAG 2.2 AA interface.
 - **OpenClaw plugin** — `brain-server/plugin/` (TypeScript) calls `/recall` each turn via openclaw's `before_prompt_build` hook, renders recalled context inside the `UNTRUSTED_*` fence, and offers the offline-queue + token-ladder posture.

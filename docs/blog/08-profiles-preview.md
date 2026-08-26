@@ -2,6 +2,8 @@
 
 *2026. Forward-looking: describes the planned v1.21.0 "Profiles" release, not a shipped capability.*
 
+*Status: shipped in v1.21.0 — see [`docs/configuration.md`](../configuration.md) for the real knobs; this preview is kept for the record.*
+
 A memory store ships with knobs. Ours has a lot of them — access scope, PII
 mode, per-kind retention, audit level, allowed memory kinds, connectors,
 legal-hold defaults. That's the honest cost of being configurable enough for

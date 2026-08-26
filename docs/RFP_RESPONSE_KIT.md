@@ -1,6 +1,6 @@
 # RFP Response Kit — brain-server
 
-**Applies to:** brain-server 1.20.25 · **Last updated:** 2026-08-13
+**Applies to:** brain-server 1.28.34 · **Last updated:** 2026-08-26
 
 A two-to-three page map from common enterprise RFP sections to the concrete
 brain-server features that satisfy them, so a procurement response can cite
@@ -14,6 +14,10 @@ file (`COMPLIANCE.md`), threat model (`THREAT_MODEL.md`), security map
 > route is live (`curl http://127.0.0.1:8765/...`), and attach the named
 > artifact. Do not copy claims you have not verified on your own deployment —
 > the point of the kit is truthful, evidence-backed answers.
+>
+> **Freshness note (2026-08-26):** this kit predates Parcels (1.28.30) and the
+> complaint lifecycle (1.28.34) — refresh it against the current technical file
+> before any procurement reuse.
 
 ## 1. Security & Access Control
 
