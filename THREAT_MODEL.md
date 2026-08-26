@@ -94,8 +94,8 @@ model, not a substitute.
 | Threat | Attack | Mitigation | Status |
 |---|---|---|---|
 | **S**poofing | Forge audit entries | Append-only; writer is the authenticated process only | ✅ |
-| **T**ampering | Edit existing rows | Hash chain (`prev_hash` SHA-256); break is detectable on read (v1.1 M2.3) | 🚧 |
-| **R**epudiation | "The log is wrong" | Hash chain proves integrity; signed release tags prove code provenance | 🚧 |
+| **T**ampering | Edit existing rows | Keyed hash chain — HMAC-SHA256 over the full row under a per-DB epoch + head pin `(id, hash, epoch)`; break is detectable on read (v1.1 M2.3; keyed epoch shipped v1.27.31) | ✅ |
+| **R**epudiation | "The log is wrong" | Keyed chain proves integrity (`/audit/verify`); signed release tags prove code provenance (keyed epoch shipped v1.27.31) | ✅ |
 | **I**nformation disclosure | Tenant A reads tenant B's audit | Data-layer filter `WHERE tenant_id = ?` + AuthZ on `/audit` (v1.1 M2.2) | 🚧 |
 | **D**enial of service | Fill audit table | Bounded by writes; rotation policy documented | 🚧 |
 | **E**levation of privilege | Non-admin queries `/audit` | `admin:<tenant>/*` scope required (v1.2) | ✅ |
@@ -119,7 +119,7 @@ model, not a substitute.
 | **S**poofing | MITM impersonates server | TLS 1.3 at proxy; mTLS for A2A (v3.7); cert pinning for native clients | ✅/🚧 |
 | **T**ampering | Modify traffic in transit | TLS 1.3 (proxy); JWS non-repudiation for A2A payloads (v3.7) | ✅/🚧 |
 | **R**epudiation | "I didn't send that request" | `x-request-id` for tracing; JWS for A2A non-repudiation | ✅/🚧 |
-| **I**nformation disclosure | Eavesdropper reads traffic | TLS 1.3 everywhere; HSTS preload-eligible when `TLS_ENABLED=1` | ✅ |
+| **I**nformation disclosure | Eavesdropper reads traffic | TLS 1.3 terminates at the operator's reverse proxy (the server itself is loopback HTTP); HSTS is a proxy-layer header | ✅ |
 | **D**enial of service | SYN flood / slowloris | Proxy handles; per-IP rate limit; per-tenant rate limit (v2.1) | ✅/🚧 |
 | **E**levation of privilege | — | (no transport-level privilege concept) | n/a |
 
@@ -134,7 +134,7 @@ control verified by a unit/integration test (308 green).
 | Threat | Attack | v1.2 mitigation | Test |
 |---|---|---|---|
 | **Token replay** | Stolen access token reused after legitimate logout | Access tokens short-lived (≤15 min `exp`) + `(jti, iss)` denylist lookup on every authenticated request; 60s negative cache (bounded eventual consistency — see residual risk §6) | `missing_jti_rejected`, revocation tests |
-| **Algorithm confusion** | Attacker sends `alg:none`, or HS256 with the server's public key as the HMAC secret, hoping the verifier falls back to HMAC verification with the public key as the secret | `ALLOWED_ALGS` whitelist (RS256/384/512, ES256/384/512, EdDSA) checked **before** key lookup; `none`, all HS\*, all PS\* rejected unconditionally | `none_algorithm_rejected`, `hs256_rejected_even_with_matching_key`, `algorithm_whitelist_rejects_ps256` |
+| **Algorithm confusion** | Attacker sends `alg:none`, or HS256 with the server's public key as the HMAC secret, hoping the verifier falls back to HMAC verification with the public key as the secret | `ALLOWED_ALGS` whitelist (RS256/384/512, ES256/384, EdDSA) checked **before** key lookup; `none`, all HS\*, all PS\* rejected unconditionally | `none_algorithm_rejected`, `hs256_rejected_even_with_matching_key`, `algorithm_whitelist_rejects_ps256` |
 | **Cross-tenant data access** | Tenant A's token attempts to read tenant B's chunks | `tenant` claim is taken from the **signed** token (never from query string / body — OWASP Multi-Tenant Cheat Sheet); AuthZ at the data-access layer (`authorize(principal, action, team, domain)`) — handlers cannot resolve a pool they aren't authorized for; default-deny → **403, never 404** (no existence leakage — OWASP A01:2025) | AuthZ cross-tenant integration test |
 | **Key compromise** | Signing key exfiltrated from `BRAIN_JWT_KEY_DIR` | Private keys mode 0600, dir mode 0700; `brain key generate` + `prune` rotation keeps two keys live during the overlap window; revocation burns the compromised `jti` set without re-issuing unaffected tokens; future KMS (v3.7) moves keys off the filesystem entirely | key rotation tests, `revoke` tests |
 | **Refresh token theft** | Attacker steals a refresh token and races the legitimate user to `/auth/refresh` | Refresh-chain reuse detection: the chain id is derived from `(iss, sub)`; presenting a stale refresh token calls `revoke_chain` and **burns the whole family** (OWASP pattern). The legitimate user's next refresh returns `refresh_reuse_detected` (403) | refresh-chain reuse test |

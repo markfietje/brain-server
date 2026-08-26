@@ -45,7 +45,7 @@ approval gate**, and **no provenance on retrieval**.
 |---|---|---|
 | Plant | Every candidate memory is scored but **not** written (proposal). Untrusted content is tagged `untrusted: true`. | `POST /ingest/proposal` · OWASP LLM01:2025 boundary |
 | Write | **Human-in-the-loop.** A proposal becomes memory only after `approve`. Nothing is auto-promoted. | `POST /proposals/{id}/approve` |
-| Hide | **Append-only SHA-256 audit chain.** Every ingest, approve, reconcile, purge is a hash-linked row. No silent mutation exists. | `src/audit.rs` · `GET /audit/verify` |
+| Hide | **Append-only SHA-256 audit chain.** Every ingest, approve, reconcile, purge is a hash-linked row. No silent mutation exists. | `src/audit/mod.rs` · `GET /audit/verify` |
 | Conflict | A planted fact conflicting with an existing one is surfaced via `contradicts`/`supersedes` evidence links and an **unresolved-contradiction check** — it cannot silently overwrite. | `POST /consolidate/propose` · `brain check-consistency` |
 | Provenance | Every recall hit carries `source`, `assertion_kind`, `confidence`, and an evidence span. Retrieval can state **where a memory came from**. | `GET /recall` · `GET /get/{id}` |
 | Undo | An accepted-but-wrong memory is **reversible** — supersession undo + DSAR purge with a chain-verifiable certificate. | `POST /consolidate/undo` · `POST /dsar` |
@@ -53,6 +53,8 @@ approval gate**, and **no provenance on retrieval**.
 ## Operator checklist
 
 - Run with a write-back gate: proposals auto-pending, approval human-owned.
+- Approval must carry the displayed `content_digest` (`?digest=` on the
+  approve call) so the decision binds to the exact bytes reviewed.
 - Treat every pending proposal as a *judgment task*, not a queue to clear: evaluate the
   scoring breakdown, sourcing prompt, screen verdict, and raw evidence — see
   [**Human in the loop**](./human-in-the-loop.md) for the decision procedure and the

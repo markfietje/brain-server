@@ -1,6 +1,6 @@
 # COMPLIANCE.md — Compliance Posture & Technical File
 
-**Version:** 1.28.28 "Channel" · **Last updated:** 2026-08-25
+**Version:** 1.28.34 "Goodwill" · **Last updated:** 2026-08-26
 
 This is the buyer-facing technical file: what brain-server IS, what it logs,
 how it erases, and how it maps to the frameworks procurement asks about. It is
@@ -63,8 +63,12 @@ paths are explicit client calls; nothing is inferred or scraped.
 ## 3. Logging Specification (EU AI Act Art 12 / Art 26(6) posture)
 
 The audit is an append-only, tamper-evident hash chain (`audit_events`,
-v1.1). Every row is SHA-256-chained to its predecessor (`prev_hash` over
-`ts|kind|actor|target_hash|prev`), verified by `/audit/verify` and reported as
+v1.1). Since v1.27.31 each link is a **keyed HMAC-SHA256 over the full row**
+(id, ts, kind, actor, target_hash, prev) under a **per-DB epoch** stamped in
+`schema_meta` (`hmac256`), with a **head pin** `(id, hash, epoch)`; the key
+resolves from `BRAIN_AUDIT_CHAIN_KEY` / `BRAIN_AUDIT_CHAIN_KEY_FILE`. Rows
+written before the epoch system existed verify as **legacy** SHA-256 chains —
+`/audit/verify` checks each DB under its own epoch and reports
 `brain_audit_chain_ok` in `/metrics`.
 
 | Event kind | Recorded | Payload |
@@ -175,7 +179,7 @@ explicit operator action.
 | Memory injection / prompt poisoning | v1.14 proposal gate (`POST /ingest/proposal` → human approval); quarantine + flagged-row exclusion (v0.9.7) |
 | Data leakage across tenants | JWT AuthN (v1.2) + per-record `access_scope` deny-by-default filter (v1.14) + per-domain pools (v1.0) |
 | Unwarranted erasure | DSAR is Admin-only; purge is explicit + tombstoned + audited; `/purge` requires explicit ids/owner |
-| Tampered audit | SHA-256 hash chain + `/audit/verify` + `/metrics` chain-ok gauge + DSAR certificates anchored to the chain |
+| Tampered audit | Keyed HMAC-SHA256 epoch chain (v1.27.31) + `/audit/verify` + `/metrics` chain-ok gauge + DSAR certificates anchored to the chain |
 | Unauthenticated access | Bearer token (opaque) or JWT/JWS + OIDC discovery (v1.2); loopback-first defaults |
 | PII at rest | Not encrypted at rest — documented posture: full-disk encryption (LUKS/FileVault) is the operator's layer; PII control is deterministic read-time output redaction, no write-time placeholder vault (v1.20.19) |
 | Exfiltration | No outbound HTTP by default; the only outbound path is the opt-in Art 19 webhook |
@@ -331,7 +335,8 @@ clause rows below are the compliance-file anchor.
 |---|---|
 | **ISO 18295-1** process/performance clauses | governed diagnostic loop with per-step evidence (`workflow_runs`/`workflow_steps`), the Order-of-Care doctrine (docs/CONTACT_CENTER_STANDARDS.md), complaints as a first-class case class with their own acknowledgment/response clocks |
 | **ISO 18295-1** people clauses — competence, workload visibility | presence + skills registry (`/ops/crew`, `/ops/skills`); workload is **measured visibility, never enforcement** — the tool makes load observable, the centre manages its people. This ceiling is deliberate: no automated enforcement of workload rules ships in any planned release |
-| **ISO 10002:2018** complaint handling | complaint lifecycle rides existing machinery: distinct `Complaint` intake class, acknowledgment deadline ≤ response deadline by policy envelope, escalation-to-dispute as an audited `handover/dispute` handover; the complaints register IS the hash-chained audit chain — zero new tables |
+| **ISO 10002:2018** complaint handling | **Shipped:** distinct `Complaint` intake class remains first-class — its own acknowledgment deadline ≤ response deadline by policy envelope, escalation-to-dispute as an audited `handover/dispute` handover; the complaints register IS the hash-chained audit chain — zero new tables. Since v1.28.34 ("Goodwill") the **full ISO 10002 lifecycle** (acknowledge → investigate → remedy → close) is a state machine recorded as workflow lineage events (`/workflow/runs/{id}/complaint/lifecycle`), so every stage change is auditable evidence |
+| **ISO 10002/10003** remedy + dispute fairness (v1.28.34) | The remedy matrix ships as HITL proposals citing the legal basis + the published code-of-conduct clause (contradictions are flagged, never silently blocked); approval caps are a deterministic role-tier table — an amount over cap escalates exactly one level with the packet attached; a goodwill ledger on the scoreboard aggregates ONLY audited remedies; the ADR packet endpoint (`/workflow/runs/{id}/complaint/adr-packet`) targets the NATIONAL ADR body per Reg. 2024/3228 (the EU ODR platform is repealed — do not reference it) |
 | **COPC R8.0** QA + calibration discipline | 100% justified scoring, gold calibration, κ gate, weekly machine report + monthly human sign-off (`/workflow/scoreboard`, calibration records on the audit chain) |
 | **COPC R8.0** service-level management | P1–P4 SLA envelopes at intake, SLA-ranked handover board, WFM interop boundary (`GET/POST /ops/shifts`, `GET /ops/skills`) — interop, not a forecasting engine |
 | **KCS v6** | double-loop measures on the scoreboard (linkage, SIR, freshness), capture-at-close drafts, public KB feedback loop |
@@ -485,7 +490,7 @@ provably isolated to it, and is built on a strict-mode masking layer for PHI.
 | HIPAA requirement | brain-server evidence (v1.22) |
 |---|---|
 | Access controls (§164.312(a)(1)) | JWT/JWS + OIDC/JWKS + opaque bearer; per-route AuthZ matrix (handler-entry gates, test-pinned); record-level `access_scope` (v1.14) is the min-necessary filter |
-| Audit controls (§164.312(b)) | Append-only SHA-256 hash-chained audit (§3) of every ingest/approve/erase; read-events via `BRAIN_AUDIT_READ_EVENTS`; `/audit/verify` chain-ok |
+| Audit controls (§164.312(b)) | Append-only keyed HMAC-SHA256 hash-chained audit (§3; keyed epoch since v1.27.31) of every ingest/approve/erase; read-events via `BRAIN_AUDIT_READ_EVENTS`; `/audit/verify` chain-ok |
 | Integrity (§164.312(c)(1)) | Supersede-not-delete + per-row content hash + UMP §2.8 signature verify-on-read (§9) |
 | Transmission security (§164.312(e)(1)) | Loopback-first (data physically never leaves the host); TLS is the operator's reverse-proxy layer |
 | Minimum necessary (§164.502(b)) | `access_scope` + PII read-path redaction (`redact_content` for non-admin); `GET /proposals` review before any write promotes |
@@ -501,7 +506,7 @@ known, when, and who changed it* without loss or silent alteration.
 
 | SOX control theme | brain-server evidence |
 |---|---|
-| Immutable audit trail | Append-only SHA-256 hash-chained audit (§3); a tampered chain fails `/audit/verify` |
+| Immutable audit trail | Append-only keyed HMAC-SHA256 hash-chained audit (§3; keyed epoch since v1.27.31); a tampered chain fails `/audit/verify` |
 | No silent alteration | Supersede-not-delete: a revised record becomes a new revision and the old one is retired (`valid_to`), never overwritten |
 | Records preservation | Retention classes (v1.21) + `GET /retention/report` (v1.22) prove the schedule; legal hold freezes records against erasure during an investigation |
 | Erasure refusal (litigation hold) | `/purge` + `/dsar` refuse a held id with `409 legal_hold_active` + the hold reasons; release is explicit (`POST /legal-hold/{id}/release`), never automatic |

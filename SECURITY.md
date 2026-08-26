@@ -527,8 +527,10 @@ Cloudflare). The brain-server Rust binary speaks HTTP on loopback only.
 - TLS 1.3 minimum (`--tls-min-v1.3` on Caddy/nginx).
 - Modern cipher suite only (Mozilla "modern" compatibility list).
 - OCSP stapling.
-- HSTS header (`max-age=63072000; includeSubDomains; preload`) when
-  `TLS_ENABLED=1`.
+- HSTS header (`max-age=63072000; includeSubDomains; preload`) at the edge.
+  brain-server has no TLS knob — TLS terminates at the reverse proxy / SSO
+  edge; the server is loopback by default and refuses `0.0.0.0` unless
+  `BIND_PUBLIC=1`.
 - Per-IP rate limit at the edge.
 - Certificate rotation (Let's Encrypt / ACME on Caddy is fine).
 - mTLS for service-to-service when A2A lands (v3.7) — client cert signed by
@@ -652,7 +654,8 @@ are operations work, not engineering.
       IP allowlist if the server is reachable beyond loopback (public keys,
       but not unlimited scrape traffic).
 - [ ] Set `CORS_ORIGINS` to exact production origins (no wildcards).
-- [ ] Terminate TLS at reverse proxy; set `TLS_ENABLED=1` for HSTS.
+- [ ] Terminate TLS at the reverse proxy / SSO edge. brain-server has no TLS
+      knob (loopback default, `0.0.0.0` refused unless `BIND_PUBLIC=1`).
 - [ ] Configure proxy: TLS 1.3 min, modern cipher suite, OCSP stapling.
 - [ ] Configure proxy: per-IP rate limit (defense against unauthenticated floods).
 - [ ] Enable `BRAIN_MULTI_DB=true` for multi-tenant isolation (file-per-tenant).

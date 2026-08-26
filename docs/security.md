@@ -41,8 +41,9 @@ brain key list        # show loaded keys
 brain key prune       # drop expired keys from JWKS
 ```
 
-- **Algorithms**: RS256/ES256/EdDSA only. HS256 and `none` are rejected
-  unconditionally (algorithm-confusion defense).
+- **Algorithms**: RS256/RS384/RS512, ES256/ES384, EdDSA only (the `ALLOWED_ALGS`
+  whitelist, `src/auth/jwt.rs`; jsonwebtoken v10 exposes no ES512). HS\*, PS\*,
+  and `none` are rejected unconditionally (algorithm-confusion defense).
 - **Claims**: `iss`, `aud`, `exp`, `nbf`, `sub`, `jti` all validated.
 - **Revocation**: `(jti, iss)` denylist; refresh-chain reuse detection burns the
   whole family.
@@ -64,9 +65,16 @@ what it may. Capability/scope denials return `403`; resource-visibility paths
 
 ## Data protections
 
-- **Append-only audit log** — a SHA-256 hash chain. Each row links to its
-  predecessor; `/audit/verify` proves no row was modified or removed. Read events
-  are opt-in (default on in JWT mode, off in loopback).
+- **Append-only audit log** — a keyed hash chain: since v1.27.31 each link is an
+  HMAC-SHA256 over the full row under a per-DB epoch (`hmac256`), with the chain
+  head pinned as `(id, hash, epoch)` and the key resolved from
+  `BRAIN_AUDIT_CHAIN_KEY` / `BRAIN_AUDIT_CHAIN_KEY_FILE`. Rows from before the
+  epoch system verify as legacy SHA-256 chains. `/audit/verify` proves no row was
+  modified or removed. Read events are opt-in (default on in JWT mode, off in
+  loopback).
+- **Token lifecycle routes** — `POST /auth/refresh`, `/auth/logout`, and
+  `/auth/revoke` cover refresh rotation, logout denylisting, and operator jti
+  revocation (`src/main.rs`).
 - **Prompt-injection quarantine** — suspicious input is stored but excluded from
   retrieval until reviewed (deterministic structural control, not a classifier).
 - **PII** — deterministic read-time output redaction masks email/phone/card for
@@ -111,7 +119,8 @@ what it may. Capability/scope denials return `403`; resource-visibility paths
 - No **agent-callable erasure**: an agent can read memory and propose writes, but cannot
   delete it. The `memory_forget` agent tool was removed (v1.20.25); erasure is human-only via
   the operator console and the HTTP API (`DELETE /memory/{id}`, `POST /purge`, DSAR — the
-  `brain` CLI has no erasure command). The
+  CLI's only delete surface is `brain source-delete`, which sweeps and tombstones a whole
+  source). The
   full authority split is in [**Human in the loop**](./human-in-the-loop.md).
 
 ---
@@ -120,10 +129,9 @@ what it may. Capability/scope denials return `403`; resource-visibility paths
 
 | Line | Status |
 |---|---|
-| Current minor (`1.27.x`) | Supported — receives fixes |
-| Previous minor | Supported |
-| `0.9.x` / `1.0.x` | Maintained for back-compat / security fixes |
-| < 0.9 | Unsupported |
+| Current minor (`1.28.x`) | Supported — receives fixes |
+| Previous minor (`1.27.x`) | Supported — security fixes |
+| < 1.27 | Unsupported |
 
 Disclosure endpoint: `/.well-known/security.txt` (RFC 9116). To report a
 vulnerability, use the GitHub Security Advisories tab. **Do not file public

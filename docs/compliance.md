@@ -47,10 +47,13 @@ are explicit client calls; nothing is inferred or scraped.
 
 ## Logging (EU AI Act Art 12 / Art 26(6) posture)
 
-The audit is an append-only, tamper-evident SHA-256 hash chain. Every row links to
-its predecessor; `/audit/verify` proves integrity; `/metrics` reports
-`brain_audit_chain_ok`. Retention is configurable via `BRAIN_AUDIT_RETENTION_DAYS`
-(deployers: ≥180 days per AI Act Art 26(6) guidance).
+The audit is an append-only, tamper-evident hash chain. Since v1.27.31 each link
+is a keyed HMAC-SHA256 over the full row under a per-DB epoch (`hmac256`, head
+pin `(id, hash, epoch)`, key via `BRAIN_AUDIT_CHAIN_KEY`/`BRAIN_AUDIT_CHAIN_KEY_FILE`);
+rows from before that release verify as legacy SHA-256 chains. `/audit/verify`
+proves integrity; `/metrics` reports `brain_audit_chain_ok`. Retention is
+configurable via `BRAIN_AUDIT_RETENTION_DAYS` (deployers: ≥180 days per AI Act
+Art 26(6) guidance).
 
 | Event class | Recorded |
 |---|---|
@@ -74,6 +77,18 @@ its predecessor; `/audit/verify` proves integrity; `/metrics` reports
   console or the HTTP API, never an agent call — the `memory_forget` agent tool was removed
   (v1.20.25). This keeps the *irreversible* GDPR Art 17 erasure act under a person's hand and
   audited on the chain, rather than delegable to the LLM.
+
+---
+
+## Governed act surfaces (shipped)
+
+The regulated-workflow acts procurement asks about each have a live surface:
+Art 30 records of processing (`/art30`), the RoPA register (`/ropa`), a breach
+ledger (`/breach*`), cross-border transfer assessments (`/transfers/{id}/tia`
+and `/transfers/{id}/dpa`), re-fetchable DSAR deletion certificates
+(`/dsar/{id}/certificate`), and the ISO 10002 complaint lifecycle
+(`/workflow/runs/{id}/complaint/*`). The row-by-row depth for each lives in
+[COMPLIANCE.md](https://github.com/markfietje/brain-server/blob/main/COMPLIANCE.md).
 
 ---
 
