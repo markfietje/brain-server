@@ -102,6 +102,10 @@ scoreboard.
   emitted text passes `sanitize_read`; OptPrincipal everywhere.
 - Scoreboard: three additive VoC fields + parity-test extension;
   docs/metrics.md normative.
+- Install: `scripts/install-service.sh` builds + installs
+  `brain-connector-crm` best-effort (the same optional-bin loop as
+  `brain-connector-gh`) — the Bridges cron recipes no longer require a
+  manual feature build; docs/deployment.md states the real posture.
 - Schema additive at **1.28.35**: the `consent_registry` table (UNIQUE
   domain × subject_hash × channel × purpose); schema-contract test extended
   (table + column set + version pin).
@@ -2896,8 +2900,7 @@ None.
   `targets.retain(can_read_domain)` on recall federation + `traverse_graph`
   (explicit forced domains stay loudly 403); `graph_domain_scope` +
   `entity_relations`/`relations_for`/traverse `?domain` clauses in shim mode.
-- **M2 (F-07) — per-IP rate limiting.** `into_make_service_with_connect_info
-  ::<SocketAddr>`; source-pin test that the wiring survives; bounded
+- **M2 (F-07) — per-IP rate limiting.** `into_make_service_with_connect_info::<SocketAddr>`; source-pin test that the wiring survives; bounded
   `RateLimiter` key set + eviction tests.
 - **M3 — fail-closed identity.** M3.1/F-26 `auth::TokenRead`
   (NotConfigured|Active|ReadFailed) + configured-but-empty denies; M3.2/F-27
@@ -7685,7 +7688,7 @@ client or API-contract break.
 - **Session lifecycle** — expired access tokens are silently refreshed once on a 401 and proactively within 60 seconds of expiry; no infinite retry loops.
 
 **Improvements**
-- The top bar shows the acting identity from the token ("acting as <subject>" vs "loopback") instead of a hardcoded placeholder.
+- The top bar shows the acting identity from the token ("acting as `<subject>`" vs "loopback") instead of a hardcoded placeholder.
 - The connect screen accepts an access + refresh token pair, pasteable from the CLI or an identity provider.
 - Clearer auth errors: a reused refresh token reports "session revoked" with a reconnect path instead of a generic failure.
 ### Engineering record
