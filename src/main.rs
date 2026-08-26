@@ -6320,6 +6320,10 @@ async fn main_inner() -> Result<()> {
             "/ops/crew/config",
             post(handlers::crew::post_ops_crew_config),
         )
+        // Workload visibility: lineage-only
+        // reads; fatigue alerts the scheduling human, never reassigns.
+        .route("/ops/workload", get(handlers::workload::get_ops_workload))
+        .route("/ops/coverage", get(handlers::workload::get_ops_coverage))
         .route("/audit/verify", get(verify_audit_chain))
         .route("/metrics", get(metrics))
         // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
@@ -12050,6 +12054,9 @@ Final paragraph after the rule.";
             "/ops/crew",
             "/ops/skills",
             "/ops/crew/config",
+            // Workload + competence visibility (the Handshake milestone).
+            "/ops/workload",
+            "/ops/coverage",
             // v1.28.27 "Relay": the one-click handover.
             "/workflow/runs/{id}/handover/offer",
             "/workflow/runs/{id}/handover/{offer_id}/accept",
@@ -13349,6 +13356,11 @@ Final paragraph after the rule.";
             ("/ops/crew", "Read"),
             ("/ops/skills", "Write"),
             ("/ops/crew/config", "Admin"),
+            // Workload + competence visibility: pure
+            // lineage reads over people-shaped aggregates (no case content) —
+            // Read on the domain, same posture as the roster.
+            ("/ops/workload", "Read"),
+            ("/ops/coverage", "Read"),
             // Relay: the offer/accept/decline are Writes on the run's domain
             // (accept performs the owner CAS); the handover-due board is a
             // Read over the ring.
@@ -13452,6 +13464,7 @@ Final paragraph after the rule.";
                     "shifts" => include_str!("handlers/shifts.rs"),
                     "relay" => include_str!("handlers/relay.rs"),
                     "crew" => include_str!("handlers/crew.rs"),
+                    "workload" => include_str!("handlers/workload.rs"),
                     "channel" => include_str!("handlers/channel.rs"),
                     "mesh" => include_str!("handlers/mesh.rs"),
                     "parcels" => include_str!("handlers/parcels.rs"),

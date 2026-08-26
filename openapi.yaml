@@ -3930,7 +3930,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [schema_version]
                 properties:
+                  schema_version:
+                    type: string
+                    description: >
+                      The WFM interchange schema version (`wfm/1`).
+                      Additive-only change policy; see docs/wfm-seam.md.
                   now: { type: integer, format: int64 }
                   domain: { type: string }
                   queue_scope_site:
@@ -4051,7 +4057,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [schema_version]
                 properties:
+                  schema_version:
+                    type: string
+                    description: >
+                      The WFM interchange schema version (`wfm/1`).
+                      Additive-only change policy; see docs/wfm-seam.md.
                   domain: { type: string }
                   skills:
                     type: array
@@ -4096,6 +4108,107 @@ paths:
                   proposal_id: { type: integer }
                   kind: { type: string }
                   status: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /ops/workload:
+    get:
+      summary: Per-principal workload + fatigue signals (Handshake, G7)
+      description: >
+        Workload visibility computed from lineage ONLY: concurrent open
+        envelopes, pending outbound handover burden, accepted transfers-in on
+        open runs, re-ask load (`case/reask` events attributed through the
+        run), and the confirm-gate backlog. Fatigue signals (consecutive-
+        shift and open-load patterns from the shift tables) alert the
+        scheduling HUMAN — nothing here ever reassigns work. Read-only by
+        construction; no case content is emitted. Requires Read on the
+        domain.
+      operationId: opsWorkload
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+        - name: now
+          in: query
+          description: Evaluation instant (epoch seconds); defaults to server time.
+          schema: { type: integer, format: int64 }
+      responses:
+        "200":
+          description: The workload view plus fatigue signals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schema_version]
+                properties:
+                  schema_version: { type: string }
+                  now: { type: integer, format: int64 }
+                  domain: { type: string }
+                  workload:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        principal: { type: string }
+                        open_envelopes: { type: integer }
+                        handover_burden_outbound: { type: integer }
+                        transfers_in_open: { type: integer }
+                        reask_load: { type: integer }
+                        gate_backlog:
+                          type: integer
+                          description: >
+                            Pending proposals owned by the principal that this
+                            domain's lineage already surfaced (proposals carry
+                            no domain column; no cross-tenant inference).
+                  fatigue_signals:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        principal: { type: string }
+                        consecutive_shifts: { type: integer }
+                        open_envelopes: { type: integer }
+                        reason: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /ops/coverage:
+    get:
+      summary: Competence coverage — skills vs worktype demand queue (Handshake, G7)
+      description: >
+        One row per demanded worktype: required tags (the routing tags), the
+        principals whose HITL-maintained skills cover EVERY tag, the open
+        demand depth (active runs of that kind), and whether the board is
+        covered. Deterministic read over the same routing data the colleague
+        board uses. Requires Read on the domain.
+      operationId: opsCoverage
+      parameters:
+        - name: domain
+          in: query
+          schema: { type: string, default: global }
+      responses:
+        "200":
+          description: The coverage view
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schema_version]
+                properties:
+                  schema_version: { type: string }
+                  domain: { type: string }
+                  coverage:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        worktype: { type: string }
+                        required_tags:
+                          type: array
+                          items: { type: string }
+                        qualified_principals:
+                          type: array
+                          items: { type: string }
+                        open_demand: { type: integer }
+                        covered: { type: boolean }
         "400":
           $ref: "#/components/responses/BadRequest"
   /ops/crew/config:

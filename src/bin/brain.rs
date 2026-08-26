@@ -17,6 +17,9 @@
 #[path = "../bin_common/http.rs"]
 mod http;
 
+#[path = "../bin_common/wfm_import.rs"]
+mod wfm_import;
+
 use http::{delete, get, post, url_encode};
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -348,6 +351,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         json: false,
         run: cmd_parcel,
         usage: "brain parcel export --domain <d> [--since <ts>] --out <file>\n       brain parcel import --file <file> --domain <d> [--expected-signer <did>]\n       brain parcel ledger [--domain <d>]",
+    },
+    Subcommand {
+        name: "wfm-import",
+        json: false,
+        run: cmd_wfm_import,
+        usage: "brain wfm-import <file.csv|file.json> [--domain D] [--dry-run]\n                 (shift rows POST to /ops/shifts; skill rows become\n                  crew_skills_update proposals — never direct writes)",
     },
 ];
 
@@ -5054,4 +5063,125 @@ fn cmd_parcel_ledger(args: &[String]) -> Result<(), String> {
     }
     println!("{}", resp.body);
     Ok(())
+}
+
+/// `brain wfm-import <file.csv|file.json> [--domain D] [--dry-run]`:
+/// the generic WFM import adapter (docs/wfm-seam.md). Format detection is
+/// content-based — shifts rows POST to `/ops/shifts` with the server's own
+/// validation and audit; skill rows become `crew_skills_update` proposals
+/// (HITL), never direct registry writes.
+fn cmd_wfm_import(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    let file = positionals
+        .first()
+        .ok_or("usage: brain wfm-import <file.csv|file.json> [--domain D] [--dry-run]")?;
+    let dry_run = flags.contains_key("dry-run");
+    let raw = std::fs::read_to_string(file).map_err(|e| format!("read {file}: {e}"))?;
+
+    // Content-based format detection: try shifts first, fall back to skills.
+    // A file that parses as neither refuses loudly with both errors.
+    let plan = match wfm_import::parse_shifts_csv(&raw)
+        .or_else(|_| wfm_import::parse_shifts_json(&raw))
+    {
+        Ok(rows) => WfmPlan::Shifts(rows),
+        Err(shift_err) => {
+            let skill_parse = if file.ends_with(".json") {
+                wfm_import::parse_skills_json(&raw)
+            } else {
+                wfm_import::parse_skills_csv(&raw).or_else(|_| wfm_import::parse_skills_json(&raw))
+            };
+            match skill_parse {
+                Ok(rows) if !rows.is_empty() => WfmPlan::Skills(rows),
+                _ => {
+                    return Err(format!(
+                        "{file} parsed as neither shifts nor skills ({shift_err})"
+                    ));
+                }
+            }
+        }
+    };
+
+    let domain_override = flags.get("domain").and_then(|o| o.clone());
+    let mut posted = 0usize;
+    let mut failed = 0usize;
+    match plan {
+        WfmPlan::Shifts(rows) => {
+            for row in rows {
+                let domain = domain_override.clone().unwrap_or(row.domain.clone());
+                if domain.is_empty() {
+                    return Err(format!(
+                        "shift row for site '{}' has no domain and no --domain override",
+                        row.site
+                    ));
+                }
+                let body = serde_json::json!({
+                    "domain": domain,
+                    "site": row.site,
+                    "tz": row.tz,
+                    "start_epoch": row.start_epoch,
+                    "end_epoch": row.end_epoch,
+                    "overlap_minutes": row.overlap_minutes,
+                    "roster": row.roster,
+                });
+                if !import_post("/ops/shifts", &body, dry_run, &mut posted, &mut failed)? {
+                    continue;
+                }
+            }
+        }
+        WfmPlan::Skills(rows) => {
+            for row in rows {
+                let body = serde_json::json!({
+                    "domain": domain_override.clone().unwrap_or_else(|| "global".into()),
+                    "principal": row.principal,
+                    "add": [row.skill],
+                });
+                if !import_post("/ops/skills", &body, dry_run, &mut posted, &mut failed)? {
+                    continue;
+                }
+            }
+        }
+    }
+    let verb = if dry_run { "would import" } else { "imported" };
+    println!(
+        "{verb} {posted} row(s) against seam {}; {failed} refused by the server",
+        wfm_import::WFM_SCHEMA_VERSION
+    );
+    Ok(())
+}
+
+enum WfmPlan {
+    Shifts(Vec<wfm_import::ImportedShift>),
+    Skills(Vec<wfm_import::ImportedSkill>),
+}
+
+/// One import POST. Returns false when the server refused the row (the run
+/// continues; the summary reports the refusals). Dry-run prints and counts.
+fn import_post(
+    path: &str,
+    body: &serde_json::Value,
+    dry_run: bool,
+    posted: &mut usize,
+    failed: &mut usize,
+) -> Result<bool, String> {
+    if dry_run {
+        println!("POST {path} {}", body);
+        *posted += 1;
+        return Ok(true);
+    }
+    let resp = post(
+        &base_url(),
+        path,
+        &[],
+        "application/json",
+        &body.to_string(),
+        auth_token().as_deref(),
+    )?;
+    if resp.status == 200 || resp.status == 201 {
+        *posted += 1;
+        Ok(true)
+    } else {
+        *failed += 1;
+        eprintln!("refused {}: {}", path, truncate(&resp.body, 200));
+        Ok(false)
+    }
 }

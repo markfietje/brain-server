@@ -53,6 +53,7 @@ pub mod webhooks;
 pub mod well_known;
 pub mod workflow;
 pub mod workflow_lineage;
+pub mod workload;
 
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
-use crate::workflow::shifts::{self, MAX_OVERLAP_MINUTES, RingView, Shift, ShiftError};
+use crate::workflow::shifts::{self, MAX_OVERLAP_MINUTES, ShiftError};
+use crate::workflow::wfm;
 
 /// Read cap mirrors the storage-layer bound (`shifts::MAX_SHIFTS_RETURNED`);
 /// re-declared here only in the doc contract.
@@ -39,30 +40,6 @@ fn shift_err(e: ShiftError) -> HandlerError {
         ShiftError::InvalidRoster(m) => HandlerError::bad_request("roster_invalid", m),
         ShiftError::Database(m) => HandlerError::internal(m),
     }
-}
-
-fn shift_json(s: &Shift) -> serde_json::Value {
-    serde_json::json!({
-        "id": s.id,
-        "domain": s.domain,
-        "site": s.site,
-        "tz": s.tz,
-        "start_epoch": s.start_epoch,
-        "end_epoch": s.end_epoch,
-        "overlap_minutes": s.overlap_minutes,
-        "roster": s.roster,
-    })
-}
-
-fn view_json(v: &RingView) -> serde_json::Value {
-    serde_json::json!({
-        "now": v.now,
-        "domain": v.domain,
-        "queue_scope_site": v.queue_scope_site,
-        "incoming_site": v.incoming_site,
-        "in_overlap": v.in_overlap,
-        "next_boundary_epoch": v.next_boundary_epoch,
-    })
 }
 
 /// `GET /ops/shifts?domain=&now=` — the ring view plus every stored shift.
@@ -88,7 +65,7 @@ pub async fn get_ops_shifts(
     };
     super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    let (rows, view) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
+    let (all, view) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
@@ -98,10 +75,7 @@ pub async fn get_ops_shifts(
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))??;
-    let payload: Vec<serde_json::Value> = rows.iter().map(shift_json).collect();
-    let mut out = view_json(&view);
-    out["shifts"] = serde_json::Value::Array(payload);
-    Ok(Json(out))
+    Ok(Json(wfm::shifts_response(&view, &all)))
 }
 
 /// `POST /ops/shifts` — declare a shift window (Admin-conservative Write;

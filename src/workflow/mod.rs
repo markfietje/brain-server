@@ -46,6 +46,8 @@ pub(crate) mod session;
 pub(crate) mod shifts;
 pub(crate) mod state;
 pub(crate) mod tx;
+pub(crate) mod wfm;
+pub(crate) mod workload;
 
 use crate::audit::{AuditKind, AuditStatus, record_tenant};
 use rusqlite::{Connection, params};

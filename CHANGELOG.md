@@ -19,6 +19,72 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.40] — 2026-08-26 — "Handshake": the ops interop seam, people made visible
+
+G5+G7 of the Conformance Line closed. The WFM boundary becomes a first-party,
+versioned contract (`wfm/1`, additive-only, two-way pinned against its doc)
+with generic CSV/JSON import adapters; workload visibility completes the
+people picture with lineage-only per-principal views, a fatigue signal that
+alerts the scheduling human and never reassigns work, and competence coverage
+joining the skills registry to the worktype demand queue. Schema unchanged;
+two additive read-only routes.
+
+### Release notes
+
+**Improvements**
+- **A stable WFM seam (G5):** `GET /ops/shifts` and `GET /ops/skills` now
+  stamp every response with `schema_version: "wfm/1"` under a written
+  additive-only change policy (`docs/wfm-seam.md` carries the field
+  declaration and change log). A new `brain wfm-import <file.csv|file.json>`
+  adapter imports shift rows through the server's own validation + audit and
+  files skill rows as HITL proposals — never direct registry writes.
+  Vendor-specific Verint/NICE connectors remain later work; these generic
+  adapters are the documented 100% any WFM can map to today.
+- **Workload visibility (G7):** `GET /ops/workload` computes per-principal
+  burden from lineage only — concurrent open envelopes, pending outbound
+  handover burden, accepted transfers-in on open runs, re-ask load, confirm-
+  gate backlog — plus fatigue signals (consecutive-shift and open-load
+  patterns) that surface to the scheduling human. Nothing ever reassigns
+  work automatically: tools make it visible, management manages (ISO
+  18295-1's own posture). `GET /ops/coverage` joins skills tags to the
+  worktype demand queue so gaps read as data (`covered: false`), not
+  surprises.
+
+### Engineering record
+
+- **New gate tests** (+5): `wfm_schema_is_versioned_and_additive_only`
+  (the emitted keys of both feeds must match the declaration block in
+  `docs/wfm-seam.md` exactly, and the declared version must equal the
+  shipped constant — drift fails either direction),
+  `wfm_import_round_trips_shifts_and_skills` (file-backed DB; CSV/JSON rows
+  round-trip through parse → storage → feed; malformed input refuses loudly
+  with line context), `workload_views_compute_from_lineage_only` (snapshot
+  of all source tables before/after proves the view writes nothing),
+  `fatigue_signal_alerts_never_reassigns` (chain arithmetic honors the 8h
+  rest floor; zero audit rows / run mutations while alerting),
+  `competence_coverage_joins_skills_to_worktype_queues` (demand without
+  supply reads as uncovered).
+- New routes ship with openapi.yaml paths, route-coverage and route-authz
+  guard-table entries (`/ops/workload`, `/ops/coverage` — Read on the
+  domain, people-shaped aggregates, no case content) and docs/api.md rows in
+  the same commit.
+- Shared parser lives in `bin_common/wfm_import.rs` (the `http.rs` include
+  pattern): server seam tests and the CLI use ONE grammar implementation —
+  no duplicate parser can drift.
+- Validation: full gate green (server main bin **942** passed / 6 ignored,
+  **+5**); clippy `-D warnings` clean; fmt clean.
+
+**Honest ceilings**
+- Gate-backlog attribution rides only onto principals the domain's own
+  lineage already surfaced (`proposals` has no domain column); no cross-
+  tenant inference is attempted.
+- Fatigue alerting is view-only: no push channel, no scheduler daemon.
+- No forecasting, no adherence monitoring, no automatic queue reassignment.
+- Import adapters are generic; vendor-specific connector parsing is later
+  work.
+
+---
+
 ## [1.28.39] — 2026-08-26 — "Access": accessibility as a hard gate, globally
 
 G3+G4 of the Conformance Line closed: the six WCAG 2.2 AA criteria that are

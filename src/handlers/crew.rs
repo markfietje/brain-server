@@ -31,7 +31,7 @@ fn body_domain(body: &serde_json::Value) -> String {
 }
 
 /// Shared `?now=` parsing (epoch seconds; absent = server time).
-fn now_param(params: &HashMap<String, String>) -> Result<i64, HandlerError> {
+pub(crate) fn now_param(params: &HashMap<String, String>) -> Result<i64, HandlerError> {
     match params.get("now").map(|s| s.parse::<i64>()) {
         Some(Ok(t)) => Ok(t),
         Some(Err(_)) => Err(HandlerError::bad_request(
@@ -140,19 +140,14 @@ pub async fn get_ops_skills(
             }
             by_principal.entry(p).or_default().push(s);
         }
-        let skills: Vec<serde_json::Value> = order
+        let grouped: Vec<(String, Vec<String>)> = order
             .into_iter()
             .map(|p| {
-                serde_json::json!({
-                    "principal": p,
-                    "skills": by_principal.remove(&p).unwrap_or_default(),
-                })
+                let skills = by_principal.remove(&p).unwrap_or_default();
+                (p, skills)
             })
             .collect();
-        Ok(serde_json::json!({
-            "domain": domain,
-            "skills": skills,
-        }))
+        Ok(crate::workflow::wfm::skills_response(&domain, &grouped))
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?;

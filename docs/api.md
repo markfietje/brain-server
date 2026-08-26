@@ -242,6 +242,12 @@ human approves through `/proposals/{id}/approve`. Approved articles are born
 | GET | `/ops/skills?domain=` | The WFM skills feed: the domain's HITL-maintained skill registry, grouped by principal — the documented interop boundary for workforce-management tools (no forecasting engine is built; centers keep their WFM tool). Bounded at the newest 1000 rows (Read on the domain) |
 | POST | `/ops/skills` | Propose a skills change `{principal, add[], remove[]}` → one pending `crew_skills_update` proposal. Tags are lowercase alnum+hyphen, ≤ 32 chars, ≤ 32 per principal; approval (HITL `approve`) is the ONLY write path to `principal_skills`, applying the change in the approval transaction (Write on the domain) |
 | POST | `/ops/crew/config` | The DPO presence switch `{domain?, presence_enabled}` — off (or unreadable) means every roster reads empty. Flip + audit ride one tx (Admin on the domain) |
+| GET | `/ops/workload?domain=&now=` | Per-principal workload from lineage only: concurrent open envelopes, pending outbound handover burden, accepted transfers-in on open runs, re-ask load, confirm-gate backlog — plus fatigue signals (consecutive-shift + open-load patterns) that alert the scheduling human and NEVER reassign work. Read-only by construction; no case content (Read on the domain). Stamped `schema_version: wfm/1` (docs/wfm-seam.md) |
+| GET | `/ops/coverage?domain=` | Competence coverage: one row per demanded worktype — required routing tags, principals whose HITL-maintained skills cover every tag, open demand depth, covered flag. Same routing data as the colleague board; deterministic read (Read on the domain). Stamped `schema_version: wfm/1` |
+
+The WFM interop boundary (`/ops/shifts`, `/ops/skills`, the two views above,
+and the generic `brain wfm-import <file.csv|file.json>` adapter) is
+versioned and additive-only — the contract lives in `docs/wfm-seam.md`.
 
 ### Public knowledge base (Beacon)
 
