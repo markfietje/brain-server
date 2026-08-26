@@ -4,6 +4,25 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.5.0] — 2026-08-26
+
+**Team Bridge** — mirror OpenClaw agent activity onto brain-server's governed
+workflow dashboards (shipped with brain-server v1.28.34+). Off by default.
+
+- New `src/team-bridge.ts`: on `before_agent_run`, ensure a signed mesh card
+  (once per agent, 409-tolerant), open a governed run for the session
+  (`POST /workflow/runs`), and append exactly-once lineage events
+  (`workflow/openclaw/start|beat|done|failed|paused`). On `agent_end`, close
+  via CAS (`status done|failed`); on `session_end`, pause still-open runs.
+- Heartbeat rides the existing `before_prompt_build` handler (one handler per
+  hook), throttled by `teamHeartbeatMs` (default 60s, seeded at run-open).
+- Config: `teamBridge` (off), `teamDomain` (defaults to `defaultDomain`),
+  `teamHeartbeatMs`. Gated by the existing per-agent allowlist.
+- Privacy: only a 200-char intent label enters run state; prompts/messages
+  never leave the host process. Observation-only and fail-open by contract;
+  17 new tests pin the wire shapes against the Rust handlers'
+  `deny_unknown_fields` contracts.
+
 ## [0.4.7] — 2026-08-23
 
 Hardening patch; shipped with brain-server `v1.28.14 "Parity"`.

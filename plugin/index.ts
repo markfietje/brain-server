@@ -38,6 +38,7 @@ import {
 } from "./src/format.js";
 import { deriveChatType, isRecallAllowed, type GateContext } from "./src/gating.js";
 import { registerProceduralTools } from "./src/procedural.js";
+import { attachTeamBridge, teamCloseOnEnd, teamPauseOnSessionEnd } from "./src/team-bridge.js";
 import { registerBrainTools, MAX_HIT_CHARS } from "./src/tools.js";
 
 const PLUGIN_ID = "brain-server";
@@ -91,6 +92,23 @@ export default definePluginEntry({
     // ponytail: client-side bound only; the server's per-IP limiter still keys
     // on 127.0.0.1 (one shared bucket). Per-principal limiting is v2.1.
     // ------------------------------------------------------------------
+    // v0.5.0 team bridge — mirror agent activity onto brain-server's governed
+    // workflow dashboards (Mesh cards, Crew roster, run timelines, Scoreboard).
+    // Off by default (teamBridge: false); observation-only, fail-open, gated by
+    // the same per-agent allowlist as recall. See src/team-bridge.ts. The
+    // per-turn heartbeat rides the existing before_prompt_build handler below
+    // (one handler per hook — house rule), so attach happens BEFORE it.
+    const teamBridge = attachTeamBridge(api, client, liveCfg);
+    const teamBeat = (ctx: HookContextLike | undefined): void => {
+      const c = liveCfg();
+      if (!c.teamBridge || !c.enabled || !ctx?.agentId || !c.agents.includes(ctx.agentId)) {
+        return;
+      }
+      void teamBridge.onTurnBeat(ctx).catch(() => {
+        // heartbeat loss is harmless by definition
+      });
+    };
+
     const inflight = new Map<string, Promise<BrainRecallResult>>();
     let sessionRecallCount = 0;
     const boundedRecall = (
@@ -209,6 +227,9 @@ export default definePluginEntry({
           return undefined;
         }
 
+        // v0.5.0 team bridge heartbeat (throttled inside the bridge).
+        teamBeat(ctx);
+
         const querySource =
           latestUserText(Array.isArray(event.messages) ? event.messages : []) ?? event.prompt;
         const query = normalizeRecallQuery(querySource, c.recallMaxChars);
@@ -282,6 +303,15 @@ export default definePluginEntry({
     // ------------------------------------------------------------------------
     api.on("agent_end", async (event, ctx) => {
       const c = liveCfg();
+
+      // v0.5.0 team bridge: close the mirrored governed run first — the run
+      // outcome is recorded regardless of whether autoCapture is enabled.
+      try {
+        await teamCloseOnEnd(teamBridge, c, ctx, event.success === true);
+      } catch (err) {
+        api.logger.warn?.(`${PLUGIN_ID}: team run close failed (${sanitizeForBlock(String(err))})`);
+      }
+
       if (!c.autoCapture || !c.enabled) {
         return;
       }
@@ -328,12 +358,15 @@ export default definePluginEntry({
       }
     });
 
-    api.on("session_end", () => {
+    api.on("session_end", (_event, ctx) => {
       // v1.20.29 "Bound": reset the per-session recall counter + drop any
       // stranded inflight entries so a new session starts unbounded. (Cursors
       // still live server-side — this is the amplification bound only.)
       sessionRecallCount = 0;
       inflight.clear();
+      // v0.5.0 team bridge: pause mirrored runs still open for this session.
+      const sessionKey = (ctx as { sessionKey?: string } | undefined)?.sessionKey;
+      void teamPauseOnSessionEnd(teamBridge, sessionKey).catch(() => {});
     });
 
     // ------------------------------------------------------------------------
@@ -343,6 +376,7 @@ export default definePluginEntry({
 
     // v0.4.0 procedural memory (runbooks / decision trees) — src/procedural.ts.
     registerProceduralTools(api, client, liveCfg);
+
 
     // ------------------------------------------------------------------------
     // Service lifecycle

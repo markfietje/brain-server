@@ -58,6 +58,19 @@ export const brainConfigSchema = Type.Object({
   // memory_proposal_decide). Off by default — promoting a capture to memory is
   // an operator action, so the agent must not gain it unless explicitly opted in.
   proposalTools: Type.Optional(Type.Boolean()),
+
+  // v0.5.0 "Team Bridge": mirror OpenClaw agent activity onto brain-server's
+  // governed-workflow dashboards (Mesh cards, Crew roster, run timelines,
+  // Scoreboard). Off by default — visibility is an operator choice, exactly
+  // like autoCapture. Gated by the same per-agent allowlist as recall.
+  teamBridge: Type.Optional(Type.Boolean()),
+  // Domain the mirrored runs open in. Defaults to defaultDomain when unset.
+  teamDomain: Type.Optional(Type.String()),
+  // Minimum gap between progress heartbeats for one session (server events
+  // are exactly-once by idempotency key; this bounds chatter on quiet turns).
+  teamHeartbeatMs: Type.Optional(
+    Type.Integer({ minimum: 15_000, maximum: 600_000 }),
+  ),
 });
 
 export type BrainConfig = Static<typeof brainConfigSchema>;
@@ -78,6 +91,8 @@ export const DEFAULTS = {
   recallMaxChars: 1_000,
   autoRecallGraph: false,
   proposalTools: false,
+  teamBridge: false,
+  teamHeartbeatMs: 60_000,
 } as const;
 
 export type ResolvedBrainConfig = {
@@ -101,6 +116,9 @@ export type ResolvedBrainConfig = {
   autoRecallGraph: boolean;
   autoRecallMaxContextTokens?: number;
   proposalTools: boolean;
+  teamBridge: boolean;
+  teamDomain: string;
+  teamHeartbeatMs: number;
 };
 
 /**
@@ -169,10 +187,26 @@ export function assertSafeBaseUrl(raw: string): void {
   throw new Error(`brain-server plugin: unsupported baseUrl scheme in '${raw}'`);
 }
 
+const TEAM_DOMAIN_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+/**
+ * Mirrors the server's `valid_domain_label` (lowercase alnum, hyphens after
+ * position one, <= 63). Validating HERE means a typo fails once at boot
+ * instead of producing a 400 warn-line on every mirrored turn.
+ */
+function assertValidTeamDomain(raw: string): void {
+  if (!TEAM_DOMAIN_RE.test(raw)) {
+    throw new Error(
+      `brain-server plugin: teamDomain '${raw}' invalid — use 1..=63 lowercase alnum/hyphen (server would reject every mirrored request)`,
+    );
+  }
+}
+
 export function resolveConfig(raw: unknown): ResolvedBrainConfig {
   const cfg = (raw ?? {}) as Partial<BrainConfig>;
   const authToken = resolveAuthToken(cfg);
   const baseUrl = (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl;
+  const defaultDomain = cfg.defaultDomain?.trim() || DEFAULTS.defaultDomain;
   assertSafeBaseUrl(baseUrl);
   return {
     enabled: cfg.enabled ?? DEFAULTS.enabled,
@@ -187,7 +221,7 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
     autoCapture: cfg.autoCapture ?? DEFAULTS.autoCapture,
     captureMode: cfg.captureMode ?? DEFAULTS.captureMode,
     strictDomain: cfg.strictDomain ?? DEFAULTS.strictDomain,
-    defaultDomain: cfg.defaultDomain?.trim() || DEFAULTS.defaultDomain,
+    defaultDomain,
     autoRecallTopK: cfg.autoRecallTopK ?? DEFAULTS.autoRecallTopK,
     autoRecallTimeoutMs: cfg.autoRecallTimeoutMs ?? DEFAULTS.autoRecallTimeoutMs,
     requestTimeoutMs: cfg.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
@@ -198,6 +232,15 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
       ? { autoRecallMaxContextTokens: cfg.autoRecallMaxContextTokens }
       : {}),
     proposalTools: cfg.proposalTools ?? DEFAULTS.proposalTools,
+    teamBridge: cfg.teamBridge ?? DEFAULTS.teamBridge,
+    ...(cfg.teamDomain?.trim()
+      ? (() => {
+          const td = cfg.teamDomain.trim();
+          assertValidTeamDomain(td);
+          return { teamDomain: td };
+        })()
+      : { teamDomain: defaultDomain }),
+    teamHeartbeatMs: cfg.teamHeartbeatMs ?? DEFAULTS.teamHeartbeatMs,
   };
 }
 

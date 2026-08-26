@@ -6,7 +6,11 @@
   "activation": {
     "onStartup": true
   },
-  "commandAliases": [{ "name": "brain" }],
+  "commandAliases": [
+    {
+      "name": "brain"
+    }
+  ],
   "contracts": {
     "tools": [
       "memory_recall",
@@ -26,7 +30,9 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean" },
+      "enabled": {
+        "type": "boolean"
+      },
       "baseUrl": {
         "type": "string",
         "description": "Loopback URL of the Rust brain-server.",
@@ -39,24 +45,35 @@
       },
       "agents": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Per-agent opt-in allowlist (agent ids). Empty = disabled until at least one agent is listed."
       },
       "allowedChatTypes": {
         "type": "array",
         "items": {
           "type": "string",
-          "enum": ["direct", "group", "channel", "explicit"]
+          "enum": [
+            "direct",
+            "group",
+            "channel",
+            "explicit"
+          ]
         },
         "description": "Chat types permitted for recall. Default: direct + explicit. group/channel excluded to prevent private-memory data leakage in shared contexts."
       },
       "allowedChatIds": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
       "deniedChatIds": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
       "autoRecall": {
         "type": "boolean",
@@ -70,7 +87,10 @@
       },
       "captureMode": {
         "type": "string",
-        "enum": ["proposal", "direct"],
+        "enum": [
+          "proposal",
+          "direct"
+        ],
         "default": "proposal",
         "description": "v1.20.1: how autoCaptures enter the brain. 'proposal' (default) routes them through the human review queue (POST /ingest/proposal) so nothing from an untrusted turn is trusted directly into memory; 'direct' stores them immediately (server-side injection screen still applies)."
       },
@@ -83,11 +103,36 @@
         "type": "string",
         "default": "global"
       },
-      "autoRecallTopK": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
-      "autoRecallTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000, "default": 5000 },
-      "requestTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000, "default": 8000 },
-      "minQueryLength": { "type": "integer", "minimum": 1, "maximum": 200, "default": 5 },
-      "recallMaxChars": { "type": "integer", "minimum": 40, "maximum": 10000, "default": 1000 },
+      "autoRecallTopK": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 3
+      },
+      "autoRecallTimeoutMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 30000,
+        "default": 5000
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 30000,
+        "default": 8000
+      },
+      "minQueryLength": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "default": 5
+      },
+      "recallMaxChars": {
+        "type": "integer",
+        "minimum": 40,
+        "maximum": 10000,
+        "default": 1000
+      },
       "autoRecallGraph": {
         "type": "boolean",
         "default": false,
@@ -102,7 +147,22 @@
       "proposalTools": {
         "type": "boolean",
         "default": false,
-        "description": "Expose the memory_proposal_list / memory_proposal_decide tools so the agent can close the review loop on captureMode:'proposal'. Off by default — promoting a capture to memory is an operator action."
+        "description": "Expose the memory_proposal_list / memory_proposal_decide tools so the agent can close the review loop on captureMode:'proposal'. Off by default \u2014 promoting a capture to memory is an operator action."
+      },
+      "teamBridge": {
+        "type": "boolean",
+        "description": "v0.5.0 Team Bridge: mirror agent activity onto brain-server's governed-workflow dashboards (Mesh cards, Crew roster, run timelines, Scoreboard). Off by default; gated by the same per-agent allowlist as recall."
+      },
+      "teamDomain": {
+        "type": "string",
+        "description": "Domain mirrored runs open in. Defaults to defaultDomain."
+      },
+      "teamHeartbeatMs": {
+        "type": "integer",
+        "minimum": 15000,
+        "maximum": 600000,
+        "default": 60000,
+        "description": "Minimum gap between progress heartbeats for one session."
       }
     }
   },
@@ -131,7 +191,7 @@
     },
     "autoRecall": {
       "label": "Auto-Recall",
-      "help": "Deterministic per-turn recall injection. Zero decision tokens — recall is plugin code, not an LLM prediction."
+      "help": "Deterministic per-turn recall injection. Zero decision tokens \u2014 recall is plugin code, not an LLM prediction."
     },
     "autoCapture": {
       "label": "Auto-Capture",
@@ -140,6 +200,14 @@
     "strictDomain": {
       "label": "Strict Domain",
       "help": "Disable cross-domain fallback on miss."
+    },
+    "teamBridge": {
+      "label": "Team Bridge",
+      "help": "Mirror agent activity onto the brain-server console (cards, crew, timelines, scoreboard). Observation-only and fail-open."
+    },
+    "teamDomain": {
+      "label": "Team Domain",
+      "help": "Domain for mirrored workflow runs. Defaults to your default domain."
     }
   }
 }

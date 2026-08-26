@@ -165,6 +165,56 @@ What the suite covers (brain-server-specific):
   `entities_added`) parse into the plugin's camelCase shapes.
 - **Error surfacing** — tools report 404 vs 500 distinctly to the agent.
 
+## Team Bridge (v0.5.0) — put your agents on the dashboard
+
+**Intent.** A terminal-only agent is invisible work. The team bridge mirrors
+OpenClaw agent activity onto brain-server's governed-workflow surfaces, so the
+console shows the AI team exactly the way it shows the human team: same cards,
+same roster, same timelines, same scoreboard.
+
+**Use case.** A customer-center floor where OpenClaw agents handle cases.
+Leadership opens one dashboard and sees who is working, on what, since when —
+with every meaningful step carrying a receipt in the audit chain.
+
+### What appears where
+
+| Console surface | What the bridge puts there |
+|---|---|
+| Mesh cards (`GET /ops/agents/cards`) | One signed card per agent (name + `source: "openclaw"`), provisioned once, 409-tolerant |
+| Crew roster (`GET /ops/crew`) | Presence rides the server's own `crew_touch` on every mirrored mutation |
+| Run timeline (`GET /workflow/runs/{id}`) | A governed run per session: start / beat / done (or failed) lineage events, exactly-once by idempotency key |
+| Scoreboard | Closed runs aggregate like any governed workflow |
+
+### Enable it
+
+```jsonc
+// openclaw config → plugins → brain-server
+{
+  "enabled": true,
+  "agents": ["Main"],          // per-agent allowlist (required; least privilege)
+  "teamBridge": true,          // the switch
+  "teamDomain": "support",     // optional; defaults to your defaultDomain
+  "teamHeartbeatMs": 60000     // optional beat throttle (15s..10min)
+}
+```
+
+Prerequisites:
+
+1. brain-server running with an operator UMP key mounted (`brain ump keygen`)
+   — mesh-card provisioning is Admin-gated and returns a loud
+   `409 operator_key_missing` without it.
+2. The agent principal needs the `workflow` role on the target domain:
+   grant it once via roles (the bridge only ever calls Write-class routes).
+
+### Failure & privacy posture
+
+- **Observation-only:** handlers always resolve pass; a transport error costs
+  one warn line and a stale dashboard — never a failed agent turn.
+- **Off by default**, gated by the same per-agent allowlist as recall.
+- **Privacy:** only a whitespace-collapsed intent label (first 200 chars)
+  enters run state. Full prompts and messages never leave the host process.
+
+
 ## Why not a skill or a recall sub-agent?
 
 - A **skill** is LLM-mediated: the model decides when to recall (tokens,

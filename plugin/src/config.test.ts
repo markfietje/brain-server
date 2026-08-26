@@ -26,6 +26,9 @@ describe("resolveConfig", () => {
       recallMaxChars: DEFAULTS.recallMaxChars,
       autoRecallGraph: DEFAULTS.autoRecallGraph,
       proposalTools: DEFAULTS.proposalTools,
+      teamBridge: DEFAULTS.teamBridge,
+      teamDomain: DEFAULTS.defaultDomain,
+      teamHeartbeatMs: DEFAULTS.teamHeartbeatMs,
     });
   });
 
