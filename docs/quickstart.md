@@ -89,11 +89,13 @@ curl -X POST http://localhost:8765/ingest/proposal \
   -H 'Content-Type: application/json' \
   -d '{"content":"Bignay is an antioxidant-rich alternative to blueberry."}'
 
-# List the pending queue
+# List the pending queue (each row carries its content_digest)
 curl http://localhost:8765/proposals?status=pending
 
-# The human decides — approve into memory (optionally superseding a conflicting chunk)
-curl -X POST http://localhost:8765/proposals/1/approve
+# The human decides — approve into memory, carrying the displayed content_digest
+# (since v1.27.12 the server refuses an approval without it: 400 digest_required)
+D=$(curl -s 'http://localhost:8765/proposals?status=pending' | jq -r '.[0].content_digest')
+curl -X POST "http://localhost:8765/proposals/1/approve?digest=$D"   # optionally add &supersedes=<chunk_id>
 
 # …or reject, audited, never deleted (note: the server records the rejection,
 # not a free-text reason — any ?reason= is accepted but not persisted)

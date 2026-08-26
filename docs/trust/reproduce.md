@@ -14,7 +14,7 @@
 ```sh
 DB=/tmp/brain-repro-$$.db
 PORT=18799
-BRAIN_DB_PATH=$DB BRAIN_PORT=$PORT BRAIN_WORKER_THREADS=2 \
+BRAIN_DB_PATH=$DB BIND_PORT=$PORT BRAIN_WORKER_THREADS=2 \
   ./target/release/brain-server &      # or via the installed binary
 SVC=$!
 sleep 2
@@ -35,7 +35,8 @@ curl -s -X POST "$B/ingest/proposal" -H 'content-type: application/json' \
   -d '{"content":"acme ships monthly","title":"t"}'
 # → a proposal id, NOT a knowledge row.
 curl -s "$B/proposals?status=pending" | jq 'length'   # ≥ 1
-curl -s -X POST "$B/proposals/1/approve"              # promote → chunk_id
+D=$(curl -s "$B/proposals?status=pending" | jq -r '.[0].content_digest')
+curl -s -X POST "$B/proposals/1/approve?digest=$D"    # promote → chunk_id (digest binds to displayed bytes)
 curl -s "$B/search?q=acme" | jq '.hits[0].content'    # now recallable
 ```
 
@@ -88,7 +89,7 @@ echo "repro complete: every row of the proof map verified live"
   the injection-screen probe are pinned by the repo's integration tests
   (`cargo test --features bench`, `test_observe_dsar_locate_and_purge_semantics`
   + the screen tests). Follow those for byte-exact payloads.
-- OTel/SSE/SOC-2-kit rows are **planned** (v1.20.7/8/10) — the proof map marks
-  them so; they are not claimed here.
+- OTel/SSE/SOC-2-kit rows **shipped** (v1.20.7 / v1.20.8 / v1.20.10) — the
+  proof map marks them so; they are claimed there, not re-proven here.
 - AuthN rows need `BRAIN_JWT_ISSUER` + a key dir to fully exercise; the opaque-
   token default covers the audit/gate/DSAR/UMP rows unauthenticated.

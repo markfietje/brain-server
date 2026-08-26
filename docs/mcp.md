@@ -64,8 +64,8 @@ The tool list (verified from `src/bin/mcp.rs` `method_tools_list`):
 
 | Tool | Maps to | Purpose |
 |---|---|---|
-| `brain_search` | `POST /search` (hybrid) | Hybrid semantic + lexical search; `query`, `limit`, `phrases`, `exclude`, `code`, `sources`, `source`, `since`, `intent`, `provenance` |
-| `brain_recall` | `POST /recall` | Deterministic end-to-end recall (embed → hybrid); alias of `brain_search`; adds `domain`, `min_relevance` etc. `limit` 1..100 |
+| `brain_search` | `POST /recall` (hybrid) | Hybrid semantic + lexical search; `query`, `limit`, `phrases`, `exclude`, `code`, `sources`, `source`, `since`, `intent`, `provenance` |
+| `brain_recall` | `POST /recall` | Deterministic end-to-end recall (embed → hybrid); alias of `brain_search` — both tools lower into the same shared `/recall` body builder, so both accept the same fields (`query`, `limit`, `domain`, `source`, `since`, `intent`, `provenance`, …). `limit` 1..100 |
 | `brain_ingest` | `POST /ingest` | Write a memory; accepts `content`, optional `title`, `source`, explicit `entities[]`/`relations[]`, `domain` |
 | `ump.capabilities` | `GET /ump/capabilities` | UMP 1.0 negotiation: conformance level, kinds, bindings, retrieval signals, `max_recall`, `writable`, `audit` |
 | `ump.remember` | `POST /ump/remember` | Store a UMP memory record |

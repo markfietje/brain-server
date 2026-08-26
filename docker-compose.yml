@@ -27,6 +27,11 @@ services:
       BIND_PORT: "8765"
       BRAIN_DB_PATH: /data/brain.db
       BRAIN_UMP_KEY_DIR: /data/keys
+      # JWT mode verifies against PEMs in this dir too (docs/proxy-sso.md
+      # exports the IdP public signing keys into ./data/keys). Without it the
+      # server falls back to ~/.config/brain-server/keys INSIDE the container
+      # — ephemeral under read_only: true.
+      BRAIN_JWT_KEY_DIR: /data/keys
       HF_HOME: /opt/brain-model
       RUST_LOG: info
       # Auth — create ./data/auth-token (0600) for opaque bearer mode, or set
