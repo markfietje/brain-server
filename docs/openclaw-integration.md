@@ -1,18 +1,18 @@
 # OpenClaw Integration
 
 Brain Server is the **memory backend for [OpenClaw](https://github.com/openclaw)**, the open-source
-personal AI assistant gateway. The integration is a TypeScript plugin (`brain-server-openclaw`)
-that lives in `plugin/` and calls the Rust server over **loopback HTTP**. It plugs into OpenClaw's
-**memory slot** (`kind: "memory"`).
+personal AI assistant gateway. The integration is a TypeScript plugin
+(`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
+**loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
-**Plugin version:** the in-tree package is at **0.4.7**. It is published to
-`brain-server-openclaw` (npm) and mirrored at
+**Plugin version:** the in-tree package is at **0.5.0**. It is published as
+`@markfietje/brain-server-openclaw` (npm) and mirrored at
 `~/Sites/openclaw/extensions/brain-server/` (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
-`../CHANGELOG.md` (see the **plugin 0.4.x** rows: 0.4.3 provenance, 0.4.4 fence-forgery
+`../CHANGELOG.md` (see the **plugin 0.4.x/0.5.x** rows: 0.4.3 provenance, 0.4.4 fence-forgery
 closure, 0.4.5 the `BRAIN_TOKEN_FILE` env-token ladder, 0.4.6 recall-graph default-pinning,
-0.4.7 drift reconciliation + hardening).
+0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge).
 
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and
@@ -190,6 +190,7 @@ against the handlers) and correct AuthZ:
 | proposal list/decide | `GET /proposals`, `POST /proposals/{id}/{approve,reject}` | Read/Write | ✅ (gated by `proposalTools`) |
 | procedure_get / decision_evaluate | `GET /procedure/{id}/steps`, `POST /decision/{id}/evaluate` | Read | ✅ |
 | procedure_store | `POST /procedure` | **Write** | ✅ |
+| team bridge card / run / events / CAS close | `POST /ops/agents/cards`, `POST /workflow/runs`, `POST /workflow/runs/{id}/events`, `PUT /workflow/runs/{id}/state` | Admin (cards) / Write + `workflow` role | ✅ (gated by `teamBridge`) |
 | health | `GET /health` | — | ✅ |
 
 **Correct omissions** (operator/human-only, not agent surfaces): `/purge`, `/dsar`,
@@ -376,6 +377,94 @@ you want the agent to *retrieve and follow* runbooks but **not author** them, gr
 
 ---
 
+## Team Bridge (v0.5.0) — put your agents on the dashboard
+
+A terminal-only agent is invisible work. The Team Bridge (`src/team-bridge.ts`)
+mirrors OpenClaw agent activity onto brain-server's governed-workflow surfaces,
+so the console shows the AI team exactly the way it shows the human team —
+same cards, same roster, same timelines, same scoreboard. **Off by default.**
+
+| Console surface | What the bridge puts there |
+| --- | --- |
+| Mesh cards (`GET /ops/agents/cards`) | One signed card per agent (`openclaw-<slug>`, `source: "openclaw"`), provisioned once, 409-tolerant |
+| Crew roster (`GET /ops/crew`) | Presence rides the server's own `crew_touch` on every mirrored mutation |
+| Run timeline (`GET /workflow/runs/{id}`) | A governed run per session with `workflow/openclaw/start\|beat\|done\|failed\|paused` lineage events — exactly-once by idempotency key, closed via CAS on `agent_end`, paused on `session_end` |
+| Scoreboard | Closed runs aggregate like any governed workflow |
+
+Lifecycle: `before_agent_run` ensures the mesh card (once per agent) and opens
+the run; the heartbeat rides the existing `before_prompt_build` handler
+(throttled by `teamHeartbeatMs`, default 60 s); `agent_end` closes the run via
+CAS (`done`/`failed`); `session_end` pauses anything still open.
+
+**Prerequisites to enable:**
+
+1. brain-server running with an operator UMP key mounted (`brain ump keygen`)
+   — mesh-card provisioning is Admin-gated and returns a loud
+   `409 operator_key_missing` without it.
+2. The agent principal needs the `workflow` role on the target domain
+   (the bridge only ever calls Write-class routes).
+3. Plugin config: `"teamBridge": true` plus the shared per-agent `agents`
+   allowlist (the bridge is gated by exactly the same allowlist as recall).
+
+**Postures:** observation-only and fail-open (a transport error costs one warn
+line and a stale dashboard — never a failed agent turn); privacy-wise only a
+whitespace-collapsed intent label (first 200 chars) enters run state — full
+prompts and messages never leave the host process.
+
+---
+
+## OpenClaw + Valet — two harnesses, one kernel
+
+Since brain-server **v1.28.42 "Valet"**, the OpenClaw plugin and the Valet
+personal-assistant harness are two seats on the same governed kernel, and they
+compose into one content pipeline:
+
+```
+content plan (CSV) ──scripts/import-content-plan.ts──► valet/reminder runs
+                                                           │ cron: brain valet due
+                                                           ▼
+                                              Signal ping (valet/due alert envelope)
+                                                           │
+              YOU ◄──────────────────────────────────────┘
+                │ openclaw drafting session (the LLM guest):
+                │   recalls the style memory (provenance-labeled, fenced)
+                ▼
+        kind='draft' proposal ──► advisory valet::style_check lint rides the row
+                │                                   (score in console + brief)
+                ▼
+   approve in console — or by Signal: [draft N] approve <content_digest>
+                │
+                ▼
+     approved draft + evening capture notes ──► brain valet brief (next morning)
+```
+
+The OpenClaw harness is the **drafting seat**: the agent (with this plugin's
+auto-recall active) recalls the style guide like any other memory — the style
+guide is an approved knowledge row (`source='valet-style'`), so the drafting
+session gets the same provenance-labeled, fenced, untrusted-bannered injection
+as everything else. The Valet harness is the **scheduler and delivery seat**:
+reminders fire on cron, the brief composes, and Signal is the outbound edge.
+Neither harness trusts the other blindly — drafts travel the ordinary proposal
+gate, and the deterministic, zero-token style lint (`valet::style_check`)
+attaches to every `kind='draft'` proposal as an **advisory** report.
+
+### What enables the bridge + plugin together
+
+| Layer | What to enable |
+| --- | --- |
+| Plugin (drafting seat) | The normal config: `agents` allowlist listing the drafting agent, `autoRecall: true`, and a token with **Write** on the target domain (so the drafting session can submit `kind='draft'` proposals). |
+| Server (scheduler) | Cron entries from `docs/deployment.md`: `brain valet due` every 15 min weekdays + `brain valet brief` each morning — **the cron recipes are the scheduler** (no daemon). |
+| Consent | `brain valet consent grant` — the one-subject registry; without an in-force grant, envelopes fire locally but nothing is sent to Signal (suppressed, audited, counted). |
+| Signal edge (relay) | A 0600 `signal-relay.json` in `$BRAIN_CONNECTOR_CONFIG_DIR` (signal-cli URLs, your number, relay + alert secrets, listen port), `BRAIN_ALERT_WEBHOOK_URL` pointing at the relay's `/alert` listener, `BRAIN_ALERT_WEBHOOK_SECRET` mirroring `alert_secret`, and `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE` mirroring `relay_secret`. The relay (`tools/valet-relay/relay.js`) holds **no brain credentials** — pinned by `relay_holds_no_brain_credentials`. |
+| Dashboard (optional) | `teamBridge: true` on the same plugin config — the drafting sessions then appear on the governed dashboards *alongside* the `valet/*` runs, one timeline for humans, agents, and the assistant. |
+
+The payoff is the dogfood loop: the assistant that reminds you, drafts in your
+voice, lints its own drafts against your style memory, and waits for your
+digest-bound approval — on the same kernel whose audit chain
+(`GET /audit/verify`) proves every step.
+
+---
+
 ## Gating policy (OWASP LLM06 + data-leakage prevention)
 
 Every read and write runs `isRecallAllowed` first (`src/gating.ts`) — a synchronous, pure, cheap
@@ -414,13 +503,16 @@ schema is `plugin/openclaw.plugin.json` (`configSchema`). Defaults in parenthese
 | `strictDomain` | `false` | `true` = no cross-domain fallback. |
 | `defaultDomain` | `"global"` | Domain applied when one isn't forced. |
 | `autoRecallTopK` | `3` | Max snippets injected per turn (1–20). |
-| `autoRecallTimeoutMs` | `5000` | Recall hook timeout. |
+| `autoRecallTimeoutMs` | `2000` | Recall hook timeout (250–30000). |
 | `requestTimeoutMs` | `8000` | Other request timeout. |
 | `minQueryLength` | `5` | Minimum query/recall length. |
 | `recallMaxChars` | `1000` | Cap on recall query length (40–10000). |
 | `autoRecallGraph` | `false` | Add the server's zero-token graph-PPR retriever as a third RRF leg on auto-recall. |
 | `autoRecallMaxContextTokens` | — | Submodularly pack auto-recalled memories to a token budget (coverage/diversity) instead of taking top-K verbatim. |
 | `proposalTools` | `false` | Expose `memory_proposal_list` / `memory_proposal_decide` so the agent can close the review loop on `captureMode: "proposal"`. Off by default — promotion is an operator action. |
+| `teamBridge` | `false` | **v0.5.0** — mirror agent activity onto the governed dashboards (mesh card + run timeline + scoreboard), off by default; gated by the same `agents` allowlist. |
+| `teamDomain` | `defaultDomain` | Domain the bridge opens its mirrored runs in (1–63 lowercase alnum/hyphen; validated client-side so a bad value can't fail every request). |
+| `teamHeartbeatMs` | `60000` | Throttle for the mirrored run's `beat` lineage event (15 s – 10 min; rides `before_prompt_build`). |
 
 ```jsonc
 // sanitized example
