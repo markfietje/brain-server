@@ -19,6 +19,127 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.44] — 2026-08-27 — "Caravel": WhatsApp for Business, the governed edge
+
+A channel is a GOVERNED EDGE, never a server feature — and WhatsApp is the
+customer-facing channel with the strongest native governance. Caravel does NOT
+invent discipline: Meta already enforces it (hub signatures, the 24-hour
+customer-service window, registered templates, per-number quality tiers), so
+the adapter mostly MAPS platform law onto kernel law. The edge process owns the
+public webhook surface (the `hub.challenge` handshake is answered THERE, never
+by the kernel); brain-server only ever sees verified envelopes over the same
+Standard-Webhooks seam Switchboard shipped.
+
+### Release notes
+
+**Improvements**
+- **The WhatsApp edge** (`tools/channel-bridge`, additive Rust binary,
+  config-off by default — absent config = channel dark): answers the Meta
+  subscription handshake itself; verifies every POST against
+  `X-Hub-Signature-256` (raw-body HMAC-SHA256 with the app secret,
+  LENGTH-CHECKED then constant-time compared) BEFORE any parse; projects
+  verified payloads into normalized envelopes; registers mount evidence at
+  boot (`channel:whatsapp`, config-digest recomputed server-side); drains
+  `channel/out` on an internal tick crank and delivers to the Cloud API —
+  approved `channel/template` acts as TEMPLATES, windowed replies as text.
+- **The 24-hour window binds the kernel gate exactly:** free-form approved
+  acts ride the customer's clock inside the window; OUTSIDE it, only approved
+  `channel/template` acts WITH standing consent pass — free-form is refused
+  (`outside_reply_window_freeform_blocked`) even when approved AND consented.
+- **Template sends are PROPOSALS:** new proposal kind `channel/template`
+  (proposal-only via `/ingest/proposal`; never promoted to knowledge). Its
+  content is the JSON packet `{tenant, conversation_ref, template, body}`;
+  approving CASes it approved and dispatches the governed send in ONE tx.
+  Double-approved by construction: Meta's registry AND ours — ours stricter
+  because it carries the content digest of the drained bytes. Business-
+  initiated contact needs ALL THREE gates every time: template + consent +
+  approved proposal; cold conversations open their own governed care case on
+  dispatch (with the reply window CLOSED until the customer answers).
+  Replay-safe: a decided id returns `{moved:false}`, never a second send.
+- **Statuses become lineage events:** sent/delivered/read/failed receipts land
+  as ONE `case/channel_status` outbox event on the thread's case — hashes and
+  refs on the audit chain, bodies never. Exactly-once by lineage key.
+- **Quality tiers throttle deterministically:** a backoff table maps tier →
+  minimum send interval (green 0s / yellow 30s / orange 300s / red-and-
+  unobserved 3600s). A FRESH state file is the MOST RESTRICTIVE tier until a
+  status webhook upgrades it (fail-closed throttle); downgrades alert the
+  operator via the bus METADATA-ONLY (number alias + old/new tiers — never
+  content, never customer refs).
+- **Media digests-and-quarantine:** attachment SHA-256s (≤8 per envelope)
+  are recorded verbatim ON the landed case note; the BYTES stay quarantined
+  edge-side under the retention dir named by digest — never auto-opened,
+  never proxied through brain-server to a browser (fetching media is an
+  operator-run edge act).
+
+**Bug fixes**: None.
+
+**Security fixes**
+- Signature hardening per plan: length-checked BEFORE compare plus constant-
+  time fold comparison kills both timing and short-circuit classes; empty/
+  malformed headers refuse without reaching any MAC work path.
+- Edge config/secret/state files all enforce owner-only (0600) fail-closed:
+  wide permissions or upward-traversing secret paths refuse at load.
+- Self-grep pin extended: `bridge_holds_no_brain_credentials` now scans BOTH
+  bridge crates (signal-gateway AND channel-bridge).
+
+### Behavior-change ledger
+
+| Change | Nature | Compat |
+|---|---|---|
+| WhatsApp edge in `tools/channel-bridge` (handshake + hub-sig verify + Cloud-API sender + tier state) | additive edge process | config-off default |
+| `channel/template` proposal kind + approve-dispatch wiring | additive | existing proposal gates reused; memory kinds untouched |
+| Envelope projections: optional `attachment_digests[]`, `status`, `quality` | additive wire fields | absent = Switchboard behavior byte-for-byte |
+| `case/channel_status` outbox topic | additive topic (case/% family) | drains ride existing Read-gated SSE fan-out |
+| Tier backoff table (kernel + edge mirror) | edge-enforced pacing; kernel-side pin | no schema change, no route change |
+| Media quarantine | edge-side bytes; digests recorded on notes kernel-side | no kernel storage beyond note text |
+
+### Engineering record
+
+- **Plan-named pins (+6 bins / mirrored at the edge):**
+  `twenty_four_hour_window_blocks_freeform_and_allows_approved_template`,
+  `template_send_requires_our_proposal_not_just_metas`,
+  `business_initiated_needs_template_and_consent_and_proposal`,
+  `delivery_status_becomes_lineage_event`,
+  `tier_downgrade_throttles_and_alerts`,
+  `media_digests_recorded_content_quarantined` — kernel pins live in the
+  channels test module (the fence holds OF THE FUNCTION: `enqueue_out`
+  re-reads status+kind from the database inside the tx; nothing caller-declared
+  is trusted), and the edge crate carries `hub_signature_verified_constant_time`
+  plus its own mirror of the tier table with the downgrade-tightening invariant.
+- Schema UNCHANGED at 1.28.44 (additive code only); no routes added — the
+  `{kind}` wildcard already covers whatsapp data, verified against the
+  openapi coverage tables. Wire doc updates (envelope projections, drained
+  source_payload fields, kind enum) shipped in the same commit across
+  openapi.yaml, docs/api.md, docs/deployment.md.
+- Full gate: fmt clean; clippy `-D warnings` clean on bench/default/otel
+  targets, engine crates, steward-harness AND the new channel-bridge crate;
+  980 bin (+6) / 207 lib tests green; lipstyk diff-strict clean; CI dry-run
+  matrix green locally.
+
+### Honest ceilings
+
+- The public HTTPS listener still terminates TLS at the OPERATOR's reverse
+  proxy; the edge itself binds loopback only. Certificate management remains
+  a deployment concern, deliberately.
+- Quality-tier OBSERVATION accepts the documented account-update envelope
+  shapes ({number_alias|display_phone_number_id}, old/new tiers lowercased);
+  exact Meta taxonomy must be re-verified against the pinned
+  `graph_api_version` at deploy — invented tiers drop silently rather than
+  lie upstream.
+- Template sends are parameterless (named template verbatim);
+  parameterized components ship later. The kernel enqueues WHAT was approved;
+  operators keep parameterless bodies.
+- Throttled rows defer tick-to-tick AFTER the kernel has marked the claim
+  batch delivered (at-least-once contract carried over from Switchboard):
+  a crash between defer and next poll surfaces loud logs, not guaranteed
+  redelivery.
+- Kernel `enqueue_out` does not itself pace by tier (pacing lives on the
+  edge where sends actually happen); a mis-deployed edge that skips its
+  state file degrades to loud logging, not silent policy bypass — the
+  three-gate law never depends on tier state.
+
+---
+
 ## [1.28.43] — 2026-08-27 — "Switchboard": the channel bridge framework, Signal first-class
 
 A channel is a GOVERNED EDGE, never a server feature. Switchboard generalizes

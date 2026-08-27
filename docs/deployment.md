@@ -256,6 +256,84 @@ secret. Content-plan import: `scripts/import-content-plan.ts plan.csv
 
 ---
 
+## The WhatsApp governed edge (v1.28.44 "Caravel")
+
+WhatsApp is governance MAPPING, not invention — Meta enforces the discipline;
+the adapter translates platform law onto kernel law. The edge is a separate
+Rust process (`tools/channel-bridge`, config-off by default: absent config =
+channel dark) that owns the PUBLIC webhook surface so brain-server never does:
+
+- **Handshake + signature.** Meta's subscription GET (`hub.challenge`) is
+  answered BY THE EDGE — the kernel never sees a challenge. Every POST is
+  verified against `X-Hub-Signature-256` (raw-body HMAC-SHA256 with the app
+  secret, length-checked, constant-time) BEFORE any parse; only then are
+  payloads projected into normalized envelopes, signed Standard-Webhooks
+  style, and forwarded to `POST /webhooks/channel/whatsapp`. Verified bytes
+  are the ONLY thing the kernel receives.
+- **The 24-hour window rides the kernel gate exactly.** Free-form replies
+  inside 24h of the customer's last inbound; outside it ONLY template
+  messages — and a template send is a PROPOSAL (`channel/template`):
+  double-approved by construction (Meta's registry AND ours; ours carries
+  the content digest). Business-initiated contact needs ALL THREE gates
+  every time: template + standing consent in the shared registry + approved
+  digest-bound proposal.
+- **Statuses become lineage.** sent/delivered/read/failed receipts land as
+  `case/channel_status` outbox events on the thread's case — hashes and refs
+  on the audit chain, bodies never.
+- **Quality tiers throttle deterministically.** The tier state lives in a
+  0600 file under the state dir; a FRESH state is the MOST RESTRICTIVE tier
+  until a status webhook upgrades it (fail-closed). Downgrades alert the
+  operator via the bus metadata-only (number alias + old/new tiers).
+- **Media digests-and-quarantine.** Attachments downloaded by the edge are
+  SHA-256'd; bytes sit in the retention dir named by digest, never auto-
+  opened, never proxied through brain-server to a browser. Only the hash
+  rides inbound (recorded verbatim ON the case note).
+
+### Config (`$BRAIN_CONNECTOR_CONFIG_DIR/channel-whatsapp-{tenant}.json`, 0600)
+
+The SAME substrate file both sides read (domain + webhook_secret for the
+kernel seam; the WhatsApp keys for the edge):
+
+```json
+{
+  "domain": "acme",
+  "webhook_secret": "whsec-…",
+  "verify_token": "…",
+  "phone_number_id": "1234567890",
+  "app_secret_path": "app_secret.txt",
+  "access_token_path": "access_token.txt"
+}
+```
+
+Secret files are 0600, referenced by path (relative resolves beside the
+config); upward traversal refuses. Optional `graph_api_version` pins the
+Cloud API (default `v21.0`) — re-verify the account-quality webhook taxonomy
+against the pinned version at deploy.
+
+### Running
+
+```sh
+# Build the edge.
+cargo build --release -p channel-bridge --manifest-path tools/channel-bridge/Cargo.toml
+
+# Run (TLS terminates at YOUR reverse proxy in front of the loopback port).
+tools/channel-bridge/target/release/channel-bridge \
+  --config $BRAIN_CONNECTOR_CONFIG_DIR/channel-whatsapp-acme.json \
+  --port 8791 --brain-url http://127.0.0.1:8765 \
+  --retention-dir /var/lib/brain-server/channel-media \
+  --state-dir /var/lib/brain-server/channel-bridge-state \
+  --tick-secs 5
+```
+
+Run it under launchd/systemd KeepAlive like any governed edge. No extra cron:
+outbound drain is an internal tick loop paced by the tier table (throttled
+rows defer to later ticks). Registration evidence posts at boot over the
+same HMAC seam (`channel:whatsapp` mount, config-digest recomputed server-
+side). Template sends use parameterless templates (parameterized components
+are a documented ceiling).
+
+---
+
 ## Deployment tiers (ISO 18295-1 applicability: any size)
 
 The standard applies to a centre of any size; so does this server. The same

@@ -8,6 +8,27 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.42 "Valet" shipped 2026-08-26** — the personal
+> AI assistant, dogfooded: reminders are governed `valet/*` runs fired by
+> the idempotent `brain valet due` crank (outbox key `valet-{run}-{due_at}`,
+> repeat re-arms via CAS); Signal is a Bridges edge (`tools/valet-relay`,
+> zero-dep Node, holds NO brain credentials — pinned by
+> `relay_holds_no_brain_credentials`); inbound `/webhooks/signal` is
+> HMAC + replay + injection-screened with `[case N]` steering and
+> digest-bound `[draft N] approve <digest>`; drafts are `kind='draft'`
+> proposals carrying the ADVISORY zero-token `valet::style_check` lint
+> (style memory = approved knowledge row, changes flow through the gate);
+> `brain valet brief` composes the morning brief; Outreach-lite is the
+> one-subject one-channel hashed consent registry (no consent → suppressed,
+> audited, counted). Cron recipes in `docs/deployment.md` ARE the
+> scheduler. Schema ADDITIVE at 1.28.42 (`valet_consents`,
+> `proposals.lint_json`); routes additive: `/workflow/valet/{due,brief,
+> consent}` + signal kind on `/webhooks/{kind}`. Ceilings: relay is
+> single-user operator-run; Signal `[draft N] edit` not wired; no
+> auto-publish anywhere; scoreboard personal view is thin-end.
+> See CHANGELOG.md §[1.28.42].
+> Predecessor: v1.28.41 "Terrain" — G8 + series-exit, tiers as tested config
+
 > **Version note:** **v1.28.29 "Mesh" shipped 2026-08-25** — a server-only
 > release (schema 1.28.28 → **1.28.29**, additive `agent_cards` +
 > `delegations`; client + plugin unchanged) — agents become named

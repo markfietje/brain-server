@@ -205,6 +205,7 @@ pub async fn receive_channel(
             let outcome = channels::land_inbound_message(tx.tx(), &cfg, &envelope, now).map_err(
                 |e| match e {
                     LandError::UnknownCase(id) => format!("unknown_case:{id}"),
+                    LandError::UnknownThread => "unknown_thread".to_string(),
                     other => format!("land_refused:{other:?}"),
                 },
             )?;
@@ -216,30 +217,53 @@ pub async fn receive_channel(
 
     match landing {
         Ok(Ok(outcome)) => {
+            // Post-commit operator notifications (metadata only). The domain
+            // layer NEVER touches AppState — it hands back alert payloads.
+            let alerts = match &outcome.kind {
+                channels::LandKind::Quality { alerts } => alerts.clone(),
+                _ => Vec::new(),
+            };
+            for a in alerts {
+                crate::alert::publish(&state, crate::alert::ALERT_KIND_WORKFLOW, a);
+            }
             if let Ok(conn) = state.pool.get() {
+                let detail = match &outcome.kind {
+                    channels::LandKind::Note { opened_case, .. } if *opened_case => {
+                        "channel/inbound opened-case"
+                    }
+                    channels::LandKind::Note { .. } => "channel/inbound note",
+                    channels::LandKind::StatusLineage => "channel/status lineage",
+                    channels::LandKind::Quality { .. } => "channel/quality observation",
+                };
                 crate::audit::record(
                     &conn,
                     crate::audit::AuditKind::Webhook,
                     &actor,
                     &format!("case:{}", outcome.case_run_id),
                     crate::audit::AuditStatus::Ok,
-                    &if outcome.opened_case {
-                        "channel/inbound opened-case".to_string()
-                    } else {
-                        "channel/inbound note".to_string()
-                    },
+                    detail,
                 );
             }
-            (
-                StatusCode::OK,
-                axum::Json(json!({
+            let body = match &outcome.kind {
+                channels::LandKind::Note {
+                    note_id,
+                    opened_case,
+                } => json!({
                     "status": "note_recorded",
                     "case_run_id": outcome.case_run_id,
-                    "note_id": outcome.note_id,
-                    "opened_case": outcome.opened_case,
-                })),
-            )
-                .into_response()
+                    "note_id": note_id,
+                    "opened_case": opened_case,
+                }),
+                channels::LandKind::StatusLineage => json!({
+                    "status": "status_lineage_recorded",
+                    "case_run_id": outcome.case_run_id,
+                }),
+                channels::LandKind::Quality { alerts } => json!({
+                    "status": "quality_observed",
+                    "alerts_published": alerts.len(),
+                }),
+            };
+            (StatusCode::OK, axum::Json(body)).into_response()
         }
         Ok(Err(msg)) if msg.starts_with("unknown_case:") => {
             deny_channel(&state, &actor, &msg);

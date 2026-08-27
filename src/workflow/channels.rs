@@ -50,6 +50,22 @@ pub(crate) const KIND_CASE: &str = "care/case";
 /// 24h rule binds to exactly this constant in Caravel).
 pub(crate) const DEFAULT_REPLY_WINDOW_SECS: i64 = 24 * 3600;
 
+/// Caravel lineage topic: platform delivery states land here as HASHES AND
+/// REFS ONLY (sent/delivered/read/failed proofs ride the chain, bodies
+/// never do — the Channels-line law).
+pub(crate) const TOPIC_CHANNEL_STATUS: &str = "case/channel_status";
+
+/// Caravel proposal kind: an outbound TEMPLATE message whose body is
+/// versioned, human-approved, digest-bound. Template approval happens TWICE
+/// by construction — Meta's registry and ours; ours is stricter because it
+/// carries the content digest.
+pub(crate) const PROP_KIND_CHANNEL_TEMPLATE: &str = "channel/template";
+
+/// Bounds law: one inbound envelope records at most this many attachment
+/// digests (each SHA-256 hex64). Bytes themselves stay quarantined on the
+/// EDGE — the kernel holds hashes, never media.
+pub(crate) const MAX_ATTACHMENT_DIGESTS: usize = 8;
+
 // ── Bounds law (pinned by tests below) ─────────────────────────────────────
 
 pub(crate) const MAX_CONVERSATION_REF: usize = 200;
@@ -64,15 +80,89 @@ const MAX_SECRET_BYTES: usize = 256;
 
 // ── The normalized envelope (server-side projection) ───────────────
 
+/// Closed state vocabulary a governed edge may report for ONE platform
+/// message (Caravel: WhatsApp sent/delivered/read/failed). Signal receipts
+/// may map onto the same set later — everything past [`land_inbound_message`]
+/// stays channel-blind.
+pub(crate) const STATUS_STATES: [&str; 4] = ["sent", "delivered", "read", "failed"];
+
+/// A platform delivery status projected off the wire (refs only, never
+/// bodies).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ChannelStatus {
+    /// One of [`STATUS_STATES`] (validated in [`InboundEnvelope::parse`]).
+    pub state: String,
+    /// The platform message id the status refers to (wamid, signal receipt
+    /// ref…) — the replay-cap key rides it too.
+    pub message_ref: String,
+}
+
+/// Per-number quality tier as observed by the edge. Metadata ONLY: a number
+/// ALIAS carried in bridge config (never a customer ref), never content.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct QualityObservation {
+    /// Stable alias for the sending number (e.g. the bridge tenant segment).
+    pub number_alias: String,
+    /// Previous tier when this is a TRANSITION report (None = first sight).
+    pub old_tier: Option<String>,
+    /// Observed tier (one of [`WHATSAPP_TIERS`]).
+    pub new_tier: String,
+}
+
+/// WhatsApp quality tiers in descending order of throughput (Meta Cloud API
+/// taxonomy, lowercased). Index = restrictiveness rank.
+pub(crate) const WHATSAPP_TIERS: [&str; 4] = ["green", "yellow", "orange", "red"];
+
+/// Deterministic backoff table: minimum seconds between outbound sends for
+/// a number, per OBSERVED quality tier. Fresh/unknown = the MOST
+/// RESTRICTIVE interval until a status webhook upgrades it (fail-closed
+/// throttle; mirrored by the edge sender).
+pub(crate) fn min_send_interval_secs(tier: Option<&str>) -> i64 {
+    match tier {
+        Some("green") => 0,
+        Some("yellow") => 30,
+        Some("orange") => 300,
+        _ => 3_600, // red AND unobserved: most restrictive
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QualityTransition {
+    Upgrade,
+    Downgrade,
+    Flat,
+}
+
+/// Classify a tier transition by index distance in [`WHATSAPP_TIERS`].
+pub(crate) fn classify_quality_transition(old: Option<&str>, new: &str) -> QualityTransition {
+    let rank = |t: &str| WHATSAPP_TIERS.iter().position(|x| *x == t);
+    let Some(new_idx) = rank(new) else {
+        return QualityTransition::Flat;
+    };
+    match old.and_then(rank) {
+        Some(old_idx) if new_idx < old_idx => QualityTransition::Upgrade,
+        Some(old_idx) if new_idx > old_idx => QualityTransition::Downgrade,
+        _ => QualityTransition::Flat,
+    }
+}
+
 /// The wire projection the SERVER accepts inside `{ "envelope": {…} }`. The
 /// full `ChannelMessage { channel, direction, attachment_digests[], ts }`
 /// shape lives bridge-side; subject identity is DERIVED here ([`subject_hash`])
 /// so no raw subscriber address ever crosses the trust boundary.
+///
+/// Caravel additions (additive, all OPTIONAL): `attachment_digests[]`
+/// (SHA-256 hex64; bytes stay quarantined on the edge), `status` (delivery
+/// proof → lineage), `quality` (tier transitions → metadata-only operator
+/// alert). A status envelope carries NO text; a note MAY carry digests.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InboundEnvelope {
     pub conversation_ref: String,
     pub text: String,
     pub external_id: String,
+    pub attachment_digests: Vec<String>,
+    pub status: Option<ChannelStatus>,
+    pub quality: Option<QualityObservation>,
 }
 
 impl InboundEnvelope {
@@ -91,7 +181,7 @@ impl InboundEnvelope {
         let conversation_ref = take("conversation_ref")?;
         let text = take("text")?;
         let external_id = take("external_id")?;
-        if conversation_ref.is_empty() || conversation_ref.len() > MAX_CONVERSATION_REF {
+        if conversation_ref.len() > MAX_CONVERSATION_REF {
             return Err("conversation_ref_bounds");
         }
         if conversation_ref.chars().any(char::is_control) {
@@ -100,15 +190,112 @@ impl InboundEnvelope {
         if external_id.is_empty() || external_id.len() > MAX_EXTERNAL_ID {
             return Err("external_id_bounds");
         }
-        // Deeper text bounds ride the screen (MAX_NOTE_LEN), but an empty or
-        // whitespace-only text refuses early, cheaply and loudly.
-        if text.trim().is_empty() {
-            return Err("text_empty");
+
+        // ── Caravel additive projections (all optional, strictly bounded) ──
+        let mut attachment_digests = Vec::new();
+        if let Some(arr) = env.get("attachment_digests") {
+            let list = arr.as_array().ok_or("attachment_digests_format")?;
+            if list.len() > MAX_ATTACHMENT_DIGESTS {
+                return Err("attachment_digests_bounds");
+            }
+            for d in list {
+                let s = d.as_str().ok_or("attachment_digests_format")?;
+                if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("attachment_digests_format");
+                }
+                attachment_digests.push(s.to_ascii_lowercase());
+            }
+        }
+
+        let status = match env.get("status") {
+            None => None,
+            Some(s) => {
+                let state = s
+                    .get("state")
+                    .and_then(|x| x.as_str())
+                    .ok_or("status_state_missing")?
+                    .to_string();
+                if !STATUS_STATES.contains(&state.as_str()) {
+                    return Err("status_state_invalid");
+                }
+                let message_ref = s
+                    .get("ref")
+                    .and_then(|x| x.as_str())
+                    .ok_or("status_ref_missing")?
+                    .to_string();
+                if message_ref.is_empty() || message_ref.len() > MAX_EXTERNAL_ID {
+                    return Err("status_ref_bounds");
+                }
+                if conversation_ref.is_empty() || conversation_ref.chars().any(char::is_control) {
+                    return Err("conversation_ref_bounds");
+                }
+                Some(ChannelStatus { state, message_ref })
+            }
+        };
+
+        let quality = match env.get("quality") {
+            None => None,
+            Some(q) => {
+                let number_alias = q
+                    .get("number_alias")
+                    .and_then(|x| x.as_str())
+                    .ok_or("quality_alias_missing")?
+                    .to_string();
+                // Aliases are operator-facing labels (bridges choose them);
+                // bounded + control-free, not filename segments.
+                if number_alias.is_empty()
+                    || number_alias.len() > 64
+                    || number_alias.chars().any(char::is_control)
+                {
+                    return Err("quality_alias_invalid");
+                }
+                let new_tier = q
+                    .get("new_tier")
+                    .and_then(|x| x.as_str())
+                    .ok_or("quality_tier_missing")?
+                    .to_string();
+                if !WHATSAPP_TIERS.contains(&new_tier.as_str()) {
+                    return Err("quality_tier_invalid");
+                }
+                let old_tier = match q.get("old_tier") {
+                    None => None,
+                    Some(t) => {
+                        let s = t.as_str().ok_or("quality_tier_invalid")?.to_string();
+                        if !WHATSAPP_TIERS.contains(&s.as_str()) {
+                            return Err("quality_tier_invalid");
+                        }
+                        Some(s)
+                    }
+                };
+                Some(QualityObservation {
+                    number_alias,
+                    old_tier,
+                    new_tier,
+                })
+            }
+        };
+
+        // Text is REQUIRED for a note and FORBIDDEN for the ref-only
+        // projections: status and quality envelopes carry NO content (they
+        // are refs and enums, never bodies).
+        if status.is_none() && quality.is_none() {
+            if conversation_ref.is_empty() {
+                return Err("conversation_ref_bounds");
+            }
+            if text.trim().is_empty() {
+                return Err("text_empty");
+            }
+        }
+        if (status.is_some() || quality.is_some()) && !text.trim().is_empty() {
+            return Err("text_with_projections");
         }
         Ok(Self {
             conversation_ref,
             text,
             external_id,
+            attachment_digests,
+            status,
+            quality,
         })
     }
 }
@@ -298,14 +485,37 @@ pub(crate) enum LandError {
     Sql(rusqlite::Error),
     /// `[case N]` pointed outside this bridge's domain (or nowhere).
     UnknownCase(i64),
+    /// A status/ref-only envelope referenced a conversation this bridge does
+    /// not own (or one that never opened a case). Refuses loudly.
+    UnknownThread,
+    /// Caravel: the bridge is not a WhatsApp number yet sent WhatsApp-law
+    /// traffic (or vice versa) — routing law violated.
+    ChannelMismatch,
+}
+
+/// WHAT a verified landing produced.
+#[derive(Debug)]
+pub(crate) enum LandKind {
+    Note {
+        note_id: i64,
+        opened_case: bool,
+    },
+    /// Delivery proof landed as ONE lineage event (refs, never bodies).
+    StatusLineage,
+    /// A quality transition was audited; the payloads here are METADATA-ONLY
+    /// operator alerts (alias + tiers) the HANDLER publishes after the tx
+    /// commits — domain code never touches AppState.
+    Quality {
+        alerts: Vec<serde_json::Value>,
+    },
 }
 
 #[derive(Debug)]
 pub(crate) struct LandOutcome {
+    /// The affected case run (0 = account-scoped: quality observations are
+    /// NOT case facts).
     pub case_run_id: i64,
-    pub note_id: i64,
-    /// True when this message AUTO-OPENED its care case (unknown conversation).
-    pub opened_case: bool,
+    pub kind: LandKind,
 }
 
 /// Resolve + land ONE verified envelope: screen FIRST, then `[case N]`
@@ -323,9 +533,27 @@ pub(crate) fn land_inbound_message(
     envelope: &InboundEnvelope,
     now: i64,
 ) -> Result<LandOutcome, LandError> {
+    // 0a. QUALITY first: a tier transition is an ACCOUNT-scoped fact — one
+    //     audited metadata event, never a case note, never customer-bound.
+    if let Some(q) = &envelope.quality {
+        return record_quality_observation(conn, cfg, q);
+    }
+
+    // 0b. STATUS: delivery proof rides the chain as HASHES AND REFS ONLY —
+    //     one lineage event on the thread's case.
+    if let Some(status) = &envelope.status {
+        return record_status_lineage(conn, cfg, envelope, status, now);
+    }
+
     // 1. SCREEN BEFORE ANYTHING (sanitize + injection blocklist +
-    //    invisible/markdown strip). Nothing untrusted reaches state below.
-    let screened = room::screen_content(&envelope.text).map_err(LandError::Screened)?;
+    //    invisible/markdown strip). Attachment digests ride INSIDE the
+    //    screened bytes — appended BEFORE the screen so the digest record on
+    //    the note passes the very same bounds + blocklist every byte faces.
+    let mut candidate = envelope.text.clone();
+    for d in &envelope.attachment_digests {
+        candidate.push_str(&format!("\n[attachment sha256:{d}]"));
+    }
+    let screened = room::screen_content(&candidate).map_err(LandError::Screened)?;
 
     // 2. `[case N]` addressing OVERRIDES the map — parsed from the SCREENED
     //    bytes, strictly scoped to THIS bridge's domain (cross-domain
@@ -345,56 +573,93 @@ pub(crate) fn land_inbound_message(
                     insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
                 return Ok(LandOutcome {
                     case_run_id: run_id,
-                    note_id,
-                    opened_case: false,
+                    kind: LandKind::Note {
+                        note_id,
+                        opened_case: false,
+                    },
                 });
             }
             _ => return Err(LandError::UnknownCase(run_id)),
         }
     }
 
-    // 3. Thread-map lookup — channel + tenant + domain in the predicate, so
-    //    bridges cannot touch each other's threads even sharing one platform
-    //    kind (tenant scoping BY CONSTRUCTION).
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT case_run_id FROM channel_threads
-              WHERE channel = ?1 AND tenant = ?2 AND conversation_ref = ?3 AND domain = ?4",
-            params![cfg.kind, cfg.tenant, envelope.conversation_ref, cfg.domain],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(LandError::Sql)?;
-
-    if let Some(run_id) = existing {
-        conn.execute(
-            "UPDATE channel_threads SET last_inbound_at = ?5
-              WHERE channel = ?1 AND tenant = ?2 AND conversation_ref = ?3 AND domain = ?4",
-            params![
-                cfg.kind,
-                cfg.tenant,
-                envelope.conversation_ref,
-                cfg.domain,
-                now
-            ],
-        )
-        .map_err(LandError::Sql)?;
-        let note_id =
-            insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
-        return Ok(LandOutcome {
-            case_run_id: run_id,
-            note_id,
-            opened_case: false,
-        });
+    // 3–4. Thread-map lookup; unknown conversations AUTO-OPEN their care case.
+    let mapped = thread_case_run(conn, cfg, &envelope.conversation_ref).map_err(LandError::Sql)?;
+    match mapped {
+        Some(run_id) => {
+            conn.execute(
+                "UPDATE channel_threads SET last_inbound_at = ?5
+                  WHERE channel = ?1 AND tenant = ?2 AND conversation_ref = ?3 AND domain = ?4",
+                params![
+                    cfg.kind,
+                    cfg.tenant,
+                    envelope.conversation_ref,
+                    cfg.domain,
+                    now
+                ],
+            )
+            .map_err(LandError::Sql)?;
+            let note_id =
+                insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
+            Ok(LandOutcome {
+                case_run_id: run_id,
+                kind: LandKind::Note {
+                    note_id,
+                    opened_case: false,
+                },
+            })
+        }
+        None => {
+            let run_id =
+                open_case_and_thread(conn, cfg, &envelope.conversation_ref, Some(now), now)
+                    .map_err(LandError::Sql)?;
+            let note_id =
+                insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
+            Ok(LandOutcome {
+                case_run_id: run_id,
+                kind: LandKind::Note {
+                    note_id,
+                    opened_case: true,
+                },
+            })
+        }
     }
+}
 
-    // 4. Unknown conversation → AUTO-OPEN `care/case` under the BRIDGE'S
-    //    configured domain. A conversation IS a governed case.
-    let conv_key = &envelope.conversation_ref;
-    let hash = subject_hash(&cfg.kind, cfg.tenant.as_str(), &envelope.conversation_ref);
+/// Thread-map lookup scoped BY CONSTRUCTION (channel + tenant + domain in
+/// every predicate). Returns the mapped case run when this conversation has
+/// one.
+fn thread_case_run(
+    conn: &Connection,
+    cfg: &ChannelBridgeConfig,
+    conversation_ref: &str,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT case_run_id FROM channel_threads
+          WHERE channel = ?1 AND tenant = ?2 AND conversation_ref = ?3 AND domain = ?4",
+        params![cfg.kind, cfg.tenant, conversation_ref, cfg.domain],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Open the care case + thread row for a conversation. Shared by inbound
+/// auto-open ([`land_inbound_message`]) and Caravel's business-initiated
+/// template dispatch — one codepath, one audit shape. `last_inbound_at` is
+/// Some on the inbound path; business-initiated contact starts with the
+/// window CLOSED (None), so free-form replies stay impossible until the
+/// customer answers.
+fn open_case_and_thread(
+    conn: &Connection,
+    cfg: &ChannelBridgeConfig,
+    conversation_ref: &str,
+    last_inbound_at: Option<i64>,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    let hash = subject_hash(&cfg.kind, cfg.tenant.as_str(), conversation_ref);
     let state_json = serde_json::json!({
         "opened_via": format!("channel/{}", cfg.kind),
-        "conversation_ref": conv_key,
+        "conversation_ref": conversation_ref,
         "subject_hash": hash,
     })
     .to_string();
@@ -402,37 +667,101 @@ pub(crate) fn land_inbound_message(
         "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
          VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4)",
         params![cfg.domain, KIND_CASE, state_json, now],
-    )
-    .map_err(LandError::Sql)?;
+    )?;
     let run_id = conn.last_insert_rowid();
     audit_write(
         conn,
         run_id,
         &format!("run:{run_id}"),
         AuditStatus::Ok,
-        &format!("open channel/{} via {}", cfg.bridge_id(), conv_key),
+        &format!("open channel/{} via {}", cfg.bridge_id(), conversation_ref),
     );
     conn.execute(
         "INSERT INTO channel_threads(channel, tenant, conversation_ref, domain, case_run_id,
                                      subject_hash, last_inbound_at, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             cfg.kind,
             cfg.tenant,
-            envelope.conversation_ref,
+            conversation_ref,
             cfg.domain,
             run_id,
             hash,
+            last_inbound_at,
             now
         ],
-    )
-    .map_err(LandError::Sql)?;
+    )?;
+    Ok(run_id)
+}
 
-    let note_id = insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
+/// Delivery proof: ONE `case/channel_status` lineage event on the thread's
+/// case — state + platform ref + ts, NEVER bodies. Exactly-once by key, so
+/// a replayed platform status cannot double-write history.
+fn record_status_lineage(
+    conn: &Connection,
+    cfg: &ChannelBridgeConfig,
+    envelope: &InboundEnvelope,
+    status: &ChannelStatus,
+    now: i64,
+) -> Result<LandOutcome, LandError> {
+    let Some(run_id) =
+        thread_case_run(conn, cfg, &envelope.conversation_ref).map_err(LandError::Sql)?
+    else {
+        return Err(LandError::UnknownThread);
+    };
+    let payload = serde_json::json!({
+        "state": status.state,
+        "ref": status.message_ref,
+        "channel": cfg.kind,
+        "ts": now,
+    })
+    .to_string();
+    let key = format!(
+        "chan-st-{}-{}-{}",
+        cfg.tenant, status.message_ref, status.state
+    );
+    outbox::append_lineage(conn, run_id, TOPIC_CHANNEL_STATUS, &payload, &key, now)
+        .map_err(LandError::Sql)?;
     Ok(LandOutcome {
         case_run_id: run_id,
-        note_id,
-        opened_case: true,
+        kind: LandKind::StatusLineage,
+    })
+}
+
+/// Quality observation: audited LOUDLY; DOWNGRADES additionally produce one
+/// metadata-only operator alert payload (number alias + old/new tier —
+/// never content, never customer refs) the handler publishes post-commit.
+fn record_quality_observation(
+    conn: &Connection,
+    cfg: &ChannelBridgeConfig,
+    q: &QualityObservation,
+) -> Result<LandOutcome, LandError> {
+    let transition = classify_quality_transition(q.old_tier.as_deref(), &q.new_tier);
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Workflow,
+        &format!("channel:{}", cfg.bridge_id()),
+        &format!("channel-tier:{}", q.number_alias),
+        AuditStatus::Ok,
+        &format!(
+            "tier {} -> {} ({transition:?})",
+            q.old_tier.as_deref().unwrap_or("unobserved"),
+            q.new_tier
+        ),
+    );
+    let alerts = match transition {
+        QualityTransition::Downgrade => vec![serde_json::json!({
+            "kind": "channel_tier_downgrade",
+            "channel": cfg.kind,
+            "number_alias": q.number_alias,
+            "old_tier": q.old_tier,
+            "new_tier": q.new_tier,
+        })],
+        _ => Vec::new(),
+    };
+    Ok(LandOutcome {
+        case_run_id: 0,
+        kind: LandKind::Quality { alerts },
     })
 }
 
@@ -504,7 +833,14 @@ fn bounded_author(cfg: &ChannelBridgeConfig) -> String {
 /// an adapter can never "helpfully" relax the metadata-only alert bus.
 pub(crate) enum OutboundSource<'a> {
     /// A HUMAN-approved act (proposal), digest-bound since Gateweld.
-    Approved { proposal_id: i64, digest: &'a str },
+    /// `template_name` carries the Meta-registered template for
+    /// `channel/template` acts so the EDGE sends what was approved — it is
+    /// descriptive only; the LAW is re-verified from the database below.
+    Approved {
+        proposal_id: i64,
+        digest: &'a str,
+        template_name: Option<&'a str>,
+    },
     /// An alert-bus FORWARD: metadata-only upstream by construction.
     Alert { alert_kind: &'a str },
 }
@@ -519,6 +855,9 @@ pub(crate) enum OutboundDecision {
 /// Enqueue ONE outbound envelope for a thread:
 /// - `Approved` — re-verifies INSIDE this tx that the proposal exists and is
 ///   `approved`, then requires reply-window open OR standing consent.
+///   WhatsApp binding (Caravel): OUTSIDE the 24h window a send is ONLY
+///   lawful as an approved `channel/template` act WITH consent — free-form
+///   approved acts are refused (`outside_reply_window_freeform_blocked`).
 /// - `Alert` — REQUIRES consent in force (business-initiated contact).
 ///
 /// Content rides only after every gate passed. Payload = envelope WITH text
@@ -552,33 +891,55 @@ pub(crate) fn enqueue_out(
     // SAME fail-closed semantics (any row not granted-and-live denies).
     let consented = switchboard_consent_in_force(conn, &domain, &subj_hash, &channel, now)?;
 
+    let window_open = reply_window_allows(last_inbound, now, DEFAULT_REPLY_WINDOW_SECS);
+
     let source_payload = match &source {
         OutboundSource::Approved {
             proposal_id,
             digest,
+            template_name,
         } => {
-            let status: Option<String> = conn
+            let row: Option<(String, String)> = conn
                 .query_row(
-                    "SELECT status FROM proposals WHERE id = ?1",
+                    "SELECT status, kind FROM proposals WHERE id = ?1",
                     params![proposal_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            let Some(status) = status else {
+            let Some((status, kind)) = row else {
                 return Ok(OutboundDecision::Suppressed("proposal_unknown"));
             };
             if status != "approved" {
                 return Ok(OutboundDecision::Suppressed("proposal_not_approved"));
             }
-            if !reply_window_allows(last_inbound, now, DEFAULT_REPLY_WINDOW_SECS) && !consented {
-                return Ok(OutboundDecision::Suppressed(
-                    "outside_reply_window_no_consent",
-                ));
+            if !window_open {
+                if channel == "whatsapp" {
+                    // The 24-hour rule maps EXACTLY: outside the customer's
+                    // last inbound, the ONLY lawful message is a TEMPLATE —
+                    // and ours must be the stricter approval (digest-bound
+                    // `channel/template`), never Meta's registry alone.
+                    if !consented {
+                        return Ok(OutboundDecision::Suppressed(
+                            "outside_reply_window_no_consent",
+                        ));
+                    }
+                    if kind != PROP_KIND_CHANNEL_TEMPLATE {
+                        return Ok(OutboundDecision::Suppressed(
+                            "outside_reply_window_freeform_blocked",
+                        ));
+                    }
+                } else if !consented {
+                    return Ok(OutboundDecision::Suppressed(
+                        "outside_reply_window_no_consent",
+                    ));
+                }
             }
             serde_json::json!({
                 "source": "approved_act",
                 "proposal_id": proposal_id,
                 "digest": digest,
+                "kind": kind,
+                "template": template_name,
             })
         }
         OutboundSource::Alert { alert_kind } => {
@@ -610,6 +971,180 @@ pub(crate) fn enqueue_out(
 /// The registry-purpose Switchboard consents live under (its own namespace so
 /// Outreach campaign purposes can never be conflated with bridge sends).
 pub(crate) const CONSENT_PURPOSE: &str = "switchboard_channel";
+
+// ── Caravel: the governed business-initiated TEMPLATE send ────────────
+
+/// One `channel/template` send request after HTTP-side validation.
+#[derive(Debug)]
+pub(crate) struct TemplateRequest<'a> {
+    pub tenant: &'a str,
+    pub conversation_ref: &'a str,
+    /// Meta-registered template name (descriptive; rides the envelope).
+    pub template: &'a str,
+    /// The exact message body the approver saw.
+    pub body: &'a str,
+}
+
+#[derive(Debug)]
+pub(crate) enum TemplateDispatchError {
+    Sql(rusqlite::Error),
+    Screened(room::ChannelError),
+    /// Config/bounds/name violations — loud 400s.
+    BridgeNotFound,
+    ChannelMismatch,
+    ConversationRefInvalid,
+    /// The sanitizer CHANGED the approved body: drained bytes would differ
+    /// from the bytes the human approved. Refuse; fix the template text.
+    BodyMutated,
+    /// Business-initiated contact lacks its third gate (standing consent) —
+    /// template + proposal existed, the registry did not grant.
+    ConsentRefused,
+    /// Every kernel gate passed at THIS layer but `enqueue_out` still
+    /// suppressed (the fence holds of the FUNCTION, never the caller). The
+    /// approval stays committed; the send is refused-and-audited.
+    EnqueueSuppressed(&'static str),
+}
+
+#[derive(Debug)]
+pub(crate) struct TemplateDispatch {
+    pub thread_id: i64,
+    pub case_run_id: i64,
+    /// True when this act OPENED the care case (business-initiated contact
+    /// to a conversation we had never landed inbound traffic for).
+    pub opened_case: bool,
+}
+
+/// File ONE approved `channel/template` send against its conversation:
+/// screen the body VERBATIM (a mutation refuses — drained bytes must equal
+/// reviewed bytes), resolve-or-open the thread under ALL THREE gates
+/// (Meta-registered template = the proposal itself; standing consent;
+/// approved digest-bound proposal upstream), then enqueue through
+/// [`enqueue_out`] whose internal fence re-verifies every law in-tx.
+/// Runs INSIDE the caller's transaction (the CAS'd approval commits or
+/// rolls back together with this dispatch).
+pub(crate) fn file_template_send(
+    conn: &Connection,
+    cfg: &ChannelBridgeConfig,
+    req: &TemplateRequest<'_>,
+    proposal_id: i64,
+    now: i64,
+) -> Result<TemplateDispatch, TemplateDispatchError> {
+    // The 24h/template/consent mapping is WHATSAPP law; the generic seam
+    // serves other kinds through their own gates.
+    if cfg.kind != "whatsapp" {
+        return Err(TemplateDispatchError::ChannelMismatch);
+    }
+    if req.conversation_ref.is_empty()
+        || req.conversation_ref.len() > MAX_CONVERSATION_REF
+        || req.conversation_ref.chars().any(char::is_control)
+    {
+        return Err(TemplateDispatchError::ConversationRefInvalid);
+    }
+    if req.template.is_empty()
+        || req.template.len() > 64
+        || req.template.chars().any(char::is_control)
+    {
+        return Err(TemplateDispatchError::ConversationRefInvalid);
+    }
+    let screened = room::screen_content(req.body).map_err(TemplateDispatchError::Screened)?;
+    if screened != req.body.trim() {
+        return Err(TemplateDispatchError::BodyMutated);
+    }
+
+    let consented = switchboard_consent_in_force(
+        conn,
+        &cfg.domain,
+        &subject_hash("whatsapp", cfg.tenant.as_str(), req.conversation_ref),
+        "whatsapp",
+        now,
+    )
+    .map_err(TemplateDispatchError::Sql)?;
+
+    enum Target {
+        Existing(i64),
+        Fresh,
+    }
+    let target = match thread_case_run(conn, cfg, req.conversation_ref)
+        .map_err(TemplateDispatchError::Sql)?
+    {
+        Some(run_id) => {
+            let last_inbound: Option<i64> = conn
+                .query_row(
+                    "SELECT last_inbound_at FROM channel_threads
+                      WHERE channel=?1 AND tenant=?2 AND conversation_ref=?3 AND domain=?4",
+                    params!["whatsapp", cfg.tenant, req.conversation_ref, cfg.domain],
+                    |r| r.get(0),
+                )
+                .map_err(TemplateDispatchError::Sql)?;
+            // Known conversation outside the window = business-initiated:
+            // consent is the third gate here too.
+            if !reply_window_allows(last_inbound, now, DEFAULT_REPLY_WINDOW_SECS) && !consented {
+                return Err(TemplateDispatchError::ConsentRefused);
+            }
+            Target::Existing(run_id)
+        }
+        None => {
+            // Cold, never-seen conversation: template + APPROVED proposal are
+            // given (the caller CAS'd them); standing consent decides.
+            if !consented {
+                return Err(TemplateDispatchError::ConsentRefused);
+            }
+            Target::Fresh
+        }
+    };
+
+    let (thread_id, case_run_id, opened_case) = match target {
+        Target::Existing(run_id) => {
+            let id: i64 = conn
+                .query_row(
+                    "SELECT id FROM channel_threads
+                      WHERE channel=?1 AND tenant=?2 AND conversation_ref=?3 AND domain=?4",
+                    params!["whatsapp", cfg.tenant, req.conversation_ref, cfg.domain],
+                    |r| r.get(0),
+                )
+                .map_err(TemplateDispatchError::Sql)?;
+            (id, run_id, false)
+        }
+        Target::Fresh => {
+            let run_id = open_case_and_thread(conn, cfg, req.conversation_ref, None, now)
+                .map_err(TemplateDispatchError::Sql)?;
+            let id: i64 = conn
+                .query_row(
+                    "SELECT id FROM channel_threads
+                      WHERE channel=?1 AND tenant=?2 AND conversation_ref=?3 AND domain=?4",
+                    params!["whatsapp", cfg.tenant, req.conversation_ref, cfg.domain],
+                    |r| r.get(0),
+                )
+                .map_err(TemplateDispatchError::Sql)?;
+            (id, run_id, true)
+        }
+    };
+
+    // Digest binds the DRAINED bytes — the screened form IS what leaves.
+    let digest = crate::audit::hash(&screened);
+    match enqueue_out(
+        conn,
+        thread_id,
+        OutboundSource::Approved {
+            proposal_id,
+            digest: &digest,
+            template_name: Some(req.template),
+        },
+        &screened,
+        now,
+    )
+    .map_err(TemplateDispatchError::Sql)?
+    {
+        OutboundDecision::Enqueued => Ok(TemplateDispatch {
+            thread_id,
+            case_run_id,
+            opened_case,
+        }),
+        OutboundDecision::Suppressed(reason) => {
+            Err(TemplateDispatchError::EnqueueSuppressed(reason))
+        }
+    }
+}
 
 /// Fail-closed consent read over the SHARED `consent_registry`: only an
 /// unexpired, unrevoked GRANT passes; absent/expired/revoked all deny.
@@ -706,11 +1241,24 @@ mod tests {
         }
     }
 
+    /// Caravel bridge fixture: a WhatsApp number under the same tenant law.
+    fn wa_cfg(domain: &str) -> ChannelBridgeConfig {
+        ChannelBridgeConfig {
+            kind: "whatsapp".into(),
+            tenant: "acme".into(),
+            domain: domain.into(),
+            webhook_secret: b"secretsecretsecret".to_vec(),
+        }
+    }
+
     fn envelope(conv: &str, text: &str, ext: &str) -> InboundEnvelope {
         InboundEnvelope {
             conversation_ref: conv.into(),
             text: text.into(),
             external_id: ext.into(),
+            attachment_digests: Vec::new(),
+            status: None,
+            quality: None,
         }
     }
 
@@ -742,10 +1290,17 @@ mod tests {
         let mut sneaky = envelope("+31", "hello \u{200b}world", "ext-2");
         sneaky.text.push('\u{202e}');
         let out = land_inbound_message(&conn, &c, &sneaky, 2001).unwrap();
+        let LandKind::Note {
+            note_id,
+            opened_case,
+        } = out.kind
+        else {
+            panic!("note envelopes land notes");
+        };
         let stored: String = conn
             .query_row(
                 "SELECT content FROM case_notes WHERE id = ?1",
-                params![out.note_id],
+                params![note_id],
                 |r| r.get(0),
             )
             .unwrap();
@@ -758,7 +1313,7 @@ mod tests {
             "bidi override stripped: {stored:?}"
         );
         assert_eq!(count_kind(&conn, KIND_CASE), 1);
-        assert!(out.opened_case);
+        assert!(opened_case);
     }
 
     // ── PIN 2: unknown conversations open cases UNDER THE BRIDGE'S DOMAIN ──
@@ -768,7 +1323,10 @@ mod tests {
         let c = cfg("acme");
         let out =
             land_inbound_message(&conn, &c, &envelope("+31", "hi there", "e1"), 3000).unwrap();
-        assert!(out.opened_case);
+        let LandKind::Note { opened_case, .. } = out.kind else {
+            panic!("notes are notes");
+        };
+        assert!(opened_case);
         let (kind, domain, status): (String, String, String) = conn
             .query_row(
                 "SELECT kind, domain, status FROM workflow_runs WHERE id = ?1",
@@ -784,7 +1342,15 @@ mod tests {
         // case (no duplicate opening).
         let again =
             land_inbound_message(&conn, &c, &envelope("+31", "hello again", "e2"), 3100).unwrap();
-        assert!(!again.opened_case && again.case_run_id == out.case_run_id);
+        assert!(
+            matches!(
+                again.kind,
+                LandKind::Note {
+                    opened_case: false,
+                    ..
+                }
+            ) && again.case_run_id == out.case_run_id
+        );
 
         // A DIFFERENT bridge of the SAME kind (own tenant + own domain) gets
         // its OWN case — cross-tenant isolation by construction. (kind+tenant
@@ -808,7 +1374,15 @@ mod tests {
             3200,
         )
         .unwrap();
-        assert!(theirs.opened_case && theirs.case_run_id != out.case_run_id);
+        assert!(
+            matches!(
+                theirs.kind,
+                LandKind::Note {
+                    opened_case: true,
+                    ..
+                }
+            ) && theirs.case_run_id != out.case_run_id
+        );
         let dom: String = conn
             .query_row(
                 "SELECT domain FROM workflow_runs WHERE id = ?1",
@@ -837,7 +1411,15 @@ mod tests {
             4010,
         )
         .unwrap();
-        assert!(!out.opened_case && out.case_run_id == case);
+        assert!(
+            matches!(
+                out.kind,
+                LandKind::Note {
+                    opened_case: false,
+                    ..
+                }
+            ) && out.case_run_id == case
+        );
         let threads: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM channel_threads WHERE conversation_ref = '+9999'",
@@ -887,7 +1469,13 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !fallback.opened_case && fallback.case_run_id == case,
+            matches!(
+                fallback.kind,
+                LandKind::Note {
+                    opened_case: false,
+                    ..
+                }
+            ) && fallback.case_run_id == case,
             "non-addressed forms route through normal threading"
         );
     }
@@ -967,6 +1555,464 @@ mod tests {
         assert_eq!(f(Some(123)), f(Some(123)));
     }
 
+    // ── CARAVEL PIN: the 24h window maps onto the seam EXACTLY — free-form
+    //    replies ride the customer's clock; outside it only an approved
+    //    `channel/template` act (with consent) leaves the building.
+    #[test]
+    fn twenty_four_hour_window_blocks_freeform_and_allows_approved_template() {
+        let conn = db();
+        let c = wa_cfg("acme");
+        let t_in = 10_000i64;
+        let th = land_inbound_message(&conn, &c, &envelope("+1555", "price please", "m1"), t_in)
+            .unwrap();
+        let thread_row: i64 = conn
+            .query_row(
+                "SELECT id FROM channel_threads WHERE case_run_id = ?1",
+                params![th.case_run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        // INSIDE the window: a plain approved act replies freely.
+        let pid_fact: i64 = insert_proposal(&conn, "fact", "approved", "free body");
+        let d = enqueue_out(
+            &conn,
+            thread_row,
+            OutboundSource::Approved {
+                proposal_id: pid_fact,
+                digest: &"a".repeat(64),
+                template_name: None,
+            },
+            "free body",
+            t_in + 60,
+        )
+        .unwrap();
+        assert!(matches!(d, OutboundDecision::Enqueued));
+
+        // Grant standing consent, then move OUTSIDE the window.
+        grant_consent(&conn, "acme", "whatsapp", "+1555", t_in);
+        let t_out = t_in + DEFAULT_REPLY_WINDOW_SECS * 2;
+
+        // Free-form OUTSIDE the window: REFUSED even though approved AND
+        // consented — Meta's police power rides the seam.
+        let d = enqueue_out(
+            &conn,
+            thread_row,
+            OutboundSource::Approved {
+                proposal_id: pid_fact,
+                digest: &"b".repeat(64),
+                template_name: None,
+            },
+            "still replying free",
+            t_out,
+        )
+        .unwrap();
+        assert!(matches!(
+            d,
+            OutboundDecision::Suppressed("outside_reply_window_freeform_blocked")
+        ));
+
+        // Approved TEMPLATE outside the window with consent: the lawful send.
+        let pid_tpl: i64 = insert_proposal(
+            &conn,
+            PROP_KIND_CHANNEL_TEMPLATE,
+            "approved",
+            r#"{"template":"order_update"}"#,
+        );
+        let d = enqueue_out(
+            &conn,
+            thread_row,
+            OutboundSource::Approved {
+                proposal_id: pid_tpl,
+                digest: &"c".repeat(64),
+                template_name: Some("order_update"),
+            },
+            "Your order has shipped",
+            t_out,
+        )
+        .unwrap();
+        assert!(matches!(d, OutboundDecision::Enqueued));
+
+        assert_eq!(
+            count_topic(&conn, TOPIC_CHANNEL_OUT),
+            2,
+            "only the lawful pair rode the topic"
+        );
+    }
+
+    /// Helper: a decided proposal row (kind, status) with bounded content.
+    fn insert_proposal(conn: &Connection, kind: &str, status: &str, content: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO proposals(kind, content, status, created_at, novelty, salience)
+             VALUES (?1, ?2, ?3, 1, 0.5, 0.5)",
+            params![kind, content, status],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Helper: standing consent under the Switchboard purpose.
+    fn grant_consent(conn: &Connection, domain: &str, channel: &str, conv: &str, now: i64) {
+        let subj_hash = subject_hash(channel, "acme", conv);
+        conn.execute(
+            "INSERT INTO consent_registry(domain, subject_hash, channel, purpose, status,
+                                          provenance, granted_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'granted', 'caravel-test', ?5, ?5)
+             ON CONFLICT(domain, subject_hash, channel, purpose) DO UPDATE SET
+               status='granted', revoked_at=NULL, updated_at=?5",
+            params![domain, subj_hash, channel, CONSENT_PURPOSE, now],
+        )
+        .unwrap();
+    }
+
+    fn template_req<'a>(conv: &'a str, template: &'a str, body: &'a str) -> TemplateRequest<'a> {
+        TemplateRequest {
+            tenant: "acme",
+            conversation_ref: conv,
+            template,
+            body,
+        }
+    }
+
+    // ── CARAVEL PIN: our approval gates a template send — Meta's registry
+    //    alone NEVER will. Unknown / not-approved / wrong-KIND proposals are
+    //    each read back from the DATABASE inside the fence and refused.
+    #[test]
+    fn template_send_requires_our_proposal_not_just_metas() {
+        let conn = db();
+        let c = wa_cfg("acme");
+        let t_in = 20_000i64;
+        let th =
+            land_inbound_message(&conn, &c, &envelope("+1556", "need help", "m1"), t_in).unwrap();
+        grant_consent(&conn, "acme", "whatsapp", "+1556", t_in);
+        let t_out = t_in + DEFAULT_REPLY_WINDOW_SECS * 2;
+        let req = template_req("+1556", "support_reply", "Fix shipped");
+
+        // (a) No proposal id at all: even with consent outside the window,
+        //     nothing rides without OUR approved row.
+        let thread_row: i64 = conn
+            .query_row(
+                "SELECT id FROM channel_threads WHERE case_run_id = ?1",
+                params![th.case_run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let d = enqueue_out(
+            &conn,
+            thread_row,
+            OutboundSource::Approved {
+                proposal_id: 999_999,
+                digest: &"d".repeat(64),
+                template_name: Some("support_reply"),
+            },
+            "no such act",
+            t_out,
+        )
+        .unwrap();
+        assert!(matches!(
+            d,
+            OutboundDecision::Suppressed("proposal_unknown")
+        ));
+
+        // (b) A PENDING template is not an approval either.
+        let pend = insert_proposal(&conn, PROP_KIND_CHANNEL_TEMPLATE, "pending", "later");
+        let err = file_template_send(&conn, &c, &req, pend, t_out).unwrap_err();
+        assert!(matches!(
+            err,
+            TemplateDispatchError::EnqueueSuppressed("proposal_not_approved")
+        ));
+
+        // (c) An APPROVED NON-template act with consent is still refused
+        //     outside the window: "Meta registered a template" is not ours.
+        let fact = insert_proposal(&conn, "fact", "approved", "body");
+        let err = file_template_send(&conn, &c, &req, fact, t_out).unwrap_err();
+        assert!(matches!(
+            err,
+            TemplateDispatchError::EnqueueSuppressed("outside_reply_window_freeform_blocked")
+        ));
+
+        // (d) Only the digest-bound OUR-proposal send flows.
+        let tpl = insert_proposal(&conn, PROP_KIND_CHANNEL_TEMPLATE, "approved", "tpl");
+        let dispatch = file_template_send(&conn, &c, &req, tpl, t_out).unwrap();
+        assert_eq!(dispatch.case_run_id, th.case_run_id);
+        assert!(!dispatch.opened_case);
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_OUT), 1);
+    }
+
+    // ── CARAVEL PIN: business-initiated contact = template + consent +
+    //    approved proposal, ALL THREE, every time (the consent registry is
+    //    the third gate on cold conversations too).
+    #[test]
+    fn business_initiated_needs_template_and_consent_and_proposal() {
+        let conn = db();
+        let c = wa_cfg("acme");
+        let now = 30_000i64;
+        let req = template_req("+1557", "welcome_intro", "Hello from Acme");
+        let tpl = insert_proposal(&conn, PROP_KIND_CHANNEL_TEMPLATE, "approved", "tpl");
+
+        // Cold conversation WITHOUT consent: loud refusal, NOTHING written.
+        let err = file_template_send(&conn, &c, &req, tpl, now).unwrap_err();
+        assert!(matches!(err, TemplateDispatchError::ConsentRefused));
+        assert_eq!(count(&conn, "channel_threads"), 0);
+        assert_eq!(count_kind(&conn, KIND_CASE), 0);
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_OUT), 0);
+
+        // The proposal EXISTS and is approved — but only consent completes
+        // the triple gate and opens the case.
+        grant_consent(&conn, "acme", "whatsapp", "+1557", now);
+        let dispatch = file_template_send(&conn, &c, &req, tpl, now + 10).unwrap();
+        assert!(dispatch.opened_case, "cold contact opens its governed case");
+        assert_eq!(count_kind(&conn, KIND_CASE), 1);
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_OUT), 1);
+
+        // The opened thread keeps last_inbound NULL — the window stays SHUT
+        // until the customer answers, so only templates ever follow.
+        let last: Option<i64> = conn
+            .query_row(
+                "SELECT last_inbound_at FROM channel_threads WHERE id = ?1",
+                params![dispatch.thread_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(last, None);
+
+        // Non-whatsapp configs can never reach the WhatsApp mapping.
+        let sig = cfg("acme");
+        let err = file_template_send(&conn, &sig, &req, tpl, now + 20).unwrap_err();
+        assert!(matches!(err, TemplateDispatchError::ChannelMismatch));
+    }
+
+    // ── CARAVEL PIN: platform delivery states become LINEAGE EVENTS on the
+    //    thread's case — hashes and refs on the chain, bodies never.
+    #[test]
+    fn delivery_status_becomes_lineage_event() {
+        let conn = db();
+        let c = wa_cfg("acme");
+        let now = 40_000i64;
+        let th = land_inbound_message(&conn, &c, &envelope("+1558", "about my order", "m1"), now)
+            .unwrap();
+
+        // Parse + land a delivered receipt (note shape carries NO text).
+        let body = br#"{"envelope":{"conversation_ref":"+1558","text":"","external_id":"s1","status":{"state":"delivered","ref":"wamid.STATUS_9"}}}"#;
+        let env = InboundEnvelope::parse(body).unwrap();
+        assert_eq!(env.status.as_ref().unwrap().state, "delivered");
+        assert_eq!(env.attachment_digests.len(), 0);
+        let out = land_inbound_message(&conn, &c, &env, now + 5).unwrap();
+        assert_eq!(out.case_run_id, th.case_run_id);
+        assert!(matches!(out.kind, LandKind::StatusLineage));
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_STATUS), 1);
+
+        // Replay lands as an idempotent no-op at the lineage layer too.
+        land_inbound_message(&conn, &c, &env, now + 6).unwrap();
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_STATUS), 1);
+
+        // A failed receipt is its own event; refs never carry bodies.
+        let fail_body = br#"{"envelope":{"conversation_ref":"+1558","text":"","external_id":"s2","status":{"state":"failed","ref":"wamid.STATUS_10"}}}"#;
+        land_inbound_message(
+            &conn,
+            &c,
+            &InboundEnvelope::parse(fail_body).unwrap(),
+            now + 7,
+        )
+        .unwrap();
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_STATUS), 2);
+        let stored: String = conn
+            .query_row(
+                "SELECT payload_json FROM outbox WHERE topic = ?1 ORDER BY id DESC LIMIT 1",
+                params![TOPIC_CHANNEL_STATUS],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(stored.contains("failed"));
+        assert!(
+            !stored.contains("my order"),
+            "no customer content on proofs"
+        );
+
+        // A status for an UNOWNED conversation refuses loudly.
+        let stranger = br#"{"envelope":{"conversation_ref":"+1999","text":"","external_id":"s3","status":{"state":"read","ref":"wamid.X"}}}"#;
+        let res = land_inbound_message(
+            &conn,
+            &c,
+            &InboundEnvelope::parse(stranger).unwrap(),
+            now + 8,
+        );
+        assert!(matches!(res.unwrap_err(), LandError::UnknownThread));
+
+        // Closed vocabulary: invented states refuse at PARSE time.
+        let junk = br#"{"envelope":{"conversation_ref":"+1558","text":"","external_id":"s4","status":{"state":"seen_everywhere","ref":"x"}}}"#;
+        assert_eq!(InboundEnvelope::parse(junk), Err("status_state_invalid"));
+    }
+
+    // ── CARAVEL PIN: quality tiers throttle DETERMINISTICALLY and downgrades
+    //    alert the operator with METADATA ONLY (alias + tiers, never content
+    //    or customer refs).
+    #[test]
+    fn tier_downgrade_throttles_and_alerts() {
+        // The deterministic backoff table: fresh/unknown = MOST restrictive.
+        assert_eq!(min_send_interval_secs(Some("green")), 0);
+        assert_eq!(min_send_interval_secs(Some("yellow")), 30);
+        assert_eq!(min_send_interval_secs(Some("orange")), 300);
+        let restrictive = min_send_interval_secs(Some("red"));
+        assert_eq!(restrictive, min_send_interval_secs(None));
+        assert_eq!(restrictive, 3_600);
+        // A downgrade always tightens (or holds) the interval — that IS the
+        // throttle law.
+        assert!(min_send_interval_secs(Some("orange")) >= min_send_interval_secs(Some("yellow")));
+
+        // Transition classification drives everything downstream.
+        assert_eq!(
+            classify_quality_transition(Some("green"), "orange"),
+            QualityTransition::Downgrade
+        );
+        assert_eq!(
+            classify_quality_transition(Some("red"), "yellow"),
+            QualityTransition::Upgrade
+        );
+        assert_eq!(
+            classify_quality_transition(Some("green"), "green"),
+            QualityTransition::Flat
+        );
+        assert_eq!(
+            classify_quality_transition(None, "not-a-tier"),
+            QualityTransition::Flat
+        );
+
+        // Landing a downgrade observation audits + produces ONE metadata-only
+        // alert payload; upgrades stay quiet on the bus.
+        let conn = db();
+        let c = wa_cfg("acme");
+        let mk_env = |old: Option<&str>, new: &str| {
+            let q = serde_json::json!({
+                "envelope": {
+                    "quality": {
+                        "number_alias": "biz_number",
+                        "old_tier": old,
+                        "new_tier": new,
+                    },
+                    "conversation_ref": "",
+                    "text": "",
+                    "external_id": "q1",
+                }
+            });
+            InboundEnvelope::parse(serde_json::to_string(&q).unwrap().as_bytes()).unwrap()
+        };
+        let out = land_inbound_message(&conn, &c, &mk_env(Some("green"), "orange"), 1).unwrap();
+        let LandKind::Quality { alerts } = out.kind else {
+            panic!("quality landing must produce a Quality outcome");
+        };
+        assert_eq!(alerts.len(), 1, "downgrades alert");
+        let a = &alerts[0];
+        assert_eq!(a["kind"], "channel_tier_downgrade");
+        assert_eq!(a["channel"], "whatsapp");
+        assert_eq!(a["number_alias"], "biz_number");
+        assert_eq!(a["new_tier"], "orange");
+        assert_eq!(
+            a.as_object().unwrap().len(),
+            5,
+            "metadata ONLY — nothing else rides"
+        );
+        assert!(out.case_run_id == 0, "account-scoped: no case attribution");
+
+        let up = land_inbound_message(&conn, &c, &mk_env(Some("orange"), "green"), 2).unwrap();
+        let LandKind::Quality { alerts } = up.kind else {
+            panic!("upgrade landing must be a Quality outcome too");
+        };
+        assert!(alerts.is_empty(), "upgrades do not page the operator");
+
+        // Vocabulary law: invented tiers refuse loudly at parse.
+        let bad = serde_json::json!({
+            "envelope": {
+                "quality": {"number_alias": "b", "new_tier": "platinum"},
+                "conversation_ref": "", "text": "", "external_id": "q2",
+            }
+        });
+        assert_eq!(
+            InboundEnvelope::parse(serde_json::to_string(&bad).unwrap().as_bytes()),
+            Err("quality_tier_invalid")
+        );
+    }
+
+    // ── CARAVEL PIN: attachment SHA-256 digests are RECORDED ON THE NOTE;
+    //    the bytes themselves are quarantined EDGE-SIDE (this side proves
+    //    the kernel holds hashes only — never media, never a proxy).
+    #[test]
+    fn media_digests_recorded_content_quarantined() {
+        let conn = db();
+        let c = wa_cfg("acme");
+        let now = 50_000i64;
+        let digest = "ab".repeat(32); // lowercase hex64
+        let upper = digest.to_uppercase();
+
+        let body = serde_json::to_string(&serde_json::json!({
+            "envelope": {
+                "conversation_ref": "+1559",
+                "text": "see attached report",
+                "external_id": "ma1",
+                "attachment_digests": [upper],
+            }
+        }))
+        .unwrap();
+        let env = InboundEnvelope::parse(body.as_bytes()).unwrap();
+        assert_eq!(
+            env.attachment_digests,
+            vec![digest.clone()],
+            "normalized lowercase"
+        );
+        let out = land_inbound_message(&conn, &c, &env, now).unwrap();
+        let LandKind::Note { note_id, .. } = out.kind else {
+            panic!("digest-bearing envelope must land a NOTE");
+        };
+        let stored: String = conn
+            .query_row(
+                "SELECT content FROM case_notes WHERE id = ?1",
+                params![note_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            stored.contains(&format!("[attachment sha256:{digest}]")),
+            "the digest is recorded ON the note: {stored}"
+        );
+        assert!(stored.contains("see attached report"));
+
+        // Bounds + format laws hold at the wire:
+        let many: Vec<String> = (0..9).map(|_| digest.clone()).collect();
+        let too_many = serde_json::json!({
+            "envelope": {"conversation_ref":"+1559","text":"t","external_id":"ma2",
+                         "attachment_digests": many},
+        });
+        assert_eq!(
+            InboundEnvelope::parse(serde_json::to_string(&too_many).unwrap().as_bytes()),
+            Err("attachment_digests_bounds")
+        );
+        let malformed = serde_json::json!({
+            "envelope": {"conversation_ref":"+1559","text":"t","external_id":"ma3",
+                         "attachment_digests": ["zz"]},
+        });
+        assert_eq!(
+            InboundEnvelope::parse(serde_json::to_string(&malformed).unwrap().as_bytes()),
+            Err("attachment_digests_format")
+        );
+        // Ref-only projections cannot carry text: media/status envelopes and
+        // notes are DISJOINT shapes.
+        let smuggling = serde_json::json!({
+            "envelope": {"conversation_ref":"+1559","text":"t","external_id":"ma4",
+                         "attachment_digests": [digest],
+                         "status": {"state":"delivered","ref":"x"}},
+        });
+        assert_eq!(
+            InboundEnvelope::parse(serde_json::to_string(&smuggling).unwrap().as_bytes()),
+            Err("text_with_projections")
+        );
+        // The kernel stores hashes ONLY: exactly one note, nothing else grew.
+        assert_eq!(
+            count_like(&conn, "case_notes", "BIN"),
+            0,
+            "no bytes anywhere"
+        );
+    }
+
     // ── PIN 4: outbound requires an approved act or an alert forward ───────
     #[test]
     fn outbound_requires_approved_act_or_alert_envelope() {
@@ -1041,6 +2087,7 @@ mod tests {
             OutboundSource::Approved {
                 proposal_id: pid,
                 digest: &"a".repeat(64),
+                template_name: None,
             },
             "approved body",
             now + 30,
@@ -1056,6 +2103,7 @@ mod tests {
             OutboundSource::Approved {
                 proposal_id: pid,
                 digest: &"a".repeat(64),
+                template_name: None,
             },
             "another body",
             now + DEFAULT_REPLY_WINDOW_SECS * 2,
@@ -1076,6 +2124,7 @@ mod tests {
             OutboundSource::Approved {
                 proposal_id: pid,
                 digest: &"a".repeat(64),
+                template_name: None,
             },
             "not yet",
             now + 40,

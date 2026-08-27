@@ -1154,13 +1154,17 @@ mod valet_tests {
         );
     }
 
-    /// Switchboard pin (the SAME law, the new bridge home): the Rust
-    /// signal-gateway source may never reference a brain token or the brain
-    /// DB — it holds ONLY its own 0600 channel config + Signal store.
+    /// Switchboard/Caravel pin (the SAME law, every governed edge home): the
+    /// Rust bridge sources may never reference a brain token or the brain
+    /// DB — each holds ONLY its own 0600 channel config (+ its platform
+    /// store/quarantine).
     #[test]
     fn bridge_holds_no_brain_credentials() {
-        let gateway_dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/signal-gateway");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let roots = [
+            manifest.join("tools/signal-gateway"),
+            manifest.join("tools/channel-bridge"),
+        ];
         let mut sources = 0usize;
         let mut hits = vec![];
         fn scan(dir: &std::path::Path, hits: &mut Vec<String>, seen: &mut usize) {
@@ -1192,8 +1196,10 @@ mod valet_tests {
                 }
             }
         }
-        scan(&gateway_dir, &mut hits, &mut sources);
-        assert!(sources > 0, "signal-gateway sources present");
+        for root in &roots {
+            scan(root, &mut hits, &mut sources);
+        }
+        assert!(sources > 0, "channel bridge sources present");
         assert!(
             hits.is_empty(),
             "channel edge must hold no brain credentials: {hits:?}"

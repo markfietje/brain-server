@@ -774,6 +774,11 @@ paths:
         conversations auto-open a `care/case` run under the bridge's domain;
         `[case N]` addressing overrides the map, cross-domain refused), and
         lands the message as a SCREENED case note with its audit row.
+        Caravel (WhatsApp): attachment digests ride ON the note; delivery
+        receipts land as ONE `case/channel_status` lineage event; tier
+        transitions fire metadata-only operator alerts. The subscription
+        handshake (`hub.challenge`) is answered by the EDGE process and never
+        reaches the kernel.
       parameters:
         - name: kind
           in: path
@@ -792,6 +797,14 @@ paths:
                 envelope:
                   type: object
                   required: [conversation_ref, text, external_id]
+                  description: >-
+                    Caravel additions (all optional): `attachment_digests`
+                    records SHA-256s ON the landed note (bytes stay quarantined
+                    on the edge); `status` projects a platform delivery receipt
+                    into ONE `case/channel_status` lineage event (refs never
+                    bodies); `quality` reports a number-tier transition and
+                    fires a METADATA-ONLY operator alert (alias + tiers).
+                    Status/quality envelopes carry NO text.
                   properties:
                     conversation_ref:
                       type: string
@@ -802,9 +815,44 @@ paths:
                       type: string
                       maxLength: 200
                       description: Platform message id — the replay-cap key half.
+                    attachment_digests:
+                      type: array
+                      maxItems: 8
+                      items:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      description: SHA-256 of each attachment; recorded verbatim on the note.
+                    status:
+                      type: object
+                      required: [state, ref]
+                      properties:
+                        state:
+                          type: string
+                          enum: [sent, delivered, read, failed]
+                        ref:
+                          type: string
+                          maxLength: 200
+                          description: Platform message id the receipt refers to.
+                    quality:
+                      type: object
+                      required: [number_alias, new_tier]
+                      properties:
+                        number_alias:
+                          type: string
+                          maxLength: 64
+                        old_tier:
+                          type: string
+                          enum: [green, yellow, orange, red]
+                        new_tier:
+                          type: string
+                          enum: [green, yellow, orange, red]
       responses:
         "200":
-          description: Message landed (or duplicate replay)
+          description: >-
+            Landed. `note_recorded` for message envelopes (with case_run_id /
+            note_id / opened_case), `status_lineage_recorded` for delivery
+            receipts, `quality_observed` (alerts_published = 0|1) for tier
+            transitions — or `{"status":"duplicate"}` for replayed ids.
           content:
             application/json:
               schema:
@@ -841,7 +889,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"status": "ok", "count": 1, "envelopes": [{"event_id": 12, "text": "…", "source_payload": {"source": "approved_act", "proposal_id": 3}}]}
+                example: {"status": "ok", "count": 1, "envelopes": [{"event_id": 12, "text": "…", "source_payload": {"source": "approved_act", "proposal_id": 3, "kind": "channel/template", "template": "order_update_v3", "digest": "<sha256-of-drained-body>"}}]}
         "401":
           description: Bridge signature verification failed
   /consolidate/propose:
@@ -1583,7 +1631,17 @@ paths:
               required: [content]
               properties:
                 content: { type: string, maxLength: 2000 }
-                kind: { type: string, enum: [fact, procedure, step, decision, episodic], default: fact }
+                kind:
+                  type: string
+                  enum: [fact, procedure, step, decision, episodic, entitlement, draft, channel/template]
+                  default: fact
+                  description: >-
+                    `draft` is proposal-only (never becomes a knowledge
+                    node_kind). `channel/template` (Caravel) is likewise
+                    proposal-only: its content is the JSON send packet
+                    `{tenant, conversation_ref, template, body}` and approval
+                    dispatches through the channel seam — never promoted to
+                    knowledge.
                 source: { type: string }
                 authority: { type: number }
                 observed_at: { type: integer }
@@ -1660,7 +1718,15 @@ paths:
             (no binding).
       responses:
         "200":
-          description: Proposal approved and promoted to a knowledge row
+          description: >-
+            Kind-dependent. Memory kinds promote to a knowledge row;
+            `channel/template` (Caravel) CASes approved and DISPATCHES the
+            governed send in the SAME tx — `{moved:true, enqueued:true,
+            case_run_id, opened_case}` on dispatch, `{moved:false}` as the
+            decided receipt when the proposal was already decided (replay-
+            safe, never double-sends), or — only when the kernel's own gates
+            still refuse (e.g. no standing consent for business-initiated
+            contact) — 409 with the approval rolled back and nothing written.
           content:
             application/json:
               schema:

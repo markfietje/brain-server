@@ -162,11 +162,19 @@ pub(crate) async fn create_proposal(
     // body travels the normal HITL lifecycle; it never becomes its own
     // knowledge node_kind (a promoted draft lands as `fact`, the
     // forward-compat default).
+    // Caravel: `channel/template` is likewise PROPOSAL-only — a governed
+    // outbound template act (Meta registry + OUR digest-bound approval).
+    // Approving it dispatches through the channel seam; it can never be
+    // promoted into knowledge.
     let is_draft = req.kind == "draft";
-    if !is_draft && !crate::procedural::MemoryKind::is_strict_valid(&req.kind) {
+    let is_channel_template = req.kind == crate::workflow::channels::PROP_KIND_CHANNEL_TEMPLATE;
+    if !is_draft
+        && !is_channel_template
+        && !crate::procedural::MemoryKind::is_strict_valid(&req.kind)
+    {
         return Err(HandlerError::bad_request(
             "invalid_kind",
-            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic, entitlement, draft",
+            "unknown memory_kind; must be one of: fact, procedure, step, decision, episodic, entitlement, draft (channel/template is a governed channel act, proposal-only)",
         ));
     }
 
@@ -1035,6 +1043,153 @@ pub async fn approve_proposal(
                 "id": id,
                 "status": "approved",
             }));
+        }
+
+        // ── Caravel: the `channel/template` branch. A template send is a
+        // PROPOSAL double-approved by construction — Meta's registry AND
+        // ours; ours is stricter because it carries the content digest.
+        // Approval = CAS pending→approved + the governed dispatch in the
+        // SAME tx: all three gates (Meta template / standing consent /
+        // digest-bound approved proposal) hold or nothing commits.
+        // Replay-safe: a decided proposal returns its receipt (moved:false)
+        // and NEVER re-enqueues.
+        if kind == crate::workflow::channels::PROP_KIND_CHANNEL_TEMPLATE {
+            let payload: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                HandlerError::bad_request("template_packet_invalid", e.to_string())
+            })?;
+            let field = |name: &str| -> Result<String, HandlerError> {
+                payload
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        HandlerError::bad_request(
+                            "template_packet_invalid",
+                            format!("missing {name}"),
+                        )
+                    })
+            };
+            let tenant = field("tenant")?;
+            let conversation_ref = field("conversation_ref")?;
+            let template = field("template")?;
+            let body = field("body")?;
+            let now_ts = chrono::Utc::now().timestamp();
+
+            // Resolve WHICH bridge owns this tenant: a whatsapp config must
+            // exist and be discoverable, or nothing here is lawful (the edge
+            // that would deliver it is not even registered).
+            let dir = super::channel_webhook::connector_config_dir();
+            let cfgs = crate::workflow::channels::discover_bridge_configs(&dir);
+            let Some(cfg) = cfgs
+                .iter()
+                .find(|c| c.kind == "whatsapp" && c.tenant == tenant)
+                .cloned()
+            else {
+                return Err(HandlerError::bad_request(
+                    "unknown_bridge",
+                    format!("no channel-whatsapp-{tenant} config is registered"),
+                ));
+            };
+
+            // CAS pending→approved. n==0 means a concurrent decision already
+            // committed: hand back the DECIDED receipt without re-dispatching
+            // (moved:false — never a second send).
+            let moved = tx
+                .execute(
+                    "UPDATE proposals SET status = 'approved', decided_at = ?1
+                     WHERE id = ?2 AND status = 'pending'",
+                    rusqlite::params![now_ts, id],
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            if moved == 0 {
+                tx.rollback()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                return Ok(serde_json::json!({
+                    "id": id,
+                    "status": "decided",
+                    "moved": false,
+                }));
+            }
+
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("gate/{kind} approved"),
+                "global",
+            );
+
+            // The governed send. ConsentRefused and EnqueueSuppressed are
+            // LAWFUL refusals of an already-recorded decision: the approval
+            // stays committed (valet posture — the refusal itself becomes
+            // evidence) and the caller sees why nothing left the building.
+            match crate::workflow::channels::file_template_send(
+                &tx,
+                &cfg,
+                &crate::workflow::channels::TemplateRequest {
+                    tenant: &tenant,
+                    conversation_ref: &conversation_ref,
+                    template: &template,
+                    body: &body,
+                },
+                id,
+                now_ts,
+            ) {
+                Ok(dispatch) => {
+                    tx.commit()
+                        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+                    return Ok(serde_json::json!({
+                        "id": id,
+                        "status": "approved",
+                        "moved": true,
+                        "enqueued": true,
+                        "case_run_id": dispatch.case_run_id,
+                        "opened_case": dispatch.opened_case,
+                    }));
+                }
+                Err(crate::workflow::channels::TemplateDispatchError::EnqueueSuppressed(reason)) => {
+                    tracing::warn!("channel/template {id}: enqueue suppressed ({reason})");
+                    tx.commit()
+                        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+                    return Ok(serde_json::json!({
+                        "id": id,
+                        "status": "approved",
+                        "moved": true,
+                        "enqueued": false,
+                        "reason": reason,
+                    }));
+                }
+                Err(crate::workflow::channels::TemplateDispatchError::ConsentRefused) => {
+                    tx.rollback()
+                        .map_err(|e| HandlerError::internal(e.to_string()))?;
+                    crate::audit::record(
+                        &conn,
+                        crate::audit::AuditKind::Workflow,
+                        principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                        &format!("proposal:{id}"),
+                        crate::audit::AuditStatus::Denied,
+                        "template send refused: no standing consent",
+                    );
+                    return Err(HandlerError::conflict(
+                        "business-initiated contact refused: no consent-registry grant for this subject under switchboard_channel",
+                    ));
+                }
+                Err(e) => {
+                    tx.rollback()
+                        .map_err(|e| HandlerError::internal(e.to_string()))?;
+                    let code = match &e {
+                        crate::workflow::channels::TemplateDispatchError::BridgeNotFound => "unknown_bridge",
+                        crate::workflow::channels::TemplateDispatchError::ChannelMismatch => "channel_mismatch",
+                        crate::workflow::channels::TemplateDispatchError::ConversationRefInvalid => "conversation_ref_invalid",
+                        crate::workflow::channels::TemplateDispatchError::BodyMutated => "template_body_mutated_by_screen",
+                        crate::workflow::channels::TemplateDispatchError::Screened(_) => "input_rejected",
+                        _ => "template_dispatch_failed",
+                    };
+                    return Err(HandlerError::bad_request(code, "channel/template dispatch refused loudly"));
+                }
+            }
         }
 
         // ── Crew: the crew_skills_update branch. Skills tags are HITL-
