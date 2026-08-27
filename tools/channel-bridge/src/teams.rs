@@ -43,6 +43,38 @@ const MAX_GRAPH_PAGES: usize = 5;
 const MAX_TEAMS_LISTED: usize = 32;
 const MAX_ITEMS_PER_PAGE: usize = 100;
 
+/// The Bot Connector service hosts this bridge will ever POST an activity
+/// (and its bearer token) to. The activity BODY is not signed by the Bot
+/// Framework — only the envelope token is — so the per-activity `serviceUrl`
+/// is attacker-influenceable data and MUST be host-allowlisted, per
+/// Microsoft's Bot Service security guidance. The allowlist is exactly the
+/// hosts the drain path already trusts (the regional Teams relay) plus the
+/// connector's canonical host; anything else is refused before any token
+/// leaves the process. Case-insensitive, exact host match (no subdomain
+/// suffix games — an evil `smba.trafficmanager.net.evil.com` does not pass).
+const SERVICE_URL_HOSTS: &[&str] = &[
+    "smba.trafficmanager.net", // the regional Teams connector relay
+    "ccs.botframework.com",    // the Bot Framework connector host
+];
+
+/// Validate one inbound `serviceUrl` down to an allowlisted https base URL
+/// (scheme + host checked; the path component is kept — the drain's regional
+/// host carries a path segment). Returns the trimmed, trailing-slash-free
+/// base on success.
+fn validated_service_url(service_url: &str) -> Result<String> {
+    let base = service_url.trim().trim_end_matches('/');
+    let rest = base
+        .strip_prefix("https://")
+        .ok_or_else(|| anyhow::anyhow!("bot connector service url must be https"))?;
+    let host = rest.split('/').next().unwrap_or("").to_ascii_lowercase();
+    // userinfo@host form refused: an @ in the authority means someone is
+    // smuggling a credential component or a redressed host.
+    if host.contains('@') || !SERVICE_URL_HOSTS.contains(&host.as_str()) {
+        anyhow::bail!("bot connector service url host is not allowlisted: {host}");
+    }
+    Ok(base.to_string())
+}
+
 /// `application/x-www-form-urlencoded` value encoding (unreserved bytes
 /// pass through; everything else percent-encoded).
 fn form_encode(s: &str) -> String {
@@ -268,8 +300,10 @@ impl BfClient {
     }
 
     /// Deliver one proactive activity: `POST {service}/v3/conversations/
-    /// {conversation_ref}/activities`. serviceUrl MUST be https (the
-    /// inbound activity is Bot-Framework-verified; the drain path uses the
+    /// {conversation_ref}/activities`. serviceUrl MUST be https AND
+    /// host-allowlisted (the inbound activity body is Bot-Framework-verified
+    /// but NOT signed — the serviceUrl inside it is untrusted data; see the
+    /// [`SERVICE_URL_HOSTS`] allowlist note). The drain path pins the
     /// conservative regional host — see the README ceiling note).
     pub(crate) async fn send_activity(
         &self,
@@ -277,10 +311,7 @@ impl BfClient {
         conversation_ref: &str,
         text: &str,
     ) -> Result<()> {
-        let base = service_url.trim().trim_end_matches('/');
-        if !base.starts_with("https://") {
-            anyhow::bail!("bot connector service url must be https");
-        }
+        let base = validated_service_url(service_url)?;
         if !render::bounded_ref(conversation_ref) {
             anyhow::bail!("conversation ref unbounded; refusing delivery");
         }
@@ -308,17 +339,15 @@ impl BfClient {
 
     /// Deliver one Adaptive Card attachment (the proposal render path):
     /// `POST {service}/v3/conversations/{conversation_ref}/activities` with
-    /// the card as the sole attachment.
+    /// the card as the sole attachment. Same serviceUrl allowlist law as
+    /// [`BfClient::send_activity`].
     pub(crate) async fn send_card(
         &self,
         service_url: &str,
         conversation_ref: &str,
         card: &Value,
     ) -> Result<()> {
-        let base = service_url.trim().trim_end_matches('/');
-        if !base.starts_with("https://") {
-            anyhow::bail!("bot connector service url must be https");
-        }
+        let base = validated_service_url(service_url)?;
         if !render::bounded_ref(conversation_ref) {
             anyhow::bail!("conversation ref unbounded; refusing delivery");
         }
@@ -893,5 +922,40 @@ mod tests {
             "text": "sneak"
         });
         assert!(project_activity(&mapped, "bot-app", &unmapped).is_none());
+    }
+
+    /// The serviceUrl inside a Bot-Framework-verified activity body is
+    /// UNTRUSTED data (only the envelope token is signed). Delivery must
+    /// refuse every host outside the Microsoft regional allowlist BEFORE any
+    /// request — the bearer token must never reach an attacker-chosen origin.
+    #[test]
+    fn teams_service_url_is_host_allowlisted() {
+        // The hosts the drain path already trusts are accepted (path kept).
+        assert_eq!(
+            validated_service_url("https://smba.trafficmanager.net/amer/").unwrap(),
+            "https://smba.trafficmanager.net/amer"
+        );
+        assert_eq!(
+            validated_service_url("https://CCS.BotFramework.com").unwrap(),
+            "https://CCS.BotFramework.com",
+            "host match is case-insensitive"
+        );
+        // Attacker shapes: plain http, attacker host, look-alike suffix,
+        // userinfo smuggling, embedded path to another origin.
+        for refused in [
+            "http://smba.trafficmanager.net/amer",
+            "https://evil.example.com/",
+            "https://smba.trafficmanager.net.evil.com/amer",
+            "https://botframework.com.evil.com",
+            "https://user@smba.trafficmanager.net",
+            "https://smba.trafficmanager.net.evil.com",
+            "",
+            "ftp://smba.trafficmanager.net",
+        ] {
+            assert!(
+                validated_service_url(refused).is_err(),
+                "must refuse: {refused}"
+            );
+        }
     }
 }

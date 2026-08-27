@@ -137,6 +137,14 @@ to use the proposal card buttons.
   - Ceiling: region-hosted channels that mint `ServiceUrl`-bound token
     audiences are not covered by `aud == bot_app_id`; the standard
     Emulator-off path is. Extend deliberately if you must serve one.
+- Delivery-time `serviceUrl` (echoed by inbound activities) is host-
+  ALLOWLISTED before any request: only the Microsoft regional relay
+  `smba.trafficmanager.net` and the connector host `ccs.botframework.com`
+  are accepted (https, case-insensitive, exact host — look-alike suffixes
+  and userinfo smuggling refused). The activity body is JWT-envelope-
+  verified but not signed, so the echoed `serviceUrl` is treated as
+  untrusted data; the bot's connector bearer token never leaves toward
+  anything else (`teams_service_url_is_host_allowlisted`).
 - `type: "message"` activities with text become case notes;
   `Action.Submit` from Adaptive Cards (`value` without `text`) obeys the
   digest law and relays `decide`. The handler always answers `200 {}`
@@ -146,9 +154,8 @@ to use the proposal card buttons.
   This bridge speaks Bot Framework and Adaptive Cards only — pinned by a
   source-text test so procurement reviewers can verify.
 - Drain-time delivery uses the conservative regional service host
-  `https://smba.trafficmanager.net/{bot_tenant_id}`. Ceiling: serviceUrl is
-  normally echoed per-activity; the drain path has no activity at hand and
-  keeps the standard regional host.
+  `https://smba.trafficmanager.net/{bot_tenant_id}` — inside the same
+  allowlist as the per-activity echo path.
 
 ## `--list-channels` (admin-gated, read-only)
 
