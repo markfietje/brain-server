@@ -167,6 +167,21 @@ fn insert_offer_event(
         AuditStatus::Ok,
         audit_detail,
     );
+    // Herald: a FRESH offer pings the receiving operator in-channel (via the
+    // bridge drain) with the I-PASS completeness state — the machine coaches
+    // before the human accepts. Replayed offers never re-ping (the early
+    // return above); disputes (action != "offer") never ping.
+    if action == "offer" {
+        super::channels::enqueue_handover_ping(
+            conn,
+            draft.run_id,
+            id,
+            draft.to_principal,
+            draft.sla_deadline,
+            draft.overlap_minutes,
+            draft.now,
+        )?;
+    }
     Ok((id, true))
 }
 

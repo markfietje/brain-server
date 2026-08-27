@@ -334,6 +334,126 @@ are a documented ceiling).
 
 ---
 
+## The Slack and Teams operator annexes (v1.28.45 "Herald")
+
+The channels operators already live in become the console's ANNEXES: case
+rooms, Relay handover pings, and digest-bound approvals where the people
+are. Both adapters are edge processes in the SAME `tools/channel-bridge`
+binary (config-off by default: absent config = channel dark), and the
+kernel-side pieces they ride are the SAME two HMAC seams as WhatsApp plus
+ONE new console seam:
+
+### Slack (Socket Mode)
+
+- **No inbound listener exists by construction.** The bridge DIALS Slack
+  over the Socket-Mode WebSocket (`apps.connections.open` → wss, reconnect
+  with capped exponential backoff + jitter). The `slack` kind binds NOTHING
+  — pinned by `socket_mode_never_opens_an_inbound_listener`.
+- `message` events in the config's `mapped_channels` become screened case
+  notes through the ordinary inbound seam (thread map or `[case N]`);
+  the sender's OPAQUE user id rides as `actor_ref` (display names are never
+  read).
+- **Approve-by-button:** pending renderable proposals render as Slack Blocks
+  with the content preview AND the digest in the block; Approve/Reject
+  buttons carry that digest in their value. A click whose digest is missing
+  or mismatched is refused BRIDGE-SIDE (logged, never relayed) — and the
+  kernel re-verifies it server-side. Two independent enforcement points.
+- **Slash commands** `/brain due`, `/brain crank <run>`, `/brain approve
+  <id>`, `/brain pending [limit]` relay over the console seam; the kernel
+  maps the clicking user through the user map and role-checks there.
+- **User map:** a Slack user is NOBODY until an approved
+  `channel/user_map` proposal maps their opaque id to a principal with
+  explicit roles. There is no auto-trust path.
+- **Presence:** mapped operator activity feeds the Crew roster as the
+  closed activity kind `channel` — activity KINDS only, never content, and
+  only while the domain's Crew DPO switch is on.
+
+### Teams (Bot Framework + Adaptive Cards)
+
+- The supported Bot Framework route ONLY: the bridge registers an Azure
+  bot, exposes `POST /messaging` behind the operator's TLS proxy, verifies
+  every activity's Bot Framework JWT (JWKS, `iss`/`aud` pinned) BEFORE any
+  parse, and answers with Adaptive Cards. The deprecated O365-connector
+  path is deliberately NOT implemented.
+- Activities in mapped conversations become screened case notes (same
+  threading law); proposal cards carry the digest field and `Action.Submit`
+  returns it — the same digest binding as Slack buttons.
+- **Room mapping:** `channel-bridge --config channel-teams-acme.json
+  --list-channels` enumerates the bot's teams/channels via Graph
+  (read-only, operator-run) so the operator can copy ids into
+  `mapped_channels`.
+
+### Relay handover pings
+
+When a handover OFFER is created, ONE `channel/ping` outbox row is enqueued
+with the I-PASS completeness state (refs only). The bridge drain resolves
+the receiving operator's mapped platform refs + the case room and posts the
+ping in-channel (the case's room; else the config's `handover_channel`);
+an unmapped principal is audited loud and consumed — the drain never
+wedges. Accept/decline stays on the console (the ping coaches; the human
+decides there).
+
+### The user map (kernel side)
+
+`POST /workflow/channel/user-map` FILES a `channel/user_map` proposal
+(`{action: add|remove, channel, tenant, platform_user_id, principal,
+roles[]}`); approval is the ONLY writer of the `channel_user_map` table
+(schema 1.28.45, additive). Roles resolve against the role store at file
+AND apply time. The console seam denies any actor that is unmapped,
+unroled, or lacking the action's capability — 403, audited.
+
+### Config examples (0600, same substrate law as WhatsApp)
+
+```json
+// channel-slack-acme.json
+{
+  "domain": "acme",
+  "webhook_secret": "whsec-…",
+  "mapped_channels": ["C0123ABCD"],
+  "handover_channel": "C09HANDOVER",
+  "app_token_path": "slack_app_token.txt",
+  "bot_token_path": "slack_bot_token.txt"
+}
+
+// channel-teams-acme.json
+{
+  "domain": "acme",
+  "webhook_secret": "whsec-…",
+  "mapped_channels": ["19:…@thread.tacv2"],
+  "bot_app_id": "00000000-0000-0000-0000-000000000000",
+  "bot_tenant_id": "00000000-0000-0000-0000-000000000000",
+  "bot_password_path": "teams_bot_password.txt"
+}
+```
+
+**Least privilege at the workspace-app level:** install the Slack app with
+access scoped to the mapped channels only, and the Teams bot to its team
+only; channel tokens grant nothing beyond their mapped channels. Tokens
+live in 0600 files referenced by path — the bridge holds NO brain token,
+ever (pinned house-wide by self-grep).
+
+### Running
+
+```sh
+cargo build --release -p channel-bridge --manifest-path tools/channel-bridge/Cargo.toml
+
+# Slack: dials OUT; binds nothing.
+tools/channel-bridge/target/release/channel-bridge \
+  --config $BRAIN_CONNECTOR_CONFIG_DIR/channel-slack-acme.json \
+  --brain-url http://127.0.0.1:8765 --tick-secs 5
+
+# Teams: one loopback listener behind YOUR TLS proxy.
+tools/channel-bridge/target/release/channel-bridge \
+  --config $BRAIN_CONNECTOR_CONFIG_DIR/channel-teams-acme.json \
+  --port 8792 --brain-url http://127.0.0.1:8765 --tick-secs 5
+
+# Teams room mapping (operator-run, read-only):
+tools/channel-bridge/target/release/channel-bridge \
+  --config $BRAIN_CONNECTOR_CONFIG_DIR/channel-teams-acme.json --list-channels
+```
+
+---
+
 ## Deployment tiers (ISO 18295-1 applicability: any size)
 
 The standard applies to a centre of any size; so does this server. The same

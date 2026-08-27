@@ -1218,6 +1218,44 @@ pub async fn approve_proposal(
             }));
         }
 
+        // ── Herald: the channel/user_map branch. The ONLY writer of
+        // `channel_user_map` rows (no HTTP route touches the table): the
+        // approved proposal applies the mapping in the SAME tx, probe-
+        // validated again here (approval time is authoritative). Platform
+        // identity is never auto-trusted: every change is proposed, approved
+        // by a named principal, and audited per row.
+        if kind == crate::workflow::channels::PROP_KIND_USER_MAP {
+            let now_ts = chrono::Utc::now().timestamp();
+            let change = crate::workflow::channels::parse_user_map_change(&content)
+                .map_err(|m| HandlerError::bad_request("user_map_change_invalid", m))?;
+            let approver_owned =
+                principal_to_owner(&principal.0).unwrap_or_else(|| "api".to_string());
+            let approver = approver_owned.as_str();
+            let n_applied = crate::workflow::channels::apply_user_map_change(
+                &tx,
+                &change,
+                approver,
+                now_ts,
+            )
+            .map_err(|m| HandlerError::bad_request("user_map_apply_denied", m))?;
+            crate::audit::record_tenant(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                approver,
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("channel/user_map rows:{n_applied}"),
+                "global",
+            );
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "status": "approved",
+                "applied_rows": n_applied,
+            }));
+        }
+
         // ── The human translation promotion. ────────────────
         // The ONLY writer of an approved `kcs_translations` row: the
         // proposal's payload is upserted per-locale, pinned to the source
@@ -2164,7 +2202,10 @@ pub(crate) fn sha256_hex(s: &str) -> String {
 /// only and would otherwise break digest stability across principals. Constant-
 /// time not required; the fingerprint catches content drift, not side channels.
 pub(crate) fn review_digest(content: &str) -> String {
-    sha256_hex(&crate::gate::sanitize_read(content, false, &None))
+    // Herald: canonicalized in the domain layer (workflow::channels) so the
+    // channel console binds to the SAME function — one fingerprint, all
+    // approvers. This delegate stays for the handler-layer call sites.
+    crate::workflow::channels::review_digest(content)
 }
 
 /// the approve gate predicate — the caller MUST supply a digest and it must

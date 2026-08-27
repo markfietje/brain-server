@@ -3,7 +3,7 @@ name = "channel-bridge"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
-description = "WhatsApp governed-edge bridge for brain-server Switchboard (Caravel)"
+description = "Governed-edge channel bridges (WhatsApp/Slack/Teams) for brain-server Switchboard"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -14,6 +14,15 @@ axum = { version = "0.8.9", features = ["macros", "json"] }
 # TLS is REQUIRED here: the bridge dials graph.facebook.com directly (the
 # only edge in the fleet with an outbound HTTPS platform dependency).
 reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }
+
+# Slack Socket Mode: the bridge DIALS OUT over WSS — no inbound listener.
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+# Teams: Bot Framework activity JWTs (RS256) verified against the
+# login.botframework.com JWKS. aws_lc_rs is the crypto backend; aws-lc-rs
+# is already in the tree via rustls, so this adds no new build weight.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

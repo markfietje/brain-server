@@ -2096,7 +2096,29 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.45 "Herald": the Slack/Teams user map ──────────────────────
+    // Proposal-maintained platform-identity → principal mappings (the ONLY
+    // writer is the approval path in workflow::channels — no HTTP route ever
+    // touches the table). Platform ids are OPAQUE: the kernel resolves every
+    // channel act (console decide/due/crank, presence) through this map, so
+    // a platform identity is never auto-trusted. Tenant-scoped by predicate.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS channel_user_map(
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel         TEXT NOT NULL,
+            tenant          TEXT NOT NULL,
+            platform_user_id TEXT NOT NULL,
+            principal       TEXT NOT NULL,
+            roles_json      TEXT NOT NULL DEFAULT '[]',
+            created_at      INTEGER NOT NULL,
+            created_by      TEXT NOT NULL DEFAULT '',
+            UNIQUE(channel, tenant, platform_user_id)
+         );",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.45 "Herald": channel_user_map table → 1.28.45.
     // v1.28.43 "Switchboard": channel_threads table → 1.28.43.
     // v1.28.42 "Valet": valet_consents table + proposals.lint_json → 1.28.42.
     // v1.28.36 "Keystone": case_status_refs + kcs_translations tables → 1.28.36.
@@ -2119,8 +2141,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.43')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.43';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.45')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.45';",
         [],
     )?;
 

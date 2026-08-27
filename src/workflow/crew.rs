@@ -24,7 +24,11 @@ pub const MAX_SKILL_LEN: usize = 32;
 /// Read cap for list surfaces (the Bound law).
 pub const MAX_CREW_RETURNED: i64 = 500;
 /// The closed activity vocabulary. Presence shows the KIND of act only.
-pub const ACTIVITY_KINDS: [&str; 3] = ["cranking", "reviewing", "idle"];
+/// The closed activity-kind vocabulary. Herald adds `channel`: presence fed
+/// from mapped Slack/Teams operator activity — activity KINDS only, never
+/// content, DPO-switch governed at both the write (touch skipped when off)
+/// and the read (roster hidden when off).
+pub const ACTIVITY_KINDS: [&str; 4] = ["cranking", "reviewing", "idle", "channel"];
 /// The proposal kind that gates every skills change (HITL).
 pub const KIND_SKILLS_UPDATE: &str = "crew_skills_update";
 

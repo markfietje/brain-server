@@ -55,6 +55,59 @@ pub(crate) const DEFAULT_REPLY_WINDOW_SECS: i64 = 24 * 3600;
 /// never do — the Channels-line law).
 pub(crate) const TOPIC_CHANNEL_STATUS: &str = "case/channel_status";
 
+/// Herald outbox topic: Relay handover pings the bridge delivers in-channel
+/// to the RECEIVING operator. Refs + the I-PASS completeness state only —
+/// never case content (the machine coaches; the human accepts elsewhere).
+pub(crate) const TOPIC_CHANNEL_PING: &str = "channel/ping";
+
+/// Herald proposal kind: a Slack/Teams user-map change. Platform identity is
+/// an OPAQUE id, never a display name; the ONLY writer of `channel_user_map`
+/// rows is the approval path (the `crew_skills_update` law).
+pub(crate) const PROP_KIND_USER_MAP: &str = "channel/user_map";
+
+/// The proposal kinds the channel console may render for digest-bound
+/// approval in Slack/Teams (the plan's closed set). Everything else stays
+/// console-only — the channel annex never becomes the whole console.
+pub(crate) const RENDERABLE_PROPOSAL_KINDS: [&str; 8] = [
+    "draft",
+    "kcs_new_article",
+    "kcs_update_article",
+    "kcs_link_only",
+    "kcs_publish",
+    "kcs_translate",
+    "channel/template",
+    "channel/user_map",
+];
+
+// ── Herald bounds (pinned below) ───────────────────────────────────────────
+
+/// One console `pending` fetch returns at most this many proposals.
+pub(crate) const MAX_CONSOLE_PENDING: usize = 25;
+/// One drained ping names at most this many mapped platform refs.
+pub(crate) const MAX_PING_REFS: usize = 8;
+/// One ping drain takes at most this many rows.
+pub(crate) const MAX_PING_BATCH: i64 = 20;
+/// A `due` listing for the console annex is bounded like every read seam.
+pub(crate) const MAX_DUE_LISTING: usize = 25;
+/// An opaque platform actor ref (`U0PING1`, an AAD object id) — never a
+/// display name. Bound mirrors the conversation-ref discipline.
+pub(crate) const MAX_ACTOR_REF: usize = 128;
+/// A user-map change carries at most this many role names.
+pub(crate) const MAX_USER_MAP_ROLES: usize = 8;
+
+/// The canonical review fingerprint — canonicalized HERE (the domain layer)
+/// in Herald so the channel console, the HTTP approve verb, and every future
+/// caller bind to ONE function. SHA-256 over the markdown-stripped +
+/// invisible-stripped read form with PII redaction DISABLED — a stable,
+/// reader-independent content fingerprint. Byte-identical to the historical
+/// handlers copy (which now delegates here).
+pub(crate) fn review_digest(content: &str) -> String {
+    use sha2::Digest;
+    let screened = crate::gate::sanitize_read(content, false, &None);
+    let digest = sha2::Sha256::digest(screened.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Caravel proposal kind: an outbound TEMPLATE message whose body is
 /// versioned, human-approved, digest-bound. Template approval happens TWICE
 /// by construction — Meta's registry and ours; ours is stricter because it
@@ -163,6 +216,10 @@ pub(crate) struct InboundEnvelope {
     pub attachment_digests: Vec<String>,
     pub status: Option<ChannelStatus>,
     pub quality: Option<QualityObservation>,
+    /// Herald: the OPAQUE platform id of the human sender (Slack `U…`, a
+    /// Teams AAD object id). NEVER a display name. Optional: present only so
+    /// mapped operator activity can feed Crew presence as an activity KIND.
+    pub actor_ref: Option<String>,
 }
 
 impl InboundEnvelope {
@@ -206,6 +263,21 @@ impl InboundEnvelope {
                 attachment_digests.push(s.to_ascii_lowercase());
             }
         }
+
+        // ── Herald additive projection (optional): the opaque actor ref. ──
+        // Bounded + control-free like every identity string; a display name
+        // or injection payload would fail these checks by shape, and the map
+        // lookup downstream simply finds no row for an unmatched id.
+        let actor_ref = match env.get("actor_ref") {
+            None => None,
+            Some(a) => {
+                let s = a.as_str().ok_or("actor_ref_format")?.to_string();
+                if s.is_empty() || s.len() > MAX_ACTOR_REF || s.chars().any(char::is_control) {
+                    return Err("actor_ref_bounds");
+                }
+                Some(s)
+            }
+        };
 
         let status = match env.get("status") {
             None => None,
@@ -296,6 +368,7 @@ impl InboundEnvelope {
             attachment_digests,
             status,
             quality,
+            actor_ref,
         })
     }
 }
@@ -571,6 +644,7 @@ pub(crate) fn land_inbound_message(
             Some(d) if d == cfg.domain => {
                 let note_id =
                     insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
+                touch_channel_presence(conn, cfg, envelope, now);
                 return Ok(LandOutcome {
                     case_run_id: run_id,
                     kind: LandKind::Note {
@@ -601,6 +675,7 @@ pub(crate) fn land_inbound_message(
             .map_err(LandError::Sql)?;
             let note_id =
                 insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
+            touch_channel_presence(conn, cfg, envelope, now);
             Ok(LandOutcome {
                 case_run_id: run_id,
                 kind: LandKind::Note {
@@ -615,6 +690,7 @@ pub(crate) fn land_inbound_message(
                     .map_err(LandError::Sql)?;
             let note_id =
                 insert_channel_note(conn, cfg, run_id, &screened, &envelope.external_id, now)?;
+            touch_channel_presence(conn, cfg, envelope, now);
             Ok(LandOutcome {
                 case_run_id: run_id,
                 kind: LandKind::Note {
@@ -824,6 +900,418 @@ fn bounded_author(cfg: &ChannelBridgeConfig) -> String {
         s.truncate(MAX_AUTHOR_LEN);
     }
     s
+}
+
+// ── Herald: the Slack/Teams operator annex ─────────────────────────────
+// Three pieces live here because they are DOMAIN law, not protocol:
+// 1. the USER MAP — proposal-maintained platform-identity → principal
+//    mappings; the kernel resolves every channel act through it, so a
+//    platform identity is NEVER auto-trusted;
+// 2. the CONSOLE core — bounded pending/due shaping with the canonical
+//    review digest, the same bytes the HTTP console renders;
+// 3. HANDOVER PINGS — the Relay offer's in-channel coaching ping (refs +
+//    completeness state only), drained by the same HMAC seam.
+
+/// One proposed user-map change (the `channel/user_map` proposal payload).
+/// Platform ids are opaque; role names are resolved against the role store
+/// at PROBE and again at APPLY (approval time is authoritative).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct UserMapChange {
+    pub action: String,
+    pub channel: String,
+    pub tenant: String,
+    pub platform_user_id: String,
+    pub principal: String,
+    pub roles: Vec<String>,
+}
+
+/// Parse + bound one user-map proposal payload. Total: named errors, no
+/// panic; the closed `action` vocabulary is add|remove.
+pub(crate) fn parse_user_map_change(content: &str) -> Result<UserMapChange, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(content).map_err(|e| format!("not json: {e}"))?;
+    let field = |k: &str| -> Result<String, String> {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("missing {k}"))
+    };
+    let action = field("action")?;
+    if action != "add" && action != "remove" {
+        return Err("action must be add or remove".into());
+    }
+    let channel = field("channel")?;
+    let tenant = field("tenant")?;
+    if !valid_config_segment(&channel) || !valid_config_segment(&tenant) {
+        return Err("channel/tenant segment invalid".into());
+    }
+    let platform_user_id = field("platform_user_id")?;
+    if platform_user_id.is_empty()
+        || platform_user_id.len() > MAX_ACTOR_REF
+        || platform_user_id.chars().any(char::is_control)
+    {
+        return Err("platform_user_id invalid (opaque id, ≤128, no controls)".into());
+    }
+    let principal = field("principal")?;
+    if principal.is_empty() || principal.len() > 256 || principal.chars().any(char::is_control) {
+        return Err("principal invalid".into());
+    }
+    let mut roles = Vec::new();
+    if let Some(list) = v.get("roles").and_then(|x| x.as_array()) {
+        if list.len() > MAX_USER_MAP_ROLES {
+            return Err(format!("at most {MAX_USER_MAP_ROLES} roles per mapping"));
+        }
+        for r in list {
+            let name = r.as_str().ok_or("role names must be strings")?;
+            if !brain_server::role::is_valid_role_name(name) {
+                return Err(format!("invalid role name {name:?}"));
+            }
+            roles.push(name.to_string());
+        }
+    }
+    Ok(UserMapChange {
+        action,
+        channel,
+        tenant,
+        platform_user_id,
+        principal,
+        roles,
+    })
+}
+
+/// Pre-flight validation for the proposal endpoint: shape checks + every
+/// named role must EXIST in the role store (an unresolvable role would
+/// silently grant nothing — refuse loudly instead).
+pub(crate) fn probe_user_map_change(
+    conn: &Connection,
+    change: &UserMapChange,
+) -> Result<(), String> {
+    for name in &change.roles {
+        let known: Option<String> = conn
+            .query_row(
+                "SELECT name FROM roles WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("role store: {e}"))?;
+        if known.is_none() {
+            return Err(format!(
+                "unknown role {name:?} — add it to the role store first"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Apply an approved user-map change INSIDE the caller's transaction. THE
+/// ONLY WRITER of `channel_user_map` rows (no HTTP route touches the table
+/// — pinned by self-grep). Returns the affected row count. The audit row is
+/// the per-change evidence: the proposal's owner proposed, the caller
+/// (approver) decided.
+pub(crate) fn apply_user_map_change(
+    conn: &Connection,
+    change: &UserMapChange,
+    approver: &str,
+    now: i64,
+) -> Result<usize, String> {
+    probe_user_map_change(conn, change)?;
+    let n = match change.action.as_str() {
+        "add" => conn
+            .execute(
+                "INSERT INTO channel_user_map(channel, tenant, platform_user_id, principal,
+                                             roles_json, created_at, created_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(channel, tenant, platform_user_id) DO UPDATE SET
+                    principal = excluded.principal,
+                    roles_json = excluded.roles_json,
+                    created_at = excluded.created_at,
+                    created_by = excluded.created_by",
+                params![
+                    change.channel,
+                    change.tenant,
+                    change.platform_user_id,
+                    change.principal,
+                    serde_json::to_string(&change.roles).unwrap_or_else(|_| "[]".into()),
+                    now,
+                    approver
+                ],
+            )
+            .map_err(|e| format!("user_map upsert: {e}"))?,
+        _ => conn
+            .execute(
+                "DELETE FROM channel_user_map
+                  WHERE channel = ?1 AND tenant = ?2 AND platform_user_id = ?3",
+                params![change.channel, change.tenant, change.platform_user_id],
+            )
+            .map_err(|e| format!("user_map delete: {e}"))?,
+    };
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Workflow,
+        approver,
+        &format!(
+            "channel_user_map:{}/{}:{}",
+            change.channel, change.tenant, change.platform_user_id
+        ),
+        crate::audit::AuditStatus::Ok,
+        &format!(
+            "user_map {} → principal {} roles {}",
+            change.action,
+            change.principal,
+            if change.roles.is_empty() {
+                "none".to_string()
+            } else {
+                change.roles.join(",")
+            }
+        ),
+    );
+    Ok(n)
+}
+
+/// Resolve a mapped platform actor → (principal, roles). Tenant-scoped by
+/// predicate like every channel surface; an unmatched id is simply None —
+/// platform identity NEVER auto-trusts.
+pub(crate) fn lookup_mapped_actor(
+    conn: &Connection,
+    channel: &str,
+    tenant: &str,
+    actor_ref: &str,
+) -> Result<Option<(String, Vec<String>)>, rusqlite::Error> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT principal, roles_json FROM channel_user_map
+              WHERE channel = ?1 AND tenant = ?2 AND platform_user_id = ?3",
+            params![channel, tenant, actor_ref],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.map(|(principal, roles_json)| {
+        let roles = serde_json::from_str::<Vec<String>>(&roles_json).unwrap_or_default();
+        (principal, roles)
+    }))
+}
+
+/// Feed Crew presence from channel activity: when the sender maps to a
+/// principal AND the domain's DPO switch is ON, bump presence with the
+/// closed activity kind `channel` — ACTIVITY KINDS ONLY, never content,
+/// never customer refs. Best-effort INSIDE the caller's tx (a failure
+/// warns; the note still lands).
+fn touch_channel_presence(
+    conn: &Connection,
+    cfg: &ChannelBridgeConfig,
+    envelope: &InboundEnvelope,
+    now: i64,
+) {
+    let Some(actor) = envelope.actor_ref.as_deref() else {
+        return;
+    };
+    let mapped = match lookup_mapped_actor(conn, &cfg.kind, &cfg.tenant, actor) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("presence map lookup failed (best-effort): {e}");
+            return;
+        }
+    };
+    let Some((principal, roles)) = mapped else {
+        return; // unmapped platform user: no presence, no error
+    };
+    if !super::crew::presence_enabled(conn, &cfg.domain) {
+        return; // DPO switch OFF: channel activity is not observed, period
+    }
+    if let Err(e) = super::crew::touch(conn, &cfg.domain, &principal, "channel", None, &roles, now)
+    {
+        tracing::warn!("channel presence touch failed (best-effort): {e}");
+    }
+}
+
+/// The console-annex `pending` shaping: bounded pending proposals of the
+/// renderable kinds with the canonical review digest — the SAME bytes the
+/// HTTP console renders, so a Slack approval binds to what a browser would
+/// have shown.
+pub(crate) fn console_pending(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
+    let limit = limit.clamp(1, MAX_CONSOLE_PENDING);
+    // Kind-filter in SQL: a large backlog of non-renderable pending proposals
+    // must not starve the console window (the LIMIT applies AFTER the kind
+    // predicate, not before it — pinned by test with a junk backlog).
+    let placeholders = RENDERABLE_PROPOSAL_KINDS
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT id, kind, content, created_at FROM proposals
+          WHERE status = 'pending' AND kind IN ({placeholders})
+          ORDER BY id ASC LIMIT ?"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let limit_i64 = limit as i64;
+    let bind: Vec<&dyn rusqlite::ToSql> = RENDERABLE_PROPOSAL_KINDS
+        .iter()
+        .map(|k| k as &dyn rusqlite::ToSql)
+        .chain(std::iter::once(&limit_i64 as &dyn rusqlite::ToSql))
+        .collect();
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(bind.as_slice(), |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, kind, content, created_at) in rows {
+        out.push(serde_json::json!({
+            "id": id,
+            "kind": kind,
+            "content": content,
+            "digest": review_digest(&content),
+            "created_at": created_at,
+        }));
+    }
+    out.truncate(MAX_CONSOLE_PENDING);
+    Ok(out)
+}
+
+/// The console-annex `due` listing: the valet due queue as bounded,
+/// read-seam-shaped rows (refs + what + clock math only).
+pub(crate) fn console_due(
+    conn: &Connection,
+    now: i64,
+) -> Result<(Vec<serde_json::Value>, usize), rusqlite::Error> {
+    let due = super::valet::due(conn, now);
+    let total = due.len();
+    let rows = due
+        .into_iter()
+        .take(MAX_DUE_LISTING)
+        .map(|d| {
+            serde_json::json!({
+                "run_id": d.run_id,
+                "what": d.state.what,
+                "due_at": d.state.due_at,
+                "overdue_secs": now.saturating_sub(d.state.due_at),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok((rows, total))
+}
+
+/// Enqueue the Relay handover ping for a FRESHLY-created offer (the caller
+/// decides freshness — a replayed offer never re-pings). Refs + the
+/// completeness state only; delivery resolution (platform refs, case room)
+/// happens at DRAIN time against the then-current map.
+pub(crate) fn enqueue_handover_ping(
+    conn: &Connection,
+    run_id: i64,
+    offer_id: i64,
+    to_principal: &str,
+    sla_deadline: i64,
+    overlap_minutes: i64,
+    now: i64,
+) -> Result<(), rusqlite::Error> {
+    // Offers are complete-gated upstream (an incomplete packet refuses with
+    // its missing list BEFORE any write), so a pinged offer is a COMPLETE
+    // packet; the field rides anyway so the receiving surface can render the
+    // check explicitly.
+    let payload = serde_json::json!({
+        "to_principal": to_principal,
+        "case_run_id": run_id,
+        "offer_id": offer_id,
+        "complete": true,
+        "missing": [],
+        "sla_deadline": sla_deadline,
+        "overlap_minutes": overlap_minutes,
+    })
+    .to_string();
+    let key = format!("chan-ping-{offer_id}");
+    outbox::enqueue(conn, run_id, TOPIC_CHANNEL_PING, &payload, &key, now)?;
+    Ok(())
+}
+
+/// Drain ONE pending `channel/ping` batch for a bridge kind — same claim law
+/// as [`drain_out_batch`]: rows mark delivered ATOMICALLY at claim (a crash
+/// replays at-least-once; the bridge dedupes on `event_id`). Each ping
+/// resolves platform refs + the case room against the THEN-current map; an
+/// unmapped/roomless ping is delivered-to-nowhere and audited LOUDLY rather
+/// than left pending forever.
+pub(crate) fn drain_ping_batch(
+    conn: &mut Connection,
+    kind: &str,
+    now: i64,
+) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut stmt = tx.prepare(
+        "SELECT id, run_id, payload_json FROM outbox
+          WHERE topic = 'channel/ping' AND status = 'pending'
+          ORDER BY id ASC LIMIT ?1",
+    )?;
+    let rows: Vec<(i64, i64, String)> = stmt
+        .query_map(params![MAX_PING_BATCH], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, run_id, payload_json) in rows {
+        outbox::deliver(&tx, id, now)?;
+        let mut ping: serde_json::Value =
+            serde_json::from_str(&payload_json).unwrap_or_else(|_| serde_json::json!({}));
+        let to_principal = ping
+            .get("to_principal")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let refs: Vec<String> = if to_principal.is_empty() {
+            Vec::new()
+        } else {
+            let mut stmt = tx.prepare(
+                "SELECT platform_user_id FROM channel_user_map
+                  WHERE channel = ?1 AND principal = ?2
+                  ORDER BY platform_user_id LIMIT ?3",
+            )?;
+            let mapped: Vec<String> = stmt
+                .query_map(params![kind, to_principal, MAX_PING_REFS as i64], |r| {
+                    r.get(0)
+                })?
+                .collect::<Result<_, _>>()?;
+            drop(stmt);
+            mapped
+        };
+        let case_channel: Option<String> = tx
+            .query_row(
+                "SELECT conversation_ref FROM channel_threads
+                  WHERE case_run_id = ?1 AND channel = ?2
+                  ORDER BY id DESC LIMIT 1",
+                params![run_id, kind],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if refs.is_empty() {
+            // Undeliverable-in-channel: audited LOUDLY (silence is never
+            // certified), but the row is consumed — a permanently unmapped
+            // principal must not wedge the drain.
+            crate::audit::record(
+                &tx,
+                crate::audit::AuditKind::Workflow,
+                &format!("channel-ping:{kind}"),
+                &format!("run:{run_id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!(
+                    "channel/ping {} undeliverable: principal {to_principal:?} maps on no {} user",
+                    id, kind
+                ),
+            );
+            continue;
+        }
+        ping["event_id"] = serde_json::json!(id);
+        ping["platform_refs"] = serde_json::json!(refs);
+        ping["case_channel"] = serde_json::json!(case_channel.unwrap_or_default());
+        ping["run_id"] = serde_json::json!(run_id);
+        out.push(ping);
+    }
+    tx.commit()?;
+    Ok(out)
 }
 
 // ── Outbound: approved acts / alert forwards ONLY ──────────────────────────
@@ -1259,6 +1747,7 @@ mod tests {
             attachment_digests: Vec::new(),
             status: None,
             quality: None,
+            actor_ref: None,
         }
     }
 
@@ -2331,5 +2820,324 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    /// Seed one role so user-map probes resolve (the roles table ships the
+    /// presets only via the server boot path, not the bare migration).
+    fn seed_role(conn: &Connection, name: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO roles(name, json) VALUES (?1, ?2)",
+            params![
+                name,
+                serde_json::json!({
+                    "name": name, "scopes": ["private"], "owner_filter": "all",
+                    "can": ["read", "write", "approve", "reject"]
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    fn user_map_proposal(conn: &Connection, change: &UserMapChange, owner: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+             VALUES (?1, ?2, 0.5, 0.5, 1000, ?3)",
+            params![
+                PROP_KIND_USER_MAP,
+                serde_json::to_string(change).unwrap(),
+                owner
+            ],
+        )
+        .unwrap();
+        1 // proposal ids are irrelevant to the apply path
+    }
+
+    // ── HERALD PIN: slack_user_map_changes_flow_through_proposals — the map
+    //    is proposal-maintained: applying an approved change writes the row
+    //    AND its audit row (approver as actor); remove deletes; roles are
+    //    validated against the role store; platform ids stay opaque.
+    #[test]
+    fn slack_user_map_changes_flow_through_proposals() {
+        let conn = db();
+        seed_role(&conn, "supervisor");
+        let change = UserMapChange {
+            action: "add".into(),
+            channel: "slack".into(),
+            tenant: "acme".into(),
+            platform_user_id: "U0PING1".into(),
+            principal: "ops@acme".into(),
+            roles: vec!["supervisor".into()],
+        };
+        probe_user_map_change(&conn, &change).expect("role resolves");
+        user_map_proposal(&conn, &change, "proposer@acme");
+        assert_eq!(
+            apply_user_map_change(&conn, &change, "approver@acme", 2000).unwrap(),
+            1
+        );
+
+        let (principal, roles) = lookup_mapped_actor(&conn, "slack", "acme", "U0PING1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(principal, "ops@acme");
+        assert_eq!(roles, vec!["supervisor".to_string()]);
+
+        // An unknown role refuses at probe (and therefore at apply).
+        let bad = UserMapChange {
+            roles: vec!["ghost".into()],
+            ..change.clone()
+        };
+        assert!(probe_user_map_change(&conn, &bad).is_err());
+
+        // Removal flows through the same proposal machinery.
+        let remove = UserMapChange {
+            action: "remove".into(),
+            ..change.clone()
+        };
+        assert_eq!(
+            apply_user_map_change(&conn, &remove, "approver@acme", 2100).unwrap(),
+            1
+        );
+        assert!(
+            lookup_mapped_actor(&conn, "slack", "acme", "U0PING1")
+                .unwrap()
+                .is_none()
+        );
+
+        // Per-change audit rows exist for both decisions (the audit chain
+        // carries hashes, so count by actor + kind).
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE actor = 'approver@acme'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 2, "one audited evidence row per map change");
+
+        // No direct-write route exists: the ONLY writer is the approval path
+        // (self-grep below pins the source; this pins the shape — an add for
+        // a channel that never had a row creates exactly one).
+        let other = UserMapChange {
+            tenant: "zeta".into(),
+            ..change.clone()
+        };
+        apply_user_map_change(&conn, &other, "approver@acme", 2200).unwrap();
+        assert_eq!(
+            lookup_mapped_actor(&conn, "slack", "zeta", "U0PING1")
+                .unwrap()
+                .unwrap()
+                .0,
+            "ops@acme"
+        );
+    }
+
+    // ── HERALD PIN: mapped_channel_messages_become_notes_with_threading —
+    //    the kernel half: an envelope with an actor_ref lands a screened,
+    //    threaded note AND (only when the sender maps + the DPO switch is
+    //    on) feeds Crew presence as an activity KIND — never content.
+    #[test]
+    fn mapped_channel_messages_become_notes_with_threading() {
+        let conn = db();
+        seed_role(&conn, "supervisor");
+        let c = cfg("acme");
+        // Map the actor BEFORE the first message lands.
+        let change = UserMapChange {
+            action: "add".into(),
+            channel: "signal".into(),
+            tenant: "acme".into(),
+            platform_user_id: "+31".into(),
+            principal: "ops@acme".into(),
+            roles: vec!["supervisor".into()],
+        };
+        apply_user_map_change(&conn, &change, "approver", 1500).unwrap();
+
+        let mut msg = envelope("+31", "room hello", "m1");
+        msg.actor_ref = Some("+31".into());
+        let out = land_inbound_message(&conn, &c, &msg, 4000).unwrap();
+        let LandKind::Note {
+            note_id,
+            opened_case,
+        } = out.kind
+        else {
+            panic!("notes are notes");
+        };
+        assert!(opened_case);
+
+        // The second message threads to the SAME case.
+        let mut again = envelope("+31", "threaded reply", "m2");
+        again.actor_ref = Some("+31".into());
+        let out2 = land_inbound_message(&conn, &c, &again, 4100).unwrap();
+        assert_eq!(out2.case_run_id, out.case_run_id);
+        let _ = note_id;
+
+        // Presence was touched with the closed `channel` activity kind and
+        // carries NO message content (kinds only, never text).
+        let (kind, case_ref): (String, Option<String>) = conn
+            .query_row(
+                "SELECT activity_kind, current_case_ref FROM presence
+                  WHERE domain = 'acme' AND principal = 'ops@acme'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "channel");
+        assert!(
+            case_ref.is_none(),
+            "presence carries no case ref from channels"
+        );
+        let stored: String = conn
+            .query_row(
+                "SELECT content FROM case_notes ORDER BY id LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "room hello");
+
+        // DPO OFF: presence stops updating (the note still lands).
+        crate::workflow::crew::set_presence_enabled(&conn, "acme", false, 4200).unwrap();
+        let mut third = envelope("+31", "after dpo off", "m3");
+        third.actor_ref = Some("+31".into());
+        land_inbound_message(&conn, &c, &third, 4300).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM case_notes WHERE content = 'after dpo off'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the note lands regardless of the DPO switch");
+    }
+
+    // ── HERALD PIN: relay_handover_pings_receiving_operator_with_…
+    //    completeness_check — a fresh offer enqueues ONE channel/ping with
+    //    the I-PASS completeness state; the drain resolves the mapped
+    //    platform refs + the case room; unmapped principals audit loud and
+    //    consume the row (the drain never wedges).
+    #[test]
+    fn relay_handover_pings_receiving_operator_with_completeness_check() {
+        let conn = db();
+        let c = cfg("acme");
+        let run = land_inbound_message(&conn, &c, &envelope("+31", "case open", "m1"), 5000)
+            .unwrap()
+            .case_run_id;
+        enqueue_handover_ping(&conn, run, 9, "ops@acme", 9000, 30, 5100).unwrap();
+        assert_eq!(count_topic(&conn, TOPIC_CHANNEL_PING), 1);
+
+        // No mapping yet: the drain consumes + audits, delivers nothing.
+        let mut conn2 = conn;
+        let pings = drain_ping_batch(&mut conn2, "signal", 5200).unwrap();
+        assert!(pings.is_empty(), "unmapped principal = undeliverable");
+        let pending: i64 = conn2
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE topic = 'channel/ping' AND status = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0, "claimed rows are consumed, never wedged");
+        let audits: i64 = conn2
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE actor = 'channel-ping:signal'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1, "the refusal itself becomes evidence");
+
+        // Map the operator; the next ping resolves refs + the case room.
+        let change = UserMapChange {
+            action: "add".into(),
+            channel: "signal".into(),
+            tenant: "acme".into(),
+            platform_user_id: "UOPERATOR".into(),
+            principal: "ops@acme".into(),
+            roles: vec![],
+        };
+        apply_user_map_change(&conn2, &change, "approver", 5250).unwrap();
+        enqueue_handover_ping(&conn2, run, 10, "ops@acme", 9500, 15, 5300).unwrap();
+        let pings = drain_ping_batch(&mut conn2, "signal", 5400).unwrap();
+        assert_eq!(pings.len(), 1);
+        let p = &pings[0];
+        assert_eq!(p["platform_refs"], serde_json::json!(["UOPERATOR"]));
+        assert_eq!(p["case_channel"], serde_json::json!("+31"));
+        assert_eq!(p["complete"], serde_json::json!(true));
+        assert_eq!(p["offer_id"], serde_json::json!(10));
+        assert!(
+            p["event_id"].is_i64(),
+            "the outbox event id rides for bridge-side dedupe"
+        );
+    }
+
+    // ── HERALD PIN: the console `pending` shaping carries the canonical
+    //    digest and ONLY the renderable kinds, bounded — and a large backlog
+    //    of non-renderable pending proposals never starves the window (the
+    //    kind predicate runs in SQL, BEFORE the LIMIT).
+    #[test]
+    fn console_pending_carries_digest_and_renderable_kinds_only() {
+        let conn = db();
+        // A junk backlog older than everything renderable.
+        for i in 0..40 {
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+                 VALUES ('secret_internal', ?1, 0.5, 0.5, 900, 'p')",
+                params![format!("junk {i}")],
+            )
+            .unwrap();
+        }
+        for (kind, content) in [
+            ("draft", "approve me"),
+            ("secret_internal", "never rendered"),
+            ("channel/template", r#"{"body":"template text"}"#),
+        ] {
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+                 VALUES (?1, ?2, 0.5, 0.5, 1000, 'p')",
+                params![kind, content],
+            )
+            .unwrap();
+        }
+        let rows = console_pending(&conn, MAX_CONSOLE_PENDING).unwrap();
+        assert_eq!(rows.len(), 2, "non-renderable kinds never cross");
+        assert_eq!(rows[0]["kind"], serde_json::json!("draft"));
+        assert_eq!(
+            rows[0]["digest"],
+            serde_json::json!(review_digest("approve me")),
+            "the digest binds to the SAME bytes the HTTP console renders"
+        );
+        // The digest matches the historical handlers fingerprint byte-for-byte.
+        assert_eq!(
+            review_digest("approve me"),
+            crate::handlers::gate::review_digest("approve me")
+        );
+    }
+
+    // ── HERALD PIN: actor_ref is bounded + control-free + optional.
+    #[test]
+    fn envelope_actor_ref_is_bounded_and_optional() {
+        let ok = serde_json::json!({
+            "envelope": {"conversation_ref": "C1", "text": "hi", "external_id": "e1",
+                         "actor_ref": "U0PING1"}
+        });
+        let e = InboundEnvelope::parse(serde_json::to_string(&ok).unwrap().as_bytes()).unwrap();
+        assert_eq!(e.actor_ref.as_deref(), Some("U0PING1"));
+
+        let none = serde_json::json!({
+            "envelope": {"conversation_ref": "C1", "text": "hi", "external_id": "e1"}
+        });
+        let e = InboundEnvelope::parse(serde_json::to_string(&none).unwrap().as_bytes()).unwrap();
+        assert!(e.actor_ref.is_none());
+
+        for bad in ["", &"x".repeat(MAX_ACTOR_REF + 1), "in\u{0007}jected"] {
+            let v = serde_json::json!({
+                "envelope": {"conversation_ref": "C1", "text": "hi", "external_id": "e1",
+                             "actor_ref": bad}
+            });
+            assert!(
+                InboundEnvelope::parse(serde_json::to_string(&v).unwrap().as_bytes()).is_err(),
+                "actor_ref {bad:?} must refuse"
+            );
+        }
     }
 }

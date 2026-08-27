@@ -9,6 +9,9 @@
 //!   every emitted string on the read seam.
 //! - `POST /workflow/runs/{id}/notes/{invite_id}/accept` — the invitee
 //!   joins the channel (Relay's accept machinery, smaller).
+//! - `POST /workflow/channel/user-map` (Herald) — FILES a `channel/user_map`
+//!   proposal (probe-validated, audited). The table itself is written ONLY
+//!   by the approval path — platform identity is never auto-trusted.
 
 use axum::{
     Json,
@@ -297,5 +300,67 @@ pub async fn post_invite_accept(
         "invite_id": invite_id,
         "moved": moved,
         "state": if moved { channel::INVITE_ACCEPTED } else { channel::INVITE_PENDING },
+    })))
+}
+
+/// `POST /workflow/channel/user-map` (Herald) — file ONE `channel/user_map`
+/// proposal. Body: `{channel, tenant, platform_user_id, principal, roles?,
+/// action}`. Probe-validated (shape + role-store resolution) and audited at
+/// file time; the `channel_user_map` TABLE is written only by the approval
+/// path. This mirrors `crew_skills_update`: proposals are the only path in.
+pub async fn post_user_map_proposal(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Write, "", "global")?;
+    let actor = super::recall::principal_label(&principal);
+    let content =
+        serde_json::to_string(&body).map_err(|e| HandlerError::internal(e.to_string()))?;
+    let change = crate::workflow::channels::parse_user_map_change(&content)
+        .map_err(|m| HandlerError::bad_request("user_map_change_invalid", m))?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    let id: Result<i64, HandlerError> = tokio::task::spawn_blocking(move || {
+        let mut conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        crate::workflow::channels::probe_user_map_change(&conn, &change)
+            .map_err(|m| HandlerError::bad_request("user_map_change_invalid", m))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let id: i64 = tx
+            .query_row(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+                 VALUES (?1, ?2, 0.5, 0.5, ?3, ?4) RETURNING id",
+                rusqlite::params![
+                    crate::workflow::channels::PROP_KIND_USER_MAP,
+                    content,
+                    chrono::Utc::now().timestamp(),
+                    actor
+                ],
+                |r| r.get(0),
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        crate::audit::record_tenant(
+            &tx,
+            crate::audit::AuditKind::Workflow,
+            actor.trim(),
+            &format!("proposal:{id}"),
+            crate::audit::AuditStatus::Ok,
+            "channel/user_map/propose",
+            "global",
+        );
+        tx.commit()
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        Ok(id)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    Ok(Json(serde_json::json!({
+        "proposal_id": id?,
+        "kind": crate::workflow::channels::PROP_KIND_USER_MAP,
+        "status": "pending",
     })))
 }

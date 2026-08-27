@@ -161,6 +161,12 @@ pub const SCHEMA_VERSION_V1_28_42: &str = "1.28.42";
 /// down-migration is a documented no-op.
 pub const SCHEMA_VERSION_V1_28_43: &str = "1.28.43";
 
+/// Herald: the `channel_user_map` Slack/Teams user map (proposal-maintained
+/// platform-identity → principal + roles snapshot; the ONLY writer is the
+/// approval path). Additive; one-way; the down-migration is a documented
+/// no-op.
+pub const SCHEMA_VERSION_V1_28_45: &str = "1.28.45";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

@@ -23,6 +23,7 @@
 use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::webhook::{WEBHOOK_TS_FUTURE_SKEW_SECS, WebhookQueue};
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -315,22 +316,600 @@ pub async fn drain_channel(
     }
     let batched = tokio::task::spawn_blocking({
         let kind = kind.clone();
-        move || -> Result<Vec<serde_json::Value>, String> {
+        move || -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), String> {
             let mut conn = state.pool.get().map_err(|e| format!("{e}"))?;
-            channels::drain_out_batch(&mut conn, &kind, chrono::Utc::now().timestamp())
-                .map_err(|e| format!("{e}"))
+            let now = chrono::Utc::now().timestamp();
+            let envelopes =
+                channels::drain_out_batch(&mut conn, &kind, now).map_err(|e| format!("{e}"))?;
+            // Herald: Relay handover pings ride the SAME claim law, delivered
+            // by the same HMAC crank. Additive key; older bridges ignore it.
+            let pings =
+                channels::drain_ping_batch(&mut conn, &kind, now).map_err(|e| format!("{e}"))?;
+            Ok((envelopes, pings))
         }
     })
     .await;
     match batched {
-        Ok(Ok(envelopes)) => (
+        Ok(Ok((envelopes, pings))) => (
             StatusCode::OK,
-            axum::Json(json!({ "status": "ok", "count": envelopes.len(), "envelopes": envelopes })),
+            axum::Json(json!({
+                "status": "ok",
+                "count": envelopes.len(),
+                "envelopes": envelopes,
+                "pings": pings,
+            })),
         )
             .into_response(),
         Ok(Err(e)) => HandlerError::internal(e).into_response(),
         Err(e) => HandlerError::internal(format!("{e}")).into_response(),
     }
+}
+
+// ── Herald: the operator-console annex (`POST /webhooks/channel/{kind}/console`)
+// ──────────────────────────────────────────────────────────────────────────
+//
+// The bridge (holding NO brain token — the house-wide credentials law) dials
+// the console INTO the kernel over the same HMAC seam as receive/drain. The
+// kernel resolves every actor through `channel_user_map` (proposal-
+// maintained; platform identity NEVER auto-trusts), role-checks the mapped
+// principal against the role store, and then REUSES the existing handler
+// machinery — approvals run the byte-identical `approve_proposal` path, so
+// the digest binding is enforced TWICE: bridge-side against the rendered
+// digest, and server-side inside the approve verb (`digest_required`).
+
+use crate::auth::Scope;
+use crate::handlers::auth::OptPrincipal;
+use crate::handlers::gate::{ApproveQuery, approve_proposal, reject_proposal};
+
+/// Console-request bounds (the bounds law: every input bounded).
+const MAX_CONSOLE_BODY: usize = 4_096;
+const MAX_CONSOLE_CRANK_STEPS: u32 = 10;
+const CONSOLE_CRANK_TIMEOUT_SECS: u64 = 60;
+
+fn console_audit(
+    state: &Arc<AppState>,
+    actor: &str,
+    target: &str,
+    status: crate::audit::AuditStatus,
+    detail: &str,
+) {
+    if let Ok(conn) = state.pool.get() {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Workflow,
+            actor,
+            target,
+            status,
+            detail,
+        );
+    }
+}
+
+/// Build the least-privilege principal a mapped operator acts as: tenant =
+/// the bridge's configured domain, exactly ONE scope (Read or Write) on the
+/// global pool, roles = the map row's role names. Empty roles NEVER get a
+/// scope — the caller checks first (a channel-relayed act requires an
+/// explicit grant; the JWT-era vacuous-role back-compat does not apply to
+/// platform identities).
+fn console_principal(
+    cfg: &ChannelBridgeConfig,
+    principal_label: &str,
+    roles: Vec<String>,
+    write: bool,
+) -> crate::auth::Principal {
+    crate::auth::Principal {
+        sub: principal_label.to_string(),
+        tenant: cfg.domain.clone(),
+        scopes: vec![Scope {
+            action: if write {
+                crate::auth::Action::Write
+            } else {
+                crate::auth::Action::Read
+            },
+            team: cfg.domain.clone(),
+            domain: "global".to_string(),
+        }],
+        jti: format!("channel-console:{}", cfg.bridge_id()),
+        roles,
+        manages: Vec::new(),
+    }
+}
+
+/// Resolve + role-check a mapped actor inside one blocking step. Returns the
+/// (principal, roles) pair or a named refusal (already audited by the
+/// caller via the error string).
+fn resolve_console_actor(
+    conn: &rusqlite::Connection,
+    cfg: &ChannelBridgeConfig,
+    actor_ref: &str,
+    capability: &str,
+) -> Result<(String, Vec<String>), &'static str> {
+    let Some((principal, roles)) =
+        channels::lookup_mapped_actor(conn, &cfg.kind, &cfg.tenant, actor_ref)
+            .map_err(|_| "map_unreadable")?
+    else {
+        return Err("actor_not_mapped");
+    };
+    // A channel-relayed act REQUIRES an explicit role grant — the map is the
+    // only trust anchor and an empty grant grants nothing.
+    if roles.is_empty() {
+        return Err("actor_unroled");
+    }
+    let resolved =
+        brain_server::role::resolve(conn, &roles).map_err(|_| "role_store_unreadable")?;
+    if !resolved.iter().any(|r| r.can(capability)) {
+        return Err("actor_lacks_capability");
+    }
+    Ok((principal, roles))
+}
+
+/// `POST /webhooks/channel/{kind}/console` — the bridge-relayed operator
+/// console. Closed action vocabulary: `pending` (renderable proposals +
+/// digest), `decide` (approve/reject with digest + actor), `due`, `crank`.
+pub async fn post_console(
+    State(state): State<Arc<AppState>>,
+    Path(kind): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(cfg) = verify_bridge(
+        &state,
+        &kind,
+        &headers,
+        &body,
+        &format!("channel-console:{kind}"),
+    ) else {
+        return HandlerError::unauthorized("bridge signature verification failed").into_response();
+    };
+    let actor = format!("channel-console:{}", cfg.bridge_id());
+    if timestamp_skew_ok(&state, &header_str(&headers, "webhook-timestamp"), &actor).is_none() {
+        return HandlerError::unauthorized("timestamp check failed").into_response();
+    }
+    if body.len() > MAX_CONSOLE_BODY {
+        console_audit(
+            &state,
+            &actor,
+            "console",
+            crate::audit::AuditStatus::Denied,
+            "body_oversized",
+        );
+        return HandlerError::bad_request("console_body_oversized", "request exceeds bounds")
+            .into_response();
+    }
+    let v: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            console_audit(
+                &state,
+                &actor,
+                "console",
+                crate::audit::AuditStatus::Denied,
+                "body_not_json",
+            );
+            return HandlerError::bad_request("console_body_invalid", "request must be json")
+                .into_response();
+        }
+    };
+    let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("");
+    match action {
+        "pending" => console_pending_action(&state, &actor, &v).await,
+        "decide" => console_decide_action(&state, &cfg, &actor, &v).await,
+        "due" => console_due_action(&state, &cfg, &actor, &v).await,
+        "crank" => console_crank_action(&state, &cfg, &actor, &v).await,
+        other => {
+            console_audit(
+                &state,
+                &actor,
+                "console",
+                crate::audit::AuditStatus::Denied,
+                &format!("unknown_action:{other}"),
+            );
+            HandlerError::bad_request(
+                "console_action_unknown",
+                "action must be pending|decide|due|crank",
+            )
+            .into_response()
+        }
+    }
+}
+
+fn bounded_actor_ref(v: &serde_json::Value) -> Option<String> {
+    let s = v.get("actor_ref").and_then(|x| x.as_str())?;
+    if s.is_empty() || s.len() > channels::MAX_ACTOR_REF || s.chars().any(char::is_control) {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+async fn console_pending_action(
+    state: &Arc<AppState>,
+    _actor: &str,
+    v: &serde_json::Value,
+) -> Response {
+    let limit = v
+        .get("limit")
+        .and_then(|x| x.as_u64())
+        .map(|n| n.min(channels::MAX_CONSOLE_PENDING as u64) as usize)
+        .unwrap_or(channels::MAX_CONSOLE_PENDING);
+    let pool = state.pool.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        channels::console_pending(&conn, limit).map_err(|e| format!("{e}"))
+    })
+    .await;
+    match rows {
+        Ok(Ok(proposals)) => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "proposals": proposals })),
+        )
+            .into_response(),
+        Ok(Err(e)) => HandlerError::internal(e).into_response(),
+        Err(e) => HandlerError::internal(format!("{e}")).into_response(),
+    }
+}
+
+async fn console_decide_action(
+    state: &Arc<AppState>,
+    cfg: &ChannelBridgeConfig,
+    actor: &str,
+    v: &serde_json::Value,
+) -> Response {
+    let decision = v.get("decision").and_then(|x| x.as_str()).unwrap_or("");
+    if decision != "approve" && decision != "reject" {
+        return HandlerError::bad_request(
+            "console_decision_invalid",
+            "decision must be approve|reject",
+        )
+        .into_response();
+    }
+    let proposal_id = v.get("proposal_id").and_then(|x| x.as_i64()).unwrap_or(0);
+    if proposal_id <= 0 {
+        return HandlerError::bad_request(
+            "console_proposal_invalid",
+            "proposal_id must be positive",
+        )
+        .into_response();
+    }
+    let digest = v
+        .get("digest")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // THE binding law, kernel-side gate #1: a decision without the exact
+        // rendered digest never reaches the approve verb.
+        console_audit(
+            state,
+            actor,
+            &format!("proposal:{proposal_id}"),
+            crate::audit::AuditStatus::Denied,
+            "console_decide_digest_missing",
+        );
+        return HandlerError::bad_request(
+            "digest_required",
+            "decide must carry the content_digest it was displayed with",
+        )
+        .into_response();
+    }
+    let Some(actor_ref) = bounded_actor_ref(v) else {
+        console_audit(
+            state,
+            actor,
+            "console",
+            crate::audit::AuditStatus::Denied,
+            "actor_ref_invalid",
+        );
+        return HandlerError::bad_request(
+            "actor_ref_invalid",
+            "actor_ref must be an opaque platform id",
+        )
+        .into_response();
+    };
+    let capability = if decision == "approve" {
+        "approve"
+    } else {
+        "reject"
+    };
+    let pool = state.pool.clone();
+    let cfg2 = cfg.clone();
+    let actor2 = actor_ref.clone();
+    let resolved =
+        tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), &'static str> {
+            let conn = pool.get().map_err(|_| "pool_unavailable")?;
+            resolve_console_actor(&conn, &cfg2, &actor2, capability)
+        })
+        .await;
+    let (principal_label, roles) = match resolved {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(reason)) => {
+            console_audit(
+                state,
+                actor,
+                &format!("proposal:{proposal_id}"),
+                crate::audit::AuditStatus::Denied,
+                &format!("console_decide_refused:{reason}"),
+            );
+            return HandlerError::forbidden(crate::auth::Action::Write, &cfg.domain, "global")
+                .into_response();
+        }
+        Err(e) => return HandlerError::internal(format!("{e}")).into_response(),
+    };
+
+    // Reuse the HTTP console's OWN verbs — the same CAS, the same digest
+    // check (kernel-side gate #2), the same audit chain. The mapped
+    // principal acts exactly as a logged-in reviewer would.
+    let principal = console_principal(cfg, &principal_label, roles, true);
+    let decision_response = if decision == "approve" {
+        let fut = approve_proposal(
+            State(Arc::clone(state)),
+            OptPrincipal(Some(principal)),
+            axum::extract::Path(proposal_id),
+            axum::extract::Query(ApproveQuery {
+                supersedes: None,
+                digest: Some(digest),
+            }),
+        );
+        fut.await
+            .map(|Json(body)| (StatusCode::OK, Json(body)).into_response())
+    } else {
+        let fut = reject_proposal(
+            State(Arc::clone(state)),
+            OptPrincipal(Some(principal)),
+            axum::extract::Path(proposal_id),
+        );
+        fut.await
+            .map(|Json(body)| (StatusCode::OK, Json(body)).into_response())
+    };
+    decision_response.unwrap_or_else(IntoResponse::into_response)
+}
+
+async fn console_due_action(
+    state: &Arc<AppState>,
+    cfg: &ChannelBridgeConfig,
+    actor: &str,
+    v: &serde_json::Value,
+) -> Response {
+    let Some(actor_ref) = bounded_actor_ref(v) else {
+        console_audit(
+            state,
+            actor,
+            "console",
+            crate::audit::AuditStatus::Denied,
+            "actor_ref_invalid",
+        );
+        return HandlerError::bad_request(
+            "actor_ref_invalid",
+            "actor_ref must be an opaque platform id",
+        )
+        .into_response();
+    };
+    let pool = state.pool.clone();
+    let cfg2 = cfg.clone();
+    let resolved =
+        tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), &'static str> {
+            let conn = pool.get().map_err(|_| "pool_unavailable")?;
+            resolve_console_actor(&conn, &cfg2, &actor_ref, "read")
+        })
+        .await;
+    let (principal_label, _roles) = match resolved {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(reason)) => {
+            console_audit(
+                state,
+                actor,
+                "console:due",
+                crate::audit::AuditStatus::Denied,
+                reason,
+            );
+            return HandlerError::forbidden(crate::auth::Action::Read, &cfg.domain, "global")
+                .into_response();
+        }
+        Err(e) => return HandlerError::internal(format!("{e}")).into_response(),
+    };
+    let now = chrono::Utc::now().timestamp();
+    let pool = state.pool.clone();
+    let shaped =
+        tokio::task::spawn_blocking(move || -> Result<(Vec<serde_json::Value>, usize), String> {
+            let conn = pool.get().map_err(|e| format!("{e}"))?;
+            channels::console_due(&conn, now).map_err(|e| format!("{e}"))
+        })
+        .await;
+    console_audit(
+        state,
+        actor,
+        "console:due",
+        crate::audit::AuditStatus::Ok,
+        &format!("principal:{principal_label}"),
+    );
+    match shaped {
+        Ok(Ok((due, total))) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "due": due, "count": due.len(), "total": total })),
+        )
+            .into_response(),
+        Ok(Err(e)) => HandlerError::internal(e).into_response(),
+        Err(e) => HandlerError::internal(format!("{e}")).into_response(),
+    }
+}
+
+async fn console_crank_action(
+    state: &Arc<AppState>,
+    cfg: &ChannelBridgeConfig,
+    actor: &str,
+    v: &serde_json::Value,
+) -> Response {
+    let Some(actor_ref) = bounded_actor_ref(v) else {
+        console_audit(
+            state,
+            actor,
+            "console",
+            crate::audit::AuditStatus::Denied,
+            "actor_ref_invalid",
+        );
+        return HandlerError::bad_request(
+            "actor_ref_invalid",
+            "actor_ref must be an opaque platform id",
+        )
+        .into_response();
+    };
+    let run_id = v.get("run_id").and_then(|x| x.as_i64()).unwrap_or(0);
+    if run_id <= 0 {
+        return HandlerError::bad_request("crank_run_invalid", "run_id must be positive")
+            .into_response();
+    }
+    let max_steps = v
+        .get("max_steps")
+        .and_then(|x| x.as_u64())
+        .map(|n| n.min(MAX_CONSOLE_CRANK_STEPS as u64) as u32)
+        .unwrap_or(MAX_CONSOLE_CRANK_STEPS);
+    let pool = state.pool.clone();
+    let cfg2 = cfg.clone();
+    let resolved =
+        tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), &'static str> {
+            let conn = pool.get().map_err(|_| "pool_unavailable")?;
+            resolve_console_actor(&conn, &cfg2, &actor_ref, "write")
+        })
+        .await;
+    let (principal_label, _roles) = match resolved {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(reason)) => {
+            console_audit(
+                state,
+                actor,
+                "console:crank",
+                crate::audit::AuditStatus::Denied,
+                reason,
+            );
+            return HandlerError::forbidden(crate::auth::Action::Write, &cfg.domain, "global")
+                .into_response();
+        }
+        Err(e) => return HandlerError::internal(format!("{e}")).into_response(),
+    };
+
+    // The crank is the steward-harness act the `brain workflow crank` CLI
+    // performs — same binary resolution, bounded steps, ONE timeout window.
+    // It runs on the kernel host because THAT is where the engine lives; the
+    // channel seam merely relays an operator's role-checked command.
+    let Some(harness) = resolve_harness_bin() else {
+        console_audit(
+            state,
+            actor,
+            "console:crank",
+            crate::audit::AuditStatus::Denied,
+            "harness_missing",
+        );
+        return HandlerError::internal("steward-harness binary not found beside the kernel")
+            .into_response();
+    };
+    let cmd = serde_json::json!({ "cmd": "crank", "run_id": run_id, "max_steps": max_steps });
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(CONSOLE_CRANK_TIMEOUT_SECS),
+        run_harness_crank(harness, cmd),
+    )
+    .await;
+    let report = match outcome {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => {
+            console_audit(
+                state,
+                actor,
+                "console:crank",
+                crate::audit::AuditStatus::Denied,
+                &format!("crank_failed:{e}"),
+            );
+            return HandlerError::internal(format!("crank failed: {e}")).into_response();
+        }
+        Err(_) => {
+            console_audit(
+                state,
+                actor,
+                "console:crank",
+                crate::audit::AuditStatus::Denied,
+                "crank_timeout",
+            );
+            return HandlerError::internal("crank exceeded its timeout window").into_response();
+        }
+    };
+    console_audit(
+        state,
+        actor,
+        "console:crank",
+        crate::audit::AuditStatus::Ok,
+        &format!(
+            "principal:{principal_label} run:{run_id} steps:{}",
+            report["steps_executed"]
+        ),
+    );
+    (StatusCode::OK, Json(report)).into_response()
+}
+
+async fn run_harness_crank(
+    harness: std::path::PathBuf,
+    cmd: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new(&harness)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn {}: {e}", harness.display()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(format!("{cmd}\n").as_bytes())
+            .await
+            .map_err(|e| format!("write stdin: {e}"))?;
+        stdin
+            .shutdown()
+            .await
+            .map_err(|e| format!("close stdin: {e}"))?;
+    }
+    let out = child
+        .wait_with_output()
+        .await
+        .map_err(|e| format!("wait harness: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let snippet: String = stderr.chars().take(200).collect();
+        return Err(format!("harness exited with {}: {snippet}", out.status));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|_| "harness stdout was not json".to_string())?;
+    // Refs only: stopped_at + steps_executed ride; step detail stays in the
+    // harness/kernel lineage, never in the channel.
+    Ok(serde_json::json!({
+        "stopped_at": parsed.get("stopped_at").cloned().unwrap_or(serde_json::Value::Null),
+        "steps_executed": parsed.get("steps_executed").cloned().unwrap_or(serde_json::Value::Null),
+    }))
+}
+
+/// Same resolution the `brain workflow crank` CLI performs: the explicit
+/// override, the binary installed beside the kernel, then PATH.
+fn resolve_harness_bin() -> Option<std::path::PathBuf> {
+    if let Ok(override_bin) = std::env::var("BRAIN_STEWARD_BIN") {
+        let p = std::path::PathBuf::from(override_bin);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let p = dir.join("steward-harness");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let p = std::path::Path::new(dir).join("steward-harness");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 // ── Mount-registration reuse (the ONE registration surface for bridges) ────

@@ -185,7 +185,7 @@ async fn post_kernel(
 /// edges: evidence certifies bytes BOTH sides can hash).
 pub(crate) async fn register_mount(app: &App) -> Result<u16> {
     let body = serde_json::json!({
-        "plugin": "channel:whatsapp",
+        "plugin": format!("channel:{}", app.cfg.kind),
         "action": "mount",
         "bundle_sha256": app.cfg.config_sha256,
         "domain": app.cfg.domain,
@@ -208,12 +208,13 @@ pub(crate) struct Quarantined {
 /// the retention dir named by digest. Written once per unique digest, never
 /// served, never proxied onward — ONLY the hash crosses the envelope seam.
 pub(crate) async fn quarantine_media(app: &App, media_id: &str) -> Result<Quarantined> {
-    let token = String::from_utf8_lossy(&app.cfg.access_token).to_string();
+    let wa = app.cfg.whatsapp()?;
+    let token = String::from_utf8_lossy(&wa.access_token).to_string();
     let meta_resp = app
         .http
         .get(format!(
             "https://graph.facebook.com/{}/{}",
-            app.graph_api_version, media_id
+            wa.graph_api_version, media_id
         ))
         .bearer_auth(token.clone())
         .send()
@@ -261,6 +262,11 @@ pub(crate) async fn quarantine_media(app: &App, media_id: &str) -> Result<Quaran
 /// kernel marks claim batches delivered at CLAIM time — at-least-once,
 /// loud logs are the visibility story).
 pub(crate) async fn crank(app: &App) -> Result<()> {
+    let state = app
+        .state
+        .as_ref()
+        .context("tier state absent on a non-whatsapp edge")?;
+    let wa = app.cfg.whatsapp()?;
     let url = format!(
         "{}/webhooks/channel/whatsapp/drain",
         app.brain_url.trim_end_matches('/')
@@ -274,23 +280,22 @@ pub(crate) async fn crank(app: &App) -> Result<()> {
         .unwrap_or_default();
     for env in envelopes {
         let now = chrono::Utc::now().timestamp();
-        if !app.state.send_allowed_now(now) {
+        if !state.send_allowed_now(now) {
             tracing::warn!(
-                interval_secs = min_send_interval_secs(app.state.current_tier().as_deref()),
+                interval_secs = min_send_interval_secs(state.current_tier().as_deref()),
                 "tier throttle active: deferring send(s) to a later tick"
             );
             break;
         }
-        if let Err(e) = deliver_one(app, &env).await {
+        if let Err(e) = deliver_one(app, wa, &env).await {
             tracing::error!("deliver failed loudly: {e:#}");
         }
-        app.state
-            .record_send_attempt(chrono::Utc::now().timestamp())?;
+        state.record_send_attempt(chrono::Utc::now().timestamp())?;
     }
     Ok(())
 }
 
-async fn deliver_one(app: &App, env: &Value) -> Result<()> {
+async fn deliver_one(app: &App, wa: &crate::config::WhatsAppCfg, env: &Value) -> Result<()> {
     let conversation_ref = env
         .get("conversation_ref")
         .and_then(|x| x.as_str())
@@ -332,12 +337,12 @@ async fn deliver_one(app: &App, env: &Value) -> Result<()> {
 
     let url = format!(
         "https://graph.facebook.com/{}/{}/messages",
-        app.graph_api_version, app.cfg.phone_number_id
+        wa.graph_api_version, wa.phone_number_id
     );
     let resp = app
         .http
         .post(url)
-        .bearer_auth(String::from_utf8_lossy(&app.cfg.access_token).to_string())
+        .bearer_auth(String::from_utf8_lossy(&wa.access_token).to_string())
         .json(&payload)
         .send()
         .await
@@ -348,6 +353,37 @@ async fn deliver_one(app: &App, env: &Value) -> Result<()> {
         anyhow::bail!("cloud api refused send ({code}): {body_text}");
     }
     Ok(())
+}
+
+/// ── Kind-general drain seam (Herald) ──────────────────────────────────
+/// One drain crank payload for ANY channel kind: claim pending `channel/
+/// out` envelopes for THIS kind over the signed seam. `pings` is OPTIONAL
+/// (absent = empty — Relay handover pings ride the same topic from
+/// v1.28.45 on; older kernels simply never send them).
+pub(crate) struct DrainedBatch {
+    pub(crate) envelopes: Vec<Value>,
+    pub(crate) pings: Vec<Value>,
+}
+
+pub(crate) async fn drain_batch(app: &App) -> Result<DrainedBatch> {
+    let kind = app.cfg.kind.as_str();
+    let url = format!(
+        "{}/webhooks/channel/{kind}/drain",
+        app.brain_url.trim_end_matches('/')
+    );
+    let resp = post_kernel(&app.http, &url, &app.cfg.webhook_secret, Vec::new()).await?;
+    let parsed: Value = resp.json().await.context("drain payload not json")?;
+    let envelopes = parsed
+        .get("envelopes")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let pings = parsed
+        .get("pings")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(DrainedBatch { envelopes, pings })
 }
 
 #[cfg(test)]

@@ -19,6 +19,153 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.45] — 2026-08-27 — "Herald": Slack and Microsoft Teams (the operator channels)
+
+The channels enterprises already live in become the console's ANNEXES: case
+rooms, Relay handovers, and digest-bound approvals where the people already
+are. Two adapters, one release — they serve the same buyer moment. The
+kernel keeps every law it has: the console annex authenticates over the
+SAME Standard-Webhooks HMAC seam, resolves every actor through a
+proposal-maintained user map (platform identity is NEVER auto-trusted), and
+approves through the byte-identical approve verb, so Gateweld's digest
+binding now holds TWICE on a channel click — bridge-side against the
+rendered digest, server-side inside the approve verb.
+
+### Release notes
+
+**Improvements**
+- **The Slack edge (Socket Mode):** `tools/channel-bridge` gains a `slack`
+  kind that binds NO listener — the bridge DIALS Slack over the Socket-Mode
+  WebSocket (apps.connections.open → wss, capped-backoff reconnects).
+  `message` events in mapped channels become screened case notes via the
+  ordinary inbound seam (thread map or `[case N]`); the sender's OPAQUE
+  user id rides as `actor_ref`. Pinned by
+  `socket_mode_never_opens_an_inbound_listener` (source-text grep + a pure
+  kind→listener predicate).
+- **Approve-by-button:** pending renderable proposals (draft / `kcs_*` /
+  `channel/template` / `channel/user_map`) render as Slack Blocks with the
+  content preview AND the digest shown in the block; Approve/Reject button
+  payloads MUST carry that digest — a missing or mismatched digest is
+  refused bridge-side, logged, and never relayed
+  (`slack_button_approval_carries_digest_and_binds`). Adaptive Cards do the
+  same on Teams (`adaptive_card_submit_returns_digest`), `Action.Submit`
+  returning the digest field.
+- **The bridge-relayed operator console:** ONE new additive route,
+  `POST /webhooks/channel/{kind}/console` (HMAC self-authenticating like
+  receive/drain). Closed action vocabulary — `pending`, `decide`, `due`,
+  `crank`. The kernel maps `actor_ref` through the user map, role-checks
+  against the role store, and then calls the EXISTING console verbs, so a
+  channel approval is CAS-safe, audited, and replay-refused exactly like a
+  browser approval.
+- **The Slack user map:** `POST /workflow/channel/user-map` FILES a
+  `channel/user_map` proposal (`crew_skills_update`-style); approval is the
+  ONLY writer of the new `channel_user_map` table — no auto-trust path
+  exists (`slack_user_map_changes_flow_through_proposals`). Platform ids
+  are stored opaque (never display names); roles resolve against the role
+  store at file AND apply time; every change carries its audit row
+  (proposer on the proposal, approver on the apply).
+- **Relay handover pings:** a fresh handover offer enqueues ONE
+  `channel/ping` outbox row carrying the I-PASS completeness state (refs
+  only). The bridge drain resolves the receiving operator's mapped
+  platform refs + the case room and pings them in-channel — the machine
+  coaches before the human accepts
+  (`relay_handover_pings_receiving_operator_with_completeness_check`).
+  Unmapped principals audit loud and consume; the drain never wedges.
+- **Case rooms manifest natively:** the thread map IS the room mapping —
+  Slack channels / Teams conversations thread to their cases through the
+  existing `channel_threads` map, and drained approved acts deliver back
+  into the room (`mapped_channel_messages_become_notes_with_threading`).
+- **Crew presence from channel activity:** a mapped operator's channel
+  messages touch presence with the new closed activity kind `channel` —
+  activity KINDS only, never content, and only while the domain's Crew DPO
+  switch is on (writes stop when off; the roster was already hidden).
+- **Teams via the supported route:** Bot Framework activities verified
+  against the Bot Framework JWKS BEFORE any parse, Adaptive Cards for
+  actions, Graph-based channel enumeration for room mapping as a read-only
+  operator-run CLI flag (`--list-channels`). The deprecated O365-connector
+  path is explicitly NOT implemented
+  (`teams_uses_bot_framework_not_deprecated_connectors`, doc-grep).
+
+**Bug fixes**: None.
+
+**Security fixes**
+- Two independent digest-enforcement points on channel approvals (bridge
+  render-cache vs stored-content fingerprint at the approve verb).
+- Channel-relayed acts REQUIRE an explicit role grant: an empty role list
+  on a map row grants nothing (the JWT-era vacuous-role back-compat does
+  not extend to platform identities).
+- The Teams edge verifies Bot Framework JWTs (issuer + audience pinned,
+  JWKS cached, refetched on unknown kid) before parsing a single byte.
+- Bridge least privilege documented at the workspace-app level: channel
+  tokens grant nothing beyond their mapped channels; secrets stay 0600
+  files; the bridge holds no brain token, ever (self-grep extended).
+
+### Behavior-change ledger
+
+| Change | Nature | Compat |
+|---|---|---|
+| Slack (Socket Mode) + Teams (Bot Framework) adapters in `tools/channel-bridge` | additive edge processes | config-off default; absent config = channel dark |
+| `POST /webhooks/channel/{kind}/console` (pending/decide/due/crank) | additive route, openapi + coverage + guard tables in step | HMAC self-authenticating; bearer surface untouched |
+| `channel_user_map` table + `channel/user_map` proposal kind + `/workflow/channel/user-map` | additive schema bump to 1.28.45 + additive route | approval is the only table writer |
+| Envelope `actor_ref`, drained `pings[]`, activity kind `channel` | additive wire fields/vocabulary | absent = prior behavior byte-for-byte |
+| Proposal renderers (Blocks / Adaptive Cards) with digest fields | bridge-side | server approve endpoint machinery reused byte-identically |
+
+### Engineering record
+
+- **Plan-named pins (+7):** `socket_mode_never_opens_an_inbound_listener`,
+  `slack_button_approval_carries_digest_and_binds`,
+  `slack_user_map_changes_flow_through_proposals`,
+  `adaptive_card_submit_returns_digest`,
+  `teams_uses_bot_framework_not_deprecated_connectors` (doc-grep),
+  `mapped_channel_messages_become_notes_with_threading` (bridge + kernel
+  halves), `relay_handover_pings_receiving_operator_with_completeness_check`
+  — plus kernel-side: `console_pending_carries_digest_and_renderable_kinds_only`,
+  `envelope_actor_ref_is_bounded_and_optional`, and the end-to-end
+  `console_seam_digest_law_and_actor_role_checks` (signed decide relay
+  through the REAL approve machinery: digest-less 400, forged-digest 409,
+  unmapped 403, approve-once CAS, replay 404).
+- **Server-diff verification (the wiring checklist):** the plan expected
+  zero server diff with `POST /proposals/{id}/approve?digest=` reused
+  directly. VERIFIED NECESSARY TO EXTEND: the bridge holds no brain token
+  (pinned house-wide), and with auth configured the bearer middleware 401s
+  every unauthenticated call to the approve route — a channel click could
+  never reach it. The seam therefore lands as the additive console route
+  above (its own ledger row), which REUSES the approve/reject handler
+  machinery unchanged — the digest-binding path is the same code, not a
+  fork. Zero changes to bearer routes; openapi coverage + guard tables
+  updated in the same commit.
+- Schema 1.28.44 → 1.28.45 (additive: `channel_user_map`); contract-test
+  table list + pragma probe extended in the same commit as the wiring.
+- The `crank` console action runs the same steward-harness binary the CLI
+  drives (resolution: BRAIN_STEWARD_BIN → beside the kernel → PATH),
+  bounded to ≤10 steps and one 60s timeout window, stdout reduced to
+  refs-only.
+
+### Honest ceilings
+
+- Approvals relayed over the console seam reuse the generic approve
+  machinery, so a replayed decide returns the console's 404 "no pending
+  proposal" rather than Caravel's `{moved:false}` receipt (which remains
+  specific to `channel/template` dispatch). The bridge surfaces this as
+  "already decided".
+- Generic `/brain approve <id>` slash commands can only act on proposals
+  the bridge has RENDERED in this session (the digest comes from the render
+  cache); anything else is refused with guidance to use the proposal card.
+- `/brain due` lists the valet due queue (bounded 25); it does not fire
+  envelopes — the crank remains the explicit act.
+- Teams drain delivery uses the standard regional BF host rather than a
+  per-activity serviceUrl (the drain path has no inbound activity to echo);
+  per-activity echo remains the inbound path's rule.
+- Presence from channel activity is an UPSERT bump (`channel` kind); it
+  carries no case ref, no message content, and no customer refs — by
+  construction, not discipline.
+- The Slack user map is tenant-scoped per bridge config; one platform user
+  may map to exactly one principal per bridge (rotation = re-approve add).
+- No channel-side accept/decline of handovers: the ping coaches, the
+  decision happens on the console where the full I-PASS packet renders.
+
+---
+
 ## [1.28.44] — 2026-08-27 — "Caravel": WhatsApp for Business, the governed edge
 
 A channel is a GOVERNED EDGE, never a server feature — and WhatsApp is the

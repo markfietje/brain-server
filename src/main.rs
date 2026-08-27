@@ -6128,6 +6128,12 @@ async fn main_inner() -> Result<()> {
             "/webhooks/channel/{kind}/drain",
             post(handlers::channel_webhook::drain_channel),
         )
+        .route(
+            "/webhooks/channel/{kind}/console",
+            post(handlers::channel_webhook::post_console),
+        )
+        // The console annex is HMAC self-authenticating like its sibling
+        // channel seams: the bridge holds no bearer, ever.
         // OIDC discovery + JWKS + auth endpoints. These are
         // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
         // and `/auth/logout` (the
@@ -6208,6 +6214,10 @@ async fn main_inner() -> Result<()> {
         .route(
             "/workflow/runs/{id}/notes/{invite_id}/accept",
             post(handlers::channel::post_invite_accept),
+        )
+        .route(
+            "/workflow/channel/user-map",
+            post(handlers::channel::post_user_map_proposal),
         )
         // Mesh: agents as named colleagues — signed cards + delegation.
         .route("/ops/agents/cards", post(handlers::mesh::post_card))
@@ -10368,6 +10378,8 @@ Final paragraph after the rule.";
             // v1.28.43 "Switchboard": the channel thread map (case threading
             // for governed channel edges; tenant-scoped by predicate).
             "channel_threads",
+            // the Slack/Teams user map (proposal-maintained identity).
+            "channel_user_map",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -10583,7 +10595,7 @@ Final paragraph after the rule.";
         // Keystone for the case_status_refs + kcs_translations tables.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_43),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_45),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -10646,6 +10658,19 @@ Final paragraph after the rule.";
             )
             .expect("pragma probe");
         assert_eq!(thread_cols, 8, "channel_threads columns must exist");
+
+        // Herald: the user map carries the opaque platform id, the mapped
+        // principal, and the role snapshot the console relay role-checks.
+        let user_map_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('channel_user_map')
+                  WHERE name IN ('channel','tenant','platform_user_id','principal',
+                                 'roles_json','created_at')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(user_map_cols, 6, "channel_user_map columns must exist");
 
         // v1.27.31 "AuditRepair": the migration stamps the initial head pin
         // ONLY for a chain with rows (a fresh DB pins on its first audit
@@ -12010,9 +12035,11 @@ Final paragraph after the rule.";
             "/decision/{id}/evaluate",
             // v0.9.7 Guard
             "/webhooks/{kind}",
-            // v1.28.43 Switchboard (HMAC self-authenticating like /webhooks/*)
+            // Switchboard (HMAC self-authenticating like /webhooks/*)
             "/webhooks/channel/{kind}",
             "/webhooks/channel/{kind}/drain",
+            // Herald (the bridge-relayed operator console; same seam)
+            "/webhooks/channel/{kind}/console",
             "/audit",
             "/audit/verify",
             "/metrics",
@@ -12103,6 +12130,9 @@ Final paragraph after the rule.";
             // v1.28.28 "Channel": the case gets a room.
             "/workflow/runs/{id}/notes",
             "/workflow/runs/{id}/notes/{invite_id}/accept",
+            // v1.28.45 "Herald": the user-map proposal filing (approval is
+            // the only writer of the table).
+            "/workflow/channel/user-map",
             // Mesh: agents as named colleagues — signed cards + delegation.
             "/ops/agents/cards",
             "/workflow/runs/{id}/delegations",
@@ -13420,6 +13450,9 @@ Final paragraph after the rule.";
             // Accepting an invite joins the room: a Write, ownership never
             // moves.
             ("/workflow/runs/{id}/notes/{invite_id}/accept", "Write"),
+            // Filing a user-map proposal is a governance Write; the table's
+            // ONLY writer is the approval path, never this route.
+            ("/workflow/channel/user-map", "Write"),
             // Mesh: provisioning/re-signing a card is governance over the
             // agent's identity → Admin; the verified card views are Reads.
             ("/ops/agents/cards", "Read"),
@@ -19575,5 +19608,217 @@ Final paragraph after the rule.";
         .await
         .expect("sign");
         assert_eq!(signed.0["signed"], serde_json::json!(true));
+    }
+
+    /// Herald console seam, end to end over the HMAC edge: a signed decide
+    /// relay runs the REAL approve machinery (digest bound server-side, CAS,
+    /// audit), a digest-less or wrong-digest relay refuses, an unmapped or
+    /// unroled platform actor never gets past the map, and replay reports a
+    /// decided queue rather than a second approval.
+    #[tokio::test]
+    async fn console_seam_digest_law_and_actor_role_checks() {
+        use axum::body::Bytes;
+        use axum::extract::{Path, State};
+        use axum::http::{HeaderMap, StatusCode};
+
+        register_sqlite_vec();
+        let manager = SqliteConnectionManager::memory();
+        let pool = Pool::new(manager).expect("pool");
+        let mut conn = pool.get().unwrap();
+        run_migration(&mut conn, 1).unwrap();
+
+        // The role the mapped operator holds, and the mapping itself — both
+        // written through the same law the production paths use.
+        conn.execute(
+            "INSERT OR IGNORE INTO roles(name, json) VALUES ('supervisor', ?1)",
+            params![
+                serde_json::json!({
+                    "name": "supervisor", "scopes": ["private"], "owner_filter": "all",
+                    "can": ["read", "write", "approve", "reject"]
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_user_map(channel, tenant, platform_user_id, principal,
+                                         roles_json, created_at, created_by)
+             VALUES ('slack', 'acme', 'UOPERATOR', 'ops@acme', '[\"supervisor\"]', 100, 'seed')",
+            [],
+        )
+        .unwrap();
+        let content = "approve me from the channel";
+        // created_at = NOW: the proposal sits inside its TTL (an ancient row
+        // would expire before the digest check runs).
+        conn.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+             VALUES ('draft', ?1, 0.5, 0.5, ?2, 'proposer@acme')",
+            params![content, chrono::Utc::now().timestamp()],
+        )
+        .unwrap();
+        let proposal_id: i64 = conn
+            .query_row(
+                "SELECT id FROM proposals ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let digest = crate::workflow::channels::review_digest(content);
+
+        // A registered bridge config the signature check can discover.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_path = dir.path().join("channel-slack-acme.json");
+        std::fs::write(
+            &cfg_path,
+            br#"{"domain":"acme","webhook_secret":"herald-secret"}"#,
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let prev_dir = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", dir.path()) };
+
+        let state = Arc::new(AppState {
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+            ),
+            registry: domain_registry::DomainRegistry::new(
+                pool.clone(),
+                &PathBuf::from(":memory:"),
+                true,
+            ),
+            pool: pool.clone(),
+            db_path: PathBuf::from(":memory:"),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::default(),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(16).0,
+            alert_events: tokio::sync::broadcast::channel(16).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+        });
+
+        fn sign(body: &[u8]) -> [String; 3] {
+            use base64::Engine;
+            use hmac::{Hmac, KeyInit, Mac};
+            type HmacSha256 = Hmac<sha2::Sha256>;
+            let id = "test-webhook-id".to_string();
+            let ts = chrono::Utc::now().timestamp().to_string();
+            let mut mac = HmacSha256::new_from_slice(b"herald-secret").unwrap();
+            mac.update(id.as_bytes());
+            mac.update(b".");
+            mac.update(ts.as_bytes());
+            mac.update(b".");
+            mac.update(body);
+            let sig = format!(
+                "v1,{}",
+                base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+            );
+            [id, ts, sig]
+        }
+        fn call(
+            state: Arc<AppState>,
+            body: serde_json::Value,
+        ) -> impl std::future::Future<Output = axum::response::Response> {
+            let bytes = Bytes::from(serde_json::to_vec(&body).unwrap());
+            let [id, ts, sig] = sign(&bytes);
+            let mut headers = HeaderMap::new();
+            headers.insert("webhook-id", id.parse().unwrap());
+            headers.insert("webhook-timestamp", ts.parse().unwrap());
+            headers.insert("webhook-signature", sig.parse().unwrap());
+            async move {
+                handlers::channel_webhook::post_console(
+                    State(state),
+                    Path("slack".to_string()),
+                    headers,
+                    bytes,
+                )
+                .await
+            }
+        }
+
+        // 1. A decide WITHOUT the digest never reaches the approve verb.
+        let resp = call(
+            Arc::clone(&state),
+            serde_json::json!({
+                "action": "decide", "decision": "approve", "proposal_id": proposal_id,
+                "actor_ref": "UOPERATOR"
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "digest is required");
+
+        // 2. A WRONG digest is refused by the approve verb's own binding
+        //    (the second, independent enforcement point).
+        let resp = call(
+            Arc::clone(&state),
+            serde_json::json!({
+                "action": "decide", "decision": "approve", "proposal_id": proposal_id,
+                "digest": "0".repeat(64), "actor_ref": "UOPERATOR"
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::CONFLICT,
+            "stale/forged digest must 409 at the approve verb"
+        );
+
+        // 3. An UNMAPPED platform actor is refused before anything happens.
+        let resp = call(
+            Arc::clone(&state),
+            serde_json::json!({
+                "action": "decide", "decision": "approve", "proposal_id": proposal_id,
+                "digest": digest, "actor_ref": "UUNKNOWN"
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "no auto-trust");
+
+        // 4. The CORRECT digest approves through the real machinery.
+        let resp = call(
+            Arc::clone(&state),
+            serde_json::json!({
+                "action": "decide", "decision": "approve", "proposal_id": proposal_id,
+                "digest": digest, "actor_ref": "UOPERATOR"
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let decided: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE id = ?1 AND status = 'approved'",
+                params![proposal_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decided, 1, "the CAS approved exactly once");
+
+        // 5. Replay: the proposal is decided; the seam refuses (404), never
+        //    a second approval.
+        let resp = call(
+            Arc::clone(&state),
+            serde_json::json!({
+                "action": "decide", "decision": "approve", "proposal_id": proposal_id,
+                "digest": digest, "actor_ref": "UOPERATOR"
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "already decided");
+
+        if let Some(prev) = prev_dir {
+            unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", prev) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR") };
+        }
     }
 }

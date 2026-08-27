@@ -846,6 +846,14 @@ paths:
                         new_tier:
                           type: string
                           enum: [green, yellow, orange, red]
+                    actor_ref:
+                      type: string
+                      maxLength: 128
+                      description: >-
+                        OPAQUE platform user id of the human sender (Herald).
+                        When it maps in the bridge's user map AND the domain's
+                        Crew DPO switch is on, it feeds presence as an activity
+                        KIND only — never a display name, never content.
       responses:
         "200":
           description: >-
@@ -884,14 +892,139 @@ paths:
             type: string
       responses:
         "200":
-          description: Drain batch (possibly empty)
+          description: Drain batch (possibly empty). `pings` (Herald) carries Relay handover pings — the receiving operator's mapped platform refs, the case room, and the I-PASS completeness state (refs only, never case content). Absent/empty when none.
           content:
             application/json:
               schema:
                 type: object
-                example: {"status": "ok", "count": 1, "envelopes": [{"event_id": 12, "text": "…", "source_payload": {"source": "approved_act", "proposal_id": 3, "kind": "channel/template", "template": "order_update_v3", "digest": "<sha256-of-drained-body>"}}]}
+                example: {"status": "ok", "count": 1, "envelopes": [{"event_id": 12, "text": "…", "source_payload": {"source": "approved_act", "proposal_id": 3, "kind": "channel/template", "template": "order_update_v3", "digest": "<sha256-of-drained-body>"}}], "pings": [{"event_id": 13, "to_principal": "ops@acme", "platform_refs": ["U0PING1"], "case_channel": "C0123ABCD", "case_run_id": 41, "offer_id": 3, "complete": true, "missing": []}]}
         "401":
           description: Bridge signature verification failed
+  /webhooks/channel/{kind}/console:
+    post:
+      summary: Bridge-relayed operator console for the Slack/Teams annex (Herald)
+      operationId: channelConsole
+      description: >-
+        The SAME HMAC-authenticated seam, carrying the console INTO the
+        kernel for an operator who lives in Slack/Teams. The kernel resolves
+        every actor through the proposal-maintained `channel_user_map`
+        (platform identity is NEVER auto-trusted), role-checks the mapped
+        principal against the role store, and then reuses the existing
+        console machinery — `decide` runs the byte-identical approve/reject
+        verbs, so the digest binding holds TWICE: bridge-side against the
+        rendered digest, and server-side inside the approve verb
+        (`digest_required`). Closed action vocabulary: `pending`
+        (renderable proposals with their canonical review digest), `decide`
+        (approve/reject + digest + actor), `due` (the valet due listing),
+        `crank` (a bounded steward-harness crank, role-gated).
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [pending, decide, due, crank]
+                decision:
+                  type: string
+                  enum: [approve, reject]
+                proposal_id:
+                  type: integer
+                digest:
+                  type: string
+                  pattern: '^[0-9a-fA-F]{64}$'
+                  description: The content_digest the operator was shown — REQUIRED for decide.
+                actor_ref:
+                  type: string
+                  maxLength: 128
+                  description: The opaque platform user id taking the action.
+                limit:
+                  type: integer
+                run_id:
+                  type: integer
+                max_steps:
+                  type: integer
+      responses:
+        "200":
+          description: Action result (pending list / decide receipt / due listing / crank report)
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"status": "approved", "id": 3}
+        "400":
+          description: Digest missing/malformed, or invalid action/actor/run
+        "401":
+          description: Bridge signature verification failed / timestamp outside window
+        "403":
+          description: Actor not mapped in the user map, unroled, or lacking the capability
+        "404":
+          description: Proposal already decided (replay = decided queue, never a second approval)
+        "409":
+          description: Proposal content changed since it was rendered (digest mismatch)
+  /workflow/channel/user-map:
+    post:
+      summary: File a channel user-map change as a HITL proposal (Herald)
+      operationId: postChannelUserMap
+      description: >-
+        The ONLY way identity mappings enter the system: a proposal. The
+        `channel_user_map` TABLE has no write route — its sole writer is
+        the approval path, so a Slack/Teams identity is never auto-trusted
+        from platform membership. Payload names the bridge (channel +
+        tenant), the OPAQUE platform user id, the principal it maps to,
+        the role names it acts under (each must exist in the role store),
+        and the action (add|remove). Probe-validated and audited at file
+        time; applied only when the proposal is approved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, channel, tenant, platform_user_id, principal]
+              properties:
+                action:
+                  type: string
+                  enum: [add, remove]
+                channel:
+                  type: string
+                  maxLength: 32
+                tenant:
+                  type: string
+                  maxLength: 32
+                platform_user_id:
+                  type: string
+                  maxLength: 128
+                  description: Opaque platform id — never a display name.
+                principal:
+                  type: string
+                  maxLength: 256
+                roles:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Proposal filed (status pending until approved)
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"proposal_id": 17, "kind": "channel/user_map", "status": "pending"}
+        "400":
+          description: Change invalid (shape, bounds, or unknown role name)
+        "403":
+          description: Not authorized (Write on global required)
   /consolidate/propose:
     post:
       summary: Propose consolidation candidates (v0.9.8 Evidence; v1.6.0 unresolved-contradictions)
