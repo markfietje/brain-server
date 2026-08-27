@@ -29,6 +29,30 @@
 > See CHANGELOG.md §[1.28.42].
 > Predecessor: v1.28.41 "Terrain" — G8 + series-exit, tiers as tested config
 
+> **v1.28.36 "Keystone" (2026-08-26)** — the last
+> three Order-of-Care gaps, closed deterministic and HITL-gated: the public
+> case-status page (unguessable per-run HMAC refs via
+> `BRAIN_CASE_STATUS_KEY_FILE`; static `status/<ref>.json` artifacts from
+> `kb build --with-case-status` over the fixed seven-word public vocabulary
+> `workflow_state::public_status` in the SDK; SLA-class promise buckets,
+> zero PII, noindex, never in the sitemap; rotation kills old refs,
+> revocation stays dead; DSAR sweep purges + legal-hold revokes), the
+> multilingual KB (`kcs_translate` HITL proposals are the only writer of
+> approved `kcs_translations` rows pinned to `based_revision`;
+> source-advance staleness rides the existing content-health worklist;
+> `kb build --locales` emits hreflang alternates + per-locale search with a
+> visible fallback note, never silent), and the re-ask event
+> (`case/reask` from crm_merge / marked (`brain workflow note --reask`) /
+> derived exact-hash duplicate heuristic proposing `case_merge_suggested`
+> within `BRAIN_REASK_WINDOW_DAYS`, default 3). Schema additive at 1.28.36
+> (`case_status_refs`, `kcs_translations`, `crm_cases.subject_ref`).
+> Routes: `/workflow/runs/{id}/status-ref` + `/kcs/translate`. Ceilings:
+> static = build-cadence fresh (no live route, ever); brain never sends
+> anything; vendor merge-event parsing not yet wired in the connector syncs
+> (the mapping ships pure and tested); effort proxy still unwired into
+> scorer gold-set families.
+> See CHANGELOG.md §[1.28.36].
+
 > **Version note:** **v1.28.29 "Mesh" shipped 2026-08-25** — a server-only
 > release (schema 1.28.28 → **1.28.29**, additive `agent_cards` +
 > `delegations`; client + plugin unchanged) — agents become named

@@ -86,6 +86,8 @@ mod proposal_events;
 mod qa;
 mod search;
 mod secrets;
+// the service layer (Foundation Line): storage lives here, handlers adapt.
+mod service;
 mod temporal;
 mod transfers;
 // the two-layer injection screen seam.

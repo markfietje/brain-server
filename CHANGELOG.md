@@ -19,6 +19,113 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.46] — 2026-08-28 — "Plumb": the service layer, the debt lock, the first vein
+
+The Foundation Line begins. This release ships ZERO features, ZERO endpoints,
+ZERO schema changes, ZERO wire changes — by design. Its product is structure:
+the measuring stick that makes the handler-embedded SQL debt visible and
+non-regressable, the service-layer contract the whole line converges onto, and
+the smallest audited surface moved end-to-end to prove both cheaply. From here
+on, handler SQL can only shrink.
+
+### Release notes
+
+**Bug fixes**
+- **A `POST /retention` policy set is now atomic and its evidence audit rides
+  the same transaction.** Pre-move, each override upsert autocommitted on its
+  own (a mid-loop failure could persist a PARTIAL policy) and the audit row was
+  written on a second pooled connection AFTER the write had already committed —
+  a crash between them left the override permanently unevidenced. Both writes
+  now live inside ONE transaction: a failure rolls the whole set AND its
+  evidence back together; a success commits them together.
+
+**Improvements**
+- **The debt lock:** a CI guard (`sql_inventory_baseline_freezes_the_debt`)
+  freezes the per-file SQL-statement inventory of `src/handlers/*.rs` — 445
+  embedded statements across 29 files at freeze time. Any file growing past
+  its frozen count (or SQL appearing in an unlisted file) fails CI; progress
+  below baseline prints the delta as the line's scoreboard. Slots only shrink.
+- **The service layer:** `src/service/` opens as the convergence target with
+  the layer contract as code + docs — services take connections (never pools,
+  server state, or HTTP types), own their aggregate's complete storage story
+  (SQL, bounds, FK-children map, audit-per-write inside the caller's
+  transaction), return typed errors that handlers map onto frozen HTTP
+  vocabularies. Enforced by greps pinned as tests, from day one.
+- **The first extraction:** the retention family (policy get/set + the
+  retention-schedule report) moved from the govern handler to
+  `src/service/retention.rs`. The handler keeps the Admin gate, parsing, and
+  `spawn_blocking`; the core owns the override upsert, the report queries, and
+  the evidence audit inside ONE transaction. `govern.rs`: 18 → 6 embedded
+  statements (−12 incl. the tests that moved with the code).
+
+**Security fixes**
+- **Audit evidence can no longer be lost between a retention override and its
+  audit row.** The evidence write is SAVEPOINT-nested inside the mutation's
+  transaction (pinned by `retention_override_audits_inside_the_tx` and its
+  rollback twin), closing the unevidenced-write window on the retention
+  surface.
+
+### Engineering record
+
+- **Plan-named pins, all green:** `sql_inventory_baseline_freezes_the_debt`
+  (the lock), `sql_baseline_total_stays_at_the_frozen_floor` (the table
+  itself cannot silently loosen), `service_layer_is_transport_free` (the
+  layer-violation greps: no transport identifiers under `src/service/`),
+  `retention_override_audits_inside_the_tx` +
+  `retention_override_rolls_back_with_its_audit` (the audit-per-write law,
+  both legs), `retention_report_rows_match_legacy_byte_for_byte` (fixture
+  captured from the PRE-move handler and asserted green BEFORE the move, then
+  repointed — the run proves the move changed the address, not one byte),
+  `retention_set_refuses_out_of_bound_entries` (the storage-boundary fence),
+  and `retention_report_matches_policy` (moved verbatim with its function).
+  Pin-count delta: main-binary tests 993 → 1000 (+7; total count never
+  decreases — the move-with-pins law).
+- **The baseline was re-measured at execution, as the plan ordered:** the
+  roadmap's scoping estimate (379) was taken with a line-based grep; the
+  frozen counter is case-insensitive, non-overlapping substring occurrences
+  of the four statement openers (`SELECT `, `INSERT `, `UPDATE `,
+  `DELETE FROM`) per file — 445 across 29 files (gate 103 / observe 66 /
+  domains 64 / clients 44 / workflow 23 / ingest 22 / govern 18 / …).
+  Substring semantics are deliberate: false positives only tighten the lock.
+  The guard refuses stale rows (a deleted handler file must lower the table
+  in the same commit) and fails closed on unlisted files (implicit baseline
+  zero).
+- **The exemplar move kept the wire frozen:** `RetentionError::Database`
+  carries the rusqlite message verbatim, mapped by the handler to the
+  byte-identical internal-error body; the retention report stays the legacy
+  JSON maps (keys alphabetically ordered, as shipped); the response shapes of
+  `GET/POST /retention` and `GET /retention/report` are unchanged. The
+  storage-boundary fence (days ∈ [1, 36500], non-empty kind) mirrors the
+  handler's exact 400s for future direct callers — unreachable over the wire.
+- **Wire artifacts byte-identical:** openapi.yaml, route-coverage, and
+  route-authz tables untouched (no route changes); schema untouched at
+  1.28.45 — zero migrations, rollback = `git revert` of the milestone's
+  commits, the database unaffected by construction.
+- **Full gate green:** `cargo fmt --check`; `cargo clippy --all-targets
+  --features bench -- -D warnings`; `cargo test --features bench` (1276
+  passed, 7 ignored); the pre-push dry-run CI suite (default-feature,
+  engine-crates, steward-harness, otel gates); lipstyk diff-strict; live
+  old-vs-new smoke on identical DB copies (below).
+
+### Honest ceilings
+
+- **The lock stops regrowth but does not force pace** — progress between
+  milestones may be zero without failing CI; the enforcing flip (any SQL under
+  `src/handlers/` fails) is the line's LAST milestone, not this one.
+- **Report rows stay legacy JSON maps** (`serde_json::Value`), not domain
+  structs — the byte-for-byte wire pin outranks the domain-type aspiration;
+  typing them is a follow-up, deliberately NOT part of this move.
+- **The baseline counts comments and test seeds** — it is a substring-regex
+  debt lock, not a precision instrument; the frozen numbers are the law the
+  counter encodes, and only a monotone-downward drift is allowed.
+- **Kind charset validation stays at the handler** (it is handler-typed); the
+  core fence re-asserts bounds + emptiness only. A future non-HTTP caller of
+  `set_overrides` gets bounds enforcement, not full charset validation.
+- **The guard watches `src/handlers/*.rs` only** — service cores are the
+  destination the debt drains toward, not a new volume to police.
+
+---
+
 ## [1.28.45] — 2026-08-27 — "Herald": Slack and Microsoft Teams (the operator channels)
 
 The channels enterprises already live in become the console's ANNEXES: case

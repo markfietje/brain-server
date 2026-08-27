@@ -22,6 +22,24 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
+use crate::service::retention::{self, RetentionError};
+
+/// Map the retention core's typed errors onto the route's FROZEN vocabulary:
+/// database failures stay the byte-identical internal body (the rusqlite
+/// text verbatim — the legacy mapping); the storage-boundary fence errors
+/// are unreachable over the wire (the handler pre-validates with the
+/// identical 400 below) and exist for future direct callers.
+fn retention_err(e: RetentionError) -> HandlerError {
+    match e {
+        RetentionError::Database(m) => HandlerError::internal(m),
+        RetentionError::InvalidDays(_) => {
+            HandlerError::bad_request("invalid_days", "days must be an integer in [1, 36500]")
+        }
+        RetentionError::EmptyKind => {
+            HandlerError::bad_request("kind_invalid", "kind must be a non-empty name")
+        }
+    }
+}
 
 /// Persisted retention overrides plus per-kind counts, both keyed by kind.
 type KindMap = std::collections::BTreeMap<String, i64>;
@@ -45,27 +63,8 @@ pub async fn retention_get(
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            let mut stmt = conn
-                .prepare("SELECT kind, days FROM retention_policy ORDER BY kind")
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let overridden: Vec<(String, i64)> = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map_err(|e| HandlerError::internal(e.to_string()))?
-                .flatten()
-                .collect();
-            let mut counts: std::collections::BTreeMap<String, i64> =
-                std::collections::BTreeMap::new();
-            if let Ok(mut cs) =
-                conn.prepare("SELECT node_kind, COUNT(*) FROM knowledge GROUP BY node_kind")
-            {
-                for (k, n) in cs
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?
-                    .flatten()
-                {
-                    counts.insert(k, n);
-                }
-            }
+            let overridden = retention::effective_overrides(&conn).map_err(retention_err)?;
+            let counts = retention::kind_counts(&conn);
             Ok((overridden, counts))
         },
     )
@@ -138,39 +137,27 @@ pub async fn retention_post(
 
     let pool = super::resolve_domain_pool(&_state.registry, Some("global"))?;
     let now = chrono::Utc::now().timestamp();
-    let pool2 = pool.clone();
     let to_set2 = to_set.clone();
     let n = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
-        let conn = pool2
+        let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let mut affected = 0usize;
-        for (kind, days) in &to_set2 {
-            affected += conn
-                .execute(
-                    "INSERT INTO retention_policy(kind, days, updated_at)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(kind) DO UPDATE SET days = excluded.days, updated_at = excluded.updated_at",
-                    rusqlite::params![kind, days, now],
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-        }
-        Ok(affected)
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        // The override and its evidence audit commit (or roll back) TOGETHER,
+        // inside ONE WorkflowTx — the audit-per-write law. Pre-move, the
+        // audit rode a second pooled connection AFTER the write had already
+        // committed; a crash between them left the override unevidenced.
+        // (Pre-move each upsert also autocommitted on its own — a mid-loop
+        // failure could persist a partial policy. The whole set is now
+        // atomic; the error body vocabulary is unchanged.)
+        let n = retention::set_overrides(tx.tx(), &to_set2, now).map_err(retention_err)?;
+        tx.commit()
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        Ok(n)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
-
-    let conn = pool
-        .get()
-        .map_err(|e| HandlerError::internal(format!("DB: {e}")))?;
-    crate::audit::record(
-        &conn,
-        crate::audit::AuditKind::Reconcile,
-        "api",
-        &format!("retention:{n}"),
-        crate::audit::AuditStatus::Ok,
-        "retention_set",
-    );
 
     Ok(Json(serde_json::json!({ "updated": n, "set": to_set })))
 }
@@ -178,87 +165,6 @@ pub async fn retention_post(
 // ---------------------------------------------------------------------------
 // /retention/report
 // ---------------------------------------------------------------------------
-
-/// the report window — rows whose effective expiry falls inside
-/// the next `REPORT_WINDOW_DAYS` days are counted as "expiring soon".
-const REPORT_WINDOW_DAYS: i64 = 30;
-
-/// Pure core of `/retention/report`: one domain's retention schedule rows.
-/// `policy` is the EFFECTIVE kind→days map for this domain (the caller merges
-/// a bound profile's retention block over the server-wide map already). A
-/// domain × kind row exists for every knowledge kind present OR every policy
-/// kind (whichever is larger) — the schedule reports coverage even at zero
-/// rows. `ttl_days` is `None` = the kind never decays by kind-default (a
-/// per-chunk `expires_at` still counts toward expiry). `expiring_30d` counts
-/// rows whose *effective* expiry (explicit `expires_at`, else kind-default
-/// from `created_at`) falls inside the next 30 days.
-fn retention_report_rows(
-    conn: &rusqlite::Connection,
-    now_unix: i64,
-    domain: &str,
-    policy: &std::collections::BTreeMap<String, i64>,
-) -> Result<Vec<serde_json::Value>, HandlerError> {
-    let mut present: Vec<String> = {
-        let mut stmt = conn
-            .prepare("SELECT DISTINCT node_kind FROM knowledge ORDER BY node_kind")
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        rows.flatten().collect()
-    };
-    for k in policy.keys() {
-        if !present.contains(k) {
-            present.push(k.clone());
-        }
-    }
-    present.sort();
-    let cutoff = now_unix + REPORT_WINDOW_DAYS * 86_400;
-    let mut rows = Vec::with_capacity(present.len());
-    for kind in present {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE node_kind = ?1",
-                rusqlite::params![kind],
-                |r| r.get(0),
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let ttl = policy.get(&kind).copied();
-        let expiring_30d: i64 = match ttl {
-            Some(days) => {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT COUNT(*) FROM knowledge
-                          WHERE node_kind = ?1 AND (
-                            expires_at IS NOT NULL AND expires_at < ?2
-                         OR expires_at IS NULL AND created_at IS NOT NULL
-                            AND unixepoch(COALESCE(created_at,'1970-01-01 00:00:00'))
-                                < ?2 - ?3 * 86400
-                          )",
-                    )
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                stmt.query_row(rusqlite::params![kind, cutoff, days], |r| r.get(0))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?
-            }
-            None => conn
-                .query_row(
-                    "SELECT COUNT(*) FROM knowledge
-                      WHERE node_kind = ?1 AND expires_at IS NOT NULL AND expires_at < ?2",
-                    rusqlite::params![kind, cutoff],
-                    |r| r.get(0),
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?,
-        };
-        rows.push(serde_json::json!({
-            "domain": domain,
-            "kind": kind,
-            "ttl_days": ttl,
-            "count": count,
-            "expiring_30d": expiring_30d,
-        }));
-    }
-    Ok(rows)
-}
 
 /// `GET /retention/report` — the per-domain × per-kind retention schedule:
 /// ttl_days → row count → rows expiring in the next 30 days. Admin. This is
@@ -284,14 +190,7 @@ pub async fn retention_report(
             .pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let mut stmt = conn
-            .prepare("SELECT kind, days FROM retention_policy ORDER BY kind")
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        for (k, d) in stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-            .map_err(|e| HandlerError::internal(e.to_string()))?
-            .flatten()
-        {
+        for (k, d) in retention::effective_overrides(&conn).map_err(retention_err)? {
             policy.insert(k, d);
         }
     }
@@ -322,7 +221,7 @@ pub async fn retention_report(
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
             let p = per_domain.get(d).unwrap_or(&policy);
-            rows.extend(retention_report_rows(&conn, now, d, p)?);
+            rows.extend(retention::report_rows(&conn, now, d, p).map_err(retention_err)?);
         }
         // Art.26(7) evidence floor: decision records are retained 12 months
         // by default (≥ the 6-month legal minimum) and never decay earlier.
@@ -335,7 +234,7 @@ pub async fn retention_report(
             "expiring_30d": 0,
         }));
         Ok(serde_json::json!({
-            "window_days": REPORT_WINDOW_DAYS,
+            "window_days": retention::REPORT_WINDOW_DAYS,
             "generated_at": chrono::Utc::now().to_rfc3339(),
             "rows": rows,
             "projection": "effective expiry = explicit expires_at, else created_at + ttl_days"
@@ -580,81 +479,7 @@ fn check_snapshot(p: &std::path::Path) -> serde_json::Value {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// plan Verification 4: the retention report
-    /// reflects the configured per-kind TTL + counts + the 30-day-expiring
-    /// window. A kind with a policy reports expiring rows via created_at; a
-    /// kind with no policy counts only explicit `expires_at`, and the schedule
-    /// still reports the policy kind even at zero rows.
-    #[test]
-    fn retention_report_matches_policy() -> rusqlite::Result<()> {
-        let conn = rusqlite::Connection::open_in_memory()?;
-        conn.execute_batch(
-            "CREATE TABLE knowledge(
-                id INTEGER PRIMARY KEY,
-                node_kind TEXT NOT NULL,
-                expires_at INTEGER,
-                created_at TEXT
-             );
-             INSERT INTO knowledge(node_kind, created_at) VALUES ('fact', '2020-01-01 00:00:00');
-             INSERT INTO knowledge(node_kind, created_at) VALUES ('episodic', '2026-08-01 00:00:00');
-             INSERT INTO knowledge(node_kind, expires_at) VALUES ('episodic', 1000000);",
-        )?;
-        let now = 1_800_000_000_i64; // fixed "today"
-        let policy: std::collections::BTreeMap<String, i64> =
-            [("fact".to_string(), 2555), ("episodic".to_string(), 90)]
-                .into_iter()
-                .collect();
-        let rows = retention_report_rows(&conn, now, "finance", &policy)
-            .expect("report for a known policy");
-
-        let by_kind: std::collections::HashMap<&str, &serde_json::Value> = rows
-            .iter()
-            .map(|r| (r["kind"].as_str().expect("row has a kind"), r))
-            .collect();
-        assert_eq!(by_kind.len(), 2, "fact + episodic reported");
-        // fact: policy TTL 2555d, 1 row, created 2020 → long expired → expiring.
-        let fact = by_kind["fact"];
-        assert_eq!(fact["ttl_days"], 2555);
-        assert_eq!(fact["count"], 1);
-        assert_eq!(
-            fact["expiring_30d"], 1,
-            "2020 fact expires within the window"
-        );
-        // episodic: policy TTL 90d; 1 explicit-expiry row + 1 created 2026-08.
-        let ep = by_kind["episodic"];
-        assert_eq!(ep["ttl_days"], 90);
-        assert_eq!(ep["count"], 2);
-        assert_eq!(ep["expiring_30d"], 2, "both episodic rows expiring");
-
-        // A kind with no policy counts only explicit expires_at.
-        let bare: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-        let rows =
-            retention_report_rows(&conn, now, "global", &bare).expect("report on a bare policy");
-        let by_kind: std::collections::HashMap<&str, &serde_json::Value> = rows
-            .iter()
-            .map(|r| (r["kind"].as_str().expect("row has a kind"), r))
-            .collect();
-        assert_eq!(by_kind["fact"]["ttl_days"], serde_json::Value::Null);
-        assert_eq!(
-            by_kind["fact"]["expiring_30d"], 0,
-            "no explicit expires_at on the fact"
-        );
-
-        // Coverage at zero rows: a policy kind absent from the data still ships.
-        let policy: std::collections::BTreeMap<String, i64> =
-            [("decision".to_string(), 365)].into_iter().collect();
-        let rows = retention_report_rows(&conn, now, "global", &policy)
-            .expect("report for the decision policy");
-        let decision = rows
-            .iter()
-            .find(|r| r["kind"] == "decision")
-            .expect("decision kind is reported");
-        assert_eq!(decision["count"], 0);
-        assert_eq!(decision["ttl_days"], 365);
-        Ok(())
-    }
-}
+// The retention tests moved WITH their code to `src/service/retention.rs`
+// (the Foundation Line move-with-pins law): the report-schedule pin, the
+// byte-for-byte legacy fixture, the audit-inside-the-tx law + its rollback
+// twin, and the storage-boundary fence pin all live next to the core now.
