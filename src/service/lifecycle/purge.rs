@@ -219,6 +219,7 @@ mod pins {
     use super::*;
 
     fn fresh_conn() -> rusqlite::Connection {
+        crate::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
         brain_server::migration::run_migration(&mut conn, 1).expect("migration");
         conn
