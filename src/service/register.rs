@@ -302,13 +302,14 @@ pub(crate) fn list_for_domain_grants(
     granted: Option<&[String]>,
 ) -> Result<Vec<Client>, RegisterError> {
     let rows = list(conn)?;
-    Ok(match granted {
-        Some(g) => rows
+    if let Some(g) = granted {
+        Ok(rows
             .into_iter()
             .filter(|c| g.iter().any(|d| d == &c.domain))
-            .collect(),
-        None => rows,
-    })
+            .collect())
+    } else {
+        Ok(rows)
+    }
 }
 
 /// Resolve a single client by its PK. `None` → 404 in the handler.
