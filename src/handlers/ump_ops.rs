@@ -18,12 +18,13 @@ use tokio_stream::StreamExt;
 
 use crate::AppState;
 use crate::handlers::auth::{OptCapability, OptPrincipal};
-use crate::handlers::gate::{load_knowledge_row, principal_to_owner};
+use crate::handlers::gate::principal_to_owner;
 use crate::handlers::ingest::{ingest_one, lower_ump};
 use crate::handlers::recall::{RecallRequest, RecallSourceQuery};
 use crate::handlers::suggest::record_feedback;
 use crate::handlers::ump::{self, UmpMeta};
 use crate::handlers::{HandlerError, audit_scope};
+use crate::service::lifecycle::fetch::load_knowledge_row;
 
 /// §3.1 `max_recall`: the UMP-side cap on a recall request. Callers are
 /// clamped, never rejected — the brain's own `MAX_LIMIT` stays authoritative.

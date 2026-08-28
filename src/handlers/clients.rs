@@ -522,7 +522,8 @@ pub async fn client_end(
                         .map_err(|e| HandlerError::internal(e.to_string()))?;
                     rows.flatten().collect()
                 };
-                let held_set = crate::legal_hold::active_hold_ids(&tx)?;
+                let held_set = crate::legal_hold::active_hold_ids(&tx)
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
                 let held_ids: Vec<i64> = active
                     .iter()
                     .filter(|id| held_set.contains(id))

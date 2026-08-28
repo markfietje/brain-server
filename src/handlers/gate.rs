@@ -34,9 +34,6 @@ use crate::AppState;
 /// Max proposals returned per review page. Bounded so a runaway queue can't
 /// unbounded a response.
 pub(crate) const MAX_PROPOSALS: usize = 200;
-/// Max ids accepted by a single `/purge` call. Explicit-only deletion must be
-/// deliberate; a huge batch is a footgun.
-const MAX_PURGE_IDS: usize = 1000;
 
 /// `POST /ingest/proposal`
 #[derive(Debug, Deserialize)]
@@ -491,7 +488,7 @@ pub async fn list_proposals(
 
 /// the review-queue SELECT, extracted so the new
 /// `decided_at` column + the optional `since` window are unit-testable with a
-/// bare `&Connection` (the `page_decayed`/`list_dsar_page` idiom — no HTTP
+/// bare `&Connection` (the `decayed_page`/`list_dsar_page` idiom — no HTTP
 /// stack, no model). Column order is pinned by the index-based `r.get(n)`.
 /// A `since` bound still leaves `LIMIT` as the hard ceiling, so a windowed
 /// stat fetch MUST pass `limit=MAX_PROPOSALS` or it only samples the default.
@@ -2255,7 +2252,8 @@ pub async fn list_decayed(
     let pool = super::resolve_domain_pool(&state.registry, domain.as_deref())?;
     let now = chrono::Utc::now().timestamp();
     // bounded page; the Rust-side expiry filter runs BEFORE
-    // the page split so a boundary never splits the "is it expired?" decision.
+    // the page split so a boundary never splits the "is it expired?" decision
+    // (the clamp re-asserts in the core — the fence holds of the FUNCTION).
     let limit = page
         .limit
         .unwrap_or(crate::config::MAX_DECAYED)
@@ -2269,139 +2267,50 @@ pub async fn list_decayed(
     };
     // a bound domain's retention block replaces the
     // server-wide policy for ITS rows (nulls remove decay). The Rust filter
-    // (page_decayed) resolves per row via its domain; the SQL superset uses
-    // the union of kinds with the least-restrictive cutoff across the
+    // (the core's arbiter) resolves per row via its domain; the SQL superset
+    // uses the union of kinds with the least-restrictive cutoff across the
     // server-wide + every profile policy, so the superset property holds
-    // under any per-domain replacement.
-    let per_domain = match state.pool.get() {
-        Ok(conn) => brain_server::profile::domain_profiles(&conn)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
-            .collect::<std::collections::HashMap<String, std::collections::BTreeMap<String, i64>>>(
-            ),
-        Err(_) => std::collections::HashMap::new(),
-    };
-    let mut sql_policy = retention_days.clone();
-    for m in per_domain.values() {
-        for (k, v) in m {
-            sql_policy.insert(k.clone(), *v);
-        }
-    }
+    // under any per-domain replacement. (Read on the GLOBAL pool by design:
+    // profile bindings are server-wide facts, not per-domain data.)
+    let per_domain = state
+        .pool
+        .get()
+        .map(|conn| {
+            brain_server::profile::domain_profiles(&conn)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
+                .collect::<std::collections::HashMap<
+                    String,
+                    std::collections::BTreeMap<String, i64>,
+                >>()
+        })
+        .unwrap_or_default();
 
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            // narrow the scan in SQL instead of pulling every
-            // row. The WHERE is a *superset* of the Rust-side
-            // `effective_expiry` filter (`page_decayed` remains the arbiter, so
-            // semantics are unchanged by construction): branch A is the exact
-            // per-chunk expiry (`expires_at < now`, index-served), branch B
-            // covers the kind-policy expiry via the raw `created_at` text
-            // comparison (the DEFAULT CURRENT_TIMESTAMP format is
-            // chronologically lexicographic; served by
-            // `idx_knowledge_kind_created`). ponytail: the exact filter still
-            // lives in `page_decayed` — the SQL never decides a row's fate.
-            let (sql, params) = decayed_superset_sql(now, &sql_policy, shim_label.as_deref());
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map(
-                    rusqlite::params_from_iter(
-                        params.iter().map(|p| p as &dyn rusqlite::types::ToSql),
-                    ),
-                    |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, Option<String>>(1)?,
-                            r.get::<_, Option<i64>>(2)?,
-                            r.get::<_, String>(3)?,
-                            r.get::<_, i64>(4)?,
-                            r.get::<_, String>(5)?,
-                        ))
-                    },
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect::<Vec<DecayedRow>>();
-            // a held id never shows up in the decay
-            // registry — the operator must never see a frozen id as "safe to
-            // purge". Filter the loaded rows before the Rust arbiter pages them
-            // (keeps `page_decayed` a pure function of the rows + policy).
-            let held = crate::legal_hold::active_hold_ids(&conn)?;
-            let rows = rows
-                .into_iter()
-                .filter(|(id, ..)| !held.contains(id))
-                .collect::<Vec<DecayedRow>>();
-            Ok(page_decayed(
-                &rows,
+            // the whole storage story lives in the decay core: the
+            // superset WHERE narrows the scan, held ids drop, and the
+            // Rust-side arbiter (moved with it as ONE unit) decides every
+            // row's fate — the SQL never decides a row.
+            crate::service::lifecycle::decay::decayed_page(
+                &conn,
                 now,
                 &retention_days,
                 &per_domain,
+                shim_label.as_deref(),
                 offset,
                 limit,
-            ))
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     Ok(Json(rows))
-}
-
-/// the SQL-superset WHERE for `/decayed` — branch A (exact
-/// per-chunk expiry, `expires_at < ?1`, index-served) plus branch B (kind-
-/// policy superset via the raw `created_at` text, cut off at the LEAST
-/// restrictive threshold — min days → latest cutoff — so no Rust-expired row
-/// is ever excluded: `created < now - days_k` implies `created < now -
-/// min_days`). Extracted so the superset property is unit-testable: the
-/// Rust-side `page_decayed` filter remains the arbiter; this clause only
-/// narrows the scan. Note `unixepoch()` (INTEGER): the legacy
-/// `strftime('%s', ...)` returns TEXT, so `get::<i64>` silently dropped
-/// every row and `/decayed` was always empty — the regression
-/// test caught it. ponytail: with an empty kind policy the clause is branch
-/// A alone — byte-identical to the prior query.
-fn decayed_superset_sql(
-    now: i64,
-    retention_days: &std::collections::BTreeMap<String, i64>,
-    domain: Option<&str>,
-) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
-    let mut sql = String::from(
-        "SELECT id, content_hash, expires_at, node_kind, \
-                unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')), domain \
-         FROM knowledge WHERE expires_at IS NOT NULL AND expires_at < ?1",
-    );
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now)];
-    if !retention_days.is_empty() {
-        let kinds: Vec<&String> = retention_days.keys().collect();
-        let placeholders: Vec<String> = (2..=(1 + kinds.len())).map(|i| format!("?{i}")).collect();
-        let cutoff_idx = 2 + kinds.len();
-        sql.push_str(&format!(
-            " OR (expires_at IS NULL AND node_kind IN ({placeholders}) \
-                AND created_at < ?{cutoff_idx})",
-            placeholders = placeholders.join(","),
-            cutoff_idx = cutoff_idx,
-        ));
-        for k in &kinds {
-            params.push(Box::new((*k).clone()));
-        }
-        let min_days = retention_days.values().copied().min().unwrap_or(0);
-        let cutoff = chrono::DateTime::from_timestamp(now - min_days * 86_400, 0)
-            .map(|t| t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string())
-            .unwrap_or_else(|| "1970-01-01 00:00:00".to_string());
-        params.push(Box::new(cutoff));
-    }
-    // Shim-mode scope — the label narrows the superset to the
-    // caller's domain (the Rust arbiter `page_decayed` is domain-agnostic, so
-    // the narrowing is exact, never a false positive).
-    if let Some(label) = domain {
-        let idx = params.len() + 1;
-        sql.push_str(&format!(" AND domain = ?{idx}"));
-        params.push(Box::new(label.to_string()));
-    }
-    (sql, params)
 }
 
 /// `?limit=`/`?offset=` on `/decayed` (clamped to
@@ -2413,47 +2322,6 @@ pub struct DecayedQuery {
     limit: Option<i64>,
     #[serde(default)]
     offset: Option<i64>,
-}
-
-/// A loaded `/decayed` row: (id, content_hash, expires_at, node_kind,
-/// created_at_unix, domain) — the domain is carried so the Rust filter can
-/// resolve the per-domain profile policy.
-type DecayedRow = (i64, Option<String>, Option<i64>, String, i64, String);
-
-/// Pure core of `/decayed`: from the loaded `ORDER BY id` rows, keep the
-/// expired ones (Rust-side [`crate::gate::effective_expiry`] — not an
-/// expressible SQL predicate) and page them. Stable across the Rust filter.
-/// a row whose domain has a bound profile with a retention block is
-/// judged by THAT map (replacing the server-wide policy); other rows keep the
-/// server-wide policy.
-fn page_decayed(
-    rows: &[DecayedRow],
-    now: i64,
-    retention_days: &std::collections::BTreeMap<String, i64>,
-    per_domain: &std::collections::HashMap<String, std::collections::BTreeMap<String, i64>>,
-    offset: i64,
-    limit: i64,
-) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    for (id, content_hash, expires_at, kind, created_unix, domain) in rows {
-        let policy = per_domain.get(domain).unwrap_or(retention_days);
-        let effective =
-            crate::gate::effective_expiry(*expires_at, Some(*created_unix), kind, policy);
-        if effective.is_some_and(|e| e < now) {
-            out.push(serde_json::json!({
-                "id": id,
-                "content_hash": content_hash,
-                "expires_at": expires_at,
-                "effective_expiry": effective,
-                "memory_kind": kind,
-                "reason": crate::gate::retention_reason(*expires_at, effective),
-            }));
-        }
-    }
-    out.into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .collect()
 }
 
 /// `POST /purge` — audited, hard, explicit-only deletion. Two bodies:
@@ -2483,10 +2351,10 @@ pub async fn purge(
             "purge requires ids or owner",
         ));
     }
-    if req.ids.len() > MAX_PURGE_IDS {
+    if req.ids.len() > crate::config::MAX_PURGE_IDS {
         return Err(HandlerError::bad_request(
             "too_many_ids",
-            format!("purge accepts at most {MAX_PURGE_IDS} ids"),
+            format!("purge accepts at most {} ids", crate::config::MAX_PURGE_IDS),
         ));
     }
     if !req.ids.is_empty() && req.owner.is_some() {
@@ -2498,88 +2366,39 @@ pub async fn purge(
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     super::authorize_role(&principal.0, &pool, "purge")?;
 
+    // wall-clock enters as an argument so the core is testable at a pinned
+    // instant; the tx + target resolution + hold preflight + primitive call
+    // + evidence audit + remanence posture live in the lifecycle core (the
+    // handler keeps parse/authz/the request-shape 400s only).
+    let now = chrono::Utc::now().timestamp();
+    let ids = req.ids;
+    let owner = req.owner;
     let count = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // a strict-posture domain erases with
-        // `secure_delete=ON` (freed page images overwritten) + a WAL TRUNCATE
-        // checkpoint after commit — the same hygiene the DSAR pool path runs.
-        // Best-effort profile lookup: an unreadable/missing bind falls back to
-        // fast logical deletes (remanence disclosed in docs), never a lie.
-        let strict = brain_server::profile::profile_for_domain(&conn, "global")
-            .ok()
-            .flatten()
-            .is_some_and(|p| p.pii_strict());
-        if strict {
-            // was `let _ =` — a failed secure_delete
-            // silently weakens the erasure guarantee claimed on the purge.
-            if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
-                tracing::warn!("secure_delete=ON failed for purge: {e}");
-            }
-        }
-        let tx = conn
-            .transaction()
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let now = chrono::Utc::now().timestamp();
-
-        // Resolve target ids: explicit list, or owner-anchored.
-        let ids: Vec<i64> = if let Some(owner) = &req.owner {
-            let mut stmt = tx
-                .prepare("SELECT id FROM knowledge WHERE owner = ?1")
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let mut collected = Vec::new();
-            {
-                let rows = stmt
-                    .query_map(rusqlite::params![owner], |r| r.get::<_, i64>(0))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                for v in rows.flatten() {
-                    collected.push(v);
+        crate::service::lifecycle::purge::purge_targets(&mut conn, ids, owner.as_deref(), now)
+            .map_err(|e| match e {
+                crate::service::lifecycle::purge::LifecyclePurgeError::NoMatch => {
+                    HandlerError::not_found("no matching chunks to purge")
                 }
-            }
-            collected
-        } else {
-            req.ids.clone()
-        };
-        if ids.is_empty() {
-            return Err(HandlerError::not_found("no matching chunks to purge"));
-        }
-
-        // a held id is frozen against EVERY erasure
-        // path. Refuse with 409 + the hold reasons; the operator must release
-        // every hold first (POST /legal-hold/{id}/release).
-        let held = crate::legal_hold::active_reasons(&tx, &ids)
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        if !held.is_empty() {
-            return Err(HandlerError::conflict_with(
-                "legal_hold_active",
-                "one or more ids are under legal hold",
-                serde_json::json!({ "held": held }),
-            ));
-        }
-
-        let purged = crate::service::purge::purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
-        tx.commit()
-            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-        // TRUNCATE the WAL so the erased page images do not
-        // linger there. Best-effort — a checkpoint failure must not fail an
-        // otherwise-successful erasure.
-        if strict {
-            // was `let _ =` — a failed TRUNCATE leaves
-            // erased page images in the WAL; warn instead of certifying silence.
-            if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
-                tracing::warn!("wal_checkpoint(TRUNCATE) failed after purge: {e}");
-            }
-        }
-        crate::audit::record(
-            &conn,
-            crate::audit::AuditKind::Reconcile,
-            "api",
-            &format!("purge:{purged}"),
-            crate::audit::AuditStatus::Ok,
-            "purge",
-        );
-        Ok(purged)
+                crate::service::lifecycle::purge::LifecyclePurgeError::LegalHold(held) => {
+                    HandlerError::conflict_with(
+                        "legal_hold_active",
+                        "one or more ids are under legal hold",
+                        serde_json::json!({ "held": held }),
+                    )
+                }
+                crate::service::lifecycle::purge::LifecyclePurgeError::TooManyIds => {
+                    HandlerError::bad_request(
+                        "too_many_ids",
+                        format!("purge accepts at most {} ids", crate::config::MAX_PURGE_IDS),
+                    )
+                }
+                crate::service::lifecycle::purge::LifecyclePurgeError::Database(m) => {
+                    HandlerError::internal(m)
+                }
+            })
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -2591,57 +2410,15 @@ pub async fn purge(
 // transaction: the primitive moved to the service layer in the Quarry move
 // (`crate::service::purge::purge_chunk_ids`) — the DSAR core and the other
 // erasure surfaces call it there; the legal-hold backstop + the
-// `knowledge` FK-children map live in that module header now.
+// `knowledge` FK-children map live in that module header now. The `/purge`
+// orchestration around it (targets, holds, pragmas, evidence) moved to the
+// lifecycle core in the Masonry move (`crate::service::lifecycle::purge`).
 
-/// the shared `knowledge` column list for row rendering
-/// (export + the `/ump/*` record paths) — one source of truth so the record
-/// engine never misses a column the export carries.
-pub(crate) const KNOWLEDGE_ROW_COLS: &str =
-    "id, content, node_kind, source, origin, authority, assertion_kind, confidence,
-        access_scope, owner, observed_at, valid_from, valid_to,
-        content_hash, title, expires_at, created_at, ump_meta, ump_id, region";
-
-/// Row → the JSON shape the record engine (`emit_record`) renders from.
-pub(crate) fn knowledge_row_to_json(r: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
-    Ok(serde_json::json!({
-        "id": r.get::<_, i64>(0)?,
-        "content": r.get::<_, String>(1)?,
-        "memory_kind": r.get::<_, String>(2)?,
-        "source": r.get::<_, String>(3)?,
-        "origin": r.get::<_, String>(4)?,
-        "authority": r.get::<_, Option<f32>>(5)?,
-        "assertion_kind": r.get::<_, String>(6)?,
-        "confidence": r.get::<_, f32>(7)?,
-        "access_scope": r.get::<_, String>(8)?,
-        "owner": r.get::<_, Option<String>>(9)?,
-        "observed_at": r.get::<_, Option<String>>(10)?,
-        "valid_from": r.get::<_, Option<String>>(11)?,
-        "valid_to": r.get::<_, Option<String>>(12)?,
-        "content_hash": r.get::<_, Option<String>>(13)?,
-        "title": r.get::<_, Option<String>>(14)?,
-        "expires_at": r.get::<_, Option<i64>>(15)?,
-        "created_at": r.get::<_, Option<String>>(16)?
-            .map(|s| crate::consolidate::observed_secs(&Some(s)))
-            .filter(|&ts| ts != 0),
-        "ump_meta": r.get::<_, Option<String>>(17)?,
-        "ump_id": r.get::<_, Option<String>>(18)?,
-        // the residency stamp on every chunk (data residency).
-        "region": r.get::<_, Option<String>>(19)?,
-    }))
-}
-
-/// One knowledge row by id (same columns as the export) — the `/ump/*`
-/// record paths resolve rows through this.
-pub(crate) fn load_knowledge_row(
-    conn: &rusqlite::Connection,
-    id: i64,
-) -> Result<Option<serde_json::Value>, rusqlite::Error> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge WHERE id = ?1"
-    ))?;
-    let mut rows = stmt.query_map(rusqlite::params![id], knowledge_row_to_json)?;
-    rows.next().transpose()
-}
+/// the shared `knowledge` column list + row → JSON projection for record
+/// rendering (export + the `/ump/*` record paths) moved to the lifecycle
+/// fetch core in the Masonry move — one source of truth, now consumed from
+/// `crate::service::lifecycle::fetch`.
+use crate::service::lifecycle::fetch::{KNOWLEDGE_ROW_COLS, knowledge_row_to_json};
 
 /// `GET /export` — portable, machine-readable JSON export (data portability,
 /// the GDPR "give me my data"). Live `knowledge` rows + graph + proposals
@@ -3149,232 +2926,10 @@ mod tests {
         })));
     }
 
-    /// `/decayed` returns a bounded first page and `?offset=`
-    /// pages the rest — the page split never re-introduces an unbounded list.
-    #[test]
-    fn page_decayed_respects_limit_and_offset() {
-        // Three expired rows (expires_at in the past); no kind policy.
-        let rows: Vec<DecayedRow> = vec![
-            (
-                1,
-                None,
-                Some(100),
-                "fact".to_string(),
-                50,
-                "global".to_string(),
-            ),
-            (
-                2,
-                None,
-                Some(100),
-                "fact".to_string(),
-                50,
-                "global".to_string(),
-            ),
-            (
-                3,
-                None,
-                Some(100),
-                "fact".to_string(),
-                50,
-                "global".to_string(),
-            ),
-        ];
-        let retention = std::collections::BTreeMap::new();
-        let per_domain = std::collections::HashMap::new();
-        let now = 1000;
-
-        let first = page_decayed(&rows, now, &retention, &per_domain, 0, 2);
-        assert_eq!(first.len(), 2, "first page honors the limit");
-        assert_eq!(first[0]["id"], 1);
-        assert_eq!(first[1]["id"], 2);
-
-        let next = page_decayed(&rows, now, &retention, &per_domain, 2, 2);
-        assert_eq!(next.len(), 1, "offset pages the remainder");
-        assert_eq!(next[0]["id"], 3);
-
-        // A page past the end yields nothing (stable, not an error).
-        assert!(page_decayed(&rows, now, &retention, &per_domain, 99, 2).is_empty());
-    }
-
-    /// a row in a bound domain is judged by THAT profile's
-    /// retention map (replacing the server-wide policy); unbound rows keep the
-    /// server-wide policy. An empty profile map = no kind decay at all.
-    #[test]
-    fn page_decayed_judges_bound_domains_by_their_profile() {
-        // Two identical 400-day-old episodic rows, one in a call-center domain
-        // (episodic: 90 — expired) and one in a domain bound to an empty map
-        // (no decay — alive despite the server-wide episodic default).
-        let now = chrono::Utc::now().timestamp();
-        let created = now - 400 * 86_400;
-        let rows: Vec<DecayedRow> = vec![
-            (
-                1,
-                None,
-                None,
-                "episodic".to_string(),
-                created,
-                "support".to_string(),
-            ),
-            (
-                2,
-                None,
-                None,
-                "episodic".to_string(),
-                created,
-                "simple".to_string(),
-            ),
-            (
-                3,
-                None,
-                None,
-                "episodic".to_string(),
-                created,
-                "global".to_string(),
-            ),
-        ];
-        let server_wide = std::collections::BTreeMap::from([("episodic".to_string(), 30)]);
-        let per_domain = std::collections::HashMap::from([
-            (
-                "support".to_string(),
-                std::collections::BTreeMap::from([("episodic".to_string(), 90)]),
-            ),
-            ("simple".to_string(), std::collections::BTreeMap::new()),
-        ]);
-        let out = page_decayed(&rows, now, &server_wide, &per_domain, 0, 100);
-        let ids: Vec<i64> = out.iter().filter_map(|v| v["id"].as_i64()).collect();
-        // 1: created+90d elapsed → expired (the profile EXTENDED life past the
-        //    server-wide 30d — and the row is now past even 90d).
-        // 2: empty profile map → no kind decay → alive.
-        // 3: unbound → server-wide 30d → expired.
-        assert_eq!(ids, vec![1, 3]);
-    }
-
-    /// the SQL WHERE is a superset of the Rust-side
-    /// filter — every row `page_decayed` would keep must be selected by the
-    /// narrowed SQL, on real CURRENT_TIMESTAMP-format dates. The SQL never
-    /// decides a row's fate; the exact filter still lives in Rust.
-    #[test]
-    fn decayed_superset_sql_covers_every_rust_expired_row() {
-        let now = chrono::Utc::now().timestamp();
-        let fmt = |t: chrono::DateTime<chrono::Utc>| {
-            t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string()
-        };
-        let old = fmt(chrono::DateTime::from_timestamp(now - 400 * 86_400, 0).unwrap());
-        let fresh = fmt(chrono::DateTime::from_timestamp(now - 10 * 86_400, 0).unwrap());
-
-        let conn = rusqlite::Connection::open_in_memory().expect("db");
-        conn.execute(
-            "CREATE TABLE knowledge (
-                id INTEGER PRIMARY KEY,
-                content_hash TEXT,
-                expires_at INTEGER,
-                node_kind TEXT DEFAULT 'chunk',
-                created_at TEXT,
-                domain TEXT DEFAULT 'global'
-             )",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO knowledge(id, content_hash, expires_at, node_kind, created_at) VALUES
-                 (1, 'a', 100,        'fact', ?1),  -- per-chunk expired (branch A)
-                 (2, 'b', NULL,       'note', ?2),  -- kind-policy expired (branch B, old)
-                 (3, 'c', NULL,       'note', ?1),  -- kind-policy NOT expired (fresh)
-                 (4, 'd', NULL,       'chunk', ?2); -- kind NOT in policy, never expires",
-            rusqlite::params![fresh, old],
-        )
-        .unwrap();
-
-        // Kind policy: note=90d, fact=180d — min days = 90 (latest cutoff).
-        let mut retention = std::collections::BTreeMap::new();
-        retention.insert("note".to_string(), 90);
-        retention.insert("fact".to_string(), 180);
-        let (sql, params) = decayed_superset_sql(now, &retention, None);
-
-        let mut stmt = conn.prepare(&sql).unwrap();
-        let sql_ids: std::collections::BTreeSet<i64> = stmt
-            .query_map(
-                rusqlite::params_from_iter(params.iter().map(|p| p as &dyn rusqlite::types::ToSql)),
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap()
-            .flatten()
-            .collect();
-
-        // Rust-side truth: run the exact filter over the full table (the SQL
-        // superset policy = the server-wide map; no per-domain bindings in
-        // this fixture — the domain-aware path is covered by its own test).
-        let all: Vec<DecayedRow> = conn
-            .prepare(
-                "SELECT id, content_hash, expires_at, node_kind, \
-                        unixepoch(COALESCE(created_at, '1970-01-01 00:00:00')), domain \
-                 FROM knowledge ORDER BY id",
-            )
-            .unwrap()
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4)?,
-                    r.get::<_, String>(5)?,
-                ))
-            })
-            .unwrap()
-            .flatten()
-            .collect();
-        let empty_per_domain = std::collections::HashMap::new();
-        let rust_expired: std::collections::BTreeSet<i64> =
-            page_decayed(&all, now, &retention, &empty_per_domain, 0, i64::MAX)
-                .iter()
-                .filter_map(|v| v["id"].as_i64())
-                .collect();
-        let rust_visible: std::collections::BTreeSet<i64> = page_decayed(
-            &all,
-            now,
-            &std::collections::BTreeMap::new(),
-            &empty_per_domain,
-            0,
-            i64::MAX,
-        )
-        .iter()
-        .filter_map(|v| v["id"].as_i64())
-        .collect();
-
-        assert!(
-            !rust_expired.is_empty(),
-            "fixture must contain expired rows"
-        );
-        assert_eq!(rust_expired, std::collections::BTreeSet::from([1, 2]));
-        assert!(
-            sql_ids.is_superset(&rust_expired),
-            "SQL ({sql_ids:?}) must cover every Rust-expired row ({rust_expired:?})"
-        );
-        assert_eq!(
-            sql_ids, rust_expired,
-            "superset must not widen to rows the exact filter rejects"
-        );
-
-        // Empty policy → branch A only: NULL-expiry rows are never selected.
-        let (sql_a, params_a) = decayed_superset_sql(now, &std::collections::BTreeMap::new(), None);
-        let mut stmt_a = conn.prepare(&sql_a).unwrap();
-        let sql_a_ids: std::collections::BTreeSet<i64> = stmt_a
-            .query_map(
-                rusqlite::params_from_iter(
-                    params_a.iter().map(|p| p as &dyn rusqlite::types::ToSql),
-                ),
-                |r| r.get::<_, i64>(0),
-            )
-            .unwrap()
-            .flatten()
-            .collect();
-        assert_eq!(
-            sql_a_ids, rust_visible,
-            "no-policy SQL == per-chunk-only Rust filter"
-        );
-    }
+    // The `/decayed` unit pins (the superset SQL + the Rust arbiter pair
+    // and their fixtures) moved verbatim to the decay core in the lifecycle
+    // move, together with the pairing pin that keeps both halves in one
+    // module (see `service::lifecycle::decay`).
 
     /// M4: `/export` body → UMP envelope resolves relation names and attaches
     /// each chunk's graph to its own record (relations only land on the chunk

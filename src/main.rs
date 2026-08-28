@@ -3462,72 +3462,48 @@ async fn get_chunk(
     let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
     // mask PII for non-admin principals like /recall does —
     // the pii-flagged row's content never leaves unmasked through the legacy
-    // read path (loopback/opaque stays unmasked by design).
+    // read path (loopback/opaque stays unmasked by design). The row LOAD
+    // lives in the lifecycle fetch core (domain-scoped, stored forms); the
+    // read seam + the row's own re-authz stay HERE at the emission boundary.
     let pii_principal = principal.0.clone();
     let row = task::spawn_blocking(move || -> Result<Option<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-        let r = conn.query_row(
-            "SELECT k.id, k.title, k.content, k.source, k.document_id, k.chunk_index,
-                    k.heading_path, k.line_start, k.line_end, k.created_at,
-                    s.uri, sr.id, k.pii, k.domain, k.owner, k.access_scope
-             FROM knowledge k
-             LEFT JOIN sources s ON k.source_id = s.id
-             LEFT JOIN source_revisions sr ON k.revision_id = sr.id
-             WHERE k.id = ?1 AND k.domain = ?2",
-            params![id, label],
-            |row| {
-                let content = row.get::<_, String>(2)?;
-                let pii: i64 = row.get(12)?;
-                let pii_flag = pii != 0;
-                // title + heading_path ride the same read seam as
-                // content (PII redaction + invisible-Unicode strip).
-                let title = crate::gate::sanitize_read_opt(
-                    row.get::<_, Option<String>>(1)?,
-                    pii_flag,
-                    &pii_principal,
-                );
-                let heading_path = crate::gate::sanitize_read_opt(
-                    row.get::<_, Option<String>>(6)?,
-                    pii_flag,
-                    &pii_principal,
-                );
-                let value = serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "title": title,
-                    "content": crate::gate::sanitize_read(&content, pii_flag, &pii_principal),
-                    "source": row.get::<_, Option<String>>(3)?,
-                    "document_id": row.get::<_, Option<String>>(4)?,
-                    "chunk_index": row.get::<_, Option<i64>>(5)?,
-                    "heading_path": heading_path,
-                    "line_start": row.get::<_, Option<i64>>(7)?,
-                    "line_end": row.get::<_, Option<i64>>(8)?,
-                    "created_at": row.get::<_, Option<String>>(9)?,
-                    "source_uri": row.get::<_, Option<String>>(10)?,
-                    "revision_id": row.get::<_, Option<i64>>(11)?,
-                });
-                let row_domain: String = row.get(13)?;
-                let row_owner: Option<String> = row.get(14)?;
-                let row_scope: Option<String> = row.get(15)?;
-                Ok((value, row_domain, row_owner, row_scope))
-            },
-        );
-        match r {
-            Ok((value, row_domain, row_owner, row_scope)) => {
-                // belt-and-braces — re-authorize against the
-                // row's OWN domain, and run the record gate (the recall
-                // parity), so any future predicate loosening cannot leak the
-                // row to a principal that could not read it via recall.
-                if !handlers::can_read_domain(&pii_principal, &row_domain) {
-                    return Ok(None);
-                }
-                if !record_gate.admits(&row_owner, &row_scope) {
-                    return Ok(None);
-                }
-                Ok(Some(value))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(AppError::Internal(e.to_string())),
+        let rec = crate::service::lifecycle::fetch::chunk_in_domain(&conn, id, &label)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let Some(rec) = rec else {
+            return Ok(None);
+        };
+        let pii_flag = rec.pii;
+        // title + heading_path ride the same read seam as
+        // content (PII redaction + invisible-Unicode strip).
+        let title = crate::gate::sanitize_read_opt(rec.title, pii_flag, &pii_principal);
+        let heading_path =
+            crate::gate::sanitize_read_opt(rec.heading_path, pii_flag, &pii_principal);
+        let value = serde_json::json!({
+            "id": rec.id,
+            "title": title,
+            "content": crate::gate::sanitize_read(&rec.content, pii_flag, &pii_principal),
+            "source": rec.source,
+            "document_id": rec.document_id,
+            "chunk_index": rec.chunk_index,
+            "heading_path": heading_path,
+            "line_start": rec.line_start,
+            "line_end": rec.line_end,
+            "created_at": rec.created_at,
+            "source_uri": rec.source_uri,
+            "revision_id": rec.revision_id,
+        });
+        // belt-and-braces — re-authorize against the
+        // row's OWN domain, and run the record gate (the recall
+        // parity), so any future predicate loosening cannot leak the
+        // row to a principal that could not read it via recall.
+        if !handlers::can_read_domain(&pii_principal, &rec.domain) {
+            return Ok(None);
         }
+        if !record_gate.admits(&rec.owner, &rec.access_scope) {
+            return Ok(None);
+        }
+        Ok(Some(value))
     })
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
@@ -3595,83 +3571,41 @@ async fn multi_get(
     let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
     let ids = req.ids;
     // mask PII per row for non-admin principals (loopback/
-    // opaque stays unmasked by design — has_pii_read(None)).
+    // opaque stays unmasked by design — has_pii_read(None)). The batch row
+    // LOAD lives in the lifecycle fetch core (domain-scoped, stored forms);
+    // the read seam + the per-row authz filters stay HERE at the emission
+    // boundary (a batch read filters like recall searches).
     let pii_principal = principal.0.clone();
     let rows = task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, AppError> {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
-        // single `WHERE id IN (...)` query instead of N round-trips.
-        // Safe parameterization: build placeholders from the ids length, bind
-        // each id by position. Bounded by MAX_MULTI_GET (1000).
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        // the domain predicate binds the
-        // header-resolved label, so ids cannot cross domains in shim mode.
-        let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
-        let label_ph = ids.len() + 1;
-        let sql = format!(
-            "SELECT k.id, k.title, k.content, k.document_id, k.chunk_index,\
-                    k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii,\
-                    k.domain, k.owner, k.access_scope \
-             FROM knowledge k \
-             LEFT JOIN sources s ON k.source_id = s.id \
-             LEFT JOIN source_revisions sr ON k.revision_id = sr.id \
-             WHERE k.id IN ({}) AND k.domain = ?{label_ph}",
-            placeholders.join(",")
-        );
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = ids
-            .iter()
-            .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
-            .collect();
-        params.push(Box::new(label));
-        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
-        let mut stmt = conn
-            .prepare(&sql)
+        let recs = crate::service::lifecycle::fetch::chunks_in_domain(&conn, &ids, &label)
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let rows = stmt
-            .query_map(refs.as_slice(), |row| {
-                let content = row.get::<_, String>(2)?;
-                let pii: i64 = row.get(10)?;
-                let pii_flag = pii != 0;
-                let title = crate::gate::sanitize_read_opt(
-                    row.get::<_, Option<String>>(1)?,
-                    pii_flag,
-                    &pii_principal,
-                );
-                let heading_path = crate::gate::sanitize_read_opt(
-                    row.get::<_, Option<String>>(5)?,
-                    pii_flag,
-                    &pii_principal,
-                );
-                let value = serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "title": title,
-                    "content": crate::gate::sanitize_read(&content, pii_flag, &pii_principal),
-                    "document_id": row.get::<_, Option<String>>(3)?,
-                    "chunk_index": row.get::<_, Option<i64>>(4)?,
-                    "heading_path": heading_path,
-                    "line_start": row.get::<_, Option<i64>>(6)?,
-                    "line_end": row.get::<_, Option<i64>>(7)?,
-                    "source_uri": row.get::<_, Option<String>>(8)?,
-                    "revision_id": row.get::<_, Option<i64>>(9)?,
-                });
-                let row_domain: String = row.get(11)?;
-                let row_owner: Option<String> = row.get(12)?;
-                let row_scope: Option<String> = row.get(13)?;
-                Ok((value, row_domain, row_owner, row_scope))
-            })
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut out = Vec::with_capacity(ids.len());
-        for v in rows.flatten() {
+        let mut out = Vec::with_capacity(recs.len());
+        for rec in recs {
+            let pii_flag = rec.pii;
+            let title = crate::gate::sanitize_read_opt(rec.title, pii_flag, &pii_principal);
+            let heading_path =
+                crate::gate::sanitize_read_opt(rec.heading_path, pii_flag, &pii_principal);
+            let value = serde_json::json!({
+                "id": rec.id,
+                "title": title,
+                "content": crate::gate::sanitize_read(&rec.content, pii_flag, &pii_principal),
+                "document_id": rec.document_id,
+                "chunk_index": rec.chunk_index,
+                "heading_path": heading_path,
+                "line_start": rec.line_start,
+                "line_end": rec.line_end,
+                "source_uri": rec.source_uri,
+                "revision_id": rec.revision_id,
+            });
             // drop (not error) rows whose domain the
             // principal may not read and rows the record gate denies — a
             // batch read filters like recall searches, keeping id-probing
             // of foreign rows blind rather than loud.
-            let (value, row_domain, row_owner, row_scope) = v;
-            if !handlers::can_read_domain(&pii_principal, &row_domain) {
+            if !handlers::can_read_domain(&pii_principal, &rec.domain) {
                 continue;
             }
-            if !record_gate.admits(&row_owner, &row_scope) {
+            if !record_gate.admits(&rec.owner, &rec.access_scope) {
                 continue;
             }
             out.push(value);
@@ -14152,6 +14086,11 @@ Final paragraph after the rule.";
             (suggest_src, "suggest", "sanitize_read"),
             // F-17: /quarantine list is the reviewer boundary for flagged rows.
             (main_src, "list_quarantined", "sanitize_read_opt"),
+            // Masonry: /get/{id} + /multi-get re-form their responses around
+            // the lifecycle fetch core's stored rows — the seam stays at the
+            // emission boundary.
+            (main_src, "get_chunk", "sanitize_read"),
+            (main_src, "multi_get", "sanitize_read"),
             // F-19: proposals carry source_prompt + qa_note (reviewer-facing).
             (gate_src, "list_proposals", "sanitize_read_opt"),
             (gate_src, "edit_proposal", "sanitize_read_opt"),

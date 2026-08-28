@@ -63,6 +63,7 @@
 //! failing CI.
 
 pub mod dsar;
+pub mod lifecycle;
 pub mod purge;
 pub mod retention;
 
@@ -92,7 +93,7 @@ mod pins {
     /// is a regression. Slots only shrink — a baseline row may be lowered
     /// when its surface moves to a service core, never raised.
     const SQL_BASELINE: &[(&str, usize)] = &[
-        ("gate.rs", 83),
+        ("gate.rs", 78),
         ("observe.rs", 0),
         ("domains.rs", 64),
         ("clients.rs", 44),
@@ -195,15 +196,19 @@ mod pins {
     }
 
     /// The baseline table must sum to the frozen floor — v1.28.46 froze it
+    /// the frozen debt total moved — v1.28.46 froze it
     /// at 445; the Quarry extraction (observe.rs 66 → 0, the DSAR + purge
-    /// cores) legitimately lowered it to 359 in the SAME commit that moved
-    /// the SQL. A table edit that loosens the sum without a matching
-    /// extraction is a silent regression of the guard itself.
+    /// cores) legitimately lowered it to 359; the Masonry extraction (the
+    /// lifecycle family: `/decayed`, `/purge` orchestration, the by-id/batch
+    /// fetch projections out of gate.rs) legitimately lowered it to 354 in
+    /// the SAME commit that moved the SQL. A table edit that
+    /// loosens the sum without a matching extraction is a silent regression
+    /// of the guard itself.
     #[test]
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 359,
+            sum, 354,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

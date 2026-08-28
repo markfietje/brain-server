@@ -19,6 +19,177 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.48] — 2026-08-28 — "Masonry": the lifecycle surface, three cores
+
+The Foundation Line's third vein: the gate handler's lifecycle families —
+the `/decayed` review list, the `/purge` by-ids/by-owner orchestration, and
+the by-id/batch read projections (`/get/{id}`, `/multi-get`, the shared
+knowledge-row projection) — converged onto `src/service/lifecycle/{decay,
+purge,fetch}.rs`. The gate handler keeps exactly the adapter work and
+shrinks toward its eventual seam-library remainder; the plan-vs-tree
+reconciliation (the roadmap priced this milestone at gate.rs 84 while the
+frozen re-measure is 83, and the `/get`+`/multi-get` handler bodies live in
+the router file, not gate.rs) is recorded in the engineering record, not
+silently absorbed.
+
+### Release notes
+
+**Bug fixes**
+None.
+
+**Improvements**
+- **The `/decayed` aggregate moves as ONE unit** (`service/lifecycle/
+  decay.rs`): the SQL-superset WHERE and the Rust-side expiry arbiter are
+  inseparable — the SQL only narrows the scan, the Rust filter decides every
+  row's fate — and the pairing travels together, pinned by
+  `sql_superset_plus_rust_arbiter_move_together` (both halves in the core,
+  neither left behind in the handler, and the route wired through the core).
+  The held-id exclusion (a held id never appears in the decay registry) and
+  the bounded-page clamp (`MAX_DECAYED`, offset floor) are re-asserted in
+  the core, so every future caller inherits the fence.
+- **The `/purge` by-ids/by-owner families move** (`service/lifecycle/
+  purge.rs`): target resolution (the by-owner sweep runs INSIDE the tx, so
+  the target set is read at the same instant the erasure runs), the
+  legal-hold preflight (the exact shared `409 legal_hold_active` envelope),
+  the strict-posture remanence pragmas (`secure_delete=ON` before, `WAL
+  TRUNCATE` checkpoint after — both warn-not-lie), and the erasure itself
+  through the shared Quarry primitive. The evidence audit now rides the
+  SAME transaction as the erasure (SAVEPOINT-nested) — pre-move it rode the
+  connection after the commit, a crash window that left a purge permanently
+  unevidenced; the row's bytes are identical, only the atomicity changed
+  (the Plumb exemplar's shape; pinned by
+  `lifecycle_purge_audits_inside_the_tx`). The negative-reach invalidation
+  (the `recall_traces` deletes — no stale trace may keep "proving" erased
+  content was returned — plus the tombstone row) already rode the same tx
+  inside the primitive; re-asserted by
+  `lifecycle_purge_evidence_and_trace_invalidation_ride_the_same_tx`.
+- **The by-id/batch read projections move** (`service/lifecycle/fetch.rs`):
+  `/get/{id}` and `/multi-get` row loads are domain-scoped cores returning
+  STORED forms, with the read seam (`sanitize_read*` on every emitted
+  field), the row's-own-domain re-authorization, and the composite record
+  gate kept at the handler emission boundary; plus the shared
+  `KNOWLEDGE_ROW_COLS`/`knowledge_row_to_json`/`load_knowledge_row`
+  projection (one source of truth for the export and the `/ump/*` record
+  paths) out of the gate handler. `MAX_MULTI_GET`/`MAX_PURGE_IDS` are
+  re-asserted at the storage boundary (the routes keep their identical
+  wire fences in front).
+- **`gate.rs` 83 → 78** (−5 incl. moved test seeds): the proposal family
+  and the export surface remain (a later milestone; Masonry's scope is the
+  lifecycle surface only). The frozen debt floor drops 359 → 354 in the
+  same commit that moved the SQL. `legal_hold::active_hold_ids` retyped to
+  `rusqlite::Error` (the Quarry `active_reasons` convention — storage
+  helpers return storage errors); handler call sites map with the identical
+  internal-error body.
+
+**Security fixes**
+- **Read-seam meta-test coverage for the moved read paths:** `get_chunk`
+  and `multi_get` join `stored_text_fields_pass_the_read_seam`'s site
+  table — the response-forming boundary now proves the seam at emission,
+  precisely because the row loads moved below it.
+
+### Engineering record
+
+- **Scope reconciliation (the plan is law; the tree is the truth):** the
+  roadmap priced Masonry against planning-time numbers (gate.rs "84 SQL",
+  "3,677 lines", four aggregates "in one file") and its own header commits
+  to re-measurement at execution ("the scoping estimate was re-measured;
+  the frozen numbers are the ones the counter produces on the frozen
+  tree"). The frozen truth: gate.rs 83, and the get/multi-get handler
+  bodies live in the router file. Masonry therefore moves the four
+  lifecycle aggregates from where they actually live — decay and purge
+  (plus the shared record projection) from `handlers/gate.rs`, the
+  by-id/batch row loads from `main.rs` — into the three planned submodules.
+  The proposal family and `/export` stay in gate.rs (unlisted in the plan's
+  scope; moving them would have been scope invention). The plan's
+  "negative-lookup cache invalidation rides the same tx" has no
+  knowledge-side cache in the tree; its true referent is the primitive's
+  in-tx `recall_traces` invalidation + tombstone (a stale trace IS the
+  negative-lookup artifact), which is true of the function and now pinned
+  in the lifecycle purge module too. The auth-side RevocationCache
+  negative-lookup cache is unrelated to `/purge` storage and untouched.
+- **Pins (count delta ≥ 0):** the three `/decayed` unit pins moved verbatim
+  with their aggregate (`page_decayed_respects_limit_and_offset`,
+  `page_decayed_judges_bound_domains_by_their_profile`,
+  `decayed_superset_sql_covers_every_rust_expired_row`); the route-level
+  WORM-lite pin (`legal_hold_freezes_erasure_and_dsar_defers`) stays with
+  the router it pins and stays green; the Quarry primitive pins stay green
+  untouched. NEW: `lifecycle_module_has_no_http_types` (production source
+  across `service/lifecycle.rs` + every `lifecycle/*.rs` submodule never
+  names a handler/transport type or a pool handle — and walks the subtree,
+  closing the general grep's non-recursive blind spot for `dsar/sweep.rs`
+  too), `sql_superset_plus_rust_arbiter_move_together`, the lifecycle purge
+  pins (`purge_targets_by_owner_resolves_inside_the_tx`,
+  `purge_targets_preflight_refuses_held_id_with_reasons`,
+  `lifecycle_purge_audits_inside_the_tx`,
+  `lifecycle_purge_evidence_and_trace_invalidation_ride_the_same_tx`,
+  `purge_targets_reasserts_the_max_ids_fence`), the fetch pins
+  (`load_knowledge_row_projects_every_rendered_column`,
+  `fetch_projections_are_domain_scoped`,
+  `chunks_in_domain_reasserts_the_bounds_fence`), and
+  `decayed_page_reasserts_the_bounds_fence`. Pin-count delta: main-binary
+  tests 1003 → 1010 (+7; the 3 moved decay pins + 8 new − 4 net of the
+  seam-site additions riding an existing test — total never decreases).
+- **Wire artifacts diff-empty:** openapi.yaml, the route-coverage array,
+  and the route-authz table are untouched (no route changes; the `x-api-
+  version` stamp moves only when the wire contract moves, and it did not).
+  Schema untouched at 1.28.45. Error bodies byte-preserved: the typed
+  errors map onto the frozen vocabulary — `no matching chunks to purge`
+  (404), the shared `legal_hold_active` envelope with reasons (409),
+  `too_many_ids`/`no_target`/`ambiguous_target` (400), and internal-error
+  bodies carrying the rusqlite text verbatim (`commit failed: ` prefix
+  included).
+- **Bounds inventory (hardening law #4):** `MAX_DECAYED` clamp + offset
+  floor (route + core, `decayed_page_reasserts_the_bounds_fence`),
+  `MAX_MULTI_GET` (route 400 + core fence,
+  `chunks_in_domain_reasserts_the_bounds_fence`), `MAX_PURGE_IDS` (route
+  400 + core fence, `purge_targets_reasserts_the_max_ids_fence`; the
+  constant moved to `config.rs` so the service can share it without naming
+  a handler module), and `LIMIT 1`-shaped single-row loads
+  (`load_knowledge_row`, `chunk_in_domain`).
+- **FK-children map + certified silence:** the lifecycle family adds NO
+  delete path — decay/fetch are read-only; the only deletion remains the
+  Quarry primitive's `knowledge` hard-delete whose FK-children map (incl.
+  the `case_articles`/`kcs_translations` NO ACTION ceilings) is the
+  `service/purge.rs` module header; the residue rows-affected checks (`if n
+  > 0` → tombstone + count) are unchanged and still pinned there. Both
+  facts are documented in the `lifecycle.rs` header.
+- **Gates:** fmt clean; clippy `--all-targets --features bench -D warnings`
+  zero warnings; full suite `--features bench` green (1290 passed, 6
+  ignored; main-binary 1008 vs 1003, +5). CI dry-run: lint-test (default
+  features) clippy+tests, engine-crates tests+clippy, steward-harness,
+  otel-gate clippy+tests — all green; lipstyk diff-strict clean (one
+  verbose-match in the moved decayed handler collapsed, Quarry-fix
+  style); client fmt clean (client/ untouched).
+- **Live smoke on a DB COPY** (two servers, same seeded copy, v1.28.46 vs
+  v1.28.48, opaque + JWT modes): `/decayed?limit=500` byte-identical;
+  `/decayed` pagination (`limit=1&offset=0/1`) byte-identical; a legal hold
+  hides the held id from `/decayed` on both; `/purge` of the held id →
+  `409 legal_hold_active` with the reasons byte-identical on both; after
+  release the purge succeeds (`{"purged":1}`) with tombstone + audit row on
+  both; by-owner purge (`{"owner":…}`) → `{"purged":N}` byte-identical on
+  both; `/get/{id}` + `/multi-get` byte-identical for loopback (raw PII by
+  loopback-trust design) AND for a non-admin JWT reader (both binaries
+  redact to `[redacted:email][redacted:phone]` — the PII-flag redaction
+  difference, byte-identical old vs new); `/audit/verify` `{"ok":true}` on
+  both at every step. The hold-placement/release dance surfaced a
+  pre-existing 1.28.46 behavior (dual-gate release + the route's
+  all-or-nothing unknown-id refusal), not a regression; final-state
+  tombstones and the audit chain verified identical.
+- **Ceilings (honest):** the moved rows stay legacy `serde_json::Value`
+  shapes (byte-for-byte wire pins outrank the domain-type aspiration —
+  same ceiling as the retention exemplar); `DecayedQuery`/`PurgeRequest`
+  stay handler-side HTTP types (they ARE the transport contract); gate.rs
+  still carries the proposal family + export surface (a later milestone;
+  the "seam-library remainder" end-state for gate.rs is NOT reached this
+  milestone — Masonry removes the lifecycle families only); the smoke's
+  409-provenance divergence (multi-hold accumulation from repeated hold
+  calls against one DB copy) was smoke-harness state, not wire behavior —
+  re-verified byte-identical per-server.
+
+Predecessor: [1.28.47] — "Quarry": the rights surface, one core.
+
+---
+
 ## [1.28.47] — 2026-08-28 — "Quarry": the rights surface, one core
 
 The Foundation Line's second vein, and the biggest single-surface retirement

@@ -116,13 +116,15 @@ pub(crate) fn active_reasons(
 }
 
 /// Every actively-held knowledge id (the `/decayed` exclusion set).
-pub(crate) fn active_hold_ids(conn: &rusqlite::Connection) -> Result<HashSet<i64>, HandlerError> {
-    let mut stmt = conn
-        .prepare("SELECT DISTINCT knowledge_id FROM legal_holds WHERE released_at IS NULL")
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, i64>(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+/// Returns storage errors (the Quarry convention — `active_reasons` made the
+/// same retype): service cores consume it without a handler type in the way;
+/// handler call sites map with the identical internal-error body as before.
+pub(crate) fn active_hold_ids(
+    conn: &rusqlite::Connection,
+) -> Result<HashSet<i64>, rusqlite::Error> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT knowledge_id FROM legal_holds WHERE released_at IS NULL")?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
     Ok(rows.flatten().collect())
 }
 

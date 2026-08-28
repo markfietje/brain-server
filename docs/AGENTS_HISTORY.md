@@ -8,6 +8,46 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.47 "Quarry" shipped 2026-08-28** — the rights
+> surface converges: the ENTIRE DSAR storage story (locate / export bundle /
+> purge / certificate / ledger composition) moved out of `handlers/observe.rs`
+> into `src/service/dsar.rs`, with `src/service/dsar/sweep.rs` as the ONE home
+> for "what erasure reaches" in the workflow tables (`workflow/erasure.rs`
+> folded in and the file deleted) and `src/service/purge.rs` taking the shared
+> knowledge-purge primitive (the legal-hold backstop inside the FUNCTION +
+> tombstone digest + orphan-entity sweep) out of gate.rs so `/purge`, DSAR,
+> client termination, and ump hard-forget call one storage law.
+> `run_dsar_pool` is now the thin per-pool seam (borrow a connection, call
+> `run_pool`); multi-pool ordering (non-global first, global last + aggregate
+> digest) stays orchestrator-side. The FK-children map for every parent DELETE
+> was written into the module headers BEFORE the move — and it caught a real
+> gap: `delegations.run_id` (Mesh) + `channel_threads.case_run_id`
+> (Switchboard) are NOT NULL FK children of `workflow_runs` the sweep never
+> cleared (a DSAR over such subjects aborted on the FK); both now die with
+> the run — the release's ONE intended fail-path delta, pinned. Remanence
+> posture (secure_delete pragma ATTEMPT + WAL checkpoint) moved
+> certificate-owned into `run_pool`; `dsar_certificate_states_remanence_posture`
+> stayed green untouched. `legal_hold::active_reasons` retyped to
+> `rusqlite::Error` (storage helpers return storage errors); handler call
+> sites map with the identical internal-error body. observe.rs 66 → 0 SQL
+> (first fully-drained handler); gate.rs 103 → 83; debt floor 445 → 359.
+> Pins 1000 → 1003 (+3: `dsar_core_is_handler_free` source assertion — no
+> `crate::handlers`/handler types/transport types/pool handles in the three
+> service files' production source —, the purge backstop pin, the FK-gap
+> pin; all observe/sweep pins repointed in the same commit). Full suite
+> 1276 → 1279 (+3). Wire artifacts byte-identical (openapi.yaml diff-empty);
+> schema untouched at 1.28.45. Live smoke on a DB copy: dry-run footprint →
+> hold on the derived chunk → purge → certificate with held_ids listed +
+> chain_verifies true + /audit/verify ok. Ceilings: case_articles +
+> kcs_translations FKs (NO ACTION) are NOT purge-cleared — such a purge
+> fails loudly (pre-existing, follow-up); delegations/channel_threads die
+> with the RUN (FK necessity), no subject arms on surviving runs; run_pool
+> owns its per-pool tx (documented per-pool-atomic shape, not a general
+> service-tx license); ledger/tombstone/certificate wire shapes stay legacy
+> (byte-for-byte pins outrank domain types). See CHANGELOG.md §[1.28.47].
+> Predecessor: v1.28.46 "Plumb" — the service layer, the debt lock, the
+> first vein (full note below, retired here).
+
 > **Version note:** **v1.28.42 "Valet" shipped 2026-08-26** — the personal
 > AI assistant, dogfooded: reminders are governed `valet/*` runs fired by
 > the idempotent `brain valet due` crank (outbox key `valet-{run}-{due_at}`,

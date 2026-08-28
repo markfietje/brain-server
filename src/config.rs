@@ -36,6 +36,13 @@ pub const SNIPPET_CONTEXT_CHARS: usize = 60;
 pub const MAX_EXPLAIN_BYTES: usize = 64 * 1024;
 pub const MAX_MULTI_GET: usize = 1000;
 
+/// Max ids accepted by a single `/purge` call. Explicit-only deletion must be
+/// deliberate; a huge batch is a footgun. Lives here (not the gate handler)
+/// since both the route's 400 fence and the service core's defensive
+/// re-assertion (`service::lifecycle::purge`) share the one constant — a
+/// service module may not name a handler-module symbol.
+pub const MAX_PURGE_IDS: usize = 1000;
+
 /// graph endpoints return a bounded edge set. The KG's clean
 /// semantic edge set is far below this; the cap exists for the pathological
 /// mega-hub. Mirrors the `MAX_MULTI_GET` bound pattern (consts, not env limits).
