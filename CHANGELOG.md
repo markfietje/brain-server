@@ -19,6 +19,153 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.50] — 2026-08-28 — "Aqueduct": the retrieval surfaces, two cores
+
+The Foundation Line's fifth vein and the performance-sensitive heart: the
+retrieval surfaces converged onto the service layer — `src/service/recall.rs`
+(cross-domain fusion, the per-domain filter law, the per-domain read
+shaping, and the read-event write story) and `src/service/ingest.rs`
+(the screen → flag → store pipeline as ONE aggregate). This release is
+EVAL-GATED PER COMMIT: the recall floor gate ran after each extraction
+commit against the CI-style 25-doc scratch corpus, and the metrics came
+back byte-identical on both commits — behavior preservation, not
+retrieval-quality improvement.
+
+### Release notes
+
+**Bug fixes**
+- **The audit-retention prune can no longer be silently stranded from the
+  read event.** The pre-move read-event write ran record-then-prune-then-DSAR
+  inside one inline handler closure with no early return between them — the
+  move pins that exact order (`read_event_failure_returns_none_and_still_prunes`):
+  a failed audit row write returns `None` AND the prunes still run, so a
+  future `?` refactor cannot silently couple retention to the write's
+  success. Behavior is unchanged; the invariant is now machine-checked.
+
+**Improvements**
+- **The recall core** (`service/recall.rs`): the cross-domain Reciprocal
+  Rank Fusion merge (`rrf_merge_domains`, moved verbatim — rank-based
+  fusion across per-domain lists whose raw scores are not comparable), the
+  per-domain filter law (`domain_filters` — multi-db drops the in-DB domain
+  predicate so the pool-is-domain rule never double-restricts; shim mode
+  keeps it scoped to the searched label; a bound profile's retention map
+  REPLACES the server-wide map rather than merging — all pinned), the
+  per-domain post-search read shaping (`finish_domain_results` — snippet
+  window, best-effort evidence enrichment, flagged-evidence suppression
+  LAST so enrichment cannot re-attach what the review posture strips), and
+  the read-event write story (`record_recall_read_event` — the
+  hash-chained audit row, its replayable trace artifact, the
+  every-registered-domain-chain retention prune, and the DSAR-ledger
+  piggyback on ONE connection in the legacy order, best-effort by
+  contract).
+- **The ingest core** (`service/ingest.rs`): the structured write path as
+  one aggregate — the screen stage (`screen_structured`: the two-layer
+  injection screen + the scrape-posture fence; the fence holds of the
+  FUNCTION), the friendly-retention conversion (`ttl_days_to_expires`,
+  clock injected — the row-wins invariant pinned exactly), the
+  bound-profile write defaults (`apply_profile_ingest`: strict-posture
+  masking at the write boundary, default access-scope fill, the kinds
+  vocabulary fence as a typed variant), and the store transaction
+  (`store_record`: the strict-posture re-check UNDER the write lock, the
+  xxh3-64 content-hash dedup, the computed §6.2 `ump_id`, the knowledge +
+  vec0 inserts, the fail-closed quarantine flag, the graph edges with
+  their in-transaction supersession audits, and the exact delta counts).
+  The wire vocabulary is rendered 1:1 from the typed errors — every
+  variant carries its pre-move message.
+- **A local eval-gate runner** (`scripts/aqueduct-eval.sh`) mirroring the
+  CI recall-eval job exactly: a scratch instance seeded with the frozen
+  25-doc corpus, then `brain eval --floor r5=0.85 --floor r10=0.85
+  --floor mrr=0.85` against it — the reproducible per-commit gate the
+  phase's law requires.
+
+**Security fixes**
+None. (The screen → flag → store fences and the every-domain authz
+read-gate move with their code; no posture changed.)
+
+### Engineering record
+
+- **The pool schedule stays transport.** The hybrid search's three
+  concurrent legs (vec0 + FTS5 + graph-PPR) each take their own pooled
+  connection per domain; the acquisition schedule is the perf contract
+  this line must not disturb, so the handler's `spawn_blocking` keeps it
+  verbatim and hands the core decisions, results, and borrowed
+  connections. The recall core takes connections and domain types — never
+  a pool, the registry, or a transport type.
+- **Row-domain predicates run exactly as they did** — inside the
+  retriever SQL (`search::vec0_knn`/`fts_search`/`graph_ppr`, untouched);
+  what moved into the service is the DECISION that feeds them
+  (`domain_filters`), pinned for both modes plus the retention-map
+  replacement.
+- **The read seam is unchanged**: `results_to_hits` stays at the handler's
+  emission boundary; the service returns STORED forms. The seam-wiring
+  meta-test (`stored_text_fields_pass_the_read_seam`) needed no additions —
+  the extraction created no new emission site.
+- **Body-scan pins repointed, not rewritten**: the owner-INSERT guard and
+  the screen-sites guard now scan `service/ingest.rs` (`store_record`,
+  `screen_structured`) — the INSERT literal and the screen call moved WITH
+  the code they evidence.
+- **Pins 1013 → 1024 (+11):** the recall module went 20 → 24 (rrf ×2 +
+  the trace-hash pin moved verbatim; `domain_filters`,
+  `finish_domain_results`, and two read-event pins new), the ingest
+  module 6 → 11 (ttl + profile ×2 moved with their aggregate;
+  `kind_vocabulary` repointed to the typed fence; screen, in-tx audit,
+  dedup, quarantine-no-edges, and the strict-posture race pins new), and
+  two handler-free pins added (`recall_core_is_handler_free`,
+  `ingest_core_is_handler_free` — fn-pointer coercions + production token
+  walks; the recall coercion covers the generic connection-guard via a
+  test-local `Deref<Target = Connection>` type).
+- **Inventory: ingest.rs 22 → 3** (every store-tx statement out; the
+  residue is comment substrings the substring lock deliberately counts)
+  **and the stale govern.rs row caught up at 18 → 6** (the Plumb-era
+  retention move's row was never lowered — Terrace shipped with the guard
+  printing −12 progress); **debt floor 272 → 241**, same commit as the
+  move. recall.rs stays 0/unlisted (no SQL before or after).
+- **Gates:** fmt clean; clippy `--all-targets -D warnings` green on bench,
+  default, and otel; full suite `--features bench` 1301 passed / 6
+  ignored (main-binary 1024 vs 1013, +11); CI dry-run (engine-crates
+  tests + clippy, steward-harness) green; lipstyk diff-strict clean vs
+  v1.28.49; openapi.yaml diff-empty (zero route changes); schema
+  untouched at 1.28.45.
+- **Eval gate (per extraction commit, CI-style 25-doc scratch corpus,
+  release build):** pre-move baseline r5=0.976 / r10=0.991 / mrr=0.956;
+  after the recall commit r5=0.976 / r10=0.991 / mrr=0.956; after the
+  ingest commit r5=0.976 / r10=0.991 / mrr=0.956 — byte-identical means
+  and per-query ranks on all 106 judged queries; floors (0.85) green at
+  every gate. The floor gate targets the FROZEN 25-doc corpus (fresh
+  scratch instance, exactly as CI runs it); a live-server run against a
+  drifted corpus is not a comparable baseline (judged indices only align
+  on the seeded set).
+- **Live smoke on a DB COPY** (multi-db, release binary): recall
+  end-to-end with all three legs (vector + FTS + graph) on a multi-domain
+  copy, `?trace=true` → `/recall/{id}/trace` replay round-trip,
+  `include_flagged` review posture, ingest screened (benign store) and
+  quarantined (scrape without lawful basis → stored + flagged + no graph
+  edges) paths, content-hash dedup (second identical ingest →
+  `"status":"duplicate"` with the first row's id), and `/audit/verify ok`
+  on every chain throughout.
+- **Ceilings (honest):** **LongMemEval parity stays PENDING — this line
+  makes NO retrieval-quality claim, only behavior preservation** (the
+  eval gate proves the frozen-set metrics did not move; it does not
+  claim external-engine parity). The read-event write remains a separate
+  best-effort post-search blocking task (availability-first: the recall's
+  8 s timeout must not absorb retention-prune cost; the consolidation is
+  one service fn on one connection, not a merge into the search task).
+  The evidence-enrichment connection is still a fresh best-effort pooled
+  `get` per domain (byte-identical posture). The graph-leg SearchFilters
+  boundary pins and the PRF occurrence-schema pins stayed attached to
+  `search/graph_ppr.rs` and the search tests respectively — they pin the
+  retriever engines, which did not move; the suite proves them
+  byte-identical post-move. The trace-detail JSON shaping stays at the
+  handler (it maps the wire `HitSource` labels; the service owns the
+  WRITE, not the response shaping). `RecallRequest`/`IngestRequest` and
+  their bounds validation stay handler-side (wire-shaped 400s; the
+  Terrace kind-vocabulary ceiling extends to the confidence/entities/
+  relations fences).
+
+Predecessor: [1.28.49] — "Terrace": the register surfaces, two cores.
+
+---
+
 ## [1.28.49] — 2026-08-28 — "Terrace": the register surfaces, two cores
 
 The Foundation Line's fourth vein: the BPO register surfaces — the

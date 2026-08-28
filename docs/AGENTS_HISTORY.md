@@ -8,6 +8,52 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.49 "Terrace" shipped 2026-08-28** — the
+> register surfaces converge: the BPO register (client CRUD, DPA terms,
+> the per-client hold/DSAR/coach/QA/termination delegation seams, the
+> auditor row filters) and the domain administration (create/delete/
+> vacuum/export/import + the relabel tx) move into `src/service/
+> register.rs` + `src/service/domains_admin.rs`; the pre-service
+> `src/clients.rs` domain module FOLDS INTO the register core (its
+> `HandlerError` leaks become the typed `RegisterError`; the file is
+> gone). `DomainRegistry` stays the pool authority — proven at the type
+> level by `register_services_receive_no_registry` (every core fn
+> coerces to a connection-first fn pointer; a registry/pool/state
+> signature stops compiling) plus a production-source token walk over
+> both modules. The domain-delete evidence audit + the termination and
+> coach audits ride INSIDE their caller's tx now (byte-identical rows;
+> the coach pair closed a real two-autocommit crash window — pinned by
+> `coach_audits_inside_the_tx`; the delete's `let _ =` certified-silence
+> form is gone — pinned by `domain_delete_rolls_back_with_its_audit`).
+> Export goes through the shared `backup::vacuum_into` escaper (its
+> escaping/symlink pins stay attached verbatim;
+> `domain_export_routes_through_shared_vacuum_escaper` pins the call
+> shape). FK-children map for the domain delete written into the
+> `domains_admin` header BEFORE the move (incl. the
+> `case_articles`/`kcs_translations` NO ACTION ceilings shared with the
+> purge core). Pins 1010 → 1013 (+3 net; the `src/clients.rs` unit pins,
+> the register route pins, and the domain pins moved verbatim with their
+> aggregates; the recompute-sweep pin repointed to `domain_router.rs`).
+> Inventory: domains.rs 64 → 0, clients.rs 44 → 26 (the 26 are OTHER
+> surfaces' hold-fence/transfer/remanence pins — see Ceilings); debt
+> floor 354 → 272, same commit as the move. Wire artifacts byte-identical
+> (openapi.yaml diff-empty); schema untouched at 1.28.45. Full suite
+> 1295 passed / 6 ignored. Live smoke on a DB COPY (multi-db, release
+> binary): client add → DPA → delegate hold → client-scoped DSAR purge
+> (free purged, held deferred, cross-domain untouched); domain create →
+> vacuum → export → import round-trip; export with a quote in TMPDIR →
+> 200 + valid SQLite (server-side escaping); delete vs active hold → 409,
+> after release → archive segment 0600 pre-deletion snapshot +
+> `domain_deleted` on the preserved chain; client end → DPA purge →
+> archived, re-end 409; `/audit/verify ok` throughout. Ceilings: the 26
+> clients.rs residue are forget/source/ump/holds/transfers/observe pins
+> that fixture on the register — they ride with those surfaces'
+> Confluence extractions; `Client`/`DpaTerms` keep their serde derives;
+> `relabel_chunks` keeps its self-contained tx verbatim; the import
+> surface stays handler-side (no storage logic exists to move). See
+> CHANGELOG.md §[1.28.49]. Predecessor: v1.28.48 "Masonry" — the
+> lifecycle surface converges (full note below, retired here).
+
 > **Version note:** **v1.28.48 "Masonry" shipped 2026-08-28** — the
 > lifecycle surface converges: the gate handler's decay + GDPR families
 > move into `src/service/lifecycle/{decay,purge,fetch}.rs` — `/decayed` as
