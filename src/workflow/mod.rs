@@ -42,6 +42,7 @@ pub(crate) mod outreach;
 pub(crate) mod parcels;
 pub(crate) mod recall;
 pub(crate) mod relay;
+pub(crate) mod scoreboard;
 pub(crate) mod session;
 pub(crate) mod shifts;
 pub(crate) mod state;

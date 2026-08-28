@@ -246,6 +246,23 @@ pub fn touch(
     Ok(())
 }
 
+/// Presence rides the caller's transaction — a mutating request is its own
+/// beacon, and a rolled-back tx leaves no ghost. Best-effort (presence
+/// never gates the work): a failed touch is a loud warn, never an error.
+pub(crate) fn touch_cranking(conn: &Connection, domain: &str, actor: &str, case_ref: Option<&str>) {
+    if let Err(e) = touch(
+        conn,
+        domain,
+        actor,
+        "cranking",
+        case_ref,
+        &[],
+        chrono::Utc::now().timestamp(),
+    ) {
+        tracing::warn!("presence touch failed: {e}");
+    }
+}
+
 fn roles_from(json: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(json).unwrap_or_default()
 }

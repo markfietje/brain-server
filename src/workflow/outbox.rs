@@ -203,6 +203,55 @@ pub(crate) fn deliver(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<
     Ok(())
 }
 
+// ── the steering inbox: the bounded write + its drain read ────────────────
+
+/// The steering inbox write, shared by `POST .../steering` and the inbound
+/// Signal webhook (`[case N] ...` messages). Drop-oldest cap + enqueue +
+/// presence touch in ONE tx on one connection so the inbox bound can never
+/// race past 100. `payload` is the ALREADY-sanitized JSON envelope.
+pub(crate) fn enqueue_steering_tx(
+    tx: &Connection,
+    id: i64,
+    domain: &str,
+    payload: &str,
+    actor: &str,
+) -> Result<(), String> {
+    let cnt: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("{e}"))?;
+    if cnt >= 100 {
+        tx.execute(
+            "DELETE FROM outbox WHERE id IN (SELECT id FROM outbox WHERE run_id=?1 AND topic='steering' ORDER BY id ASC LIMIT ?2)",
+            params![id, cnt - 99],
+        )
+        .map_err(|e| format!("{e}"))?;
+    }
+    let now = chrono::Utc::now().timestamp();
+    let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
+    enqueue(tx, id, "steering", payload, &key, now).map_err(|e| format!("{e}"))?;
+    super::crew::touch_cranking(tx, domain, actor, Some(&format!("run:{id}")));
+    Ok(())
+}
+
+/// The steering inbox read (the drain half): strictly-after `since`, oldest
+/// first, bounded at 100 — the read side of [`enqueue_steering_tx`]'s cap.
+pub(crate) fn steering_inbox(
+    conn: &Connection,
+    run_id: i64,
+    since: i64,
+) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, payload_json FROM outbox
+         WHERE run_id=?1 AND topic='steering' AND id > ?2 ORDER BY id ASC LIMIT 100",
+    )?;
+    let it = stmt.query_map(params![run_id, since], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(it.filter_map(Result::ok).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

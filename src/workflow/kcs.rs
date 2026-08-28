@@ -116,6 +116,64 @@ pub(crate) fn record_sir_not_found(conn: &mut Connection, run_id: i64, now: i64)
     n
 }
 
+/// The zero-hit reuse probe behind the run-suggestions surface: a bounded
+/// LIKE search over the run's domain with the quarantine + decay posture
+/// (flagged rows never surface through a side door; expired rows stay
+/// retired) and a wildcard-injection fence (`%`/`_`/`\\` escaped, query
+/// clamped). Fail-open by contract: any storage error reads as "no reuse
+/// candidates", never a failed run read. Stored forms — the read seam
+/// (snippet sanitize + clamp) stays handler-side.
+pub(crate) fn reuse_candidates(
+    conn: &Connection,
+    domain: &str,
+    q: &str,
+    now: i64,
+) -> Vec<(i64, Option<String>, String)> {
+    let mut out = Vec::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id,title,content FROM knowledge \
+         WHERE domain=?1 AND flagged=0 \
+           AND (expires_at IS NULL OR expires_at >= ?3) \
+           AND content LIKE ?2 ESCAPE '\\' LIMIT 5",
+    ) else {
+        return out;
+    };
+    let q_take: String = q.chars().take(50).collect();
+    let pat = format!(
+        "%{}%",
+        q_take
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = match stmt.query_map(params![domain, pat, now], |r| {
+        let id: i64 = r.get(0)?;
+        let title: Option<String> = r.get(1)?;
+        let content: String = r.get(2)?;
+        Ok((id, title, content))
+    }) {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    for row in rows.flatten() {
+        out.push(row);
+    }
+    out
+}
+
+/// The `abstention` finding row for a zero-hit reuse search. Best-effort at
+/// the caller: the loud warn stays with the caller, who owns the context.
+pub(crate) fn record_abstention(
+    conn: &Connection,
+    run_id: i64,
+    now: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "INSERT INTO findings(run_id,claim,evidence,source,confidence,ts) VALUES (?1,'abstention','no hits','copilot',0,?2)",
+        params![run_id, now],
+    )
+}
+
 /// The Improve practice: when a run COMPLETED but contradicted what it used
 /// (diverged steps / skipped verification), emit one `kcs_flag` finding per
 /// cited article. Returns flagged article ids. Never an edit — content-health

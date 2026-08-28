@@ -11,7 +11,7 @@ pub use brain_engine_sdk::host::CasError;
 
 use super::audit_write;
 use crate::audit::AuditStatus;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 fn db_err(e: rusqlite::Error) -> CasError {
     CasError::Database(e.to_string())
@@ -72,6 +72,116 @@ pub(crate) fn cas_update(
         &format!("cas:{expected_revision}->{}", expected_revision + 1),
     );
     Ok(run_id)
+}
+
+// ── run-row reads: the projections the engine surfaces serve ──────────────
+
+/// The stored run row: (id, domain, kind, status, state_json, created_at,
+/// updated_at). Wire shaping stays handler-side.
+pub(crate) type RunRowTuple = (i64, String, String, String, String, i64, i64);
+
+/// The stored step row: (id, run_id, phase, step_key, state_json, revision,
+/// parent_step_id).
+pub(crate) type StepRowTuple = (i64, i64, String, String, String, i64, Option<i64>);
+
+/// The full run row `GET /workflow/runs/{id}` serves.
+pub(crate) fn run_row(conn: &Connection, run_id: i64) -> rusqlite::Result<Option<RunRowTuple>> {
+    conn.query_row(
+        "SELECT id,domain,kind,status,state_json,created_at,updated_at FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
+        },
+    )
+    .optional()
+}
+
+/// The run's domain label, or None when the run is gone (the caller owns
+/// the probe-blind 404).
+pub(crate) fn run_domain_of(conn: &Connection, run_id: i64) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT domain FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// (domain, state_json) — the suggestions surface's read (domain for the
+/// authz gate, state for the reuse query). One statement so the row is
+/// resolved once, BEFORE authorization, exactly as the 404 order demands.
+pub(crate) fn run_domain_and_state(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT domain,state_json FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+/// The engine state read: (state_json, state_revision), None when the run
+/// is gone. Shared by the bare-connection state view (whose caller audits
+/// the read) and the in-tx CAS sequences (answer/rewind).
+pub(crate) fn read_state_and_revision(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Option<(String, i64)>> {
+    conn.query_row(
+        "SELECT state_json, state_revision FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+    )
+    .optional()
+}
+
+/// The run's step rows in id order: (id, run_id, phase, step_key,
+/// state_json, revision, parent_step_id). Stored forms — the read seam
+/// stays handler-side.
+pub(crate) fn steps_of_run(conn: &Connection, run_id: i64) -> rusqlite::Result<Vec<StepRowTuple>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,run_id,phase,step_key,state_json,revision,parent_step_id FROM workflow_steps WHERE run_id=?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![run_id], |r| {
+        Ok((
+            r.get(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get(6)?,
+        ))
+    })?;
+    rows.collect()
+}
+
+/// Open a run: the row write + id resolution inside the CALLER'S
+/// transaction ([`super::tx::WorkflowTx`]). The caller owes the `open`
+/// audit row and the presence touch, in the same tx.
+pub(crate) fn open_run(
+    conn: &Connection,
+    domain: &str,
+    kind: &str,
+    state_json: &str,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4)",
+        params![domain, kind, state_json, now],
+    )?;
+    Ok(conn.last_insert_rowid())
 }
 
 #[cfg(test)]

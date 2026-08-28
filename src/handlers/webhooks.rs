@@ -768,7 +768,7 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
                     let sanitized = crate::gate::sanitize_read(&message, false, &None);
                     let payload_json = serde_json::json!({"message": sanitized}).to_string();
                     let tx = conn.transaction().map_err(|e| format!("{e}"))?;
-                    super::workflow::enqueue_steering_tx(
+                    crate::workflow::outbox::enqueue_steering_tx(
                         &tx,
                         run_id,
                         &domain,

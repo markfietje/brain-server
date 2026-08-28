@@ -101,7 +101,7 @@ mod pins {
         ("observe.rs", 0),
         ("domains.rs", 0),
         ("clients.rs", 26),
-        ("workflow.rs", 23),
+        ("workflow.rs", 0),
         ("ingest.rs", 3),
         ("govern.rs", 6),
         ("webhooks.rs", 14),
@@ -215,14 +215,19 @@ mod pins {
     /// `service::ingest`; the residue is comment substrings — and the
     /// stale govern.rs row caught up at 18 → 6, the retention family's
     /// Plumb-era move the table had never lowered) legitimately lowered it
-    /// to 241 in the SAME commit that moved the SQL. A table edit that
+    /// to 241 in the SAME commit that moved the SQL. The Confluence
+    /// extraction (workflow.rs 23 → 0 — every engine-projection read, the
+    /// steering inbox write/read, and the scoreboard family out to
+    /// `workflow::{state, outbox, kcs, scoreboard}`; the residue was two
+    /// comment substrings, reworded) legitimately lowered it to 218 in the
+    /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
     #[test]
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 241,
+            sum, 218,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );
