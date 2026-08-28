@@ -10,7 +10,6 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
-use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -96,15 +95,10 @@ pub async fn post_kcs_article_approve(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        let (domain, kcs_state): (String, String) = conn
-            .query_row(
-                "SELECT domain, kcs_state FROM knowledge WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| HandlerError::internal(format!("{e}")))?
-            .ok_or_else(|| HandlerError::not_found("article not found"))?;
+        let (domain, kcs_state): (String, String) =
+            crate::workflow::kcs::article_lifecycle_row(&conn, id)
+                .map_err(|e| HandlerError::internal(format!("{e}")))?
+                .ok_or_else(|| HandlerError::not_found("article not found"))?;
         // Row-domain re-auth + the HITL approve role gate.
         super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
         super::authorize_role(&principal, &pool, "approve")?;
@@ -116,12 +110,7 @@ pub async fn post_kcs_article_approve(
             ));
         }
         let now = chrono::Utc::now().timestamp();
-        let n = conn
-            .execute(
-                "UPDATE knowledge SET kcs_state = 'approved', freshness_review_due = ?2
-                 WHERE id = ?1 AND kcs_state = 'draft'",
-                rusqlite::params![id, now + KCS_FRESHNESS_SECS],
-            )
+        let n = crate::workflow::kcs::approve_article(&conn, id, now + KCS_FRESHNESS_SECS)
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
         if n == 0 {
             return Err(HandlerError::conflict("article state changed concurrently"));
@@ -170,32 +159,12 @@ pub async fn get_kcs_articles(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     let rows: Vec<serde_json::Value> = tokio::task::spawn_blocking(move || {
         let Ok(conn) = pool.get() else { return vec![] };
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT k.id, k.title, k.content, k.kcs_state, k.freshness_review_due, k.domain,
-                    (SELECT COUNT(*) FROM findings f
-                      WHERE f.claim = 'kcs_flag' AND f.evidence = 'article:' || k.id) AS open_flags
-             FROM knowledge k
-             WHERE k.kcs_state != 'none'
-             ORDER BY k.id DESC LIMIT 500",
-        ) else {
-            return vec![];
-        };
-        let Ok(it) = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, i64>(6)?,
-            ))
-        }) else {
+        let Ok(rows) = crate::workflow::kcs::article_worklist(&conn) else {
             return vec![];
         };
         let now = chrono::Utc::now().timestamp();
         let mut out = Vec::new();
-        for (id, title, content, kcs_state, fresh_due, domain, flags) in it.flatten() {
+        for (id, title, content, kcs_state, fresh_due, domain, flags) in rows {
             if !super::can_read_domain(&principal, &domain) {
                 continue;
             }
@@ -287,15 +256,10 @@ pub async fn post_kcs_article_publish(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        let (domain, kcs_state): (String, String) = conn
-            .query_row(
-                "SELECT domain, kcs_state FROM knowledge WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| HandlerError::internal(format!("{e}")))?
-            .ok_or_else(|| HandlerError::not_found("article not found"))?;
+        let (domain, kcs_state): (String, String) =
+            crate::workflow::kcs::article_lifecycle_row(&conn, id)
+                .map_err(|e| HandlerError::internal(format!("{e}")))?
+                .ok_or_else(|| HandlerError::not_found("article not found"))?;
         // Row-domain re-auth. Proposing needs Write only — the publish
         // capability is enforced at APPROVAL time, where it belongs.
         super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
@@ -317,13 +281,8 @@ pub async fn post_kcs_article_publish(
             "action": action,
         });
         let now = chrono::Utc::now().timestamp();
-        conn.execute(
-            "INSERT INTO proposals(kind, content, source, novelty, salience, status, created_at)
-             VALUES (?1, ?2, 'operator', 0.0, 0.5, 'pending', ?3)",
-            rusqlite::params![crate::workflow::kcs::KIND_PUBLISH, payload.to_string(), now],
-        )
-        .map_err(|e| HandlerError::internal(format!("insert failed: {e}")))?;
-        let pid = conn.last_insert_rowid();
+        let pid = crate::workflow::kcs::file_publish_proposal(&conn, &payload.to_string(), now)
+            .map_err(HandlerError::internal)?;
         crate::audit::record_tenant(
             &conn,
             crate::audit::AuditKind::Workflow,
@@ -362,29 +321,8 @@ pub async fn get_kcs_article_preview(
     let html: Option<(String, String)> =
         tokio::task::spawn_blocking(move || -> Option<(String, String)> {
             let conn = pool.get().ok()?;
-            let row = conn
-                .query_row(
-                    "SELECT domain, kcs_state, COALESCE(public_slug, ''), COALESCE(title, ''),
-                        content, CAST(COALESCE(strftime('%s', created_at), '0') AS INTEGER),
-                        origin, content_hash
-                 FROM knowledge WHERE id = ?1 AND kcs_state IN ('approved', 'published')",
-                    [id],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                            r.get::<_, String>(3)?,
-                            r.get::<_, String>(4)?,
-                            r.get::<_, i64>(5)?,
-                            r.get::<_, Option<String>>(6)?,
-                            r.get::<_, Option<String>>(7)?,
-                        ))
-                    },
-                )
-                .optional()
-                .ok()?;
-            let (domain, kcs_state, slug, title, content, created_at, origin, hash) = row?;
+            let (domain, kcs_state, slug, title, content, created_at, origin, hash) =
+                crate::workflow::kcs::publishable_article_row(&conn, id).ok()??;
             if !super::can_read_domain(&principal, &domain) {
                 return None;
             }

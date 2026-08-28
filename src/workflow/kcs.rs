@@ -842,6 +842,140 @@ pub(crate) fn stale_translations(conn: &Connection) -> rusqlite::Result<Vec<serd
         .collect())
 }
 
+// ── the article lifecycle: the handler surfaces' reads + writes ───────────
+
+/// One article-lifecycle row: (domain, kcs_state).
+pub(crate) type LifecycleRow = (String, String);
+
+/// One worklist row: (id, title, content, kcs_state, freshness_review_due,
+/// domain, open_flags).
+pub(crate) type WorklistRow = (
+    i64,
+    Option<String>,
+    String,
+    String,
+    Option<i64>,
+    String,
+    i64,
+);
+
+/// One publishable (approved/published) article row: (domain, kcs_state,
+/// public_slug, title, content, created_at, origin, content_hash).
+pub(crate) type PublishableRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+);
+
+/// The article's (domain, kcs_state) — the row fetch the approve/publish
+/// gates run against (row-domain re-auth + state precheck inputs).
+pub(crate) fn article_lifecycle_row(
+    conn: &Connection,
+    id: i64,
+) -> rusqlite::Result<Option<LifecycleRow>> {
+    conn.query_row(
+        "SELECT domain, kcs_state FROM knowledge WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+/// The draft → approved CAS transition (freshness deadline stamped in the
+/// same statement). Returns the affected row count — the CALLER owns the
+/// `n == 0` concurrent-change refusal and the audit row (same connection,
+/// autocommit atomic).
+pub(crate) fn approve_article(
+    conn: &Connection,
+    id: i64,
+    freshness_review_due: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE knowledge SET kcs_state = 'approved', freshness_review_due = ?2
+         WHERE id = ?1 AND kcs_state = 'draft'",
+        params![id, freshness_review_due],
+    )
+}
+
+/// The content-health worklist: every article-carrying row with its open
+/// improve-flag count, newest first, bounded at 500. Stored forms — the
+/// per-row domain filter, the state/stale narrowing, and the read seam all
+/// stay handler-side.
+pub(crate) fn article_worklist(conn: &Connection) -> rusqlite::Result<Vec<WorklistRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT k.id, k.title, k.content, k.kcs_state, k.freshness_review_due, k.domain,
+                (SELECT COUNT(*) FROM findings f
+                  WHERE f.claim = 'kcs_flag' AND f.evidence = 'article:' || k.id) AS open_flags
+         FROM knowledge k
+         WHERE k.kcs_state != 'none'
+         ORDER BY k.id DESC LIMIT 500",
+    )?;
+    let it = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, Option<i64>>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, i64>(6)?,
+        ))
+    })?;
+    it.collect()
+}
+
+/// File a pending `kcs_publish` proposal (publish or retract — the payload
+/// JSON is the caller's; the gate parses it at approval). Source is
+/// 'operator'; the call path's failure text carries the historical message.
+pub(crate) fn file_publish_proposal(
+    conn: &Connection,
+    payload_json: &str,
+    now: i64,
+) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO proposals(kind, content, source, novelty, salience, status, created_at)
+         VALUES (?1, ?2, 'operator', 0.0, 0.5, 'pending', ?3)",
+        params![KIND_PUBLISH, payload_json, now],
+    )
+    .map_err(|e| format!("insert failed: {e}"))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// The EXACT public-page input row for an approved/published article (the
+/// preview renders it with the same function the build uses — what you
+/// approve is byte-identical to what ships). None when the id is not an
+/// approved/published article.
+pub(crate) fn publishable_article_row(
+    conn: &Connection,
+    id: i64,
+) -> rusqlite::Result<Option<PublishableRow>> {
+    conn.query_row(
+        "SELECT domain, kcs_state, COALESCE(public_slug, ''), COALESCE(title, ''),
+                content, CAST(COALESCE(strftime('%s', created_at), '0') AS INTEGER),
+                origin, content_hash
+         FROM knowledge WHERE id = ?1 AND kcs_state IN ('approved', 'published')",
+        params![id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+            ))
+        },
+    )
+    .optional()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

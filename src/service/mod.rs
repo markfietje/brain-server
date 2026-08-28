@@ -111,7 +111,7 @@ mod pins {
         ("compliance.rs", 13),
         ("workflow_lineage.rs", 0),
         ("ump_ops.rs", 0),
-        ("kcs.rs", 8),
+        ("kcs.rs", 0),
         ("valet.rs", 6),
         ("suggest.rs", 6),
         ("forget.rs", 5),
@@ -233,8 +233,11 @@ mod pins {
     /// relations read, the soft-forget block (flag + hash-only tombstone +
     /// in-tx audit), and the consent-denial audit helper + its pin out to
     /// `service::ump_ops`; the row-meta read reuses
-    /// `service::procedure::row_access_meta` — one definition)
-    /// legitimately lowered it to 183 in the
+    /// `service::procedure::row_access_meta` — one definition); then
+    /// kcs.rs 8 → 0 — the article lifecycle (row fetch, the draft→approved
+    /// CAS, the worklist read, the publish-proposal write, the public-page
+    /// row) out to `workflow::kcs` beside propose_translation)
+    /// legitimately lowered it to 175 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -242,7 +245,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 183,
+            sum, 175,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );
