@@ -19,6 +19,203 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.49] — 2026-08-28 — "Terrace": the register surfaces, two cores
+
+The Foundation Line's fourth vein: the BPO register surfaces — the
+`clients` register (CRUD, DPA terms, per-client hold/DSAR/coach/QA/
+termination delegation seams, auditor row filters) and the isolation-
+domain administration (create/delete/vacuum/export/import census + the
+relabel transaction) — converged onto `src/service/register.rs` and
+`src/service/domains_admin.rs`. The pre-service `src/clients.rs` domain
+module folds into the register core (its `HandlerError` leaks become the
+typed `RegisterError`), the handler files shrink to protocol adapters,
+and the domain registry (the pool authority) never crosses the service
+boundary — proven at the type level.
+
+### Release notes
+
+**Bug fixes**
+None.
+
+**Improvements**
+- **The register core** (`service/register.rs`): the `clients` rows
+  (insert with canonical-lowercase storage, the WORM-lite archive flip,
+  `list`/`by_name` reads), the Art-28 DPA-terms round-trip (blank/
+  oversize fenced by `MAX_DPA_FIELD` — the fence now holds of the
+  FUNCTION, re-asserted in `set_dpa_terms`), and the registration fences
+  (`validate_new_client`/`validate_dpa_terms`) as typed variants the
+  handler renders onto the byte-identical wire vocabulary. The
+  per-client DELEGATION seams move with it: `require_active_client`
+  (the by-name resolve + archived refusal every per-client route shares —
+  404 unknown / 409 archived before any domain-pool work), `coach_note`
+  (the QA-note write + its audit row INSIDE the caller's tx — pre-move
+  the update and the audit rode two separate autocommit transactions, a
+  crash window the audit-per-write law closes; pinned by
+  `coach_audits_inside_the_tx` + its rollback twin), and
+  `termination_clause` (the contract-end purge-or-return around the
+  shared purge/DSAR primitives, held ids DEFERRED and reported).
+- **The auditor row filter moves into the core**
+  (`list_for_domain_grants`): a `client-auditor`'s grant list scopes the
+  emitted rows in the service — row-scoping is a service duty, not
+  call-site discipline. The handler's gate (403 on an empty grant set,
+  the per-domain `authorize`) stays in front, byte-identical.
+- **The domain-admin core** (`service/domains_admin.rs`): the shim-mode
+  census (DISTINCT `domain` labels + counts, `unwrap_or(0)` posture kept
+  verbatim), the per-file census + emptiness probe behind create/warm,
+  the domain erasure (legal-hold preflight → multi-db audit-segment
+  export → the FK-ordered sweeps → the `domain_deleted` evidence row
+  INSIDE the caller's tx — pre-move that audit rode after the commit with
+  a `let _ =`, the exact certified-silence form the error-propagation
+  sweep forbids; the erasure and its evidence now commit or roll back
+  together, pinned by `domain_delete_rolls_back_with_its_audit`),
+  `vacuum`, `export_snapshot` (through the shared `backup::vacuum_into`
+  escaper — the quote-escaping and symlink-containment pins stay attached
+  to that primitive verbatim; `domain_export_routes_through_shared_
+  vacuum_escaper` pins that this module keeps calling it, never a
+  hand-rolled literal), and the relabel transaction (moved VERBATIM with
+  its own single-tx atomicity unit and its provenance guarantees).
+- **`handlers/domains.rs` 64 → 0 SQL, `handlers/clients.rs` 44 → 26**
+  (every register statement out; the 26 residue are other surfaces'
+  hold-fence/transfer/remanence pins that fixture on the register — see
+  Ceilings). The frozen debt floor drops 354 → 272 in the same commit
+  that moved the SQL. `src/clients.rs` is GONE — its storage fns, its
+  tests, and its handler seams live in the register core.
+
+**Security fixes**
+- **`register_services_receive_no_registry`:** the compile-time + source
+  proof that the pool authority cannot leak into the register family —
+  every core storage fn coerces to a plain fn pointer taking a connection
+  or transaction FIRST (a future signature that takes the registry, a
+  pool handle, or server state stops compiling), and the production
+  source of both modules never names the registry/transport/handler
+  types.
+- **Auditor isolation re-asserted at the new boundary:**
+  `client_auditor_sees_only_their_domain`,
+  `client_auditor_with_no_granted_domain_sees_nothing`, and the
+  hold-per-client isolation pins moved with their aggregate and stay
+  green; `list_for_domain_grants_scopes_rows_in_the_core` adds the
+  core-level negative (a grant list scopes rows even if a future caller
+  forgets the gate).
+- **The domain-delete hold preflight is structural:** the preflight runs
+  inside the erasure fn on the ids collected in the same tx (the
+  pre-move shape), rendering the identical shared `409 legal_hold_active`
+  envelope with reasons; `domain_delete_refuses_while_holds_active`
+  moved with the aggregate and stays green.
+
+### Engineering record
+
+- **Pin ledger (count delta ≥ 0):** main-binary tests 1010 → 1013 (+3
+  net: NEW pins `register_services_receive_no_registry`,
+  `domain_delete_rolls_back_with_its_audit`,
+  `domain_export_routes_through_shared_vacuum_escaper`,
+  `coach_audits_inside_the_tx` (+ its rollback twin inside the same test),
+  `list_for_domain_grants_scopes_rows_in_the_core`; the `src/clients.rs`
+  unit pins moved verbatim into the register core's test region — the
+  duplicate-register/`profile_not_found`/archive-idempotence/DPA-round-
+  trip/unknown-client-zero assertions assert the typed variants now
+  instead of `HandlerError` fields); the register route pins (per-client
+  DSAR scope + unknown/archived, hold isolation + unknown/archived, shim
+  single-pool no-deadlock, the R6 termination quartet, coach audit,
+  QA-queue owner filter) moved verbatim with their aggregate; the domain
+  pins (shim-delete preserves global tables — now driving the REAL erasure
+  core instead of hand-replayed SQL, so its expected audit count grows by
+  exactly the one in-tx evidence row — relabel provenance, relabel
+  missing-ids) moved with theirs; the recompute-sweep pin repointed to
+  `domain_router.rs`, the module of the code it always tested; the
+  hold-fence pins (forget/tombstone digest, source delete/reconcile, ump
+  hard/soft forget, allow-empty, hold-release DPO dual gate) and the
+  transfer-registration atomicity pin stay in `handlers/clients.rs` —
+  they pin OTHER surfaces and ride with those surfaces' own extractions.
+- **FK-children map** (the erasure law: documented BEFORE the move) lives
+  in the `domains_admin.rs` header: `evidence_links` both arms (NO
+  ACTION — explicit first), `relationships` (SET NULL — explicit first so
+  entities don't orphan), the orphan-`entities` sweep (parents, shared
+  across domains), `embeddings` (CASCADE, auto), `tombstones` (soft ref
+  BY DESIGN), `vec_knowledge` (no FK — explicit), `knowledge_fts`
+  (trigger-cleaned, never hand-deleted), `sources`/`source_revisions`
+  (knowledge is the CHILD; sources' CASCADE takes revisions),
+  `domain_centroids` (domain-keyed), the multi-db wholesale-only tables
+  (`connector_checkpoints`, `webhook_seen`, `webhook_queue`), and the
+  `case_articles`/`kcs_translations` NO ACTION ceilings (shared with the
+  purge core's map — a domain carrying either fails LOUDLY, fail-closed).
+- **Wire artifacts diff-empty:** openapi.yaml, the route-coverage array,
+  and the route-authz table are untouched (no route changes). Schema
+  untouched at 1.28.45. Error bodies byte-preserved via the typed maps:
+  `client not found` (404), `client not active (archived)` (409), `client
+  already exists` (409), the registration-fence 400s with their exact
+  messages, `profile_not_found`, `id_not_found` (`{missing}/{total} ids
+  do not exist`), `confirm_required` (delete AND relabel forms), the
+  shared `legal_hold_active` envelope with reasons, and internal-error
+  bodies carrying the verbatim pre-move statement-prefixed texts
+  (`delete evidence_links failed: `, `relabel failed: `, `VACUUM INTO
+  failed: `, `vacuum failed: `, `archive domain audit: `, `commit
+  failed: ` included). The response JSON shapes (`DomainInfo`, the
+  register rows, `TerminationCertificate`, the hold/QA/coach bodies) are
+  field-for-field identical; the core's census returns a plain
+  `DomainRow` the adapter maps 1:1.
+- **Error-conversion notes (the honest diff):** the pre-move client
+  resolution ran `transfers::list` BEFORE the archived refusal in the
+  DSAR seam; the typed `require_active_client` refusal now precedes the
+  mechanism lookup (a read-order change with no wire effect — the 409
+  body is identical and the lookup was read-only). The `domain_deleted`
+  audit row and the termination audit row moved INSIDE their caller's
+  transactions (byte-identical rows; only the crash-window atomicity
+  changed — the Masonry/Plumb shape), and the audit writer's own
+  fail-safe posture (drop + `/health` alert, never forge) is unchanged.
+- **Gates:** fmt clean; clippy `--all-targets --features bench -D
+  warnings` zero warnings (the fn-pointer signature aliases in the new
+  type-level pin factor the complexity); full suite `--features bench`
+  green (1295 passed, 6 ignored; main-binary 1013 vs 1010, +3). CI
+  dry-run: lint-test (default features) clippy+tests, engine-crates
+  tests+clippy, steward-harness, otel-gate clippy+tests — all green;
+  lipstyk diff-strict clean (one verbose-match in the moved DPA read
+  collapsed to `ok_or_else`); client fmt clean (client/ untouched).
+- **Live smoke on a DB COPY** (multi-db mode, release binary): client
+  add → DPA set/read-back → delegate hold on the client's row →
+  client-scoped DSAR purge: the free row purged (tombstone reason
+  `owner:smoke@client`), the held row DEFERRED with reasons on the
+  certificate, and the other-domain row completely untouched (zero
+  cross-domain tombstones); `/audit/verify ok` on every chain at every
+  step. Domain legs: create (201) → vacuum → export → import round-trip
+  (content-identical clone); export with a single quote in TMPDIR — the
+  exact breakout the escaping pin guards — returned 200 with valid
+  SQLite bytes and zero temp residue; domain delete refused `409
+  legal_hold_active` while held (rows + file intact), then after hold
+  release proceeded: FK-ordered sweep, 0600 pre-deletion archive segment
+  (NULL `prev_hash` serialized, tombstones appended, no `domain_deleted`
+  inside), the evidence row on the preserved chain, file retained in
+  place. Client end with a purge-policy DPA: chunks purged, register row
+  archived, re-end → 409, unknown client → 404 before any pool work.
+- **Ceilings (honest):** `handlers/clients.rs` retains 26 test-region
+  statements — the universal legal-hold fence pins (delete/source/ump
+  bypass paths), the transfer-registration atomicity pin, and the DSAR
+  remanence-posture pin fixture on the register but pin OTHER surfaces
+  (forget/sources/ump/holds/transfers/observe); they are neither register
+  pins nor register-security pins, they cannot move to their surfaces'
+  handler files without regressing those files' frozen baselines, and
+  they ride with those surfaces' own Confluence-line extractions — the
+  register surface itself is fully drained (0 production statements, the
+  route inventory 64 → 0 and 44 → 26 measured by the guard's own
+  counter). `Client`/`DpaTerms` keep their legacy serde derives (they ARE
+  the wire/storage forms — the retention exemplar's ceiling);
+  `relabel_chunks` keeps its verbatim self-contained tx (the whole
+  relabel is its atomicity unit; it owes no audit row); the shim-mode
+  per-client DSAR sweeps the shared DB by subject (pre-existing shim
+  semantics, pinned and unchanged — the multi-db isolation is the scoped
+  contract); the import path embeds no storage logic, so its
+  magic-header/filesystem/registry duties stay at the handler by the
+  layer law (the surface is converged: zero embedded statements remain to
+  move); the multi-db census keeps the per-file open loop and the
+  fail-soft `continue` at the handler (filesystem orchestration, not
+  storage); the register/termination handler audits that already sat
+  AFTER their commits (`if let Ok(conn)` best-effort form) stay
+  handler-side this milestone — closing them is a follow-up, filed, not
+  smuggled into a move.
+
+Predecessor: [1.28.48] — "Masonry": the lifecycle surface, three cores.
+
+---
+
 ## [1.28.48] — 2026-08-28 — "Masonry": the lifecycle surface, three cores
 
 The Foundation Line's third vein: the gate handler's lifecycle families —

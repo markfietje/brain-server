@@ -324,4 +324,64 @@ mod tests {
         let second = route_domain_label(&forced, &embedding, &centroids);
         assert_eq!(first, second, "same content + same centroids → same domain");
     }
+
+    /// the one-shot sweep recomputes every known domain's centroid
+    /// from vec_knowledge and cleans a stale centroid for an emptied domain.
+    /// Driven through the real vec0 + `recompute_all_centroids` path (a Pool is
+    /// required, so this spins up a real pool on a temp file like the M1 tests).
+    /// (v1.28.49: repointed here from the domains handler's test home — the
+    /// pin's subject was always THIS module's sweep.)
+    #[test]
+    fn recompute_sweep_recomputes_all_and_cleans_stale() {
+        crate::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sweep.db");
+        // Schema first on a raw connection (the pool reads the same file).
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+                .expect("migration");
+            conn.execute(
+                "INSERT INTO knowledge(id, content, content_hash, domain) VALUES
+                    (1, 'a', 'a', 'visa')",
+                [],
+            )
+            .unwrap();
+            let v: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
+            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            conn.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (1, vec_quantize_int8(?1, 'unit'), vec_quantize_binary(?1), 'test', datetime('now'))",
+                rusqlite::params![blob],
+            )
+            .unwrap();
+            // A stale centroid for a domain with zero rows must be cleaned.
+            conn.execute(
+                "INSERT INTO domain_centroids (domain, centroid, count) VALUES ('dead', X'ABCD', 3)",
+                [],
+            )
+            .unwrap();
+        }
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .build(r2d2_sqlite::SqliteConnectionManager::file(&path))
+            .expect("pool build");
+        let out = crate::domain_router::recompute_all_centroids(&pool).unwrap();
+        let rows: std::collections::BTreeMap<String, usize> = out.into_iter().collect();
+        assert_eq!(rows.get("visa"), Some(&1), "visa recomputed from vec0");
+        assert_eq!(
+            rows.get("dead"),
+            Some(&0),
+            "emptied domain processed with count 0 (centroid cleaned)"
+        );
+        let dead_rows: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM domain_centroids WHERE domain='dead'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(dead_rows, 0, "stale centroid deleted");
+    }
 }

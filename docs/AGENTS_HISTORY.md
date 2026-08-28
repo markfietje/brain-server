@@ -8,6 +8,45 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.48 "Masonry" shipped 2026-08-28** — the
+> lifecycle surface converges: the gate handler's decay + GDPR families
+> move into `src/service/lifecycle/{decay,purge,fetch}.rs` — `/decayed` as
+> ONE unit (the SQL-superset WHERE + the Rust-side arbiter travel together;
+> the SQL never decides a row — pinned by
+> `sql_superset_plus_rust_arbiter_move_together`), `/purge` by-ids/by-owner
+> (by-owner sweep + legal-hold preflight inside ONE tx around the Quarry
+> primitive; the evidence audit now rides the SAME tx — its one intended
+> fail-path delta, pinned by `lifecycle_purge_audits_inside_the_tx`;
+> negative-reach invalidation = the primitive's in-tx `recall_traces`
+> deletes + tombstone, re-asserted), and the by-id/batch read projections
+> (`/get/{id}` + `/multi-get` row loads from the router file + the shared
+> `KNOWLEDGE_ROW_COLS` projection out of gate.rs; services return STORED
+> forms — the read seam, row-domain re-authz, and record gate stay at the
+> emission boundary). The plan-vs-tree reconciliation is in CHANGELOG
+> §[1.28.48]: the roadmap priced gate.rs at 84 (frozen: 83) and put
+> get/multi-get "in one file" (they live in main.rs); the proposal family
+> + `/export` stay in gate.rs for a later milestone — the seam-library
+> end-state is NOT reached here. NEW pins: `lifecycle_module_has_no_http_
+> types` (walks the lifecycle SUBTREE — also closes the general grep's
+> non-recursive blind spot), the pairing pin, 5 lifecycle-purge pins, 3
+> fetch pins, the decay bounds pin; the 3 `/decayed` unit pins moved
+> verbatim with their aggregate; the seam meta-test site list takes
+> `get_chunk` + `multi_get`. Pins 1003 → 1010 (+7). Wire artifacts
+> byte-identical (openapi.yaml diff-empty); schema untouched at 1.28.45.
+> gate.rs 83 → 78 (debt floor 359 → 354, same commit as the move);
+> `legal_hold::active_hold_ids` retyped to `rusqlite::Error` (Quarry
+> convention); `MAX_PURGE_IDS` moved to config.rs so the service shares the
+> fence without naming a handler module. Full suite 1290 passed / 6
+> ignored. Live smoke on a DB COPY, v1.28.46 vs v1.28.48 side by side:
+> `/decayed` pagination byte-identical; hold-refusal `409
+> legal_hold_active` byte-identical; `/get/{id}` + `/multi-get`
+> byte-identical for loopback AND for a non-admin JWT reader (both redact
+> PII to `[redacted:email][redacted:phone]`); `/audit/verify ok` at every
+> step. Ceilings: moved rows stay legacy `serde_json::Value` shapes;
+> handler-side `DecayedQuery`/`PurgeRequest` stay HTTP types; no export/
+> proposal extraction this milestone. See CHANGELOG.md §[1.28.48].
+> Predecessor: v1.28.47 "Quarry" (below).
+
 > **Version note:** **v1.28.47 "Quarry" shipped 2026-08-28** — the rights
 > surface converges: the ENTIRE DSAR storage story (locate / export bundle /
 > purge / certificate / ledger composition) moved out of `handlers/observe.rs`

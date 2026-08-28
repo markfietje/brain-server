@@ -1,3 +1,15 @@
+//! the isolation-domain administration surface (HTTP).
+//!
+//! The storage story lives in [`crate::service::domains_admin`] (create/
+//! delete/vacuum/export census + erasure + the relabel transaction). This
+//! file is the protocol adapter — parse → gate → `spawn_blocking` → core
+//! call → typed-error mapping → response — plus the two pieces that are NOT
+//! storage and therefore stay: the FILESYSTEM orchestration (the multi-db
+//! census's per-file open loop, the import's temp-write/atomic-rename) and
+//! the registry/pool-authority calls (`register`, `pool_for`), which never
+//! cross the service boundary. Every mutation is Admin-gated + hash-chained
+//! into the audit.
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -8,7 +20,6 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
-use rusqlite::{Connection, params};
 
 #[derive(Debug, Serialize)]
 pub struct DomainInfo {
@@ -54,6 +65,34 @@ pub struct RecomputeResponse {
     pub recomputed: Vec<(String, usize)>,
 }
 
+/// The handler-boundary map for the domain-admin core: storage failures
+/// render the internal-error body with the verbatim pre-move message
+/// (statement-specific prefixes included); the hold preflight renders the
+/// exact shared `409 legal_hold_active` envelope every erasure route emits;
+/// the relabel variants render the pre-move 400 vocabulary byte for byte.
+impl From<crate::service::domains_admin::DomainAdminError> for HandlerError {
+    fn from(e: crate::service::domains_admin::DomainAdminError) -> Self {
+        use crate::service::domains_admin::DomainAdminError as E;
+        match e {
+            E::Database(m) => HandlerError::internal(m),
+            E::LegalHold(held) => HandlerError::conflict_with(
+                "legal_hold_active",
+                "one or more ids are under legal hold",
+                serde_json::json!({ "held": held }),
+            ),
+            E::MissingIds { missing, total } => HandlerError::bad_request(
+                "id_not_found",
+                format!("{missing}/{total} ids do not exist"),
+            ),
+            E::ConfirmRequired => HandlerError::bad_request_with(
+                "confirm_required",
+                "moving rows out of 'global' requires ?confirm=global",
+                serde_json::json!({ "domain": "global" }),
+            ),
+        }
+    }
+}
+
 /// `GET /domains` — list domains with per-domain counts.
 ///
 /// In shim mode (single-DB) this groups by the `domain` column.
@@ -71,57 +110,23 @@ pub async fn domains(
         // In shim mode the registry's `known_domains()` enumerates files, which
         // is meaningless (the global brain.db's filename leaks in as a fake
         // "domain"). The truth in shim mode is the DISTINCT set of values in
-        // the `domain` column on `knowledge`. In multi-db mode each per-domain
-        // file is a real domain; we use the file list.
+        // the `domain` column on `knowledge` (the core's census). In multi-db
+        // mode each per-domain file is a real domain; we use the file list.
         let mut out = Vec::new();
         if !multi_db {
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            // Always include `global` (covers the NULL / 'global' case) + every
-            // distinct non-NULL domain value present in the data.
-            let mut names: Vec<String> = vec!["global".to_string()];
-            let mut stmt = conn
-                .prepare("SELECT DISTINCT domain FROM knowledge WHERE domain IS NOT NULL")
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, String>(0))
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for r in rows.flatten() {
-                if r != "global" {
-                    names.push(r);
-                }
-            }
-            names.sort();
-            names.dedup();
-            let total_entities: i64 = conn
-                .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
-                .unwrap_or(0);
-            let total_relations: i64 = conn
-                .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
-                .unwrap_or(0);
-            for name in &names {
-                let entries: i64 = conn
-                    .query_row(
-                        // `global` covers its own rows + any NULL-domain legacy rows.
-                        "SELECT COUNT(*) FROM knowledge
-                         WHERE domain = ?1 OR (?1 = 'global' AND domain IS NULL)",
-                        params![name],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(0);
-                out.push(DomainInfo {
-                    name: name.clone(),
-                    entries,
-                    // ponytail: per-domain entity/relation counts in shim mode need a
-                    // JOIN through relationships.knowledge_id → knowledge.domain.
-                    // For now we report the global total (clearly labeled as such via
-                    // multi_db=false); true per-domain counts land with multi-db files.
-                    entities: total_entities,
-                    relations: total_relations,
-                    multi_db,
-                });
-            }
+            out = crate::service::domains_admin::shim_domain_rows(&conn)?
+                .into_iter()
+                .map(|r| DomainInfo {
+                    name: r.name,
+                    entries: r.entries,
+                    entities: r.entities,
+                    relations: r.relations,
+                    multi_db: r.multi_db,
+                })
+                .collect();
         } else {
             // Multi-db: open a connection to each per-domain file.
             // ponytail: opens N connections sequentially; upgrade to parallel if > 100 domains.
@@ -136,15 +141,8 @@ pub async fn domains(
                 let Ok(conn) = rusqlite::Connection::open(&path) else {
                     continue;
                 };
-                let entries: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
-                    .unwrap_or(0);
-                let entities: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
-                    .unwrap_or(0);
-                let relations: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
-                    .unwrap_or(0);
+                let (entries, entities, relations) =
+                    crate::service::domains_admin::file_domain_counts(&conn);
                 out.push(DomainInfo {
                     name: name.clone(),
                     entries,
@@ -178,7 +176,8 @@ pub async fn create_domain(
 
     // registration is the ONE creation path —
     // this is the only place a domain file comes into being (cap-bounded in
-    // multi-db; warm no-op over the shared pool in shim mode).
+    // multi-db; warm no-op over the shared pool in shim mode). The pool
+    // authority never crosses the service boundary.
     let pool = state
         .registry
         .register(&name)
@@ -188,10 +187,7 @@ pub async fn create_domain(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
-            .unwrap_or(0);
-        Ok(count == 0)
+        Ok(crate::service::domains_admin::is_empty_store(&conn))
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -214,7 +210,10 @@ pub async fn create_domain(
 ///
 /// Drops all data for the domain. The `global` domain is protected. The
 /// caller must echo the domain name as `?confirm=<name>` so a
-/// typoed URL or replay can't destroy data by accident.
+/// typoed URL or replay can't destroy data by accident. The erasure
+/// itself (hold preflight → audit-segment export → the FK-ordered sweeps →
+/// the in-tx `domain_deleted` evidence row) is the core's
+/// `delete_domain_data`, inside the tx this adapter opens.
 pub async fn delete_domain(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -249,7 +248,6 @@ pub async fn delete_domain(
         .pool_for(&name)
         .map_err(super::map_domain_error)?;
     let name_for_response = name.clone();
-    let name_for_audit = name.clone();
     let root = state.db_path.parent().map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
@@ -261,130 +259,9 @@ pub async fn delete_domain(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
-        // a domain holding any actively-held chunk
-        // refuses deletion entirely (all-or-nothing). The operator must release
-        // every hold or scope the delete before the domain can go.
-        {
-            let ids: Vec<i64> = if multi_db {
-                let mut stmt = tx
-                    .prepare("SELECT id FROM knowledge")
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                let rows = stmt
-                    .query_map([], |r| r.get::<_, i64>(0))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                rows.filter_map(|r| r.ok()).collect()
-            } else {
-                let mut stmt = tx
-                    .prepare("SELECT id FROM knowledge WHERE domain = ?1")
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                let rows = stmt
-                    .query_map(params![name], |r| r.get::<_, i64>(0))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                rows.filter_map(|r| r.ok()).collect()
-            };
-            crate::legal_hold::refuse_if_held(&tx, &ids)?;
-        }
-        if multi_db {
-            // export the domain's audit segment
-            // before erasure so the chain survives as an operator-reviewable
-            // artifact, then preserve it in the live file too (never unlink).
-            export_audit_segment(
-                &tx,
-                &name,
-                if let Some(r) = &root {
-                    r.as_path()
-                } else {
-                    std::path::Path::new(".")
-                },
-            )
-            .map_err(|e| HandlerError::internal(format!("archive domain audit: {e}")))?;
-            // Multi-db: the pool IS this domain's own DB. Every table in it is
-            // scoped to this domain — clear them all. Order respects FKs:
-            // evidence_links → relationships → knowledge (FK target) → rest.
-            // `audit_events` is deliberately NOT deleted: the immutible chain
-            // must survive a domain delete.
-            tx.execute_batch(
-                "DELETE FROM evidence_links;
-                 DELETE FROM relationships;
-                 DELETE FROM knowledge;
-                 DELETE FROM entities;
-                 DELETE FROM tombstones;
-                 DELETE FROM sources;
-                 DELETE FROM source_revisions;
-                 DELETE FROM connector_checkpoints;
-                 DELETE FROM webhook_seen;
-                 DELETE FROM webhook_queue;
-                 DELETE FROM domain_centroids;
-                 DELETE FROM knowledge_fts;
-                 DELETE FROM vec_knowledge;",
-            )
-            .map_err(|e| HandlerError::internal(format!("delete domain data failed: {e}")))?;
-        } else {
-            // Shim mode: the pool is the GLOBAL shared DB. Delete ONLY this
-            // domain's rows. `audit_events` has no domain column → leave it
-            // untouched (the immutable audit log MUST survive a domain delete).
-            // `domain_centroids` is keyed by domain → delete just this one.
-            tx.execute(
-                "DELETE FROM evidence_links WHERE from_chunk IN
-                 (SELECT id FROM knowledge WHERE domain = ?1)
-                 OR to_chunk IN
-                 (SELECT id FROM knowledge WHERE domain = ?1)",
-                params![name],
-            )
-            .map_err(|e| HandlerError::internal(format!("delete evidence_links failed: {e}")))?;
-            tx.execute(
-                "DELETE FROM relationships WHERE knowledge_id IN
-                 (SELECT id FROM knowledge WHERE domain = ?1)",
-                params![name],
-            )
-            .map_err(|e| HandlerError::internal(format!("delete relationships failed: {e}")))?;
-            // Entities: only delete entities no longer referenced by any
-            // relationship in any domain (an entity may be shared across domains).
-            tx.execute(
-                "DELETE FROM entities WHERE id NOT IN
-                 (SELECT from_entity_id FROM relationships)
-                 AND id NOT IN
-                 (SELECT to_entity_id FROM relationships)",
-                [],
-            )
-            .map_err(|e| HandlerError::internal(format!("delete orphan entities failed: {e}")))?;
-            // Tombstones + sources tied to this domain's chunks.
-            tx.execute(
-                "DELETE FROM tombstones WHERE knowledge_id IN
-                 (SELECT id FROM knowledge WHERE domain = ?1)",
-                params![name],
-            )
-            .map_err(|e| HandlerError::internal(format!("delete tombstones failed: {e}")))?;
-            // Knowledge rows (FK source for relationships — already cleared).
-            tx.execute(
-                "DELETE FROM vec_knowledge WHERE knowledge_id IN
-                 (SELECT id FROM knowledge WHERE domain = ?1)",
-                params![name],
-            )
-            .map_err(|e| HandlerError::internal(format!("delete vec_knowledge failed: {e}")))?;
-            tx.execute("DELETE FROM knowledge WHERE domain = ?1", params![name])
-                .map_err(|e| HandlerError::internal(format!("delete knowledge failed: {e}")))?;
-            // FTS5 shadow rows for the deleted knowledge ids are cleaned by the
-            // FTS5 trigger on knowledge DELETE, so no explicit DELETE there.
-            // Domain centroids: drop just this domain's centroid.
-            tx.execute(
-                "DELETE FROM domain_centroids WHERE domain = ?1",
-                params![name],
-            )
-            .map_err(|e| HandlerError::internal(format!("delete centroid failed: {e}")))?;
-        }
+        crate::service::domains_admin::delete_domain_data(&tx, &name, multi_db, root.as_deref())?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
-        // record the deletion on the surviving chain (the global
-        // chain in shim mode; the domain's own preserved chain in multi-db).
-        let _ = crate::audit::record(
-            &conn,
-            crate::audit::AuditKind::Reconcile,
-            "operator",
-            &name_for_audit,
-            crate::audit::AuditStatus::Ok,
-            "domain_deleted",
-        );
         // VACUUM must run outside any transaction. Best-effort: failure here
         // means the file isn't defragmented but the data is gone.
         let _ = conn.execute_batch("VACUUM;");
@@ -425,9 +302,7 @@ pub async fn vacuum_domain(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        conn.execute_batch("VACUUM;")
-            .map_err(|e| HandlerError::internal(format!("vacuum failed: {e}")))?;
-        Ok(())
+        Ok(crate::service::domains_admin::vacuum(&conn)?)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -439,9 +314,10 @@ pub async fn vacuum_domain(
 }
 
 /// `GET /domains/{name}/export` — stream a consistent snapshot of the domain's
-/// `.db` file. Uses SQLite's `VACUUM INTO` to produce a defragmented, WAL-free
-/// copy on a temp path and streams that. Avoids reading the live file directly
-/// (WAL pages would be missed; concurrent writes could corrupt the read).
+/// `.db` file. The core's `export_snapshot` produces a defragmented, WAL-free
+/// copy via SQLite's `VACUUM INTO` on a temp path and reads it back; this
+/// adapter streams it. Avoids reading the live file directly (WAL pages would
+/// be missed; concurrent writes could corrupt the read).
 ///
 /// Content type is `application/octet-stream` with a
 /// `Content-Disposition: attachment; filename="brain-<domain>.db"` header.
@@ -475,24 +351,9 @@ pub async fn export_domain(
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            let temp = std::env::temp_dir().join(format!(
-                "brain-export-{}-{}.db",
-                name,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0)
-            ));
-            // VACUUM INTO writes a consistent snapshot to `temp` without holding
-            // a write lock on the source. Safe under concurrent writes.
-            // Through the shared quote-escaping primitive — the raw
-            // `format!` literal here could break out on a `'` in TMPDIR.
-            brain_server::backup::vacuum_into(&conn, &temp)
-                .map_err(|e| HandlerError::internal(format!("VACUUM INTO failed: {e}")))?;
-            let bytes = std::fs::read(&temp)
-                .map_err(|e| HandlerError::internal(format!("read export: {e}")))?;
-            let _ = std::fs::remove_file(&temp);
-            Ok((bytes, format!("brain-{name}.db")))
+            Ok(crate::service::domains_admin::export_snapshot(
+                &conn, &name,
+            )?)
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -524,6 +385,12 @@ pub async fn export_domain(
 /// - Bytes are written to a temp path and atomically renamed, then opened.
 ///
 /// Returns 201 with `{ "name": ..., "imported": true, "bytes": N }`.
+///
+/// Ceiling (honest): the import path embeds NO storage logic — its
+/// duties are the magic-header check, the filesystem write/rename, and the
+/// registry `register` (pool authority), all of which stay at the handler by
+/// the layer law. The surface is converged: zero embedded statements remain
+/// in this file to move.
 pub async fn import_domain(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -627,6 +494,7 @@ pub async fn import_domain(
 /// Guards: `to` may not be `global` (the fallback bucket); moving rows OUT of
 /// `global` requires `?confirm=global` (typo-replay protection, mirror of the
 /// delete guard). Each id must exist. Bounded by `MAX_MULTI_GET`/call.
+/// The relabel tx itself is the core's `relabel_chunks`.
 pub async fn move_domains(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -665,14 +533,17 @@ pub async fn move_domains(
     let to_c = to.clone();
     let ids = req.ids;
 
-    let (moved, from_domains) = tokio::task::spawn_blocking(move || {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        relabel_chunks(&mut conn, &ids, &to_c, &confirm)
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    let (moved, from_domains) =
+        tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>), HandlerError> {
+            let mut conn = pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            Ok(crate::service::domains_admin::relabel_chunks(
+                &mut conn, &ids, &to_c, &confirm,
+            )?)
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     // Recompute centroids for every domain touched so routing sees the move.
     // Best-effort: a centroid failure must not fail an otherwise-successful move.
@@ -714,422 +585,4 @@ pub async fn recompute_domains(
             .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?
             .map_err(|e| HandlerError::internal(format!("recompute sweep failed: {e}")))?;
     Ok(Json(RecomputeResponse { recomputed: result }))
-}
-
-/// The relabel transaction core of `move_domains`, extracted for testability.
-/// Validates every id exists, derives the source domains, enforces the
-/// `?confirm=global` guard when draining the fallback bucket, then relabels in
-/// ONE transaction (only rows currently in a different domain; provenance
-/// fields `source`/`authority`/`observed_at` are untouched). Returns the
-/// number actually moved + the distinct source domains.
-pub(crate) fn relabel_chunks(
-    conn: &mut Connection,
-    ids: &[i64],
-    to: &str,
-    confirm: &str,
-) -> Result<(usize, Vec<String>), HandlerError> {
-    let ph = std::iter::repeat_n("?", ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-
-    // Validate every id exists before touching anything (provenance safety).
-    let existing: i64 = conn
-        .query_row(
-            &format!("SELECT COUNT(*) FROM knowledge WHERE id IN ({ph})"),
-            rusqlite::params_from_iter(ids.iter()),
-            |r| r.get(0),
-        )
-        .map_err(|e| HandlerError::internal(format!("id check failed: {e}")))?;
-    if existing as usize != ids.len() {
-        return Err(HandlerError::bad_request(
-            "id_not_found",
-            format!(
-                "{}/{} ids do not exist",
-                ids.len() - existing as usize,
-                ids.len()
-            ),
-        ));
-    }
-
-    // Source domains involved; draining `global` needs ?confirm=global.
-    let mut from_domains: Vec<String> = Vec::new();
-    {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT DISTINCT domain FROM knowledge WHERE id IN ({ph})"
-            ))
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-                r.get::<_, String>(0)
-            })
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        for r in rows.flatten() {
-            from_domains.push(r);
-        }
-    }
-    if from_domains.iter().any(|d| d == "global") && confirm != "global" {
-        return Err(HandlerError::bad_request_with(
-            "confirm_required",
-            "moving rows out of 'global' requires ?confirm=global",
-            serde_json::json!({ "domain": "global" }),
-        ));
-    }
-
-    // One tx: relabel only rows currently in a different domain.
-    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids.len() + 1);
-    params_vec.push(Box::new(to.to_string()));
-    for id in ids {
-        params_vec.push(Box::new(*id));
-    }
-    let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-    let tx = conn
-        .transaction()
-        .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
-    let changed = tx
-        .execute(
-            &format!("UPDATE knowledge SET domain = ?1 WHERE id IN ({ph}) AND domain != ?1"),
-            param_refs.as_slice(),
-        )
-        .map_err(|e| HandlerError::internal(format!("relabel failed: {e}")))?;
-    tx.commit()
-        .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
-    Ok((changed, from_domains))
-}
-
-/// stream a domain's audit segment to `<layout>/archives/<domain>-audit-<date>.ndjson`
-/// (0600) before its rows are erased, so the deletion registry survives as an
-/// operator-reviewable artifact. The path is derived from the data root the
-/// handler threads in (`state.db_path`'s parent — the same root
-/// `StorageLayout::detect()` resolves in production, without the env
-/// dependence that would race tests). Only meaningful in multi-db mode (the
-/// whole file is the domain's); shim-mode audit is global.
-fn export_audit_segment(
-    tx: &rusqlite::Transaction<'_>,
-    domain: &str,
-    root: &std::path::Path,
-) -> Result<std::path::PathBuf, anyhow::Error> {
-    let archives = root.join("archives");
-    std::fs::create_dir_all(&archives)?;
-    let epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = archives.join(format!("{domain}-audit-{epoch}.ndjson"));
-    let mut stmt = tx.prepare(
-        "SELECT id, ts, kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash
-           FROM audit_events ORDER BY id",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        // NULLable columns read as Option — the chain's FIRST row has a NULL
-        // prev_hash (and legacy rows NULL actors); a bare String read would
-        // drop it at the flatten boundary. Nulls serialize as JSON null.
-        Ok(serde_json::json!({
-            "id": r.get::<_, i64>(0)?,
-            "ts": r.get::<_, String>(1)?,
-            "kind": r.get::<_, String>(2)?,
-            "actor": r.get::<_, Option<String>>(3)?,
-            "target_hash": r.get::<_, Option<String>>(4)?,
-            "status": r.get::<_, Option<String>>(5)?,
-            "detail_hash": r.get::<_, Option<String>>(6)?,
-            "tenant_id": r.get::<_, Option<String>>(7)?,
-            "prev_hash": r.get::<_, Option<String>>(8)?,
-        }))
-    })?;
-    use std::io::Write;
-    let mut out = std::fs::File::create(&path)?;
-    // 0600 explicitly — `File::create` honors the process umask (this is a
-    // deletion-judgment artifact an operator reviews; same posture as the
-    // auth-token rotate path).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        out.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    for row in rows.flatten() {
-        writeln!(out, "{row}")?;
-    }
-    // The deletion registry is evidence too — tombstones
-    // (SHA-256 content digests of purged chunks) + evidence_links were
-    // previously destroyed by the delete the segment was supposed to
-    // memorialize. Append them to the same operator artifact.
-    let mut ts = tx.prepare(
-        "SELECT knowledge_id, document_id, content_hash, reason, origin_id, deleted_at, purged_at \
-           FROM tombstones ORDER BY knowledge_id",
-    )?;
-    let ts_rows = ts.query_map([], |r| {
-        Ok(serde_json::json!({
-            "knowledge_id": r.get::<_, i64>(0)?,
-            "document_id": r.get::<_, Option<String>>(1)?,
-            "content_hash": r.get::<_, Option<String>>(2)?,
-            "reason": r.get::<_, Option<String>>(3)?,
-            "origin_id": r.get::<_, Option<i64>>(4)?,
-            "deleted_at": r.get::<_, Option<String>>(5)?,
-            "purged_at": r.get::<_, Option<i64>>(6)?,
-        }))
-    })?;
-    for row in ts_rows.flatten() {
-        writeln!(out, "{{\"segment\":\"tombstones\",\"row\":{row}}}")?;
-    }
-    let mut el = tx.prepare(
-        "SELECT from_chunk, to_chunk, kind, created_at FROM evidence_links ORDER BY from_chunk, to_chunk",
-    )?;
-    let el_rows = el.query_map([], |r| {
-        Ok(serde_json::json!({
-            "from_chunk": r.get::<_, i64>(0)?,
-            "to_chunk": r.get::<_, i64>(1)?,
-            "kind": r.get::<_, Option<String>>(2)?,
-            "created_at": r.get::<_, Option<String>>(3)?,
-        }))
-    })?;
-    for row in el_rows.flatten() {
-        writeln!(out, "{{\"segment\":\"evidence_links\",\"row\":{row}}}")?;
-    }
-    Ok(path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// domains' centroids. This is the critical-correctness bug caught in the
-    /// second-pass review: an earlier draft did `DELETE FROM audit_events`
-    /// (no WHERE clause) which would have wiped the immutable audit trail when
-    /// any single domain was deleted.
-    #[test]
-    fn delete_domain_shim_mode_sql_preserves_global_tables() {
-        // We can't easily spin up axum in a unit test, so we exercise the SQL
-        // shape against a real in-memory DB with the v0.9.9 schema.
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
-            .expect("migration");
-
-        // Seed two domains + global audit + a global centroid.
-        for (domain, n) in [("health", 1), ("business", 2)] {
-            for i in 0..n {
-                conn.execute(
-                    "INSERT INTO knowledge (title, content, source, content_hash, domain)
-                     VALUES (?1, ?2, 'structured', ?3, ?4)",
-                    params![
-                        format!("{domain}{i}"),
-                        format!("content {i}"),
-                        format!("h{domain}{i}"),
-                        domain
-                    ],
-                )
-                .unwrap();
-            }
-        }
-        // An unrelated audit row (must survive a domain delete).
-        conn.execute(
-            "INSERT INTO audit_events (kind, actor, target_hash, status)
-             VALUES ('auth', 'tester', 'abcdef', 'allowed')",
-            [],
-        )
-        .unwrap();
-        // Two domain centroids (only the deleted domain's should go).
-        conn.execute(
-            "INSERT INTO domain_centroids (domain, centroid, count) VALUES ('health', X'AABB', 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO domain_centroids (domain, centroid, count) VALUES ('business', X'CCDD', 2)",
-            [],
-        )
-        .unwrap();
-
-        // Execute the EXACT shim-mode delete SQL the handler runs for `health`.
-        let tx = conn.transaction().unwrap();
-        let name = "health";
-        tx.execute(
-            "DELETE FROM relationships WHERE knowledge_id IN
-             (SELECT id FROM knowledge WHERE domain = ?1)",
-            params![name],
-        )
-        .unwrap();
-        tx.execute("DELETE FROM knowledge WHERE domain = ?1", params![name])
-            .unwrap();
-        tx.execute(
-            "DELETE FROM domain_centroids WHERE domain = ?1",
-            params![name],
-        )
-        .unwrap();
-        tx.commit().unwrap();
-
-        // Audit log is IMMUTABLE — must be untouched.
-        let audit_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(
-            audit_count, 1,
-            "global audit_events must survive a domain delete"
-        );
-
-        // Other domains' centroids must survive.
-        let biz_centroids: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM domain_centroids WHERE domain = 'business'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(biz_centroids, 1, "other domains' centroids must survive");
-
-        // Deleted domain's rows gone; other domains' rows intact.
-        let health_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE domain = 'health'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let business_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE domain = 'business'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(health_rows, 0, "deleted domain's rows are gone");
-        assert_eq!(business_rows, 2, "other domains' rows are intact");
-    }
-
-    /// the relabel core moves only the requested ids into the target
-    /// domain, reports the distinct source domains, and leaves provenance
-    /// fields (`source`/`authority`/`observed_at`) untouched. Draining rows OUT
-    /// of the fallback bucket requires `?confirm=global`.
-    #[test]
-    fn relabel_chunks_moves_rows_and_preserves_provenance() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
-            .expect("migration");
-
-        let mut global_ids = Vec::new();
-        for i in 0..2 {
-            conn.execute(
-                "INSERT INTO knowledge (title, content, source, content_hash, domain)
-                 VALUES (?1, ?2, 'structured', ?3, 'global')",
-                params![
-                    format!("g{i}"),
-                    format!("global content {i}"),
-                    format!("hg{i}")
-                ],
-            )
-            .unwrap();
-            global_ids.push(conn.last_insert_rowid());
-        }
-        conn.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash, domain)
-             VALUES ('b0', 'biz', 'structured', 'hb0', 'business')",
-            [],
-        )
-        .unwrap();
-
-        // No confirm -> draining global is refused.
-        let err = super::relabel_chunks(&mut conn, &global_ids, "business", "").unwrap_err();
-        assert_eq!(
-            err.inner.code, "confirm_required",
-            "got: {:?}",
-            err.inner.code
-        );
-
-        // With confirm -> both rows move; business rows untouched.
-        let (moved, from) =
-            super::relabel_chunks(&mut conn, &global_ids, "business", "global").unwrap();
-        assert_eq!(moved, 2);
-        assert_eq!(from, vec!["global".to_string()]);
-
-        let biz_rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE domain = 'business' AND id IN (?, ?)",
-                params![global_ids[0], global_ids[1]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(biz_rows, 2, "relabeled rows now live in the target domain");
-        // Provenance preserved.
-        let src: String = conn
-            .query_row(
-                "SELECT source FROM knowledge WHERE id = ?1",
-                params![global_ids[0]],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(src, "structured", "provenance field untouched by relabel");
-    }
-
-    #[test]
-    fn relabel_chunks_rejects_missing_ids() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
-            .expect("migration");
-        let err = super::relabel_chunks(&mut conn, &[999999], "business", "global").unwrap_err();
-        assert_eq!(
-            err.inner.code, "id_not_found",
-            "expected id_not_found, got: {:?}",
-            err.inner.code
-        );
-    }
-
-    /// the one-shot sweep recomputes every known domain's centroid
-    /// from vec_knowledge and cleans a stale centroid for an emptied domain.
-    /// Driven through the real vec0 + `recompute_all_centroids` path (a Pool is
-    /// required, so this spins up a real pool on a temp file like the M1 tests).
-    #[test]
-    fn recompute_sweep_recomputes_all_and_cleans_stale() {
-        crate::register_sqlite_vec();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sweep.db");
-        // Schema first on a raw connection (the pool reads the same file).
-        {
-            let mut conn = rusqlite::Connection::open(&path).unwrap();
-            brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
-                .expect("migration");
-            conn.execute(
-                "INSERT INTO knowledge(id, content, content_hash, domain) VALUES
-                    (1, 'a', 'a', 'visa')",
-                [],
-            )
-            .unwrap();
-            let v: Vec<f32> = (0..512).map(|i| (i as f32 * 0.01).sin()).collect();
-            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-            conn.execute(
-                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
-                 VALUES (1, vec_quantize_int8(?1, 'unit'), vec_quantize_binary(?1), 'test', datetime('now'))",
-                rusqlite::params![blob],
-            )
-            .unwrap();
-            // A stale centroid for a domain with zero rows must be cleaned.
-            conn.execute(
-                "INSERT INTO domain_centroids (domain, centroid, count) VALUES ('dead', X'ABCD', 3)",
-                [],
-            )
-            .unwrap();
-        }
-        let pool: crate::Pool = r2d2::Pool::builder()
-            .build(r2d2_sqlite::SqliteConnectionManager::file(&path))
-            .expect("pool build");
-        let out = crate::domain_router::recompute_all_centroids(&pool).unwrap();
-        let rows: std::collections::BTreeMap<String, usize> = out.into_iter().collect();
-        assert_eq!(rows.get("visa"), Some(&1), "visa recomputed from vec0");
-        assert_eq!(
-            rows.get("dead"),
-            Some(&0),
-            "emptied domain processed with count 0 (centroid cleaned)"
-        );
-        let dead_rows: i64 = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM domain_centroids WHERE domain='dead'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(dead_rows, 0, "stale centroid deleted");
-    }
 }

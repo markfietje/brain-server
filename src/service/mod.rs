@@ -62,9 +62,11 @@
 //! does not force pace — progress between milestones may be zero without
 //! failing CI.
 
+pub mod domains_admin;
 pub mod dsar;
 pub mod lifecycle;
 pub mod purge;
+pub mod register;
 pub mod retention;
 
 #[cfg(test)]
@@ -95,8 +97,8 @@ mod pins {
     const SQL_BASELINE: &[(&str, usize)] = &[
         ("gate.rs", 78),
         ("observe.rs", 0),
-        ("domains.rs", 64),
-        ("clients.rs", 44),
+        ("domains.rs", 0),
+        ("clients.rs", 26),
         ("workflow.rs", 23),
         ("ingest.rs", 22),
         ("govern.rs", 18),
@@ -201,14 +203,19 @@ mod pins {
     /// cores) legitimately lowered it to 359; the Masonry extraction (the
     /// lifecycle family: `/decayed`, `/purge` orchestration, the by-id/batch
     /// fetch projections out of gate.rs) legitimately lowered it to 354 in
-    /// the SAME commit that moved the SQL. A table edit that
+    /// the SAME commit that moved the SQL; the Terrace extraction (the
+    /// the register surfaces: domains.rs 64 → 0 — every statement out — and
+    /// clients.rs 44 → 26 — every register statement out; the residue is
+    /// other surfaces' hold-fence/transfer pins that fixture on the
+    /// register) legitimately lowered it to 272 in the SAME commit that
+    /// moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
     #[test]
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 354,
+            sum, 272,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );
@@ -252,6 +259,109 @@ mod pins {
                     "layer violation in src/service{display}: production source names \
                      the transport type `{token}` — services take connections and \
                      return domain types; map to HTTP at the handler boundary"
+                );
+            }
+        }
+    }
+
+    /// v1.28.49 "Terrace" — the register surfaces' compile-time + source
+    /// proof that the pool authority cannot leak into the register family:
+    ///
+    /// 1. TYPE-LEVEL: every core storage fn of `service::register` coerces
+    ///    to a plain fn pointer taking a connection/transaction FIRST — if a
+    ///    future edit changes a signature to take the registry, a pool
+    ///    handle, or server state, these coercions stop compiling (the
+    ///    signature no longer unifies).
+    /// 2. SOURCE-LEVEL: production source of `register.rs` +
+    ///    `domains_admin.rs` never names the registry type, a transport
+    ///    type, or a handler type (the same token walk the lifecycle pin
+    ///    runs over its subtree). `#[cfg(test)]` regions are exempt — pins
+    ///    may name what they refute.
+    #[test]
+    fn register_services_receive_no_registry() {
+        // (1) fn-pointer coercions = compile-time signature proof. Each alias
+        // IS the pinned signature — if a fn's parameters change to take a
+        // registry/pool/state handle, the coercion below stops compiling.
+        use crate::service::domains_admin as da;
+        use crate::service::register as reg;
+        type ConnFn<R> = fn(&rusqlite::Connection) -> R;
+        type ListFor = fn(
+            &rusqlite::Connection,
+            Option<&[String]>,
+        ) -> Result<Vec<reg::Client>, reg::RegisterError>;
+        type ByName =
+            fn(&rusqlite::Connection, &str) -> Result<Option<reg::Client>, reg::RegisterError>;
+        type ActiveClient =
+            fn(&rusqlite::Connection, &str) -> Result<reg::Client, reg::RegisterError>;
+        type Archive = fn(&rusqlite::Transaction, &str, i64) -> Result<bool, reg::RegisterError>;
+        type SetDpa =
+            fn(&rusqlite::Transaction, &str, &reg::DpaTerms) -> Result<usize, reg::RegisterError>;
+        type Scaffold = fn(
+            &rusqlite::Transaction,
+            &str,
+            &str,
+            &str,
+            Option<&str>,
+            i64,
+        ) -> Result<(), reg::RegisterError>;
+        type Coach = fn(
+            &rusqlite::Transaction,
+            &str,
+            i64,
+            Option<String>,
+            bool,
+        ) -> Result<usize, reg::RegisterError>;
+        type Export =
+            fn(&rusqlite::Connection, &str) -> Result<(Vec<u8>, String), da::DomainAdminError>;
+        let _list: ConnFn<Result<Vec<reg::Client>, reg::RegisterError>> = reg::list;
+        let _granted: ListFor = reg::list_for_domain_grants;
+        let _by_name: ByName = reg::by_name;
+        let _active: ActiveClient = reg::require_active_client;
+        let _archive: Archive = reg::archive;
+        let _dpa: SetDpa = reg::set_dpa_terms;
+        let _scaffold: Scaffold = reg::scaffold_and_register;
+        let _coach: Coach = reg::coach_note;
+        let _shim_rows: ConnFn<Result<Vec<da::DomainRow>, da::DomainAdminError>> =
+            da::shim_domain_rows;
+        let _file_counts: ConnFn<(i64, i64, i64)> = da::file_domain_counts;
+        let _empty: ConnFn<bool> = da::is_empty_store;
+        let _vacuum: ConnFn<Result<(), da::DomainAdminError>> = da::vacuum;
+        let _export: Export = da::export_snapshot;
+
+        // (2) the token walk over the register family's production source.
+        const FORBIDDEN: &[&str] = &[
+            "DomainRegistry",
+            "AppState",
+            "Pool",
+            "axum",
+            "StatusCode",
+            "Json",
+            "HandlerError",
+        ];
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
+        let mut files = vec![base.join("register.rs"), base.join("domains_admin.rs")];
+        assert!(
+            files.iter().all(|f| f.exists()),
+            "sanity: the register-family files must exist"
+        );
+        files.sort();
+        for f in &files {
+            let text = std::fs::read_to_string(f).expect("service file must be readable");
+            let prod = text
+                .split("#[cfg(test)]")
+                .next()
+                .expect("split always yields a first slice");
+            let display = f
+                .strip_prefix(&base)
+                .unwrap_or(f)
+                .to_string_lossy()
+                .into_owned();
+            for token in FORBIDDEN {
+                assert!(
+                    !prod.contains(token),
+                    "layer violation in src/service/{display}: production source names \
+                     `{token}` — the register cores take connections and return domain \
+                     types; the registry/pool authority and HTTP mapping stay at the handler"
                 );
             }
         }

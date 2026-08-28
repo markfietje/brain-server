@@ -62,7 +62,6 @@ mod alert;
 mod auth;
 mod breach;
 mod chunker;
-mod clients;
 mod config;
 mod connector;
 mod consolidate;
