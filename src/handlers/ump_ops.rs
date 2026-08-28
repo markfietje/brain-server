@@ -20,7 +20,6 @@ use crate::handlers::auth::{OptCapability, OptPrincipal};
 use crate::handlers::gate::principal_to_owner;
 use crate::handlers::ingest::{ingest_one, lower_ump};
 use crate::handlers::recall::{RecallRequest, RecallSourceQuery};
-use crate::handlers::suggest::record_feedback;
 use crate::handlers::ump::{self, UmpMeta};
 use crate::handlers::{HandlerError, audit_scope};
 use crate::service::lifecycle::fetch::load_knowledge_row;
@@ -828,7 +827,7 @@ pub async fn feedback(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         let id = resolve_row_id(&conn, &id_arg)?;
-        record_feedback(
+        crate::service::suggest::record_feedback(
             &conn,
             id,
             feedback,
@@ -838,6 +837,12 @@ pub async fn feedback(
             tenant,
             Some(&outcome),
         )
+        .map_err(|e| match e {
+            crate::service::suggest::FeedbackError::NoSuchChunk(id) => {
+                HandlerError::not_found(format!("no chunk with id {id}"))
+            }
+            crate::service::suggest::FeedbackError::Database(m) => HandlerError::internal(m),
+        })
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;

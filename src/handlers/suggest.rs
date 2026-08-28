@@ -357,7 +357,7 @@ pub async fn feedback(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        record_feedback(
+        crate::service::suggest::record_feedback(
             &conn,
             chunk_id,
             outcome_str,
@@ -367,6 +367,7 @@ pub async fn feedback(
             tenant,
             None,
         )
+        .map_err(feedback_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -374,50 +375,17 @@ pub async fn feedback(
     Ok(Json(FeedbackResponse { status: "recorded" }))
 }
 
-/// the suggest-feedback last-wins upsert extracted from the
-/// `/suggest/feedback` handler so the `/ump/feedback` binding shares it. The
-/// optional `ump_outcome` carries the granular UMP outcome (`followed`/
-/// `overridden`/`ignored`/`contradicted`) in its own column; the suggest path
-/// passes `None` (column stays NULL).
-#[allow(clippy::too_many_arguments)] // 8 positional params, 2 call sites; a struct would be ceremony for a private fn
-pub(crate) fn record_feedback(
-    conn: &rusqlite::Connection,
-    chunk_id: i64,
-    feedback: &str,
-    reason_hash: Option<String>,
-    ts: i64,
-    session: Option<String>,
-    tenant: String,
-    ump_outcome: Option<&str>,
-) -> Result<(), HandlerError> {
-    // chunk_id validity: refuse feedback on a non-existent chunk so the
-    // metric isn't poisoned by typos. (A deleted chunk's id still counts —
-    // the feedback was real when given; only never-existed ids are rejected.)
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM knowledge WHERE id = ?1)",
-            rusqlite::params![chunk_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|n| n != 0)
-        .unwrap_or(false);
-    if !exists {
-        return Err(HandlerError::not_found(format!(
-            "no chunk with id {chunk_id}"
-        )));
+/// The typed service error → the route's frozen wire vocabulary: the
+/// probe-blind 404 for an unknown chunk, internal for storage failures
+/// (Display carries the exact pre-move message text).
+fn feedback_err(e: crate::service::suggest::FeedbackError) -> HandlerError {
+    use crate::service::suggest::FeedbackError;
+    match e {
+        FeedbackError::NoSuchChunk(chunk_id) => {
+            HandlerError::not_found(format!("no chunk with id {chunk_id}"))
+        }
+        FeedbackError::Database(m) => HandlerError::internal(m),
     }
-    conn.execute(
-        "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id, ump_outcome)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
-           feedback = excluded.feedback,
-           reason_hash = excluded.reason_hash,
-           ts = excluded.ts,
-           ump_outcome = excluded.ump_outcome",
-        rusqlite::params![chunk_id, feedback, reason_hash, ts, session, tenant, ump_outcome],
-    )
-    .map_err(|e| HandlerError::internal(format!("feedback insert failed: {e}")))?;
-    Ok(())
 }
 
 /// The two outcomes that matter for the false-positive metric. Mem0's
@@ -528,36 +496,19 @@ pub async fn metrics(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // One grouped query; the (tenant_id, ts) index keeps this cheap.
-        let mut sql = String::from(
-            "SELECT feedback, COUNT(*) FROM suggest_feedback \
-             WHERE tenant_id = ?1",
-        );
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(tenant)];
-        if let Some(since) = &since_for_task {
-            sql.push_str(" AND ts >= ?");
-            params_vec.push(Box::new(since.clone()));
-        }
-        if let Some(sess) = &session_for_task {
-            sql.push_str(" AND session = ?");
-            params_vec.push(Box::new(sess.clone()));
-        }
-        sql.push_str(" GROUP BY feedback");
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| HandlerError::internal(format!("metrics prepare failed: {e}")))?;
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let counts = crate::service::suggest::feedback_counts(
+            &conn,
+            &tenant,
+            since_for_task.as_deref(),
+            session_for_task.as_deref(),
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
         let mut accepts = 0u64;
         let mut dismisses = 0u64;
-        let rows = stmt
-            .query_map(param_refs.as_slice(), |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })
-            .map_err(|e| HandlerError::internal(format!("metrics query failed: {e}")))?;
-        for row in rows.flatten() {
-            match row.0.as_str() {
-                "accept" => accepts = row.1.max(0) as u64,
-                "dismiss" => dismisses = row.1.max(0) as u64,
+        for (feedback, n) in counts {
+            match feedback.as_str() {
+                "accept" => accepts = n.max(0) as u64,
+                "dismiss" => dismisses = n.max(0) as u64,
                 _ => {} // unknown outcome — ignore (forward-compat with future kinds)
             }
         }
