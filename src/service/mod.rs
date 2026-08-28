@@ -66,6 +66,7 @@ pub mod domains_admin;
 pub mod dsar;
 pub mod ingest;
 pub mod lifecycle;
+pub mod procedure;
 pub mod purge;
 pub mod recall;
 pub mod register;
@@ -105,7 +106,7 @@ mod pins {
         ("ingest.rs", 3),
         ("govern.rs", 6),
         ("webhooks.rs", 14),
-        ("procedure.rs", 13),
+        ("procedure.rs", 0),
         ("compliance.rs", 13),
         ("workflow_lineage.rs", 0),
         ("ump_ops.rs", 11),
@@ -221,8 +222,13 @@ mod pins {
     /// steering inbox write/read, and the scoreboard family out to
     /// `workflow::{state, outbox, kcs, scoreboard}`; the residue was two
     /// comment substrings, reworded; then workflow_lineage.rs 11 → 0 — the
-    /// events/context/rewind/handoff reads out to the same cores)
-    /// legitimately lowered it to 207 in the
+    /// events/context/rewind/handoff reads out to the same cores; then
+    /// procedure.rs 13 → 0 — the store tx (root → per-chunk quarantine
+    /// flags → steps → next_step edges), the step-chain/meta/decision
+    /// reads, and the vec-shadow writes out to `service::procedure`; the
+    /// residue was two error-string substrings carried out in the typed
+    /// error's Display)
+    /// legitimately lowered it to 194 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -230,7 +236,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 207,
+            sum, 194,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

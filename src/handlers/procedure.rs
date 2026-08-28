@@ -161,79 +161,30 @@ pub async fn create(
     let title_for_task = title.clone();
     let content_for_task = content.clone();
 
-    let (root_id, step_ids) = tokio::task::spawn_blocking(move || -> Result<(i64, Vec<i64>), HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
-        // Root chunk: memory_kind = 'procedure'.
-        let content_hash = crate::audit::hash(&format!("{title_for_task}|{content_for_task}"));
-        tx.execute(
-            "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin)
-             VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', 'operator')",
-            rusqlite::params![title_for_task, content_for_task, content_hash, domain.as_deref().unwrap_or("global")],
-        )
-        .map_err(|e| HandlerError::internal(format!("procedure insert failed: {e}")))?;
-        let root_id = tx.last_insert_rowid();
-        // flag the root if the screen quarantined. Excluded from
-        // recall via `WHERE flagged = 0`, KG edges skipped below.
-        let root_flagged = crate::flag_if_quarantined(&tx, root_id, root_quarantine)
-            .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
-        // Embedding for the root (so /recall finds it). Reuses the same vec0
-        // path as /ingest. ponytail: the model is in AppState but spawn_blocking
-        // closes over pool, not state; we encode after the tx via a second
-        // connection to avoid holding a write tx across the model call.
-        let mut step_ids: Vec<i64> = Vec::new();
-        for (idx, (step_title, step_content, step_kind)) in steps.iter().enumerate() {
-            let hash = crate::audit::hash(&format!("{root_id}|{idx}|{step_title}|{step_content}"));
-            let kind_str = step_kind.as_str();
-            tx.execute(
-                "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin)
-                 VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, 'operator')",
-                rusqlite::params![
-                    step_title,
-                    step_content,
-                    hash,
-                    domain.as_deref().unwrap_or("global"),
-                    kind_str,
-                    root_id
-                ],
+    let (root_id, step_ids) =
+        tokio::task::spawn_blocking(move || -> Result<(i64, Vec<i64>), HandlerError> {
+            let mut conn = pool
+                .get()
+                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let tx = conn
+                .transaction()
+                .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
+            let (root_id, step_ids) = crate::service::procedure::store_procedure(
+                &tx,
+                &title_for_task,
+                &content_for_task,
+                domain.as_deref(),
+                &steps,
+                root_quarantine,
+                &step_quarantine,
             )
-            .map_err(|e| HandlerError::internal(format!("step insert failed: {e}")))?;
-            let step_id = tx.last_insert_rowid();
-            // flag this step if its screen quarantined. The verdict
-            // was computed per-step before the tx, so only the steps that
-            // actually quarantined are flagged (a benign step in a quarantined
-            // procedure stays clean).
-            // occurrence in a quarantined
-            // procedure stays clean). Fails closed: a step that must be
-            // flagged but can't be is a stop-the-write condition.
-            crate::flag_if_quarantined(&tx, step_id, step_quarantine[idx])
-                .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
-            // next_step edge with explicit ordering. Skipped for a quarantined
-            // root so a flagged plant can't reach the graph even via a step.
-            // The edge kind is 'next_step'; step_index carries the position.
-            // UNIQUE(from_chunk, to_chunk, kind) means a re-ingest of the same
-            // pair is idempotent.
-            if !root_flagged {
-                tx.execute(
-                    "INSERT INTO evidence_links (from_chunk, to_chunk, kind, step_index)
-                     VALUES (?1, ?2, 'next_step', ?3)
-                     ON CONFLICT(from_chunk, to_chunk, kind) DO UPDATE SET step_index = ?3",
-                    rusqlite::params![root_id, step_id, idx as i64],
-                )
-                .map_err(|e| HandlerError::internal(format!("next_step edge failed: {e}")))?;
-            }
-            step_ids.push(step_id);
-        }
-        tx.commit()
-            .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
-        Ok((root_id, step_ids))
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+            tx.commit()
+                .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
+            Ok((root_id, step_ids))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
     // Embedding pass (outside the write tx). Best-effort: a failure here must
     // not undo the successful ingest — the chunks are queryable via FTS5 even
@@ -254,8 +205,8 @@ pub async fn create(
     }))
 }
 
-/// Encode the root + each step, inserting into vec_knowledge. Best-effort —
-/// the FTS5 shadow row (created by the knowledge insert trigger) makes the
+/// Encode the root + each step, writing into vec_knowledge. Best-effort —
+/// the FTS5 shadow row (the knowledge store trigger creates it) makes the
 /// chunks retrievable even if this fails. Mirrors the /ingest path's tolerance.
 async fn embed_procedure_chunks(
     state: &Arc<AppState>,
@@ -279,11 +230,7 @@ async fn embed_procedure_chunks(
         // Collect (id, text) pairs to embed.
         let mut targets: Vec<(i64, String)> = vec![(root_id, root_content)];
         for sid in &step_ids {
-            if let Ok(c) = conn.query_row(
-                "SELECT content FROM knowledge WHERE id = ?1",
-                rusqlite::params![sid],
-                |r| r.get::<_, String>(0),
-            ) {
+            if let Ok(c) = crate::service::procedure::chunk_content(&conn, *sid) {
                 targets.push((*sid, c));
             }
         }
@@ -293,11 +240,7 @@ async fn embed_procedure_chunks(
             if emb.is_empty() {
                 continue;
             }
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO vec_knowledge (knowledge_id, embedding_int8, embedding_bit, source, created_at)
-                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'manual', datetime('now'))",
-                rusqlite::params![chunk_id, emb.as_bytes()],
-            );
+            let _ = crate::service::procedure::store_embedding(&conn, *chunk_id, emb.as_bytes());
         }
         Ok(())
     })
@@ -362,14 +305,10 @@ pub async fn steps(
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
             // Root must exist + be a procedure.
-            let root: Option<(Option<String>, String)> = conn
-                .query_row(
-                    "SELECT title, content FROM knowledge \
-                     WHERE id = ?1 AND node_kind = 'procedure' AND domain = ?2",
-                    rusqlite::params![procedure_id, label],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok();
+            let root: Option<(Option<String>, String)> =
+                crate::service::procedure::procedure_root(&conn, procedure_id, &label)
+                    .ok()
+                    .flatten();
             let Some((title, content)) = root else {
                 return Err(HandlerError::not_found(format!(
                     "no procedure with id {procedure_id}"
@@ -377,13 +316,10 @@ pub async fn steps(
             };
             // belt-and-braces (the /get idiom): re-authorize on the row's own
             // domain + the record gate before any content leaves.
-            let row_meta: Option<(String, Option<String>, Option<String>)> = conn
-                .query_row(
-                    "SELECT domain, owner, access_scope FROM knowledge WHERE id = ?1",
-                    rusqlite::params![procedure_id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .ok();
+            let row_meta: Option<(String, Option<String>, Option<String>)> =
+                crate::service::procedure::row_access_meta(&conn, procedure_id)
+                    .ok()
+                    .flatten();
             if let Some((row_domain, row_owner, row_scope)) = row_meta
                 && (!crate::handlers::can_read_domain(&gate_principal, &row_domain)
                     || !record_gate.admits(&row_owner, &row_scope))
@@ -394,29 +330,18 @@ pub async fn steps(
             }
             // Ordered steps via the next_step edges (same domain label —
             // steps live with their procedure).
-            let mut stmt = conn
-                .prepare(
-                    "SELECT k.id, k.title, k.content, k.node_kind, el.step_index \
-                     FROM evidence_links el \
-                     JOIN knowledge k ON k.id = el.to_chunk \
-                     WHERE el.from_chunk = ?1 AND el.kind = 'next_step' AND k.domain = ?2 \
-                     ORDER BY el.step_index ASC",
-                )
-                .map_err(|e| HandlerError::internal(format!("prepare failed: {e}")))?;
-            let rows = stmt
-                .query_map(rusqlite::params![procedure_id, label], |r| {
-                    Ok(StepView {
-                        id: r.get(0)?,
-                        title: r.get(1)?,
-                        content: r.get(2)?,
-                        memory_kind: MemoryKind::from_str(&r.get::<_, String>(3)?)
-                            .as_str()
-                            .to_string(),
-                        step_index: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                    })
+            let rows = crate::service::procedure::step_chain(&conn, procedure_id, &label)
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            let steps: Vec<StepView> = rows
+                .into_iter()
+                .map(|(id, title, content, node_kind, step_index)| StepView {
+                    id,
+                    title,
+                    content,
+                    memory_kind: MemoryKind::from_str(&node_kind).as_str().to_string(),
+                    step_index: step_index.unwrap_or(0),
                 })
-                .map_err(|e| HandlerError::internal(format!("query failed: {e}")))?;
-            let steps: Vec<StepView> = rows.filter_map(|r| r.ok()).collect();
+                .collect();
             Ok(ProcedureStepsResponse {
                 procedure_id,
                 title,
@@ -501,13 +426,8 @@ pub async fn evaluate(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let content: String = conn
-            .query_row(
-                "SELECT content FROM knowledge WHERE id = ?1 AND node_kind = 'decision'",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .map_err(|e| match e {
+        let content: String =
+            crate::service::procedure::decision_rule_content(&conn, id).map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {
                     HandlerError::not_found(format!("no decision rule with id {id}"))
                 }
