@@ -12,7 +12,6 @@ use std::{collections::HashMap, sync::Arc};
 use crate::AppState;
 use crate::handlers::HandlerError;
 use crate::handlers::workflow::run_domain;
-use rusqlite::OptionalExtension;
 
 /// `GET /workflow/runs/{id}/events?branch=` — the lineage read: ordered
 /// events with parent links (the UI timeline input). `branch=<event_id>`
@@ -56,27 +55,8 @@ pub async fn get_run_events(
             } else {
                 None
             };
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, parent_id, topic, payload_json, status FROM outbox
-                      WHERE run_id = ?1 AND (?2 IS NULL OR id > ?2) ORDER BY id ASC LIMIT 1000",
-                )
+            let mut out = crate::workflow::outbox::events_page(&conn, id, since)
                 .map_err(|e| format!("{e}"))?;
-            let it = stmt
-                .query_map(rusqlite::params![id, since], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, Option<i64>>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, String>(4)?,
-                    ))
-                })
-                .map_err(|e| format!("{e}"))?;
-            let mut out = Vec::new();
-            for r in it {
-                out.push(r.map_err(|e| format!("{e}"))?);
-            }
             if let Some(chain) = chain {
                 out.retain(|(eid, ..)| chain.contains(eid));
             }
@@ -143,25 +123,7 @@ pub async fn get_run_context(
     let rows: Vec<(i64, String, String)> =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let conn = pool.get().map_err(|e| format!("{e}"))?;
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, topic, payload_json FROM outbox WHERE run_id = ?1 ORDER BY id ASC",
-                )
-                .map_err(|e| format!("{e}"))?;
-            let it = stmt
-                .query_map(rusqlite::params![id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                })
-                .map_err(|e| format!("{e}"))?;
-            let mut out = Vec::new();
-            for r in it {
-                out.push(r.map_err(|e| format!("{e}"))?);
-            }
-            Ok(out)
+            crate::workflow::outbox::events_all(&conn, id).map_err(|e| format!("{e}"))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("{e}")))?
@@ -255,30 +217,20 @@ pub async fn post_rewind(
             let mut conn = pool.get().map_err(|e| RewindErr::Corrupt(format!("{e}")))?;
             let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
                 .map_err(|e| RewindErr::Corrupt(format!("{e}")))?;
-            let (js, rev): (String, i64) = tx
-                .tx()
-                .query_row(
-                    "SELECT state_json, state_revision FROM workflow_runs WHERE id=?1",
-                    rusqlite::params![id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(|_| RewindErr::Gone)?;
+            // Any read failure on the target (including the row being on
+            // another run) is the same probe-blind refusal: the target is
+            // simply not rewindable from here.
+            let (js, rev): (String, i64) =
+                crate::workflow::state::read_state_and_revision(tx.tx(), id)
+                    .map_err(|_| RewindErr::Gone)?
+                    .ok_or(RewindErr::Gone)?;
             let _ = js;
-            let (topic, payload): (String, String) = tx
-                .tx()
-                .query_row(
-                    "SELECT topic, payload_json FROM outbox WHERE id=?1 AND run_id=?2",
-                    rusqlite::params![to_event, id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(|_| RewindErr::Target("event not found on this run".to_string()))?;
-            let root: i64 = tx
-                .tx()
-                .query_row(
-                    "SELECT COALESCE(MIN(id), 0) FROM outbox WHERE run_id=?1",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
+            let (topic, payload): (String, String) =
+                match crate::workflow::outbox::event_of_run(tx.tx(), to_event, id) {
+                    Ok(Some(row)) => row,
+                    _ => return Err(RewindErr::Target("event not found on this run".to_string())),
+                };
+            let root: i64 = crate::workflow::outbox::root_event_id(tx.tx(), id)
                 .map_err(|e| RewindErr::Corrupt(format!("{e}")))?;
             // A rewind target is always a checkpoint event — or the run root
             // itself, whose snapshot is the fresh-run state ({}).
@@ -379,63 +331,20 @@ pub async fn get_handoff(
     let pool = state.pool.clone();
     let packet: serde_json::Value = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let conn = pool.get().map_err(|e| format!("{e}"))?;
-        let (kind, status, created_at, state_json): (String, String, i64, String) = conn
-            .query_row(
-                "SELECT kind, status, created_at, state_json FROM workflow_runs WHERE id=?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(|e| format!("{e}"))?
-            .ok_or("workflow run not found".to_string())?;
-        let opening: Option<String> = conn
-            .query_row(
-                "SELECT payload_json FROM outbox WHERE run_id=?1 ORDER BY id ASC LIMIT 1",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .optional()
+        let (kind, status, created_at, state_json): (String, String, i64, String) =
+            crate::workflow::state::run_head(&conn, id)
+                .map_err(|e| format!("{e}"))?
+                .ok_or("workflow run not found".to_string())?;
+        let opening: Option<String> =
+            crate::workflow::outbox::first_event_payload(&conn, id).map_err(|e| format!("{e}"))?;
+        let steps: Vec<String> =
+            crate::workflow::state::step_labels(&conn, id).map_err(|e| format!("{e}"))?;
+        let step_events: Vec<String> = crate::workflow::outbox::non_checkpoint_topics(&conn, id)
             .map_err(|e| format!("{e}"))?;
-        let steps: Vec<String> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT step_key || ':' || phase FROM workflow_steps
-                      WHERE run_id=?1 ORDER BY id LIMIT 200",
-                )
+        let latest_checkpoint: Option<String> =
+            crate::workflow::outbox::latest_checkpoint_payload(&conn, id)
                 .map_err(|e| format!("{e}"))?;
-            let it = stmt
-                .query_map(rusqlite::params![id], |r| r.get::<_, String>(0))
-                .map_err(|e| format!("{e}"))?;
-            it.filter_map(Result::ok).collect()
-        };
-        let step_events: Vec<String> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT topic FROM outbox
-                      WHERE run_id=?1 AND topic != 'workflow/checkpoint' ORDER BY id LIMIT 200",
-                )
-                .map_err(|e| format!("{e}"))?;
-            let it = stmt
-                .query_map(rusqlite::params![id], |r| r.get::<_, String>(0))
-                .map_err(|e| format!("{e}"))?;
-            it.filter_map(Result::ok).collect()
-        };
-        let latest_checkpoint: Option<String> = conn
-            .query_row(
-                "SELECT payload_json FROM outbox
-                  WHERE run_id=?1 AND topic='workflow/checkpoint' ORDER BY id DESC LIMIT 1",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("{e}"))?;
-        let held: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM legal_holds WHERE released_at IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+        let held: i64 = crate::workflow::state::active_legal_holds(&conn).unwrap_or(0);
         let st: serde_json::Value =
             serde_json::from_str(&state_json).unwrap_or(serde_json::Value::Null);
         let now = chrono::Utc::now().timestamp();

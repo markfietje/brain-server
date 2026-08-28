@@ -252,6 +252,121 @@ pub(crate) fn steering_inbox(
     Ok(it.filter_map(Result::ok).collect())
 }
 
+// ── the lineage reads: the events surface and its derivatives ─────────────
+
+/// One lineage event row: (id, parent_id, topic, payload_json, status).
+pub(crate) type EventRowTuple = (i64, Option<i64>, String, String, String);
+
+/// The events page: ordered by
+/// id, bounded at 1000, `since` backfilling the reconnect gap with only rows
+/// strictly after the given id (a resuming consumer replays nothing twice).
+/// The caller owns branch narrowing (retain on [`branch_chain`]'s result).
+pub(crate) fn events_page(
+    conn: &Connection,
+    run_id: i64,
+    since: Option<i64>,
+) -> rusqlite::Result<Vec<EventRowTuple>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent_id, topic, payload_json, status FROM outbox
+          WHERE run_id = ?1 AND (?2 IS NULL OR id > ?2) ORDER BY id ASC LIMIT 1000",
+    )?;
+    let it = stmt.query_map(params![run_id, since], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<i64>>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+        ))
+    })?;
+    it.collect()
+}
+
+/// The run's FULL event chain, uncapped: (id, topic, payload_json). The
+/// context derivation budgets field counts downstream — the cap lives
+/// there, not here.
+pub(crate) fn events_all(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn
+        .prepare("SELECT id, topic, payload_json FROM outbox WHERE run_id = ?1 ORDER BY id ASC")?;
+    let it = stmt.query_map(params![run_id], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    it.collect()
+}
+
+/// One event of ONE run: (topic, payload_json). `None` when the id does not
+/// exist ON this run — the run-scoping predicate is the point.
+pub(crate) fn event_of_run(
+    conn: &Connection,
+    event_id: i64,
+    run_id: i64,
+) -> rusqlite::Result<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT topic, payload_json FROM outbox WHERE id=?1 AND run_id=?2",
+        params![event_id, run_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+/// The run's root event id (0 when the chain has not started — the caller
+/// treats root 0 as "no root snapshot").
+pub(crate) fn root_event_id(conn: &Connection, run_id: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(MIN(id), 0) FROM outbox WHERE run_id=?1",
+        params![run_id],
+        |r| r.get(0),
+    )
+}
+
+/// The run's opening event payload, if any.
+pub(crate) fn first_event_payload(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT payload_json FROM outbox WHERE run_id=?1 ORDER BY id ASC LIMIT 1",
+        params![run_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Step-event topics for the handoff packet: everything EXCEPT checkpoints,
+/// bounded at 200 (row errors skip — the packet is best-effort assembled).
+pub(crate) fn non_checkpoint_topics(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT topic FROM outbox
+          WHERE run_id=?1 AND topic != 'workflow/checkpoint' ORDER BY id LIMIT 200",
+    )?;
+    let it = stmt.query_map(params![run_id], |r| r.get::<_, String>(0))?;
+    Ok(it.filter_map(Result::ok).collect())
+}
+
+/// The LATEST checkpoint payload of the run, if any (newest wins).
+pub(crate) fn latest_checkpoint_payload(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT payload_json FROM outbox
+          WHERE run_id=?1 AND topic='workflow/checkpoint' ORDER BY id DESC LIMIT 1",
+        params![run_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

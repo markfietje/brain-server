@@ -184,6 +184,41 @@ pub(crate) fn open_run(
     Ok(conn.last_insert_rowid())
 }
 
+/// The handoff head: (kind, status, created_at, state_json), None when gone.
+pub(crate) fn run_head(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Option<(String, String, i64, String)>> {
+    conn.query_row(
+        "SELECT kind, status, created_at, state_json FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .optional()
+}
+
+/// Step labels for the handoff packet (`step_key:phase`), id order, bounded
+/// at 200 (row errors skip — the packet is best-effort assembled).
+pub(crate) fn step_labels(conn: &Connection, run_id: i64) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT step_key || ':' || phase FROM workflow_steps
+          WHERE run_id=?1 ORDER BY id LIMIT 200",
+    )?;
+    let it = stmt.query_map(params![run_id], |r| r.get::<_, String>(0))?;
+    Ok(it.filter_map(Result::ok).collect())
+}
+
+/// Count of unreleased legal holds (GLOBAL by schema — holds are not
+/// per-row). The caller decides the failure posture; the handoff packet's
+/// documented fail-open reads `unwrap_or(0)` ("no hold" on a degraded DB).
+pub(crate) fn active_legal_holds(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM legal_holds WHERE released_at IS NULL",
+        [],
+        |r| r.get(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
