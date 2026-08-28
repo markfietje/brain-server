@@ -32,51 +32,11 @@ pub async fn forget(
         // `/purge`'s 409 is the single hold-fence envelope.
         crate::legal_hold::refuse_if_held(&tx, &[id])?;
 
-        // Capture document_id + content digest for the tombstone (the registry
-        // must carry the same SHA-256 evidence as every erasure path).
-        let doc_id: Option<String> = tx
-            .query_row(
-                "SELECT document_id FROM knowledge WHERE id = ?1",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .ok()
-            .flatten();
-        let content_digest: Option<String> = tx
-            .query_row(
-                "SELECT content FROM knowledge WHERE id = ?1",
-                rusqlite::params![id],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-            .map(|c| crate::handlers::gate::sha256_hex(&c));
-
-        // vec_knowledge is a vec0 table with no FK (no cascade) — delete explicitly.
-        tx.execute(
-            "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(|e| HandlerError::internal(format!("vec0 delete failed: {e}")))?;
-
-        // Deleting the row cascades to embeddings, SET NULLs relationships,
-        // and the FTS trigger removes the FTS row.
-        let rows = tx
-            .execute("DELETE FROM knowledge WHERE id = ?1", rusqlite::params![id])
-            .map_err(|e| HandlerError::internal(format!("delete failed: {e}")))?;
-
-        if rows > 0 {
-            // Tombstone for provenance (content gone; SHA-256 digest survives).
-            tx.execute(
-                "INSERT INTO tombstones (knowledge_id, document_id, content_hash)
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![id, doc_id, content_digest],
-            )
-            .map_err(|e| HandlerError::internal(format!("tombstone failed: {e}")))?;
-        }
-
+        let deleted = crate::service::forget::forget_one(&tx, id)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-        Ok(rows > 0)
+        Ok(deleted)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;

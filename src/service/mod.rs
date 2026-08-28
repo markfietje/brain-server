@@ -64,6 +64,7 @@
 
 pub mod domains_admin;
 pub mod dsar;
+pub mod forget;
 pub mod ingest;
 pub mod lifecycle;
 pub mod procedure;
@@ -114,7 +115,7 @@ mod pins {
         ("kcs.rs", 0),
         ("valet.rs", 6),
         ("suggest.rs", 6),
-        ("forget.rs", 5),
+        ("forget.rs", 0),
         ("relay.rs", 4),
         ("holds.rs", 2),
         ("auth.rs", 2),
@@ -236,8 +237,12 @@ mod pins {
     /// `service::procedure::row_access_meta` — one definition); then
     /// kcs.rs 8 → 0 — the article lifecycle (row fetch, the draft→approved
     /// CAS, the worklist read, the publish-proposal write, the public-page
-    /// row) out to `workflow::kcs` beside propose_translation)
-    /// legitimately lowered it to 175 in the
+    /// row) out to `workflow::kcs` beside propose_translation; then
+    /// forget.rs 5 → 0 — the single-chunk erasure (legal-hold fence,
+    /// document_id + content digest capture, the explicit vec0 delete, the
+    /// knowledge delete, the tombstone only when a row actually deleted) out
+    /// to `service::forget`)
+    /// legitimately lowered it to 170 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -245,7 +250,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 175,
+            sum, 170,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );
