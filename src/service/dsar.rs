@@ -642,20 +642,16 @@ pub fn run_pool(
     // 2a. Dry-run: a read-only footprint preview. Locate + bundle already ran;
     //     count what a live purge WOULD delete, then drop the tx untouched.
     if dry_run {
-        let export_rows = match &export_bundle {
-            Some(b) => {
-                // The bundle always carries `{exported_at, subject, knowledge}`.
-                serde_json::from_str::<serde_json::Value>(b)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("knowledge")
-                            .and_then(|k| k.as_array())
-                            .map(|a| a.len())
-                    })
-                    .unwrap_or(0)
-            }
-            None => 0, // `action == "purge"` builds no bundle; nothing exported
-        };
+        // The bundle always carries `{exported_at, subject, knowledge}`.
+        let export_rows = export_bundle
+            .as_deref()
+            .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+            .and_then(|v| {
+                v.get("knowledge")
+                    .and_then(|k| k.as_array())
+                    .map(|a| a.len())
+            })
+            .unwrap_or(0); // `action == "purge"` builds no bundle; nothing exported
         let tombstones = count_subject_tombstones(&tx, subject, &roots)?;
         let dsar_rows: i64 = tx.query_row(
             "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
