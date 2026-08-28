@@ -13975,7 +13975,7 @@ Final paragraph after the rule.";
     #[test]
     fn ingest_insert_sites_write_owner_column() {
         let main_src = include_str!("main.rs");
-        let ingest_src = include_str!("handlers/ingest.rs");
+        let ingest_core_src = include_str!("service/ingest.rs");
         // (source, handler name, the `knowledge` INSERT SQL fragment it must contain)
         let sites: &[(&str, &str, &str)] = &[
             // add_chunk
@@ -13993,9 +13993,12 @@ Final paragraph after the rule.";
             // /ingest (structured) — v1.17.3 M2: the INSERT moved into the
             // shared `ingest_one` core (the batch path reuses it), and the
             // column list gained the UMP overlay; `owner` is still written.
+            // Aqueduct: the store stage itself now lives in the service
+            // (`store_record`); the INSERT literal moved with it, pinned
+            // there.
             (
-                ingest_src,
-                "ingest_one",
+                ingest_core_src,
+                "store_record",
                 "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner,",
             ),
             // write_markdown_ingest
@@ -14029,7 +14032,7 @@ Final paragraph after the rule.";
     #[test]
     fn ingest_write_sites_route_through_screen() {
         let main_src = include_str!("main.rs");
-        let ingest_src = include_str!("handlers/ingest.rs");
+        let ingest_core_src = include_str!("service/ingest.rs");
         let proc_src = include_str!("handlers/procedure.rs");
         let gate_src = include_str!("handlers/gate.rs");
         // (source, handler name) — every direct write surface that stores
@@ -14042,7 +14045,9 @@ Final paragraph after the rule.";
             // (`write_markdown_ingest` receives the already-computed
             // `quarantine_flagged` bool).
             (main_src, "ingest_markdown"),
-            (ingest_src, "ingest_one"),
+            // Aqueduct: the structured core's screen stage lives in the
+            // service (`screen_structured`); the handler orchestrates it.
+            (ingest_core_src, "screen_structured"),
             (proc_src, "create"),
             // the screen lives in the shared `create_proposal` core since the
             // review posture made it a multi-caller seam.

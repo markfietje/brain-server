@@ -21,8 +21,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::AppState;
-use xxhash_rust::xxh3::xxh3_64;
-use zerocopy::IntoBytes;
 
 use super::{
     IngestResponse, MAX_CONTENT, MAX_ENTITIES, MAX_RELATIONS, MAX_TITLE, normalize_domain,
@@ -30,11 +28,6 @@ use super::{
 };
 use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
-
-/// A normalized relation ready for insert: (from, to, kind, optional explicit
-/// valid_at, optional explicit invalid_at). The temporal pair is caller override;
-/// when None the ingest path runs the deterministic temporal extractor.
-type NormalizedRelation = (String, String, String, Option<String>, Option<String>);
 
 #[derive(Debug, Deserialize)]
 pub struct EntityInput {
@@ -371,25 +364,18 @@ pub(crate) async fn ingest_one(
     }
 
     // screen this shared write core exactly like its
-    // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). Runs
-    // the full two-layer screen (blocklist + optional classifier). `Reject`
-    // keeps the HTTP-400; `Quarantine` (default) ingests then flags post-insert
-    // so a flagged plant is excluded from retrieval and its KG edges are
-    // skipped.
-    let screen_result = crate::screen::screen(&content, &title);
-    if screen_result == crate::screen::ScreenResult::Reject {
-        return Err(HandlerError::bad_request(
-            "input_rejected",
-            "input contains suspicious patterns",
-        ));
-    }
-    let quarantine_flagged = screen_result == crate::screen::ScreenResult::Quarantine
-        // scraped data without a documented lawful
-        // basis is quarantined (the NPC 2026-01 posture), never stored as memory.
-        || matches!(
-            crate::ph::scrape_posture(req.source.as_deref(), req.lawful_basis.as_deref()),
-            crate::ph::ScrapePosture::Quarantine
-        );
+    // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). The screen
+    // stage lives in the ingest core (the fence is of the FUNCTION):
+    // `Reject` keeps the HTTP-400; `Quarantine` (default) ingests then flags
+    // post-insert so a flagged plant is excluded from retrieval and its KG
+    // edges are skipped.
+    let quarantine_flagged = crate::service::ingest::screen_structured(
+        &content,
+        &title,
+        req.source.as_deref(),
+        req.lawful_basis.as_deref(),
+    )
+    .map_err(map_ingest_error)?;
 
     // trust labels are not client-asserted.
     // A DIRECT client assert (HTTP `/ingest`, `/proposals` — `ump_meta` is
@@ -439,8 +425,14 @@ pub(crate) async fn ingest_one(
 
     // `ttl_days` is the friendly retention field (days
     // from now). It only applies when `expires_at` is absent — an explicit
-    // absolute expiry always wins (the row-wins invariant).
-    req.expires_at = ttl_days_to_expires(req.expires_at, req.ttl_days)?;
+    // absolute expiry always wins (the row-wins invariant). The clock is
+    // injected by the handler (the core is pinned with a fixed one).
+    req.expires_at = crate::service::ingest::ttl_days_to_expires(
+        req.expires_at,
+        req.ttl_days,
+        chrono::Utc::now().timestamp(),
+    )
+    .map_err(map_ingest_error)?;
 
     // Forced domain (auto-route when omitted)
     let forced_domain: Option<String> = req.domain.as_deref().map(normalize_domain).transpose()?;
@@ -467,7 +459,8 @@ pub(crate) async fn ingest_one(
     }
     // (from, to, kind, explicit valid_at, explicit invalid_at). The
     // temporal pair is optional caller override; None ⇒ run the extractor.
-    let mut relations: Vec<NormalizedRelation> = Vec::with_capacity(req.relations.len());
+    let mut relations: Vec<crate::service::ingest::NormalizedRelation> =
+        Vec::with_capacity(req.relations.len());
     for r in &req.relations {
         let from = normalize_name(&r.from)?;
         let to = normalize_name(&r.to)?;
@@ -577,13 +570,14 @@ pub(crate) async fn ingest_one(
         brain_server::profile::profile_for_domain(&conn, &domain_label)
             .map_err(HandlerError::internal)?
     };
-    let (title_for_store, content, access_scope) = apply_profile_ingest(
+    let (title_for_store, content, access_scope) = crate::service::ingest::apply_profile_ingest(
         profile.as_ref(),
-        title_for_store,
-        content,
+        &title_for_store,
+        &content,
         req.access_scope.clone(),
         req.memory_kind.as_deref(),
-    )?;
+    )
+    .map_err(map_ingest_error)?;
     req.access_scope = access_scope;
     // whether this domain's bound profile is a
     // strict-posture one — the flag that marks a record with no documented
@@ -603,270 +597,63 @@ pub(crate) async fn ingest_one(
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
 
-        // Re-check the bound profile UNDER THE WRITE LOCK: a concurrent
-        // profile bind/unbind between the pre-tx mask decision and this write
-        // would otherwise land unmasked content into a now-strict domain.
-        let profile_now =
-            brain_server::profile::profile_for_domain(&tx, &domain_label)
-                .map_err(HandlerError::internal)?;
-        let strict_now = profile_now
-            .as_ref()
-            .is_some_and(brain_server::profile::Profile::pii_strict);
-        if strict_now != strict_domain {
-            return Err(HandlerError::conflict_with(
-                "profile_changed",
-                "the domain's bound profile changed during ingest — retry",
-                serde_json::json!([]),
-            ));
-        }
+        // The store stage — every statement of the ingest runs inside THIS
+        // tx (the audit-per-write law travels with the logic). A dropped or
+        // rolled-back tx takes the whole store with it.
+        let store = crate::service::ingest::StoreRecord {
+            domain: &domain_label,
+            title: &title_for_store,
+            content: &content,
+            owner: owner.as_deref(),
+            strict_domain,
+            quarantine_flagged,
+            embedding: &embedding,
+            memory_kind: req.memory_kind.as_deref(),
+            assertion_kind: req.assertion_kind.as_deref(),
+            confidence: req.confidence,
+            access_scope: req.access_scope.as_deref(),
+            expires_at: req.expires_at,
+            valid_from: req.valid_from.as_deref(),
+            valid_to: req.valid_to.as_deref(),
+            observed_at: req.observed_at.as_deref(),
+            ump_meta: req.ump_meta.as_deref(),
+            lawful_basis: req.lawful_basis.as_deref(),
+            purpose: req.purpose.as_deref(),
+            entities: &entities_norm,
+            relations: &relations_norm,
+        };
+        let outcome =
+            crate::service::ingest::store_record(&tx, &store).map_err(map_ingest_error)?;
 
-        // Baseline counts so we can report what THIS ingest actually added
-        // (relations may auto-create entities that weren't in the input array).
-        let entities_before: i64 = tx
-            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
-            .unwrap_or(0);
-        let relations_before: i64 = tx
-            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
-            .unwrap_or(0);
+        tx.commit()
+            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
 
-        // The transaction timestamp for the four-timestamp edge model. Fetched
-        // once per transaction (not per relation) so every relation corrected in
-        // one ingest shares the same transaction-time END, and so
-        // old.superseded_at == new.created_at exactly on each supersession.
-        let tx_now: String = tx
-            .query_row(
-                "SELECT strftime('%Y-%m-%d %H:%M:%S','now','utc')",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| HandlerError::internal(format!("resolve tx timestamp failed: {e}")))?;
-
-        let content_hash = format!("{:016x}", xxh3_64(content.as_bytes()));
-
-        // Idempotent dedup: if this exact content already exists, report duplicate.
-        let existing: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE content_hash = ?1",
-                rusqlite::params![&content_hash],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        if existing > 0 {
-            let id: i64 = tx
-                .query_row(
-                    "SELECT id FROM knowledge WHERE content_hash = ?1 LIMIT 1",
-                    rusqlite::params![&content_hash],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            return Ok(IngestResponse {
+        Ok(match outcome {
+            crate::service::ingest::StoreOutcome::Duplicate { id } => IngestResponse {
                 id,
                 status: "duplicate",
                 domain: Some(domain_label),
                 entities_added: Some(0),
                 relations_added: Some(0),
                 compliance: None,
-            });
-        }
-
-        // persist the UMP overlay onto the row. The
-        // content-addressed `ump_id` is COMPUTED here (domain \0 content —
-        // §6.2 ids are derived, never trusted from a record), so re-imports
-        // of the same content land on the same id and the unique index holds.
-        let ump_id = req.ump_meta.as_ref().map(|_| {
-            brain_server::ump_integrity::content_id(&brain_server::ump_integrity::record_hash(
-                format!("{domain_label}\0{content}").as_bytes(),
-            ))
-        });
-        tx.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash, domain, pii, owner, \
-                node_kind, assertion_kind, confidence, access_scope, expires_at, valid_from, \
-                valid_to, observed_at, ump_id, ump_meta, lawful_basis, purpose, origin) \
-             VALUES (?1, ?2, 'structured', ?3, ?4, ?5, ?6, COALESCE(?7, 'fact'), \
-                COALESCE(?8, 'stated'), COALESCE(?9, 1.0), COALESCE(?10, 'private'), \
-                ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-            rusqlite::params![
-                &title_for_store,
-                &content,
-                &content_hash,
-                &domain_label,
-                !crate::gate::scan_pii(&content).is_empty(),
-                &owner,
-                req.memory_kind.as_deref(),                req.assertion_kind.as_deref(),
-                req.confidence,
-                req.access_scope.as_deref(),
-                req.expires_at,
-                req.valid_from.as_deref(),
-                req.valid_to.as_deref(),
-                req.observed_at.as_deref(),
-                ump_id.as_deref(),
-                req.ump_meta.as_deref(),
-                // the lawful-basis + purpose tags (Art 5/6 evidence).
-                req.lawful_basis.as_deref(),
-                req.purpose.as_deref(),
-                // Seatbelt (Seatbelt): a UMP-lowered record is
-                // agent-authored by definition; plain structured ingest stays
-                // `imported` (the safe fallback).
-                if req.ump_meta.is_some() {
-                    "agent"
-                } else {
-                    crate::gate::origin_for_source(Some("structured"))
-                },
-            ],
-        )
-        .map_err(|e| HandlerError::internal(format!("insert knowledge failed: {e}")))?;
-        let id: i64 = tx.last_insert_rowid();
-
-        // under Quarantine policy, a chunk that trips the
-        // injection screen is stored but flagged (excluded from retrieval) and
-        // its KG edges are skipped so a quarantined plant can't pollute the
-        // graph. `flag_if_quarantined` returns true only when it flagged. Fails
-        // closed: a quarantine that can't be recorded aborts the ingest.
-        let quarantined = crate::flag_if_quarantined(&tx, id, quarantine_flagged)
-            .map_err(|e| HandlerError::internal(format!("quarantine flag failed: {e}")))?;
-
-        // vec0 (int8 + binary quantized) is the sole vector
-        // store; no raw f32 JSON is written to the legacy `embeddings` column.
-        tx.execute(
-            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
-             VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",
-            rusqlite::params![id, embedding.as_bytes()],
-        )
-        .map_err(|e| HandlerError::internal(format!("vec0 insert failed: {e}")))?;
-
-        if !quarantined {
-            // Entities (idempotent upsert, with optional type).
-            for (name, kind) in &entities_norm {
-                tx.execute(
-                    "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, ?2)",
-                    rusqlite::params![name, kind],
-                )
-                .map_err(|e| HandlerError::internal(format!("insert entity failed: {e}")))?;
-            }
-            // Relations (idempotent upsert, anchored to this knowledge row).
-            // ponytail: relations may reference entities that weren't explicitly
-            // declared in `entities` — auto-create them on miss so the canonical
-            // plan example (`vitamin d3 helps inflammation`) works even when only
-            // `vitamin d3` is declared. Idempotent: INSERT OR IGNORE on existing
-            // rows is a no-op; the SELECT then finds the row.
-            //
-            // populate bi-temporal valid_at/invalid_at.
-            // Caller-supplied explicit values win; otherwise run the deterministic
-            // temporal extractor over the ingested content (best-effort, no LLM).
-            // The extractor is pure; we run it once per relation keyed on content.
-            let content_interval = crate::temporal::extract_interval_now(&content);
-            for (from, to, kind, explicit_va, explicit_via) in &relations_norm {
-                tx.execute(
-                    "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
-                    rusqlite::params![from],
-                )
-                .map_err(|e| HandlerError::internal(format!("auto-create from-entity failed: {e}")))?;
-                tx.execute(
-                    "INSERT OR IGNORE INTO entities (name, entity_type) VALUES (?1, NULL)",
-                    rusqlite::params![to],
-                )
-                .map_err(|e| HandlerError::internal(format!("auto-create to-entity failed: {e}")))?;
-                let from_id: i64 = tx
-                    .query_row(
-                        "SELECT id FROM entities WHERE name = ?1",
-                        rusqlite::params![from],
-                        |r| r.get(0),
-                    )
-                    .map_err(|e| HandlerError::internal(format!("resolve from-entity failed: {e}")))?;
-                let to_id: i64 = tx
-                    .query_row(
-                        "SELECT id FROM entities WHERE name = ?1",
-                        rusqlite::params![to],
-                        |r| r.get(0),
-                    )
-                    .map_err(|e| HandlerError::internal(format!("resolve to-entity failed: {e}")))?;
-                // Resolve the valid-time interval: explicit caller value, else the
-                // extractor's result. `None` ⇒ leave the column NULL (always valid).
-                let va: Option<&str> = explicit_va
-                    .as_deref()
-                    .or(content_interval.valid_at.as_deref());
-                let via: Option<&str> = explicit_via
-                    .as_deref()
-                    .or(content_interval.invalid_at.as_deref());
-                // Wire edge supersession into the
-                // existing machinery — this replaces the write-once `INSERT OR
-                // IGNORE` (a documented-but-unimplemented behavior, the `trace`
-                // contract said a corrected belief supersedes the old edge).
-                // `resolve_edge_insert` is the pure, truly-bi-temporal core: an
-                // unchanged re-ingest is a SameWindow no-op (history not churned);
-                // a changed window retires the old version at `tx_now`
-                // (superseded_at = transaction-time END, old row preserved
-                // verbatim) and inserts the corrected version as the new current
-                // belief. Fail-closed: an inability to resolve declines the write
-                // rather than half-close.
-                let action = crate::graph_supersede::resolve_edge_insert(
-                    &tx,
-                    from_id,
-                    to_id,
-                    kind,
-                    id,
-                    (va, via),
-                    &tx_now,
-                )
-                .map_err(|e| HandlerError::internal(format!("resolve relation insert failed: {e}")))?;
-                // Transaction-time evidence rides the existing hash-chained audit
-                // log (AuditKind::Ingest, actor = the owner resolution from the
-                // principal; target = the edge id; best-effort, never fails the
-                // ingest). A supersession additionally records the corrected edge
-                // id so the /graph/relationships/{id}/history surface resolves
-                // the old→new handoff.
-                match &action {
-                    crate::graph_supersede::EdgeAction::Created { id: eid } => {
-                        crate::audit::record(
-                            &tx,
-                            crate::audit::AuditKind::Ingest,
-                            owner.as_deref().unwrap_or("auto"),
-                            &eid.to_string(),
-                            crate::audit::AuditStatus::Ok,
-                            "created",
-                        );
-                    }
-                    crate::graph_supersede::EdgeAction::Superseded { old_id, new_id } => {
-                        crate::audit::record(
-                            &tx,
-                            crate::audit::AuditKind::Ingest,
-                            owner.as_deref().unwrap_or("auto"),
-                            &old_id.to_string(),
-                            crate::audit::AuditStatus::Ok,
-                            &format!("superseded:{old_id}->:{new_id}"),
-                        );
-                    }
-                    crate::graph_supersede::EdgeAction::SameWindow { .. } => {}
-                }
-            }
-        }
-
-        let entities_after: i64 = tx
-            .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
-            .unwrap_or(entities_before);
-        let relations_after: i64 = tx
-            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
-            .unwrap_or(relations_before);
-        let entities_added = (entities_after - entities_before).max(0) as u32;
-        let relations_added = (relations_after - relations_before).max(0) as u32;
-
-        tx.commit()
-            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-
-        Ok(IngestResponse {
-            id,
-            status: "created",
-            domain: Some(domain_label),
-            entities_added: Some(entities_added),
-            relations_added: Some(relations_added),
-            // a strict-posture domain storing a record with no
-            // lawful_basis is flagged (the purpose-limitation evidence). Only
-            // present when flagged (additive; absent otherwise).
-            compliance: crate::transfers::lawful_basis_flag(
-                strict_domain,
-                req.lawful_basis.as_deref(),
-            )
-            .then_some(serde_json::json!({ "lawful_basis_missing": true })),
+            },
+            crate::service::ingest::StoreOutcome::Created {
+                id,
+                entities_added,
+                relations_added,
+                lawful_basis_missing,
+            } => IngestResponse {
+                id,
+                status: "created",
+                domain: Some(domain_label),
+                entities_added: Some(entities_added),
+                relations_added: Some(relations_added),
+                // a strict-posture domain storing a record with no
+                // lawful_basis is flagged (the purpose-limitation evidence).
+                // Only present when flagged (additive; absent otherwise).
+                compliance: lawful_basis_missing
+                    .then_some(serde_json::json!({ "lawful_basis_missing": true })),
+            },
         })
     })
     .await
@@ -884,75 +671,34 @@ pub(crate) async fn ingest_one(
     Ok(result)
 }
 
-/// `ttl_days` (days-from-now) → absolute `expires_at`.
-/// Only applies when `expires_at` is absent — the row-wins invariant. Pure
-/// (the `now` is injected by the caller; `ingest_one` passes Utc::now).
-pub(crate) fn ttl_days_to_expires(
-    expires_at: Option<i64>,
-    ttl_days: Option<i64>,
-) -> Result<Option<i64>, HandlerError> {
-    match (expires_at, ttl_days) {
-        (Some(e), _) => Ok(Some(e)),
-        (None, None) => Ok(None),
-        (None, Some(days)) => {
-            if !(1..=36500).contains(&days) {
-                return Err(HandlerError::bad_request(
-                    "ttl_days_invalid",
-                    "ttl_days must be an integer in [1, 36500]",
-                ));
-            }
-            Ok(Some(chrono::Utc::now().timestamp() + days * 86_400))
+/// The frozen handler boundary map for the ingest core's typed errors:
+/// every variant renders the exact status + body its pre-move `HandlerError`
+/// produced, so the wire vocabulary is unchanged (404-vs-403-vs-409 semantics
+/// are pinned per route; the service never names an HTTP status).
+fn map_ingest_error(e: crate::service::ingest::IngestError) -> HandlerError {
+    use crate::service::ingest::IngestError as E;
+    match e {
+        E::InputRejected => {
+            HandlerError::bad_request("input_rejected", "input contains suspicious patterns")
         }
+        E::TtlDaysInvalid(_) => HandlerError::bad_request(
+            "ttl_days_invalid",
+            "ttl_days must be an integer in [1, 36500]",
+        ),
+        E::KindNotAllowed { effective, profile } => HandlerError::bad_request(
+            "kind_not_allowed",
+            format!("memory_kind '{effective}' is not in profile '{profile}''s allowed kinds"),
+        ),
+        E::ProfileChanged => HandlerError::conflict_with(
+            "profile_changed",
+            "the domain's bound profile changed during ingest — retry",
+            serde_json::json!([]),
+        ),
+        E::QuarantineFlag(e) => HandlerError::internal(format!("quarantine flag failed: {e}")),
+        // Database messages carry their statement context verbatim
+        // ("insert knowledge failed: …", "resolve tx timestamp failed: …").
+        E::Database(msg) => HandlerError::internal(msg),
     }
-}
-
-/// the pure ingest-defaults core. The invariant: the
-/// profile sets DEFAULTS, the row wins —
-///   - `pii_mode: strict` masks title + content at the write boundary
-///     (one-way, the existing `[redacted:*]` maskers; no vault);
-///   - `default_access_scope` only fills an ABSENT access_scope;
-///   - `kinds` is a constraint: the effective kind (explicit, else the 'fact'
-///     column default) must be in the vocabulary, else 400 `kind_not_allowed`.
-///
-/// No profile → everything passes through unchanged.
-///
-/// ponytail: ceiling — when called from `ingest_one` the mask runs after
-/// auto-routing, so the quantized vec0 embedding + caller-declared entity
-/// names derive from the raw text (neither practically invertible; entities
-/// were always stored verbatim). The HITL /ingest/proposal flow keeps its
-/// legacy posture (binding the gate flow is future work).
-pub(crate) fn apply_profile_ingest(
-    profile: Option<&brain_server::profile::Profile>,
-    title: String,
-    content: String,
-    access_scope: Option<String>,
-    memory_kind: Option<&str>,
-) -> Result<(String, String, Option<String>), HandlerError> {
-    let Some(p) = profile else {
-        return Ok((title, content, access_scope));
-    };
-    let (title, content) = if p.pii_strict() {
-        (
-            crate::gate::screen_source_prompt(&title),
-            crate::gate::screen_source_prompt(&content),
-        )
-    } else {
-        (title, content)
-    };
-    let access_scope = access_scope.or_else(|| p.default_access_scope.clone());
-    if let Some(kinds) = &p.kinds {
-        let effective = memory_kind.unwrap_or("fact");
-        if !kinds.iter().any(|k| k == effective) {
-            return Err(HandlerError::bad_request(
-                "kind_not_allowed",
-                format!(
-                    "memory_kind '{effective}' is not in profile '{}''s allowed kinds",
-                    p.name
-                ),
-            ));
-        }
-    }
-    Ok((title, content, access_scope))
 }
 
 #[cfg(test)]
@@ -1015,135 +761,5 @@ mod tests {
     fn lower_ump_rejects_malformed_records() {
         assert!(lower_ump(&serde_json::json!({"ump": "1.0"})).is_err());
         assert!(lower_ump(&serde_json::json!({"ump": "1.0", "body": {"text": 42}})).is_err());
-    }
-
-    /// a strict-posture
-    /// profile masks PII at the write boundary — the email/phone/card NEVER
-    /// reach the store, only the deterministic placeholders (the v1.20.19
-    /// "no vault" posture: one-way, no recovery map).
-    #[test]
-    fn profile_sets_ingest_defaults_strict_masks_and_scope_fills() {
-        let p = brain_server::profile::Profile {
-            name: "health-hipaa".into(),
-            pii_mode: Some("strict".into()),
-            default_access_scope: Some("private".into()),
-            ..Default::default()
-        };
-        let (title, content, scope) = apply_profile_ingest(
-            Some(&p),
-            "Patient follow-up".into(),
-            "Email dave@example.com or call +1 (555) 123-4567".into(),
-            None,
-            None,
-        )
-        .expect("applies");
-        assert!(
-            !content.contains("dave@example.com"),
-            "raw email never stored"
-        );
-        assert!(content.contains("[redacted:email]"), "{content}");
-        assert!(content.contains("[redacted:phone]"), "{content}");
-        assert!(
-            !title.contains("dave"),
-            "title masked too when it carries PII"
-        );
-        assert_eq!(
-            scope.as_deref(),
-            Some("private"),
-            "absent scope gets the default"
-        );
-
-        // The row always wins: an explicit scope survives the profile default.
-        let (_, _, scope) = apply_profile_ingest(
-            Some(&p),
-            "t".into(),
-            "c".into(),
-            Some("team".to_string()),
-            None,
-        )
-        .unwrap();
-        assert_eq!(scope.as_deref(), Some("team"));
-    }
-
-    /// no bound profile → byte-identical passthrough
-    /// (verification #4, pure half — the HTTP half is the ignored e2e test).
-    #[test]
-    fn no_profile_preserves_current_behavior_pure() {
-        let (t, c, s) =
-            apply_profile_ingest(None, "t".into(), "c".into(), Some("domain".into()), None)
-                .unwrap();
-        assert_eq!(
-            (t.as_str(), c.as_str(), s.as_deref()),
-            ("t", "c", Some("domain"))
-        );
-        // non-strict pii_mode leaves content alone (read-time redaction is the
-        // v1.14 seam and stays untouched).
-        let std = brain_server::profile::Profile {
-            name: "call-center".into(),
-            pii_mode: Some("standard".into()),
-            ..Default::default()
-        };
-        let (_, c2, _) = apply_profile_ingest(
-            Some(&std),
-            "t".into(),
-            "mail bob@example.com".into(),
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            c2, "mail bob@example.com",
-            "standard mode does not mask at write"
-        );
-    }
-
-    /// the kind vocabulary is a constraint — the
-    /// effective kind (explicit, else 'fact') must be in the list.
-    #[test]
-    fn kind_vocabulary_rejects_out_of_list_kinds() {
-        let p = brain_server::profile::Profile {
-            name: "call-center".into(),
-            kinds: Some(vec!["fact".into(), "episodic".into()]),
-            ..Default::default()
-        };
-        assert!(
-            apply_profile_ingest(Some(&p), "t".into(), "c".into(), None, Some("episodic")).is_ok()
-        );
-        // The column default 'fact' is in the list.
-        assert!(apply_profile_ingest(Some(&p), "t".into(), "c".into(), None, None).is_ok());
-        let err =
-            apply_profile_ingest(Some(&p), "t".into(), "c".into(), None, Some("step")).unwrap_err();
-        assert_eq!(err.inner.code, "kind_not_allowed");
-        // An empty list allows nothing (a lockdown posture).
-        let sealed = brain_server::profile::Profile {
-            name: "sealed".into(),
-            kinds: Some(vec![]),
-            ..Default::default()
-        };
-        assert!(apply_profile_ingest(Some(&sealed), "t".into(), "c".into(), None, None).is_err());
-    }
-
-    /// an explicit `ttl_days`
-    /// becomes the row's absolute expiry — and an explicit `expires_at` always
-    /// wins over a later ttl_days (the row-wins invariant).
-    #[test]
-    fn ttl_days_converts_and_explicit_expires_wins() {
-        let before = chrono::Utc::now().timestamp();
-        let e = ttl_days_to_expires(None, Some(30))
-            .unwrap()
-            .expect("converted");
-        let after = chrono::Utc::now().timestamp();
-        assert!(
-            e >= before + 30 * 86_400 && e <= after + 30 * 86_400,
-            "ttl 30 → now+30d (got {e}, window {before}..{after})"
-        );
-        assert_eq!(
-            ttl_days_to_expires(Some(123), Some(30)).unwrap(),
-            Some(123),
-            "explicit expires_at wins over ttl_days"
-        );
-        assert_eq!(ttl_days_to_expires(None, None).unwrap(), None);
-        assert!(ttl_days_to_expires(None, Some(0)).is_err());
-        assert!(ttl_days_to_expires(None, Some(99_999)).is_err());
     }
 }

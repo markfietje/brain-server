@@ -64,6 +64,7 @@
 
 pub mod domains_admin;
 pub mod dsar;
+pub mod ingest;
 pub mod lifecycle;
 pub mod purge;
 pub mod recall;
@@ -101,8 +102,8 @@ mod pins {
         ("domains.rs", 0),
         ("clients.rs", 26),
         ("workflow.rs", 23),
-        ("ingest.rs", 22),
-        ("govern.rs", 18),
+        ("ingest.rs", 3),
+        ("govern.rs", 6),
         ("webhooks.rs", 14),
         ("procedure.rs", 13),
         ("compliance.rs", 13),
@@ -209,14 +210,19 @@ mod pins {
     /// clients.rs 44 → 26 — every register statement out; the residue is
     /// other surfaces' hold-fence/transfer pins that fixture on the
     /// register) legitimately lowered it to 272 in the SAME commit that
-    /// moved the SQL. A table edit that
+    /// moved the SQL. The Aqueduct extraction (the retrieval surfaces:
+    /// ingest.rs 22 → 3 — every statement of the store tx out to
+    /// `service::ingest`; the residue is comment substrings — and the
+    /// stale govern.rs row caught up at 18 → 6, the retention family's
+    /// Plumb-era move the table had never lowered) legitimately lowered it
+    /// to 241 in the SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
     #[test]
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 272,
+            sum, 241,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );
@@ -434,6 +440,67 @@ mod pins {
                 "layer violation in src/service/recall.rs: production source names \
                  `{token}` — the recall core takes connections and domain types; \
                  the pool schedule and HTTP mapping stay at the handler"
+            );
+        }
+    }
+
+    /// v1.28.50 "Aqueduct" — the ingest core's compile-time + source proof
+    /// that the structured-ingest service is handler-free and
+    /// transport-free:
+    ///
+    /// 1. TYPE-LEVEL: every core fn of `service::ingest` coerces to a plain
+    ///    fn pointer whose parameters are connections/transactions, pure
+    ///    inputs, and domain types — if a future edit hands the core the
+    ///    pool authority, server state, or a handler type, these coercions
+    ///    stop compiling.
+    /// 2. SOURCE-LEVEL: production source never names a transport type, the
+    ///    pool authority, or a handler type. `#[cfg(test)]` regions are
+    ///    exempt — pins may name what they refute.
+    #[test]
+    fn ingest_core_is_handler_free() {
+        use crate::service::ingest as ig;
+
+        type Ttl = fn(Option<i64>, Option<i64>, i64) -> Result<Option<i64>, ig::IngestError>;
+        type Profile = fn(
+            Option<&brain_server::profile::Profile>,
+            &str,
+            &str,
+            Option<String>,
+            Option<&str>,
+        ) -> Result<(String, String, Option<String>), ig::IngestError>;
+        type Screen = fn(&str, &str, Option<&str>, Option<&str>) -> Result<bool, ig::IngestError>;
+        type Store = fn(
+            &rusqlite::Transaction<'_>,
+            &ig::StoreRecord<'_>,
+        ) -> Result<ig::StoreOutcome, ig::IngestError>;
+        let _ttl: Ttl = ig::ttl_days_to_expires;
+        let _profile: Profile = ig::apply_profile_ingest;
+        let _screen: Screen = ig::screen_structured;
+        let _store: Store = ig::store_record;
+
+        const FORBIDDEN: &[&str] = &[
+            "DomainRegistry",
+            "AppState",
+            "Pool",
+            "axum",
+            "StatusCode",
+            "Json",
+            "HandlerError",
+            "handlers::",
+        ];
+        let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service/ingest.rs");
+        assert!(f.exists(), "sanity: the ingest core must exist");
+        let text = std::fs::read_to_string(&f).expect("service file must be readable");
+        let prod = text
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first slice");
+        for token in FORBIDDEN {
+            assert!(
+                !prod.contains(token),
+                "layer violation in src/service/ingest.rs: production source names \
+                 `{token}` — the ingest core takes transactions and domain types; \
+                 the transport and HTTP mapping stay at the handler"
             );
         }
     }
