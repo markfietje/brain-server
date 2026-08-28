@@ -440,6 +440,25 @@ impl IntoResponse for HandlerError {
     }
 }
 
+/// The handler-boundary map for the shared knowledge-purge core
+/// (`crate::service::purge`, the Quarry move): storage failures render the
+/// internal-error body with the rusqlite message VERBATIM; the in-function
+/// legal-hold backstop renders the exact shared `409 legal_hold_active`
+/// envelope every erasure route emits — same bytes as the pre-move
+/// `HandlerError::conflict_with` construction inside the primitive.
+impl From<crate::service::purge::PurgeError> for HandlerError {
+    fn from(e: crate::service::purge::PurgeError) -> Self {
+        match e {
+            crate::service::purge::PurgeError::Database(m) => HandlerError::internal(m),
+            crate::service::purge::PurgeError::LegalHold(held) => HandlerError::conflict_with(
+                "legal_hold_active",
+                "one or more ids are under legal hold",
+                serde_json::json!({ "held": held }),
+            ),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AuthZ gate
 // ---------------------------------------------------------------------------

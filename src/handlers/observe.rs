@@ -1,4 +1,9 @@
-//! observability + compliance-workflow handlers.
+//! observability + compliance-workflow handlers — the protocol adapters for
+//! the rights surface. ALL storage for this aggregate lives in the service
+//! core (`crate::service::dsar` + `crate::service::dsar::sweep` +
+//! `crate::service::purge`, the Quarry move); what stays here is exactly the
+//! adapter law: parse → OptPrincipal → authorize → spawn_blocking (borrow a
+//! connection per pool) → core call → response.
 //!
 //! The recall read-event trace endpoint (`/recall/{id}/trace`) replays
 //! the decision path of a recorded read event (the audit row is hash-only; the
@@ -19,12 +24,62 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_QUERY};
+use crate::service::dsar::{
+    DsarError, DsarLedger, backfill_certificate, certificate_json, certificate_view,
+    list_dsar_page, tombstones_page,
+};
 
-/// Max derived_from walk depth for a DSAR purge. Derived chains are operator-
-/// created and short (see `consolidate.rs`); a bounded walk keeps the tx small.
-const DERIVED_MAX_DEPTH: usize = 8;
-/// Max tombstone rows returned by `GET /tombstones` per page.
-const MAX_TOMBSTONES: i64 = 1000;
+/// Map a core [`DsarError`] onto this route family's FROZEN probe-blind
+/// vocabulary: storage failures → the internal-error body with the message
+/// verbatim; a missing / foreign-tenant certificate row → the certificate
+/// route's 404 (existence never leaks); the knowledge-purge backstop fence →
+/// the shared `409 legal_hold_active` envelope every erasure route renders.
+impl From<DsarError> for HandlerError {
+    fn from(e: DsarError) -> Self {
+        match e {
+            DsarError::Database(m) => HandlerError::internal(m),
+            DsarError::NotFound => HandlerError::not_found("no dsar request with this id"),
+            DsarError::LegalHold(held) => HandlerError::conflict_with(
+                "legal_hold_active",
+                "one or more ids are under legal hold",
+                serde_json::json!({ "held": held }),
+            ),
+        }
+    }
+}
+
+/// `POST /dsar` request. `subject` is the owner/principal being actioned;
+/// `action` is `export` | `purge` | `both`; `dry_run` previews the
+/// footprint — locate + bundle build only, nothing is purged or written.
+#[derive(Debug, Deserialize)]
+pub struct DsarRequest {
+    pub subject: String,
+    #[serde(default = "default_dsar_action")]
+    pub action: String,
+    #[serde(default)]
+    pub dry_run: bool,
+    /// the subject's jurisdiction (country code,
+    /// e.g. `eu`, `us`). Absent → the legacy generic Art 17 window/rights
+    /// surface. When set, the response carries the jurisdiction's curated
+    /// rights + its deadline (GDPR 1 month, CCPA 45 days, PH reasonable, ...).
+    #[serde(default)]
+    pub jurisdiction: Option<String>,
+    /// the mechanism (e.g. `scc-eu-2021`) recorded
+    /// on the deletion certificate — the per-law proof of compliance. Free-text
+    /// so the operator records exactly what they signed.
+    #[serde(default)]
+    pub mechanism: Option<String>,
+    /// Exact-subject matching for the residue sweeps (traces, proposals,
+    /// workflow state): default is the erasure-safe substring sweep; an
+    /// operator may narrow to exact matches to avoid over-matching short or
+    /// wildcard-like subjects.
+    #[serde(default)]
+    pub subject_exact: bool,
+}
+
+fn default_dsar_action() -> String {
+    "both".to_string()
+}
 
 // ---------------------------------------------------------------------------
 // recall trace
@@ -62,54 +117,11 @@ pub async fn get_trace(
     }
 }
 
-// ---------------------------------------------------------------------------
-// DSAR orchestration
-// ---------------------------------------------------------------------------
-
 /// `POST /dsar` request. `subject` is the owner/principal being actioned;
-/// `action` is `export` | `purge` | `both`; `dry_run` previews the
-/// footprint — locate + bundle build only, nothing is purged or written.
-#[derive(Debug, Deserialize)]
-pub struct DsarRequest {
-    pub subject: String,
-    #[serde(default = "default_dsar_action")]
-    pub action: String,
-    #[serde(default)]
-    pub dry_run: bool,
-    /// the subject's jurisdiction (country code,
-    /// e.g. `eu`, `us`). Absent → the legacy generic Art 17 window/rights
-    /// surface. When set, the response carries the jurisdiction's curated
-    /// rights + its deadline (GDPR 1 month, CCPA 45 days, PH reasonable, ...).
-    #[serde(default)]
-    pub jurisdiction: Option<String>,
-    /// the mechanism (e.g. `scc-eu-2021`) recorded
-    /// on the deletion certificate — the per-law proof of compliance. Free-text
-    /// so the operator records exactly what they signed.
-    #[serde(default)]
-    pub mechanism: Option<String>,
-    /// Exact-subject matching for the residue sweeps (traces, proposals,
-    /// workflow state): default is the erasure-safe substring sweep; an
-    /// operator may narrow to exact matches to avoid over-matching short or
-    /// wildcard-like subjects.
-    #[serde(default)]
-    pub subject_exact: bool,
-}
-
-fn default_dsar_action() -> String {
-    "both".to_string()
-}
-
-/// the DSAR Art 17 erasure deadline — `created_at` +
-/// the operator's window, a pure mirror of `gate::proposal_deadline`. The
-/// client countdown ticks against this absolute deadline, so an operator's
-/// `BRAIN_DSAR_WINDOW_DAYS` override is authoritative (no client window guess).
-pub fn dsar_deadline(created_at: i64) -> i64 {
-    created_at + crate::config::dsar_window_secs()
-}
-
 /// `POST /dsar` response: the workflow row id + the deletion certificate. In
 /// dry-run mode the certificate is `None` and `footprint` carries the would-be
-/// deletion footprint instead.
+/// deletion footprint instead. The footprint type is the core's
+/// (`crate::service::dsar::Footprint`) — the preview is the core's answer.
 #[derive(Debug, Serialize)]
 pub struct DsarResponse {
     pub id: i64,
@@ -132,23 +144,7 @@ pub struct DsarResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub footprint: Option<Footprint>,
-}
-
-/// the would-be DSAR deletion footprint — what a live purge would
-/// locate + export + delete, without executing any write. The GDPR Art 17
-/// preview a DPO reads before clicking "erase".
-#[derive(Debug, Serialize, Clone)]
-pub struct Footprint {
-    pub roots: usize,
-    pub derived: usize,
-    pub export_rows: usize,
-    pub tombstones: usize,
-    pub dsar_rows: usize,
-    /// Governed-workflow rows a live purge would reach (matched runs +
-    /// their dependents; frozen runs counted as matched).
-    pub workflow_rows: usize,
-    pub dry_run: bool,
+    pub footprint: Option<crate::service::dsar::Footprint>,
 }
 
 /// `POST /dsar` — the GDPR Art 15/17 workflow: locate every record for the
@@ -227,10 +223,11 @@ pub async fn post_dsar(
     let outcome = tokio::task::spawn_blocking(move || -> Result<DsarOutcome, HandlerError> {
         let now = chrono::Utc::now().timestamp();
         let dry_run = req.dry_run;
-        let mut runs: Vec<DsarPoolRun> = Vec::with_capacity(pools.len());
+        let mut runs: Vec<crate::service::dsar::DsarRun> = Vec::with_capacity(pools.len());
 
         // 1+2. Non-global pools first: each locates + purges in its own tx and
-        //      returns its bundle + purged ids for the aggregate.
+        //      returns its bundle + purged ids for the aggregate. The core
+        //      borrows one connection per pool; the pool handles stay here.
         let mut cross_bundle: Vec<(String, String)> = Vec::new();
         let mut cross_ids: Vec<i64> = Vec::new();
         let global_idx = pools
@@ -289,7 +286,7 @@ pub async fn post_dsar(
 
         // 5. Dry-run preview: aggregate the read-only footprint across pools.
         if dry_run {
-            let mut fp = Footprint {
+            let mut fp = crate::service::dsar::Footprint {
                 roots: 0,
                 derived: 0,
                 export_rows: 0,
@@ -360,14 +357,7 @@ pub async fn post_dsar(
 
         // backfill the certificate onto the ledger row committed
         // with the purge (best-effort — the row + times already prove it).
-        if let Err(e) = global_conn.execute(
-            "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
-            rusqlite::params![certificate, ledger_id],
-        ) {
-            tracing::warn!(
-                "DSAR certificate backfill failed (ledger row {ledger_id}, subject {subject}): {e}"
-            );
-        }
+        backfill_certificate(&global_conn, ledger_id, &subject, &certificate);
 
         Ok(DsarOutcome::Completed {
             id: ledger_id,
@@ -425,7 +415,7 @@ pub async fn post_dsar(
         deadline: jurisdiction
             .as_deref()
             .map(|j| crate::transfers::dsar_deadline_for(created_at, j))
-            .unwrap_or_else(|| dsar_deadline(created_at)),
+            .unwrap_or_else(|| crate::service::dsar::dsar_deadline(created_at)),
         jurisdiction,
         rights,
         certificate: Some(cert),
@@ -441,7 +431,7 @@ enum DsarOutcome {
         certified_at: String,
         created_at: i64,
     },
-    Footprint(Footprint),
+    Footprint(crate::service::dsar::Footprint),
 }
 
 /// Trim + validate a DSAR subject + action, shared by every DSAR surface so the
@@ -470,53 +460,14 @@ fn normalize_dsar_subject(subject: &str, action: &str) -> Result<String, Handler
     Ok(subject)
 }
 
-/// The DSAR deletion-certificate JSON shape — shared by the generic
-/// `post_dsar` (aggregated across domain pools) and the per-client
-/// `run_dsar_subject` (a single pool) so the audit-visible contract lives in
-/// one place. `purged_ids`/`held`/`tombstone_root` are the run(s)' erased sets;
-/// jurisdiction/mechanism are the request's per-law stamp (advisory).
-/// the honest physical-purge posture to disclose on the
-/// deletion certificate. Defaults to the disclosed logical posture when no run
-/// carried a stricter one (a strict domain's certificate states secure_delete).
-#[allow(clippy::too_many_arguments)]
-fn certificate_json(
-    subject: &str,
-    action: &str,
-    found_count: usize,
-    purged_ids: Vec<i64>,
-    held: Vec<serde_json::Value>,
-    jurisdiction: Option<&str>,
-    mechanism: Option<&str>,
-    tombstone_root: Option<i64>,
-    certified_at: &str,
-    chain_head: Option<String>,
-    remanence: &str,
-) -> String {
-    serde_json::json!({
-        "subject": subject,
-        "action": action,
-        "found_count": found_count,
-        "purged_ids": purged_ids,
-        "region": brain_server::storage_layout::region(),
-        "held_ids": held,
-        "jurisdiction": jurisdiction,
-        "mechanism": mechanism,
-        "tombstone_root": tombstone_root,
-        "certified_at": certified_at,
-        "chain_head": chain_head,
-        "physical_purge": remanence,
-    })
-    .to_string()
-}
-
 /// Run a DSAR against ONE domain pool and produce the full `DsarResponse`
 /// (certificate or dry-run footprint), jurisdiction-stamped. The shared seam
 /// for the per-client surface — the real locate/purge/export/certificate +
-/// legal-hold deferral all live in `run_dsar_pool`; this only composes a single
-/// run with the caller's resolved pool + jurisdiction + mechanism (no new purge
-/// path). The audit + chain anchor stay on the global pool (the hash chain is
-/// the server's single registry of record), while the ledger row lives in the
-/// run's domain pool.
+/// legal-hold deferral all live in the core (`crate::service::dsar::run_pool`);
+/// this only composes a single run with the caller's resolved pool +
+/// jurisdiction + mechanism (no new purge path). The audit + chain anchor stay
+/// on the global pool (the hash chain is the server's single registry of
+/// record), while the ledger row lives in the run's domain pool.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_dsar_subject(
     state: Arc<AppState>,
@@ -565,7 +516,7 @@ pub(crate) async fn run_dsar_subject(
                 jurisdiction: None,
                 rights: Vec::new(),
                 certificate: None,
-                footprint: Some(Footprint {
+                footprint: Some(crate::service::dsar::Footprint {
                     roots: run.roots,
                     derived: run.derived,
                     export_rows: run.export_rows,
@@ -615,18 +566,11 @@ pub(crate) async fn run_dsar_subject(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        if let Err(e) = conn.execute(
-            "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
-            rusqlite::params![certificate, ledger_id],
-        ) {
-            tracing::warn!(
-                "DSAR certificate backfill failed (ledger row {ledger_id}, subject {subject}): {e}"
-            );
-        }
+        backfill_certificate(&conn, ledger_id, &subject, &certificate);
         let deadline = jurisdiction
             .as_deref()
             .map(|j| crate::transfers::dsar_deadline_for(now, j))
-            .unwrap_or_else(|| dsar_deadline(now));
+            .unwrap_or_else(|| crate::service::dsar::dsar_deadline(now));
         let cert: serde_json::Value = serde_json::from_str(&certificate)
             .map_err(|_| HandlerError::internal("stored certificate is not valid JSON"))?;
         Ok(DsarResponse {
@@ -656,34 +600,11 @@ pub struct DsarLedgerQuery {
     pub offset: Option<i64>,
 }
 
-/// One `dsar_requests` ledger row. `created_at` +
-/// `completed_at` are the clock inputs; `deadline` is the server-computed Art
-/// 17 erasure window so the client ticks against the SAME number the `POST`
-/// response carries — no client mirror of `BRAIN_DSAR_WINDOW_DAYS`. The
-/// subject is the operator's operand (Admin surface; no redaction).
-#[derive(Debug, Serialize)]
-pub struct DsarLedgerRow {
-    pub id: i64,
-    pub subject: String,
-    pub action: String,
-    pub status: String,
-    pub created_at: Option<i64>,
-    pub deadline: Option<i64>,
-    pub completed_at: Option<i64>,
-}
-
-/// `GET /dsar` response: a bounded, newest-first page + the total row count.
-#[derive(Debug, Serialize)]
-pub struct DsarLedger {
-    pub requests: Vec<DsarLedgerRow>,
-    pub total: i64,
-}
-
 /// `GET /dsar` — the DSAR ledger list (Admin). Past DSAR requests
 /// were only visible via the `/audit` side-channel; this is the first-class
 /// registry the client countdown renders. Bounded (default 100, clamped to
 /// `MAX_MULTI_GET`), newest-first (`ORDER BY id DESC`), the audit pagination
-/// idiom.
+/// idiom. Storage lives in the core's `list_dsar_page`.
 pub async fn list_dsar(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -700,47 +621,11 @@ pub async fn list_dsar(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        list_dsar_page(&conn, limit, offset)
+        list_dsar_page(&conn, limit, offset).map_err(HandlerError::from)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     Ok(Json(body))
-}
-
-/// Pure ledger query — extracted so the ordering, the page
-/// boundary, and the total count are unit-testable without an HTTP stack
-/// (the `page_decayed` idiom).
-pub(crate) fn list_dsar_page(
-    conn: &rusqlite::Connection,
-    limit: i64,
-    offset: i64,
-) -> Result<DsarLedger, HandlerError> {
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, subject, action, status, created_at, completed_at
-             FROM dsar_requests ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let requests = stmt
-        .query_map(rusqlite::params![limit, offset], |r| {
-            let created_at = r.get::<_, Option<i64>>(4)?;
-            Ok(DsarLedgerRow {
-                id: r.get(0)?,
-                subject: r.get(1)?,
-                action: r.get(2)?,
-                status: r.get(3)?,
-                created_at,
-                deadline: created_at.map(dsar_deadline),
-                completed_at: r.get(5)?,
-            })
-        })
-        .map_err(|e| HandlerError::internal(e.to_string()))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(DsarLedger { requests, total })
 }
 
 /// `GET /tombstones?subject=&since=&limit=` — the queryable deletion registry
@@ -764,7 +649,10 @@ pub async fn list_tombstones(
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let subject = q.subject.clone();
     let since = q.since;
-    let limit = q.limit.map(|l| l.clamp(1, MAX_TOMBSTONES)).unwrap_or(100);
+    let limit = q
+        .limit
+        .map(|l| l.clamp(1, crate::service::dsar::MAX_TOMBSTONES))
+        .unwrap_or(100);
     // tenant scoping. A non-superuser admin only sees tombstones
     // whose `reason` (owner:<subject>) matches their own `sub`. Superuser
     // (`None` principal — opaque/loopback) is unconstrained. The query
@@ -774,59 +662,7 @@ pub async fn list_tombstones(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let mut sql = String::from(
-            "SELECT knowledge_id, content_hash, purged_at, reason, origin_id \
-               FROM tombstones",
-        );
-        let mut clauses: Vec<String> = Vec::new();
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if let Some(s) = &subject {
-            clauses.push("reason = ?".to_string());
-            params.push(Box::new(format!("owner:{s}")));
-        }
-        // Tenant scoping: a non-superuser admin is restricted to their own
-        // subject's tombstones, regardless of the `subject` query param.
-        if let Some(owner_reason) = &tenant_filter {
-            // Caller-supplied `subject` (if any) must agree with the principal's
-            // own sub; a cross-tenant request is rejected here at the SQL layer.
-            if subject.is_none() {
-                clauses.push("reason = ?".to_string());
-                params.push(Box::new(owner_reason.clone()));
-            } else if subject.as_deref() != Some(owner_reason.trim_start_matches("owner:")) {
-                // Cross-tenant request → empty result (don't leak existence).
-                return Ok(serde_json::json!({ "tombstones": [] }));
-            }
-        }
-        if let Some(t) = since {
-            clauses.push("purged_at >= ?".to_string());
-            params.push(Box::new(t));
-        }
-        if !clauses.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&clauses.join(" AND "));
-        }
-        sql.push_str(" ORDER BY purged_at DESC LIMIT ?");
-        params.push(Box::new(limit));
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
-        let rows = stmt
-            .query_map(refs.as_slice(), |r| {
-                Ok(serde_json::json!({
-                    "knowledge_id": r.get::<_, i64>(0)?,
-                    "content_hash": r.get::<_, Option<String>>(1)?,
-                    "purged_at": r.get::<_, Option<i64>>(2)?,
-                    "reason": r.get::<_, Option<String>>(3)?,
-                    "origin_id": r.get::<_, Option<i64>>(4)?,
-                }))
-            })
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let mut out = Vec::new();
-        for v in rows.flatten() {
-            out.push(v);
-        }
-        Ok(serde_json::json!({ "tombstones": out }))
+        tombstones_page(&conn, subject, since, limit, tenant_filter).map_err(HandlerError::from)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -836,7 +672,8 @@ pub async fn list_tombstones(
 /// `GET /dsar/{id}/certificate` — re-fetch a past deletion certificate. The
 /// stored `chain_head` is the audit-chain link at certification time; the
 /// response recomputes `verify_chain` live so the caller sees whether the
-/// chain the certificate anchored to still holds.
+/// chain the certificate anchored to still holds. Row fetch + tenant gate +
+/// chain verification live in the core's `certificate_view`.
 pub async fn get_dsar_certificate(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -853,32 +690,7 @@ pub async fn get_dsar_certificate(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        // Fetch subject + certificate in one query so the tenant check happens
-        // before the certificate body is read.
-        let row: Option<(Option<String>, Option<String>)> = conn
-            .query_row(
-                "SELECT subject, certificate FROM dsar_requests WHERE id = ?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .ok();
-        match row {
-            Some((Some(stored_subject), Some(c))) => {
-                // Tenant gate: if the principal is scoped, the row's subject must match.
-                if let Some(sub) = &tenant_sub
-                    && stored_subject.as_str() != sub.as_str()
-                {
-                    return Err(HandlerError::not_found("no dsar request with this id"));
-                }
-                let v: serde_json::Value = serde_json::from_str(&c)
-                    .map_err(|_| HandlerError::internal("stored certificate is not valid JSON"))?;
-                Ok(serde_json::json!({
-                    "certificate": v,
-                    "chain_verifies": crate::audit::verify_chain(&conn),
-                }))
-            }
-            _ => Err(HandlerError::not_found("no dsar request with this id")),
-        }
+        certificate_view(&conn, id, tenant_sub).map_err(HandlerError::from)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -886,31 +698,8 @@ pub async fn get_dsar_certificate(
 }
 
 // ---------------------------------------------------------------------------
-// Art 19 webhook (opt-in) + shared helpers
+// Art 19 webhook (opt-in, handler-owned egress) + the per-pool seam
 // ---------------------------------------------------------------------------
-
-/// ledger retention. Completed `dsar_requests` rows older than
-/// `retention_days` are deleted (the erasure record's remaining value is the
-/// certificate + the audit chain, not the ledger row itself). Returns the
-/// number of rows removed. Pure; best-effort callers swallow the result.
-pub(crate) fn purge_stale_dsar_ledger(conn: &rusqlite::Connection, retention_days: u32) -> i64 {
-    if retention_days == 0 {
-        return 0;
-    }
-    let now = chrono::Utc::now().timestamp();
-    // was `.unwrap_or(0)` — a silent failure hid the
-    // prune; warn instead of pretending.
-    match conn.execute(
-        "DELETE FROM dsar_requests WHERE status = 'completed' AND completed_at < ?1",
-        rusqlite::params![now - (retention_days as i64) * 86400],
-    ) {
-        Ok(n) => n as i64,
-        Err(e) => {
-            tracing::warn!("DSAR ledger retention prune failed: {e}");
-            0
-        }
-    }
-}
 
 /// Art 19 onward-notification. When
 /// `BRAIN_DSAR_WEBHOOK_URL` is set, a completed DSAR purge POSTs
@@ -962,179 +751,11 @@ fn hmac_hex(secret: &[u8], body: &[u8]) -> Option<String> {
     Some(hex::encode(mac.finalize().into_bytes()))
 }
 
-/// Collect all rows of `SELECT <i64>` sql (one `?` param) into a Vec.
-fn collect_ids(
-    tx: &rusqlite::Transaction,
-    sql: &str,
-    param: &str,
-) -> Result<Vec<i64>, HandlerError> {
-    let mut stmt = tx
-        .prepare(sql)
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let rows = stmt
-        .query_map(rusqlite::params![param], |r| r.get::<_, i64>(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    Ok(rows.flatten().collect())
-}
-
-/// build the portable export bundle (the JSON a live purge embeds
-/// into its ledger row) for the given locate result. Extracted so the dry-run
-/// preview and the live path run the EXACT same query — behavior-preserving.
-pub(crate) fn build_export_bundle(
-    tx: &rusqlite::Transaction,
-    subject: &str,
-    roots: &[i64],
-    derived: &[(i64, i64)],
-) -> Result<String, HandlerError> {
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    let mut stmt = tx
-        .prepare(
-            "SELECT id, content, node_kind, assertion_kind, confidence,
-                    owner, observed_at, valid_from, valid_to, lawful_basis, purpose
-             FROM knowledge WHERE id IN (?1)",
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    for id in roots.iter().chain(derived.iter().map(|(d, _)| d)) {
-        let q = stmt
-            .query_map(rusqlite::params![id], |row| {
-                Ok(serde_json::json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "content": row.get::<_, String>(1)?,
-                    "memory_kind": row.get::<_, String>(2)?,
-                    "assertion_kind": row.get::<_, String>(3)?,
-                    "confidence": row.get::<_, f32>(4)?,
-                    "owner": row.get::<_, Option<String>>(5)?,
-                    "observed_at": row.get::<_, Option<String>>(6)?,
-                    "valid_from": row.get::<_, Option<String>>(7)?,
-                    "valid_to": row.get::<_, Option<String>>(8)?,
-                    // the lawful-basis + purpose
-                    // tags surfaced on the export/DSAR bundle (Art 5/6 evidence).
-                    "lawful_basis": row.get::<_, Option<String>>(9)?,
-                    "purpose": row.get::<_, Option<String>>(10)?,
-                }))
-            })
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        for v in q.flatten() {
-            rows.push(v);
-        }
-    }
-    // Channel rows the subject can access under Art 15 — the SAME three
-    // match arms the purge's sweep erases (author / addressee / content),
-    // so what the certificate erases and what the bundle discloses stay
-    // symmetric. Raw text matches the knowledge rows' posture (the bundle
-    // goes to the subject or their DPO, never to a public surface).
-    let mut notes: Vec<serde_json::Value> = Vec::new();
-    let mut note_stmt = tx
-        .prepare(
-            "SELECT id, run_id, kind, author, content, addressed_to, created_at
-             FROM case_notes
-              WHERE author = ?1 OR addressed_to = ?1 OR content LIKE ?2
-              ORDER BY id",
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let q = note_stmt
-        .query_map(rusqlite::params![subject, format!("%{subject}%")], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, i64>(0)?,
-                "run_id": row.get::<_, i64>(1)?,
-                "kind": row.get::<_, String>(2)?,
-                "author": row.get::<_, String>(3)?,
-                "content": row.get::<_, String>(4)?,
-                "addressed_to": row.get::<_, Option<String>>(5)?,
-                "created_at": row.get::<_, i64>(6)?,
-            }))
-        })
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    for v in q.flatten() {
-        notes.push(v);
-    }
-    drop(note_stmt);
-    Ok(serde_json::json!({
-        "exported_at": chrono::Utc::now().to_rfc3339(),
-        // the residency stamp on the DSAR bundle too.
-        "region": brain_server::storage_layout::region(),
-        "subject": subject,
-        "knowledge": rows,
-        "channel_notes": notes,
-    })
-    .to_string())
-}
-
-/// count prior deletions for a subject — the tombstone reasons a live
-/// purge writes: `owner:<subject>` for roots, and `derived` (scoped to one of
-/// this subject's roots via `origin_id`) for derived descendants. The ledger
-/// trace a DPO sees in the preview.
-fn count_subject_tombstones(
-    tx: &rusqlite::Transaction,
-    subject: &str,
-    roots: &[i64],
-) -> Result<i64, HandlerError> {
-    let owner_reason = format!("owner:{subject}");
-    if roots.is_empty() {
-        return tx
-            .query_row(
-                "SELECT COUNT(*) FROM tombstones WHERE reason = ?1",
-                rusqlite::params![owner_reason],
-                |r| r.get(0),
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()));
-    }
-    let placeholders = vec!["?"; roots.len()].join(",");
-    let sql = format!(
-        "SELECT COUNT(*) FROM tombstones
-          WHERE reason = ?1 OR (reason = 'derived' AND origin_id IN ({placeholders}))"
-    );
-    let mut stmt = tx
-        .prepare(&sql)
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let params: Vec<&dyn rusqlite::ToSql> =
-        roots.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
-    // ?1 = the owner reason, then one per root for the IN list.
-    let mut all_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(params.len() + 1);
-    all_params.push(&owner_reason);
-    all_params.extend(params.iter().copied());
-    let count: i64 = stmt
-        .query_row(all_params.as_slice(), |r| r.get(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    Ok(count)
-}
-
-/// one DSAR pool's outcome — the locate + purge result for a
-/// single domain DB (global or `brain-<domain>.db`). Counts for the dry-run
-/// footprint, ids + bundle for the cross-domain aggregate, and the ledger row
-/// identity when this pool is the registry of record (global).
-struct DsarPoolRun {
-    roots: usize,
-    derived: usize,
-    export_rows: usize,
-    tombstones: usize,
-    dsar_rows: usize,
-    /// Governed-workflow rows this pool's sweep reached (matched runs +
-    /// dependents; frozen runs counted as matched).
-    workflow_rows: usize,
-    /// Live-purge ids from this pool (certificate payload).
-    purged_ids: Vec<i64>,
-    /// ids under legal hold that erasure DEFERRED,
-    /// with their reasons — listed on the certificate as the why. A held id
-    /// is never purged here.
-    held: Vec<serde_json::Value>,
-    /// This pool's export bundle (cross-domain aggregate input).
-    bundle: Option<String>,
-    /// `Some(ledger row id)` when this pool wrote the ledger row (global).
-    ledger_id: Option<i64>,
-    tombstone_root: Option<i64>,
-    /// the honest physical-purge posture for this
-    /// domain (secure_delete+checkpoint for a strict profile, else the disclosed
-    /// logical posture). Surfaced verbatim on the deletion certificate.
-    remanence: String,
-}
-
-/// Run locate + [dry-run preview | purge + ledger] for ONE domain pool.
-/// `write_ledger` is true only for the global pool (the registry of record);
-/// `aggregate_bundle_hash` carries the cross-domain SHA-256 in multi-db mode
-/// (the global run's own bundle is digested in shim mode — byte-identical to
-/// the purge + ledger row commit in the
-/// same tx.
+/// Run one pool's DSAR through the core. The THIN per-pool seam: borrow a
+/// connection from the caller's resolved pool and hand it to
+/// `crate::service::dsar::run_pool` — the pool handle never crosses into the
+/// core, and every statement (locate / export / purge / sweeps / ledger /
+/// pragma posture / checkpoint) lives there now.
 #[allow(clippy::too_many_arguments)] // 9 run fields; a struct would add ceremony to the single-erasure path
 fn run_dsar_pool(
     pool: &crate::Pool,
@@ -1146,846 +767,20 @@ fn run_dsar_pool(
     write_ledger: bool,
     aggregate_bundle_hash: Option<&str>,
     subject_exact: bool,
-) -> Result<DsarPoolRun, HandlerError> {
+) -> Result<crate::service::dsar::DsarRun, HandlerError> {
     let mut conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-    // a strict-posture domain erases with
-    // `secure_delete=ON` (freed page images overwritten) + a WAL TRUNCATE
-    // checkpoint after commit, so the certificate's erasure claim has teeth.
-    // Best-effort profile lookup: an unreadable/missing bind defaults to the
-    // disclosed logical posture (nothing ever fails closed into a lie).
-    let strict = brain_server::profile::profile_for_domain(&conn, domain)
-        .ok()
-        .flatten()
-        .is_some_and(|p| p.pii_strict());
-    // The remanence claim must reflect the pragma ATTEMPT,
-    // not just the profile flag — on a failed `secure_delete=ON` the
-    // certificate must downgrade to the disclosed logical posture instead of
-    // asserting an overwrite that never happened. Dry-run/export-only keep
-    // the would-be posture (the pragma only runs on a live purge).
-    let mut secure_delete_active = strict;
-    if strict && !dry_run && matches!(action, "purge" | "both") {
-        // was `let _ =` — a failed secure_delete
-        // weakens the remanence claim on the certificate; warn, don't certify.
-        if let Err(e) = conn.execute_batch("PRAGMA secure_delete=ON;") {
-            tracing::warn!("secure_delete=ON failed for DSAR purge: {e}");
-            secure_delete_active = false;
-        }
-    }
-    let remanence = if secure_delete_active {
-        "secure_delete+checkpoint (backup files excepted)".to_string()
-    } else {
-        "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
-    };
-    let tx = conn
-        .transaction()
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-
-    // 1. Locate: owner rows + transitive derived_from descendants.
-    let (roots, derived) = dsar_locate(&tx, subject)?;
-
-    // 2. Export bundle (portable JSON; raw PII is never included). Shared by
-    //    the live purge path and the dry-run preview — the same SELECT.
-    let export_bundle = if matches!(action, "export" | "both") {
-        Some(build_export_bundle(&tx, subject, &roots, &derived)?)
-    } else {
-        None
-    };
-
-    // 2a. Dry-run: a read-only footprint preview. Locate + bundle already ran;
-    //     count what a live purge WOULD delete, then drop the tx untouched.
-    if dry_run {
-        let export_rows = match &export_bundle {
-            Some(b) => {
-                // The bundle always carries `{exported_at, subject, knowledge}`.
-                serde_json::from_str::<serde_json::Value>(b)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("knowledge")
-                            .and_then(|k| k.as_array())
-                            .map(|a| a.len())
-                    })
-                    .unwrap_or(0)
-            }
-            None => 0, // `action == "purge"` builds no bundle; nothing exported
-        };
-        let tombstones = count_subject_tombstones(&tx, subject, &roots)?;
-        let dsar_rows: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
-                rusqlite::params![subject],
-                |r| r.get(0),
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let workflow_rows: usize = if subject.is_empty() {
-            0
-        } else {
-            tx.query_row(
-                "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
-                rusqlite::params![format!("%{subject}%")],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))? as usize
-        };
-        return Ok(DsarPoolRun {
-            roots: roots.len(),
-            derived: derived.len(),
-            export_rows,
-            tombstones: tombstones as usize,
-            dsar_rows: dsar_rows as usize,
-            workflow_rows,
-            purged_ids: Vec::new(),
-            held: Vec::new(),
-            bundle: None,
-            ledger_id: None,
-            tombstone_root: None,
-            remanence,
-        });
-    }
-
-    // 3. Purge (all-or-nothing with the export, same tx): roots with the
-    //    owner reason, derived descendants with `derived` + origin id.
-    let mut purged_ids: Vec<i64> = Vec::new();
-    let mut held: Vec<serde_json::Value> = Vec::new();
-    let mut workflow_rows = 0;
-    if matches!(action, "purge" | "both") {
-        // a held id is frozen against DSAR erasure too
-        // (the WORM-lite posture). The subject's located set that is under an
-        // active legal hold is DEFERRED — not purged — and listed (+ reasons)
-        // on the certificate so the subject is told *why* erasure is deferred.
-        let all_targets: Vec<i64> = roots
-            .iter()
-            .copied()
-            .chain(derived.iter().map(|(d, _)| *d))
-            .collect();
-        let held_map = crate::legal_hold::active_reasons(&tx, &all_targets)?;
-        let deferred: std::collections::HashSet<i64> = held_map.keys().copied().collect();
-        for (kid, reasons) in &held_map {
-            held.push(serde_json::json!({ "id": kid, "reasons": reasons }));
-        }
-        let free = |ids: &[i64]| {
-            ids.iter()
-                .filter(|i| !deferred.contains(i))
-                .copied()
-                .collect::<Vec<_>>()
-        };
-        for root in &roots {
-            let closure: Vec<i64> = derived
-                .iter()
-                .filter(|(_, r)| r == root)
-                .map(|(d, _)| *d)
-                .collect();
-            if !closure.is_empty() {
-                purged_ids.extend(free(&closure).iter().copied());
-            }
-        }
-        let _ = crate::handlers::gate::purge_chunk_ids(
-            &tx,
-            &free(&roots),
-            now,
-            &format!("owner:{subject}"),
-            None,
-        )?;
-        for root in &roots {
-            let closure: Vec<i64> = derived
-                .iter()
-                .filter(|(_, r)| r == root)
-                .map(|(d, _)| *d)
-                .collect();
-            if !closure.is_empty() {
-                let _ = crate::handlers::gate::purge_chunk_ids(
-                    &tx,
-                    &free(&closure),
-                    now,
-                    "derived",
-                    Some(*root),
-                )?;
-            }
-        }
-        purged_ids.extend(free(&roots).iter().copied());
-    }
-
-    // trace residue sweep. The trace no longer
-    // stores the raw query (only its xxh3-64 hash), so the subject can't
-    // appear in it — this sweep remains as a defensive net against any
-    // future field that does embed personal data. Best-effort (short
-    // common subjects over-match slightly; erasure-safe direction).
-    if matches!(action, "purge" | "both") && !subject.is_empty() {
-        let (sql, pat): (&str, String) = if subject_exact {
-            (
-                "DELETE FROM recall_traces WHERE trace_json = ?1",
-                subject.to_string(),
-            )
-        } else {
-            (
-                "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
-                format!("%{subject}%"),
-            )
-        };
-        tx.execute(sql, rusqlite::params![pat])
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        // proposals hold raw candidate content with no owner column,
-        // so a DSAR could never locate them and their plaintext (possibly PII
-        // about the subject) survived a "complete" erasure. Sweep them by the
-        // subject verbatim — the same erasure-safe over-match posture as the
-        // trace sweep above. ponytail: this is a literal `LIKE %subject%`, not a
-        // semantic owner join (proposals are operator-reviewed candidates, not
-        // subject-attributed rows); the review-queue provenance for the subject
-        // is intentionally erased with the memory per Art 17.
-        // was `let _ =` — a silent failure would leave
-        // subject PII in a "complete" erasure; propagate (tx rolls back).
-        let (sql, pat): (&str, String) = if subject_exact {
-            (
-                "DELETE FROM proposals WHERE content = ?1",
-                subject.to_string(),
-            )
-        } else {
-            (
-                "DELETE FROM proposals WHERE content LIKE ?1",
-                format!("%{subject}%"),
-            )
-        };
-        tx.execute(sql, rusqlite::params![pat])
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-    }
-
-    // Governed-workflow sweep: matched runs + their dependents go with the
-    // erasure; runs frozen by an active legal hold are DEFERRED and listed
-    // on the certificate beside the held chunks.
-    if matches!(action, "purge" | "both") {
-        let wf = crate::workflow::erasure::sweep_subject(&tx, subject)?;
-        workflow_rows = wf.runs_matched + wf.dependent_rows;
-        for (run_id, reasons) in wf.deferred {
-            held.push(serde_json::json!({ "run": run_id, "reasons": reasons }));
-        }
-    } else {
-        // Dry-run/export: count what a live purge WOULD reach.
-        if !subject.is_empty() {
-            let (sql, pat): (&str, String) = if subject_exact {
-                (
-                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json = ?1",
-                    subject.to_string(),
-                )
-            } else {
-                (
-                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
-                    format!("%{subject}%"),
-                )
-            };
-            workflow_rows =
-                tx.query_row(sql, rusqlite::params![pat], |r| r.get::<_, i64>(0))
-                    .map_err(|e| HandlerError::internal(e.to_string()))? as usize;
-        }
-    }
-
-    // 4. Store the export's SHA-256 (replacing
-    //    the brute-forceable xxh3-64 digest of a DELETED-content payload),
-    //    never the raw bundle — the ledger's job is to prove the purge
-    //    happened, not to keep a copy of the erasure payload.
-    let mut ledger_id: Option<i64> = None;
-    if write_ledger {
-        let bundle_hash = aggregate_bundle_hash.map(str::to_string).or_else(|| {
-            export_bundle
-                .as_deref()
-                .map(crate::handlers::gate::sha256_hex)
-        });
-        tx.execute(
-            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
-             VALUES (?1, ?2, 'completed', ?3, NULL, ?4, ?4)",
-            rusqlite::params![subject, action, bundle_hash, now],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        ledger_id = Some(tx.last_insert_rowid());
-    }
-    tx.commit()
-        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-    // TRUNCATE the WAL so a just-erased subject's page images do
-    // not linger there (reuse the integrity.rs import pattern). Best-effort —
-    // a checkpoint failure must not fail an otherwise-successful erasure.
-    if !dry_run && matches!(action, "purge" | "both") {
-        // was `let _ =` — a failed TRUNCATE leaves the
-        // erased subject's page images in the WAL; warn, never certify silence.
-        if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
-            tracing::warn!("wal_checkpoint(TRUNCATE) failed after DSAR purge: {e}");
-        }
-    }
-
-    Ok(DsarPoolRun {
-        roots: roots.len(),
-        derived: derived.len(),
-        export_rows: 0,
-        tombstones: 0,
-        dsar_rows: 0,
-        workflow_rows,
-        purged_ids,
-        held,
-        bundle: export_bundle,
-        ledger_id,
-        tombstone_root: roots.first().copied(),
-        remanence,
-    })
-}
-
-/// Locate every record for a DSAR subject: content rows by `owner`, plus all
-/// transitive `derived_from` descendants (bounded by `DERIVED_MAX_DEPTH`).
-/// Returns `(root_ids, derived_pairs)` where each derived pair is
-/// `(derived_id, root_id)` — the purge stamps `origin_id` so the deletion
-/// registry can point a derived chunk back at the subject's root record.
-#[allow(clippy::type_complexity)]
-pub(crate) fn dsar_locate(
-    tx: &rusqlite::Transaction,
-    subject: &str,
-) -> Result<(Vec<i64>, Vec<(i64, i64)>), HandlerError> {
-    let roots: Vec<i64> = collect_ids(tx, "SELECT id FROM knowledge WHERE owner = ?1", subject)?;
-    let mut derived: Vec<(i64, i64)> = Vec::new(); // (derived_id, root_id)
-    let mut seen: std::collections::HashSet<i64> = roots.iter().copied().collect();
-    let mut frontier: Vec<i64> = roots.clone();
-    for _ in 0..DERIVED_MAX_DEPTH {
-        if frontier.is_empty() {
-            break;
-        }
-        let placeholders = vec!["?"; frontier.len()].join(",");
-        let sql = format!(
-            "SELECT el.to_chunk FROM evidence_links el
-             WHERE el.kind = 'derived_from' AND el.from_chunk IN ({placeholders})"
-        );
-        let mut stmt = tx
-            .prepare(&sql)
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let mut next: Vec<i64> = Vec::new();
-        {
-            let params: Vec<&dyn rusqlite::ToSql> =
-                frontier.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-            let rows = stmt
-                .query_map(params.as_slice(), |r| r.get::<_, i64>(0))
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for v in rows.flatten() {
-                if seen.insert(v) {
-                    next.push(v);
-                    derived.push((v, roots[0]));
-                }
-            }
-        }
-        frontier = next;
-    }
-    Ok((roots, derived))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fresh_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE dsar_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject TEXT NOT NULL,
-                action TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                export_bundle TEXT,
-                certificate TEXT,
-                created_at INTEGER NOT NULL,
-                completed_at INTEGER
-             );",
-        )
-        .unwrap();
-        conn
-    }
-
-    #[test]
-    fn dsar_ledger_stores_hash_not_raw_bundle() {
-        let conn = fresh_conn();
-        let now = chrono::Utc::now().timestamp();
-        conn.execute(
-            "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
-             VALUES ('alice', 'both', 'completed', ?1, ?2, ?2)",
-            rusqlite::params![crate::handlers::gate::sha256_hex("personal export payload"), now],
-        )
-        .unwrap();
-        let stored: String = conn
-            .query_row("SELECT export_bundle FROM dsar_requests", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(
-            stored,
-            crate::handlers::gate::sha256_hex("personal export payload")
-        );
-        assert_ne!(stored, "personal export payload");
-        // The hash is a bounded non-reversible digest, never the content.
-        assert_eq!(stored.len(), 64);
-    }
-
-    #[test]
-    fn purge_deletes_only_old_completed_rows() {
-        let conn = fresh_conn();
-        let now = chrono::Utc::now().timestamp();
-        let insert = |subject: &str, status: &str, completed: i64| {
-            conn.execute(
-                "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
-                 VALUES (?1, 'purge', ?2, NULL, 0, ?3)",
-                rusqlite::params![subject, status, completed],
-            )
-            .unwrap();
-        };
-        let thirty_one_days_ago = now - 31 * 86400;
-        let one_day_ago = now - 86400;
-        insert("old_completed", "completed", thirty_one_days_ago);
-        insert("fresh_completed", "completed", one_day_ago);
-        insert("pending", "pending", thirty_one_days_ago); // never purged
-        let deleted = purge_stale_dsar_ledger(&conn, 30);
-        assert_eq!(deleted, 1);
-        let remaining: i64 = conn
-            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(remaining, 2);
-        // The pending erasure record survives regardless of age.
-        let subjects: Vec<String> = conn
-            .prepare("SELECT subject FROM dsar_requests ORDER BY subject")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .flatten()
-            .collect();
-        assert_eq!(subjects, vec!["fresh_completed", "pending"]);
-    }
-
-    #[test]
-    fn purge_zero_retention_is_a_noop() {
-        let conn = fresh_conn();
-        let now = chrono::Utc::now().timestamp();
-        conn.execute(
-            "INSERT INTO dsar_requests(subject, action, status, export_bundle, created_at, completed_at)
-             VALUES ('x', 'purge', 'completed', NULL, 0, ?1)",
-            rusqlite::params![now - 400 * 86400],
-        )
-        .unwrap();
-        assert_eq!(purge_stale_dsar_ledger(&conn, 0), 0);
-    }
-
-    #[test]
-    fn ledger_row_is_committed_atomically_with_purge_tx_commit() {
-        // the ledger insert used to happen AFTER the
-        // tx.commit() — a crash between the two lost the erasure record. Now
-        // the insert rides in the SAME tx as the purge; prove the row exists
-        // the moment the tx commits by simulating the handler's sequence.
-        let mut conn = fresh_conn();
-        let tx = conn.transaction().unwrap();
-        let now = chrono::Utc::now().timestamp();
-        tx.execute(
-            "INSERT INTO dsar_requests(subject, action, status, export_bundle, certificate, created_at, completed_at)
-             VALUES ('alice', 'both', 'completed', NULL, NULL, ?1, ?1)",
-            rusqlite::params![now],
-        )
-        .unwrap();
-        let id = tx.last_insert_rowid();
-        tx.commit().unwrap();
-        let (subj, status): (String, String) = conn
-            .query_row(
-                "SELECT subject, status FROM dsar_requests WHERE id = ?1",
-                rusqlite::params![id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!((subj.as_str(), status.as_str()), ("alice", "completed"));
-        // Certificate is backfilled post-commit (best-effort).
-        let _ = conn.execute(
-            "UPDATE dsar_requests SET certificate = ?1 WHERE id = ?2",
-            rusqlite::params!["cert", id],
-        );
-        let cert: String = conn
-            .query_row(
-                "SELECT certificate FROM dsar_requests WHERE id = ?1",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(cert, "cert");
-    }
-
-    /// A fresh connection with the tables the M1 helpers touch: `knowledge`
-    /// (owner + export columns), `evidence_links` (derived walk), `tombstones`
-    /// (deletion registry), `dsar_requests` (ledger history), and
-    /// `case_notes` (the export builder's channel arm).
-    fn helper_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE case_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain TEXT NOT NULL,
-                run_id INTEGER NOT NULL,
-                author TEXT NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'note',
-                content TEXT NOT NULL,
-                addressed_to TEXT,
-                parent_note_id INTEGER,
-                state TEXT NOT NULL DEFAULT 'visible',
-                decided_at INTEGER,
-                created_at INTEGER NOT NULL
-             );
-             CREATE TABLE knowledge (
-                id INTEGER PRIMARY KEY,
-                content TEXT,
-                content_hash TEXT,
-                node_kind TEXT DEFAULT 'chunk',
-                assertion_kind TEXT DEFAULT 'stated',
-                confidence REAL DEFAULT 0.5,
-                owner TEXT,
-                observed_at TEXT,
-                valid_from TEXT,
-                valid_to TEXT,
-                lawful_basis TEXT,
-                purpose TEXT
-             );
-             CREATE TABLE evidence_links (
-                kind TEXT,
-                from_chunk INTEGER,
-                to_chunk INTEGER
-             );
-             CREATE TABLE tombstones (
-                id INTEGER PRIMARY KEY,
-                reason TEXT,
-                origin_id INTEGER
-             );
-             CREATE TABLE dsar_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                subject TEXT NOT NULL,
-                action TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending',
-                export_bundle TEXT,
-                certificate TEXT,
-                created_at INTEGER NOT NULL,
-                completed_at INTEGER
-             );",
-        )
-        .unwrap();
-        conn
-    }
-
-    /// a dry-run footprint reports the exact would-be counts and
-    /// writes NOTHING — the knowledge rows survive, no ledger row, no new
-    /// tombstone. The preview is a pure read.
-    #[test]
-    fn dsar_dry_run_footprint_counts_and_writes_nothing() {
-        let mut conn = helper_conn();
-        conn.execute_batch(
-            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
-                 (1, 'alice root', 'h1', 'alice@example.com'),
-                 (2, 'alice derived', 'h2', NULL),
-                 (3, 'bob chunk', 'h3', 'bob@example.com');
-             INSERT INTO evidence_links(kind, from_chunk, to_chunk)
-                 VALUES ('derived_from', 1, 2);
-             INSERT INTO tombstones(reason, origin_id) VALUES
-                 ('owner:alice@example.com', NULL),
-                 ('derived', 1);
-             INSERT INTO dsar_requests(subject, action, status, created_at, completed_at)
-                 VALUES ('alice@example.com', 'both', 'completed', 0, 0);",
-        )
-        .unwrap();
-        let tx = conn.transaction().unwrap();
-        let (roots, derived) = dsar_locate(&tx, "alice@example.com").unwrap();
-        assert_eq!(roots, vec![1]);
-        assert_eq!(derived, vec![(2, 1)]);
-        let bundle = build_export_bundle(&tx, "alice@example.com", &roots, &derived).unwrap();
-        let export_rows: usize = serde_json::from_str::<serde_json::Value>(&bundle)
-            .unwrap()
-            .get("knowledge")
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .len();
-        assert_eq!(export_rows, 2, "bundle carries both root + derived");
-        let tombstones = count_subject_tombstones(&tx, "alice@example.com", &roots).unwrap();
-        let dsar_rows: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM dsar_requests WHERE subject = ?1",
-                rusqlite::params!["alice@example.com"],
-                |r| r.get(0),
-            )
-            .unwrap();
-        // Footprint assembly mirrors the handler's dry-run branch.
-        let fp = Footprint {
-            roots: roots.len(),
-            derived: derived.len(),
-            export_rows,
-            tombstones: tombstones as usize,
-            dsar_rows: dsar_rows as usize,
-            workflow_rows: 0,
-            dry_run: true,
-        };
-        assert_eq!(fp.roots, 1);
-        assert_eq!(fp.derived, 1);
-        assert_eq!(fp.export_rows, 2);
-        assert_eq!(fp.tombstones, 2, "owner reason + derived-scoped row");
-        assert_eq!(fp.dsar_rows, 1, "ledger history counted");
-        // Nothing written by the read-only helpers. Drop the tx (a read-only
-        // tx the handler would drop untouched) before reading the conn.
-        drop(tx);
-        let remaining: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(remaining, 3, "no knowledge deleted");
-        let toms: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tombstones", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(toms, 2, "no new tombstone");
-        let led: i64 = conn
-            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(led, 1, "no ledger row written");
-    }
-
-    /// `build_export_bundle` is behavior-preserving — the
-    /// extracted builder produces the same JSON the live purge path embeds.
-    #[test]
-    fn dsar_export_bundle_builder_matches_live_shape() {
-        // Full-migration fixture: the bundle now also reads case_notes.
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
-        conn.execute_batch(
-            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
-                 (1, 'alice root', 'h1', 'alice@example.com'),
-                 (2, 'alice derived', 'h2', NULL);
-             INSERT INTO evidence_links(kind, from_chunk, to_chunk)
-                 VALUES ('derived_from', 1, 2);",
-        )
-        .unwrap();
-        // Channel rows across all three match arms: authored by the subject,
-        // addressed to her, and content-bearing on someone else's note.
-        conn.execute_batch(
-            "INSERT INTO workflow_runs(id, domain, kind, state_json, status, created_at, updated_at)
-             VALUES (7,'acme','interview','{}','active',1,1);
-             INSERT INTO case_notes(domain, run_id, author, kind, content, addressed_to, state, created_at) VALUES
-                 ('acme', 7, 'alice@example.com', 'note', 'my own note', NULL, 'visible', 1),
-                 ('acme', 7, 'bob', 'invite', 'ping', 'alice@example.com', 'pending', 2),
-                 ('acme', 7, 'carol', 'note', 'call alice@example.com back', NULL, 'visible', 3),
-                 ('acme', 7, 'dave', 'note', 'unrelated chatter', NULL, 'visible', 4);",
-        )
-        .unwrap();
-        let tx = conn.transaction().unwrap();
-        let (roots, derived) = dsar_locate(&tx, "alice@example.com").unwrap();
-        let bundle = build_export_bundle(&tx, "alice@example.com", &roots, &derived).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&bundle).unwrap();
-        assert_eq!(v["subject"], "alice@example.com");
-        let k = v["knowledge"].as_array().unwrap();
-        assert_eq!(k.len(), 2);
-        let ids: Vec<i64> = k.iter().map(|r| r["id"].as_i64().unwrap()).collect();
-        assert_eq!(ids, vec![1, 2]);
-        // Same per-row shape the live handler relies on.
-        assert!(k[0].get("content").is_some());
-        assert!(k[0].get("memory_kind").is_some());
-        // Art-15 symmetry: the bundle discloses exactly what the purge
-        // erases — author + addressee + content arms, never the unrelated row.
-        let notes = v["channel_notes"].as_array().unwrap();
-        assert_eq!(
-            notes
-                .iter()
-                .map(|n| n["id"].as_i64().unwrap())
-                .collect::<Vec<_>>(),
-            vec![1, 2, 3],
-            "authored + addressed-to + content-bearing; unrelated excluded"
-        );
-    }
-
-    /// a multi-domain DSAR purges the subject in EVERY
-    /// pool but writes the ledger row + aggregate hash only on the global pool
-    /// (the registry of record) — mirroring the handler's run order (non-global
-    /// first, global last). Each pool commits its own transaction, so a crash
-    /// between pools erases-but-under-reports (erasure-safe direction).
-    #[test]
-    fn cross_domain_dsar_purges_all_pools_and_ledgers_once() {
-        use r2d2_sqlite::SqliteConnectionManager;
-
-        crate::register_sqlite_vec();
-        let mk_pool = || {
-            let mgr = SqliteConnectionManager::memory();
-            let pool: crate::Pool = r2d2::Pool::builder()
-                .max_size(1)
-                .build(mgr)
-                .expect("build pool");
-            let mut conn = pool.get().unwrap();
-            brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-            drop(conn);
-            pool
-        };
-        let global = mk_pool();
-        let health = mk_pool();
-        let now = chrono::Utc::now().timestamp();
-        let subject = "alice@example.com";
-
-        for pool in [&global, &health] {
-            let conn = pool.get().unwrap();
-            conn.execute(
-                "INSERT INTO knowledge (content, content_hash, owner) VALUES
-                     ('alice root in this db', 'h1', ?1)",
-                rusqlite::params![subject],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO knowledge (content, content_hash) VALUES ('alice derived here', 'h2')",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO evidence_links(kind, from_chunk, to_chunk) VALUES ('derived_from', 1, 2)",
-                [],
-            )
-            .unwrap();
-        }
-
-        // Handler order: non-global pools first (local txs, no ledger)...
-        let health_run = run_dsar_pool(
-            &health, "global", subject, "both", false, now, false, None, false,
-        )
-        .unwrap();
-        assert!(!health_run.purged_ids.is_empty(), "health pool erased");
-        assert_eq!(health_run.ledger_id, None, "non-global pool never ledgers");
-        // ...then global, with the cross-domain aggregate hash.
-        let aggregate = crate::handlers::gate::sha256_hex(
-            &serde_json::json!({"subject": subject, "domains": ["health"]}).to_string(),
-        );
-        let global_run = run_dsar_pool(
-            &global,
-            "global",
-            subject,
-            "both",
-            false,
-            now,
-            true,
-            Some(&aggregate),
-            false,
-        )
-        .unwrap();
-        assert!(!global_run.purged_ids.is_empty(), "global pool erased");
-        assert!(
-            global_run.ledger_id.is_some(),
-            "global pool owns the ledger row"
-        );
-
-        for (name, pool) in [("global", &global), ("health", &health)] {
-            let conn = pool.get().unwrap();
-            let remaining: i64 = conn
-                .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
-                .unwrap_or(0);
-            assert_eq!(remaining, 0, "{name} knowledge fully purged");
-            let toms: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tombstones WHERE reason = ?1",
-                    rusqlite::params![format!("owner:{subject}")],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            assert_eq!(toms, 1, "{name} tombstoned the root");
-        }
-        // Exactly one ledger row, on global, carrying the aggregate digest —
-        // never a pool-local bundle.
-        let conn = global.get().unwrap();
-        let (count, stored): (i64, String) = conn
-            .query_row(
-                "SELECT COUNT(*), COALESCE(MAX(export_bundle), '') FROM dsar_requests",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "one ledger row across all pools");
-        assert_eq!(stored, aggregate, "ledger stores the cross-domain digest");
-        let health_led: i64 = health
-            .get()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
-            .unwrap_or(0);
-        assert_eq!(health_led, 0, "non-global pool has no ledger rows");
-    }
-
-    /// a DSAR purge must erase the review-queue residue and the graph
-    /// residue that v1.20.24 left behind — proposals have no owner column so
-    /// their raw candidate content (possible PII about the subject) survived a
-    /// "complete" erasure, and the entity-scoped relationship delete referenced
-    /// a non-existent `entities.knowledge_id` so relationships + PII-named
-    /// entity nodes survived every purge. Both must now go, while shared
-    /// entities survive.
-    #[test]
-    fn dsar_purge_erases_proposals_and_orphaned_entities() {
-        use r2d2_sqlite::SqliteConnectionManager;
-        crate::register_sqlite_vec();
-        let mgr = SqliteConnectionManager::memory();
-        let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");
-        let mut conn = pool.get().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-        let subject = "alice@example.com";
-        // Root knowledge owned by the subject (will be purged).
-        conn.execute(
-            "INSERT INTO knowledge(id, content, content_hash, owner) VALUES (1, 'alice root', 'h1', ?1)",
-            rusqlite::params![subject],
-        )
-        .unwrap();
-        // A proposal whose raw content mentions the subject (PII in the queue).
-        conn.execute(
-            "INSERT INTO proposals(id, kind, content, novelty, salience, status, created_at)
-             VALUES (1, 'fact', 'contact alice@example.com re: x', 1.0, 0.5, 'pending', 1)",
-            [],
-        )
-        .unwrap();
-        // Two entities: 10 is PII-named + only in the purged relationship;
-        // 11 is shared with a surviving chunk.
-        conn.execute(
-            "INSERT INTO entities(id, name) VALUES (10, 'alice@example.com')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO entities(id, name) VALUES (11, 'shared-concept')",
-            [],
-        )
-        .unwrap();
-        conn.execute("INSERT INTO entities(id, name) VALUES (12, 'survivor')", [])
-            .unwrap();
-        // A surviving chunk (no owner) holding the shared entity's relationship.
-        conn.execute(
-            "INSERT INTO knowledge(id, content, content_hash) VALUES (2, 'survivor chunk', 'h2')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO relationships(from_entity_id, to_entity_id, relation_type, knowledge_id)
-             VALUES (10, 11, 'relates_to', 1), (11, 12, 'relates_to', 2)",
-            [],
-        )
-        .unwrap();
-        drop(conn);
-
-        let now = chrono::Utc::now().timestamp();
-        let run = run_dsar_pool(
-            &pool, "global", subject, "both", false, now, true, None, false,
-        )
-        .unwrap();
-        assert!(!run.purged_ids.is_empty(), "subject root erased");
-
-        let conn = pool.get().unwrap();
-        let proposals: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM proposals WHERE content LIKE ?1",
-                rusqlite::params![format!("%{subject}%")],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(proposals, 0, "proposal PII erased with the memory");
-        let e10: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entities WHERE id=10", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let e11: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entities WHERE id=11", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(e10, 0, "orphaned PII-named entity erased");
-        assert_eq!(e11, 1, "shared entity survives");
-        let rels: i64 = conn
-            .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(rels, 1, "only the surviving chunk's relationship remains");
-    }
+    crate::service::dsar::run_pool(
+        &mut conn,
+        domain,
+        subject,
+        action,
+        dry_run,
+        now,
+        write_ledger,
+        aggregate_bundle_hash,
+        subject_exact,
+    )
+    .map_err(HandlerError::from)
 }

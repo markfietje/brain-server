@@ -1,27 +1,55 @@
-//! Erasure reach for governed-workflow data: DSAR sweeps cover the
-//! workflow tables per domain, and an active legal hold freezes a run
-//! exactly as it freezes a chunk.
+//! The workflow sweep — what erasure reaches inside the governed-workflow
+//! tables. Folded in from `workflow/erasure.rs` by the Quarry milestone so
+//! the DSAR core is ONE home for the erasure story (locate → export → purge
+//! → certificate and every table the purge touches).
+//!
+//! DSAR sweeps cover the workflow tables per domain, and an active legal
+//! hold freezes a run exactly as it freezes a chunk.
 //!
 //! Hold convention: a hold row whose `knowledge_id` is negative holds
 //! `workflow_runs` id `-knowledge_id` (chunk ids are positive, so no chunk
 //! path can collide). A frozen run is DEFERRED by a DSAR — listed on the
 //! certificate — never silently deleted.
+//!
+//! FK-children map for the `workflow_runs` parent DELETE (declared FKs,
+//! `PRAGMA foreign_keys=ON`; the Quarry move's map, written from the schema):
+//! - `handover_offers.run_id` (NOT NULL) → deleted before the parent;
+//! - `case_notes.run_id` (NOT NULL) → deleted before the parent (run arm),
+//!   plus the subject arms (author / addressee / content) across ALL runs;
+//!   `parent_note_id` is a soft self-reference (no declared FK, no hazard);
+//! - `crm_cases.run_id` (NULLable) → UNLINKED (`run_id = NULL`), the
+//!   external CRM case itself is out of reach by design;
+//! - `case_status_refs.run_id` → PURGED for erased runs, REVOKED for runs a
+//!   legal hold defers (the public page goes dark, the evidence stays);
+//! - `outbox.run_id`, `workflow_steps.run_id`, `findings.run_id`,
+//!   `contradictions.run_id` → soft refs (no declared FK), deleted
+//!   explicitly before the parent; `outbox.parent_id` self-reference is
+//!   safe within one statement (immediate FKs check at statement end);
+//! - `delegations.run_id` (NOT NULL), `channel_threads.case_run_id` (NOT
+//!   NULL) → declared FK children the pre-Quarry sweep MISSED (Mesh and
+//!   Switchboard added them after erasure.rs was written; both schema
+//!   comments already claimed "rows die with their DSAR sweep"). The
+//!   Quarry move's FK map exposed the gap; both are now deleted with the
+//!   run — the release's ONE intended behavior delta, on the failure path
+//!   only (previously the whole DSAR aborted on the FK; fail-closed, but
+//!   the erasure was unreachable for such subjects);
+//! - `presence` / `principal_skills` (exact-principal deletes) and
+//!   `shifts.roster_json` (REWRITE, the shift survives) are principal-keyed,
+//!   not run-keyed — childless rows;
+//! - `consent_registry.subject_hash` → keyed by the re-hashed subject, no
+//!   FK, no dependents.
 
 use std::collections::HashSet;
 
-use crate::handlers::HandlerError;
+use super::DsarError;
 
 /// Workflow-run ids frozen by an active legal hold (`knowledge_id = -run_id`).
-pub(crate) fn frozen_runs(conn: &rusqlite::Connection) -> Result<HashSet<i64>, HandlerError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT -knowledge_id FROM legal_holds
-             WHERE released_at IS NULL AND knowledge_id < 0",
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, i64>(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+pub(crate) fn frozen_runs(conn: &rusqlite::Connection) -> Result<HashSet<i64>, DsarError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT -knowledge_id FROM legal_holds
+         WHERE released_at IS NULL AND knowledge_id < 0",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
     Ok(rows.flatten().collect())
 }
 
@@ -59,18 +87,16 @@ pub(crate) struct SweepReport {
 pub(crate) fn sweep_subject(
     tx: &rusqlite::Transaction<'_>,
     subject: &str,
-) -> Result<SweepReport, HandlerError> {
+) -> Result<SweepReport, DsarError> {
     let mut report = SweepReport::default();
     if subject.is_empty() {
         return Ok(report);
     }
     let pattern = format!("%{subject}%");
-    let mut stmt = tx
-        .prepare("SELECT id FROM workflow_runs WHERE state_json LIKE ?1 ORDER BY id")
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let mut stmt =
+        tx.prepare("SELECT id FROM workflow_runs WHERE state_json LIKE ?1 ORDER BY id")?;
     let targets: Vec<i64> = stmt
-        .query_map(rusqlite::params![pattern], |r| r.get(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?
+        .query_map(rusqlite::params![pattern], |r| r.get(0))?
         .flatten()
         .collect();
     drop(stmt);
@@ -92,7 +118,7 @@ pub(crate) fn sweep_subject(
         &deferred_ids,
         chrono::Utc::now().timestamp(),
     )
-    .map_err(|e| HandlerError::internal(e.to_string()))?;
+    .map_err(|e| DsarError::Database(e.to_string()))?;
     for run_id in targets {
         if frozen.contains(&run_id) {
             report
@@ -101,122 +127,108 @@ pub(crate) fn sweep_subject(
             continue;
         }
         // Contradictions referencing this run's findings (either side or resolver).
-        report.dependent_rows += tx
-            .execute(
-                "DELETE FROM contradictions WHERE id IN (
-                     SELECT c.id FROM contradictions c
-                     LEFT JOIN findings fa ON fa.id = c.finding_a_id
-                     LEFT JOIN findings fb ON fb.id = c.finding_b_id
-                     WHERE c.run_id = ?1 OR fa.run_id = ?1 OR fb.run_id = ?1)",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        report.dependent_rows += tx
-            .execute(
-                "DELETE FROM findings WHERE run_id = ?1",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        report.dependent_rows += tx
-            .execute(
-                "DELETE FROM workflow_steps WHERE run_id = ?1",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM contradictions WHERE id IN (
+                 SELECT c.id FROM contradictions c
+                 LEFT JOIN findings fa ON fa.id = c.finding_a_id
+                 LEFT JOIN findings fb ON fb.id = c.finding_b_id
+                 WHERE c.run_id = ?1 OR fa.run_id = ?1 OR fb.run_id = ?1)",
+            rusqlite::params![run_id],
+        )?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM findings WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM workflow_steps WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
         // Channel + handover + CRM-linkage rows are FK children of the run:
         // they MUST go before the run row or the delete violates the foreign
         // key and the whole erasure fails (offers predated the case_notes
         // sweep; the Bridges linkage predates both — all three families clear
         // here, before their parent row; the external CRM case itself is out
         // of reach by design, only this server's link row dies).
-        report.dependent_rows += tx
-            .execute(
-                "DELETE FROM case_notes WHERE run_id = ?1",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM case_notes WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
         // The status ref dies WITH its run (Keystone: a purged subject must
         // not leave an unguessable-but-live public page behind).
         report.status_refs += crate::workflow::case_status::purge_for_runs(tx, &[run_id])
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        report.dependent_rows += tx
-            .execute(
-                "DELETE FROM handover_offers WHERE run_id = ?1",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        report.dependent_rows += tx
-            .execute(
-                "UPDATE crm_cases SET run_id = NULL WHERE run_id = ?1",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        report.dependent_rows += tx
-            .execute(
-                "DELETE FROM outbox WHERE run_id = ?1",
-                rusqlite::params![run_id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+            .map_err(|e| DsarError::Database(e.to_string()))?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM handover_offers WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
+        report.dependent_rows += tx.execute(
+            "UPDATE crm_cases SET run_id = NULL WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM outbox WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
+        // Mesh delegations + Switchboard channel threads are declared FK
+        // children of the run (see the module FK-children map): pre-Quarry
+        // sweeps missed both, so a subject whose runs carried them failed the
+        // whole DSAR on the parent delete. They die with the run now —
+        // fail-path delta, pinned by
+        // `dsar_sweep_takes_the_run_fk_children_delegations_and_channel_threads`.
+        report.dependent_rows += tx.execute(
+            "DELETE FROM delegations WHERE run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
+        report.dependent_rows += tx.execute(
+            "DELETE FROM channel_threads WHERE case_run_id = ?1",
+            rusqlite::params![run_id],
+        )?;
         report.runs_deleted += 1;
         tx.execute(
             "DELETE FROM workflow_runs WHERE id = ?1",
             rusqlite::params![run_id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+        )?;
     }
 
     // ── Consent registry (Outreach): rows are keyed by the hashed subject,
     // so the sweep re-hashes `subject` exactly as the writer did and takes
     // every channel/purpose row in one exact match.
-    report.consent_rows += tx
-        .execute(
-            "DELETE FROM consent_registry WHERE subject_hash = ?1",
-            rusqlite::params![crate::workflow::outreach::hash_subject(subject)],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    report.consent_rows += tx.execute(
+        "DELETE FROM consent_registry WHERE subject_hash = ?1",
+        rusqlite::params![crate::workflow::outreach::hash_subject(subject)],
+    )?;
 
     // ── Crew sweep: a principal id is
     // personal data wherever it sits. Presence + skills rows go by exact
     // principal; shift rosters are REWRITTEN to drop the subject (the shift
     // itself survives — it is schedule evidence, not subject data).
-    report.crew_rows += tx
-        .execute(
-            "DELETE FROM presence WHERE principal = ?1",
-            rusqlite::params![subject],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    report.crew_rows += tx
-        .execute(
-            "DELETE FROM principal_skills WHERE principal = ?1",
-            rusqlite::params![subject],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    report.crew_rows += tx.execute(
+        "DELETE FROM presence WHERE principal = ?1",
+        rusqlite::params![subject],
+    )?;
+    report.crew_rows += tx.execute(
+        "DELETE FROM principal_skills WHERE principal = ?1",
+        rusqlite::params![subject],
+    )?;
     // Channel sweep: a note or invite carries the subject's personal data
     // BOTH as authorship/addressee ids AND possibly in content — the exact-
     // principal arms cover rows on ANY run (over-match, erasure-safe
     // direction), and the content arm matches the proposals-sweep posture
     // (a `LIKE %subject%` over stored text, not a semantic owner join).
     // Run-level dependents above took their rows already.
-    report.channel_rows += tx
-        .execute(
-            "DELETE FROM case_notes WHERE author = ?1 OR addressed_to = ?1",
-            rusqlite::params![subject],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    report.channel_rows += tx
-        .execute(
-            "DELETE FROM case_notes WHERE content LIKE ?1",
-            rusqlite::params![format!("%{subject}%")],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let mut stmt = tx
-        .prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1")
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    report.channel_rows += tx.execute(
+        "DELETE FROM case_notes WHERE author = ?1 OR addressed_to = ?1",
+        rusqlite::params![subject],
+    )?;
+    report.channel_rows += tx.execute(
+        "DELETE FROM case_notes WHERE content LIKE ?1",
+        rusqlite::params![format!("%{subject}%")],
+    )?;
+    let mut stmt = tx.prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1")?;
     let rostered: Vec<(i64, String)> = stmt
         .query_map(rusqlite::params![format!("%{subject}%")], |r| {
             Ok((r.get(0)?, r.get(1)?))
-        })
-        .map_err(|e| HandlerError::internal(e.to_string()))?
+        })?
         .flatten()
         .collect();
     drop(stmt);
@@ -224,7 +236,7 @@ pub(crate) fn sweep_subject(
         let Ok(roster) = serde_json::from_str::<Vec<String>>(&json) else {
             // A corrupt roster cell fails closed: the whole DSAR errors (tx
             // rolls back) rather than certifying an erasure that skipped it.
-            return Err(HandlerError::internal(format!(
+            return Err(DsarError::Database(format!(
                 "shift {id} roster_json is corrupt; erasure refused"
             )));
         };
@@ -236,12 +248,11 @@ pub(crate) fn sweep_subject(
         if kept.len() != roster.len() {
             report.crew_rows += roster.len() - kept.len();
             let new_json =
-                serde_json::to_string(&kept).map_err(|e| HandlerError::internal(e.to_string()))?;
+                serde_json::to_string(&kept).map_err(|e| DsarError::Database(e.to_string()))?;
             tx.execute(
                 "UPDATE shifts SET roster_json = ?1 WHERE id = ?2",
                 rusqlite::params![new_json, id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+            )?;
         }
     }
     Ok(report)
@@ -575,5 +586,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(linked, None, "the erased run's linkage is gone");
+    }
+
+    /// The Quarry FK-children map's gap closes HERE and is pinned HERE:
+    /// `delegations` (Mesh) and `channel_threads` (Switchboard) are declared
+    /// FK children of `workflow_runs` (NOT NULL, no cascade). Pre-Quarry the
+    /// sweep missed both, so a DSAR over a subject whose runs carried a
+    /// delegation or a thread violated the FK and aborted the whole erasure.
+    /// Both die with the run now — before the parent row.
+    #[test]
+    fn dsar_sweep_takes_the_run_fk_children_delegations_and_channel_threads() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        let run = seed_run(&conn, "acme", r#"{"subject":"jane@example.com"}"#);
+        conn.execute(
+            "INSERT INTO delegations(domain, run_id, from_principal, to_principal, task, created_at)
+             VALUES ('acme', ?1, 'jane', 'bob', 'screened task', 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_threads(channel, tenant, conversation_ref, domain, case_run_id, created_at)
+             VALUES ('whatsapp', 'acme', 'conv-1', 'acme', ?1, 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane@example.com").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(rep.runs_deleted, 1);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delegations"),
+            0,
+            "the run's delegation dies with the erasure"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM channel_threads"),
+            0,
+            "the run's channel thread dies with the erasure"
+        );
     }
 }

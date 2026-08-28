@@ -744,7 +744,7 @@ pub(crate) async fn run_recall(
                     }
                     // piggyback the DSAR ledger retention on the
                     // same read-event prune cadence (no dedicated timer).
-                    crate::handlers::observe::purge_stale_dsar_ledger(
+                    crate::service::dsar::purge_stale_dsar_ledger(
                         &conn,
                         crate::config::dsar_ledger_retention_days(),
                     );

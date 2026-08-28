@@ -19,6 +19,175 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.47] — 2026-08-28 — "Quarry": the rights surface, one core
+
+The Foundation Line's second vein, and the biggest single-surface retirement
+of the line: the entire DSAR (GDPR Art 15/17) storage story — locate, export
+bundle, purge, certificate, and ledger composition — moved out of the observe
+handler into `src/service/dsar.rs`. The highest-stakes erasure path now lives
+behind the same law as the retention exemplar: services own the SQL, handlers
+are protocol adapters, and a source pin keeps it that way.
+
+### Release notes
+
+**Bug fixes**
+- **A DSAR purge no longer aborts when the subject's governed runs carry a
+  delegation or a channel thread.** `delegations.run_id` (Mesh) and
+  `channel_threads.case_run_id` (Switchboard) are declared NOT NULL foreign
+  keys on `workflow_runs` with no cascade — but the erasure sweep never
+  cleared either family, so a subject whose runs carried one violated the FK
+  and failed the whole DSAR (loud and fail-closed, but the erasure was
+  unreachable for exactly those subjects; both schema comments already
+  claimed "rows die with their DSAR sweep"). The Quarry move's FK-children
+  map exposed the gap; both families now die with the run, before the parent
+  row. The failure-path delta is pinned by
+  `dsar_sweep_takes_the_run_fk_children_delegations_and_channel_threads`.
+
+**Improvements**
+- **The rights surface converges onto the service layer:**
+  `src/service/dsar.rs` owns locate, the portable export bundle (Art 15
+  symmetry with the purge, `channel_notes[]` included), one pool's full
+  erasure (`run_pool`: remanence pragma posture → purge tx with held-id
+  deferral → trace/proposal residue sweeps → workflow sweep → ledger row
+  committed atomically with the purge → best-effort WAL TRUNCATE), the
+  certificate shape, the certificate backfill, the ledger page, the
+  tombstone registry page, the tenant-gated certificate re-fetch, and the
+  stale-ledger prune. `src/service/dsar/sweep.rs` is the single home for
+  "what erasure reaches" in the governed-workflow tables (folded in from
+  `workflow/erasure.rs`). `src/service/purge.rs` takes the shared
+  knowledge-purge primitive (the legal-hold backstop inside the FUNCTION,
+  the tombstone digest, the orphan-entity sweep) out of the gate handler so
+  the DSAR core, `/purge`, client termination, and ump hard-forget all call
+  the same storage law. The observe handler keeps exactly the adapter work:
+  parse, Admin/role gates, multi-pool ordering (non-global first, global
+  last with the aggregate digest), the Art 19 webhook, and response shaping.
+- **Observe.rs carries zero embedded SQL** — 66 → 0, the first handler file
+  in the line to drain completely. `gate.rs` 103 → 83 (−20 incl. the moved
+  primitive + its pin). The frozen debt floor drops 445 → 359 in the same
+  commit that moved the SQL.
+- **The legal-hold read helper returns storage errors**
+  (`crate::legal_hold::active_reasons` → `rusqlite::Error`), so service
+  cores consume it without a handler type in the way; every handler call
+  site maps it with the identical internal-error body as before.
+
+**Security fixes**
+- **The knowledge-purge backstop fence is now structural:** moving the
+  primitive into the service layer pins the fence to the FUNCTION (a future
+  caller cannot repeat the ump.forget miss), and a new test
+  (`purge_chunk_ids_backstop_refuses_held_id`) proves a held id is never
+  purged even when the caller forgets its own preflight — the error carries
+  the hold reasons for the shared `409 legal_hold_active` envelope.
+
+### Engineering record
+
+- **Plan-named pins, all green:** every observe.rs pin repointed in the same
+  commit — `dsar_dry_run_footprint_counts_and_writes_nothing` (the preview
+  writes nothing), `cross_domain_dsar_purges_all_pools_and_ledgers_once`
+  (multi-pool ordering: non-global first, global last, exactly one ledger
+  row carrying the aggregate digest), the held-id deferral legs
+  (`legal_hold_freezes_run_from_dsar_sweep`,
+  `dsar_sweep_and_legal_hold_revoke_refs`, the wire-level
+  `legal_hold_freezes_erasure_and_dsar_defers`),
+  `dsar_export_bundle_builder_matches_live_shape` (Art 15 export/purge
+  symmetry incl. `channel_notes[]`),
+  `dsar_purge_erases_proposals_and_orphaned_entities`, the tombstone-registry
+  pins (`dsar_ledger_stores_hash_not_raw_bundle`,
+  `purge_deletes_only_old_completed_rows`,
+  `purge_zero_retention_is_a_noop`,
+  `ledger_row_is_committed_atomically_with_purge_tx_commit`,
+  `test_tombstone_backfill_makes_legacy_rows_visible`), the Art 19 fail-soft
+  webhook pin (`test_observe_art19_webhook_posts_on_purge`), and the
+  remanence posture pin (`dsar_certificate_states_remanence_posture`, in
+  place in clients.rs — the pragma-ATTEMPT rule moved certificate-owned into
+  `run_pool` and the pin stayed green untouched). All six workflow-sweep
+  pins moved verbatim with their submodule; the full sweep of locate/ledger
+  wire pins (`test_observe_dsar_locate_and_purge_semantics`,
+  `test_ingest_owner_flows_to_dsar_locate`,
+  `test_dsar_deadline_is_created_at_plus_window`,
+  `test_dsar_ledger_list_returns_rows_with_deadline_fields`) repointed to
+  the core. NEW source assertion: `dsar_core_is_handler_free` — production
+  source across `service/dsar.rs`, `service/dsar/sweep.rs`, and
+  `service/purge.rs` never names `crate::handlers`, a handler type, a
+  transport type, or a pool handle. Pin-count delta: main-binary tests 1000
+  → 1003 (+3 net: the source assertion, the purge backstop pin, and the
+  FK-gap pin; the tombstone-digest pin moved with the primitive, total
+  count never decreases —
+  the move-with-pins law). Full suite: 1279 passed, 7 ignored (1276 → 1279,
+  +3).
+- **The move was verbatim where the law demands it:** statement SQL, sweep
+  order, dry-run arithmetic, and the certificate JSON shape are the handler's
+  bytes, re-homed. The mechanical adaptations: typed service errors
+  (`DsarError`/`PurgeError` with `From<rusqlite::Error>` preserving messages
+  verbatim; the handler `From` impls render the exact frozen bodies —
+  internal-error text unchanged, the certificate route's 404 unchanged, the
+  shared `409 legal_hold_active` envelope unchanged), `?`-propagation via
+  those `From` impls replacing per-site `map_err` noise, the bundle/ledger
+  digest now computed by `crate::audit::hash` (byte-identical lowercase-hex
+  SHA-256 to the gate-local helper it replaces in the moved code; the known
+  vector pins on both sides prove it), and `run_dsar_pool` becoming the thin
+  per-pool seam (borrow a connection, call the core — the pool handle never
+  crosses). The two intended deltas are BOTH on failure paths: the FK-gap
+  fix above and nothing else.
+- **The FK-children map was written BEFORE the move** (the erasure lesson,
+  now structural law): `knowledge`'s map lives in the purge module header
+  (`embeddings` CASCADE; `relationships` SET NULL + explicit;
+  `evidence_links`/`proposals`/`recall_traces` soft refs, explicit;
+  `tombstones` a soft ref BY DESIGN), `workflow_runs`' map in the sweep
+  header (steps/findings/contradictions/outbox/handover_offers/case_notes
+  deleted first; `case_status_refs` purged or revoked;
+  `crm_cases` UNLINKED; delegations + channel_threads the closed gap).
+- **Wire artifacts byte-identical:** openapi.yaml diff-empty against
+  origin/main; route-coverage and route-authz tables untouched; schema
+  untouched at 1.28.45 — zero migrations, rollback = `git revert` of the
+  milestone's commits, the database unaffected by construction.
+- **Full gate green:** `cargo fmt --check`; `cargo clippy --all-targets
+  --features bench -- -D warnings`; `cargo test --features bench` (1279
+  passed, 7 ignored); the pre-push dry-run CI suite (default-feature clippy
+  + tests, engine-crates, steward-harness, otel gates); lipstyk diff-strict
+  clean; live smoke on a COPY of the production DB (below).
+- **Live smoke (DB copy, shim mode):** seeded an owned root + a derived
+  descendant + an active legal hold on the derived chunk; dry-run preview
+  reported roots 1 / derived 1 / export rows 2 and wrote nothing; the live
+  `POST /dsar` (action `both`, jurisdiction `eu`, mechanism `scc-eu-2021`)
+  purged the free root only, LISTED the held chunk + reason under
+  `held_ids`, wrote the ledger row with the bundle digest, and returned the
+  EU rights + deadline; `GET /dsar/{id}/certificate` → `chain_verifies:
+  true`; `GET /audit/verify` → `ok: true`; the tombstone registry lists the
+  purged root under `owner:<subject>`.
+
+### Honest ceilings
+
+- **`case_articles.knowledge_id` and `kcs_translations.knowledge_id` are
+  declared FKs with NO ACTION and are NOT cleared by the purge** — purging a
+  chunk that carries a case article or a knowledge translation violates the
+  FK and fails the whole tx (pre-existing, loud, fail-closed; unifying
+  those sweeps is a follow-up, deliberately not silently widened here).
+- **Delegations and channel threads die WITH the run (FK necessity); they
+  are not subject-matched.** A delegation or thread referencing the subject
+  on a SURVIVING run (another subject's run) is not swept by the subject
+  arms — the consent-registry re-hash posture would apply if the product
+  ever wants it; filed as a follow-up, not improvised in a refactor line.
+- **`run_pool` owns its per-pool transaction** (begin/commit inside the
+  core) so the pragma posture, the purge, the ledger row, and the checkpoint
+  stay one story; multi-pool sequencing stays handler-side. This is the
+  documented shape for per-pool atomic erasure — not a general license for
+  service-side tx ownership, which remains the caller's for multi-step
+  handler flows (the retention exemplar's law stands).
+- **The outbox self-reference caveat:** `outbox.parent_id` is a declared
+  self-FK; a single-statement delete is safe (immediate FKs check at
+  statement end), but a CROSS-run parent link (child on run B pointing at a
+  parent on run A) would fail run A's sweep loudly — no such link is written
+  today (the lineage writer is run-local).
+- **Wire shapes stay legacy:** ledger rows / tombstone page / certificate
+  view keep their shipped shapes (derived structs + `serde_json` maps) — the
+  byte-for-byte pins outrank the domain-type aspiration; typing them is a
+  follow-up.
+- **The baseline counts comments and test seeds** (substring lock, not a
+  precision instrument); observe.rs's zero includes its emptied test
+  module — the pins moved with the code they pin.
+
+---
+
 ## [1.28.46] — 2026-08-28 — "Plumb": the service layer, the debt lock, the first vein
 
 The Foundation Line begins. This release ships ZERO features, ZERO endpoints,

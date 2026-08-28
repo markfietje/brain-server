@@ -30,7 +30,6 @@ pub(crate) mod complaint;
 pub(crate) mod crew;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
-pub(crate) mod erasure;
 pub(crate) mod frontdesk;
 pub(crate) mod frontdoor;
 pub(crate) mod host;

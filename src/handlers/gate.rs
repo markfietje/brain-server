@@ -2548,7 +2548,8 @@ pub async fn purge(
         // a held id is frozen against EVERY erasure
         // path. Refuse with 409 + the hold reasons; the operator must release
         // every hold first (POST /legal-hold/{id}/release).
-        let held = crate::legal_hold::active_reasons(&tx, &ids)?;
+        let held = crate::legal_hold::active_reasons(&tx, &ids)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
         if !held.is_empty() {
             return Err(HandlerError::conflict_with(
                 "legal_hold_active",
@@ -2557,7 +2558,7 @@ pub async fn purge(
             ));
         }
 
-        let purged = purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
+        let purged = crate::service::purge::purge_chunk_ids(&tx, &ids, now, "explicit", None)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
         // TRUNCATE the WAL so the erased page images do not
@@ -2586,161 +2587,11 @@ pub async fn purge(
     Ok(Json(serde_json::json!({ "purged": count })))
 }
 
-/// Shared hard-delete for a list of chunk ids, run inside the caller's
-/// transaction. Removes the `knowledge` row + its `vec_knowledge` embedding +
-/// graph nodes/edges + supersession/derivation pointers + `proposals`
-/// references, and appends a tombstone row (hash-only). Used by `/purge`
-/// (reason `explicit`) and the DSAR workflow (reason `owner:<subject>`, with
-/// derived descendants carrying `derived` + the purge root's origin id).
-/// Returns the number of chunks actually deleted.
-pub(crate) fn purge_chunk_ids(
-    tx: &rusqlite::Transaction,
-    ids: &[i64],
-    now: i64,
-    reason: &str,
-    origin_id: Option<i64>,
-) -> Result<i64, HandlerError> {
-    // the structural legal-hold fence. Every production
-    // caller preflights (`/purge` 409s, DSAR defers + lists, client
-    // termination filters, ump forget refuses), so this guard is the backstop
-    // that makes "every erasure path" true of the FUNCTION, not of today's
-    // call-site discipline — a future caller cannot repeat the ump.forget miss.
-    crate::legal_hold::refuse_if_held(tx, ids)?;
-    let mut purged = 0i64;
-    // Entity ids referenced by the purged chunks' relationships, collected so the
-    // post-loop orphan sweep can drop graph nodes that no longer link to any
-    // surviving knowledge. Scoped (never global) so standalone entities unrelated
-    // to this purge are untouched.
-    let mut affected_entities: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    for id in ids {
-        // Capture the entity ids this chunk's relationships reference (the only
-        // reliable link — `entities` has no `knowledge_id` column).
-        if let Ok(mut s) = tx.prepare(
-            "SELECT from_entity_id FROM relationships WHERE knowledge_id = ?1
-             UNION SELECT to_entity_id FROM relationships WHERE knowledge_id = ?1",
-        ) && let Ok(rows) = s.query_map([id], |r| r.get::<_, i64>(0))
-        {
-            for e in rows.flatten() {
-                affected_entities.insert(e);
-            }
-        }
-        // Capture a SHA-256 of the row content for the tombstone before
-        // deletion (the deletion registry's digest of
-        // DELETED content must not be an offline-brute-forceable xxh3-64 —
-        // low-entropy personal values are recoverable from 64-bit hashes).
-        // ponytail: still a one-way digest, not a secrecy mechanism — a full
-        // at-rest compromise (key beside data) is out of scope.
-        let content_digest: Option<String> = tx
-            .query_row(
-                "SELECT content FROM knowledge WHERE id = ?1",
-                rusqlite::params![id],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-            .map(|c| sha256_hex(&c));
-        // Graph edges are removed by their knowledge link (the FK on
-        // `relationships.knowledge_id` only SET NULLs, it does not delete, so
-        // the row must go explicitly). The old clause also referenced
-        // `entities.knowledge_id`, a column that does NOT exist — that subquery
-        // raised "no such column" and silently aborted the whole DELETE, so
-        // relationships (and with them their PII-bearing entity names) survived
-        // every purge. Now removed; entity-level cleanup runs in the post-loop
-        // orphan sweep. vec0 rows are deleted by knowledge_id.
-        // these residue DELETEs were `let _ =` — a single
-        // silent failure left relationships/vec/evidence/traces for a chunk the
-        // purge then tombstoned as erased (partial erasure certified complete).
-        // All now propagate: a residue failure rolls back the whole purge tx.
-        tx.execute(
-            "DELETE FROM vec_knowledge WHERE knowledge_id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        tx.execute(
-            "DELETE FROM relationships WHERE knowledge_id = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        tx.execute(
-            "DELETE FROM evidence_links WHERE from_chunk = ?1 OR to_chunk = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        tx.execute(
-            "DELETE FROM proposals WHERE conflict_with = ?1",
-            rusqlite::params![id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        // cascade to recall_traces. The trace side table (read-event
-        // replay artifact) embeds hit chunk ids in its JSON; a purged chunk
-        // must not leave a trace that still "proves" it was returned. JSON1
-        // is compiled into the bundled SQLite (rusqlite "bundled"), so the
-        // path filter is exact, not a LIKE. A trace with an unparseable JSON
-        // body is skipped by the json_valid filter rather than failing the
-        // purge; only a genuine SQL error now propagates.
-        tx.execute(
-            "DELETE FROM recall_traces WHERE audit_id IN (
-                 SELECT rt.audit_id FROM recall_traces rt
-                  WHERE json_valid(rt.trace_json)
-                    AND EXISTS (
-                        SELECT 1 FROM json_each(rt.trace_json, '$.hits')
-                         WHERE json_extract(value, '$.id') = ?1
-                    )
-             )",
-            rusqlite::params![id],
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let n = tx
-            .execute("DELETE FROM knowledge WHERE id = ?1", rusqlite::params![id])
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-        if n > 0 {
-            tx.execute(
-                "INSERT INTO tombstones(knowledge_id, content_hash, purged_at, reason, origin_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![
-                    id,
-                    content_digest.unwrap_or_else(|| "unknown".into()),
-                    now,
-                    reason,
-                    origin_id
-                ],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-            purged += 1;
-        }
-    }
-
-    // orphan-entity sweep. An entity referenced by a purged chunk
-    // whose relationships are now all gone is erased too — an entity *name* can
-    // itself be PII (a person/email/account label), so "memory you can see,
-    // approve, and erase" must not leave a graph node behind after erasure.
-    // Scoped to the affected set + the "no remaining relationship" guard, so a
-    // shared entity still linked to surviving knowledge survives. Best-effort.
-    for e in &affected_entities {
-        let alive: i64 = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM relationships
-                                WHERE from_entity_id = ?1 OR to_entity_id = ?1)",
-                rusqlite::params![e],
-                |r| r.get(0),
-            )
-            .unwrap_or(1);
-        if alive == 0 {
-            // Clear any residual relationship rows first (FK-off safety; if FKs
-            // are on the entity DELETE cascades them anyway).
-            // was `let _ =` — an orphan PII-named entity
-            // surviving a purge is a partial erasure; propagate.
-            tx.execute(
-                "DELETE FROM relationships WHERE from_entity_id = ?1 OR to_entity_id = ?1",
-                rusqlite::params![e],
-            )
-            .map_err(|err| HandlerError::internal(err.to_string()))?;
-            tx.execute("DELETE FROM entities WHERE id = ?1", rusqlite::params![e])
-                .map_err(|err| HandlerError::internal(err.to_string()))?;
-        }
-    }
-
-    Ok(purged)
-}
+// Shared hard-delete for a list of chunk ids, run inside the caller's
+// transaction: the primitive moved to the service layer in the Quarry move
+// (`crate::service::purge::purge_chunk_ids`) — the DSAR core and the other
+// erasure surfaces call it there; the legal-hold backstop + the
+// `knowledge` FK-children map live in that module header now.
 
 /// the shared `knowledge` column list for row rendering
 /// (export + the `/ump/*` record paths) — one source of truth so the record
@@ -3523,44 +3374,6 @@ mod tests {
             sql_a_ids, rust_visible,
             "no-policy SQL == per-chunk-only Rust filter"
         );
-    }
-
-    /// the deletion registry's digest is the SHA-256 of
-    /// the deleted content — NOT the row's own content_hash (the 64-bit xxh3
-    /// that was brute-forceable offline for low-entropy values). The tombstone
-    /// must carry the new digest, and it must not be the stored hash.
-    #[test]
-    fn purge_tombstone_digest_is_sha256_of_content() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-        conn.execute(
-            "INSERT INTO knowledge (content, content_hash, node_kind) \
-             VALUES ('SSN 123-45-6789', 'xxh3-of-content', 'fact')",
-            [],
-        )
-        .unwrap();
-        let id: i64 = conn
-            .query_row("SELECT id FROM knowledge", [], |r| r.get(0))
-            .unwrap();
-        let now = chrono::Utc::now().timestamp();
-        let tx = conn.transaction().unwrap();
-        purge_chunk_ids(&tx, &[id], now, "test", None).unwrap();
-        tx.commit().unwrap();
-        let digest: String = conn
-            .query_row(
-                "SELECT content_hash FROM tombstones WHERE knowledge_id = ?1",
-                rusqlite::params![id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(digest, sha256_hex("SSN 123-45-6789"));
-        assert_eq!(digest.len(), 64, "SHA-256 hex is 64 chars");
-        assert_ne!(digest, "xxh3-of-content");
-        let remaining: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(remaining, 0);
     }
 
     /// M4: `/export` body → UMP envelope resolves relation names and attaches

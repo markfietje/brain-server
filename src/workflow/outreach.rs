@@ -780,7 +780,7 @@ mod tests {
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
-        let rep = crate::workflow::erasure::sweep_subject(&tx, "jane@example.com").unwrap();
+        let rep = crate::service::dsar::sweep::sweep_subject(&tx, "jane@example.com").unwrap();
         tx.commit().unwrap();
         assert_eq!(rep.consent_rows, 2);
         let n: i64 = conn

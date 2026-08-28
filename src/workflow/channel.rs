@@ -798,7 +798,7 @@ mod tests {
         // DSAR sweep: subject-authored notes go with the erasure, on ANY run.
         let rep = {
             let tx = conn.transaction().unwrap();
-            let rep = crate::workflow::erasure::sweep_subject(&tx, "alice").unwrap();
+            let rep = crate::service::dsar::sweep::sweep_subject(&tx, "alice").unwrap();
             tx.commit().unwrap();
             rep
         };

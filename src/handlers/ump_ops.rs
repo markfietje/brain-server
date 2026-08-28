@@ -803,7 +803,7 @@ pub async fn forget(
             // inside the same tx (the 409 envelope matches `/purge`). This is
             // the seam an MCP `ump.forget` reaches with only Write scope.
             crate::legal_hold::refuse_if_held(&tx, &[id])?;
-            crate::handlers::gate::purge_chunk_ids(&tx, &[id], now, &reason, None)?;
+            crate::service::purge::purge_chunk_ids(&tx, &[id], now, &reason, None)?;
         } else {
             // Soft: quarantine-style flag; tombstone + audit row (hash-only).
             let hash: Option<String> = tx

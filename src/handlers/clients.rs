@@ -534,7 +534,7 @@ pub async fn client_end(
                     .copied()
                     .collect();
                 let (n, bundle) = if purge {
-                    let n = crate::handlers::gate::purge_chunk_ids(
+                    let n = crate::service::purge::purge_chunk_ids(
                         &tx,
                         &free,
                         now,
@@ -545,7 +545,7 @@ pub async fn client_end(
                 } else {
                     (
                         0,
-                        Some(crate::handlers::observe::build_export_bundle(
+                        Some(crate::service::dsar::build_export_bundle(
                             &tx,
                             &key_for2,
                             &active,

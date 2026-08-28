@@ -156,14 +156,15 @@ pub fn jurisdiction_rule(code: &str) -> Option<&'static JurisdictionRule> {
 /// law fixes a number, else the operator's `BRAIN_DSAR_WINDOW_DAYS` window
 /// (the PH "reasonable" + unknown-law fallback). Pure, so the
 /// `dsar_deadline_matches_jurisdiction` test pins the law directly. The
-/// fallback expression is shared with `handlers::observe::dsar_deadline` —
+/// fallback expression is shared with `crate::service::dsar::dsar_deadline` —
 /// the operator window stays the single practical countdown.
 pub fn dsar_deadline_for(created_at: i64, code: &str) -> i64 {
-    match jurisdiction_rule(code).and_then(|r| r.deadline_days) {
-        Some(days) => created_at + days * 86400,
-        // RA 10173 "reasonable (commensurate)" / unknown law → operator window.
-        None => created_at + crate::config::dsar_window_secs(),
-    }
+    // RA 10173 "reasonable (commensurate)" / unknown law → operator window.
+    let days = jurisdiction_rule(code).and_then(|r| r.deadline_days);
+    created_at
+        + days
+            .map(|d| d * 86400)
+            .unwrap_or_else(crate::config::dsar_window_secs)
 }
 
 /// The destination country's surveillance posture for the Schrems II TIA.

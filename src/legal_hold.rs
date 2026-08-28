@@ -90,24 +90,23 @@ pub(crate) fn insert_holds(
 }
 
 /// The active-hold reasons for each of `ids` that is currently held (held ids
-/// missing from the map are free). The 409/certificate payload builder. Pulls
-/// the active holds (a tiny, partial index-served set) and filters in Rust —
-/// no IN-list param cap, no batching.
+/// missing from the map are the free set). The 409/certificate payload
+/// builder. Pulls the active holds (a tiny, partial index-served set) and
+/// filters in Rust — no IN-list param cap, no batching. Fails with the bare
+/// rusqlite error (Quarry convention: storage helpers return storage errors;
+/// the handler boundary maps them onto the route vocabulary).
 pub(crate) fn active_reasons(
     conn: &rusqlite::Connection,
     ids: &[i64],
-) -> Result<HashMap<i64, Vec<String>>, HandlerError> {
+) -> Result<HashMap<i64, Vec<String>>, rusqlite::Error> {
     let mut out: HashMap<i64, Vec<String>> = HashMap::new();
     if ids.is_empty() {
         return Ok(out);
     }
     let want: HashSet<i64> = ids.iter().copied().collect();
-    let mut stmt = conn
-        .prepare("SELECT knowledge_id, reason FROM legal_holds WHERE released_at IS NULL")
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
+    let mut stmt =
+        conn.prepare("SELECT knowledge_id, reason FROM legal_holds WHERE released_at IS NULL")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
     for (kid, reason) in rows.flatten() {
         if want.contains(&kid) {
             out.entry(kid).or_default().push(reason);
@@ -137,7 +136,7 @@ pub(crate) fn refuse_if_held(
     tx: &rusqlite::Transaction<'_>,
     ids: &[i64],
 ) -> Result<(), HandlerError> {
-    let held = active_reasons(tx, ids)?;
+    let held = active_reasons(tx, ids).map_err(|e| HandlerError::internal(e.to_string()))?;
     if !held.is_empty() {
         return Err(HandlerError::conflict_with(
             "legal_hold_active",

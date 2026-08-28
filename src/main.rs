@@ -11355,7 +11355,7 @@ Final paragraph after the rule.";
     #[test]
     fn test_dsar_deadline_is_created_at_plus_window() {
         let created = 1_750_000_000i64;
-        let deadline = handlers::observe::dsar_deadline(created);
+        let deadline = crate::service::dsar::dsar_deadline(created);
         assert_eq!(
             deadline,
             created + crate::config::dsar_window_secs(),
@@ -11378,7 +11378,7 @@ Final paragraph after the rule.";
         )
         .unwrap();
         // Newest-first page: ids 3, 2, 1; the open row (2) has no completed_at.
-        let page = handlers::observe::list_dsar_page(&db, 100, 0).expect("page");
+        let page = crate::service::dsar::list_dsar_page(&db, 100, 0).expect("page");
         assert_eq!(page.total, 3, "total counts every ledger row");
         let ids: Vec<i64> = page.requests.iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![3, 2, 1], "newest-first ordering");
@@ -11389,15 +11389,15 @@ Final paragraph after the rule.";
         assert_eq!(open.completed_at, None, "open row has no completed_at");
         assert_eq!(
             open.deadline,
-            Some(handlers::observe::dsar_deadline(2000)),
+            Some(crate::service::dsar::dsar_deadline(2000)),
             "open row carries the computed Art 17 deadline"
         );
         let done = &page.requests[0];
         assert_eq!(done.completed_at, Some(3001));
         // Page boundary: limit=2 offset=0 → first two; offset=2 → the tail.
-        let first = handlers::observe::list_dsar_page(&db, 2, 0).expect("page");
+        let first = crate::service::dsar::list_dsar_page(&db, 2, 0).expect("page");
         assert_eq!(first.requests.len(), 2);
-        let tail = handlers::observe::list_dsar_page(&db, 2, 2).expect("page");
+        let tail = crate::service::dsar::list_dsar_page(&db, 2, 2).expect("page");
         assert_eq!(tail.requests.len(), 1);
         assert_eq!(tail.requests[0].id, 1, "offset honors the boundary");
     }
@@ -11549,7 +11549,7 @@ Final paragraph after the rule.";
         .unwrap();
         let tx = db.transaction().unwrap();
         let (roots, derived) =
-            handlers::observe::dsar_locate(&tx, "alice@example.com").expect("locate");
+            crate::service::dsar::dsar_locate(&tx, "alice@example.com").expect("locate");
         assert_eq!(roots, vec![1], "owner rows located");
         assert_eq!(
             derived,
@@ -11559,9 +11559,9 @@ Final paragraph after the rule.";
         // Purge exactly like `POST /dsar` does: roots with the owner reason,
         // derived with the origin stamp.
         let now = chrono::Utc::now().timestamp();
-        crate::handlers::gate::purge_chunk_ids(&tx, &roots, now, "owner:alice@example.com", None)
+        crate::service::purge::purge_chunk_ids(&tx, &roots, now, "owner:alice@example.com", None)
             .expect("roots purged");
-        crate::handlers::gate::purge_chunk_ids(&tx, &[2], now, "derived", Some(1))
+        crate::service::purge::purge_chunk_ids(&tx, &[2], now, "derived", Some(1))
             .expect("derived purged");
         tx.commit().unwrap();
         let remaining: i64 = db
@@ -11631,11 +11631,11 @@ Final paragraph after the rule.";
             .unwrap();
         let tx = db.transaction().unwrap();
         let (roots, derived) =
-            handlers::observe::dsar_locate(&tx, "alice@example.com").expect("locate by subject");
+            crate::service::dsar::dsar_locate(&tx, "alice@example.com").expect("locate by subject");
         assert_eq!(roots, vec![id], "DSAR finds the just-ingested owner row");
         assert!(derived.is_empty());
         let (roots_b, _) =
-            handlers::observe::dsar_locate(&tx, "alice@example.com").expect("locate again");
+            crate::service::dsar::dsar_locate(&tx, "alice@example.com").expect("locate again");
         assert!(
             !roots_b.contains(&bob),
             "NULL-owner (loopback) chunk not attributed to alice"
@@ -11660,7 +11660,7 @@ Final paragraph after the rule.";
         )
         .unwrap();
         let tx = db.transaction().unwrap();
-        crate::handlers::gate::purge_chunk_ids(&tx, &[1], 1_700_000_000, "explicit", None)
+        crate::service::purge::purge_chunk_ids(&tx, &[1], 1_700_000_000, "explicit", None)
             .expect("purge");
         tx.commit().unwrap();
         let remaining: i64 = db
