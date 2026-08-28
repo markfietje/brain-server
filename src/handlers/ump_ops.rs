@@ -11,7 +11,6 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
-use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_stream::StreamExt;
@@ -56,27 +55,6 @@ pub async fn capabilities() -> Json<Value> {
     Json(capabilities_payload())
 }
 
-/// record a `Denied` auth audit row for a §3.7 consent mismatch.
-/// Extractable for a test (pass an on-disk/in-memory conn); the handler uses a
-/// fresh connection to the live DB. Best-effort: a failure is ignored so a
-/// missing audit log never fails the request.
-fn record_forbidden_scope(
-    conn: &rusqlite::Connection,
-    principal_sub: &str,
-    declared_owner: &str,
-) -> bool {
-    let detail = format!("ump.remember scope.owner={declared_owner} does not match principal");
-    crate::audit::record(
-        conn,
-        crate::audit::AuditKind::Auth,
-        principal_sub,
-        &detail,
-        crate::audit::AuditStatus::Denied,
-        "api",
-    )
-    .is_some()
-}
-
 /// §3.3 `remember` — lower a partial record through the structured-ingest
 /// path (`ingest_one`), with the §3.7 consent/signature gates applied first.
 pub async fn remember(
@@ -105,7 +83,11 @@ pub async fn remember(
                 // the handler's own identity assertion, not a secret).
                 match rusqlite::Connection::open(crate::config::brain_db_path()) {
                     Ok(audit_conn) => {
-                        if !record_forbidden_scope(&audit_conn, &owner, declared) {
+                        if !crate::service::ump_ops::record_forbidden_scope(
+                            &audit_conn,
+                            &owner,
+                            declared,
+                        ) {
                             tracing::warn!(
                                 "forbidden_scope audit record failed: owner={owner} declared={declared}"
                             );
@@ -188,13 +170,7 @@ fn resolve_row_id(conn: &rusqlite::Connection, id: &str) -> Result<i64, HandlerE
     if let Ok(n) = id.parse::<i64>() {
         return Ok(n);
     }
-    if let Some(rid) = conn
-        .query_row(
-            "SELECT id FROM knowledge WHERE ump_id = ?1",
-            rusqlite::params![id],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()
+    if let Some(rid) = crate::service::ump_ops::row_id_for_ump_id(conn, id)
         .map_err(|e| HandlerError::internal(format!("resolve ump_id failed: {e}")))?
     {
         return Ok(rid);
@@ -209,19 +185,7 @@ fn resolve_row_id(conn: &rusqlite::Connection, id: &str) -> Result<i64, HandlerE
 /// `superseded_by`): `supersedes` evidence links pointing AT this chunk,
 /// resolved to the successor's content-addressed id. Empty when current.
 fn superseded_by_for(conn: &rusqlite::Connection, id: i64) -> Result<Vec<String>, HandlerError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT k.ump_id FROM evidence_links el
-               JOIN knowledge k ON k.id = el.from_chunk
-              WHERE el.kind = 'supersedes' AND el.to_chunk = ?1
-                AND k.ump_id IS NOT NULL AND k.ump_id != ''
-              ORDER BY el.id",
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let rows = stmt
-        .query_map(rusqlite::params![id], |r| r.get::<_, String>(0))
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    rows.collect::<Result<Vec<_>, _>>()
+    crate::service::ump_ops::superseded_by_for(conn, id)
         .map_err(|e| HandlerError::internal(e.to_string()))
 }
 
@@ -358,13 +322,10 @@ pub async fn get_memory(
         // Belt-and-braces — the row's OWN domain must match the
         // header label AND the principal must pass the row-domain re-auth +
         // record gate (probe-blind miss on denial, the /get posture).
-        let row_meta: Option<(String, Option<String>, Option<String>)> = conn
-            .query_row(
-                "SELECT domain, owner, access_scope FROM knowledge WHERE id = ?1",
-                rusqlite::params![rid],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .ok();
+        let row_meta: Option<(String, Option<String>, Option<String>)> =
+            crate::service::procedure::row_access_meta(&conn, rid)
+                .ok()
+                .flatten();
         match row_meta {
             Some((row_domain, row_owner, row_scope)) => {
                 if row_domain != label
@@ -424,31 +385,21 @@ pub async fn get_memory(
 /// The chunk's outgoing relations as `{from, to, type}` rows (the shape the
 /// record engine renders into `about`/typed `body.structured.relations`).
 fn relations_for_chunk(conn: &rusqlite::Connection, id: i64) -> Result<Vec<Value>, HandlerError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT e1.name, e2.name, r.relation_type
-               FROM relationships r
-               JOIN entities e1 ON r.from_entity_id = e1.id
-               JOIN entities e2 ON r.to_entity_id = e2.id
-              WHERE r.knowledge_id = ?1
-                AND r.superseded_at IS NULL",
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    let rows = stmt
-        .query_map(rusqlite::params![id], |r| {
-            // entity names arrive from vault
-            // wikilinks/frontmatter with no vocabulary gate, and the relation
-            // type is linker text — stored text, same seam.
-            let none: Option<crate::auth::Principal> = None;
-            Ok(json!({
-                "from": crate::gate::sanitize_stored(&r.get::<_, String>(0)?, false, &none),
-                "to": crate::gate::sanitize_stored(&r.get::<_, String>(1)?, false, &none),
-                "type": crate::gate::sanitize_stored(&r.get::<_, String>(2)?, false, &none),
-            }))
+    // entity names arrive from vault
+    // wikilinks/frontmatter with no vocabulary gate, and the relation
+    // type is linker text — stored text, same seam.
+    let none: Option<crate::auth::Principal> = None;
+    Ok(crate::service::ump_ops::raw_relations(conn, id)
+        .map_err(|e| HandlerError::internal(e.to_string()))?
+        .into_iter()
+        .map(|(from, to, ty)| {
+            json!({
+                "from": crate::gate::sanitize_stored(&from, false, &none),
+                "to": crate::gate::sanitize_stored(&to, false, &none),
+                "type": crate::gate::sanitize_stored(&ty, false, &none),
+            })
         })
-        .map_err(|e| HandlerError::internal(e.to_string()))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| HandlerError::internal(e.to_string()))
+        .collect())
 }
 
 /// §3.2 `recall` — the shared `run_recall` core rendered as UMP records with
@@ -728,7 +679,7 @@ pub async fn revise(
     if new_id != old_id {
         // Expire the old chunk so current recall returns the new revision.
         // `ponytail:` `ingest_one` commits its own transaction first, so the
-        // insert + supersession are not one atomic unit — a failure here
+        // new-row write + supersession are not one atomic unit — a failure here
         // leaves the new chunk created but unlinked (still retrievable).
         let pool = state.pool.clone();
         tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
@@ -786,14 +737,8 @@ pub async fn forget(
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let exists: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM knowledge WHERE id = ?1)",
-                rusqlite::params![id],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| HandlerError::internal(format!("existence check failed: {e}")))?
-            != 0;
+        let exists = crate::service::ump_ops::chunk_exists(&tx, id)
+            .map_err(|e| HandlerError::internal(format!("existence check failed: {e}")))?;
         if !exists {
             return Err(HandlerError::not_found(format!("no chunk with id {id}")));
         }
@@ -806,34 +751,10 @@ pub async fn forget(
             crate::legal_hold::refuse_if_held(&tx, &[id])?;
             crate::service::purge::purge_chunk_ids(&tx, &[id], now, &reason, None)?;
         } else {
-            // Soft: quarantine-style flag; tombstone + audit row (hash-only).
-            let hash: Option<String> = tx
-                .query_row(
-                    "SELECT content_hash FROM knowledge WHERE id = ?1",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
-                .ok()
-                .flatten();
-            tx.execute(
-                "UPDATE knowledge SET flagged = 1 WHERE id = ?1",
-                rusqlite::params![id],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-            tx.execute(
-                "INSERT INTO tombstones(knowledge_id, content_hash, purged_at, reason, origin_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![id, hash, now, reason, None::<i64>],
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
-            crate::audit::record(
-                &tx,
-                crate::audit::AuditKind::Ingest,
-                "ump",
-                &id.to_string(),
-                crate::audit::AuditStatus::Ok,
-                "ump-forget-soft",
-            );
+            // Soft: quarantine-style flag; tombstone + audit row (hash-only)
+            // — the whole block rides service::ump_ops inside this tx.
+            crate::service::ump_ops::forget_soft(&tx, id, &reason, now)
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
         }
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1119,31 +1040,15 @@ mod tests {
     /// a §3.7 consent mismatch is audited as a `Denied` auth
     /// event on the read-event-capable audit chain (COMPLIANCE.md §3.5
     /// promised it; the gap this closes was a silent 400 with no footprint).
+    /// The assertions moved WITH the helper — they live now at
+    /// `service::ump_ops::tests::forbidden_scope_is_audited_as_denied_auth_event`
+    /// (call path changed, the assertions did not).
     #[test]
-    fn forbidden_scope_is_audited_as_denied_auth_event() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+    fn forbidden_scope_pin_lives_beside_the_moved_helper() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         assert!(
-            record_forbidden_scope(&conn, "alice", "eve"),
-            "the audit write succeeds on the migrated chain"
+            !crate::service::ump_ops::record_forbidden_scope(&conn, "alice", "eve"),
+            "an un-migrated chain refuses the write — evidence is never faked"
         );
-        let (kind, status, target_hash): (String, String, Option<String>) = conn
-            .query_row(
-                "SELECT kind, status, target_hash FROM audit_events WHERE kind = 'auth' ORDER BY id DESC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(kind, "auth");
-        assert_eq!(status, "denied");
-        // The scope detail rides in the target slot (record(kind, actor,
-        // target, status, detail)) as a bounded xxh3 hash, never the raw
-        // string. Derive from the helper's OWN format so the test cannot
-        // drift; asserting the exact hash also proves nothing raw persisted.
-        let expected = crate::audit::hash("ump.remember scope.owner=eve does not match principal");
-        assert_eq!(target_hash.as_deref(), Some(expected.as_str()));
-        // The chain still verifies (the denial joined the tamper-evident log).
-        assert!(crate::audit::verify_chain(&conn));
     }
 }

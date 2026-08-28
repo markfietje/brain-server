@@ -71,6 +71,7 @@ pub mod purge;
 pub mod recall;
 pub mod register;
 pub mod retention;
+pub mod ump_ops;
 
 #[cfg(test)]
 mod pins {
@@ -109,7 +110,7 @@ mod pins {
         ("procedure.rs", 0),
         ("compliance.rs", 13),
         ("workflow_lineage.rs", 0),
-        ("ump_ops.rs", 11),
+        ("ump_ops.rs", 0),
         ("kcs.rs", 8),
         ("valet.rs", 6),
         ("suggest.rs", 6),
@@ -227,8 +228,13 @@ mod pins {
     /// flags → steps → next_step edges), the step-chain/meta/decision
     /// reads, and the vec-shadow writes out to `service::procedure`; the
     /// residue was two error-string substrings carried out in the typed
-    /// error's Display)
-    /// legitimately lowered it to 194 in the
+    /// error's Display); then
+    /// ump_ops.rs 11 → 0 — the urn lookup, the supersession read, the raw
+    /// relations read, the soft-forget block (flag + hash-only tombstone +
+    /// in-tx audit), and the consent-denial audit helper + its pin out to
+    /// `service::ump_ops`; the row-meta read reuses
+    /// `service::procedure::row_access_meta` — one definition)
+    /// legitimately lowered it to 183 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -236,7 +242,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 194,
+            sum, 183,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );
