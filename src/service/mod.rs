@@ -66,6 +66,7 @@ pub mod domains_admin;
 pub mod dsar;
 pub mod lifecycle;
 pub mod purge;
+pub mod recall;
 pub mod register;
 pub mod retention;
 
@@ -364,6 +365,76 @@ mod pins {
                      types; the registry/pool authority and HTTP mapping stay at the handler"
                 );
             }
+        }
+    }
+
+    /// v1.28.50 "Aqueduct" — the recall core's compile-time + source proof
+    /// that the recall service is handler-free and transport-free:
+    ///
+    /// 1. TYPE-LEVEL: every core fn of `service::recall` coerces to a plain
+    ///    fn pointer whose parameters are connections, pure inputs, and
+    ///    domain types — if a future edit hands the core the pool authority,
+    ///    server state, or a handler type, these coercions stop compiling.
+    ///    The generic guard parameter of `record_recall_read_event` is
+    ///    coerced through a test-local `Deref<Target = Connection>` guard to
+    ///    prove the core accepts ANY connection guard and names none.
+    /// 2. SOURCE-LEVEL: production source never names a transport type, the
+    ///    pool authority, or a handler type. `#[cfg(test)]` regions are
+    ///    exempt — pins may name what they refute.
+    #[test]
+    fn recall_core_is_handler_free() {
+        use crate::service::recall as rc;
+
+        struct Guard(rusqlite::Connection);
+        impl std::ops::Deref for Guard {
+            type Target = rusqlite::Connection;
+            fn deref(&self) -> &rusqlite::Connection {
+                &self.0
+            }
+        }
+
+        type Merge = fn(
+            Vec<(String, Vec<crate::search::SearchResult>)>,
+            usize,
+        ) -> Vec<(crate::search::SearchResult, String)>;
+        type DomainFilters = fn(
+            &crate::search::SearchFilters,
+            &str,
+            bool,
+            &std::collections::HashMap<String, Vec<(String, i64)>>,
+        ) -> crate::search::SearchFilters;
+        type Finish =
+            fn(Option<&rusqlite::Connection>, &mut [crate::search::SearchResult], &str, bool, bool);
+        type ReadEvent = fn(&rusqlite::Connection, [Guard; 1], rc::ReadEvent<'_>) -> Option<i64>;
+        let _merge: Merge = rc::rrf_merge_domains;
+        let _filters: DomainFilters = rc::domain_filters;
+        let _finish: Finish = rc::finish_domain_results;
+        let _read_event: ReadEvent = rc::record_recall_read_event::<Guard, [Guard; 1]>;
+
+        const FORBIDDEN: &[&str] = &[
+            "DomainRegistry",
+            "AppState",
+            "Pool",
+            "axum",
+            "StatusCode",
+            "Json",
+            "HandlerError",
+            "handlers::",
+        ];
+        let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service/recall.rs");
+        assert!(f.exists(), "sanity: the recall core must exist");
+        let text = std::fs::read_to_string(&f).expect("service file must be readable");
+        let prod = text
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first slice");
+        for token in FORBIDDEN {
+            assert!(
+                !prod.contains(token),
+                "layer violation in src/service/recall.rs: production source names \
+                 `{token}` — the recall core takes connections and domain types; \
+                 the pool schedule and HTTP mapping stay at the handler"
+            );
         }
     }
 }

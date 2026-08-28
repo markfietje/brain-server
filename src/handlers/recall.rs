@@ -540,41 +540,29 @@ pub(crate) async fn run_recall(
         let mut per_domain: Vec<(String, Vec<crate::SearchResult>)> = Vec::new();
         let mut tel = crate::search::SearchTelemetry::default();
         for (domain, pool) in &targets {
-            let mut f = base_filters.clone();
-            // In multi-db the pool IS the domain, so drop the in-DB domain filter
-            // to avoid double-restricting; in shim mode keep it to narrow the
-            // single shared pool.
-            if multi_db {
-                f.domain = None;
-            } else {
-                f.domain = Some(domain.clone());
-            }
-            // the bound profile's retention map is THE
-            // policy for this domain (replaces the server-wide map; an empty
-            // map = no kind decay — the smb-simple posture).
-            if let Some(days) = profile_retention.get(domain) {
-                f.retention_days = std::sync::Arc::new(days.clone());
-            }
+            // the per-domain filter law (in-DB domain scope + bound-profile
+            // retention replacement) lives in the recall core.
+            let f = crate::service::recall::domain_filters(
+                &base_filters,
+                domain,
+                multi_db,
+                &profile_retention,
+            );
             match crate::perform_search_with_prf(pool, &*model, query.clone(), k, &f) {
                 Ok((mut rs, t)) => {
                     tel = t;
-                    for r in &mut rs {
-                        r.with_snippet(&snippet_q);
-                    }
-                    // Enrich with span + source link + highlights per-domain.
-                    if let Ok(conn) = pool.get() {
-                        let _ = crate::search::SearchResult::enrich_evidence(
-                            &conn,
-                            &mut rs,
-                            &snippet_q,
-                            f.as_of.is_some(),
-                        );
-                    }
-                    // strip snippet/evidence for flagged hits (after
-                    // enrichment) unless the caller opted into flagged rows.
-                    for r in &mut rs {
-                        crate::suppress_flagged_evidence(r, f.include_flagged);
-                    }
+                    // the per-domain read shaping (snippet + evidence
+                    // enrichment + flagged suppression) lives in the recall
+                    // core; the enrichment connection is best-effort, exactly
+                    // the pre-move pooled `get` posture.
+                    let enrich_conn = pool.get().ok();
+                    crate::service::recall::finish_domain_results(
+                        enrich_conn.as_deref(),
+                        &mut rs,
+                        &snippet_q,
+                        f.as_of.is_some(),
+                        f.include_flagged,
+                    );
                     per_domain.push((domain.clone(), rs));
                 }
                 Err(e) => {
@@ -582,7 +570,7 @@ pub(crate) async fn run_recall(
                 }
             }
         }
-        let all = rrf_merge_domains(per_domain, k);
+        let all = crate::service::recall::rrf_merge_domains(per_domain, k);
         (all, tel)
     });
 
@@ -718,39 +706,31 @@ pub(crate) async fn run_recall(
             let event_query = trace_query.clone();
             // The read-event cadence prunes EVERY
             // registered domain's chain, not just the global pool — collected
-            // here (owned) so the blocking closure stays 'static.
+            // here (owned) so the blocking closure stays 'static. The write
+            // story (row + trace artifact + per-domain chain prunes + the DSAR
+            // piggyback) is the recall core's `record_recall_read_event`; the
+            // prune connections are pulled lazily, one at a time, in the
+            // legacy schedule.
             let prune_targets = crate::handlers::domain_pools(&state.registry, &pool);
             task::spawn_blocking(move || {
-                if let Ok(conn) = pool.get() {
-                    let id = crate::audit::record_read_event(
+                pool.get().ok().and_then(|conn| {
+                    crate::service::recall::record_recall_read_event(
                         &conn,
-                        crate::audit::AuditKind::Recall,
-                        &actor,
-                        &event_query,
-                        trace_detail.as_deref(),
-                        &tenant,
-                    );
-                    if let Some(days) = crate::config::audit_read_retention_days() {
-                        // No-op on failure — prunes are fail-safe (retention
-                        // lingers; it never false-deletes); the warning
-                        // is logged inside the helper.
-                        for (_, domain_pool) in &prune_targets {
-                            if let Some(dp) = domain_pool
-                                && let Ok(c) = dp.get()
-                            {
-                                crate::audit::prune_audit_retention(&c, days);
-                            }
-                        }
-                    }
-                    // piggyback the DSAR ledger retention on the
-                    // same read-event prune cadence (no dedicated timer).
-                    crate::service::dsar::purge_stale_dsar_ledger(
-                        &conn,
-                        crate::config::dsar_ledger_retention_days(),
-                    );
-                    return id;
-                }
-                None
+                        prune_targets
+                            .iter()
+                            .filter_map(|(_, dp)| dp.as_ref())
+                            .filter_map(|p| p.get().ok()),
+                        crate::service::recall::ReadEvent {
+                            kind: crate::audit::AuditKind::Recall,
+                            actor: &actor,
+                            query: &event_query,
+                            trace_detail: trace_detail.as_deref(),
+                            tenant: &tenant,
+                            prune_days: crate::config::audit_read_retention_days(),
+                            dsar_retention_days: crate::config::dsar_ledger_retention_days(),
+                        },
+                    )
+                })
             })
             .await
             .unwrap_or(None)
@@ -917,56 +897,6 @@ fn map_source(src: Option<crate::SearchSource>) -> HitSource {
         Some(SearchSource::Both) => HitSource::Both,
         None => HitSource::Vector,
     }
-}
-
-/// Merge per-domain ranked result lists via Reciprocal Rank Fusion
-/// ("merge across domains with the same RRF").
-///
-/// Each domain's list is treated as one retriever; a chunk that appears in
-/// multiple domains accumulates RRF contributions from each. RRF is rank-based,
-/// so it correctly merges results whose raw scores are not comparable across
-/// domains (different IDF, different embed norms after quantization).
-///
-/// Dedup key is `(id, domain)` — the same content legitimately stored in two
-/// domains stays distinct (two memories), but a chunk can only appear once per
-/// domain (the in-domain search already deduplicated).
-///
-/// `k` is the final cap. The RRF contribution uses the same `RRF_K = 60`
-/// constant as the in-domain hybrid fusion (`search::RRF_K`).
-pub(super) fn rrf_merge_domains(
-    per_domain: Vec<(String, Vec<crate::SearchResult>)>,
-    k: usize,
-) -> Vec<(crate::SearchResult, String)> {
-    use std::collections::HashMap;
-    let rrf_k = crate::search::RRF_K as f32;
-
-    // First pass: collect fused scores per (domain, id).
-    let mut fused: HashMap<(String, i64), (f32, &crate::SearchResult)> = HashMap::new();
-    for (domain, rs) in &per_domain {
-        for (rank, r) in rs.iter().enumerate() {
-            let key = (domain.clone(), r.id);
-            let contribution = 1.0 / (rrf_k + rank as f32);
-            fused
-                .entry(key)
-                .and_modify(|(score, _)| *score += contribution)
-                .or_insert((contribution, r));
-        }
-    }
-
-    // Sort by fused score descending; truncate to k.
-    let mut entries: Vec<((String, i64), f32, &crate::SearchResult)> = fused
-        .into_iter()
-        .map(|((d, id), (score, r))| ((d, id), score, r))
-        .collect();
-    entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    entries.truncate(k);
-
-    // Clone the (cheaply cloneable) SearchResult for the caller. ponytail:
-    // cloning here keeps the helper pure + testable without lifetime gymnastics.
-    entries
-        .into_iter()
-        .map(|((d, _), _, r)| (r.clone(), d))
-        .collect()
 }
 
 /// Validate a parsed recall request against the contract bounds. Returns the
@@ -1282,76 +1212,6 @@ mod tests {
         );
     }
 
-    /// Cross-domain RRF: results are ranked by their RRF contribution
-    /// `1/(k+rank)` per-domain. Raw scores are NOT comparable across domains
-    /// (different IDF tables, different embed norms); rank IS comparable.
-    /// Each (domain, id) pair is a distinct hit tagged with its source domain.
-    #[test]
-    fn rrf_merge_ranks_by_per_domain_rank_not_raw_score() {
-        let mk = |id: i64, score: f32, content: &str| crate::SearchResult {
-            id,
-            score,
-            content: content.into(),
-            untrusted: true,
-            ..Default::default()
-        };
-        // Domain A: chunk 1 rank 0 (raw score 0.10), chunk 2 rank 1 (raw 0.95).
-        // Domain B: chunk 3 rank 0 (raw 0.99), chunk 4 rank 1 (raw 0.50).
-        //
-        // Under the OLD raw-score merge, chunk 3 (0.99) would win. Under RRF,
-        // the two rank-0 hits (chunk 1 in A, chunk 3 in B) tie for first because
-        // each contributes exactly `1/60`. The high raw 0.99 score must NOT
-        // outweigh the low raw 0.10 score — both are rank 0 in their domain.
-        let per_domain = vec![
-            ("a".to_string(), vec![mk(1, 0.10, "a1"), mk(2, 0.95, "a2")]),
-            ("b".to_string(), vec![mk(3, 0.99, "b3"), mk(4, 0.50, "b4")]),
-        ];
-        let merged = rrf_merge_domains(per_domain, 10);
-        // Top two must be the two rank-0 hits (ids 1 and 3), in either order.
-        let top_ids: std::collections::HashSet<i64> =
-            merged.iter().take(2).map(|(r, _)| r.id).collect();
-        assert_eq!(
-            top_ids,
-            [1, 3].into_iter().collect(),
-            "rank-0 hits should win regardless of raw score"
-        );
-        // Every hit is tagged with its source domain.
-        let tags: Vec<&str> = merged.iter().map(|(_, d)| d.as_str()).collect();
-        assert!(tags.contains(&"a") && tags.contains(&"b"));
-        // Cap to k.
-        let capped = rrf_merge_domains(
-            vec![
-                ("a".to_string(), vec![mk(1, 0.1, "a1"), mk(2, 0.2, "a2")]),
-                ("b".to_string(), vec![mk(3, 0.3, "b3"), mk(4, 0.4, "b4")]),
-            ],
-            2,
-        );
-        assert_eq!(capped.len(), 2, "k truncation must apply");
-    }
-
-    /// Same chunk id in the SAME domain twice (shouldn't happen, but the dedup
-    /// key is (domain, id) so we must keep them distinct across domains).
-    #[test]
-    fn rrf_merge_keeps_same_id_in_different_domains() {
-        let mk = |id: i64, content: &str| crate::SearchResult {
-            id,
-            score: 0.5,
-            content: content.into(),
-            untrusted: true,
-            ..Default::default()
-        };
-        let per_domain = vec![
-            ("a".to_string(), vec![mk(7, "a-copy")]),
-            ("b".to_string(), vec![mk(7, "b-copy")]),
-        ];
-        let merged = rrf_merge_domains(per_domain, 10);
-        assert_eq!(
-            merged.len(),
-            2,
-            "same id in different domains stays distinct"
-        );
-    }
-
     #[test]
     fn results_to_hits_tags_per_hit_domain() {
         // Federation: each hit keeps its own source domain.
@@ -1465,43 +1325,6 @@ mod tests {
             abstention_decision(None, true),
             crate::handlers::RecallDecision::Ok
         );
-    }
-
-    /// the stored recall trace records `query_hash` (SHA-256, v1.20.25),
-    /// never the raw query text — a recall query typed by a user is itself
-    /// personal data of that subject, and must not linger in the replay
-    /// artifact (the DSAR residue sweep relies on this invariant).
-    #[test]
-    fn stored_trace_hashes_query_never_stores_raw_text() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
-        let secret_query = "alice@example.com's medical history";
-        let trace_detail = serde_json::json!({
-            "query_hash": crate::audit::hash(secret_query),
-            "decision": "Ok",
-            "graph_rescued": false,
-            "hits": [],
-        })
-        .to_string();
-        let id = crate::audit::record_read_event(
-            &conn,
-            crate::audit::AuditKind::Recall,
-            "alice@example.com",
-            secret_query,
-            Some(&trace_detail),
-            "api",
-        )
-        .expect("trace row");
-        let replayed = crate::audit::read_trace(&conn, id).unwrap();
-        assert!(
-            !replayed.contains(secret_query),
-            "raw query text must never be stored in the trace"
-        );
-        let v: serde_json::Value = serde_json::from_str(&replayed).unwrap();
-        assert_eq!(v["query_hash"], crate::audit::hash(secret_query));
-        // The raw query lives only on the tamper-evident audit row's target
-        // (which is what record_read_event stores), never the replay artifact.
     }
 
     /// the recall read seam (results_to_hits) must strip invisible
