@@ -62,6 +62,8 @@
 //! does not force pace — progress between milestones may be zero without
 //! failing CI.
 
+#[cfg(feature = "compliance-pack")]
+pub mod compliance;
 pub mod domains_admin;
 pub mod dsar;
 pub mod forget;
@@ -74,7 +76,6 @@ pub mod register;
 pub mod retention;
 pub mod suggest;
 pub mod ump_ops;
-
 #[cfg(test)]
 mod pins {
     use std::path::Path;
@@ -110,7 +111,7 @@ mod pins {
         ("govern.rs", 6),
         ("webhooks.rs", 14),
         ("procedure.rs", 0),
-        ("compliance.rs", 13),
+        ("compliance.rs", 0),
         ("workflow_lineage.rs", 0),
         ("ump_ops.rs", 0),
         ("kcs.rs", 0),
@@ -246,8 +247,15 @@ mod pins {
     /// suggest.rs 6 → 0 — the last-wins feedback upsert (existence fence +
     /// upsert + the shared /ump/feedback binding) and the grouped outcome
     /// counts out to `service::suggest`; the error-string substring carried
-    /// out in the typed error's Display)
-    /// legitimately lowered it to 164 in the
+    /// out in the typed error's Display); then
+    /// compliance.rs 13 → 0 — the oversight-evidence write (best-effort
+    /// Option contract preserved), the six evidence counts, the RoPA read
+    /// (legacy JSON rows, byte-for-byte ceiling), and the RoPA upsert
+    /// (rows-affected 404 + in-tx audit) out to `service::compliance`,
+    /// feature-gated with the handler; the oversight pin moved with the fn
+    /// onto the full evidence schema, fixing the latent 7-vs-8-column
+    /// fixture drift)
+    /// legitimately lowered it to 151 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -255,7 +263,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 164,
+            sum, 151,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

@@ -166,49 +166,10 @@ pub struct ExportQuery {
 
 // ── Art.14 oversight evidence ───────────────────────────────────────────
 
-/// Append one oversight-evidence row linked to a fresh decision record.
-/// Best-effort like the audit chain: evidence must never fail the primary
-/// action. `basis` is the snapshot hash of what the reviewer saw (the
-/// review digest — never raw content); `outcome` ∈ accept|modify|override.
-pub(crate) fn record_oversight(
-    conn: &rusqlite::Connection,
-    reviewer_id: &str,
-    basis: &str,
-    outcome: &str,
-    authority: &str,
-    proposal_id: Option<i64>,
-    domain: &str,
-) -> Option<i64> {
-    let decision = brain_server::audit::decision::record_decision(
-        conn,
-        &brain_server::audit::decision::DecisionInput {
-            actor_id: reviewer_id,
-            role: authority,
-            policy_version: env!("CARGO_PKG_VERSION"),
-            prompt_class: "review",
-            tool: "oversight",
-            model_id: "",
-            outcome,
-        },
-    )?;
-    let decision_hash = decision.hash.clone();
-    conn.execute(
-        "INSERT INTO oversight_evidence(reviewer_id, reviewed_at, basis, outcome, authority, decision_hash, proposal_id, domain)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        rusqlite::params![
-            reviewer_id,
-            chrono::Utc::now().timestamp(),
-            basis,
-            outcome,
-            authority,
-            decision_hash,
-            proposal_id,
-            domain
-        ],
-    )
-    .ok()?;
-    Some(conn.last_insert_rowid())
-}
+/// Append one oversight-evidence row linked to a fresh decision record —
+/// the storage lives in `service::compliance` (this re-export keeps the
+/// gate.rs call sites byte-identical). Best-effort by contract.
+pub(crate) use crate::service::compliance::record_oversight;
 
 /// `POST /compliance/evaluation-record` — an accuracy/validation declaration
 /// (Art.15 evidence) appended to the decision ledger, tied to the system
@@ -302,17 +263,13 @@ pub async fn inventory(
         for (_, pool) in &targets {
             let Some(pool) = pool else { continue };
             let Ok(conn) = pool.get() else { continue };
-            let n = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap_or(-1) };
-            counts.decisions = counts
-                .decisions
-                .max(n("SELECT COUNT(*) FROM decision_records"));
-            counts.oversight = counts
-                .oversight
-                .max(n("SELECT COUNT(*) FROM oversight_evidence"));
-            counts.dsar = counts.dsar.max(n("SELECT COUNT(*) FROM dsar_requests"));
-            counts.incidents = counts.incidents.max(n("SELECT COUNT(*) FROM breaches"));
-            counts.transfers = counts.transfers.max(n("SELECT COUNT(*) FROM transfers"));
-            counts.ropa = counts.ropa.max(n("SELECT COUNT(*) FROM ropa_registry"));
+            let c = crate::service::compliance::evidence_counts(&conn);
+            counts.decisions = counts.decisions.max(c.decisions);
+            counts.oversight = counts.oversight.max(c.oversight);
+            counts.dsar = counts.dsar.max(c.dsar);
+            counts.incidents = counts.incidents.max(c.incidents);
+            counts.transfers = counts.transfers.max(c.transfers);
+            counts.ropa = counts.ropa.max(c.ropa);
         }
         vec![
             art(
@@ -375,23 +332,7 @@ fn art(name: &str, present: bool, count: i64, _now: Option<i64>) -> serde_json::
 
 // ── RoPA (GDPR Art.30 records of processing) ────────────────────────────
 
-#[derive(Debug, Deserialize)]
-pub struct RopaInput {
-    pub activity: String,
-    pub controller: String,
-    pub processor: String,
-    #[serde(default)]
-    pub categories: String,
-    #[serde(default)]
-    pub recipients: String,
-    pub lawful_basis: String,
-    #[serde(default)]
-    pub retention_days: Option<i64>,
-    #[serde(default)]
-    pub security_measures: String,
-    #[serde(default)]
-    pub transfers: String,
-}
+use crate::service::compliance::RopaInput;
 
 pub async fn list_ropa(
     State(state): State<Arc<AppState>>,
@@ -414,31 +355,7 @@ pub async fn list_ropa(
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, activity, controller, processor, categories, recipients,
-                        lawful_basis, retention_days, security_measures, transfers, updated_at
-                 FROM ropa_registry ORDER BY id",
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(serde_json::json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "activity": r.get::<_, String>(1)?,
-                        "controller": r.get::<_, String>(2)?,
-                        "processor": r.get::<_, String>(3)?,
-                        "categories": r.get::<_, String>(4)?,
-                        "recipients": r.get::<_, String>(5)?,
-                        "lawful_basis": r.get::<_, String>(6)?,
-                        "retention_days": r.get::<_, Option<i64>>(7)?,
-                        "security_measures": r.get::<_, String>(8)?,
-                        "transfers": r.get::<_, String>(9)?,
-                        "updated_at": r.get::<_, i64>(10)?,
-                    }))
-                })
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            rows.collect::<Result<Vec<_>, _>>()
+            crate::service::compliance::ropa_rows(&conn)
                 .map_err(|e| HandlerError::internal(e.to_string()))
         })
         .await
@@ -504,66 +421,16 @@ async fn ropa_upsert(
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let now = chrono::Utc::now().timestamp();
-        let rid = match id {
-            Some(rid) => {
-                let n = tx
-                    .execute(
-                        "UPDATE ropa_registry SET activity=?2, controller=?3, processor=?4,
-                            categories=?5, recipients=?6, lawful_basis=?7, retention_days=?8,
-                            security_measures=?9, transfers=?10, updated_at=?11 WHERE id=?1",
-                        rusqlite::params![
-                            rid,
-                            body.activity,
-                            body.controller,
-                            body.processor,
-                            body.categories,
-                            body.recipients,
-                            body.lawful_basis,
-                            body.retention_days,
-                            body.security_measures,
-                            body.transfers,
-                            now
-                        ],
-                    )
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                if n == 0 {
-                    return Err(HandlerError::not_found(format!(
-                        "no RoPA activity with id {rid}"
-                    )));
+        let rid = crate::service::compliance::ropa_upsert_tx(&tx, id, &body, now, &actor).map_err(
+            |e| match e {
+                crate::service::compliance::ComplianceError::NotFound(m) => {
+                    HandlerError::not_found(m)
                 }
-                rid
-            }
-            None => {
-                tx.execute(
-                    "INSERT INTO ropa_registry(activity, controller, processor, categories,
-                          recipients, lawful_basis, retention_days, security_measures,
-                          transfers, created_at, updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)",
-                    rusqlite::params![
-                        body.activity,
-                        body.controller,
-                        body.processor,
-                        body.categories,
-                        body.recipients,
-                        body.lawful_basis,
-                        body.retention_days,
-                        body.security_measures,
-                        body.transfers,
-                        now
-                    ],
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-                tx.last_insert_rowid()
-            }
-        };
-        crate::audit::record(
-            &tx,
-            crate::audit::AuditKind::Client,
-            &actor,
-            &format!("ropa:{rid}"),
-            crate::audit::AuditStatus::Ok,
-            "ropa_upserted",
-        );
+                crate::service::compliance::ComplianceError::Database(m) => {
+                    HandlerError::internal(m)
+                }
+            },
+        )?;
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
         Ok(rid)
@@ -580,16 +447,10 @@ async fn ropa_upsert(
 pub(crate) mod tests {
     use super::*;
 
-    /// The decision signing key resolves once per process from the env; every
-    /// compliance test installs the same fixed seed under a shared lock so
-    /// signatures verify deterministically.
-    pub(crate) static KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    const TEST_SEED_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     /// Install the FIXED test seed directly into the process-global cache and
     /// hold the crate-wide decision test lock for the caller's whole
     /// record→verify span. Env-var racing cannot produce mixed-key
     /// signatures (the tip_truncation CI flake).
-    #[must_use]
     pub(crate) fn ensure_test_key() -> std::sync::MutexGuard<'static, ()> {
         let _g = brain_server::audit::decision::decision_test_lock();
         brain_server::audit::decision::install_test_signing_key([7u8; 32]);
@@ -600,56 +461,14 @@ pub(crate) mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(brain_server::audit::decision::DDL)
             .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE oversight_evidence(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                reviewer_id TEXT NOT NULL,
-                reviewed_at INTEGER NOT NULL,
-                basis TEXT NOT NULL,
-                outcome TEXT NOT NULL,
-                authority TEXT NOT NULL DEFAULT '',
-                decision_hash TEXT
-             );",
-        )
-        .unwrap();
         conn
     }
 
-    #[test]
-    fn oversight_links_a_signed_decision_record() {
-        let _key = ensure_test_key();
-        let conn = db();
-        let id = record_oversight(
-            &conn,
-            "dpo-1",
-            "digest-abc",
-            "accept",
-            "approve",
-            Some(7),
-            "global",
-        )
-        .unwrap();
-        assert_eq!(id, 1);
-        let (hash, outcome): (String, String) = conn
-            .query_row(
-                "SELECT decision_hash, outcome FROM oversight_evidence WHERE id = 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(outcome, "accept");
-        // the linked decision record exists and carries the same hash
-        let stored: String = conn
-            .query_row(
-                "SELECT hash FROM decision_records WHERE hash = ?1",
-                rusqlite::params![hash],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(stored, hash);
-        let _g = brain_server::audit::decision::decision_test_lock();
-        assert!(brain_server::audit::decision::verify_decisions(&conn).unwrap());
-    }
+    // `oversight_links_a_signed_decision_record` moved WITH
+    // `record_oversight` into `service::compliance` (call path changed,
+    // assertions did not — and its fixture now carries the full 9-column
+    // evidence table the write actually targets, fixing the latent
+    // column-count mismatch these handler copies never exercised).
 
     #[test]
     fn wire_input_caps_reject_absurd_sizes() {
@@ -687,27 +506,7 @@ pub(crate) mod tests {
         assert!(!plain.contains("domain="));
     }
 
-    #[test]
-    fn tampered_signature_fails_verification() {
-        let _key = ensure_test_key();
-        let conn = db();
-        record_oversight(
-            &conn,
-            "dpo-1",
-            "d",
-            "override",
-            "reject",
-            Some(9),
-            "acme-us",
-        );
-        let n = conn
-            .execute(
-                "UPDATE decision_records SET sig = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
-                [],
-            )
-            .unwrap();
-        assert_eq!(n, 1);
-        let _g = brain_server::audit::decision::decision_test_lock();
-        assert!(!brain_server::audit::decision::verify_decisions(&conn).unwrap());
-    }
+    // `tampered_signature_fails_verification` moved WITH the oversight core
+    // into `service::compliance` — it exercises the same signed chain that
+    // `record_oversight` writes (call path changed, assertions did not).
 }

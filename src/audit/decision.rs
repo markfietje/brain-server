@@ -112,9 +112,12 @@ fn load_chain_key() -> ChainKey {
 }
 
 /// Test-only override so suites can exercise the signed path without env
-/// racing the process-wide cache.
-#[cfg(test)]
-pub(crate) fn install_test_signing_key(seed: [u8; 32]) {
+/// racing the process-wide cache. Also visible under `compliance-pack`: the
+/// pack's evidence suites run in the BINARY's test target, where this lib
+/// crate is an external dependency and `cfg(test)` is off — without the
+/// feature arm (and `pub`) the pack's own pins cannot reach the seam.
+#[cfg(any(test, feature = "compliance-pack"))]
+pub fn install_test_signing_key(seed: [u8; 32]) {
     *chain_key_cell().write().unwrap_or_else(|e| e.into_inner()) =
         ChainKey(Some(SigningKey::from_bytes(&seed)));
 }
@@ -123,13 +126,13 @@ pub(crate) fn install_test_signing_key(seed: [u8; 32]) {
 /// decisions must hold this lock for the whole record→verify sequence or a
 /// sibling's `install_test_signing_key` races mid-test and signatures are
 /// verified under the wrong key (the tip_truncation CI flake).
-#[cfg(test)]
-pub(crate) static DECISION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(any(test, feature = "compliance-pack"))]
+pub static DECISION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Poison-tolerant acquisition — a panicking sibling must not cascade
 /// PoisonErrors through unrelated decision tests.
-#[cfg(test)]
-pub(crate) fn decision_test_lock() -> std::sync::MutexGuard<'static, ()> {
+#[cfg(any(test, feature = "compliance-pack"))]
+pub fn decision_test_lock() -> std::sync::MutexGuard<'static, ()> {
     DECISION_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
