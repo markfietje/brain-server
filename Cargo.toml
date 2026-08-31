@@ -121,7 +121,7 @@ aes-gcm = "0.11"
 # v1.27.17 "Strongbox" (M1/F-08): memory-hard KDF for backup passphrases
 # (Argon2id, 64 MiB / t=3). Pure-Rust, no new transitive surface beyond
 # blake2/password-hash — both pass the cargo audit gate.
-argon2 = "0.5"
+argon2 = "0.6"
 # Hex encoding for HMAC signature roundtrips in webhook verification + tests.
 hex = "0.4"
 chrono = "0.4.45"
