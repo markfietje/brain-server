@@ -62,6 +62,7 @@
 //! does not force pace — progress between milestones may be zero without
 //! failing CI.
 
+pub mod art30;
 #[cfg(feature = "compliance-pack")]
 pub mod compliance;
 pub mod domains_admin;
@@ -109,7 +110,7 @@ mod pins {
         ("clients.rs", 26),
         ("workflow.rs", 0),
         ("ingest.rs", 3),
-        ("govern.rs", 6),
+        ("govern.rs", 0),
         ("webhooks.rs", 0),
         ("procedure.rs", 0),
         ("compliance.rs", 0),
@@ -270,8 +271,12 @@ mod pins {
     /// relay.rs 4 → 0 — the handover run reads (the gate row, the
     /// steps-existence probe with its nested EXISTS, the accept-time CAS
     /// inputs) out to `workflow::relay` beside insert_offer/decide_offer/
-    /// board)
-    /// legitimately lowered it to 127 in the
+    /// board); then
+    /// govern.rs 6 → 0 — the Art.30 register's data reads (per-kind
+    /// categories with fail-the-request posture, connector/DSAR
+    /// best-effort sections, the fail-open lifecycle counts) out to
+    /// `service::art30`; the register JSON stays handler-side)
+    /// legitimately lowered it to 121 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -279,7 +284,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 127,
+            sum, 121,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

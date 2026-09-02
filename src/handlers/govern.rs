@@ -267,23 +267,14 @@ pub async fn art30(
         // Categories of data: per-memory_kind counts (the kinds are the
         // categories brain-server processes).
         let mut categories: Vec<serde_json::Value> = Vec::new();
+        for (kind, n) in crate::service::art30::node_kind_counts(&conn)
+            .map_err(|e| HandlerError::internal(e.to_string()))?
         {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT node_kind, COUNT(*) FROM knowledge GROUP BY node_kind ORDER BY node_kind",
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for (kind, n) in stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
-                .map_err(|e| HandlerError::internal(e.to_string()))?
-                .flatten()
-            {
-                categories.push(serde_json::json!({
-                    "category": kind,
-                    "count": n,
-                    "purpose": format!("{kind} memory retrieved into decision context"),
-                }));
-            }
+            categories.push(serde_json::json!({
+                "category": kind,
+                "count": n,
+                "purpose": format!("{kind} memory retrieved into decision context"),
+            }));
         }
 
         // Retention: the effective per-kind policy.
@@ -300,12 +291,8 @@ pub async fn art30(
             }));
         }
         {
-            if let Ok(mut stmt) = conn.prepare("SELECT kind, instance FROM connectors ORDER BY kind") {
-                for (kind, instance) in stmt
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?
-                    .flatten()
-                {
+            if let Ok(rows) = crate::service::art30::connector_recipients(&conn) {
+                for (kind, instance) in rows {
                     recipients.push(serde_json::json!({
                         "name": format!("connector:{kind}:{instance}"),
                         "purpose": "external data source ingestion",
@@ -335,12 +322,8 @@ pub async fn art30(
         // DSAR exercise history (count by action/status).
         let dsar: Vec<serde_json::Value> = {
             let mut v = Vec::new();
-            if let Ok(mut stmt) = conn.prepare("SELECT action, status, COUNT(*) FROM dsar_requests GROUP BY action, status ORDER BY action") {
-                for (a, s, n) in stmt
-                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
-                    .map_err(|e| HandlerError::internal(e.to_string()))?
-                    .flatten()
-                {
+            if let Ok(rows) = crate::service::art30::dsar_history(&conn) {
+                for (a, s, n) in rows {
                     v.push(serde_json::json!({ "action": a, "status": s, "count": n }));
                 }
             }
@@ -348,15 +331,7 @@ pub async fn art30(
         };
 
         // Chunk lifecycle summary: superseded (valid_to set), tombstoned, live.
-        let live: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge WHERE valid_to IS NULL", [], |r| r.get(0))
-            .unwrap_or(0);
-        let superseded: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge WHERE valid_to IS NOT NULL", [], |r| r.get(0))
-            .unwrap_or(0);
-        let tombstoned: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tombstones", [], |r| r.get(0))
-            .unwrap_or(0);
+        let (live, superseded, tombstoned) = crate::service::art30::lifecycle_counts(&conn);
 
         Ok(serde_json::json!({
             "art30": {
