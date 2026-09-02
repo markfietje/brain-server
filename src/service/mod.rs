@@ -68,6 +68,7 @@ pub mod compliance;
 pub mod domains_admin;
 pub mod dsar;
 pub mod forget;
+pub mod gate;
 pub mod ingest;
 pub mod lifecycle;
 pub mod procedure;
@@ -104,7 +105,7 @@ mod pins {
     /// is a regression. Slots only shrink — a baseline row may be lowered
     /// when its surface moves to a service core, never raised.
     const SQL_BASELINE: &[(&str, usize)] = &[
-        ("gate.rs", 78),
+        ("gate.rs", 68),
         ("observe.rs", 0),
         ("domains.rs", 0),
         ("clients.rs", 0),
@@ -298,12 +299,16 @@ mod pins {
     /// legitimately lowered it to 78 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
-    /// of the guard itself.
+    /// of the guard itself. The Cornerstone extraction (the final vein: the
+    /// review-queue read — `ProposalView` + the deadline/SLA derivation + the
+    /// page SELECT pair + the supervisor owner filter, tests riding along —
+    /// out to the new `service::gate`) legitimately lowered it to 68 in the
+    /// SAME commit that moved the SQL.
     #[test]
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 78,
+            sum, 68,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

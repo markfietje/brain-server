@@ -11272,7 +11272,8 @@ Final paragraph after the rule.";
     #[test]
     fn test_proposal_deadline_is_derived_and_bands_mirror_alert_watcher() {
         let created = 1_750_000_000i64;
-        let (expires_at, warn_secs, critical_secs) = handlers::gate::proposal_deadline(created);
+        let (expires_at, warn_secs, critical_secs) =
+            crate::service::gate::proposal_deadline(created);
         assert_eq!(
             expires_at,
             created + crate::config::proposal_ttl_secs(),

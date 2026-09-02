@@ -400,7 +400,7 @@ pub async fn client_proposals(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
     Path(name): Path<String>,
-) -> Result<Json<Vec<crate::handlers::gate::ProposalView>>, HandlerError> {
+) -> Result<Json<Vec<crate::service::gate::ProposalView>>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     let pool_for = pool.clone();
@@ -420,17 +420,18 @@ pub async fn client_proposals(
         .map(|p| p.manages.clone())
         .unwrap_or_default();
     let rows = tokio::task::spawn_blocking(
-        move || -> Result<Vec<crate::handlers::gate::ProposalView>, HandlerError> {
+        move || -> Result<Vec<crate::service::gate::ProposalView>, HandlerError> {
             let conn = domain_pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-            let page = crate::handlers::gate::list_proposals_page(
+            let page = crate::service::gate::pending_page(
                 &conn,
                 "pending",
-                crate::handlers::gate::MAX_PROPOSALS,
+                crate::service::gate::MAX_PROPOSALS,
                 None,
-            )?;
-            Ok(crate::handlers::gate::owner_in_filtered(page, &manages))
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+            Ok(crate::service::gate::owner_in_filtered(page, &manages))
         },
     )
     .await
