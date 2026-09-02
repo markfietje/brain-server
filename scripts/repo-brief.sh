@@ -33,7 +33,7 @@ echo "unique paths:  $(tr '\n' ' ' < "$m" 2>/dev/null | grep -oE '"(/[a-zA-Z0-9{
 echo "cli commands:  $(sed -n 's/^        name: "\([a-z-]*\)",/\1/p' src/bin/brain.rs 2>/dev/null | wc -l | tr -d ' ')"
 
 echo "--- guards present ---"
-for g in docs_truth dup_guard spire_inventory reg_watch sql_inventory_baseline; do
+for g in docs_truth dup_guard spire_inventory reg_watch no_sql_in_handlers_enforced; do
   hit=$(grep -rl "$g" src --include='*.rs' 2>/dev/null || true | head -1)
   printf '%-24s %s\n' "$g" "${hit:-ABSENT}"
 done

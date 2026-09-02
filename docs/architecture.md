@@ -181,13 +181,60 @@ not a separate service:
 
 Handlers are protocol adapters ONLY: parse → principal → authorize → one
 `spawn_blocking` → domain call → read-seam shaping → response. ALL SQL, caps,
-FK ordering, and invariants live in domain modules (`src/workflow/*`) that
-take `&Connection` / `WorkflowTx` — never pool or HTTP types. Every mutation
-emits its hash-chained audit row INSIDE the caller's transaction: a transition
-and its evidence commit or roll back together.
-Error paths deny loudly (fail-closed); silence is never certified. New code is
-always a service core; see `docs/engine-sdk.md` for the stable engine ABI the
-workflow cores compile against.
+FK ordering, and invariants live in domain modules (`src/workflow/*`, and the
+storage cores under `src/service/*`) that take `&Connection` / `WorkflowTx` —
+never pool or HTTP types. Every mutation emits its hash-chained audit row
+INSIDE the caller's transaction: a transition and its evidence commit or roll
+back together. Error paths deny loudly (fail-closed); silence is never
+certified. New code is always a service core; see `docs/engine-sdk.md` for the
+stable engine ABI the workflow cores compile against.
+
+The law is machine-checked, not aspirational — two CI guards (tests under
+`src/service/mod.rs`, run by every `cargo test` job) hold it shut:
+
+1. **`no_sql_in_handlers_enforced`** — ANY SQL statement under `src/handlers/`
+   (production source, test fixture, or even a comment naming a statement
+   opener) fails the build. There is no allowlist: the handler-side debt was
+   frozen at 445 statements (v1.28.46), extracted file-by-file to zero, and
+   the guard now keeps it there by construction. A handler that needs new
+   storage writes (or extends) a service core first.
+2. **`service_layer_free_of_http_types`** — production source under
+   `src/service/` never names a transport type (`axum`, `StatusCode`, `Json`,
+   `AppState`, `Pool`). Services take connections and return domain types;
+   HTTP status mapping happens only at the handler boundary, via each core's
+   typed error enum.
+
+### The request flow through the seam
+
+Every write and read crosses the layer boundary the same way:
+
+```mermaid
+flowchart TD
+    A[HTTP request] --> B[Handler: parse + authorize]
+    B --> C[spawn_blocking
+borrow pooled connection]
+    C --> D[Service core
+SQL + bounds + FK order + in-tx audit]
+    D --> E[Typed domain result / error]
+    E --> F[Handler: read-seam shaping
+sanitize + digest + status mapping]
+    F --> G[HTTP response]
+```
+
+The seam list — what may cross the boundary, in both directions:
+
+| Crossing | Down (handler → core) | Up (core → handler) |
+|---|---|---|
+| Connections | `&rusqlite::Connection` (reads) or the caller's `&rusqlite::Transaction` (writes) | — (a core can never outlive or commit the caller's tx) |
+| Time | unix-second `i64` arguments (wall-clock is injected, never read) | — |
+| Values | validated, bounded scalar/struct parameters | domain types (stored forms, NOT wire shapes) |
+| Errors | — | one typed enum per core (`Display` carries the exact pre-move message; the handler maps to the route's frozen status vocabulary) |
+| Audit rows | — | written INSIDE the caller's tx by the core that owns the mutation |
+
+What never crosses: pool handles, `AppState`, HTTP status codes, JSON body
+wrappers, or `serde` wire shapes. The read seam (`sanitize_read`, digest
+binding, PII masking) stays handler-side by contract — cores return stored
+bytes; the handler decides what a given reader sees.
 
 ---
 
