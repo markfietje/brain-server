@@ -316,8 +316,9 @@ routes, no schema (1.28.45 untouched).
   datetime('now')` (a SQL-side clock, inconsistent with every other branch's
   bound parameter) is preserved VERBATIM — a pin or fix is filed, not
   smuggled into the move. The maxLength parity pin for the Confluence bound
-  is a follow-up. The compliance-pack TEST RUN owed from Confluence is still
-  owed before push (clippy green; the one-time full rebuild is the cost).
+  is a follow-up. The compliance-pack TEST RUN owed from Confluence remains
+  owed — deferred again at push time by operator call (clippy green; the
+  one-time full rebuild is the cost).
 
 Predecessor: [1.28.51] — "Confluence": the long tail, sixteen files to zero.
 
