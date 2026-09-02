@@ -116,7 +116,7 @@ mod pins {
         ("workflow_lineage.rs", 0),
         ("ump_ops.rs", 0),
         ("kcs.rs", 0),
-        ("valet.rs", 6),
+        ("valet.rs", 0),
         ("suggest.rs", 0),
         ("forget.rs", 0),
         ("relay.rs", 4),
@@ -260,8 +260,13 @@ mod pins {
     /// flood/finding/hot-count, the Signal flood bound, the draft-approve
     /// read + digest-gated UPDATE) out to `service::webhook_ingest`; the
     /// run-domain lookup reuses workflow::state::run_domain_of and the e2e
-    /// seeds ride the cores (open_run, file_pending_draft, steering_inbox))
-    /// legitimately lowered it to 137 in the
+    /// seeds ride the cores (open_run, file_pending_draft, steering_inbox));
+    /// then
+    /// valet.rs 6 → 0 — the morning brief's two projections (pending-drafts
+    /// queue, trailing-window evening notes) out to `workflow::valet` beside
+    /// due/consent; the e2e tests moved WITH the surface onto the core's
+    /// test module (the register.rs precedent), seeds riding the cores)
+    /// legitimately lowered it to 131 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -269,7 +274,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 137,
+            sum, 131,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

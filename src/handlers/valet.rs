@@ -106,18 +106,7 @@ pub async fn get_brief(
 
         // Drafts pending approval + their advisory lint scores.
         let mut drafts: Vec<serde_json::Value> = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, lint_json FROM proposals
-                  WHERE status='pending' AND kind='draft' ORDER BY id DESC LIMIT 20",
-            )
-            .map_err(|e| format!("{e}"))?;
-        let rows: Vec<(i64, String, Option<String>)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(|e| format!("{e}"))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("{e}"))?;
-        for (id, content, lint) in rows {
+        for (id, content, lint) in core::pending_drafts(&conn).map_err(|e| format!("{e}"))? {
             let lint: serde_json::Value = lint
                 .as_deref()
                 .and_then(|l| serde_json::from_str(l).ok())
@@ -131,22 +120,9 @@ pub async fn get_brief(
 
         // Evening captures: notes on valet runs in the trailing 24h.
         let mut notes: Vec<serde_json::Value> = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT n.run_id, n.content FROM case_notes n
-                  JOIN workflow_runs r ON r.id = n.run_id
-                  WHERE r.kind LIKE 'valet/%' AND n.created_at > ?1
-                  ORDER BY n.id DESC LIMIT 50",
-            )
-            .map_err(|e| format!("{e}"))?;
-        let nrows: Vec<(i64, String)> = stmt
-            .query_map(rusqlite::params![now - 86_400], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .map_err(|e| format!("{e}"))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("{e}"))?;
-        for (run_id, content) in nrows {
+        for (run_id, content) in
+            core::evening_notes(&conn, now - 86_400).map_err(|e| format!("{e}"))?
+        {
             notes.push(serde_json::json!({
                 "run_id": run_id,
                 "content": crate::gate::sanitize_stored(&content, false, &None),
@@ -235,125 +211,4 @@ pub async fn put_consent(
     Ok(Json(
         serde_json::json!({"ok": true, "granted": body.granted}),
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    fn test_state() -> (tempfile::TempDir, Arc<crate::AppState>) {
-        crate::register_sqlite_vec();
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let db_path = dir.path().join("brain.db");
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
-        let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
-        brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0)
-            .expect("migration");
-        let state = Arc::new(crate::AppState {
-            model: Arc::new(
-                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
-            ),
-            registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
-            pool,
-            db_path,
-            connection_tracker: Arc::new(crate::ConnectionTracker::new()),
-            rate_limiter: Arc::new(crate::RateLimiter::new()),
-            snapshot: crate::integrity::SnapshotState::default(),
-            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
-            auth_mode: crate::auth::AuthMode::Opaque,
-            key_store: crate::auth::jwks::KeyStore::default(),
-            revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
-            jwt_issuer: String::new(),
-            jwt_audience: String::new(),
-            oidc_config: crate::handlers::well_known::OidcConfig::unconfigured(),
-            ump_events: tokio::sync::broadcast::channel(16).0,
-            alert_events: tokio::sync::broadcast::channel(16).0,
-            alert_seq: std::sync::atomic::AtomicU64::new(0),
-            chain_watch: crate::alert::ChainWatchState::default(),
-        });
-        (dir, state)
-    }
-
-    fn seed(conn: &rusqlite::Connection, now: i64) {
-        // One overdue + one future reminder.
-        for (what, due) in [("overdue post", now - 3600), ("future post", now + 3600)] {
-            conn.execute(
-                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
-                 VALUES ('personal', 'valet/reminder', ?1, 0, 'active', 1, 1)",
-                rusqlite::params![
-                    &core::stamp_state(what, due, core::REPEAT_NONE).unwrap()
-                ],
-            )
-            .unwrap();
-        }
-        // One pending draft with a lint report + one decided draft (must NOT appear).
-        let lint = brain_server::valet_style::LintReport {
-            score: 60,
-            findings: vec![],
-            style_memory_hash: "h".repeat(64),
-        };
-        conn.execute(
-            "INSERT INTO proposals(kind, content, novelty, status, lint_json, created_at)
-             VALUES ('draft', 'draft body one', 0.5, 'pending', ?1, ?2)",
-            rusqlite::params![serde_json::to_string(&lint).unwrap(), now - 100],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO proposals(kind, content, novelty, status, decided_at, created_at)
-             VALUES ('draft', 'draft body two', 0.5, 'approved', ?1, ?2)",
-            rusqlite::params![now - 50, now - 60],
-        )
-        .unwrap();
-        // An evening-capture note on the overdue run, inside the window.
-        conn.execute(
-            "INSERT INTO case_notes(domain, run_id, author, content, created_at)
-             VALUES ('personal', 1, 'operator', 'shipped the brief feature; learned to pin caps', ?1)",
-            rusqlite::params![now - 10],
-        )
-        .unwrap();
-    }
-
-    /// The morning brief composes the whole picture: due/overdue (only what
-    /// is actually due), drafts PENDING approval with their lint scores, and
-    /// the trailing-window evening notes linked to their runs.
-    #[tokio::test]
-    async fn brief_includes_due_overdue_pending_with_lint_scores() {
-        let (_dir, state) = test_state();
-        {
-            let conn = state.pool.get().unwrap();
-            let now = chrono::Utc::now().timestamp();
-            seed(&conn, now);
-        }
-        let res = get_brief(
-            axum::extract::State(state.clone()),
-            crate::handlers::auth::OptPrincipal(None),
-        )
-        .await
-        .expect("brief");
-        let v = res.0;
-        let due = v["due"].as_array().expect("due array");
-        assert_eq!(due.len(), 1, "only the overdue envelope is due");
-        assert_eq!(due[0]["what"], "overdue post");
-        assert!(due[0]["overdue_secs"].as_i64().unwrap() > 0);
-        let drafts = v["drafts_pending"].as_array().expect("drafts array");
-        assert_eq!(drafts.len(), 1, "only the PENDING draft appears");
-        assert_eq!(drafts[0]["lint"]["score"], 60);
-        let notes = v["evening_notes"].as_array().expect("notes array");
-        assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0]["run_id"], 1, "notes link back to their runs");
-    }
-
-    /// The consent gate surfaces its state in the brief (no silent sends).
-    #[tokio::test]
-    async fn brief_reports_signal_consent_state() {
-        let (_dir, state) = test_state();
-        let res = get_brief(
-            axum::extract::State(state.clone()),
-            crate::handlers::auth::OptPrincipal(None),
-        )
-        .await
-        .expect("brief");
-        assert_eq!(res.0["signal_consent_in_force"], false);
-    }
 }
