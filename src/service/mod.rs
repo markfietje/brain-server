@@ -54,13 +54,12 @@
 //! orchestration — undecided coupling is how the old pattern creeps back.
 //!
 //! **Enforcement** — the layer contract is pinned shut by the tests at the
-//! bottom of this file: the SQL-inventory baseline freezes the handler-side
-//! debt (regressions fail CI; progress prints deltas), and the transport-
-//! type greps keep this tree free of HTTP-framework identifiers. The
-//! enforcing flip (any SQL under `src/handlers/` fails) is the LAST
-//! milestone of the line; until then the lock stops regrowth but
-//! does not force pace — progress between milestones may be zero without
-//! failing CI.
+//! bottom of this file, ENFORCING since the Cornerstone flip: ANY SQL
+//! statement under `src/handlers/` fails CI (there is no baseline and no
+//! allowlist — the debt is zero and the guard keeps it there), and the
+//! transport-type greps keep the service tree free of HTTP-framework
+//! identifiers. Storage changes belong in a service core by construction;
+//! a handler that needs one writes the core first.
 
 pub mod art30;
 #[cfg(feature = "compliance-pack")]
@@ -83,12 +82,11 @@ pub mod webhook_ingest;
 mod pins {
     use std::path::Path;
 
-    /// The SQL-statement counter, per the roadmap's definition: one pass,
+    /// The SQL-statement counter, per the line's definition: one pass,
     /// case-insensitive, non-overlapping occurrences of the four statement
     /// openers (`SELECT `, `INSERT `, `UPDATE `, `DELETE FROM`). Substring
     /// semantics are deliberate — false positives (a comment naming a
-    /// keyword) only make the lock stricter, never looser, and are absorbed
-    /// by the frozen baseline until the file is extracted.
+    /// keyword) only make the lock stricter, never looser.
     fn count_sql_statements(source: &str) -> usize {
         let lower = source.to_ascii_lowercase();
         ["select ", "insert ", "update ", "delete from"]
@@ -97,233 +95,95 @@ mod pins {
             .sum()
     }
 
-    /// The debt inventory, FROZEN at v1.28.46 (pre-extraction measurement
-    /// over `src/handlers/*.rs`; the scoping estimate in the roadmap was
-    /// re-measured at execution — the frozen numbers are the ones the
-    /// counter above produces on the frozen tree). A file absent from the
-    /// table has an implicit baseline of 0: a NEW handler file shipping SQL
-    /// is a regression. Slots only shrink — a baseline row may be lowered
-    /// when its surface moves to a service core, never raised.
-    const SQL_BASELINE: &[(&str, usize)] = &[
-        ("gate.rs", 0),
-        ("observe.rs", 0),
-        ("domains.rs", 0),
-        ("clients.rs", 0),
-        ("workflow.rs", 0),
-        ("ingest.rs", 0),
-        ("govern.rs", 0),
-        ("webhooks.rs", 0),
-        ("procedure.rs", 0),
-        ("compliance.rs", 0),
-        ("workflow_lineage.rs", 0),
-        ("ump_ops.rs", 0),
-        ("kcs.rs", 0),
-        ("valet.rs", 0),
-        ("suggest.rs", 0),
-        ("forget.rs", 0),
-        ("relay.rs", 0),
-        ("holds.rs", 0),
-        ("auth.rs", 0),
-        ("breaches.rs", 0),
-        ("channel.rs", 0),
-        ("channel_webhook.rs", 0),
-        ("crew.rs", 0),
-        ("mod.rs", 0),
-        ("profiles.rs", 0),
-        ("roles.rs", 0),
-        ("shifts.rs", 0),
-        ("sources.rs", 0),
-        ("verify.rs", 0),
-    ];
-
-    /// v1.28.46 "Plumb" — the measuring stick. REGRESSION (any handler file
-    /// above its frozen count, or SQL in an unlisted file) = hard failure;
-    /// PROGRESS (below baseline) prints the delta and passes. The guard is
-    /// the line's scoreboard: the per-file delta IS the progress report.
+    /// v1.28.52 "Cornerstone" — the enforcing flip. The Foundation Line
+    /// began by FREEZING the handler-side debt (v1.28.46 "Plumb": a per-file
+    /// baseline at 445 statements across 29 files — regressions failed,
+    /// progress printed deltas), then burned it to zero one extraction per
+    /// commit (Quarry 359, Masonry 354, Terrace 272, Aqueduct 241, Confluence
+    /// 78 — every handler file EXCEPT gate.rs drained; Cornerstone's final
+    /// vein took gate.rs 78 → 0 across six surfaces: the review-queue read,
+    /// the creation insert, the expire/reject family, the edit path, the
+    /// approve family, and the export read). With nothing left to compare
+    /// against, the baseline table and the allowlist machinery are DELETED:
+    /// ANY counted statement in ANY file under `src/handlers/` — production
+    /// source, test fixture, or comment residue — fails. The walk is
+    /// recursive so a future subdirectory cannot quietly escape the law.
+    /// The file-count sanity below refuses a vacuous pass (the lipstyk
+    /// lesson: a guard that scans nothing must not smile).
     #[test]
-    fn sql_inventory_baseline_freezes_the_debt() {
+    fn no_sql_in_handlers_enforced() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers");
-        let mut current: Vec<(String, usize)> = Vec::new();
-        for entry in std::fs::read_dir(&dir).expect("src/handlers must exist") {
-            let entry = entry.expect("readable dir entry");
-            let name = entry.file_name();
-            let name = name.to_string_lossy().into_owned();
-            if !name.ends_with(".rs") {
-                continue;
-            }
-            let text =
-                std::fs::read_to_string(entry.path()).expect("handler file must be readable");
-            let n = count_sql_statements(&text);
-            current.push((name, n));
-        }
-        assert!(
-            current.len() >= SQL_BASELINE.len(),
-            "sanity: expected at least the baseline's handler files, found {}",
-            current.len()
-        );
-        current.sort();
-
-        let mut regressions: Vec<String> = Vec::new();
-        let mut progress: Vec<String> = Vec::new();
-        let mut stale: Vec<String> = Vec::new();
-        let mut total = 0usize;
-        let mut baseline_total = 0usize;
-        for (name, base) in SQL_BASELINE {
-            baseline_total += base;
-            match current.iter().find(|(f, _)| f == name) {
-                None => stale.push(format!("{name} (baseline {base})")),
-                Some((_, cur)) => {
-                    total += cur;
-                    if *cur > *base {
-                        regressions.push(format!("  {name}: {cur} > baseline {base}"));
-                    } else if *cur < *base {
-                        progress.push(format!("  {name}: {base} → {cur} (−{})", base - cur));
-                    }
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("src/handlers must exist") {
+                let entry = entry.expect("readable dir entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().map(|x| x == "rs").unwrap_or(false) {
+                    out.push(path);
                 }
             }
         }
-        for (f, cur) in &current {
-            if !SQL_BASELINE.iter().any(|(n, _)| n == f) && *cur > 0 {
-                regressions.push(format!("  {f}: {cur} > baseline 0 (unlisted file)"));
+        walk(&dir, &mut files);
+        assert!(
+            files.len() >= 30,
+            "sanity: expected the full handler tree (30+ files at the flip), found {} \
+             — a walk that finds nothing has found nothing",
+            files.len()
+        );
+        files.sort();
+
+        let mut violations: Vec<String> = Vec::new();
+        for f in &files {
+            let text = std::fs::read_to_string(f).expect("handler file must be readable");
+            let n = count_sql_statements(&text);
+            if n > 0 {
+                let display = f
+                    .strip_prefix(&dir)
+                    .unwrap_or(f)
+                    .to_string_lossy()
+                    .into_owned();
+                violations.push(format!("  src/handlers{display}: {n} statement matches"));
             }
         }
         assert!(
-            stale.is_empty(),
-            "stale baseline rows — the file is gone, lower the table in the same commit:\n  {}",
-            stale.join("\n  ")
+            violations.is_empty(),
+            "SQL-inventory VIOLATION — handlers are protocol adapters ONLY; ALL SQL, \
+             bounds/caps, FK-children ordering, and invariants live in a domain \
+             core (`src/workflow/*`, `src/service/*`) taking `&Connection` / \
+             `WorkflowTx`. Write the core first, then the handler:
+{}",
+            violations.join("\n")
         );
-        assert!(
-            regressions.is_empty(),
-            "SQL-inventory REGRESSION — handler-embedded SQL may not regrow; move the \
-             statements into a service core and lower the baseline in the same commit:\n{}",
-            regressions.join("\n")
-        );
-        println!(
-            "sql inventory: {total} embedded statements (baseline {baseline_total}, Δ {})",
-            total as i64 - baseline_total as i64
-        );
-        for p in &progress {
-            println!("  progress: {p}");
-        }
     }
 
-    /// The baseline table must sum to the frozen floor — v1.28.46 froze it
-    /// the frozen debt total moved — v1.28.46 froze it
-    /// at 445; the Quarry extraction (observe.rs 66 → 0, the DSAR + purge
-    /// cores) legitimately lowered it to 359; the Masonry extraction (the
-    /// lifecycle family: `/decayed`, `/purge` orchestration, the by-id/batch
-    /// fetch projections out of gate.rs) legitimately lowered it to 354 in
-    /// the SAME commit that moved the SQL; the Terrace extraction (the
-    /// the register surfaces: domains.rs 64 → 0 — every statement out — and
-    /// clients.rs 44 → 26 — every register statement out; the residue is
-    /// other surfaces' hold-fence/transfer pins that fixture on the
-    /// register) legitimately lowered it to 272 in the SAME commit that
-    /// moved the SQL. The Aqueduct extraction (the retrieval surfaces:
-    /// ingest.rs 22 → 3 — every statement of the store tx out to
-    /// `service::ingest`; the residue is comment substrings — and the
-    /// stale govern.rs row caught up at 18 → 6, the retention family's
-    /// Plumb-era move the table had never lowered) legitimately lowered it
-    /// to 241 in the SAME commit that moved the SQL. The Confluence
-    /// SAME commit that moved the SQL. The Confluence
-    /// extraction (workflow.rs 23 → 0 — every engine-projection read, the
-    /// steering inbox write/read, and the scoreboard family out to
-    /// `workflow::{state, outbox, kcs, scoreboard}`; the residue was two
-    /// comment substrings, reworded; then workflow_lineage.rs 11 → 0 — the
-    /// events/context/rewind/handoff reads out to the same cores; then
-    /// procedure.rs 13 → 0 — the store tx (root → per-chunk quarantine
-    /// flags → steps → next_step edges), the step-chain/meta/decision
-    /// reads, and the vec-shadow writes out to `service::procedure`; the
-    /// residue was two error-string substrings carried out in the typed
-    /// error's Display); then
-    /// ump_ops.rs 11 → 0 — the urn lookup, the supersession read, the raw
-    /// relations read, the soft-forget block (flag + hash-only tombstone +
-    /// in-tx audit), and the consent-denial audit helper + its pin out to
-    /// `service::ump_ops`; the row-meta read reuses
-    /// `service::procedure::row_access_meta` — one definition); then
-    /// kcs.rs 8 → 0 — the article lifecycle (row fetch, the draft→approved
-    /// CAS, the worklist read, the publish-proposal write, the public-page
-    /// row) out to `workflow::kcs` beside propose_translation; then
-    /// forget.rs 5 → 0 — the single-chunk erasure (legal-hold fence,
-    /// document_id + content digest capture, the explicit vec0 delete, the
-    /// knowledge delete, the tombstone only when a row actually deleted) out
-    /// to `service::forget`); then
-    /// suggest.rs 6 → 0 — the last-wins feedback upsert (existence fence +
-    /// upsert + the shared /ump/feedback binding) and the grouped outcome
-    /// counts out to `service::suggest`; the error-string substring carried
-    /// out in the typed error's Display); then
-    /// compliance.rs 13 → 0 — the oversight-evidence write (best-effort
-    /// Option contract preserved), the six evidence counts, the RoPA read
-    /// (legacy JSON rows, byte-for-byte ceiling), and the RoPA upsert
-    /// (rows-affected 404 + in-tx audit) out to `service::compliance`,
-    /// feature-gated with the handler; the oversight pin moved with the fn
-    /// onto the full evidence schema, fixing the latent 7-vs-8-column
-    /// fixture drift); then
-    /// webhooks.rs 14 → 0 — the synchronous webhook side-door (kb-feedback
-    /// flood/finding/hot-count, the Signal flood bound, the draft-approve
-    /// read + digest-gated UPDATE) out to `service::webhook_ingest`; the
-    /// run-domain lookup reuses workflow::state::run_domain_of and the e2e
-    /// seeds ride the cores (open_run, file_pending_draft, steering_inbox));
-    /// then
-    /// valet.rs 6 → 0 — the morning brief's two projections (pending-drafts
-    /// queue, trailing-window evening notes) out to `workflow::valet` beside
-    /// due/consent; the e2e tests moved WITH the surface onto the core's
-    /// test module (the register.rs precedent), seeds riding the cores);
-    /// then
-    /// relay.rs 4 → 0 — the handover run reads (the gate row, the
-    /// steps-existence probe with its nested EXISTS, the accept-time CAS
-    /// inputs) out to `workflow::relay` beside insert_offer/decide_offer/
-    /// board); then
-    /// govern.rs 6 → 0 — the Art.30 register's data reads (per-kind
-    /// categories with fail-the-request posture, connector/DSAR
-    /// best-effort sections, the fail-open lifecycle counts) out to
-    /// `service::art30`; the register JSON stays handler-side); then
-    /// the single-statement sweep — breaches 1 → 0 (role-store count onto
-    /// role::defined_count), channel 1 → 0 + channel_webhook 1 → 0 (the
-    /// user-map proposal INSERT + the shared seen-window flood count onto
-    /// workflow::channels), crew 1 → 0 (the skills proposal INSERT onto
-    /// workflow::crew), mod.rs 1 → 0 (the guard's docs count onto
-    /// capacity::knowledge_docs, fail-open preserved), sources 1 → 0 (the
-    /// DEAD uri read deleted — result was discarded, zero observable
-    /// effect), verify 1 → 0 (the domain-bound row read onto
-    /// service::recall::chunk_for_verify), holds 2 → 0 (the per-id
-    /// existence fence onto legal_hold::first_missing_id, same tx, same
-    /// error mapping)); then the comment-residue sweep — ingest 3, shifts 1,
-    /// auth 2, profiles 1, roles 1: prose reworded so no counted keyword
-    /// remains in a drained file); then
-    /// clients.rs 26 → 0 — the borrowed-fixture fence pins (hold fences over
-    /// forget / sources / ump / observe / holds / transfers, fixtures only —
-    /// zero register-surface SQL since Terrace) move onto
-    /// service::register's test module, which already carried the identical
-    /// app-state + seed fixtures; call paths unchanged, every assertion
-    /// unchanged)
-    /// legitimately lowered it to 78 in the
-    /// SAME commit that moved the SQL. A table edit that
-    /// loosens the sum without a matching extraction is a silent regression
-    /// of the guard itself. The Cornerstone extraction (the final vein: the
-    /// SAME commit that moved the SQL. The Cornerstone extraction (the final
-    /// vein out of gate.rs onto the new `service::gate`): the review-queue
-    /// read (ProposalView + deadline/SLA derivation + the page SELECT pair +
-    /// the supervisor owner filter, tests riding along) lowered it to 68, the
-    /// creation insert + conflict pre-check (with the pending audit riding
-    /// the insert) to 66, the expire/reject family (the TTL write with
-    /// wall-clock as an argument, the pending-fence read one-defined across
-    /// approve/reject/edit, the reject CAS, the content read) to 59, the edit
-    /// row read + its re-score CAS to 57, and the approve family (the pending
-    /// row read, the decision CAS one-defined across six branches, the article
-    /// state CAS with its typed slug-taken variant, the translation CAS with
-    /// its verbatim datetime('now') quirk, the draft/promote inserts, the
-    /// one-definition vec shadow, the case-article link + supersession link,
-    /// and the promote-provenance pins riding onto the core) to 21, and the
-    /// export read (the four-dataset bundle + count pre-flight, the
-    /// export/migration/pii_map pins riding along) to 0 — each in the SAME
-    /// commit that moved the SQL.
+    /// The enforcing flip's self-pin: the counter the guard runs is the
+    /// line's counter — it must still detect the four statement openers on a
+    /// synthetic fixture (a guard that cannot fire is decoration, not
+    /// enforcement).
     #[test]
-    fn sql_baseline_total_stays_at_the_frozen_floor() {
-        let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
+    fn sql_statement_counter_still_fires() {
+        assert_eq!(count_sql_statements(""), 0);
         assert_eq!(
-            sum, 0,
-            "the frozen debt total moved — only legitimate extractions lower it, \
-             and only in the commit that moves the SQL"
+            count_sql_statements("SELECT a FROM t; insert into u values (1);"),
+            2
+        );
+        assert_eq!(
+            count_sql_statements(
+                "// the review-queue SELECT extracted from the handler\nlet x = 1;"
+            ),
+            1,
+            "comment residue counts too — substring semantics are deliberate"
+        );
+        assert_eq!(
+            count_sql_statements("UPDATE t SET a = 1; DELETE FROM u;"),
+            2
+        );
+        assert_eq!(
+            count_sql_statements("no keywords here, updates deferred indefinitely"),
+            0,
+            "`updates` (no following space) is not a statement opener"
         );
     }
 
@@ -331,9 +191,11 @@ mod pins {
     /// `src/service/` never names transport types — no HTTP-framework
     /// identifiers, no HTTP status type, no body-wrapper, no server state,
     /// no pool handle. `#[cfg(test)]` regions are exempt (pins may name
-    /// what they refute).
+    /// what they refute). Born a hard error at the Plumb pin (there was
+    /// never a warning phase); renamed to its line-plan name at the
+    /// Cornerstone flip.
     #[test]
-    fn service_layer_is_transport_free() {
+    fn service_layer_free_of_http_types() {
         const FORBIDDEN: &[&str] = &["axum", "StatusCode", "Json", "AppState", "Pool"];
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
