@@ -214,6 +214,94 @@ pub(crate) fn owner_in_filtered(rows: Vec<ProposalView>, manages: &[String]) -> 
         .collect()
 }
 
+/// A candidate awaiting review, exactly as the creation insert persists it.
+/// The injection screen + bounds + kind validation stay handler-side (they
+/// produce handler-shaped 400s); this is the storage contract only.
+pub(crate) struct ProposalInsert<'a> {
+    pub kind: &'a str,
+    pub content: &'a str,
+    pub source: Option<&'a str>,
+    pub authority: Option<f32>,
+    pub observed_at: Option<i64>,
+    pub novelty: f32,
+    pub conflict_with: Option<i64>,
+    pub salience: f32,
+    pub created_at: i64,
+    /// the SCREENED form — the caller applies `screen_source_prompt`.
+    pub source_prompt: Option<&'a str>,
+    pub owner: Option<&'a str>,
+    /// the draft advisory lint report (JSON), `None` for non-drafts.
+    pub lint_json: Option<&'a str>,
+}
+
+/// Queue a scored candidate: the `proposals` insert + its `proposal_pending`
+/// audit row (the evidence lands inside whatever tx context the caller
+/// holds — audit-per-write).
+pub(crate) fn insert_proposal(conn: &Connection, p: &ProposalInsert<'_>) -> Result<i64, GateError> {
+    let id: i64 = conn
+        .query_row(
+            "INSERT INTO proposals(kind, content, source, authority, observed_at,
+                               novelty, conflict_with, salience, created_at, source_prompt, owner, lint_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         RETURNING id",
+            rusqlite::params![
+                p.kind,
+                p.content,
+                p.source,
+                p.authority,
+                p.observed_at,
+                p.novelty,
+                p.conflict_with,
+                p.salience,
+                p.created_at,
+                p.source_prompt,
+                p.owner,
+                p.lint_json,
+            ],
+            |r| r.get(0),
+        )
+        .map_err(|e| GateError::Database(format!("proposal insert failed: {e}")))?;
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Ingest,
+        p.owner.unwrap_or("api"),
+        &format!("proposal:{id}"),
+        crate::audit::AuditStatus::Ok,
+        "proposal_pending",
+    );
+    Ok(id)
+}
+
+/// Find a live chunk whose subject conflicts with the candidate content. Reuses
+/// [`crate::consolidate::find_subject_conflicts`]'s signal: a candidate that
+/// contradicts an existing current claim is flagged in the review queue so the
+/// human sees the conflict, not a silent overwrite.
+pub(crate) fn find_conflict(conn: &Connection, content: &str) -> Option<i64> {
+    // Cheap exact-subject pre-check before the O(n²) pairwise scan: only run
+    // the full conflict scan when the candidate's subject appears somewhere.
+    let subject = content
+        .lines()
+        .next()
+        .unwrap_or(content)
+        .chars()
+        .take(120)
+        .collect::<String>();
+    let mut stmt = conn
+        .prepare("SELECT id FROM knowledge WHERE (title IS NOT NULL AND title = ?1) OR (heading_path IS NOT NULL AND heading_path = ?1) AND valid_to IS NULL LIMIT 1")
+        .ok()?;
+    let matched: Option<i64> = stmt
+        .query_row(rusqlite::params![subject], |r| r.get(0))
+        .ok();
+    drop(stmt);
+    // Full pairwise conflict scan only when we have a subject-anchored hit.
+    if matched.is_some()
+        && let Ok(pairs) = crate::consolidate::find_subject_conflicts(conn)
+    {
+        return pairs.into_iter().map(|p| p.from_chunk).next();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

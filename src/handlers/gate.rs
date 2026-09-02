@@ -194,7 +194,7 @@ pub(crate) async fn create_proposal(
             return Err(HandlerError::internal("embedding generation failed"));
         }
         let novelty = crate::gate::novelty(&conn, &embedding).unwrap_or(1.0); // first memory / no index → max novelty
-        let conflict_with = find_conflict(&conn, &content_for_task);
+        let conflict_with = crate::service::gate::find_conflict(&conn, &content_for_task);
         let entity_count = crate::linker::extract_vocabulary(&content_for_task, &[])
             .entities
             .len();
@@ -206,47 +206,36 @@ pub(crate) async fn create_proposal(
         let lint_json: Option<String> = if is_draft {
             let (banned, hash) = brain_server::valet_style::style_memory(&conn);
             let report = brain_server::valet_style::style_check(&content_for_task, &banned, &hash);
-            Some(serde_json::to_string(&report).map_err(|e| {
-                HandlerError::internal(format!("lint serialize failed: {e}"))
-            })?)
+            Some(
+                serde_json::to_string(&report)
+                    .map_err(|e| HandlerError::internal(format!("lint serialize failed: {e}")))?,
+            )
         } else {
             None
         };
 
-        let id: i64 = conn
-            .query_row(
-                "INSERT INTO proposals(kind, content, source, authority, observed_at,
-                                   novelty, conflict_with, salience, created_at, source_prompt, owner, lint_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             RETURNING id",
-                rusqlite::params![
-                    req.kind,
-                    content_for_task,
-                    req.source,
-                    req.authority,
-                    req.observed_at,
-                    novelty,
-                    conflict_with,
-                    salience,
-                    now,
-                    req.source_prompt
-                        .as_deref()
-                        .map(crate::gate::screen_source_prompt),
-                    owner,
-                    lint_json,
-                ],
-                |r| r.get(0),
-            )
-            .map_err(|e| HandlerError::internal(format!("proposal insert failed: {e}")))?;
-
-        crate::audit::record(
+        let id = crate::service::gate::insert_proposal(
             &conn,
-            crate::audit::AuditKind::Ingest,
-            owner.as_deref().unwrap_or("api"),
-            &format!("proposal:{id}"),
-            crate::audit::AuditStatus::Ok,
-            "proposal_pending",
-        );
+            &crate::service::gate::ProposalInsert {
+                kind: &req.kind,
+                content: &content_for_task,
+                source: req.source.as_deref(),
+                authority: req.authority,
+                observed_at: req.observed_at,
+                novelty,
+                conflict_with,
+                salience,
+                created_at: now,
+                source_prompt: req
+                    .source_prompt
+                    .as_deref()
+                    .map(crate::gate::screen_source_prompt)
+                    .as_deref(),
+                owner: owner.as_deref(),
+                lint_json: lint_json.as_deref(),
+            },
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
 
         Ok(ProposalResponse {
             id,
@@ -306,36 +295,6 @@ pub(crate) async fn create_proposal(
     }
 
     Ok(resp)
-}
-
-/// Find a live chunk whose subject conflicts with the candidate content. Reuses
-/// [`crate::consolidate::find_subject_conflicts`]'s signal: a candidate that
-/// contradicts an existing current claim is flagged in the review queue so the
-/// human sees the conflict, not a silent overwrite.
-fn find_conflict(conn: &rusqlite::Connection, content: &str) -> Option<i64> {
-    // Cheap exact-subject pre-check before the O(n²) pairwise scan: only run
-    // the full conflict scan when the candidate's subject appears somewhere.
-    let subject = content
-        .lines()
-        .next()
-        .unwrap_or(content)
-        .chars()
-        .take(120)
-        .collect::<String>();
-    let mut stmt = conn
-        .prepare("SELECT id FROM knowledge WHERE (title IS NOT NULL AND title = ?1) OR (heading_path IS NOT NULL AND heading_path = ?1) AND valid_to IS NULL LIMIT 1")
-        .ok()?;
-    let matched: Option<i64> = stmt
-        .query_row(rusqlite::params![subject], |r| r.get(0))
-        .ok();
-    drop(stmt);
-    // Full pairwise conflict scan only when we have a subject-anchored hit.
-    if matched.is_some()
-        && let Ok(pairs) = crate::consolidate::find_subject_conflicts(conn)
-    {
-        return pairs.into_iter().map(|p| p.from_chunk).next();
-    }
-    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -1908,7 +1867,7 @@ pub async fn edit_proposal(
                 return Err(HandlerError::internal("embedding generation failed"));
             }
             let new_novelty = crate::gate::novelty(&tx, &embedding).unwrap_or(1.0);
-            let new_conflict = find_conflict(&tx, &content);
+            let new_conflict = crate::service::gate::find_conflict(&tx, &content);
             let entity_count = crate::linker::extract_vocabulary(&content, &[])
                 .entities
                 .len();
