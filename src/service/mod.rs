@@ -107,7 +107,7 @@ mod pins {
         ("gate.rs", 78),
         ("observe.rs", 0),
         ("domains.rs", 0),
-        ("clients.rs", 26),
+        ("clients.rs", 0),
         ("workflow.rs", 0),
         ("ingest.rs", 0),
         ("govern.rs", 0),
@@ -288,8 +288,14 @@ mod pins {
     /// existence fence onto legal_hold::first_missing_id, same tx, same
     /// error mapping)); then the comment-residue sweep — ingest 3, shifts 1,
     /// auth 2, profiles 1, roles 1: prose reworded so no counted keyword
-    /// remains in a drained file)
-    /// legitimately lowered it to 104 in the
+    /// remains in a drained file); then
+    /// clients.rs 26 → 0 — the borrowed-fixture fence pins (hold fences over
+    /// forget / sources / ump / observe / holds / transfers, fixtures only —
+    /// zero register-surface SQL since Terrace) move onto
+    /// service::register's test module, which already carried the identical
+    /// app-state + seed fixtures; call paths unchanged, every assertion
+    /// unchanged)
+    /// legitimately lowered it to 78 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -297,7 +303,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 104,
+            sum, 78,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

@@ -492,6 +492,7 @@ mod tests {
     use crate::alert::ChainWatchState;
     use crate::auth::jwks::KeyStore;
     use crate::domain_registry::DomainRegistry;
+    use crate::handlers::auth::OptPrincipal;
     use crate::handlers::clients::{
         ClientDsarRequest, ClientEndRequest, ClientHoldRequest, CoachRequest, client_dsar,
         client_end, client_hold, client_proposals, coach_proposal, get_client, list_clients,
@@ -1535,5 +1536,665 @@ mod tests {
             2,
             "an admin (no grant list) sees the whole register"
         );
+    }
+
+    // ── the universal legal-hold fence pins (moved from handlers/clients —
+    // the erasure surfaces these pins exercise are OTHER aggregates; the
+    // register was only ever the fixture scaffold. Call paths unchanged,
+    // every assertion unchanged.) ──
+
+    // The shared static embedder is loaded once and reused across tests: many
+    // parallel tests each building a fresh model2vec instance raced on huggingface's
+    // file-based cache lock ("Lock acquisition failed") under a cold CI cache.
+
+    #[tokio::test]
+    async fn client_auditor_can_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let auditor = OptPrincipal(Some(crate::auth::Principal {
+            sub: "compliance@acme".to_string(),
+            tenant: "ops".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:ops/acme-us").unwrap()],
+            jti: "a".to_string(),
+            roles: vec!["client-auditor".to_string()],
+            manages: vec![],
+        }));
+        let err = crate::handlers::authorize_role(&auditor.0, &state.pool, "admin")
+            .expect_err("client-auditor cannot admin");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(crate::handlers::authorize_role(&auditor.0, &state.pool, "read").is_ok());
+    }
+
+    // ── the universal legal-hold fence ────────
+    // Every erasure path — `/purge`, DSAR, `DELETE /memory/{id}`, the source
+    // sweeps (single delete + reconcile), quarantine delete, domain delete —
+    // runs one `refuse_if_held` inside its write tx and answers `409
+    // legal_hold_active`. One test per bypass path (plan M1.2) + the tombstone
+    // digest parity (M1.3).
+
+    fn seed_global_chunk(state: &AppState, content: &str) -> i64 {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO knowledge(content, content_hash, owner, document_id)
+             VALUES (?1, ?2, 'o', 'doc-1')",
+            rusqlite::params![content, format!("h{content}")],
+        )
+        .expect("seed global chunk");
+        conn.last_insert_rowid()
+    }
+
+    fn hold(domain_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, ids: &[i64]) {
+        let mut conn = domain_pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::legal_hold::insert_holds(&tx, ids, "litigation 2026-118", Some("dpo"), 60).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn seed_source_chunk(state: &AppState, uri: &str, kind: &str, content: &str) -> (i64, i64) {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO sources(uri, kind) VALUES (?1, ?2)",
+            rusqlite::params![uri, kind],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO source_revisions(source_id, revision, content_hash, chunk_count,
+                                           byte_size, state)
+             VALUES (?1, 'r1', ?2, 1, ?3, 'active')",
+            rusqlite::params![sid, format!("h{content}"), content.len() as i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO knowledge(content, content_hash, owner, source_id, revision_id)
+             VALUES (?1, ?2, 'o', ?3, ?4)",
+            rusqlite::params![
+                content,
+                format!("h{content}"),
+                sid,
+                conn.last_insert_rowid()
+            ],
+        )
+        .unwrap();
+        (sid, conn.last_insert_rowid())
+    }
+
+    #[tokio::test]
+    async fn delete_memory_refuses_held_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let id = seed_global_chunk(&state, "evidence under litigation");
+        hold(&state.pool, &[id]);
+
+        let err =
+            crate::handlers::forget::forget(State(state.clone()), OptPrincipal(None), Path(id))
+                .await
+                .expect_err("a held id must refuse DELETE /memory/{id}");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.inner.code, "legal_hold_active");
+
+        let free: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM knowledge WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(free, 1, "the held row survives");
+
+        // Release the hold → the same path erases it (the fence is per-id).
+        let mut conn = state.pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::legal_hold::release(&tx, 1, 61).unwrap();
+        tx.commit().unwrap();
+        let resp =
+            crate::handlers::forget::forget(State(state.clone()), OptPrincipal(None), Path(id))
+                .await
+                .expect("a released id deletes normally");
+        assert!(resp.deleted);
+    }
+
+    #[tokio::test]
+    async fn delete_memory_tombstone_carries_content_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let id = seed_global_chunk(&state, "the deleted subject's evidence");
+
+        let _ = crate::handlers::forget::forget(State(state.clone()), OptPrincipal(None), Path(id))
+            .await
+            .expect("forget runs");
+
+        let (hash, doc): (Option<String>, Option<String>) = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT content_hash, document_id FROM tombstones WHERE knowledge_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            hash.as_deref(),
+            Some(crate::handlers::gate::sha256_hex("the deleted subject's evidence").as_str()),
+            "the tombstone carries the same SHA-256 evidence /purge writes"
+        );
+        assert_eq!(doc.as_deref(), Some("doc-1"));
+    }
+
+    #[tokio::test]
+    async fn source_delete_refuses_held_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (sid, cid) = seed_source_chunk(&state, "/v/legal.md", "vault", "held under hold");
+        hold(&state.pool, &[cid]);
+
+        let err = crate::handlers::sources::delete_source(
+            State(state.clone()),
+            OptPrincipal(None),
+            Path(sid),
+        )
+        .await
+        .expect_err("a source with a held chunk must refuse DELETE /sources/{id}");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.inner.code, "legal_hold_active");
+
+        let (chunk, sstate): (i64, String) = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM knowledge WHERE id = ?1),
+                        (SELECT state FROM sources WHERE id = ?2)",
+                rusqlite::params![cid, sid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((chunk, sstate.as_str()), (1, "active"), "nothing erased");
+    }
+
+    #[tokio::test]
+    async fn ump_hard_forget_refuses_held_chunk() {
+        // S2-03 (CRITICAL): `POST /ump/forget {"hard":true}` reaches
+        // `purge_chunk_ids` — the legal-hold fence that guards every other
+        // erasure path must guard this one too (it is MCP-reachable at Write
+        // scope via the `ump.forget` tool).
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (_sid, cid) = seed_source_chunk(&state, "/v/hold.md", "vault", "litigation evidence");
+        hold(&state.pool, &[cid]);
+        let cid_s = cid.to_string();
+
+        let err = crate::handlers::ump_ops::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            Json(crate::handlers::ump_ops::ForgetRequest {
+                id: cid_s.clone(),
+                reason: Some("ump_forget".to_string()),
+                hard: true,
+            }),
+        )
+        .await
+        .expect_err("a hard forget of a held chunk must 409");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.inner.code, "legal_hold_active");
+
+        let chunks: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id = ?1",
+                rusqlite::params![cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunks, 1, "held chunk survives the hard-forget attempt");
+
+        // Release → the same request erases.
+        let mut conn = state.pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::legal_hold::release(&tx, 1, 63).unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+        let _erased = crate::handlers::ump_ops::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            Json(crate::handlers::ump_ops::ForgetRequest {
+                id: cid_s,
+                reason: Some("ump_forget".to_string()),
+                hard: true,
+            }),
+        )
+        .await
+        .expect("after release the hard forget completes");
+        let chunks: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE id = ?1",
+                rusqlite::params![cid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunks, 0, "released chunk is erased");
+    }
+
+    #[tokio::test]
+    async fn ump_forget_soft_flags_but_not_held_chunks() {
+        // S2-03 complement (v1.27.27 M2): the SOFT branch is not an erasure —
+        // it flags (quarantine-style) + tombstones, so a held chunk may be
+        // soft-forgotten (still retrievable with include_flagged) but is
+        // NEVER purged by it. The hold freezes erasure, not flagging.
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (_sid, cid) = seed_source_chunk(&state, "/v/hold.md", "vault", "litigation evidence");
+        hold(&state.pool, &[cid]);
+        let cid_s = cid.to_string();
+
+        let resp = crate::handlers::ump_ops::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            crate::handlers::auth::OptCapability(None),
+            Json(crate::handlers::ump_ops::ForgetRequest {
+                id: cid_s,
+                reason: Some("ump_forget".to_string()),
+                hard: false,
+            }),
+        )
+        .await
+        .expect("soft forget of a held chunk proceeds (it is not an erasure)");
+        assert_eq!(resp.0["result"], "tombstoned");
+
+        let (chunks, flagged): (i64, i64) = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*), MAX(flagged) FROM knowledge WHERE id = ?1",
+                rusqlite::params![cid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (chunks, flagged),
+            (1, 1),
+            "the held chunk survives soft forget (no purge) and is flagged"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_live_set_requires_explicit_allow_empty() {
+        // S2/N1: an empty live_uris retires EVERY active source of the kind —
+        // indistinguishable on the wire from a caller whose listing failed, so
+        // it must be an explicit decision, not a default.
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (sid, _cid) = seed_source_chunk(&state, "/v/a.md", "vault", "content");
+
+        let err = crate::handlers::sources::reconcile(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::sources::ReconcileRequest {
+                kind: "vault".to_string(),
+                live_uris: vec![],
+                allow_empty: false,
+            }),
+        )
+        .await
+        .expect_err("an unconfirmed empty live set must be refused");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.inner.code, "live_set_empty");
+
+        let sstate: String = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM sources WHERE id = ?1",
+                rusqlite::params![sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sstate, "active", "nothing retired by the refused request");
+
+        // The explicit confirmation retires it.
+        let resp = crate::handlers::sources::reconcile(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::sources::ReconcileRequest {
+                kind: "vault".to_string(),
+                live_uris: vec![],
+                allow_empty: true,
+            }),
+        )
+        .await
+        .expect("confirmed empty set proceeds");
+        assert_eq!(resp.deleted_sources, 1);
+    }
+
+    #[tokio::test]
+    async fn source_reconcile_refuses_held_chunks() {
+        // §F-02 adversarial replay: hold a chunk, then reconcile with an empty
+        // live set — the sweep must refuse (409) and the chunk must survive.
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let (sid, cid) = seed_source_chunk(&state, "/v/legal.md", "vault", "held under hold");
+        hold(&state.pool, &[cid]);
+
+        let err = crate::handlers::sources::reconcile(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::sources::ReconcileRequest {
+                kind: "vault".to_string(),
+                live_uris: vec![],
+                allow_empty: true,
+            }),
+        )
+        .await
+        .expect_err("a reconcile that would erase a held chunk must 409");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert_eq!(err.inner.code, "legal_hold_active");
+
+        let (chunk, sstate): (i64, String) = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM knowledge WHERE id = ?1),
+                        (SELECT state FROM sources WHERE id = ?2)",
+                rusqlite::params![cid, sid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((chunk, sstate.as_str()), (1, "active"), "erasure deferred");
+
+        // Release the hold → the same reconcile retires the source.
+        let mut conn = state.pool.get().unwrap();
+        let tx = conn.transaction().unwrap();
+        crate::legal_hold::release(&tx, 1, 62).unwrap();
+        tx.commit().unwrap();
+        let resp = crate::handlers::sources::reconcile(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::sources::ReconcileRequest {
+                kind: "vault".to_string(),
+                live_uris: vec![],
+                allow_empty: true,
+            }),
+        )
+        .await
+        .expect("after release the reconcile completes");
+        assert_eq!(resp.deleted_sources, 1);
+        assert_eq!(resp.deleted_chunks, 1);
+    }
+
+    // ── the deletion certificate discloses the
+    // honest physical-purge posture — secure_delete+checkpoint for a
+    // strict-posture domain, the disclosed logical posture otherwise.
+
+    #[tokio::test]
+    async fn dsar_certificate_states_remanence_posture() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Strict-posture domain: bind a pii_mode=strict profile.
+        register_client(&state, "beta", "beta-eu", "eu");
+        seed_subject(&state, "beta-eu", "alice@beta");
+        {
+            let conn = state.registry.register("beta-eu").unwrap().get().unwrap();
+            let p = brain_server::profile::Profile {
+                name: "strict-holdall".into(),
+                pii_mode: Some("strict".into()),
+                ..Default::default()
+            };
+            brain_server::profile::upsert(&conn, &p).unwrap();
+            brain_server::profile::bind(&conn, "beta-eu", Some("strict-holdall")).unwrap();
+        }
+        // Default-posture domain (no bound profile).
+        register_client(&state, "acme", "acme-us", "us");
+        seed_subject(&state, "acme-us", "bob@acme");
+
+        let strict = crate::handlers::observe::run_dsar_subject(
+            state.clone(),
+            OptPrincipal(None),
+            state.registry.register("beta-eu").unwrap(),
+            "beta-eu",
+            "alice@beta",
+            "purge",
+            false,
+            Some("eu".to_string()),
+            None,
+            false,
+            now,
+        )
+        .await
+        .expect("strict dsar runs");
+        assert_eq!(
+            strict.certificate.as_ref().unwrap()["physical_purge"],
+            "secure_delete+checkpoint (backup files excepted)",
+            "a strict domain's certificate states the strict posture"
+        );
+
+        let logical = crate::handlers::observe::run_dsar_subject(
+            state.clone(),
+            OptPrincipal(None),
+            state.registry.register("acme-us").unwrap(),
+            "acme-us",
+            "bob@acme",
+            "purge",
+            false,
+            Some("us".to_string()),
+            None,
+            false,
+            now + 1,
+        )
+        .await
+        .expect("default dsar runs");
+        assert_eq!(
+            logical.certificate.as_ref().unwrap()["physical_purge"],
+            "logical (secure_delete off; WAL/freelist/backup copies may persist)",
+            "an unbound domain honestly discloses the logical posture"
+        );
+
+        // The strict domain's purge actually happened; the erasure completed.
+        assert_eq!(count_knowledge(&state, "beta-eu"), 0);
+        assert_eq!(count_knowledge(&state, "acme-us"), 0);
+    }
+
+    // ── releasing a legal hold unfreezes erasure
+    // mid-litigation — the same DPO/admin dual gate a breach close carries.
+    // A `dpo`-role principal releases; a role bundle without the dpo role OR
+    // an admin capability is refused even when its SCOPES grant admin.
+
+    fn gated_principal(roles: &[&str]) -> OptPrincipal {
+        OptPrincipal(Some(crate::auth::Principal {
+            sub: format!("{}@ops", roles.join("-")),
+            tenant: "ops".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:ops/*").unwrap()],
+            jti: "m3".to_string(),
+            roles: roles.iter().map(|r| r.to_string()).collect(),
+            manages: vec![],
+        }))
+    }
+
+    #[tokio::test]
+    async fn hold_release_requires_dpo() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let id = seed_global_chunk(&state, "evidence in two holds");
+        hold(&state.pool, &[id]);
+
+        let release = |pid: i64, principal: OptPrincipal| {
+            crate::handlers::holds::release_legal_hold(
+                State(state.clone()),
+                principal,
+                Path(pid),
+                axum::extract::Query(crate::handlers::holds::ReleaseQuery { domain: None }),
+            )
+        };
+
+        let _ = release(1, gated_principal(&["dpo"]))
+            .await
+            .expect("a dpo-role principal releases the hold");
+        let freed: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM legal_holds WHERE id = 1 AND released_at IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(freed, 1, "the dpo release sticks");
+
+        hold(&state.pool, &[id]);
+        let err = release(2, gated_principal(&["qa"]))
+            .await
+            .expect_err("a qa-role principal cannot unfreeze erasure");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        let still_held: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM legal_holds WHERE id = 2 AND released_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_held, 1, "the refused hold stays frozen");
+    }
+
+    #[tokio::test]
+    async fn non_dpo_admin_cannot_release_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+        let id = seed_global_chunk(&state, "the controller's contested evidence");
+        hold(&state.pool, &[id]);
+
+        // An admin-SCOPED principal whose resolved role (`controller`) has
+        // purge but not the admin capability is refused by the dual gate —
+        // scope grant alone is not a release.
+        let err = crate::handlers::holds::release_legal_hold(
+            State(state.clone()),
+            gated_principal(&["controller"]),
+            Path(1),
+            axum::extract::Query(crate::handlers::holds::ReleaseQuery { domain: None }),
+        )
+        .await
+        .expect_err("an admin-scoped controller cannot release a hold");
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+
+        // The `admin` role (its can list carries the admin capability) passes
+        // the same gate — breach parity, verified by name.
+        let resp = crate::handlers::holds::release_legal_hold(
+            State(state.clone()),
+            gated_principal(&["admin"]),
+            Path(1),
+            axum::extract::Query(crate::handlers::holds::ReleaseQuery { domain: None }),
+        )
+        .await
+        .expect("the admin-capability role releases through the dual gate");
+        assert!(resp["released"].as_bool().unwrap_or(false));
+    }
+
+    // ── the Art-30 register row + its audit row
+    // are ONE transaction — a crash between commit and audit cannot leave an
+    // unmirrored register entry (and a rollback erases both).
+
+    #[tokio::test]
+    async fn transfer_registration_audited_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = app_state(&dir);
+
+        // Positive: the handler commits the register row AND its audit row
+        // in one transaction.
+        let resp = crate::handlers::transfers::register_transfer(
+            State(state.clone()),
+            OptPrincipal(None),
+            Json(crate::handlers::transfers::TransferRequest {
+                dataset: "hr".into(),
+                origin_jurisdiction: "eu".into(),
+                destination_jurisdiction: "us".into(),
+                mechanism: "scc-eu-2021".into(),
+                counterparty: "acme-us".into(),
+                lawful_basis: Some("contract".into()),
+                purpose: "payroll".into(),
+                signed_at: None,
+                expires_at: None,
+            }),
+        )
+        .await
+        .expect("transfer registers");
+        let id = resp["id"].as_i64().unwrap();
+        let (t, a): (i64, i64) = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM transfers WHERE id = ?1),
+                        (SELECT COUNT(*) FROM audit_events
+                          WHERE target_hash = ?2)",
+                rusqlite::params![id, crate::audit::hash(&format!("transfer_register:{id}"))],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((t, a), (1, 1), "register row + audit row commit together");
+
+        // Crash-injection fixture: the SAME two writes inside one rolled-back
+        // transaction → neither survives the rollback.
+        {
+            let mut conn = state.pool.get().unwrap();
+            let tx = conn.transaction().unwrap();
+            let id2 = crate::transfers::register(
+                &tx,
+                "hr",
+                "eu",
+                "us",
+                "scc-eu-2021",
+                "acme-us",
+                Some("contract"),
+                "payroll",
+                None,
+                None,
+            )
+            .unwrap();
+            let _ = crate::audit::record(
+                &tx,
+                crate::audit::AuditKind::Transfer,
+                "api",
+                &format!("transfer_register:{id2}"),
+                crate::audit::AuditStatus::Ok,
+                "hr:eu->us:scc-eu-2021",
+            );
+            tx.rollback().unwrap();
+            let (t2, a2): (i64, i64) = state
+                .pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM transfers WHERE id = ?1),
+                            (SELECT COUNT(*) FROM audit_events
+                              WHERE target_hash = ?2)",
+                    rusqlite::params![id2, crate::audit::hash(&format!("transfer_register:{id2}"))],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (t2, a2),
+                (0, 0),
+                "a rollback erases BOTH the register row and its audit row"
+            );
+        }
     }
 }
