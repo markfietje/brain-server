@@ -1763,52 +1763,22 @@ pub async fn edit_proposal(
                 )
                 .map_err(|e| HandlerError::internal(e.to_string()))?
             {
-                    return Err(HandlerError::bad_request(
-                        "proposal_expired",
-                        "proposal aged out of the review window (TTL), refused",
-                    ));
-                }
+                return Err(HandlerError::bad_request(
+                    "proposal_expired",
+                    "proposal aged out of the review window (TTL), refused",
+                ));
+            }
 
             let tx = conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
 
-            #[derive(Default)]
-            struct Row {
-                kind: String,
-                content: String,
-                source: Option<String>,
-                source_prompt: Option<String>,
-                authority: Option<f32>,
-                created_at: i64,
-                owner: Option<String>,
-                qa_note: Option<String>,
-            }
-            let p: Option<Row> = tx
-                .query_row(
-                    "SELECT kind, content, source, source_prompt, authority, created_at, owner, qa_note
-                     FROM proposals WHERE id = ?1 AND status = 'pending'",
-                    rusqlite::params![id],
-                    |r| {
-                        Ok(Row {
-                            kind: r.get(0)?,
-                            content: r.get(1)?,
-                            source: r.get(2)?,
-                            source_prompt: r.get(3)?,
-                            authority: r.get(4)?,
-                            created_at: r.get(5)?,
-                            owner: r.get(6)?,
-                            qa_note: r.get(7)?,
-                        })
-                    },
-                )
-                .ok();
-            let Some(p) = p else {
+            let Some(row) = crate::service::gate::pending_edit_row(&tx, id) else {
                 return Err(HandlerError::not_found(format!(
                     "no pending proposal with id {id}"
                 )));
             };
-            let Row {
+            let crate::service::gate::PendingEditRow {
                 kind,
                 content: before,
                 source,
@@ -1817,7 +1787,7 @@ pub async fn edit_proposal(
                 created_at,
                 owner,
                 qa_note,
-            } = p;
+            } = row;
 
             // Re-score the edited content deterministically (the ingest path).
             let embedding = model.encode_one(&content);
@@ -1832,14 +1802,16 @@ pub async fn edit_proposal(
             let new_salience = crate::gate::salience(&content, entity_count);
 
             let now = chrono::Utc::now().timestamp();
-            let n = tx
-                .execute(
-                    "UPDATE proposals SET content = ?1, novelty = ?2, salience = ?3,
-                            conflict_with = ?4, edited_at = ?5
-                     WHERE id = ?6 AND status = 'pending'",
-                    rusqlite::params![content, new_novelty, new_salience, new_conflict, now, id],
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            let n = crate::service::gate::apply_edit(
+                &tx,
+                id,
+                &content,
+                new_novelty,
+                new_salience,
+                new_conflict,
+                now,
+            )
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
             if n == 0 {
                 // A concurrent approve/reject won the race — abort cleanly.
                 tx.rollback()

@@ -372,6 +372,61 @@ pub(crate) fn content_of(conn: &Connection, id: i64) -> rusqlite::Result<String>
     )
 }
 
+/// The edit-path pending row: the 8-column projection the edit verb loads
+/// inside its tx before rewriting. `None` = no pending row with that id
+/// (the handler renders the frozen 404).
+pub(crate) struct PendingEditRow {
+    pub kind: String,
+    pub content: String,
+    pub source: Option<String>,
+    pub source_prompt: Option<String>,
+    pub authority: Option<f32>,
+    pub created_at: i64,
+    pub owner: Option<String>,
+    pub qa_note: Option<String>,
+}
+
+pub(crate) fn pending_edit_row(conn: &Connection, id: i64) -> Option<PendingEditRow> {
+    conn.query_row(
+        "SELECT kind, content, source, source_prompt, authority, created_at, owner, qa_note
+         FROM proposals WHERE id = ?1 AND status = 'pending'",
+        params![id],
+        |r| {
+            Ok(PendingEditRow {
+                kind: r.get(0)?,
+                content: r.get(1)?,
+                source: r.get(2)?,
+                source_prompt: r.get(3)?,
+                authority: r.get(4)?,
+                created_at: r.get(5)?,
+                owner: r.get(6)?,
+                qa_note: r.get(7)?,
+            })
+        },
+    )
+    .ok()
+}
+
+/// The edit CAS: rewrite content + re-scored components + the `edited_at`
+/// stamp, `AND status = 'pending'` so a concurrent decision wins cleanly
+/// (rows-affected 0 = the caller's rollback + 409).
+pub(crate) fn apply_edit(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    content: &str,
+    novelty: f32,
+    salience: f32,
+    conflict_with: Option<i64>,
+    edited_at: i64,
+) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE proposals SET content = ?1, novelty = ?2, salience = ?3,
+                conflict_with = ?4, edited_at = ?5
+         WHERE id = ?6 AND status = 'pending'",
+        params![content, novelty, salience, conflict_with, edited_at, id],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
