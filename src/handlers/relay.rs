@@ -15,7 +15,6 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
-use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -73,21 +72,9 @@ fn load_run(
     conn: &rusqlite::Connection,
     id: i64,
 ) -> Result<(String, String, i64, String), HandlerError> {
-    conn.query_row(
-        "SELECT domain, state_json, created_at, status FROM workflow_runs WHERE id = ?1",
-        [id],
-        |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        },
-    )
-    .optional()
-    .map_err(|e| HandlerError::internal(format!("{e}")))?
-    .ok_or_else(|| HandlerError::not_found("workflow run not found"))
+    relay::load_run(conn, id)
+        .map_err(|e| HandlerError::internal(format!("{e}")))?
+        .ok_or_else(|| HandlerError::not_found("workflow run not found"))
 }
 
 /// Identity fields fail CLOSED: bounds + a control/invisible-character
@@ -196,12 +183,7 @@ pub async fn post_handover_offer(
             ensure_run_active(&status)?;
             let parsed: serde_json::Value =
                 serde_json::from_str(&state_json).unwrap_or(serde_json::Value::Null);
-            let steps_exist: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM workflow_steps WHERE run_id = ?1)",
-                    [id],
-                    |r| r.get(0),
-                )
+            let steps_exist = relay::run_has_steps(&conn, id)
                 .map_err(|e| HandlerError::internal(format!("{e}")))?;
             Ok(packet_facts(
                 &parsed,
@@ -328,20 +310,13 @@ async fn decide_route(
             // either both land or neither does. The SLA clock is untouched,
             // and the run's CURRENT status is preserved — an acceptance must
             // never resurrect a completed/cancelled run.
-            let row: (String, i64, String) = tx
-                .tx()
-                .query_row(
-                    "SELECT state_json, state_revision, status FROM workflow_runs WHERE id = ?1",
-                    [id],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, i64>(1)?,
-                            r.get::<_, String>(2)?,
-                        ))
-                    },
-                )
-                .map_err(|e| HandlerError::internal(format!("{e}")))?;
+            let row = relay::load_run_state(tx.tx(), id)
+                .map_err(|e| HandlerError::internal(format!("{e}")))?
+                // Same observable failure the direct query_row produced —
+                // the run cannot vanish inside the Immediate tx that just
+                // moved its offer, and if it ever does the text is the
+                // rusqlite no-rows text, byte-for-byte.
+                .ok_or_else(|| HandlerError::internal("Query returned no rows"))?;
             ensure_run_active(&row.2)?;
             let mut st: serde_json::Value =
                 serde_json::from_str(&row.0).unwrap_or(serde_json::Value::Null);

@@ -321,6 +321,61 @@ pub fn board(
     Ok((rows, corrupt))
 }
 
+// ── the handler surfaces' run reads ───────────────────────────────────────
+
+/// One run-handover row: (domain, state_json, created_at, status).
+pub(crate) type RelayRunRow = (String, String, i64, String);
+
+/// The run row the handover surfaces read (offer/deny gates). None when
+/// gone — the caller owns the probe-blind 404.
+pub(crate) fn load_run(conn: &Connection, id: i64) -> rusqlite::Result<Option<RelayRunRow>> {
+    conn.query_row(
+        "SELECT domain, state_json, created_at, status FROM workflow_runs WHERE id = ?1",
+        [id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        },
+    )
+    .optional()
+}
+
+/// Whether the run has ANY step row (the packet-completeness gate's
+/// evidence signal).
+pub(crate) fn run_has_steps(conn: &Connection, run_id: i64) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM workflow_steps WHERE run_id = ?1)",
+        [run_id],
+        |r| r.get(0),
+    )?;
+    Ok(n != 0)
+}
+
+/// The accept-time CAS inputs: (state_json, state_revision, status) — read
+/// inside the SAME tx as the offer state move so ownership transfer is
+/// atomic with it.
+pub(crate) fn load_run_state(
+    conn: &Connection,
+    id: i64,
+) -> rusqlite::Result<Option<(String, i64, String)>> {
+    conn.query_row(
+        "SELECT state_json, state_revision, status FROM workflow_runs WHERE id = ?1",
+        [id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        },
+    )
+    .optional()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
