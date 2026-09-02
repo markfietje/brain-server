@@ -395,10 +395,7 @@ pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
     let Some(conn) = state.pool.get().ok() else {
         return Ok(());
     };
-    let docs: usize = conn
-        .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(0)
-        .max(0) as usize;
+    let docs: usize = brain_server::capacity::knowledge_docs(&conn);
     let db_mib: u64 = std::fs::metadata(&state.db_path)
         .map(|m| m.len() / 1_000_000)
         .unwrap_or(0);

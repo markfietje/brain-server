@@ -225,6 +225,15 @@ pub fn resolve(conn: &Connection, names: &[String]) -> Result<Vec<Role>, String>
     Ok(out)
 }
 
+/// How many roles the deployment DEFINES. The dual-gate surfaces pass
+/// scope-only tokens only while this is zero: a populated role store means
+/// the deployment opted into role-based governance. Fails with the bare
+/// storage error text; the caller maps it.
+pub fn defined_count(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
 // ── the data-layer retrieval filter ─────────────────────────────────────────
 
 /// A Comparator row-owner restriction (self/reports), mapped to a SQL

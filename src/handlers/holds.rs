@@ -76,24 +76,16 @@ pub(crate) async fn post_legal_hold_for_domain(
                 .transaction()
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             // Existence check inside the same tx as the inserts: an id deleted
-            // between check + insert is impossible, an unknown id refuses the
+            // between check + write is impossible, an unknown id refuses the
             // whole request (all-or-nothing, the purge posture).
+            if let Some(missing) = crate::legal_hold::first_missing_id(&tx, &ids)
+                .map_err(|e| HandlerError::internal(e.to_string()))?
             {
-                let mut exists = tx
-                    .prepare("SELECT COUNT(*) FROM knowledge WHERE id = ?1")
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
-                for id in &ids {
-                    let n: i64 = exists
-                        .query_row(rusqlite::params![id], |r| r.get(0))
-                        .map_err(|e| HandlerError::internal(e.to_string()))?;
-                    if n == 0 {
-                        return Err(HandlerError::bad_request_with(
-                            "unknown_ids",
-                            format!("knowledge id {id} does not exist in this domain"),
-                            serde_json::json!({ "unknown_id": id }),
-                        ));
-                    }
-                }
+                return Err(HandlerError::bad_request_with(
+                    "unknown_ids",
+                    format!("knowledge id {missing} does not exist in this domain"),
+                    serde_json::json!({ "unknown_id": missing }),
+                ));
             }
             let now = chrono::Utc::now().timestamp();
             let created =

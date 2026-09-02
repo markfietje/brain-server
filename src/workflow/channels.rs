@@ -1693,6 +1693,38 @@ pub(crate) fn drain_out_batch(
     Ok(out)
 }
 
+// ── the HITL user-map proposal + the inbound flood bound ─────────────────
+
+/// File ONE `channel/user_map` proposal: the raw INSERT + id resolution
+/// inside the CALLER'S tx. Probe validation stays at the caller; the audit
+/// row (same tx) stays at the call site, adjacent to the write it
+/// evidences.
+pub(crate) fn file_user_map_proposal(
+    tx: &Connection,
+    content: &str,
+    owner: &str,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    tx.query_row(
+        "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+         VALUES (?1, ?2, 0.5, 0.5, ?3, ?4) RETURNING id",
+        params![PROP_KIND_USER_MAP, content, now, owner],
+        |r| r.get(0),
+    )
+}
+
+/// The inbound channel-webhook trailing-hour delivery count over the SHARED
+/// `webhook_seen` replay window (the flood bound the synchronous path
+/// enforces; the queue cap does not cover it).
+pub(crate) fn recent_inbound_count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM webhook_seen
+          WHERE seen_at >= datetime('now', '-1 hour')",
+        [],
+        |r| r.get(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -89,6 +89,27 @@ pub(crate) fn insert_holds(
     Ok(created)
 }
 
+/// Refuse unless EVERY id exists (the hold write's all-or-nothing fence:
+/// a hold on nothing is operator error, not a silent no-op). Per-id count
+/// probe inside the caller's tx; the caller owns the wire error. Returns
+/// the first missing id, if any.
+pub(crate) fn first_missing_id(
+    tx: &rusqlite::Transaction,
+    ids: &[i64],
+) -> Result<Option<i64>, rusqlite::Error> {
+    for id in ids {
+        let n: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM knowledge WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        )?;
+        if n == 0 {
+            return Ok(Some(*id));
+        }
+    }
+    Ok(None)
+}
+
 /// The active-hold reasons for each of `ids` that is currently held (held ids
 /// missing from the map are the free set). The 409/certificate payload
 /// builder. Pulls the active holds (a tiny, partial index-served set) and

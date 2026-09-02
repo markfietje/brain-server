@@ -497,6 +497,24 @@ pub fn apply_proposal(
     Ok(n)
 }
 
+/// File ONE `crew_skills_update` proposal: the raw INSERT + id resolution
+/// inside the CALLER'S tx. Probe validation stays at the caller; the audit
+/// row (same tx) stays at the call site, adjacent to the write it
+/// evidences.
+pub(crate) fn file_skills_proposal(
+    tx: &Connection,
+    content: &str,
+    owner: &str,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    tx.query_row(
+        "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+         VALUES (?1, ?2, 0.5, 0.5, ?3, ?4) RETURNING id",
+        params![KIND_SKILLS_UPDATE, content, now, owner],
+        |r| r.get(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

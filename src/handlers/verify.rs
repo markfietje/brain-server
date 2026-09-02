@@ -103,21 +103,9 @@ pub async fn verify(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        let r = conn.query_row(
-            "SELECT k.content, k.domain, k.owner, k.access_scope FROM knowledge k \
-             WHERE k.id = ?1 AND k.domain = ?2",
-            rusqlite::params![chunk_id, label],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            },
-        );
+        let r = crate::service::recall::chunk_for_verify(&conn, chunk_id, &label);
         match r {
-            Ok((content, row_domain, row_owner, row_scope)) => {
+            Ok(Some((content, row_domain, row_owner, row_scope))) => {
                 // belt-and-braces: re-authorize on the row's OWN domain + the
                 // record gate, so a predicate loosening can never turn /verify
                 // into a cross-domain oracle. Miss (not leak) on denial.
@@ -128,7 +116,7 @@ pub async fn verify(
                 }
                 Ok(Some(content))
             }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Ok(None) => Ok(None),
             Err(e) => Err(HandlerError::internal(format!("query failed: {e}"))),
         }
     })

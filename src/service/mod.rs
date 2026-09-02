@@ -121,18 +121,18 @@ mod pins {
         ("suggest.rs", 0),
         ("forget.rs", 0),
         ("relay.rs", 0),
-        ("holds.rs", 2),
+        ("holds.rs", 0),
         ("auth.rs", 2),
-        ("breaches.rs", 1),
-        ("channel.rs", 1),
-        ("channel_webhook.rs", 1),
-        ("crew.rs", 1),
-        ("mod.rs", 1),
+        ("breaches.rs", 0),
+        ("channel.rs", 0),
+        ("channel_webhook.rs", 0),
+        ("crew.rs", 0),
+        ("mod.rs", 0),
         ("profiles.rs", 1),
         ("roles.rs", 1),
         ("shifts.rs", 1),
-        ("sources.rs", 1),
-        ("verify.rs", 1),
+        ("sources.rs", 0),
+        ("verify.rs", 0),
     ];
 
     /// v1.28.46 "Plumb" — the measuring stick. REGRESSION (any handler file
@@ -275,8 +275,19 @@ mod pins {
     /// govern.rs 6 → 0 — the Art.30 register's data reads (per-kind
     /// categories with fail-the-request posture, connector/DSAR
     /// best-effort sections, the fail-open lifecycle counts) out to
-    /// `service::art30`; the register JSON stays handler-side)
-    /// legitimately lowered it to 121 in the
+    /// `service::art30`; the register JSON stays handler-side); then
+    /// the single-statement sweep — breaches 1 → 0 (role-store count onto
+    /// role::defined_count), channel 1 → 0 + channel_webhook 1 → 0 (the
+    /// user-map proposal INSERT + the shared seen-window flood count onto
+    /// workflow::channels), crew 1 → 0 (the skills proposal INSERT onto
+    /// workflow::crew), mod.rs 1 → 0 (the guard's docs count onto
+    /// capacity::knowledge_docs, fail-open preserved), sources 1 → 0 (the
+    /// DEAD uri read deleted — result was discarded, zero observable
+    /// effect), verify 1 → 0 (the domain-bound row read onto
+    /// service::recall::chunk_for_verify), holds 2 → 0 (the per-id
+    /// existence fence onto legal_hold::first_missing_id, same tx, same
+    /// error mapping))
+    /// legitimately lowered it to 112 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -284,7 +295,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 121,
+            sum, 112,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

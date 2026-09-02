@@ -149,6 +149,15 @@ pub fn classify(docs: usize, db_mib: u64, rss_mib: u64, env: &CapacityEnvelope) 
     CapacityStatus::Ok
 }
 
+/// The stored-documents count feeding the envelope: fail-open by contract
+/// (a read error counts ZERO docs — a transient DB failure must never turn
+/// the brain read-only). Shared by every ingest path's write guard.
+pub fn knowledge_docs(conn: &rusqlite::Connection) -> usize {
+    conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
+        .max(0) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

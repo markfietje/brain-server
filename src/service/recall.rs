@@ -35,7 +35,7 @@
 //!
 //! Time: wall-clock enters as `now_unix` where a decision needs it.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::ops::Deref;
 
@@ -207,6 +207,36 @@ where
     // same read-event prune cadence (no dedicated timer).
     crate::service::dsar::purge_stale_dsar_ledger(conn, event.dsar_retention_days);
     id
+}
+
+// ── the verify surface's domain-bound row read ────────────────────────────
+
+/// One chunk-verify row: (content, domain, owner, access_scope).
+pub(crate) type VerifyRow = (String, String, Option<String>, Option<String>);
+
+/// The domain-BOUND row fetch behind claim verification: the domain label
+/// is IN the predicate, so a bare id can never read across domains. The
+/// gate re-authorization + record-gate decision stay handler-side; this
+/// returns the stored form (None = no such chunk in that domain).
+pub(crate) fn chunk_for_verify(
+    conn: &rusqlite::Connection,
+    id: i64,
+    domain_label: &str,
+) -> rusqlite::Result<Option<VerifyRow>> {
+    conn.query_row(
+        "SELECT k.content, k.domain, k.owner, k.access_scope FROM knowledge k \
+         WHERE k.id = ?1 AND k.domain = ?2",
+        rusqlite::params![id, domain_label],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
+    )
+    .optional()
 }
 
 #[cfg(test)]

@@ -330,19 +330,13 @@ pub async fn post_user_map_proposal(
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
-        let id: i64 = tx
-            .query_row(
-                "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
-                 VALUES (?1, ?2, 0.5, 0.5, ?3, ?4) RETURNING id",
-                rusqlite::params![
-                    crate::workflow::channels::PROP_KIND_USER_MAP,
-                    content,
-                    chrono::Utc::now().timestamp(),
-                    actor
-                ],
-                |r| r.get(0),
-            )
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let id: i64 = crate::workflow::channels::file_user_map_proposal(
+            &tx,
+            &content,
+            &actor,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
         crate::audit::record_tenant(
             &tx,
             crate::audit::AuditKind::Workflow,

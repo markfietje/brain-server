@@ -189,13 +189,7 @@ pub async fn receive_channel(
         move || -> Result<channels::LandOutcome, String> {
             let mut conn = state.pool.get().map_err(|e| format!("{e}"))?;
             // Flood bound over the shared seen-window (bounds law).
-            let recent: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM webhook_seen
-                      WHERE seen_at >= datetime('now', '-1 hour')",
-                    [],
-                    |r| r.get(0),
-                )
+            let recent = crate::workflow::channels::recent_inbound_count(&conn)
                 .map_err(|e| format!("{e}"))?;
             if recent >= CHANNEL_MAX_PER_HOUR {
                 return Err("flood".into());

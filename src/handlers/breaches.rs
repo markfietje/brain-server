@@ -45,8 +45,7 @@ pub(crate) fn require_dpo_role(
         // with no roles is exactly the single-token shape the dual gate
         // exists to stop (hold release / breach close are one-principal
         // decisions that must not ride a bare admin scope).
-        let defined: i64 = conn
-            .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
+        let defined = brain_server::role::defined_count(&conn)
             .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
         if defined == 0 {
             return Ok(());

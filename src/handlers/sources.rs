@@ -12,7 +12,6 @@
 
 use axum::extract::{Path, State};
 use axum::response::Json;
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -172,13 +171,6 @@ pub async fn delete_source(
         let chunk_ids = crate::sources::chunk_ids_for_source(&tx, id)
             .map_err(|e| HandlerError::internal(format!("collect chunks failed: {e}")))?;
         crate::legal_hold::refuse_if_held(&tx, &chunk_ids)?;
-        // Surface the URI for the tombstone audit before the source row is
-        // marked deleted — same provenance rationale as `forget`'s tombstone.
-        let _uri: Option<String> = tx
-            .query_row("SELECT uri FROM sources WHERE id = ?1", params![id], |r| {
-                r.get(0)
-            })
-            .ok();
         let existed = crate::sources::delete_source(&tx, id)
             .map_err(|e| HandlerError::internal(format!("delete_source failed: {e}")))?;
         tx.commit()
