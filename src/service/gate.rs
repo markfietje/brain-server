@@ -135,20 +135,21 @@ pub(crate) fn pending_page(
     const COLS: &str =
         "id, kind, content, source, source_prompt, authority, novelty, conflict_with,
                         salience, created_at, edited_at, decided_at, owner, qa_note";
-    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match since {
-        Some(s) => (
+    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(s) = since {
+        (
             &format!(
                 "SELECT {COLS} FROM proposals WHERE status = ?1 AND created_at >= ?3 \
                  ORDER BY created_at DESC LIMIT ?2"
             ),
             vec![Box::new(status), Box::new(limit as i64), Box::new(s)],
-        ),
-        None => (
+        )
+    } else {
+        (
             &format!(
                 "SELECT {COLS} FROM proposals WHERE status = ?1 ORDER BY created_at DESC LIMIT ?2"
             ),
             vec![Box::new(status), Box::new(limit as i64)],
-        ),
+        )
     };
     let mut stmt = conn.prepare(sql).map_err(GateError::from)?;
     let rows = stmt
